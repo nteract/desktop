@@ -389,6 +389,8 @@ pub enum BlobResponse {
 
 ## Phase 5: Tauri <-> daemon notebook sync
 
+> **Implemented** (PR #233, #238, #241)
+
 Wire the Tauri app and React frontend to use the daemon's automerge doc as the source of truth for notebook state. This gives us multi-window sync immediately. Outputs still flow as inline JSON strings through the CRDT for now — Phase 6 makes them efficient.
 
 ### Current state (what changes)
@@ -437,13 +439,12 @@ render
 - `add_cell(cell_type, after_cell_id)` -> `sync_client.add_cell(index, cell_id, cell_type)`
 - `delete_cell(cell_id)` -> `sync_client.delete_cell(cell_id)`
 
-**Kernel outputs** — the iopub listener writes to automerge instead of just emitting events:
-- `stream` -> `sync_client.append_output(cell_id, json_output_string)`
-- `display_data` / `execute_result` -> same
-- `error` -> same
-- `execute_cell` clears outputs first: `sync_client.clear_outputs(cell_id)`
+**Kernel outputs** — the **frontend** drives output sync, not the Tauri iopub listener. `App.tsx`'s `handleOutput` calls `invoke("sync_append_output")` after appending to React state. This design avoids syncing widget-captured outputs to the CRDT:
+- `stream` / `display_data` / `execute_result` / `error` -> `handleOutput` calls `sync_append_output(cell_id, json_output_string)`
+- `execute_cell` clears outputs first: `sync_clear_outputs(cell_id)`
+- `execute_input` syncs execution count: `sync_execution_count(cell_id, count)`
 
-The Tauri event `kernel:iopub` still fires for low-latency display (the frontend can render immediately from the event, then reconcile when the automerge update arrives). This is the same data, two delivery paths — event for speed, automerge for durability and sync.
+The Tauri event `kernel:iopub` still fires for low-latency display (the frontend renders immediately from the event, then reconciles when the automerge update arrives). This is the same data, two delivery paths — event for speed, automerge for durability and sync. The sync calls are fire-and-forget (errors logged, not propagated to the UI).
 
 **On save** (`save_notebook`):
 1. Read cell state from the sync client's local replica
@@ -467,20 +468,32 @@ The frontend doesn't know about automerge. It still calls Tauri commands and rec
 - Execute cell in window A -> outputs appear in window B (JSON strings synced through automerge)
 - Both windows save -> same `.ipynb` content (both read from the same automerge doc)
 
+### Known limitations
+
+- **Output flicker in executing window** (#242): Outputs arrive via iopub (~10ms), the frontend renders them, then the automerge round-trip arrives (~100ms) and reconciliation re-renders. This can cause a brief visual flicker. Resolved by Phase 8 (daemon-managed kernels eliminate the dual delivery path).
+- **Stream output fragmentation in receiving windows** (#243): Consecutive stdout prints (e.g., a `for` loop with `print()`) merge into a single stream block in the executing window, but each `sync_append_output` call creates a separate CRDT list entry. Receiving windows see fragmented output with extra spacing. Options: receive-side merging (practical short-term), daemon-layer merging (cleanest, ties into Phase 8), or debounced batching.
+- **Stale execution_count on re-execution** (#244): `sync_clear_outputs` fires but `execution_count` remains stale until the kernel sends `execute_input`. Other windows briefly show the old count. Fix: clear execution_count alongside outputs atomically.
+
 ### Key files
 
 | File | Role |
 |------|------|
-| `crates/notebook/src/lib.rs` | Tauri commands — rewire to use sync client |
-| `crates/notebook/src/notebook_state.rs` | Replace with sync client handle |
-| `crates/notebook/src/kernel.rs` | iopub listener writes outputs to automerge |
-| `apps/notebook/src/hooks/useNotebook.ts` | Listen to `notebook:updated` events |
+| `crates/notebook/src/lib.rs` | Tauri commands: `sync_append_output`, `sync_execution_count`, `sync_clear_outputs`, cell CRUD via sync client |
+| `crates/notebook/src/notebook_state.rs` | Holds `NotebookSyncHandle` (send half of the sync client) |
+| `crates/runtimed/src/notebook_sync_client.rs` | Handle/receiver split pattern for Tauri state sharing |
+| `apps/notebook/src/App.tsx` | `handleOutput` routes output sync — frontend drives sync to avoid widget double-sync |
+| `apps/notebook/src/hooks/useNotebook.ts` | Reconciliation logic, `notebook:updated` event handling |
+| `apps/notebook/src/hooks/useKernel.ts` | Syncs execution counts via `sync_execution_count` |
 
 ---
 
 ## Phase 6: Output store
 
+> **Foundation implemented** (PR #237 — `output_store.rs` with `ContentRef`, manifests, inlining threshold). Integration into the live pipeline is next.
+
 Move outputs from inline JSON in the CRDT to the blob store. This solves the CRDT bloat problem from Phase 5 and introduces two-level serving.
+
+**Note:** Stream output fragmentation (#243) is orthogonal to this phase — manifests don't fix the CRDT-level issue of per-`print()` list entries. That's addressed at the sync layer (see Phase 5 known limitations).
 
 ### The two levels
 
@@ -678,7 +691,9 @@ The .ipynb is always the durable format. If blobs are missing (cache cleared, ne
 
 ## Phase 8: Daemon-owned kernels
 
-The endgame. The daemon takes ownership of kernel processes and the full output pipeline. Notebook windows become pure views.
+> See #242 for the motivating timing race between iopub and Automerge delivery paths.
+
+The endgame. The daemon takes ownership of kernel processes and the full output pipeline. Notebook windows become pure views. This also resolves the Phase 5 known limitations: output flicker (#242), stream fragmentation (#243), and stale execution counts (#244) all go away when the daemon is the single actor writing outputs to the CRDT.
 
 ### Current model (Tauri-managed, through Phase 6)
 
@@ -787,13 +802,13 @@ Cross-cutting decisions that affect multiple phases. These are living answers �
 
 ### Acceptance criteria per phase
 
-**Phase 5**: Two windows open the same notebook, cell source edits propagate between them, and outputs from execution in window A appear in window B. Save from either window produces the same `.ipynb`. The existing `NotebookState` code path should remain as a fallback if the daemon isn't running — notebooks must still work standalone.
+**Phase 5** *(met)*: Two windows open the same notebook, cell source edits propagate between them, and outputs from execution in window A appear in window B. Save from either window produces the same `.ipynb`. The sync client connects gracefully — if the daemon isn't running, sync operations are no-ops (errors are logged but don't block the UI). Known limitations deferred to Phase 8: output flicker (#242), stream fragmentation (#243), stale execution_count (#244).
 
 **Phase 6**: Outputs render from manifests + blob store. Images no longer bloat the CRDT. Re-opening a notebook with existing outputs renders them correctly from blobs, and new execution outputs use the manifest path.
 
 ### Output format backward compatibility (Phase 5 -> 6)
 
-The outputs list is `List of Str`. A string that starts with `{` and parses as a Jupyter output object is Phase 5 inline JSON. A string that's 64 hex characters is a Phase 6 manifest hash. The reader can detect which format it's looking at trivially. Phase 6 rolls out incrementally — old outputs keep working, new outputs use manifests. No migration step needed.
+The outputs list is `List of Str`. A string that starts with `{` and parses as a Jupyter output object is Phase 5 inline JSON. A string that's 64 hex characters is a Phase 6 manifest hash. The reader can detect which format it's looking at trivially. Phase 6 rolls out incrementally — old outputs keep working, new outputs use manifests. No migration step needed. This is the key enabler for incremental Phase 6 work: the frontend can support both formats simultaneously.
 
 ### ipynb metadata hints are advisory only
 
@@ -831,7 +846,7 @@ For output manifests, the `output_type` field provides structural versioning. Ne
 | **2** | CRDT sync (settings + notebooks) | Implemented (PR #220, #223) |
 | **3** | Blob store (on-disk CAS + HTTP server) | Implemented (PR #220) |
 | **4** | Protocol consolidation (single socket) | Implemented (PR #220, #223) |
-| **5** | Tauri <-> daemon notebook sync (multi-window) | Next |
-| **6** | Output store (manifests, ContentRef, inlining) | After 5 |
+| **5** | Tauri <-> daemon notebook sync (multi-window) | Implemented (PR #233, #238, #241) — known limitations: #242, #243, #244 |
+| **6** | Output store (manifests, ContentRef, inlining) | Foundation landed (PR #237), pipeline integration next |
 | **7** | ipynb round-tripping | After 6 |
-| **8** | Daemon-owned kernels | After 7 |
+| **8** | Daemon-owned kernels (#242) | After 7 — resolves Phase 5 limitations |
