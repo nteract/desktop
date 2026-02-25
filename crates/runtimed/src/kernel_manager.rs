@@ -825,42 +825,78 @@ impl RoomKernel {
 
     /// Send a comm message to the kernel (for widget interactions).
     ///
-    /// This handles frontend→kernel comm_msg and comm_close messages.
-    pub async fn send_comm_message(
-        &mut self,
-        msg_type: &str,
-        content: serde_json::Value,
-        buffers: Vec<Vec<u8>>,
-    ) -> Result<()> {
+    /// Accepts the full Jupyter message envelope from the frontend to preserve
+    /// header/session for proper widget protocol compliance.
+    pub async fn send_comm_message(&mut self, raw_message: serde_json::Value) -> Result<()> {
         let shell = self
             .shell_writer
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("No kernel running"))?;
 
-        // Convert buffers from Vec<Vec<u8>> to Vec<Bytes>
-        let buffers: Vec<Bytes> = buffers.into_iter().map(Bytes::from).collect();
+        // Parse header from the raw message
+        let header: jupyter_protocol::Header = serde_json::from_value(
+            raw_message
+                .get("header")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Missing header in comm message"))?,
+        )?;
 
-        // Parse content to the appropriate comm message type
-        let message_content = match msg_type {
-            "comm_msg" => {
-                let comm_msg: jupyter_protocol::CommMsg = serde_json::from_value(content)?;
-                JupyterMessageContent::CommMsg(comm_msg)
-            }
-            "comm_close" => {
-                let comm_close: jupyter_protocol::CommClose = serde_json::from_value(content)?;
-                JupyterMessageContent::CommClose(comm_close)
-            }
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "Unsupported comm message type: {}",
-                    msg_type
-                ));
-            }
+        let msg_type = header.msg_type.clone();
+
+        // Parse parent_header (may be null or missing)
+        let parent_header: Option<jupyter_protocol::Header> =
+            raw_message.get("parent_header").and_then(|v| {
+                if v.is_null() {
+                    None
+                } else {
+                    serde_json::from_value(v.clone()).ok()
+                }
+            });
+
+        // Parse metadata (defaults to empty object)
+        let metadata: serde_json::Value = raw_message
+            .get("metadata")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
+
+        // Parse content and convert to JupyterMessageContent
+        let content_value = raw_message
+            .get("content")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Missing content in comm message"))?;
+
+        let message_content =
+            JupyterMessageContent::from_type_and_content(&msg_type, content_value)?;
+
+        // Parse buffers from Vec<Vec<u8>> (JSON number arrays)
+        let buffers: Vec<Bytes> = raw_message
+            .get("buffers")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|buf| {
+                        buf.as_array().map(|bytes| {
+                            let bytes: Vec<u8> = bytes
+                                .iter()
+                                .filter_map(|b| b.as_u64().map(|n| n as u8))
+                                .collect();
+                            Bytes::from(bytes)
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Construct the JupyterMessage with the frontend's original header
+        let message = JupyterMessage {
+            zmq_identities: Vec::new(),
+            header,
+            parent_header,
+            metadata,
+            content: message_content,
+            buffers,
+            channel: Some(jupyter_protocol::Channel::Shell),
         };
-
-        // Create the Jupyter message
-        let mut message: JupyterMessage = message_content.into();
-        message.buffers = buffers;
 
         debug!(
             "[kernel-manager] Sending comm message: type={} msg_id={}",

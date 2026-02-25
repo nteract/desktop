@@ -704,14 +704,10 @@ async fn handle_notebook_request(
             }
         }
 
-        NotebookRequest::SendComm {
-            msg_type,
-            content,
-            buffers,
-        } => {
+        NotebookRequest::SendComm { message } => {
             let mut kernel_guard = room.kernel.lock().await;
             if let Some(ref mut kernel) = *kernel_guard {
-                match kernel.send_comm_message(&msg_type, content, buffers).await {
+                match kernel.send_comm_message(message).await {
                     Ok(()) => NotebookResponse::Ok {},
                     Err(e) => NotebookResponse::Error {
                         error: format!("Failed to send comm message: {}", e),

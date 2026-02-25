@@ -169,15 +169,11 @@ pub enum NotebookRequest {
     RunAllCells {},
 
     /// Send a comm message to the kernel (widget interactions).
-    /// Used for frontend→kernel comm_msg and comm_close messages.
+    /// Accepts the full Jupyter message envelope to preserve header/session.
     SendComm {
-        /// Message type: "comm_msg" or "comm_close"
-        msg_type: String,
-        /// Message content (comm_id, data, etc.)
-        content: serde_json::Value,
-        /// Binary buffers
-        #[serde(default)]
-        buffers: Vec<Vec<u8>>,
+        /// The full Jupyter message (header, content, buffers, etc.)
+        /// Preserves frontend session/msg_id for proper widget protocol.
+        message: serde_json::Value,
     },
 }
 

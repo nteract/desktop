@@ -394,31 +394,40 @@ export function useDaemonKernel({
   /** Send a comm message to the kernel via the daemon (for widget interactions) */
   const sendCommMessage = useCallback(
     async (message: {
-      header: { msg_type: string };
+      header: Record<string, unknown>;
+      parent_header?: Record<string, unknown> | null;
+      metadata?: Record<string, unknown>;
       content: Record<string, unknown>;
       buffers?: ArrayBuffer[];
+      channel?: string;
     }): Promise<void> => {
-      console.log(
-        "[daemon-kernel] sending comm message:",
-        message.header.msg_type,
-      );
+      const msgType = message.header.msg_type as string;
+      console.log("[daemon-kernel] sending comm message:", msgType);
       try {
-        // Convert ArrayBuffer[] to number[][] for serialization
+        // Convert ArrayBuffer[] to number[][] for JSON serialization
         const buffers: number[][] = (message.buffers ?? []).map((buf) =>
           Array.from(new Uint8Array(buf)),
         );
 
+        // Send the full message envelope to preserve header/session
+        const fullMessage = {
+          header: message.header,
+          parent_header: message.parent_header ?? null,
+          metadata: message.metadata ?? {},
+          content: message.content,
+          buffers,
+          channel: message.channel ?? "shell",
+        };
+
         const response = await invoke<DaemonNotebookResponse>(
           "send_comm_via_daemon",
-          {
-            msgType: message.header.msg_type,
-            content: message.content,
-            buffers,
-          },
+          { message: fullMessage },
         );
 
         if (response.result === "error") {
           console.error("[daemon-kernel] send comm failed:", response.error);
+        } else if (response.result === "no_kernel") {
+          console.error("[daemon-kernel] send comm failed: no kernel running");
         }
       } catch (e) {
         console.error("[daemon-kernel] send comm failed:", e);
