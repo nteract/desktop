@@ -353,14 +353,14 @@ impl RoomKernel {
 
     /// Launch a kernel for this room.
     ///
-    /// Launches a kernel using the provided pooled environment.
-    /// The environment must be provided - there is no fallback to kernelspec discovery.
+    /// For Python kernels, uses the provided pooled environment.
+    /// For non-Python kernels (e.g., Deno), falls back to kernelspec discovery.
     pub async fn launch(
         &mut self,
         kernel_type: &str,
         env_source: &str,
         notebook_path: Option<&std::path::Path>,
-        env: PooledEnv,
+        env: Option<PooledEnv>,
     ) -> Result<()> {
         // Shutdown existing kernel if any (but don't broadcast shutdown for fresh kernel)
         if self.is_running() {
@@ -425,16 +425,45 @@ impl RoomKernel {
             dirs::home_dir().unwrap_or_else(std::env::temp_dir)
         };
 
-        // Build kernel command using the pooled environment
-        info!(
-            "[kernel-manager] Starting kernel from pooled env at {:?}",
-            env.python_path
-        );
-        let mut cmd = tokio::process::Command::new(&env.python_path);
-        cmd.args(["-Xfrozen_modules=off", "-m", "ipykernel_launcher", "-f"]);
-        cmd.arg(&connection_file_path);
-        cmd.stdout(Stdio::null());
-        cmd.stderr(Stdio::null());
+        // Build kernel command based on kernel type and environment
+        let mut cmd = if kernel_type == "python" {
+            if let Some(ref pooled_env) = env {
+                // Python with pooled environment - use the env's Python directly
+                info!(
+                    "[kernel-manager] Starting Python kernel from pooled env at {:?}",
+                    pooled_env.python_path
+                );
+                let mut c = tokio::process::Command::new(&pooled_env.python_path);
+                c.args(["-Xfrozen_modules=off", "-m", "ipykernel_launcher", "-f"]);
+                c.arg(&connection_file_path);
+                c.stdout(Stdio::null());
+                c.stderr(Stdio::null());
+                c
+            } else {
+                // Python without pooled env - shouldn't happen, but fall back to kernelspec
+                warn!(
+                    "[kernel-manager] No pooled env provided for Python kernel, falling back to kernelspec"
+                );
+                let kernelspec = runtimelib::find_kernelspec(kernelspec_name).await?;
+                kernelspec.command(
+                    &connection_file_path,
+                    Some(Stdio::null()),
+                    Some(Stdio::null()),
+                )?
+            }
+        } else {
+            // Non-Python kernels (e.g., Deno) - use kernelspec discovery
+            info!(
+                "[kernel-manager] Starting {} kernel via kernelspec at {:?}",
+                kernel_type, connection_file_path
+            );
+            let kernelspec = runtimelib::find_kernelspec(kernelspec_name).await?;
+            kernelspec.command(
+                &connection_file_path,
+                Some(Stdio::null()),
+                Some(Stdio::null()),
+            )?
+        };
         cmd.current_dir(&cwd);
 
         #[cfg(unix)]

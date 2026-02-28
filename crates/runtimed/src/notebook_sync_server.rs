@@ -828,24 +828,44 @@ async fn auto_launch_kernel(
                 }
             }
         }
-        _ => {
-            // For non-prewarmed env sources (shouldn't happen in auto_launch for new notebooks),
-            // default to creating a UV environment on-demand
-            warn!("[notebook-sync] Auto-launch: unexpected env_source '{}', creating UV env on-demand", env_source);
-            match daemon.create_uv_env_on_demand().await {
-                Ok(env) => env,
-                Err(e) => {
-                    error!(
-                        "[notebook-sync] Auto-launch failed: could not create UV env: {}",
-                        e
-                    );
-                    let _ = room
-                        .kernel_broadcast_tx
-                        .send(NotebookBroadcast::KernelStatus {
-                            status: format!("error: {}", e),
-                            cell_id: None,
-                        });
-                    return;
+        other => {
+            // For unexpected env sources, route based on prefix to ensure correct env manager
+            if other.starts_with("conda:") {
+                warn!("[notebook-sync] Auto-launch: unexpected conda env_source '{}', creating Conda env on-demand", other);
+                match daemon.create_conda_env_on_demand().await {
+                    Ok(env) => env,
+                    Err(e) => {
+                        error!(
+                            "[notebook-sync] Auto-launch failed: could not create Conda env: {}",
+                            e
+                        );
+                        let _ = room
+                            .kernel_broadcast_tx
+                            .send(NotebookBroadcast::KernelStatus {
+                                status: format!("error: {}", e),
+                                cell_id: None,
+                            });
+                        return;
+                    }
+                }
+            } else {
+                // Default to UV for uv:* or unknown prefixes
+                warn!("[notebook-sync] Auto-launch: unexpected env_source '{}', creating UV env on-demand", other);
+                match daemon.create_uv_env_on_demand().await {
+                    Ok(env) => env,
+                    Err(e) => {
+                        error!(
+                            "[notebook-sync] Auto-launch failed: could not create UV env: {}",
+                            e
+                        );
+                        let _ = room
+                            .kernel_broadcast_tx
+                            .send(NotebookBroadcast::KernelStatus {
+                                status: format!("error: {}", e),
+                                cell_id: None,
+                            });
+                        return;
+                    }
                 }
             }
         }
@@ -858,7 +878,7 @@ async fn auto_launch_kernel(
             kernel_type,
             &env_source,
             notebook_path_opt.as_deref(),
-            pooled_env,
+            Some(pooled_env),
         )
         .await
     {
@@ -993,45 +1013,49 @@ async fn handle_notebook_request(
                     env_source.clone()
                 };
 
-            // Acquire prewarmed environment from pool, or create on-demand if pool is empty
-            let pooled_env = match resolved_env_source.as_str() {
-                "uv:prewarmed" | "uv:inline" | "uv:pyproject" => {
-                    match daemon.take_uv_env().await {
-                        Some(env) => {
-                            info!(
-                                "[notebook-sync] LaunchKernel: acquired UV env from pool: {:?}",
-                                env.python_path
-                            );
-                            env
-                        }
-                        None => {
-                            info!("[notebook-sync] LaunchKernel: UV pool empty, creating env on-demand");
-                            match daemon.create_uv_env_on_demand().await {
-                                Ok(env) => {
-                                    info!(
-                                    "[notebook-sync] LaunchKernel: created UV env on-demand: {:?}",
+            // For Python kernels, acquire pooled env or create on-demand
+            // For non-Python kernels (e.g., Deno), use kernelspec (no pooled env)
+            let pooled_env: Option<crate::PooledEnv> = if kernel_type == "python" {
+                Some(match resolved_env_source.as_str() {
+                    "uv:prewarmed" | "uv:inline" | "uv:pyproject" => {
+                        match daemon.take_uv_env().await {
+                            Some(env) => {
+                                info!(
+                                    "[notebook-sync] LaunchKernel: acquired UV env from pool: {:?}",
                                     env.python_path
                                 );
-                                    env
-                                }
-                                Err(e) => {
-                                    error!("[notebook-sync] LaunchKernel failed: could not create UV env: {}", e);
-                                    let _ = room.kernel_broadcast_tx.send(
-                                        NotebookBroadcast::KernelStatus {
-                                            status: format!("error: {}", e),
-                                            cell_id: None,
-                                        },
+                                env
+                            }
+                            None => {
+                                info!("[notebook-sync] LaunchKernel: UV pool empty, creating env on-demand");
+                                match daemon.create_uv_env_on_demand().await {
+                                    Ok(env) => {
+                                        info!(
+                                        "[notebook-sync] LaunchKernel: created UV env on-demand: {:?}",
+                                        env.python_path
                                     );
-                                    return NotebookResponse::Error {
-                                        error: format!("Failed to create UV environment: {}", e),
-                                    };
+                                        env
+                                    }
+                                    Err(e) => {
+                                        error!("[notebook-sync] LaunchKernel failed: could not create UV env: {}", e);
+                                        let _ = room.kernel_broadcast_tx.send(
+                                            NotebookBroadcast::KernelStatus {
+                                                status: format!("error: {}", e),
+                                                cell_id: None,
+                                            },
+                                        );
+                                        return NotebookResponse::Error {
+                                            error: format!(
+                                                "Failed to create UV environment: {}",
+                                                e
+                                            ),
+                                        };
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                "conda:prewarmed" | "conda:inline" | "conda:env_yml" | "conda:pixi" => {
-                    match daemon.take_conda_env().await {
+                    other if other.starts_with("conda:") => match daemon.take_conda_env().await {
                         Some(env) => {
                             info!(
                                 "[notebook-sync] LaunchKernel: acquired Conda env from pool: {:?}",
@@ -1044,9 +1068,9 @@ async fn handle_notebook_request(
                             match daemon.create_conda_env_on_demand().await {
                                 Ok(env) => {
                                     info!(
-                                        "[notebook-sync] LaunchKernel: created Conda env on-demand: {:?}",
-                                        env.python_path
-                                    );
+                                            "[notebook-sync] LaunchKernel: created Conda env on-demand: {:?}",
+                                            env.python_path
+                                        );
                                     env
                                 }
                                 Err(e) => {
@@ -1063,30 +1087,37 @@ async fn handle_notebook_request(
                                 }
                             }
                         }
-                    }
-                }
-                _ => {
-                    // For unknown env_source, default to UV on-demand
-                    warn!("[notebook-sync] LaunchKernel: unknown env_source '{}', creating UV env on-demand", resolved_env_source);
-                    match daemon.create_uv_env_on_demand().await {
-                        Ok(env) => env,
-                        Err(e) => {
-                            error!(
-                                "[notebook-sync] LaunchKernel failed: could not create env: {}",
-                                e
-                            );
-                            let _ =
-                                room.kernel_broadcast_tx
-                                    .send(NotebookBroadcast::KernelStatus {
+                    },
+                    _ => {
+                        // For unknown env_source, default to UV on-demand
+                        warn!("[notebook-sync] LaunchKernel: unknown env_source '{}', creating UV env on-demand", resolved_env_source);
+                        match daemon.create_uv_env_on_demand().await {
+                            Ok(env) => env,
+                            Err(e) => {
+                                error!(
+                                    "[notebook-sync] LaunchKernel failed: could not create env: {}",
+                                    e
+                                );
+                                let _ = room.kernel_broadcast_tx.send(
+                                    NotebookBroadcast::KernelStatus {
                                         status: format!("error: {}", e),
                                         cell_id: None,
-                                    });
-                            return NotebookResponse::Error {
-                                error: format!("Failed to create environment: {}", e),
-                            };
+                                    },
+                                );
+                                return NotebookResponse::Error {
+                                    error: format!("Failed to create environment: {}", e),
+                                };
+                            }
                         }
                     }
-                }
+                })
+            } else {
+                // Non-Python kernels (e.g., Deno) don't use pooled environments
+                info!(
+                    "[notebook-sync] LaunchKernel: {} kernel uses kernelspec (no pooled env)",
+                    kernel_type
+                );
+                None
             };
 
             match kernel

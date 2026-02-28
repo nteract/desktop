@@ -2277,12 +2277,16 @@ print("warmup complete")
         );
 
         // Install packages
-        Installer::new()
+        if let Err(e) = Installer::new()
             .with_download_client(download_client)
             .with_target_platform(install_platform)
             .install(&env_path, required_packages)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to install packages: {}", e))?;
+        {
+            // Clean up partial environment on failure
+            tokio::fs::remove_dir_all(&env_path).await.ok();
+            anyhow::bail!("Failed to install packages: {}", e);
+        }
 
         // Verify python exists
         if !python_path.exists() {
