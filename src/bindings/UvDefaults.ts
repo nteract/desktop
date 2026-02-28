@@ -3,4 +3,4 @@
 /**
  * Default packages for uv environments.
  */
-export type UvDefaults = { default_packages: Array<string> };
+export type UvDefaults = { default_packages: Array<string>, };

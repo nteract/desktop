@@ -192,7 +192,25 @@ export type DaemonBroadcast =
   | {
       event: "comm_sync";
       comms: CommSnapshot[]; // All active comms for widget reconstruction
+    }
+  | {
+      event: "deps_changed";
+      uv: UvDependencies | null;
+      conda: CondaDependencies | null;
     };
+
+/** UV dependencies stored in Automerge metadata */
+export interface UvDependencies {
+  dependencies: string[];
+  requires_python?: string;
+}
+
+/** Conda dependencies stored in Automerge metadata */
+export interface CondaDependencies {
+  dependencies: string[];
+  channels: string[];
+  python?: string;
+}
 
 /** Response types from daemon notebook requests */
 export type DaemonNotebookResponse =

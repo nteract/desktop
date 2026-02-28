@@ -2158,14 +2158,14 @@ mod tests {
         pool.mark_warming(2);
         assert_eq!(pool.warming, 2);
 
-        pool.warming_failed();
+        pool.warming_failed_with_error(None);
         assert_eq!(pool.warming, 1);
 
-        pool.warming_failed();
+        pool.warming_failed_with_error(None);
         assert_eq!(pool.warming, 0);
 
         // Should not go negative
-        pool.warming_failed();
+        pool.warming_failed_with_error(None);
         assert_eq!(pool.warming, 0);
     }
 
@@ -2218,30 +2218,30 @@ mod tests {
         assert!(pool.should_retry());
 
         // First failure = 30s backoff
-        pool.warming_failed();
+        pool.warming_failed_with_error(None);
         assert_eq!(pool.backoff_delay(), std::time::Duration::from_secs(30));
         assert_eq!(pool.failure_state.consecutive_failures, 1);
 
         // Second failure = 60s
-        pool.warming_failed();
+        pool.warming_failed_with_error(None);
         assert_eq!(pool.backoff_delay(), std::time::Duration::from_secs(60));
         assert_eq!(pool.failure_state.consecutive_failures, 2);
 
         // Third = 120s
-        pool.warming_failed();
+        pool.warming_failed_with_error(None);
         assert_eq!(pool.backoff_delay(), std::time::Duration::from_secs(120));
 
         // Fourth = 240s
-        pool.warming_failed();
+        pool.warming_failed_with_error(None);
         assert_eq!(pool.backoff_delay(), std::time::Duration::from_secs(240));
 
         // Fifth and beyond = max 300s (5 min)
-        pool.warming_failed();
+        pool.warming_failed_with_error(None);
         assert_eq!(pool.backoff_delay(), std::time::Duration::from_secs(300));
 
         // Even more failures should stay at max
         for _ in 0..10 {
-            pool.warming_failed();
+            pool.warming_failed_with_error(None);
         }
         assert_eq!(pool.backoff_delay(), std::time::Duration::from_secs(300));
     }
@@ -2256,7 +2256,7 @@ mod tests {
             failed_package: Some("bad-pkg".to_string()),
             error_message: "not found".to_string(),
         }));
-        pool.warming_failed();
+        pool.warming_failed_with_error(None);
         assert_eq!(pool.failure_state.consecutive_failures, 2);
         assert!(pool.failure_state.last_error.is_some());
 

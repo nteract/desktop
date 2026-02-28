@@ -24,7 +24,10 @@ pub use runtime::Runtime;
 use notebook_state::{FrontendCell, NotebookState};
 use runtimed::notebook_doc::CellSnapshot;
 use runtimed::notebook_sync_client::{NotebookSyncClient, NotebookSyncHandle};
-use runtimed::protocol::{CompletionItem, HistoryEntry, NotebookRequest, NotebookResponse};
+use runtimed::protocol::{
+    CompletionItem, CondaDependenciesJson as DaemonCondaDeps, HistoryEntry, NotebookRequest,
+    NotebookResponse, UvDependenciesJson as DaemonUvDeps,
+};
 
 use log::{debug, info, warn};
 use nbformat::v4::{Cell, CellId, CellMetadata};
@@ -1154,6 +1157,13 @@ struct CompletionResult {
     cursor_end: usize,
 }
 
+/// Result type for dependency requests (matches frontend interface).
+#[derive(Serialize)]
+struct DaemonDependenciesResult {
+    uv: Option<DaemonUvDeps>,
+    conda: Option<DaemonCondaDeps>,
+}
+
 /// Get code completions via daemon.
 ///
 /// Requests completions from the kernel for the given code at cursor position.
@@ -1188,6 +1198,180 @@ async fn complete_via_daemon(
             cursor_end,
         }),
         NotebookResponse::NoKernel {} => Err("No kernel running".to_string()),
+        NotebookResponse::Error { error } => Err(error),
+        _ => Err("Unexpected response from daemon".to_string()),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Dependency Management via Daemon
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Get dependencies from the daemon's Automerge document.
+#[tauri::command]
+async fn get_deps_via_daemon(
+    notebook_sync: tauri::State<'_, SharedNotebookSync>,
+) -> Result<DaemonDependenciesResult, String> {
+    debug!("[daemon-kernel] get_deps_via_daemon");
+
+    let guard = notebook_sync.lock().await;
+    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
+
+    let response = handle
+        .send_request(NotebookRequest::GetDependencies {})
+        .await
+        .map_err(|e| format!("daemon request failed: {}", e))?;
+
+    match response {
+        NotebookResponse::Dependencies { uv, conda } => Ok(DaemonDependenciesResult { uv, conda }),
+        NotebookResponse::Error { error } => Err(error),
+        _ => Err("Unexpected response from daemon".to_string()),
+    }
+}
+
+/// Set UV dependencies in the daemon's Automerge document.
+#[tauri::command]
+async fn set_uv_deps_via_daemon(
+    dependencies: Vec<String>,
+    requires_python: Option<String>,
+    notebook_sync: tauri::State<'_, SharedNotebookSync>,
+) -> Result<(), String> {
+    debug!("[daemon-kernel] set_uv_deps_via_daemon");
+
+    let guard = notebook_sync.lock().await;
+    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
+
+    let response = handle
+        .send_request(NotebookRequest::SetUvDependencies {
+            dependencies,
+            requires_python,
+        })
+        .await
+        .map_err(|e| format!("daemon request failed: {}", e))?;
+
+    match response {
+        NotebookResponse::DependencyUpdated {} => Ok(()),
+        NotebookResponse::Error { error } => Err(error),
+        _ => Err("Unexpected response from daemon".to_string()),
+    }
+}
+
+/// Set Conda dependencies in the daemon's Automerge document.
+#[tauri::command]
+async fn set_conda_deps_via_daemon(
+    dependencies: Vec<String>,
+    channels: Vec<String>,
+    python: Option<String>,
+    notebook_sync: tauri::State<'_, SharedNotebookSync>,
+) -> Result<(), String> {
+    debug!("[daemon-kernel] set_conda_deps_via_daemon");
+
+    let guard = notebook_sync.lock().await;
+    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
+
+    let response = handle
+        .send_request(NotebookRequest::SetCondaDependencies {
+            dependencies,
+            channels,
+            python,
+        })
+        .await
+        .map_err(|e| format!("daemon request failed: {}", e))?;
+
+    match response {
+        NotebookResponse::DependencyUpdated {} => Ok(()),
+        NotebookResponse::Error { error } => Err(error),
+        _ => Err("Unexpected response from daemon".to_string()),
+    }
+}
+
+/// Add a single UV dependency via daemon.
+#[tauri::command]
+async fn add_uv_dep_via_daemon(
+    package: String,
+    notebook_sync: tauri::State<'_, SharedNotebookSync>,
+) -> Result<(), String> {
+    debug!("[daemon-kernel] add_uv_dep_via_daemon: {}", package);
+
+    let guard = notebook_sync.lock().await;
+    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
+
+    let response = handle
+        .send_request(NotebookRequest::AddUvDependency { package })
+        .await
+        .map_err(|e| format!("daemon request failed: {}", e))?;
+
+    match response {
+        NotebookResponse::DependencyUpdated {} => Ok(()),
+        NotebookResponse::Error { error } => Err(error),
+        _ => Err("Unexpected response from daemon".to_string()),
+    }
+}
+
+/// Remove a UV dependency via daemon.
+#[tauri::command]
+async fn remove_uv_dep_via_daemon(
+    package: String,
+    notebook_sync: tauri::State<'_, SharedNotebookSync>,
+) -> Result<(), String> {
+    debug!("[daemon-kernel] remove_uv_dep_via_daemon: {}", package);
+
+    let guard = notebook_sync.lock().await;
+    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
+
+    let response = handle
+        .send_request(NotebookRequest::RemoveUvDependency { package })
+        .await
+        .map_err(|e| format!("daemon request failed: {}", e))?;
+
+    match response {
+        NotebookResponse::DependencyUpdated {} => Ok(()),
+        NotebookResponse::Error { error } => Err(error),
+        _ => Err("Unexpected response from daemon".to_string()),
+    }
+}
+
+/// Add a single Conda dependency via daemon.
+#[tauri::command]
+async fn add_conda_dep_via_daemon(
+    package: String,
+    notebook_sync: tauri::State<'_, SharedNotebookSync>,
+) -> Result<(), String> {
+    debug!("[daemon-kernel] add_conda_dep_via_daemon: {}", package);
+
+    let guard = notebook_sync.lock().await;
+    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
+
+    let response = handle
+        .send_request(NotebookRequest::AddCondaDependency { package })
+        .await
+        .map_err(|e| format!("daemon request failed: {}", e))?;
+
+    match response {
+        NotebookResponse::DependencyUpdated {} => Ok(()),
+        NotebookResponse::Error { error } => Err(error),
+        _ => Err("Unexpected response from daemon".to_string()),
+    }
+}
+
+/// Remove a Conda dependency via daemon.
+#[tauri::command]
+async fn remove_conda_dep_via_daemon(
+    package: String,
+    notebook_sync: tauri::State<'_, SharedNotebookSync>,
+) -> Result<(), String> {
+    debug!("[daemon-kernel] remove_conda_dep_via_daemon: {}", package);
+
+    let guard = notebook_sync.lock().await;
+    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
+
+    let response = handle
+        .send_request(NotebookRequest::RemoveCondaDependency { package })
+        .await
+        .map_err(|e| format!("daemon request failed: {}", e))?;
+
+    match response {
+        NotebookResponse::DependencyUpdated {} => Ok(()),
         NotebookResponse::Error { error } => Err(error),
         _ => Err("Unexpected response from daemon".to_string()),
     }
@@ -2710,6 +2894,14 @@ pub fn run(
             send_comm_via_daemon,
             get_history_via_daemon,
             complete_via_daemon,
+            // Dependency management via daemon
+            get_deps_via_daemon,
+            set_uv_deps_via_daemon,
+            set_conda_deps_via_daemon,
+            add_uv_dep_via_daemon,
+            remove_uv_dep_via_daemon,
+            add_conda_dep_via_daemon,
+            remove_conda_dep_via_daemon,
             reconnect_to_daemon,
             refresh_from_automerge,
             debug_get_automerge_state,

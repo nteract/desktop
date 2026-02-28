@@ -1236,6 +1236,245 @@ async fn handle_notebook_request(
                 NotebookResponse::NoKernel {}
             }
         }
+
+        // ── Dependency Management ──────────────────────────────────────
+        NotebookRequest::GetDependencies {} => {
+            let doc = room.doc.read().await;
+            let uv = doc
+                .get_uv_deps()
+                .map(|d| crate::protocol::UvDependenciesJson {
+                    dependencies: d.dependencies,
+                    requires_python: d.requires_python,
+                });
+            let conda = doc
+                .get_conda_deps()
+                .map(|d| crate::protocol::CondaDependenciesJson {
+                    dependencies: d.dependencies,
+                    channels: d.channels,
+                    python: d.python,
+                });
+            NotebookResponse::Dependencies { uv, conda }
+        }
+
+        NotebookRequest::SetUvDependencies {
+            dependencies,
+            requires_python,
+        } => {
+            let deps = crate::notebook_doc::UvDependencies {
+                dependencies,
+                requires_python,
+            };
+            let (persist_bytes, uv, conda) = {
+                let mut doc = room.doc.write().await;
+                if let Err(e) = doc.set_uv_deps(&deps) {
+                    return NotebookResponse::Error {
+                        error: format!("Failed to set UV deps: {}", e),
+                    };
+                }
+                let bytes = doc.save();
+                let _ = room.changed_tx.send(());
+                let uv = doc
+                    .get_uv_deps()
+                    .map(|d| crate::protocol::UvDependenciesJson {
+                        dependencies: d.dependencies,
+                        requires_python: d.requires_python,
+                    });
+                let conda = doc
+                    .get_conda_deps()
+                    .map(|d| crate::protocol::CondaDependenciesJson {
+                        dependencies: d.dependencies,
+                        channels: d.channels,
+                        python: d.python,
+                    });
+                (bytes, uv, conda)
+            };
+            persist_notebook_bytes(&persist_bytes, &room.persist_path);
+            let _ = room
+                .kernel_broadcast_tx
+                .send(NotebookBroadcast::DepsChanged { uv, conda });
+            NotebookResponse::DependencyUpdated {}
+        }
+
+        NotebookRequest::SetCondaDependencies {
+            dependencies,
+            channels,
+            python,
+        } => {
+            let deps = crate::notebook_doc::CondaDependencies {
+                dependencies,
+                channels,
+                python,
+            };
+            let (persist_bytes, uv, conda) = {
+                let mut doc = room.doc.write().await;
+                if let Err(e) = doc.set_conda_deps(&deps) {
+                    return NotebookResponse::Error {
+                        error: format!("Failed to set Conda deps: {}", e),
+                    };
+                }
+                let bytes = doc.save();
+                let _ = room.changed_tx.send(());
+                let uv = doc
+                    .get_uv_deps()
+                    .map(|d| crate::protocol::UvDependenciesJson {
+                        dependencies: d.dependencies,
+                        requires_python: d.requires_python,
+                    });
+                let conda = doc
+                    .get_conda_deps()
+                    .map(|d| crate::protocol::CondaDependenciesJson {
+                        dependencies: d.dependencies,
+                        channels: d.channels,
+                        python: d.python,
+                    });
+                (bytes, uv, conda)
+            };
+            persist_notebook_bytes(&persist_bytes, &room.persist_path);
+            let _ = room
+                .kernel_broadcast_tx
+                .send(NotebookBroadcast::DepsChanged { uv, conda });
+            NotebookResponse::DependencyUpdated {}
+        }
+
+        NotebookRequest::AddUvDependency { package } => {
+            let (persist_bytes, uv, conda) = {
+                let mut doc = room.doc.write().await;
+                let mut deps = doc.get_uv_deps().unwrap_or_default();
+                if !deps.dependencies.contains(&package) {
+                    deps.dependencies.push(package);
+                }
+                if let Err(e) = doc.set_uv_deps(&deps) {
+                    return NotebookResponse::Error {
+                        error: format!("Failed to add UV dep: {}", e),
+                    };
+                }
+                let bytes = doc.save();
+                let _ = room.changed_tx.send(());
+                let uv = doc
+                    .get_uv_deps()
+                    .map(|d| crate::protocol::UvDependenciesJson {
+                        dependencies: d.dependencies,
+                        requires_python: d.requires_python,
+                    });
+                let conda = doc
+                    .get_conda_deps()
+                    .map(|d| crate::protocol::CondaDependenciesJson {
+                        dependencies: d.dependencies,
+                        channels: d.channels,
+                        python: d.python,
+                    });
+                (bytes, uv, conda)
+            };
+            persist_notebook_bytes(&persist_bytes, &room.persist_path);
+            let _ = room
+                .kernel_broadcast_tx
+                .send(NotebookBroadcast::DepsChanged { uv, conda });
+            NotebookResponse::DependencyUpdated {}
+        }
+
+        NotebookRequest::RemoveUvDependency { package } => {
+            let (persist_bytes, uv, conda) = {
+                let mut doc = room.doc.write().await;
+                let mut deps = doc.get_uv_deps().unwrap_or_default();
+                deps.dependencies.retain(|d| d != &package);
+                if let Err(e) = doc.set_uv_deps(&deps) {
+                    return NotebookResponse::Error {
+                        error: format!("Failed to remove UV dep: {}", e),
+                    };
+                }
+                let bytes = doc.save();
+                let _ = room.changed_tx.send(());
+                let uv = doc
+                    .get_uv_deps()
+                    .map(|d| crate::protocol::UvDependenciesJson {
+                        dependencies: d.dependencies,
+                        requires_python: d.requires_python,
+                    });
+                let conda = doc
+                    .get_conda_deps()
+                    .map(|d| crate::protocol::CondaDependenciesJson {
+                        dependencies: d.dependencies,
+                        channels: d.channels,
+                        python: d.python,
+                    });
+                (bytes, uv, conda)
+            };
+            persist_notebook_bytes(&persist_bytes, &room.persist_path);
+            let _ = room
+                .kernel_broadcast_tx
+                .send(NotebookBroadcast::DepsChanged { uv, conda });
+            NotebookResponse::DependencyUpdated {}
+        }
+
+        NotebookRequest::AddCondaDependency { package } => {
+            let (persist_bytes, uv, conda) = {
+                let mut doc = room.doc.write().await;
+                let mut deps = doc.get_conda_deps().unwrap_or_default();
+                if !deps.dependencies.contains(&package) {
+                    deps.dependencies.push(package);
+                }
+                if let Err(e) = doc.set_conda_deps(&deps) {
+                    return NotebookResponse::Error {
+                        error: format!("Failed to add Conda dep: {}", e),
+                    };
+                }
+                let bytes = doc.save();
+                let _ = room.changed_tx.send(());
+                let uv = doc
+                    .get_uv_deps()
+                    .map(|d| crate::protocol::UvDependenciesJson {
+                        dependencies: d.dependencies,
+                        requires_python: d.requires_python,
+                    });
+                let conda = doc
+                    .get_conda_deps()
+                    .map(|d| crate::protocol::CondaDependenciesJson {
+                        dependencies: d.dependencies,
+                        channels: d.channels,
+                        python: d.python,
+                    });
+                (bytes, uv, conda)
+            };
+            persist_notebook_bytes(&persist_bytes, &room.persist_path);
+            let _ = room
+                .kernel_broadcast_tx
+                .send(NotebookBroadcast::DepsChanged { uv, conda });
+            NotebookResponse::DependencyUpdated {}
+        }
+
+        NotebookRequest::RemoveCondaDependency { package } => {
+            let (persist_bytes, uv, conda) = {
+                let mut doc = room.doc.write().await;
+                let mut deps = doc.get_conda_deps().unwrap_or_default();
+                deps.dependencies.retain(|d| d != &package);
+                if let Err(e) = doc.set_conda_deps(&deps) {
+                    return NotebookResponse::Error {
+                        error: format!("Failed to remove Conda dep: {}", e),
+                    };
+                }
+                let bytes = doc.save();
+                let _ = room.changed_tx.send(());
+                let uv = doc
+                    .get_uv_deps()
+                    .map(|d| crate::protocol::UvDependenciesJson {
+                        dependencies: d.dependencies,
+                        requires_python: d.requires_python,
+                    });
+                let conda = doc
+                    .get_conda_deps()
+                    .map(|d| crate::protocol::CondaDependenciesJson {
+                        dependencies: d.dependencies,
+                        channels: d.channels,
+                        python: d.python,
+                    });
+                (bytes, uv, conda)
+            };
+            persist_notebook_bytes(&persist_bytes, &room.persist_path);
+            let _ = room
+                .kernel_broadcast_tx
+                .send(NotebookBroadcast::DepsChanged { uv, conda });
+            NotebookResponse::DependencyUpdated {}
+        }
     }
 }
 

@@ -20,6 +20,14 @@
 //!         [j]: Str                ← JSON-encoded Jupyter output (Phase 5: manifest hash)
 //!   metadata/                     ← Map
 //!     runtime: Str
+//!     runt/                       ← Map (optional, for runt-specific metadata)
+//!       uv/                       ← Map (optional, UV dependencies)
+//!         dependencies/           ← List of Str
+//!         requires_python: Str    ← (optional)
+//!       conda/                    ← Map (optional, Conda dependencies)
+//!         dependencies/           ← List of Str
+//!         channels/               ← List of Str
+//!         python: Str             ← (optional)
 //! ```
 
 use std::path::Path;
@@ -42,6 +50,28 @@ pub struct CellSnapshot {
     pub execution_count: String,
     /// JSON-encoded Jupyter output objects (will become manifest hashes in Phase 5)
     pub outputs: Vec<String>,
+}
+
+/// UV dependencies configuration stored in Automerge metadata.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UvDependencies {
+    /// List of PEP 508 dependency specifiers (e.g., "numpy>=1.0", "pandas")
+    pub dependencies: Vec<String>,
+    /// Python version requirement (e.g., ">=3.9")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires_python: Option<String>,
+}
+
+/// Conda dependencies configuration stored in Automerge metadata.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CondaDependencies {
+    /// List of conda package specs (e.g., "python", "numpy=1.24")
+    pub dependencies: Vec<String>,
+    /// List of conda channels (e.g., "conda-forge")
+    pub channels: Vec<String>,
+    /// Python version (e.g., "3.9")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub python: Option<String>,
 }
 
 /// Wrapper around an Automerge document storing a notebook.
@@ -528,6 +558,140 @@ impl NotebookDoc {
         Ok(())
     }
 
+    // ── Dependencies (runt metadata) ───────────────────────────────
+
+    /// Get UV dependencies from Automerge metadata.
+    pub fn get_uv_deps(&self) -> Option<UvDependencies> {
+        let runt_id = self.runt_map_id()?;
+        let uv_id = self.map_id(&runt_id, "uv")?;
+
+        // Read dependencies list
+        let dependencies = match self.list_id(&uv_id, "dependencies") {
+            Some(list_id) => {
+                let len = self.doc.length(&list_id);
+                (0..len)
+                    .filter_map(|i| read_str(&self.doc, &list_id, i))
+                    .collect()
+            }
+            None => vec![],
+        };
+
+        // Read requires_python
+        let requires_python = read_str(&self.doc, &uv_id, "requires_python");
+
+        Some(UvDependencies {
+            dependencies,
+            requires_python,
+        })
+    }
+
+    /// Set UV dependencies in Automerge metadata.
+    pub fn set_uv_deps(&mut self, deps: &UvDependencies) -> Result<(), AutomergeError> {
+        let runt_id = self.ensure_runt_map()?;
+
+        // Delete existing uv section if present
+        let _ = self.doc.delete(&runt_id, "uv");
+
+        let uv_id = self.doc.put_object(&runt_id, "uv", ObjType::Map)?;
+
+        // Create dependencies list
+        let deps_id = self.doc.put_object(&uv_id, "dependencies", ObjType::List)?;
+        for (i, dep) in deps.dependencies.iter().enumerate() {
+            self.doc.insert(&deps_id, i, dep.as_str())?;
+        }
+
+        // Set requires_python if present
+        if let Some(rp) = &deps.requires_python {
+            self.doc.put(&uv_id, "requires_python", rp.as_str())?;
+        }
+
+        Ok(())
+    }
+
+    /// Get Conda dependencies from Automerge metadata.
+    pub fn get_conda_deps(&self) -> Option<CondaDependencies> {
+        let runt_id = self.runt_map_id()?;
+        let conda_id = self.map_id(&runt_id, "conda")?;
+
+        // Read dependencies list
+        let dependencies = match self.list_id(&conda_id, "dependencies") {
+            Some(list_id) => {
+                let len = self.doc.length(&list_id);
+                (0..len)
+                    .filter_map(|i| read_str(&self.doc, &list_id, i))
+                    .collect()
+            }
+            None => vec![],
+        };
+
+        // Read channels list
+        let channels = match self.list_id(&conda_id, "channels") {
+            Some(list_id) => {
+                let len = self.doc.length(&list_id);
+                (0..len)
+                    .filter_map(|i| read_str(&self.doc, &list_id, i))
+                    .collect()
+            }
+            None => vec![],
+        };
+
+        // Read python version
+        let python = read_str(&self.doc, &conda_id, "python");
+
+        Some(CondaDependencies {
+            dependencies,
+            channels,
+            python,
+        })
+    }
+
+    /// Set Conda dependencies in Automerge metadata.
+    pub fn set_conda_deps(&mut self, deps: &CondaDependencies) -> Result<(), AutomergeError> {
+        let runt_id = self.ensure_runt_map()?;
+
+        // Delete existing conda section if present
+        let _ = self.doc.delete(&runt_id, "conda");
+
+        let conda_id = self.doc.put_object(&runt_id, "conda", ObjType::Map)?;
+
+        // Create dependencies list
+        let deps_id = self
+            .doc
+            .put_object(&conda_id, "dependencies", ObjType::List)?;
+        for (i, dep) in deps.dependencies.iter().enumerate() {
+            self.doc.insert(&deps_id, i, dep.as_str())?;
+        }
+
+        // Create channels list
+        let channels_id = self.doc.put_object(&conda_id, "channels", ObjType::List)?;
+        for (i, channel) in deps.channels.iter().enumerate() {
+            self.doc.insert(&channels_id, i, channel.as_str())?;
+        }
+
+        // Set python version if present
+        if let Some(py) = &deps.python {
+            self.doc.put(&conda_id, "python", py.as_str())?;
+        }
+
+        Ok(())
+    }
+
+    /// Clear UV dependencies from Automerge metadata.
+    pub fn clear_uv_deps(&mut self) -> Result<(), AutomergeError> {
+        if let Some(runt_id) = self.runt_map_id() {
+            let _ = self.doc.delete(&runt_id, "uv");
+        }
+        Ok(())
+    }
+
+    /// Clear Conda dependencies from Automerge metadata.
+    pub fn clear_conda_deps(&mut self) -> Result<(), AutomergeError> {
+        if let Some(runt_id) = self.runt_map_id() {
+            let _ = self.doc.delete(&runt_id, "conda");
+        }
+        Ok(())
+    }
+
     // ── Sync protocol ───────────────────────────────────────────────
 
     /// Generate a sync message to send to a peer.
@@ -560,6 +724,43 @@ impl NotebookDoc {
     fn metadata_map_id(&self) -> Option<ObjId> {
         self.doc
             .get(automerge::ROOT, "metadata")
+            .ok()
+            .flatten()
+            .and_then(|(value, id)| match value {
+                automerge::Value::Object(ObjType::Map) => Some(id),
+                _ => None,
+            })
+    }
+
+    /// Get the metadata.runt map ID if it exists.
+    fn runt_map_id(&self) -> Option<ObjId> {
+        let meta_id = self.metadata_map_id()?;
+        self.map_id(&meta_id, "runt")
+    }
+
+    /// Ensure metadata.runt map exists, creating it if needed.
+    fn ensure_runt_map(&mut self) -> Result<ObjId, AutomergeError> {
+        // Ensure metadata map exists
+        let meta_id = match self.metadata_map_id() {
+            Some(id) => id,
+            None => self
+                .doc
+                .put_object(automerge::ROOT, "metadata", ObjType::Map)?,
+        };
+
+        // Check if runt map exists
+        if let Some(runt_id) = self.map_id(&meta_id, "runt") {
+            return Ok(runt_id);
+        }
+
+        // Create runt map
+        self.doc.put_object(&meta_id, "runt", ObjType::Map)
+    }
+
+    /// Get a nested map ID by key.
+    fn map_id(&self, parent: &ObjId, key: &str) -> Option<ObjId> {
+        self.doc
+            .get(parent, key)
             .ok()
             .flatten()
             .and_then(|(value, id)| match value {
@@ -898,6 +1099,141 @@ mod tests {
             doc.get_metadata("custom_key"),
             Some("custom_value".to_string())
         );
+    }
+
+    #[test]
+    fn test_uv_deps() {
+        let mut doc = NotebookDoc::new("nb1");
+
+        // Initially no UV deps
+        assert!(doc.get_uv_deps().is_none());
+
+        // Set UV deps
+        let deps = UvDependencies {
+            dependencies: vec!["numpy>=1.0".to_string(), "pandas".to_string()],
+            requires_python: Some(">=3.9".to_string()),
+        };
+        doc.set_uv_deps(&deps).unwrap();
+
+        // Read back
+        let loaded = doc.get_uv_deps().unwrap();
+        assert_eq!(loaded.dependencies, vec!["numpy>=1.0", "pandas"]);
+        assert_eq!(loaded.requires_python, Some(">=3.9".to_string()));
+    }
+
+    #[test]
+    fn test_uv_deps_without_requires_python() {
+        let mut doc = NotebookDoc::new("nb1");
+
+        let deps = UvDependencies {
+            dependencies: vec!["requests".to_string()],
+            requires_python: None,
+        };
+        doc.set_uv_deps(&deps).unwrap();
+
+        let loaded = doc.get_uv_deps().unwrap();
+        assert_eq!(loaded.dependencies, vec!["requests"]);
+        assert!(loaded.requires_python.is_none());
+    }
+
+    #[test]
+    fn test_conda_deps() {
+        let mut doc = NotebookDoc::new("nb1");
+
+        // Initially no Conda deps
+        assert!(doc.get_conda_deps().is_none());
+
+        // Set Conda deps
+        let deps = CondaDependencies {
+            dependencies: vec!["python".to_string(), "numpy=1.24".to_string()],
+            channels: vec!["conda-forge".to_string()],
+            python: Some("3.10".to_string()),
+        };
+        doc.set_conda_deps(&deps).unwrap();
+
+        // Read back
+        let loaded = doc.get_conda_deps().unwrap();
+        assert_eq!(loaded.dependencies, vec!["python", "numpy=1.24"]);
+        assert_eq!(loaded.channels, vec!["conda-forge"]);
+        assert_eq!(loaded.python, Some("3.10".to_string()));
+    }
+
+    #[test]
+    fn test_conda_deps_without_python() {
+        let mut doc = NotebookDoc::new("nb1");
+
+        let deps = CondaDependencies {
+            dependencies: vec!["scipy".to_string()],
+            channels: vec!["conda-forge".to_string(), "defaults".to_string()],
+            python: None,
+        };
+        doc.set_conda_deps(&deps).unwrap();
+
+        let loaded = doc.get_conda_deps().unwrap();
+        assert_eq!(loaded.dependencies, vec!["scipy"]);
+        assert_eq!(loaded.channels, vec!["conda-forge", "defaults"]);
+        assert!(loaded.python.is_none());
+    }
+
+    #[test]
+    fn test_clear_deps() {
+        let mut doc = NotebookDoc::new("nb1");
+
+        // Set both
+        doc.set_uv_deps(&UvDependencies {
+            dependencies: vec!["numpy".to_string()],
+            requires_python: None,
+        })
+        .unwrap();
+        doc.set_conda_deps(&CondaDependencies {
+            dependencies: vec!["scipy".to_string()],
+            channels: vec![],
+            python: None,
+        })
+        .unwrap();
+
+        assert!(doc.get_uv_deps().is_some());
+        assert!(doc.get_conda_deps().is_some());
+
+        // Clear UV
+        doc.clear_uv_deps().unwrap();
+        assert!(doc.get_uv_deps().is_none());
+        assert!(doc.get_conda_deps().is_some()); // Conda still exists
+
+        // Clear Conda
+        doc.clear_conda_deps().unwrap();
+        assert!(doc.get_conda_deps().is_none());
+    }
+
+    #[test]
+    fn test_deps_persist_through_save_load() {
+        let mut doc = NotebookDoc::new("nb1");
+
+        doc.set_uv_deps(&UvDependencies {
+            dependencies: vec!["requests".to_string()],
+            requires_python: Some(">=3.8".to_string()),
+        })
+        .unwrap();
+
+        doc.set_conda_deps(&CondaDependencies {
+            dependencies: vec!["matplotlib".to_string()],
+            channels: vec!["conda-forge".to_string()],
+            python: Some("3.9".to_string()),
+        })
+        .unwrap();
+
+        // Save and reload
+        let bytes = doc.save();
+        let loaded = NotebookDoc::load(&bytes).unwrap();
+
+        let uv = loaded.get_uv_deps().unwrap();
+        assert_eq!(uv.dependencies, vec!["requests"]);
+        assert_eq!(uv.requires_python, Some(">=3.8".to_string()));
+
+        let conda = loaded.get_conda_deps().unwrap();
+        assert_eq!(conda.dependencies, vec!["matplotlib"]);
+        assert_eq!(conda.channels, vec!["conda-forge"]);
+        assert_eq!(conda.python, Some("3.9".to_string()));
     }
 
     #[test]

@@ -205,6 +205,35 @@ pub enum NotebookRequest {
         /// Cursor position in the code
         cursor_pos: usize,
     },
+
+    // ── Dependency Management ──────────────────────────────────────
+    /// Get dependencies from the Automerge document.
+    GetDependencies {},
+
+    /// Set UV dependencies in the Automerge document.
+    SetUvDependencies {
+        dependencies: Vec<String>,
+        requires_python: Option<String>,
+    },
+
+    /// Set Conda dependencies in the Automerge document.
+    SetCondaDependencies {
+        dependencies: Vec<String>,
+        channels: Vec<String>,
+        python: Option<String>,
+    },
+
+    /// Add a single UV dependency.
+    AddUvDependency { package: String },
+
+    /// Remove a UV dependency.
+    RemoveUvDependency { package: String },
+
+    /// Add a single Conda dependency.
+    AddCondaDependency { package: String },
+
+    /// Remove a Conda dependency.
+    RemoveCondaDependency { package: String },
 }
 
 /// Responses from daemon to notebook app.
@@ -271,6 +300,16 @@ pub enum NotebookResponse {
         cursor_start: usize,
         cursor_end: usize,
     },
+
+    // ── Dependency Responses ───────────────────────────────────────
+    /// Dependencies from the Automerge document.
+    Dependencies {
+        uv: Option<UvDependenciesJson>,
+        conda: Option<CondaDependenciesJson>,
+    },
+
+    /// Dependency operation completed successfully.
+    DependencyUpdated {},
 }
 
 /// A single entry from kernel input history.
@@ -299,6 +338,28 @@ pub struct CompletionItem {
     /// Source: "kernel" now, "ruff"/"basedpyright" later.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+}
+
+/// UV dependencies for JSON serialization in protocol messages.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UvDependenciesJson {
+    /// List of PEP 508 dependency specifiers
+    pub dependencies: Vec<String>,
+    /// Python version requirement
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires_python: Option<String>,
+}
+
+/// Conda dependencies for JSON serialization in protocol messages.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CondaDependenciesJson {
+    /// List of conda package specs
+    pub dependencies: Vec<String>,
+    /// List of conda channels
+    pub channels: Vec<String>,
+    /// Python version
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub python: Option<String>,
 }
 
 /// Broadcast messages from daemon to all peers in a room.
@@ -366,6 +427,13 @@ pub enum NotebookBroadcast {
     CommSync {
         /// All active comm snapshots
         comms: Vec<CommSnapshot>,
+    },
+
+    /// Dependencies changed in the Automerge document.
+    /// Broadcast when UV or Conda dependencies are added, removed, or modified.
+    DepsChanged {
+        uv: Option<UvDependenciesJson>,
+        conda: Option<CondaDependenciesJson>,
     },
 }
 
