@@ -24,6 +24,7 @@ import {
 import { useWidgetStore } from "@/components/widgets/widget-store-context";
 import { isDarkMode as detectDarkMode } from "@/lib/dark-mode";
 import { ErrorBoundary } from "@/lib/error-boundary";
+import { highlightTextInDom } from "@/lib/highlight-text";
 import { OutputErrorFallback } from "@/lib/output-error-fallback";
 import { cn } from "@/lib/utils";
 
@@ -290,6 +291,7 @@ export function OutputArea({
   const id = useId();
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const bridgeRef = useRef<CommBridgeManager | null>(null);
+  const inDomOutputRef = useRef<HTMLDivElement>(null);
 
   // Track dark mode state and observe changes
   const [darkMode, setDarkMode] = useState(() => detectDarkMode());
@@ -425,12 +427,19 @@ export function OutputArea({
     }
   }, [handleFrameReady]);
 
-  // Forward search query to the iframe
+  // Forward search query to the iframe (for isolated outputs)
   useEffect(() => {
-    if (frameRef.current?.isReady) {
+    if (frameRef.current?.isIframeReady) {
       frameRef.current.search(searchQuery || "");
     }
   }, [searchQuery]);
+
+  // Highlight search matches in in-DOM outputs
+  // Re-run when outputs change (outputCount tracks this) so new content gets highlighted
+  useEffect(() => {
+    if (!inDomOutputRef.current || shouldIsolate || outputCount === 0) return;
+    return highlightTextInDom(inDomOutputRef.current, searchQuery || "");
+  }, [searchQuery, shouldIsolate, outputCount]);
 
   // Empty state: render nothing (unless preloading iframe)
   if (outputs.length === 0 && !showPreloadedIframe) {
@@ -494,34 +503,37 @@ export function OutputArea({
           )}
 
           {/* In-DOM outputs (when not using isolation) */}
-          {!shouldIsolate &&
-            outputs.map((output, index) => (
-              <div
-                key={`output-${index}`}
-                data-slot="output-item"
-                data-output-index={index}
-              >
-                <ErrorBoundary
-                  resetKeys={[JSON.stringify(output)]}
-                  fallback={(error, reset) => (
-                    <OutputErrorFallback
-                      error={error}
-                      outputIndex={index}
-                      onRetry={reset}
-                    />
-                  )}
-                  onError={(error, errorInfo) => {
-                    console.error(
-                      `[OutputArea] Error rendering output ${index}:`,
-                      error,
-                      errorInfo.componentStack,
-                    );
-                  }}
+          {!shouldIsolate && (
+            <div ref={inDomOutputRef}>
+              {outputs.map((output, index) => (
+                <div
+                  key={`output-${index}`}
+                  data-slot="output-item"
+                  data-output-index={index}
                 >
-                  {renderOutput(output, index, renderers, priority)}
-                </ErrorBoundary>
-              </div>
-            ))}
+                  <ErrorBoundary
+                    resetKeys={[JSON.stringify(output)]}
+                    fallback={(error, reset) => (
+                      <OutputErrorFallback
+                        error={error}
+                        outputIndex={index}
+                        onRetry={reset}
+                      />
+                    )}
+                    onError={(error, errorInfo) => {
+                      console.error(
+                        `[OutputArea] Error rendering output ${index}:`,
+                        error,
+                        errorInfo.componentStack,
+                      );
+                    }}
+                  >
+                    {renderOutput(output, index, renderers, priority)}
+                  </ErrorBoundary>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

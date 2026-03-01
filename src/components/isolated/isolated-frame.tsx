@@ -440,10 +440,24 @@ export const IsolatedFrame = forwardRef<
       setTheme: (isDark: boolean) =>
         send({ type: "theme", payload: { isDark } }),
       clear: () => send({ type: "clear" }),
-      search: (query: string, caseSensitive?: boolean) =>
-        send({ type: "search", payload: { query, caseSensitive } }),
-      searchNavigate: (matchIndex: number) =>
-        send({ type: "search_navigate", payload: { matchIndex } }),
+      search: (query: string, caseSensitive?: boolean) => {
+        // Search handler is in bootstrap HTML, so send directly when iframe is loaded
+        // (bypasses the isReady queue which waits for the React renderer)
+        if (iframeRef.current?.contentWindow) {
+          iframeRef.current.contentWindow.postMessage(
+            { type: "search", payload: { query, caseSensitive } },
+            "*",
+          );
+        }
+      },
+      searchNavigate: (matchIndex: number) => {
+        if (iframeRef.current?.contentWindow) {
+          iframeRef.current.contentWindow.postMessage(
+            { type: "search_navigate", payload: { matchIndex } },
+            "*",
+          );
+        }
+      },
       isReady,
       isIframeReady,
     }),
