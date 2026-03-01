@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  ArrowDownToLine,
   ChevronsRight,
   Info,
   Monitor,
@@ -23,6 +24,7 @@ import type { ThemeMode } from "@/hooks/useSyncedSettings";
 import { isKnownPythonEnv, isKnownRuntime } from "@/hooks/useSyncedSettings";
 import { cn } from "@/lib/utils";
 import type { EnvProgressState } from "../hooks/useEnvProgress";
+import type { UpdateStatus } from "../hooks/useUpdater";
 import type { KernelspecInfo } from "../types";
 
 /** Deno logo icon (from tabler icons) */
@@ -168,6 +170,10 @@ interface NotebookToolbarProps {
   onToggleDependencies: () => void;
   isDepsOpen?: boolean;
   listKernelspecs?: () => Promise<KernelspecInfo[]>;
+  updateStatus?: UpdateStatus;
+  updateVersion?: string | null;
+  onDownloadUpdate?: () => void;
+  onRestartToUpdate?: () => void;
 }
 
 const themeOptions: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
@@ -303,6 +309,10 @@ export function NotebookToolbar({
   onToggleDependencies,
   isDepsOpen = false,
   listKernelspecs,
+  updateStatus,
+  updateVersion,
+  onDownloadUpdate,
+  onRestartToUpdate,
 }: NotebookToolbarProps) {
   const [kernelspecs, setKernelspecs] = useState<KernelspecInfo[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -460,6 +470,41 @@ export function NotebookToolbar({
           )}
 
           <div className="flex-1" />
+
+          {/* Update available */}
+          {updateStatus === "available" && onDownloadUpdate && (
+            <button
+              type="button"
+              onClick={onDownloadUpdate}
+              data-testid="update-download-button"
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-violet-500/10 text-violet-600 hover:bg-violet-500/20 dark:text-violet-400 transition-colors"
+              title={`Download update v${updateVersion}`}
+            >
+              <ArrowDownToLine className="h-3 w-3" />
+              <span>Update {updateVersion}</span>
+            </button>
+          )}
+          {updateStatus === "downloading" && (
+            <div
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-violet-500/10 text-violet-500 dark:text-violet-400"
+              title="Downloading update…"
+            >
+              <ArrowDownToLine className="h-3 w-3 animate-bounce" />
+              <span>Updating…</span>
+            </div>
+          )}
+          {updateStatus === "ready" && onRestartToUpdate && (
+            <button
+              type="button"
+              onClick={onRestartToUpdate}
+              data-testid="update-restart-button"
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-green-500/15 text-green-600 hover:bg-green-500/25 dark:text-green-400 transition-colors"
+              title={`Restart to install v${updateVersion}`}
+            >
+              <RotateCcw className="h-3 w-3" />
+              <span>Restart to update</span>
+            </button>
+          )}
 
           {/* Runtime / deps toggle */}
           <button

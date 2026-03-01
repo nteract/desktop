@@ -30,6 +30,7 @@ import { useEnvProgress } from "./hooks/useEnvProgress";
 import { useDaemonInfo, useGitInfo } from "./hooks/useGitInfo";
 import { useNotebook } from "./hooks/useNotebook";
 import { useTrust } from "./hooks/useTrust";
+import { useUpdater } from "./hooks/useUpdater";
 import type { JupyterMessage } from "./types";
 
 /** MIME bundle type for page payloads */
@@ -309,6 +310,14 @@ function AppContent() {
         : envType === "uv"
           ? ("uv" as const)
           : null;
+
+  // Auto-updater
+  const {
+    status: updateStatus,
+    version: updateVersion,
+    downloadAndInstall: downloadUpdate,
+    restartToUpdate,
+  } = useUpdater();
 
   // Environment preparation progress
   const envProgress = useEnvProgress();
@@ -779,6 +788,10 @@ function AppContent() {
         onAddCell={handleAddCell}
         onToggleDependencies={() => setDependencyHeaderOpen((prev) => !prev)}
         isDepsOpen={dependencyHeaderOpen}
+        updateStatus={updateStatus}
+        updateVersion={updateVersion}
+        onDownloadUpdate={downloadUpdate}
+        onRestartToUpdate={restartToUpdate}
       />
       {/* Dual-dependency choice: both UV and conda deps exist, let user pick */}
       {dependencyHeaderOpen &&

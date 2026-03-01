@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+env:
+  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
 jobs:
   build-linux:
     name: Build Linux Executables
@@ -163,7 +167,7 @@ jobs:
             runt-darwin-arm64
 
   build-notebook-macos-arm64:
-    name: Build macOS ARM64 Notebook DMG
+    name: Build macOS ARM64 Notebook
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -202,20 +206,6 @@ jobs:
 
       - name: Build frontend
         run: pnpm build
-
-      - name: Cache cargo bin
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin
-          key: cargo-bin-macos-arm64-tauri-cli-${{ hashFiles('rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-bin-macos-arm64-tauri-cli-
-
-      - name: Install Tauri CLI
-        run: |
-          if ! command -v cargo-tauri &> /dev/null; then
-            cargo install tauri-cli --locked
-          fi
 
       - name: Import Apple signing certificate
         env:
@@ -264,14 +254,18 @@ jobs:
           cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
           cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
 
-      - name: Build and Sign DMG
+      - name: Build with tauri-action
+        uses: tauri-apps/tauri-action@v0
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: cargo tauri build --ci --bundles dmg --config '{"build":{"beforeBuildCommand":""}}'
-        working-directory: crates/notebook
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: crates/notebook
+          args: --bundles dmg --config '{"build":{"beforeBuildCommand":""}}'
+          includeUpdaterJson: false
 
       - name: Cleanup keychain
         if: always()
@@ -280,19 +274,27 @@ jobs:
             security delete-keychain "$KEYCHAIN_PATH" || true
           fi
 
-      - name: Rename DMG
+      - name: Collect artifacts
         run: |
+          mkdir -p artifacts
           DMG_PATH=$(find target/release/bundle/dmg -name "*.dmg" | head -1)
-          cp "$DMG_PATH" nteract-darwin-arm64.dmg
+          cp "$DMG_PATH" artifacts/nteract-darwin-arm64.dmg
+          # Updater bundle (.tar.gz and .sig)
+          for f in target/release/bundle/macos/*.tar.gz; do
+            [ -f "$f" ] && cp "$f" artifacts/nteract-darwin-arm64.app.tar.gz
+          done
+          for f in target/release/bundle/macos/*.tar.gz.sig; do
+            [ -f "$f" ] && cp "$f" artifacts/nteract-darwin-arm64.app.tar.gz.sig
+          done
 
-      - name: Upload ARM64 DMG
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: nteract-macos-arm64
-          path: nteract-darwin-arm64.dmg
+          path: artifacts/
 
   build-notebook-macos-x64:
-    name: Build macOS x64 Notebook DMG
+    name: Build macOS x64 Notebook
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -334,20 +336,6 @@ jobs:
 
       - name: Build frontend
         run: pnpm build
-
-      - name: Cache cargo bin
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin
-          key: cargo-bin-macos-x64-tauri-cli-${{ hashFiles('rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-bin-macos-x64-tauri-cli-
-
-      - name: Install Tauri CLI
-        run: |
-          if ! command -v cargo-tauri &> /dev/null; then
-            cargo install tauri-cli --locked
-          fi
 
       - name: Import Apple signing certificate
         env:
@@ -395,14 +383,18 @@ jobs:
           cp target/x86_64-apple-darwin/release/runtimed "crates/notebook/binaries/runtimed-x86_64-apple-darwin"
           cp target/x86_64-apple-darwin/release/runt "crates/notebook/binaries/runt-x86_64-apple-darwin"
 
-      - name: Build and Sign DMG
+      - name: Build with tauri-action
+        uses: tauri-apps/tauri-action@v0
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: cargo tauri build --ci --target x86_64-apple-darwin --bundles dmg --config '{"build":{"beforeBuildCommand":""}}'
-        working-directory: crates/notebook
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: crates/notebook
+          args: --target x86_64-apple-darwin --bundles dmg --config '{"build":{"beforeBuildCommand":""}}'
+          includeUpdaterJson: false
 
       - name: Cleanup keychain
         if: always()
@@ -411,19 +403,26 @@ jobs:
             security delete-keychain "$KEYCHAIN_PATH" || true
           fi
 
-      - name: Rename DMG
+      - name: Collect artifacts
         run: |
+          mkdir -p artifacts
           DMG_PATH=$(find target/x86_64-apple-darwin/release/bundle/dmg -name "*.dmg" | head -1)
-          cp "$DMG_PATH" nteract-darwin-x64.dmg
+          cp "$DMG_PATH" artifacts/nteract-darwin-x64.dmg
+          for f in target/x86_64-apple-darwin/release/bundle/macos/*.tar.gz; do
+            [ -f "$f" ] && cp "$f" artifacts/nteract-darwin-x64.app.tar.gz
+          done
+          for f in target/x86_64-apple-darwin/release/bundle/macos/*.tar.gz.sig; do
+            [ -f "$f" ] && cp "$f" artifacts/nteract-darwin-x64.app.tar.gz.sig
+          done
 
-      - name: Upload x64 DMG
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: nteract-macos-x64
-          path: nteract-darwin-x64.dmg
+          path: artifacts/
 
   build-notebook-windows-x64:
-    name: Build Windows x64 Notebook Installer
+    name: Build Windows x64 Notebook
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -460,21 +459,6 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
-      - name: Cache cargo bin
-        uses: actions/cache@v4
-        with:
-          path: ~\.cargo\bin
-          key: cargo-bin-windows-x64-tauri-cli-${{ hashFiles('rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-bin-windows-x64-tauri-cli-
-
-      - name: Install Tauri CLI
-        shell: pwsh
-        run: |
-          if (!(Get-Command cargo-tauri -ErrorAction SilentlyContinue)) {
-            cargo install tauri-cli --locked
-          }
-
       - name: Set version in tauri.conf.json
         shell: pwsh
         run: |
@@ -501,24 +485,36 @@ jobs:
           cp target/release/runtimed.exe "crates/notebook/binaries/runtimed-$TARGET.exe"
           cp target/release/runt.exe "crates/notebook/binaries/runt-$TARGET.exe"
 
-      - name: Build NSIS Installer
-        run: cargo tauri build --ci --bundles nsis --config '{"build":{"beforeBuildCommand":""}}'
-        working-directory: crates/notebook
+      - name: Build with tauri-action
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: crates/notebook
+          args: --bundles nsis --config '{"build":{"beforeBuildCommand":""}}'
+          includeUpdaterJson: false
 
-      - name: Rename Installer
-        shell: pwsh
+      - name: Collect artifacts
+        shell: bash
         run: |
-          $nsisPath = Get-ChildItem -Path target\release\bundle\nsis -Filter "*.exe" | Select-Object -First 1
-          Copy-Item $nsisPath.FullName "nteract-windows-x64.exe"
+          mkdir -p artifacts
+          NSIS_PATH=$(find target/release/bundle/nsis -name "*.exe" | head -1)
+          cp "$NSIS_PATH" artifacts/nteract-windows-x64.exe
+          for f in target/release/bundle/nsis/*.nsis.zip; do
+            [ -f "$f" ] && cp "$f" artifacts/nteract-windows-x64.nsis.zip
+          done
+          for f in target/release/bundle/nsis/*.nsis.zip.sig; do
+            [ -f "$f" ] && cp "$f" artifacts/nteract-windows-x64.nsis.zip.sig
+          done
 
-      - name: Upload Windows Installer
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: nteract-windows-x64
-          path: nteract-windows-x64.exe
+          path: artifacts/
 
   build-notebook-linux-x64:
-    name: Build Linux x64 Notebook AppImage
+    name: Build Linux x64 Notebook
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -564,20 +560,6 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
-      - name: Cache cargo bin
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin
-          key: cargo-bin-linux-x64-tauri-cli-${{ hashFiles('rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-bin-linux-x64-tauri-cli-
-
-      - name: Install Tauri CLI
-        run: |
-          if ! command -v cargo-tauri &> /dev/null; then
-            cargo install tauri-cli --locked
-          fi
-
       - name: Set version in tauri.conf.json
         run: |
           CURRENT_VERSION=$(grep '^version' crates/runt/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
@@ -597,20 +579,29 @@ jobs:
           cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
           cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
 
-      - name: Build AppImage
-        run: cargo tauri build --ci --bundles appimage --config '{"build":{"beforeBuildCommand":""}}'
-        working-directory: crates/notebook
+      - name: Build with tauri-action
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: crates/notebook
+          args: --bundles appimage --config '{"build":{"beforeBuildCommand":""}}'
+          includeUpdaterJson: false
 
-      - name: Rename AppImage
+      - name: Collect artifacts
         run: |
+          mkdir -p artifacts
           APPIMAGE_PATH=$(find target/release/bundle/appimage -name "*.AppImage" | head -1)
-          cp "$APPIMAGE_PATH" nteract-linux-x64.AppImage
+          cp "$APPIMAGE_PATH" artifacts/nteract-linux-x64.AppImage
+          for f in target/release/bundle/appimage/*.AppImage.sig; do
+            [ -f "$f" ] && cp "$f" artifacts/nteract-linux-x64.AppImage.sig
+          done
 
-      - name: Upload Linux AppImage
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: nteract-linux-x64
-          path: nteract-linux-x64.AppImage
+          path: artifacts/
 
   prerelease:
     name: Prerelease
@@ -642,29 +633,93 @@ jobs:
           name: runt-macos-executables
           path: ./executables
 
-      - name: Download macOS ARM64 notebook DMG
+      - name: Download macOS ARM64 notebook
         uses: actions/download-artifact@v4
         with:
           name: nteract-macos-arm64
-          path: ./executables
+          path: ./notebook-macos-arm64
 
-      - name: Download macOS x64 notebook DMG
+      - name: Download macOS x64 notebook
         uses: actions/download-artifact@v4
         with:
           name: nteract-macos-x64
-          path: ./executables
+          path: ./notebook-macos-x64
 
-      - name: Download Windows x64 notebook installer
+      - name: Download Windows x64 notebook
         uses: actions/download-artifact@v4
         with:
           name: nteract-windows-x64
-          path: ./executables
+          path: ./notebook-windows-x64
 
-      - name: Download Linux x64 notebook AppImage
+      - name: Download Linux x64 notebook
         uses: actions/download-artifact@v4
         with:
           name: nteract-linux-x64
-          path: ./executables
+          path: ./notebook-linux-x64
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          # CLI binaries
+          cp executables/runt-linux-x64 release-assets/
+          cp executables/runt-darwin-x64 release-assets/
+          cp executables/runt-darwin-arm64 release-assets/
+          # Notebook installers
+          cp notebook-macos-arm64/nteract-darwin-arm64.dmg release-assets/
+          cp notebook-macos-x64/nteract-darwin-x64.dmg release-assets/
+          cp notebook-windows-x64/nteract-windows-x64.exe release-assets/
+          cp notebook-linux-x64/nteract-linux-x64.AppImage release-assets/
+          # Updater bundles + signatures
+          cp notebook-macos-arm64/nteract-darwin-arm64.app.tar.gz release-assets/ 2>/dev/null || true
+          cp notebook-macos-arm64/nteract-darwin-arm64.app.tar.gz.sig release-assets/ 2>/dev/null || true
+          cp notebook-macos-x64/nteract-darwin-x64.app.tar.gz release-assets/ 2>/dev/null || true
+          cp notebook-macos-x64/nteract-darwin-x64.app.tar.gz.sig release-assets/ 2>/dev/null || true
+          cp notebook-windows-x64/nteract-windows-x64.nsis.zip release-assets/ 2>/dev/null || true
+          cp notebook-windows-x64/nteract-windows-x64.nsis.zip.sig release-assets/ 2>/dev/null || true
+          cp notebook-linux-x64/nteract-linux-x64.AppImage.sig release-assets/ 2>/dev/null || true
+
+      - name: Generate updater manifest (latest.json)
+        env:
+          VERSION: ${{ needs.build-linux.outputs.version }}
+          TAG_NAME: v${{ needs.build-linux.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          RELEASE_BASE="https://github.com/${REPO}/releases/download/${TAG_NAME}"
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          read_sig() { cat "$1" 2>/dev/null || echo ""; }
+
+          SIG_DARWIN_ARM64=$(read_sig release-assets/nteract-darwin-arm64.app.tar.gz.sig)
+          SIG_DARWIN_X64=$(read_sig release-assets/nteract-darwin-x64.app.tar.gz.sig)
+          SIG_LINUX_X64=$(read_sig release-assets/nteract-linux-x64.AppImage.sig)
+          SIG_WINDOWS_X64=$(read_sig release-assets/nteract-windows-x64.nsis.zip.sig)
+
+          jq -n \
+            --arg version "$VERSION" \
+            --arg notes "Preview release $TAG_NAME" \
+            --arg pub_date "$PUB_DATE" \
+            --arg sig_darwin_arm64 "$SIG_DARWIN_ARM64" \
+            --arg url_darwin_arm64 "$RELEASE_BASE/nteract-darwin-arm64.app.tar.gz" \
+            --arg sig_darwin_x64 "$SIG_DARWIN_X64" \
+            --arg url_darwin_x64 "$RELEASE_BASE/nteract-darwin-x64.app.tar.gz" \
+            --arg sig_linux_x64 "$SIG_LINUX_X64" \
+            --arg url_linux_x64 "$RELEASE_BASE/nteract-linux-x64.AppImage" \
+            --arg sig_windows_x64 "$SIG_WINDOWS_X64" \
+            --arg url_windows_x64 "$RELEASE_BASE/nteract-windows-x64.nsis.zip" \
+            '{
+              version: $version,
+              notes: $notes,
+              pub_date: $pub_date,
+              platforms: {
+                "darwin-aarch64": { signature: $sig_darwin_arm64, url: $url_darwin_arm64 },
+                "darwin-x86_64": { signature: $sig_darwin_x64, url: $url_darwin_x64 },
+                "linux-x86_64": { signature: $sig_linux_x64, url: $url_linux_x64 },
+                "windows-x86_64": { signature: $sig_windows_x64, url: $url_windows_x64 }
+              }
+            }' > release-assets/latest.json
+
+          echo "Generated latest.json:"
+          cat release-assets/latest.json
 
       - name: Create GitHub Preview Release
         uses: softprops/action-gh-release@v2
@@ -689,6 +744,8 @@ jobs:
 
             macOS builds are signed and notarized. Windows is not code signed — expect a SmartScreen prompt. Linux AppImage: `chmod +x` and run.
 
+            This release includes auto-update support. Existing installations will be notified of this update automatically.
+
             ### runt (CLI)
 
             Also bundled inside the desktop app. Standalone binaries:
@@ -701,10 +758,30 @@ jobs:
           draft: false
           prerelease: true
           files: |
-            ./executables/runt-linux-x64
-            ./executables/runt-darwin-x64
-            ./executables/runt-darwin-arm64
-            ./executables/nteract-linux-x64.AppImage
-            ./executables/nteract-darwin-x64.dmg
-            ./executables/nteract-darwin-arm64.dmg
-            ./executables/nteract-windows-x64.exe
+            ./release-assets/runt-linux-x64
+            ./release-assets/runt-darwin-x64
+            ./release-assets/runt-darwin-arm64
+            ./release-assets/nteract-linux-x64.AppImage
+            ./release-assets/nteract-linux-x64.AppImage.sig
+            ./release-assets/nteract-darwin-x64.dmg
+            ./release-assets/nteract-darwin-x64.app.tar.gz
+            ./release-assets/nteract-darwin-x64.app.tar.gz.sig
+            ./release-assets/nteract-darwin-arm64.dmg
+            ./release-assets/nteract-darwin-arm64.app.tar.gz
+            ./release-assets/nteract-darwin-arm64.app.tar.gz.sig
+            ./release-assets/nteract-windows-x64.exe
+            ./release-assets/nteract-windows-x64.nsis.zip
+            ./release-assets/nteract-windows-x64.nsis.zip.sig
+            ./release-assets/latest.json
+
+      - name: Update preview-latest updater channel
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Ensure the rolling preview-latest release exists, then update latest.json
+          gh release create preview-latest \
+            --title "Preview Update Channel" \
+            --notes "Rolling release for the preview auto-update channel. This release always contains the latest updater manifest. Do not delete this release." \
+            --prerelease 2>/dev/null || true
+
+          gh release upload preview-latest release-assets/latest.json --clobber

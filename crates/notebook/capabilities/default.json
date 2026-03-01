@@ -8,6 +8,8 @@
     "core:event:default",
     "core:webview:allow-set-webview-zoom",
     "core:window:allow-set-theme",
-    "dialog:default"
+    "dialog:default",
+    "process:allow-restart",
+    "updater:default"
   ]
 }
