@@ -612,9 +612,69 @@ jobs:
           name: nteract-linux-x64
           path: nteract-linux-x64.AppImage
 
+  build-python-wheels:
+    name: Build Python Wheels (${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - name: Install cross-compilation targets
+        run: rustup target add ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "python-${{ matrix.target }}"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Install JS dependencies
+        run: pnpm install
+
+      - name: Build sidecar UI
+        run: pnpm build
+
+      - name: Set dev version
+        run: |
+          CURRENT_VERSION=$(grep '^version' python/runtimed/pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          DEV_VERSION="${CURRENT_VERSION}.dev$(date -u +%Y%m%d)"
+          echo "Setting Python version to: ${DEV_VERSION}"
+          sed -i '' "s/^version = .*/version = \"${DEV_VERSION}\"/" python/runtimed/pyproject.toml
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          working-directory: python/runtimed
+          sccache: true
+          maturin-version: "v1.11.5"
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.target }}
+          path: python/runtimed/dist
+
   prerelease:
     name: Prerelease
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
     needs:
       [
         build-linux,
@@ -623,6 +683,7 @@ jobs:
         build-notebook-macos-x64,
         build-notebook-windows-x64,
         build-notebook-linux-x64,
+        build-python-wheels,
       ]
     steps:
       - name: Checkout
@@ -666,6 +727,25 @@ jobs:
           name: nteract-linux-x64
           path: ./executables
 
+      - name: Download Python wheels (macOS ARM64)
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-aarch64-apple-darwin
+          path: ./wheels
+
+      - name: Download Python wheels (macOS x64)
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-x86_64-apple-darwin
+          path: ./wheels
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Publish to PyPI
+        continue-on-error: true
+        run: uv publish --trusted-publishing always ./wheels/*.whl
+
       - name: Create GitHub Preview Release
         uses: softprops/action-gh-release@v2
         env:
@@ -698,6 +778,12 @@ jobs:
             | Linux | x64 | `runt-linux-x64` |
             | macOS | x64 | `runt-darwin-x64` |
             | macOS | ARM64 | `runt-darwin-arm64` |
+
+            ### runtimed (Python)
+
+            ```bash
+            pip install runtimed --pre
+            ```
           draft: false
           prerelease: true
           files: |
@@ -708,3 +794,4 @@ jobs:
             ./executables/nteract-darwin-x64.dmg
             ./executables/nteract-darwin-arm64.dmg
             ./executables/nteract-windows-x64.exe
+            ./wheels/*.whl
