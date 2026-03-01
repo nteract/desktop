@@ -452,23 +452,6 @@ export function useDaemonKernel({
     [],
   );
 
-  /** Queue a cell for execution via the daemon */
-  const queueCell = useCallback(
-    async (cellId: string, code: string): Promise<DaemonNotebookResponse> => {
-      console.log("[daemon-kernel] queueing cell:", cellId);
-      try {
-        return await invoke<DaemonNotebookResponse>("queue_cell_via_daemon", {
-          cellId,
-          code,
-        });
-      } catch (e) {
-        console.error("[daemon-kernel] queue failed:", e);
-        throw e;
-      }
-    },
-    [],
-  );
-
   /** Execute a cell via the daemon (reads source from synced document) */
   const executeCell = useCallback(
     async (cellId: string): Promise<DaemonNotebookResponse> => {
@@ -616,8 +599,6 @@ export function useDaemonKernel({
     kernelInfo,
     /** Launch a kernel via the daemon */
     launchKernel,
-    /** Queue a cell for execution */
-    queueCell,
     /** Execute a cell (reads source from synced document) */
     executeCell,
     /** Clear outputs for a cell */

@@ -321,11 +321,9 @@ function AppContent() {
     if (!info) return false;
 
     if (info.status === "trusted" || info.status === "no_dependencies") {
-      // Trusted - launch kernel via daemon ("auto" triggers project file detection)
-      const response = await launchKernel(
-        runtime === "deno" ? "deno" : "python",
-        "auto",
-      );
+      // Trusted - launch kernel via daemon
+      // Both kernel_type and env_source use "auto" - daemon detects from Automerge doc
+      const response = await launchKernel("auto", "auto");
       if (response.result === "error") {
         console.error("[App] tryStartKernel: daemon error", response.error);
         return false;
@@ -336,7 +334,7 @@ function AppContent() {
     pendingKernelStartRef.current = true;
     setTrustDialogOpen(true);
     return false;
-  }, [checkTrust, launchKernel, runtime]);
+  }, [checkTrust, launchKernel]);
 
   // Restart and run all cells
   const restartAndRunAll = useCallback(async () => {
@@ -384,10 +382,11 @@ function AppContent() {
     if (success && pendingKernelStartRef.current) {
       pendingKernelStartRef.current = false;
       // Now start the kernel since trust was approved
-      await launchKernel(runtime === "deno" ? "deno" : "python", "auto");
+      // Use "auto" for both - daemon detects from Automerge doc
+      await launchKernel("auto", "auto");
     }
     return success;
-  }, [approveTrust, launchKernel, runtime]);
+  }, [approveTrust, launchKernel]);
 
   // Handle trust decline from dialog
   const handleTrustDecline = useCallback(() => {

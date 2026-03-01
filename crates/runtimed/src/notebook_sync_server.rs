@@ -1246,6 +1246,23 @@ async fn handle_notebook_request(
             // Resolve metadata snapshot from Automerge doc (preferred) or disk
             let metadata_snapshot = resolve_metadata_snapshot(room, notebook_path.as_deref()).await;
 
+            // Auto-detect kernel type if "auto" or empty
+            let resolved_kernel_type = if kernel_type == "auto" || kernel_type.is_empty() {
+                metadata_snapshot
+                    .as_ref()
+                    .and_then(detect_notebook_kernel_type)
+                    .unwrap_or_else(|| {
+                        info!("[notebook-sync] LaunchKernel: kernel type unknown, defaulting to python");
+                        "python".to_string()
+                    })
+            } else {
+                kernel_type.clone()
+            };
+            info!(
+                "[notebook-sync] LaunchKernel: resolved kernel_type='{}' (from '{}')",
+                resolved_kernel_type, kernel_type
+            );
+
             // Auto-detect environment if env_source is "auto" or empty
             let resolved_env_source =
                 if env_source == "auto" || env_source.is_empty() || env_source == "prewarmed" {
@@ -1282,7 +1299,7 @@ async fn handle_notebook_request(
                 };
 
             // Deno kernels don't need pooled environments
-            let pooled_env = if kernel_type == "deno" {
+            let pooled_env = if resolved_kernel_type == "deno" {
                 info!("[notebook-sync] LaunchKernel: Deno kernel (no pooled env)");
                 None
             } else {
@@ -1433,7 +1450,7 @@ async fn handle_notebook_request(
 
             match kernel
                 .launch(
-                    &kernel_type,
+                    &resolved_kernel_type,
                     &resolved_env_source,
                     notebook_path.as_deref(),
                     pooled_env,
