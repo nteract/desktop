@@ -1,5 +1,5 @@
 import { Plus, RotateCcw, X } from "lucide-react";
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
@@ -8,6 +8,7 @@ import {
   EditorRegistryProvider,
   useEditorRegistry,
 } from "../hooks/useEditorRegistry";
+import type { FindMatch } from "../hooks/useGlobalFind";
 import type { NotebookCell } from "../types";
 import { CodeCell } from "./CodeCell";
 import { MarkdownCell } from "./MarkdownCell";
@@ -18,6 +19,8 @@ interface NotebookViewProps {
   executingCellIds: Set<string>;
   pagePayloads: Map<string, CellPagePayload>;
   runtime?: Runtime;
+  searchQuery?: string;
+  searchCurrentMatch?: FindMatch | null;
   onFocusCell: (cellId: string) => void;
   onUpdateCellSource: (cellId: string, source: string) => void;
   onExecuteCell: (cellId: string) => void;
@@ -125,6 +128,8 @@ function NotebookViewContent({
   executingCellIds,
   pagePayloads,
   runtime = "python",
+  searchQuery,
+  searchCurrentMatch,
   onFocusCell,
   onUpdateCellSource,
   onExecuteCell,
@@ -139,6 +144,17 @@ function NotebookViewContent({
 
   // Memoize cell IDs array
   const cellIds = useMemo(() => cells.map((c) => c.id), [cells]);
+
+  // Scroll the current search match cell into view
+  useEffect(() => {
+    if (!searchCurrentMatch) return;
+    const cellEl = containerRef.current?.querySelector(
+      `[data-cell-id="${searchCurrentMatch.cellId}"]`,
+    );
+    if (cellEl) {
+      cellEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [searchCurrentMatch]);
 
   const renderCell = useCallback(
     (cell: NotebookCell, index: number) => {
@@ -166,6 +182,13 @@ function NotebookViewContent({
         const pagePayload = pagePayloads.get(cell.id) ?? null;
         // Use TypeScript for Deno, Python otherwise
         const language = runtime === "deno" ? "typescript" : "python";
+        // Determine active match offset for this cell's source
+        const activeSourceOffset =
+          searchCurrentMatch &&
+          searchCurrentMatch.cellId === cell.id &&
+          searchCurrentMatch.type === "source"
+            ? searchCurrentMatch.offset
+            : -1;
         return (
           <CodeCell
             key={cell.id}
@@ -174,6 +197,8 @@ function NotebookViewContent({
             isFocused={isFocused}
             isExecuting={isExecuting}
             pagePayload={pagePayload}
+            searchQuery={searchQuery}
+            searchActiveOffset={activeSourceOffset}
             onFocus={() => onFocusCell(cell.id)}
             onUpdateSource={(source) => onUpdateCellSource(cell.id, source)}
             onExecute={() => onExecuteCell(cell.id)}
@@ -195,6 +220,7 @@ function NotebookViewContent({
             key={cell.id}
             cell={cell}
             isFocused={isFocused}
+            searchQuery={searchQuery}
             onFocus={() => onFocusCell(cell.id)}
             onUpdateSource={(source) => onUpdateCellSource(cell.id, source)}
             onDelete={() => onDeleteCell(cell.id)}
@@ -220,6 +246,8 @@ function NotebookViewContent({
       executingCellIds,
       pagePayloads,
       runtime,
+      searchQuery,
+      searchCurrentMatch,
       cellIds,
       cells.length,
       onFocusCell,

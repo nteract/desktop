@@ -111,6 +111,17 @@ export interface IsolatedFrameHandle {
   clear: () => void;
 
   /**
+   * Search for text within the iframe's rendered content.
+   * Pass empty string to clear search highlights.
+   */
+  search: (query: string, caseSensitive?: boolean) => void;
+
+  /**
+   * Navigate to a specific search match by index.
+   */
+  searchNavigate: (matchIndex: number) => void;
+
+  /**
    * Whether the iframe is ready to receive messages.
    * True after the React renderer bundle is initialized.
    */
@@ -429,6 +440,10 @@ export const IsolatedFrame = forwardRef<
       setTheme: (isDark: boolean) =>
         send({ type: "theme", payload: { isDark } }),
       clear: () => send({ type: "clear" }),
+      search: (query: string, caseSensitive?: boolean) =>
+        send({ type: "search", payload: { query, caseSensitive } }),
+      searchNavigate: (matchIndex: number) =>
+        send({ type: "search_navigate", payload: { matchIndex } }),
       isReady,
       isIframeReady,
     }),

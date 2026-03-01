@@ -17,6 +17,7 @@ import {
   type CodeMirrorEditorRef,
 } from "@/components/editor/codemirror-editor";
 import type { SupportedLanguage } from "@/components/editor/languages";
+import { searchHighlight } from "@/components/editor/search-highlight";
 import { AnsiOutput } from "@/components/outputs/ansi-output";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import type { CellPagePayload, MimeBundle } from "../App";
@@ -79,6 +80,8 @@ interface CodeCellProps {
   isFocused: boolean;
   isExecuting: boolean;
   pagePayload: CellPagePayload | null;
+  searchQuery?: string;
+  searchActiveOffset?: number;
   onFocus: () => void;
   onUpdateSource: (source: string) => void;
   onExecute: () => void;
@@ -98,6 +101,8 @@ export function CodeCell({
   isFocused,
   isExecuting,
   pagePayload,
+  searchQuery,
+  searchActiveOffset = -1,
   onFocus,
   onUpdateSource,
   onExecute,
@@ -200,6 +205,15 @@ export function CodeCell({
     [navigationKeyMap, historyKeyBinding],
   );
 
+  // CodeMirror extensions: kernel completion + search highlighting
+  const editorExtensions = useMemo(
+    () => [
+      kernelCompletionExtension,
+      ...searchHighlight(searchQuery || "", searchActiveOffset),
+    ],
+    [searchQuery, searchActiveOffset],
+  );
+
   const handleExecute = useCallback(() => {
     handleExecuteWithClear();
   }, [handleExecuteWithClear]);
@@ -244,7 +258,7 @@ export function CodeCell({
                 language={language}
                 onValueChange={onUpdateSource}
                 keyMap={keyMap}
-                extensions={[kernelCompletionExtension]}
+                extensions={editorExtensions}
                 placeholder="Enter code..."
                 className="min-h-[2rem]"
                 autoFocus={isFocused}
@@ -271,7 +285,13 @@ export function CodeCell({
             )}
           </>
         }
-        outputContent={<OutputArea outputs={cell.outputs} preloadIframe />}
+        outputContent={
+          <OutputArea
+            outputs={cell.outputs}
+            preloadIframe
+            searchQuery={searchQuery}
+          />
+        }
         hideOutput={cell.outputs.length === 0}
       />
 

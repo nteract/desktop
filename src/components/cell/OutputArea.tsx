@@ -108,6 +108,11 @@ interface OutputAreaProps {
    * @deprecated Use the comm bridge instead for full widget support
    */
   onWidgetUpdate?: (commId: string, state: Record<string, unknown>) => void;
+  /**
+   * Search query to highlight in iframe outputs.
+   * Empty string or undefined clears highlights.
+   */
+  searchQuery?: string;
 }
 
 /**
@@ -280,6 +285,7 @@ export function OutputArea({
   preloadIframe = false,
   onLinkClick,
   onWidgetUpdate,
+  searchQuery,
 }: OutputAreaProps) {
   const id = useId();
   const frameRef = useRef<IsolatedFrameHandle>(null);
@@ -418,6 +424,13 @@ export function OutputArea({
       handleFrameReady();
     }
   }, [handleFrameReady]);
+
+  // Forward search query to the iframe
+  useEffect(() => {
+    if (frameRef.current?.isReady) {
+      frameRef.current.search(searchQuery || "");
+    }
+  }, [searchQuery]);
 
   // Empty state: render nothing (unless preloading iframe)
   if (outputs.length === 0 && !showPreloadedIframe) {

@@ -6,6 +6,7 @@ import {
   CodeMirrorEditor,
   type CodeMirrorEditorRef,
 } from "@/components/editor/codemirror-editor";
+import { searchHighlight } from "@/components/editor/search-highlight";
 import { IsolatedFrame, type IsolatedFrameHandle } from "@/components/isolated";
 import { isDarkMode as detectDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
@@ -16,6 +17,7 @@ import type { MarkdownCell as MarkdownCellType } from "../types";
 interface MarkdownCellProps {
   cell: MarkdownCellType;
   isFocused: boolean;
+  searchQuery?: string;
   onFocus: () => void;
   onUpdateSource: (source: string) => void;
   onDelete: () => void;
@@ -28,6 +30,7 @@ interface MarkdownCellProps {
 export function MarkdownCell({
   cell,
   isFocused,
+  searchQuery,
   onFocus,
   onUpdateSource,
   onDelete,
@@ -144,6 +147,12 @@ export function MarkdownCell({
     [cell.source, isLastCell, onFocusNext, onInsertCellAfter],
   );
 
+  // Search highlight extension for edit mode
+  const searchExtensions = useMemo(
+    () => searchHighlight(searchQuery || ""),
+    [searchQuery],
+  );
+
   // Get keyboard navigation bindings
   const navigationKeyMap = useCellKeyboardNavigation({
     onFocusPrevious: onFocusPrevious ?? (() => {}),
@@ -182,6 +191,13 @@ export function MarkdownCell({
       });
     }
   }, [editing]);
+
+  // Forward search query to the markdown iframe
+  useEffect(() => {
+    if (!editing && frameRef.current?.isReady) {
+      frameRef.current.search(searchQuery || "");
+    }
+  }, [searchQuery, editing]);
 
   // Focus view section when cell becomes focused but not editing
   useEffect(() => {
@@ -225,6 +241,7 @@ export function MarkdownCell({
             onValueChange={onUpdateSource}
             onBlur={handleBlur}
             keyMap={keyMap}
+            extensions={searchExtensions}
             placeholder="Enter markdown..."
             className="min-h-[2rem]"
             autoFocus={editing}
