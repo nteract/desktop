@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import platform
 import shutil
+import sys
 import sysconfig
 
 
@@ -16,7 +18,8 @@ class BinaryNotFoundError(FileNotFoundError):
         paths_str = "\n  ".join(searched_paths)
         super().__init__(
             f"Could not find '{binary_name}' binary. Searched:\n  {paths_str}\n\n"
-            f"Install it with: cargo install runt-cli\n"
+            f"Install nteract (https://github.com/nteract/desktop/releases) "
+            f"or download the binary directly.\n"
             f"Or set {_env_var(binary_name)} to the binary path."
         )
 
@@ -26,13 +29,38 @@ def _env_var(binary_name: str) -> str:
     return f"RUNTIMED_{binary_name.upper()}_PATH"
 
 
+def _well_known_paths(name: str) -> list[str]:
+    """Return platform-specific well-known install locations for a binary."""
+    paths: list[str] = []
+
+    if sys.platform == "darwin":
+        # nteract.app installs runt to /usr/local/bin via CLI install menu
+        paths.append(f"/usr/local/bin/{name}")
+        # runtimed daemon binary location
+        home = os.path.expanduser("~")
+        paths.append(
+            os.path.join(home, "Library", "Application Support", "runt", "bin", name)
+        )
+    elif sys.platform == "linux":
+        paths.append(f"/usr/local/bin/{name}")
+        home = os.path.expanduser("~")
+        paths.append(os.path.join(home, ".local", "share", "runt", "bin", name))
+    elif sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        if local_app_data:
+            paths.append(os.path.join(local_app_data, "runt", "bin", f"{name}.exe"))
+
+    return paths
+
+
 def find_binary(name: str) -> str:
     """Find a runtimed binary by name.
 
     Search order:
     1. Environment variable override (RUNTIMED_RUNT_PATH, etc.)
-    2. Python scripts directory (for future maturin-installed binaries)
+    2. Python scripts directory (where pip/maturin install binaries)
     3. System PATH
+    4. Well-known install locations (nteract.app, manual installs)
 
     Args:
         name: Binary name (e.g., "runt")
@@ -67,5 +95,11 @@ def find_binary(name: str) -> str:
     if which_result:
         return which_result
     searched.append(f"PATH: {name} (not found via shutil.which)")
+
+    # 4. Well-known install locations
+    for path in _well_known_paths(name):
+        if os.path.isfile(path):
+            return path
+        searched.append(f"well-known: {path} (not found)")
 
     raise BinaryNotFoundError(name, searched)

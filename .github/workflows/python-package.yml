@@ -1,10 +1,8 @@
 # Build and publish the runtimed Python package.
 #
-# The package bundles the compiled `runt` binary via maturin (bindings = "bin").
-# The sidecar crate requires tao/wry, which means:
-#   - macOS: works out of the box (WebKit is a system framework)
-#   - Linux: requires libgtk-3-dev + libwebkit2gtk-4.1-dev (not available in
-#     standard manylinux containers, so we build on the host runner)
+# The package provides PyO3 bindings for the runtimed daemon client.
+# It does NOT bundle the runt CLI binary — users get that from the
+# nteract desktop app or GitHub Releases.
 #
 # To publish: push a tag matching `python-v*` (e.g. `python-v0.1.0`).
 
@@ -17,9 +15,8 @@ on:
   pull_request:
     paths:
       - "python/runtimed/**"
-      - "crates/runt/**"
-      - "crates/sidecar/**"
-      - "packages/sidecar-ui/**"
+      - "crates/runtimed-py/**"
+      - "crates/runtimed/**"
       - ".github/workflows/python-package.yml"
   workflow_dispatch:
 
@@ -41,26 +38,10 @@ jobs:
         platform:
           - runner: macos-latest
             target: aarch64-apple-darwin
-            binary_name: runt-darwin-arm64
           - runner: macos-latest
             target: x86_64-apple-darwin
-            binary_name: runt-darwin-x64
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - name: Install JS dependencies
-        run: pnpm install
-
-      - name: Build sidecar UI
-        run: pnpm build
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
@@ -77,35 +58,10 @@ jobs:
           name: wheels-macos-${{ matrix.platform.target }}
           path: python/runtimed/dist
 
-      - name: Upload runt binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.platform.binary_name }}
-          path: target/${{ matrix.platform.target }}/release/runt
-
   linux:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - name: Install JS dependencies
-        run: pnpm install
-
-      - name: Build sidecar UI
-        run: pnpm build
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
@@ -114,7 +70,6 @@ jobs:
           args: --release --out dist
           working-directory: python/runtimed
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
-          manylinux: "off"
           maturin-version: "v1.11.5"
 
       - name: Upload wheels
@@ -122,12 +77,6 @@ jobs:
         with:
           name: wheels-linux-x86_64
           path: python/runtimed/dist
-
-      - name: Upload runt binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: runt-linux-x64
-          path: target/x86_64-unknown-linux-gnu/release/runt
 
   release:
     name: Release
@@ -144,32 +93,18 @@ jobs:
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: |
-            wheels-*/*
-            runt-darwin-arm64/*
-            runt-darwin-x64/*
-            runt-linux-x64/*
+          subject-path: "wheels-*/*"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
       - name: Publish to PyPI
-        run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/runtimed/ 'wheels-macos-*/*'
-
-      - name: Prepare runt binaries
-        run: |
-          mkdir -p binaries
-          cp runt-darwin-arm64/runt binaries/runt-darwin-arm64
-          cp runt-darwin-x64/runt binaries/runt-darwin-x64
-          cp runt-linux-x64/runt binaries/runt-linux-x64
-          chmod +x binaries/*
+        run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/runtimed/ 'wheels-*/*'
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          files: |
-            wheels-*/*
-            binaries/*
+          files: "wheels-*/*"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
