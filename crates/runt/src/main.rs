@@ -1616,10 +1616,10 @@ async fn doctor_command(
 ) -> Result<()> {
     use serde::Serialize;
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Clone)]
     struct DoctorReport {
         installed_binary: CheckResult,
-        launchd_plist: CheckResult,
+        service_config: CheckResult,
         socket_file: CheckResult,
         daemon_state: CheckResult,
         daemon_running: CheckResult,
@@ -1627,113 +1627,147 @@ async fn doctor_command(
         actions_taken: Vec<String>,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Clone)]
     struct CheckResult {
         path: String,
         status: String, // "ok", "missing", "stale", "error"
         detail: Option<String>,
     }
 
-    let mut actions_taken: Vec<String> = Vec::new();
+    // Helper to run all checks and build report
+    async fn run_checks(
+        client: &runtimed::client::PoolClient,
+        daemon_info: Option<&runtimed::singleton::DaemonInfo>,
+        actions_taken: Vec<String>,
+    ) -> DoctorReport {
+        // Get expected paths - use service.rs paths for consistency
+        let binary_path = runtimed::service::default_binary_path();
+        let socket_path = runtimed::default_socket_path();
+        let daemon_json_path = runtimed::singleton::daemon_info_path();
+        let service_config_path = runtimed::service::service_config_path();
 
-    // Get expected paths
-    let binary_path = runtimed::service::default_binary_path();
-    let _log_path = runtimed::service::default_log_path();
-    let socket_path = runtimed::default_socket_path();
-    let daemon_json_path = runtimed::singleton::daemon_info_path();
+        // Check 1: Installed binary
+        let binary_exists = binary_path.exists();
+        let installed_binary = CheckResult {
+            path: shorten_path(&binary_path),
+            status: if binary_exists { "ok" } else { "missing" }.to_string(),
+            detail: None,
+        };
 
-    #[cfg(target_os = "macos")]
-    let plist_path = dirs::home_dir()
-        .unwrap_or_default()
-        .join("Library/LaunchAgents/io.nteract.runtimed.plist");
-    #[cfg(target_os = "linux")]
-    let plist_path = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".config/systemd/user/runtimed.service");
-    #[cfg(target_os = "windows")]
-    let plist_path = dirs::data_local_dir()
-        .unwrap_or_default()
-        .join("Microsoft/Windows/Start Menu/Programs/Startup/runtimed.vbs");
+        // Check 2: Service config (plist/systemd/startup script)
+        let config_exists = service_config_path.exists();
+        let service_config = CheckResult {
+            path: shorten_path(&service_config_path),
+            status: if config_exists { "ok" } else { "missing" }.to_string(),
+            detail: None,
+        };
 
-    // Check 1: Installed binary
-    let binary_exists = binary_path.exists();
-    let installed_binary = CheckResult {
-        path: shorten_path(&binary_path),
-        status: if binary_exists { "ok" } else { "missing" }.to_string(),
-        detail: None,
-    };
+        // Check 3: Socket file
+        let socket_exists = socket_path.exists();
+        let socket_file = CheckResult {
+            path: shorten_path(&socket_path),
+            status: if socket_exists { "ok" } else { "missing" }.to_string(),
+            detail: None,
+        };
 
-    // Check 2: LaunchAgent plist / systemd service
-    let plist_exists = plist_path.exists();
-    let launchd_plist = CheckResult {
-        path: shorten_path(&plist_path),
-        status: if plist_exists { "ok" } else { "missing" }.to_string(),
-        detail: None,
-    };
-
-    // Check 3: Socket file
-    let socket_exists = socket_path.exists();
-    let socket_file = CheckResult {
-        path: shorten_path(&socket_path),
-        status: if socket_exists { "ok" } else { "missing" }.to_string(),
-        detail: None,
-    };
-
-    // Check 4: daemon.json state
-    let (daemon_state_status, daemon_state_detail) = if let Some(info) = daemon_info {
-        // Check if PID is actually running
-        let pid_running = is_process_running(info.pid);
-        if pid_running {
-            ("ok".to_string(), Some(format!("PID {} running", info.pid)))
+        // Check 4: daemon.json state
+        let (daemon_state_status, daemon_state_detail) = if let Some(info) = daemon_info {
+            // Check if PID is actually running
+            let pid_running = is_process_running(info.pid);
+            if pid_running {
+                ("ok".to_string(), Some(format!("PID {} running", info.pid)))
+            } else {
+                (
+                    "stale".to_string(),
+                    Some(format!("PID {} not running", info.pid)),
+                )
+            }
         } else {
-            (
-                "stale".to_string(),
-                Some(format!("PID {} not running", info.pid)),
-            )
-        }
-    } else {
-        ("missing".to_string(), None)
-    };
-    let daemon_state = CheckResult {
-        path: shorten_path(&daemon_json_path),
-        status: daemon_state_status.clone(),
-        detail: daemon_state_detail,
-    };
+            ("missing".to_string(), None)
+        };
+        let daemon_state = CheckResult {
+            path: shorten_path(&daemon_json_path),
+            status: daemon_state_status.clone(),
+            detail: daemon_state_detail,
+        };
 
-    // Check 5: Can we ping the daemon?
-    let daemon_running_result = if daemon_info.is_some() {
-        tokio::time::timeout(Duration::from_secs(2), client.ping())
+        // Check 5: Can we ping the daemon? Try regardless of daemon.json state
+        let daemon_running_result = tokio::time::timeout(Duration::from_secs(2), client.ping())
             .await
             .map(|r| r.is_ok())
-            .unwrap_or(false)
-    } else {
-        false
-    };
-    let daemon_running = CheckResult {
-        path: String::new(),
-        status: if daemon_running_result {
+            .unwrap_or(false);
+
+        let daemon_running = CheckResult {
+            path: String::new(),
+            status: if daemon_running_result {
+                "ok"
+            } else {
+                "not_running"
+            }
+            .to_string(),
+            detail: if daemon_running_result && daemon_state_status == "missing" {
+                Some("running but daemon.json missing".to_string())
+            } else {
+                None
+            },
+        };
+
+        // Determine diagnosis
+        let diagnosis = if daemon_running_result {
+            "Daemon is healthy and running.".to_string()
+        } else if !binary_exists && !config_exists {
+            "Daemon service not installed. Launch the nteract app to install.".to_string()
+        } else if !binary_exists && config_exists {
+            "Service config exists but binary missing. Need to reinstall.".to_string()
+        } else if binary_exists && config_exists && daemon_state_status == "stale" {
+            "Daemon state is stale (process crashed). Service needs restart.".to_string()
+        } else if binary_exists && config_exists && !daemon_running_result {
+            "Daemon installed but not running. Try 'runt daemon start'.".to_string()
+        } else if binary_exists && !config_exists {
+            "Daemon binary installed but service config missing.".to_string()
+        } else {
+            "Unknown state. Check logs with 'runt daemon logs'.".to_string()
+        };
+
+        DoctorReport {
+            installed_binary,
+            service_config,
+            socket_file,
+            daemon_state,
+            daemon_running,
+            diagnosis,
+            actions_taken,
+        }
+    }
+
+    let mut actions_taken: Vec<String> = Vec::new();
+
+    // Get paths for fix operations
+    let binary_path = runtimed::service::default_binary_path();
+    let socket_path = runtimed::default_socket_path();
+    let daemon_json_path = runtimed::singleton::daemon_info_path();
+    let service_config_path = runtimed::service::service_config_path();
+
+    let binary_exists = binary_path.exists();
+    let config_exists = service_config_path.exists();
+    let socket_exists = socket_path.exists();
+
+    // Check daemon state for fix operations
+    let daemon_state_status = if let Some(info) = daemon_info {
+        if is_process_running(info.pid) {
             "ok"
         } else {
-            "not_running"
+            "stale"
         }
-        .to_string(),
-        detail: None,
+    } else {
+        "missing"
     };
 
-    // Determine diagnosis
-    let diagnosis = if daemon_running_result {
-        "Daemon is healthy and running.".to_string()
-    } else if !binary_exists && !plist_exists {
-        "Daemon service not installed. Launch the nteract app to install.".to_string()
-    } else if binary_exists && plist_exists && daemon_state_status == "stale" {
-        "Daemon state is stale (process crashed). Service needs restart.".to_string()
-    } else if binary_exists && plist_exists && !daemon_running_result {
-        "Daemon installed but not running. Try 'runt daemon start'.".to_string()
-    } else if binary_exists && !plist_exists {
-        "Daemon binary installed but service config missing.".to_string()
-    } else {
-        "Unknown state. Check logs with 'runt daemon logs'.".to_string()
-    };
+    // Check if daemon is running before fixes
+    let daemon_running_before = tokio::time::timeout(Duration::from_secs(2), client.ping())
+        .await
+        .map(|r| r.is_ok())
+        .unwrap_or(false);
 
     // Fix issues if requested
     if fix {
@@ -1759,12 +1793,25 @@ async fn doctor_command(
             }
         }
 
-        // Try to install if not installed
-        if !binary_exists || !plist_exists {
+        // Handle different repair scenarios
+        if !binary_exists || !config_exists {
             // Look for bundled binary in common app locations
-            let bundled_paths = find_bundled_runtimed();
-            if let Some(bundled) = bundled_paths {
-                if !manager.is_installed() {
+            if let Some(bundled) = find_bundled_runtimed() {
+                if !binary_exists && config_exists {
+                    // Service config exists but binary missing - use upgrade to replace binary
+                    match manager.upgrade(&bundled) {
+                        Ok(()) => {
+                            actions_taken.push(format!(
+                                "Reinstalled daemon binary from {}",
+                                bundled.display()
+                            ));
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to reinstall daemon binary: {}", e);
+                        }
+                    }
+                } else if !manager.is_installed() {
+                    // Fresh install needed
                     match manager.install(&bundled) {
                         Ok(()) => {
                             actions_taken
@@ -1775,16 +1822,14 @@ async fn doctor_command(
                         }
                     }
                 }
-            } else {
-                if !json {
-                    eprintln!("Could not find bundled runtimed binary.");
-                    eprintln!("Launch the nteract application to install the daemon.");
-                }
+            } else if !json {
+                eprintln!("Could not find bundled runtimed binary.");
+                eprintln!("Launch the nteract application to install the daemon.");
             }
         }
 
         // Start if installed but not running
-        if manager.is_installed() && !daemon_running_result {
+        if manager.is_installed() && !daemon_running_before {
             match manager.start() {
                 Ok(()) => {
                     actions_taken.push("Started daemon service".to_string());
@@ -1796,60 +1841,74 @@ async fn doctor_command(
         }
     }
 
+    // Re-read daemon info after potential fixes
+    let daemon_info_after = if fix && !actions_taken.is_empty() {
+        // Give daemon time to start and write daemon.json
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        runtimed::singleton::get_running_daemon_info()
+    } else {
+        daemon_info.cloned()
+    };
+
+    // Run final checks (after any fixes)
+    let report = run_checks(client, daemon_info_after.as_ref(), actions_taken).await;
+
     // Output results
     if json {
-        let report = DoctorReport {
-            installed_binary,
-            launchd_plist,
-            socket_file,
-            daemon_state,
-            daemon_running,
-            diagnosis,
-            actions_taken,
-        };
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         println!("runtimed Health Check");
         println!("=====================");
         println!(
             "Installed binary:   {} {}",
-            shorten_path(&binary_path),
-            status_icon(&installed_binary.status)
+            report.installed_binary.path,
+            status_icon(&report.installed_binary.status)
         );
         println!(
             "Service config:     {} {}",
-            shorten_path(&plist_path),
-            status_icon(&launchd_plist.status)
+            report.service_config.path,
+            status_icon(&report.service_config.status)
         );
         println!(
             "Socket file:        {} {}",
-            shorten_path(&socket_path),
-            status_icon(&socket_file.status)
+            report.socket_file.path,
+            status_icon(&report.socket_file.status)
         );
         println!(
             "Daemon state:       {} {}{}",
-            shorten_path(&daemon_json_path),
-            status_icon(&daemon_state.status),
-            daemon_state
+            report.daemon_state.path,
+            status_icon(&report.daemon_state.status),
+            report
+                .daemon_state
                 .detail
                 .as_ref()
                 .map(|d| format!(" ({})", d))
                 .unwrap_or_default()
         );
         println!(
-            "Daemon running:     {}",
-            if daemon_running_result { "yes" } else { "no" }
+            "Daemon running:     {}{}",
+            if report.daemon_running.status == "ok" {
+                "yes"
+            } else {
+                "no"
+            },
+            report
+                .daemon_running
+                .detail
+                .as_ref()
+                .map(|d| format!(" ({})", d))
+                .unwrap_or_default()
         );
         println!();
-        println!("Diagnosis: {}", diagnosis);
+        println!("Diagnosis: {}", report.diagnosis);
 
-        if !actions_taken.is_empty() {
+        if !report.actions_taken.is_empty() {
             println!();
             println!("Actions taken:");
-            for action in &actions_taken {
+            for action in &report.actions_taken {
                 println!("  - {}", action);
             }
-        } else if !daemon_running_result && !fix {
+        } else if report.daemon_running.status != "ok" && !fix {
             println!();
             println!("Run 'runt daemon doctor --fix' to attempt automatic repair.");
         }
@@ -1863,7 +1922,16 @@ fn is_process_running(pid: u32) -> bool {
     #[cfg(unix)]
     {
         // On Unix, send signal 0 to check if process exists
-        unsafe { libc::kill(pid as i32, 0) == 0 }
+        // Returns 0 if process exists (even if we can't signal it due to permissions)
+        // EPERM means process exists but we don't have permission - still running
+        let result = unsafe { libc::kill(pid as i32, 0) };
+        if result == 0 {
+            true
+        } else {
+            // Check errno - EPERM means process exists but we lack permission
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            errno == libc::EPERM
+        }
     }
     #[cfg(windows)]
     {
@@ -1881,11 +1949,19 @@ fn is_process_running(pid: u32) -> bool {
 
 /// Find bundled runtimed binary in common app locations
 fn find_bundled_runtimed() -> Option<PathBuf> {
+    let binary_name = if cfg!(windows) {
+        "runtimed.exe"
+    } else {
+        "runtimed"
+    };
+
     // Check if we're running from within an app bundle
     if let Ok(current_exe) = std::env::current_exe() {
-        let sibling = current_exe.parent()?.join("runtimed");
-        if sibling.exists() {
-            return Some(sibling);
+        if let Some(parent) = current_exe.parent() {
+            let sibling = parent.join(binary_name);
+            if sibling.exists() {
+                return Some(sibling);
+            }
         }
     }
 
@@ -1911,6 +1987,27 @@ fn find_bundled_runtimed() -> Option<PathBuf> {
         let locations = [
             PathBuf::from("/usr/share/nteract/runtimed"),
             PathBuf::from("/opt/nteract/runtimed"),
+            // AppImage extracts to /tmp, check common paths
+            PathBuf::from("/usr/local/bin/runtimed"),
+        ];
+        for path in &locations {
+            if path.exists() {
+                return Some(path.clone());
+            }
+        }
+    }
+
+    // Windows: check common locations
+    #[cfg(target_os = "windows")]
+    {
+        let locations = [
+            dirs::data_local_dir()
+                .unwrap_or_default()
+                .join("Programs")
+                .join("nteract")
+                .join("runtimed.exe"),
+            PathBuf::from("C:\\Program Files\\nteract\\runtimed.exe"),
+            PathBuf::from("C:\\Program Files (x86)\\nteract\\runtimed.exe"),
         ];
         for path in &locations {
             if path.exists() {
