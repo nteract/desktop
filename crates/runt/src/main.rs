@@ -321,6 +321,15 @@ enum DaemonCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Diagnose daemon installation issues
+    Doctor {
+        /// Attempt to fix issues automatically
+        #[arg(long)]
+        fix: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
     /// Start the daemon service
     Start,
     /// Stop the daemon service
@@ -1391,7 +1400,11 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
         DaemonCommands::Status { json } => {
             let installed = manager.is_installed();
             let running = if daemon_info.is_some() {
-                client.ping().await.is_ok()
+                // Use timeout to prevent hanging on stale daemon.json
+                tokio::time::timeout(Duration::from_secs(3), client.ping())
+                    .await
+                    .map(|r| r.is_ok())
+                    .unwrap_or(false)
             } else {
                 false
             };
@@ -1474,6 +1487,9 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 }
             }
         }
+        DaemonCommands::Doctor { fix, json } => {
+            doctor_command(&manager, &client, daemon_info.as_ref(), fix, json).await?;
+        }
         DaemonCommands::Start => {
             if !manager.is_installed() {
                 eprintln!("Service not installed. Run 'runt daemon install' first.");
@@ -1516,8 +1532,12 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
             });
 
             if !source.exists() {
-                eprintln!("Daemon binary not found at: {}", source.display());
-                eprintln!("Build it with: cargo build -p runtimed");
+                eprintln!("Error: Daemon binary not found at: {}", source.display());
+                eprintln!();
+                eprintln!("The daemon is normally installed automatically by the nteract app.");
+                eprintln!(
+                    "Run 'runt daemon doctor' to diagnose issues, or launch nteract to install."
+                );
                 std::process::exit(1);
             }
 
@@ -1584,6 +1604,333 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Diagnose daemon installation issues and optionally fix them.
+async fn doctor_command(
+    manager: &runtimed::service::ServiceManager,
+    client: &runtimed::client::PoolClient,
+    daemon_info: Option<&runtimed::singleton::DaemonInfo>,
+    fix: bool,
+    json: bool,
+) -> Result<()> {
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    struct DoctorReport {
+        installed_binary: CheckResult,
+        launchd_plist: CheckResult,
+        socket_file: CheckResult,
+        daemon_state: CheckResult,
+        daemon_running: CheckResult,
+        diagnosis: String,
+        actions_taken: Vec<String>,
+    }
+
+    #[derive(Serialize)]
+    struct CheckResult {
+        path: String,
+        status: String, // "ok", "missing", "stale", "error"
+        detail: Option<String>,
+    }
+
+    let mut actions_taken: Vec<String> = Vec::new();
+
+    // Get expected paths
+    let binary_path = runtimed::service::default_binary_path();
+    let _log_path = runtimed::service::default_log_path();
+    let socket_path = runtimed::default_socket_path();
+    let daemon_json_path = runtimed::singleton::daemon_info_path();
+
+    #[cfg(target_os = "macos")]
+    let plist_path = dirs::home_dir()
+        .unwrap_or_default()
+        .join("Library/LaunchAgents/io.nteract.runtimed.plist");
+    #[cfg(target_os = "linux")]
+    let plist_path = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".config/systemd/user/runtimed.service");
+    #[cfg(target_os = "windows")]
+    let plist_path = dirs::data_local_dir()
+        .unwrap_or_default()
+        .join("Microsoft/Windows/Start Menu/Programs/Startup/runtimed.vbs");
+
+    // Check 1: Installed binary
+    let binary_exists = binary_path.exists();
+    let installed_binary = CheckResult {
+        path: shorten_path(&binary_path),
+        status: if binary_exists { "ok" } else { "missing" }.to_string(),
+        detail: None,
+    };
+
+    // Check 2: LaunchAgent plist / systemd service
+    let plist_exists = plist_path.exists();
+    let launchd_plist = CheckResult {
+        path: shorten_path(&plist_path),
+        status: if plist_exists { "ok" } else { "missing" }.to_string(),
+        detail: None,
+    };
+
+    // Check 3: Socket file
+    let socket_exists = socket_path.exists();
+    let socket_file = CheckResult {
+        path: shorten_path(&socket_path),
+        status: if socket_exists { "ok" } else { "missing" }.to_string(),
+        detail: None,
+    };
+
+    // Check 4: daemon.json state
+    let (daemon_state_status, daemon_state_detail) = if let Some(info) = daemon_info {
+        // Check if PID is actually running
+        let pid_running = is_process_running(info.pid);
+        if pid_running {
+            ("ok".to_string(), Some(format!("PID {} running", info.pid)))
+        } else {
+            (
+                "stale".to_string(),
+                Some(format!("PID {} not running", info.pid)),
+            )
+        }
+    } else {
+        ("missing".to_string(), None)
+    };
+    let daemon_state = CheckResult {
+        path: shorten_path(&daemon_json_path),
+        status: daemon_state_status.clone(),
+        detail: daemon_state_detail,
+    };
+
+    // Check 5: Can we ping the daemon?
+    let daemon_running_result = if daemon_info.is_some() {
+        tokio::time::timeout(Duration::from_secs(2), client.ping())
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    let daemon_running = CheckResult {
+        path: String::new(),
+        status: if daemon_running_result {
+            "ok"
+        } else {
+            "not_running"
+        }
+        .to_string(),
+        detail: None,
+    };
+
+    // Determine diagnosis
+    let diagnosis = if daemon_running_result {
+        "Daemon is healthy and running.".to_string()
+    } else if !binary_exists && !plist_exists {
+        "Daemon service not installed. Launch the nteract app to install.".to_string()
+    } else if binary_exists && plist_exists && daemon_state_status == "stale" {
+        "Daemon state is stale (process crashed). Service needs restart.".to_string()
+    } else if binary_exists && plist_exists && !daemon_running_result {
+        "Daemon installed but not running. Try 'runt daemon start'.".to_string()
+    } else if binary_exists && !plist_exists {
+        "Daemon binary installed but service config missing.".to_string()
+    } else {
+        "Unknown state. Check logs with 'runt daemon logs'.".to_string()
+    };
+
+    // Fix issues if requested
+    if fix {
+        // Clean up stale state
+        if daemon_state_status == "stale" {
+            if let Err(e) = std::fs::remove_file(&daemon_json_path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("Warning: Could not remove stale daemon.json: {}", e);
+                }
+            } else {
+                actions_taken.push("Removed stale daemon.json".to_string());
+            }
+
+            // Also remove stale socket
+            if socket_exists {
+                if let Err(e) = std::fs::remove_file(&socket_path) {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        eprintln!("Warning: Could not remove stale socket: {}", e);
+                    }
+                } else {
+                    actions_taken.push("Removed stale socket file".to_string());
+                }
+            }
+        }
+
+        // Try to install if not installed
+        if !binary_exists || !plist_exists {
+            // Look for bundled binary in common app locations
+            let bundled_paths = find_bundled_runtimed();
+            if let Some(bundled) = bundled_paths {
+                if !manager.is_installed() {
+                    match manager.install(&bundled) {
+                        Ok(()) => {
+                            actions_taken
+                                .push(format!("Installed daemon from {}", bundled.display()));
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to install daemon: {}", e);
+                        }
+                    }
+                }
+            } else {
+                if !json {
+                    eprintln!("Could not find bundled runtimed binary.");
+                    eprintln!("Launch the nteract application to install the daemon.");
+                }
+            }
+        }
+
+        // Start if installed but not running
+        if manager.is_installed() && !daemon_running_result {
+            match manager.start() {
+                Ok(()) => {
+                    actions_taken.push("Started daemon service".to_string());
+                }
+                Err(e) => {
+                    eprintln!("Failed to start daemon: {}", e);
+                }
+            }
+        }
+    }
+
+    // Output results
+    if json {
+        let report = DoctorReport {
+            installed_binary,
+            launchd_plist,
+            socket_file,
+            daemon_state,
+            daemon_running,
+            diagnosis,
+            actions_taken,
+        };
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("runtimed Health Check");
+        println!("=====================");
+        println!(
+            "Installed binary:   {} {}",
+            shorten_path(&binary_path),
+            status_icon(&installed_binary.status)
+        );
+        println!(
+            "Service config:     {} {}",
+            shorten_path(&plist_path),
+            status_icon(&launchd_plist.status)
+        );
+        println!(
+            "Socket file:        {} {}",
+            shorten_path(&socket_path),
+            status_icon(&socket_file.status)
+        );
+        println!(
+            "Daemon state:       {} {}{}",
+            shorten_path(&daemon_json_path),
+            status_icon(&daemon_state.status),
+            daemon_state
+                .detail
+                .as_ref()
+                .map(|d| format!(" ({})", d))
+                .unwrap_or_default()
+        );
+        println!(
+            "Daemon running:     {}",
+            if daemon_running_result { "yes" } else { "no" }
+        );
+        println!();
+        println!("Diagnosis: {}", diagnosis);
+
+        if !actions_taken.is_empty() {
+            println!();
+            println!("Actions taken:");
+            for action in &actions_taken {
+                println!("  - {}", action);
+            }
+        } else if !daemon_running_result && !fix {
+            println!();
+            println!("Run 'runt daemon doctor --fix' to attempt automatic repair.");
+        }
+    }
+
+    Ok(())
+}
+
+/// Check if a process with the given PID is running
+fn is_process_running(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // On Unix, send signal 0 to check if process exists
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+    #[cfg(windows)]
+    {
+        // On Windows, use tasklist to check if process exists
+        std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+            .output()
+            .map(|output| {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                stdout.contains(&pid.to_string())
+            })
+            .unwrap_or(false)
+    }
+}
+
+/// Find bundled runtimed binary in common app locations
+fn find_bundled_runtimed() -> Option<PathBuf> {
+    // Check if we're running from within an app bundle
+    if let Ok(current_exe) = std::env::current_exe() {
+        let sibling = current_exe.parent()?.join("runtimed");
+        if sibling.exists() {
+            return Some(sibling);
+        }
+    }
+
+    // Common app locations on macOS
+    #[cfg(target_os = "macos")]
+    {
+        let locations = [
+            PathBuf::from("/Applications/nteract.app/Contents/MacOS/runtimed"),
+            dirs::home_dir()
+                .unwrap_or_default()
+                .join("Applications/nteract.app/Contents/MacOS/runtimed"),
+        ];
+        for path in &locations {
+            if path.exists() {
+                return Some(path.clone());
+            }
+        }
+    }
+
+    // Linux: check common locations
+    #[cfg(target_os = "linux")]
+    {
+        let locations = [
+            PathBuf::from("/usr/share/nteract/runtimed"),
+            PathBuf::from("/opt/nteract/runtimed"),
+        ];
+        for path in &locations {
+            if path.exists() {
+                return Some(path.clone());
+            }
+        }
+    }
+
+    None
+}
+
+/// Return a status icon for display
+fn status_icon(status: &str) -> &'static str {
+    match status {
+        "ok" => "[ok]",
+        "missing" => "[missing]",
+        "stale" => "[stale]",
+        "not_running" => "",
+        _ => "[?]",
+    }
 }
 
 /// Native log file tailing implementation
