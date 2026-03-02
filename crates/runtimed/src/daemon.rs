@@ -53,6 +53,9 @@ pub struct DaemonConfig {
     pub max_age_secs: u64,
     /// Optional custom directory for lock files (used in tests).
     pub lock_dir: Option<PathBuf>,
+    /// Override for room eviction delay (milliseconds). Used in tests.
+    /// If None, uses the user's `keep_alive_secs` setting.
+    pub room_eviction_delay_ms: Option<u64>,
 }
 
 impl Default for DaemonConfig {
@@ -66,6 +69,7 @@ impl Default for DaemonConfig {
             conda_pool_size: 3,
             max_age_secs: 172800, // 2 days
             lock_dir: None,
+            room_eviction_delay_ms: None,
         }
     }
 }
@@ -384,6 +388,21 @@ impl Daemon {
     pub async fn trigger_shutdown(&self) {
         *self.shutdown.lock().await = true;
         self.shutdown_notify.notify_waiters();
+    }
+
+    /// Get the room eviction delay.
+    ///
+    /// Uses the config override if set (for tests), otherwise reads from
+    /// the user's `keep_alive_secs` setting.
+    pub async fn room_eviction_delay(&self) -> std::time::Duration {
+        if let Some(ms) = self.config.room_eviction_delay_ms {
+            return std::time::Duration::from_millis(ms);
+        }
+        let settings = self.settings.read().await;
+        let secs = settings
+            .get_u64("keep_alive_secs")
+            .unwrap_or(crate::settings_doc::DEFAULT_KEEP_ALIVE_SECS);
+        std::time::Duration::from_secs(secs)
     }
 
     /// Run the daemon server.

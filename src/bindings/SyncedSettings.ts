@@ -28,4 +28,9 @@ uv: UvDefaults,
 /**
  * Conda environment defaults
  */
-conda: CondaDefaults, };
+conda: CondaDefaults, 
+/**
+ * How long (in seconds) to keep notebook rooms alive after all clients disconnect.
+ * This allows you to close and reopen the window without losing your kernel state.
+ */
+keep_alive_secs: bigint, };

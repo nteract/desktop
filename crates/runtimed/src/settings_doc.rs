@@ -134,6 +134,10 @@ pub struct CondaDefaults {
     pub default_packages: Vec<String>,
 }
 
+/// Default keep-alive duration in seconds for notebook rooms.
+/// When all clients disconnect, the daemon waits this long before evicting the room.
+pub const DEFAULT_KEEP_ALIVE_SECS: u64 = 30;
+
 /// Snapshot of all synced settings.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
 #[ts(export)]
@@ -157,6 +161,15 @@ pub struct SyncedSettings {
     /// Conda environment defaults
     #[serde(default)]
     pub conda: CondaDefaults,
+
+    /// How long (in seconds) to keep notebook rooms alive after all clients disconnect.
+    /// This allows you to close and reopen the window without losing your kernel state.
+    #[serde(default = "default_keep_alive_secs")]
+    pub keep_alive_secs: u64,
+}
+
+fn default_keep_alive_secs() -> u64 {
+    DEFAULT_KEEP_ALIVE_SECS
 }
 
 /// Generate a JSON Schema string for the settings file.
@@ -200,6 +213,11 @@ impl SettingsDoc {
             automerge::ROOT,
             "default_python_env",
             defaults.default_python_env.to_string(),
+        );
+        let _ = doc.put(
+            automerge::ROOT,
+            "keep_alive_secs",
+            defaults.keep_alive_secs as i64,
         );
 
         // Nested uv map with empty package list
@@ -420,6 +438,30 @@ impl SettingsDoc {
         let _ = self.doc.put(automerge::ROOT, key, value);
     }
 
+    /// Get a u64 setting value from the root.
+    pub fn get_u64(&self, key: &str) -> Option<u64> {
+        self.doc
+            .get(automerge::ROOT, key)
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| match value {
+                automerge::Value::Scalar(s) => match s.as_ref() {
+                    automerge::ScalarValue::Int(i) => Some(*i as u64),
+                    automerge::ScalarValue::Uint(u) => Some(*u),
+                    // Also support string for migration/JSON compatibility
+                    automerge::ScalarValue::Str(s) => s.parse().ok(),
+                    _ => None,
+                },
+                _ => None,
+            })
+    }
+
+    /// Set a u64 setting value at the root.
+    pub fn put_u64(&mut self, key: &str, value: u64) {
+        // Store as i64 since Automerge's Int is more widely supported
+        let _ = self.doc.put(automerge::ROOT, key, value as i64);
+    }
+
     /// Set a scalar setting value, supporting dotted paths for nested maps.
     pub fn put(&mut self, key: &str, value: &str) {
         if let Some((map_key, sub_key)) = key.split_once('.') {
@@ -485,8 +527,9 @@ impl SettingsDoc {
         }
     }
 
-    ///// Set a value from a `serde_json::Value` — dispatches to `put` for strings,
-    /// `put_list` for arrays, or `put_bool` for booleans. Used by Tauri commands.
+    /// Set a value from a `serde_json::Value` — dispatches to `put` for strings,
+    /// `put_list` for arrays, `put_bool` for booleans, or `put_u64` for numbers.
+    /// Used by Tauri commands.
     pub fn put_value(&mut self, key: &str, value: &serde_json::Value) {
         match value {
             serde_json::Value::String(s) => self.put(key, s),
@@ -498,6 +541,11 @@ impl SettingsDoc {
                 self.put_list(key, &items);
             }
             serde_json::Value::Bool(b) => self.put_bool(key, *b),
+            serde_json::Value::Number(n) => {
+                if let Some(u) = n.as_u64() {
+                    self.put_u64(key, u);
+                }
+            }
             _ => {}
         }
     }
@@ -578,6 +626,9 @@ impl SettingsDoc {
             conda: CondaDefaults {
                 default_packages: conda_packages,
             },
+            keep_alive_secs: self
+                .get_u64("keep_alive_secs")
+                .unwrap_or(defaults.keep_alive_secs),
         }
     }
 
@@ -631,6 +682,19 @@ impl SettingsDoc {
             let conda_packages = Self::extract_packages_from_json(json, "conda");
             if self.get_list("conda.default_packages") != conda_packages {
                 self.put_list("conda.default_packages", &conda_packages);
+                changed = true;
+            }
+        }
+
+        // keep_alive_secs (numeric)
+        if let Some(value) = json.get("keep_alive_secs").and_then(|v| v.as_u64()) {
+            let current = self.get_u64("keep_alive_secs");
+            if current != Some(value) {
+                info!(
+                    "[settings] apply_json_changes: keep_alive_secs changed {:?} -> {value}",
+                    current
+                );
+                self.put_u64("keep_alive_secs", value);
                 changed = true;
             }
         }

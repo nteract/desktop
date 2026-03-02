@@ -58,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
         conda_pool_size: 0,
         max_age_secs: 3600,
         lock_dir: Some(temp_dir.path().to_path_buf()),
+        room_eviction_delay_ms: None,
     };
     let socket_path = config.socket_path.clone();
     println!("Socket path: {:?}", socket_path);

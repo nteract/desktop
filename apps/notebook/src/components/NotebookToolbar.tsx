@@ -160,6 +160,8 @@ interface NotebookToolbarProps {
   onDefaultUvPackagesChange?: (packages: string[]) => void;
   defaultCondaPackages?: string[];
   onDefaultCondaPackagesChange?: (packages: string[]) => void;
+  keepAliveSecs?: number;
+  onKeepAliveSecsChange?: (secs: number) => void;
   onSave: () => void;
   onStartKernel: (name: string) => void;
   onInterruptKernel: () => void;
@@ -288,6 +290,8 @@ export function NotebookToolbar({
   onDefaultUvPackagesChange,
   defaultCondaPackages = [],
   onDefaultCondaPackagesChange,
+  keepAliveSecs = 30,
+  onKeepAliveSecsChange,
   onSave,
   onStartKernel,
   onInterruptKernel,
@@ -838,6 +842,39 @@ export function NotebookToolbar({
                         />
                       </>
                     )}
+                </div>
+              </div>
+            )}
+
+            {/* Advanced settings */}
+            {onKeepAliveSecsChange && (
+              <div className="space-y-2 pt-2 border-t border-border/50">
+                <div>
+                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                    Advanced
+                  </span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    Keep Alive
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={3600}
+                    step={5}
+                    value={keepAliveSecs}
+                    onChange={(e) =>
+                      onKeepAliveSecsChange(
+                        Math.max(0, Math.min(3600, Number(e.target.value))),
+                      )
+                    }
+                    className="w-20 rounded-md border bg-muted/50 px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                  <span className="text-xs text-muted-foreground">seconds</span>
+                  <span className="text-[10px] text-muted-foreground/70 ml-2">
+                    Time to keep notebook room alive after closing
+                  </span>
                 </div>
               </div>
             )}

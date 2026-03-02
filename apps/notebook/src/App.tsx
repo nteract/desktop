@@ -91,6 +91,8 @@ function AppContent() {
     setDefaultUvPackages,
     defaultCondaPackages,
     setDefaultCondaPackages,
+    keepAliveSecs,
+    setKeepAliveSecs,
   } = useSyncedSettings();
 
   const {
@@ -922,6 +924,8 @@ function AppContent() {
         onDefaultUvPackagesChange={setDefaultUvPackages}
         defaultCondaPackages={defaultCondaPackages}
         onDefaultCondaPackagesChange={setDefaultCondaPackages}
+        keepAliveSecs={keepAliveSecs}
+        onKeepAliveSecsChange={setKeepAliveSecs}
         onSave={save}
         onStartKernel={handleStartKernel}
         onInterruptKernel={interruptKernel}

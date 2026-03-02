@@ -339,6 +339,21 @@ fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
             })
     };
 
+    let get_u64 = |key: &str| -> Option<u64> {
+        doc.get(automerge::ROOT, key)
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| match value {
+                automerge::Value::Scalar(s) => match s.as_ref() {
+                    automerge::ScalarValue::Int(i) => Some(*i as u64),
+                    automerge::ScalarValue::Uint(u) => Some(*u),
+                    automerge::ScalarValue::Str(s) => s.parse().ok(),
+                    _ => None,
+                },
+                _ => None,
+            })
+    };
+
     // Read uv packages: try nested list, fall back to flat comma string
     let uv_packages = {
         let nested = read_nested_list(doc, "uv", "default_packages");
@@ -379,6 +394,7 @@ fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         conda: CondaDefaults {
             default_packages: conda_packages,
         },
+        keep_alive_secs: get_u64("keep_alive_secs").unwrap_or(defaults.keep_alive_secs),
     }
 }
 

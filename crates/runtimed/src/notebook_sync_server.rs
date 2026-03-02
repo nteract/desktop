@@ -711,7 +711,7 @@ where
     }
 
     let result = if use_typed_frames {
-        run_sync_loop_v2(&mut reader, &mut writer, &room, daemon).await
+        run_sync_loop_v2(&mut reader, &mut writer, &room, daemon.clone()).await
     } else {
         run_sync_loop_v1(&mut reader, &mut writer, &room).await
     };
@@ -723,15 +723,15 @@ where
         // 1. Grace period during auto-launch (client may reconnect)
         // 2. Kernel running with no peers (idle timeout)
         // Without this, rooms with kernels would leak forever.
-        let eviction_delay = std::time::Duration::from_secs(30);
+        let eviction_delay = daemon.room_eviction_delay().await;
         let rooms_for_eviction = rooms.clone();
         let room_for_eviction = room.clone();
         let notebook_id_for_eviction = notebook_id.clone();
 
         info!(
-            "[notebook-sync] All peers disconnected from room {}, scheduling eviction check in {}s",
+            "[notebook-sync] All peers disconnected from room {}, scheduling eviction check in {:?}",
             notebook_id,
-            eviction_delay.as_secs()
+            eviction_delay
         );
 
         tokio::spawn(async move {

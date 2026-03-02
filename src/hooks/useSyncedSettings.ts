@@ -102,6 +102,7 @@ export function useSyncedSettings() {
   const [defaultCondaPackages, setDefaultCondaPackagesState] = useState<
     string[]
   >([]);
+  const [keepAliveSecs, setKeepAliveSecsState] = useState<number>(30);
 
   // Load initial settings from daemon
   useEffect(() => {
@@ -123,6 +124,11 @@ export function useSyncedSettings() {
         if (Array.isArray(settings.conda?.default_packages)) {
           setDefaultCondaPackagesState(settings.conda.default_packages);
         }
+        if (typeof settings.keep_alive_secs === "bigint") {
+          setKeepAliveSecsState(Number(settings.keep_alive_secs));
+        } else if (typeof settings.keep_alive_secs === "number") {
+          setKeepAliveSecsState(settings.keep_alive_secs);
+        }
       })
       .catch(() => {
         // Daemon unavailable — defaults are fine
@@ -136,6 +142,7 @@ export function useSyncedSettings() {
         theme: newTheme,
         default_runtime,
         default_python_env,
+        keep_alive_secs,
       } = event.payload;
       if (isValidTheme(newTheme)) {
         setThemeState(newTheme);
@@ -152,6 +159,11 @@ export function useSyncedSettings() {
       }
       if (Array.isArray(event.payload.conda?.default_packages)) {
         setDefaultCondaPackagesState(event.payload.conda.default_packages);
+      }
+      if (typeof keep_alive_secs === "bigint") {
+        setKeepAliveSecsState(Number(keep_alive_secs));
+      } else if (typeof keep_alive_secs === "number") {
+        setKeepAliveSecsState(keep_alive_secs);
       }
     });
     return () => {
@@ -199,6 +211,14 @@ export function useSyncedSettings() {
     }).catch(() => {});
   }, []);
 
+  const setKeepAliveSecs = useCallback((secs: number) => {
+    setKeepAliveSecsState(secs);
+    invoke("set_synced_setting", {
+      key: "keep_alive_secs",
+      value: secs,
+    }).catch(() => {});
+  }, []);
+
   return {
     theme,
     setTheme,
@@ -210,6 +230,8 @@ export function useSyncedSettings() {
     setDefaultUvPackages,
     defaultCondaPackages,
     setDefaultCondaPackages,
+    keepAliveSecs,
+    setKeepAliveSecs,
   };
 }
 
