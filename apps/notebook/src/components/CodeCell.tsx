@@ -24,6 +24,7 @@ import type { CellPagePayload, MimeBundle } from "../App";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { useEditorRegistry } from "../hooks/useEditorRegistry";
 import { kernelCompletionExtension } from "../lib/kernel-completion";
+import { tabCompletionKeymap } from "../lib/tab-completion";
 import type { CodeCell as CodeCellType } from "../types";
 
 // Lazy load HistorySearchDialog - it pulls in react-syntax-highlighter (~800KB)
@@ -207,10 +208,11 @@ export function CodeCell({
     [navigationKeyMap, historyKeyBinding],
   );
 
-  // CodeMirror extensions: kernel completion + search highlighting
+  // CodeMirror extensions: kernel completion + tab completion + search highlighting
   const editorExtensions = useMemo(
     () => [
       kernelCompletionExtension,
+      tabCompletionKeymap,
       ...searchHighlight(searchQuery || "", searchActiveOffset),
     ],
     [searchQuery, searchActiveOffset],
