@@ -5,9 +5,12 @@
 //! - Linux: ~/.config/nteract/settings.json
 //! - Windows: C:\Users\<User>\AppData\Roaming\nteract\settings.json
 //!
+//! The daemon (runtimed) is the sole writer to settings.json to prevent race
+//! conditions when multiple notebook windows are open. This module only reads
+//! settings for fallback when the daemon is unavailable.
+//!
 //! Uses `runtimed::settings_doc::SyncedSettings` as the canonical settings type.
 
-use anyhow::Result;
 use runtimed::settings_doc::SyncedSettings;
 use std::path::PathBuf;
 
@@ -72,27 +75,6 @@ pub fn load_settings() -> SyncedSettings {
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or(defaults.keep_alive_secs),
     }
-}
-
-/// Save settings to disk.
-///
-/// Injects a `$schema` key pointing to the companion schema file so editors
-/// can provide autocomplete and validation.
-pub fn save_settings(settings: &SyncedSettings) -> Result<()> {
-    let path = settings_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut json_value = serde_json::to_value(settings)?;
-    if let Some(obj) = json_value.as_object_mut() {
-        obj.insert(
-            "$schema".to_string(),
-            serde_json::Value::String("./settings.schema.json".to_string()),
-        );
-    }
-    let json = serde_json::to_string_pretty(&json_value)?;
-    std::fs::write(&path, format!("{json}\n"))?;
-    Ok(())
 }
 
 #[cfg(test)]
