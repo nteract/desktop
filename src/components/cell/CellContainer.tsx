@@ -107,7 +107,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 />
                 <div
                   className={cn(
-                    "min-w-0 flex-1 py-2 pl-5 pr-3 transition-opacity duration-150",
+                    "min-w-0 flex-1 py-2 pl-[26px] pr-3 transition-opacity duration-150",
                     !isFocused && "opacity-70",
                   )}
                 >
