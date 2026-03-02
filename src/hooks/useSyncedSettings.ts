@@ -102,8 +102,8 @@ export function useSyncedSettings() {
   const [defaultCondaPackages, setDefaultCondaPackagesState] = useState<
     string[]
   >([]);
-  // null means "forever" (no automatic eviction)
-  const [keepAliveSecs, setKeepAliveSecsState] = useState<number | null>(30);
+  // Keep-alive duration in seconds (5s to 7 days)
+  const [keepAliveSecs, setKeepAliveSecsState] = useState<number>(30);
 
   // Load initial settings from daemon
   useEffect(() => {
@@ -125,10 +125,8 @@ export function useSyncedSettings() {
         if (Array.isArray(settings.conda?.default_packages)) {
           setDefaultCondaPackagesState(settings.conda.default_packages);
         }
-        // Handle keep_alive_secs: null means "forever", number means timeout
-        if (settings.keep_alive_secs === null) {
-          setKeepAliveSecsState(null);
-        } else if (typeof settings.keep_alive_secs === "bigint") {
+        // Handle keep_alive_secs: bigint from backend, convert to number
+        if (typeof settings.keep_alive_secs === "bigint") {
           setKeepAliveSecsState(Number(settings.keep_alive_secs));
         } else if (typeof settings.keep_alive_secs === "number") {
           setKeepAliveSecsState(settings.keep_alive_secs);
@@ -164,10 +162,8 @@ export function useSyncedSettings() {
       if (Array.isArray(event.payload.conda?.default_packages)) {
         setDefaultCondaPackagesState(event.payload.conda.default_packages);
       }
-      // Handle keep_alive_secs: null means "forever", number means timeout
-      if (keep_alive_secs === null) {
-        setKeepAliveSecsState(null);
-      } else if (typeof keep_alive_secs === "bigint") {
+      // Handle keep_alive_secs: bigint from backend, convert to number
+      if (typeof keep_alive_secs === "bigint") {
         setKeepAliveSecsState(Number(keep_alive_secs));
       } else if (typeof keep_alive_secs === "number") {
         setKeepAliveSecsState(keep_alive_secs);
@@ -224,7 +220,7 @@ export function useSyncedSettings() {
     );
   }, []);
 
-  const setKeepAliveSecs = useCallback((secs: number | null) => {
+  const setKeepAliveSecs = useCallback((secs: number) => {
     setKeepAliveSecsState(secs);
     invoke("set_synced_setting", {
       key: "keep_alive_secs",

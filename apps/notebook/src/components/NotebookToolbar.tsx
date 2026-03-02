@@ -29,8 +29,17 @@ import type { UpdateStatus } from "../hooks/useUpdater";
 import type { KernelspecInfo } from "../types";
 
 /** Format seconds into human-readable duration */
-function formatDuration(secs: number | null): string {
-  if (secs === null) return "Forever";
+function formatDuration(secs: number): string {
+  if (secs >= 86400) {
+    const days = Math.floor(secs / 86400);
+    const hours = Math.floor((secs % 86400) / 3600);
+    return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  }
+  if (secs >= 3600) {
+    const hours = Math.floor(secs / 3600);
+    const mins = Math.floor((secs % 3600) / 60);
+    return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+  }
   if (secs >= 60) {
     const mins = Math.floor(secs / 60);
     const remainingSecs = secs % 60;
@@ -39,24 +48,43 @@ function formatDuration(secs: number | null): string {
   return `${secs}s`;
 }
 
-/** Keep Alive slider - uses Radix Slider for consistency with widget controls */
+// Exponential slider constants
+const MIN_SECS = 5;
+const MAX_SECS = 604800; // 7 days
+const SLIDER_STEPS = 100;
+
+// Convert slider position (0-100) to seconds (exponential scale)
+function sliderToSeconds(position: number): number {
+  // Exponential: value = MIN * (MAX/MIN)^(position/100)
+  const ratio = MAX_SECS / MIN_SECS;
+  const secs = Math.round(MIN_SECS * ratio ** (position / SLIDER_STEPS));
+  return Math.max(MIN_SECS, Math.min(MAX_SECS, secs));
+}
+
+// Convert seconds to slider position (0-100)
+function secondsToSlider(secs: number): number {
+  // Inverse: position = 100 * log(value/MIN) / log(MAX/MIN)
+  const ratio = MAX_SECS / MIN_SECS;
+  const position = (SLIDER_STEPS * Math.log(secs / MIN_SECS)) / Math.log(ratio);
+  return Math.max(0, Math.min(SLIDER_STEPS, Math.round(position)));
+}
+
+/** Keep Alive slider - exponential scale from 5s to 7 days */
 function KeepAliveSlider({
   value,
   onChange,
 }: {
-  value: number | null;
-  onChange: (value: number | null) => void;
+  value: number;
+  onChange: (value: number) => void;
 }) {
-  // When forever mode is on, value is null; slider uses last known numeric value
-  const [localValue, setLocalValue] = useState(value ?? 30);
-  const isForever = value === null;
+  const [localValue, setLocalValue] = useState(value);
 
-  // Sync local value when prop changes externally (only for numeric values)
+  // Sync local value when prop changes externally
   useEffect(() => {
-    if (value !== null) {
-      setLocalValue(value);
-    }
+    setLocalValue(value);
   }, [value]);
+
+  const sliderPosition = secondsToSlider(localValue);
 
   return (
     <div className="space-y-3 pt-2 border-t border-border/50">
@@ -71,50 +99,27 @@ function KeepAliveSlider({
             Keep Alive
           </span>
           <span className="text-xs font-medium text-foreground tabular-nums">
-            {formatDuration(isForever ? null : localValue)}
+            {formatDuration(localValue)}
           </span>
         </div>
         <p className="text-[10px] text-muted-foreground/70">
           Time to keep notebook runtime alive after closing
         </p>
       </div>
-      {/* Forever checkbox */}
-      <label className="flex items-center gap-2 cursor-pointer">
-        <input
-          type="checkbox"
-          checked={isForever}
-          onChange={(e) => {
-            if (e.target.checked) {
-              onChange(null);
-            } else {
-              onChange(localValue);
-            }
-          }}
-          className="h-3.5 w-3.5 rounded border-muted-foreground/50 text-primary focus:ring-primary/50"
+      <div className="py-2">
+        <Slider
+          value={[sliderPosition]}
+          min={0}
+          max={SLIDER_STEPS}
+          step={1}
+          onValueChange={(v) => setLocalValue(sliderToSeconds(v[0]))}
+          onValueCommit={(v) => onChange(sliderToSeconds(v[0]))}
         />
-        <span className="text-xs text-muted-foreground">
-          Keep alive forever
-        </span>
-      </label>
-      {/* Slider - only shown when not in forever mode */}
-      {!isForever && (
-        <>
-          <div className="py-2">
-            <Slider
-              value={[localValue]}
-              min={5}
-              max={3600}
-              step={5}
-              onValueChange={(v) => setLocalValue(v[0])}
-              onValueCommit={(v) => onChange(v[0])}
-            />
-          </div>
-          <div className="flex justify-between text-[10px] text-muted-foreground/70">
-            <span>5s</span>
-            <span>1 hour</span>
-          </div>
-        </>
-      )}
+      </div>
+      <div className="flex justify-between text-[10px] text-muted-foreground/70">
+        <span>5s</span>
+        <span>7 days</span>
+      </div>
     </div>
   );
 }
@@ -252,8 +257,8 @@ interface NotebookToolbarProps {
   onDefaultUvPackagesChange?: (packages: string[]) => void;
   defaultCondaPackages?: string[];
   onDefaultCondaPackagesChange?: (packages: string[]) => void;
-  keepAliveSecs?: number | null;
-  onKeepAliveSecsChange?: (secs: number | null) => void;
+  keepAliveSecs?: number;
+  onKeepAliveSecsChange?: (secs: number) => void;
   onSave: () => void;
   onStartKernel: (name: string) => void;
   onInterruptKernel: () => void;

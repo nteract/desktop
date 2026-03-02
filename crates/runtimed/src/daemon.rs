@@ -392,31 +392,22 @@ impl Daemon {
 
     /// Get the room eviction delay.
     ///
-    /// Returns `None` for "forever" mode (no eviction), or `Some(Duration)`
-    /// for timed eviction.
+    /// Returns the eviction delay duration.
     ///
     /// Uses the config override if set (for tests), otherwise reads from
     /// the user's `keep_alive_secs` setting. Enforces a minimum of 5 seconds
     /// to prevent accidental instant eviction from misconfigured settings.
-    pub async fn room_eviction_delay(&self) -> Option<std::time::Duration> {
-        // Test override always returns Some (tests need predictable eviction)
+    pub async fn room_eviction_delay(&self) -> std::time::Duration {
+        // Test override for predictable eviction in tests
         if let Some(ms) = self.config.room_eviction_delay_ms {
-            return Some(std::time::Duration::from_millis(ms));
+            return std::time::Duration::from_millis(ms);
         }
         let settings = self.settings.read().await;
-        match settings.get_u64_option("keep_alive_secs") {
-            // Key is null -> forever mode, no eviction
-            Some(None) => None,
-            // Key has value -> use it (with minimum enforcement)
-            Some(Some(secs)) => {
-                let secs = secs.max(crate::settings_doc::MIN_KEEP_ALIVE_SECS);
-                Some(std::time::Duration::from_secs(secs))
-            }
-            // Key missing -> use default
-            None => Some(std::time::Duration::from_secs(
-                crate::settings_doc::DEFAULT_KEEP_ALIVE_SECS,
-            )),
-        }
+        let secs = settings
+            .get_u64("keep_alive_secs")
+            .unwrap_or(crate::settings_doc::DEFAULT_KEEP_ALIVE_SECS)
+            .max(crate::settings_doc::MIN_KEEP_ALIVE_SECS);
+        std::time::Duration::from_secs(secs)
     }
 
     /// Run the daemon server.

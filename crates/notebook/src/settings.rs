@@ -101,7 +101,7 @@ mod tests {
                 default_packages: vec!["numpy".into(), "pandas".into()],
             },
             conda: CondaDefaults::default(),
-            keep_alive_secs: Some(30),
+            keep_alive_secs: 30,
         };
 
         let json = serde_json::to_string(&settings).unwrap();

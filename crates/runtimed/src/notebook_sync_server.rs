@@ -735,18 +735,8 @@ where
         // Schedule delayed eviction check. This handles:
         // 1. Grace period during auto-launch (client may reconnect)
         // 2. Kernel running with no peers (idle timeout)
-        // Without this, rooms with kernels would leak forever.
+        // Without this, rooms with kernels would leak indefinitely.
         let eviction_delay = daemon.room_eviction_delay().await;
-
-        // If keep-alive is "forever" (None), skip eviction scheduling
-        let Some(eviction_delay) = eviction_delay else {
-            info!(
-                "[notebook-sync] All peers disconnected from room {}, keep-alive forever (no eviction)",
-                notebook_id
-            );
-            return Ok(());
-        };
-
         let rooms_for_eviction = rooms.clone();
         let room_for_eviction = room.clone();
         let notebook_id_for_eviction = notebook_id.clone();

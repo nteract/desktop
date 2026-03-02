@@ -246,11 +246,6 @@ where
                         .map_err(|e| SyncClientError::SyncError(format!("put u64: {}", e)))?;
                 }
             }
-            serde_json::Value::Null => {
-                self.doc
-                    .put(automerge::ROOT, key, automerge::ScalarValue::Null)
-                    .map_err(|e| SyncClientError::SyncError(format!("put null: {}", e)))?;
-            }
             _ => {}
         }
 
@@ -352,19 +347,13 @@ fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
             })
     };
 
-    // Returns Option<Option<u64>> to distinguish:
-    // - None = key doesn't exist or has invalid value
-    // - Some(None) = key exists with null value (forever)
-    // - Some(Some(u64)) = key exists with valid numeric value
-    // Invalid values (negative numbers, unparseable strings) are treated as
-    // "key not present" to avoid accidentally enabling forever mode.
-    let get_u64_option = |key: &str| -> Option<Option<u64>> {
+    // Get a u64 value from the doc
+    let get_u64 = |key: &str| -> Option<u64> {
         match doc.get(automerge::ROOT, key).ok().flatten() {
             Some((automerge::Value::Scalar(s), _)) => match s.as_ref() {
-                automerge::ScalarValue::Null => Some(None),
-                automerge::ScalarValue::Int(i) => u64::try_from(*i).ok().map(Some),
-                automerge::ScalarValue::Uint(u) => Some(Some(*u)),
-                automerge::ScalarValue::Str(s) => s.parse().ok().map(Some),
+                automerge::ScalarValue::Int(i) => u64::try_from(*i).ok(),
+                automerge::ScalarValue::Uint(u) => Some(*u),
+                automerge::ScalarValue::Str(s) => s.parse().ok(),
                 _ => None,
             },
             _ => None,
@@ -411,7 +400,7 @@ fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         conda: CondaDefaults {
             default_packages: conda_packages,
         },
-        keep_alive_secs: get_u64_option("keep_alive_secs").unwrap_or(defaults.keep_alive_secs),
+        keep_alive_secs: get_u64("keep_alive_secs").unwrap_or(defaults.keep_alive_secs),
     }
 }
 

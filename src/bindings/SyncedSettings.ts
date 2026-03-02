@@ -8,31 +8,31 @@ import type { UvDefaults } from "./UvDefaults";
 /**
  * Snapshot of all synced settings.
  */
-export type SyncedSettings = { 
-/**
- * UI theme
- */
-theme: ThemeMode, 
-/**
- * Default runtime for new notebooks
- */
-default_runtime: Runtime, 
-/**
- * Default Python environment type (uv or conda)
- */
-default_python_env: PythonEnvType, 
-/**
- * UV environment defaults
- */
-uv: UvDefaults, 
-/**
- * Conda environment defaults
- */
-conda: CondaDefaults, 
-/**
- * How long (in seconds) to keep notebook rooms alive after all clients disconnect.
- * This allows you to close and reopen the window without losing your kernel state.
- * `None` means keep alive forever (no automatic eviction).
- * When set to a value, minimum is 5 seconds to prevent accidental instant eviction.
- */
-keep_alive_secs: bigint | null, };
+export type SyncedSettings = {
+  /**
+   * UI theme
+   */
+  theme: ThemeMode;
+  /**
+   * Default runtime for new notebooks
+   */
+  default_runtime: Runtime;
+  /**
+   * Default Python environment type (uv or conda)
+   */
+  default_python_env: PythonEnvType;
+  /**
+   * UV environment defaults
+   */
+  uv: UvDefaults;
+  /**
+   * Conda environment defaults
+   */
+  conda: CondaDefaults;
+  /**
+   * How long (in seconds) to keep notebook rooms alive after all clients disconnect.
+   * This allows you to close and reopen the window without losing your kernel state.
+   * Range: 5 seconds to 7 days (604800 seconds).
+   */
+  keep_alive_secs: bigint;
+};
