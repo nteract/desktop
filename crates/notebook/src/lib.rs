@@ -459,7 +459,7 @@ async fn initialize_notebook_sync(
             notebook_id_for_broadcast, cleanup_generation
         );
         while let Some(broadcast) = broadcast_receiver.recv().await {
-            info!(
+            debug!(
                 "[notebook-sync] Received broadcast for {}: {:?}",
                 notebook_id_for_broadcast, broadcast
             );
@@ -1259,7 +1259,7 @@ async fn update_cell_source(
     // Sync to daemon (fire-and-forget errors to maintain responsiveness)
     let guard = notebook_sync.lock().await;
     if let Some(handle) = guard.as_ref() {
-        info!("[notebook-sync] Syncing source update for cell {}", cell_id);
+        debug!("[notebook-sync] Syncing source update for cell {}", cell_id);
         if let Err(e) = handle.update_source(&cell_id, &source).await {
             warn!("[notebook-sync] update_source failed: {}", e);
         }
