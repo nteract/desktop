@@ -34,6 +34,11 @@ export const notebookEditorTheme = EditorView.theme({
   "&.cm-focused": {
     outline: "none",
   },
+  // Reset line padding so code aligns with output areas
+  // (CodeMirror's base theme adds "padding: 0 2px 0 6px" to .cm-line)
+  ".cm-line": {
+    paddingLeft: "0",
+  },
   // Mobile-friendly padding
   "@media (max-width: 640px)": {
     ".cm-content": {
