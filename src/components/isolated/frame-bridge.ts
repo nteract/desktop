@@ -155,6 +155,33 @@ export interface BridgeReadyMessage {
   type: "bridge_ready";
 }
 
+// --- Global Find: Parent → Iframe ---
+
+/**
+ * Search for text within the iframe's rendered content.
+ * The iframe should highlight all matches and report the count.
+ */
+export interface SearchMessage {
+  type: "search";
+  payload: {
+    /** The search query string (empty string clears search) */
+    query: string;
+    /** Whether the search should be case-sensitive */
+    caseSensitive?: boolean;
+  };
+}
+
+/**
+ * Navigate to a specific match in the iframe's search results.
+ */
+export interface SearchNavigateMessage {
+  type: "search_navigate";
+  payload: {
+    /** The index of the match to navigate to (0-based) */
+    matchIndex: number;
+  };
+}
+
 /**
  * All message types that can be sent from parent to iframe.
  */
@@ -169,7 +196,9 @@ export type ParentToIframeMessage =
   | CommMsgMessage
   | CommCloseMessage
   | CommSyncMessage
-  | BridgeReadyMessage;
+  | BridgeReadyMessage
+  | SearchMessage
+  | SearchNavigateMessage;
 
 // --- Message Types: Iframe → Parent ---
 
@@ -324,6 +353,20 @@ export interface WidgetCommCloseMessage {
   };
 }
 
+// --- Global Find: Iframe → Parent ---
+
+/**
+ * Report search results from the iframe.
+ * Sent after processing a search message.
+ */
+export interface SearchResultsMessage {
+  type: "search_results";
+  payload: {
+    /** Number of matches found */
+    count: number;
+  };
+}
+
 /**
  * All message types that can be sent from iframe to parent.
  */
@@ -340,7 +383,8 @@ export type IframeToParentMessage =
   | RendererReadyMessage
   | WidgetReadyMessage
   | WidgetCommMsgMessage
-  | WidgetCommCloseMessage;
+  | WidgetCommCloseMessage
+  | SearchResultsMessage;
 
 // --- Utility Types ---
 
@@ -376,6 +420,7 @@ export function isIframeMessage(data: unknown): data is IframeToParentMessage {
       "widget_ready",
       "widget_comm_msg",
       "widget_comm_close",
+      "search_results",
     ].includes(msg.type)
   );
 }

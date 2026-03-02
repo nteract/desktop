@@ -19,6 +19,7 @@ import {
 import { DebugBanner } from "./components/DebugBanner";
 import { DenoDependencyHeader } from "./components/DenoDependencyHeader";
 import { DependencyHeader } from "./components/DependencyHeader";
+import { GlobalFindBar } from "./components/GlobalFindBar";
 import { NotebookToolbar } from "./components/NotebookToolbar";
 import { NotebookView } from "./components/NotebookView";
 import { TrustDialog } from "./components/TrustDialog";
@@ -28,6 +29,7 @@ import { useDenoDependencies } from "./hooks/useDenoDependencies";
 import { type EnvSyncState, useDependencies } from "./hooks/useDependencies";
 import { useEnvProgress } from "./hooks/useEnvProgress";
 import { useDaemonInfo, useGitInfo } from "./hooks/useGitInfo";
+import { useGlobalFind } from "./hooks/useGlobalFind";
 import { useNotebook } from "./hooks/useNotebook";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
@@ -107,6 +109,9 @@ function AppContent() {
     clearCellOutputs,
     formatCell,
   } = useNotebook();
+
+  // Global find (Cmd+F)
+  const globalFind = useGlobalFind(cells);
 
   const [dependencyHeaderOpen, setDependencyHeaderOpen] = useState(false);
   const [showIsolationTest, setShowIsolationTest] = useState(false);
@@ -640,6 +645,18 @@ function AppContent() {
     };
   }, [save]);
 
+  // Cmd+F to open global find
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        e.preventDefault();
+        globalFind.open();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [globalFind.open]);
+
   // Cmd+O to open (keyboard and native menu)
   useEffect(() => {
     const webview = getCurrentWebview();
@@ -997,6 +1014,17 @@ function AppContent() {
           isUsingProjectEnv={envSource === "uv:pyproject"}
         />
       )}
+      {globalFind.isOpen && (
+        <GlobalFindBar
+          query={globalFind.query}
+          matchCount={globalFind.matches.length}
+          currentMatchIndex={globalFind.currentMatchIndex}
+          onQueryChange={globalFind.setQuery}
+          onNextMatch={globalFind.nextMatch}
+          onPrevMatch={globalFind.prevMatch}
+          onClose={globalFind.close}
+        />
+      )}
       {showIsolationTest && <IsolationTest />}
       <TrustDialog
         open={trustDialogOpen}
@@ -1014,6 +1042,8 @@ function AppContent() {
         executingCellIds={executingCellIds}
         pagePayloads={pagePayloads}
         runtime={runtime}
+        searchQuery={globalFind.query}
+        searchCurrentMatch={globalFind.currentMatch}
         onFocusCell={setFocusedCellId}
         onUpdateCellSource={updateCellSource}
         onExecuteCell={handleExecuteCell}
@@ -1022,6 +1052,7 @@ function AppContent() {
         onAddCell={handleAddCell}
         onClearPagePayload={clearPagePayload}
         onFormatCell={formatCell}
+        onReportOutputMatchCount={globalFind.reportOutputMatchCount}
       />
     </div>
   );

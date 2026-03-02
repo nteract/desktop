@@ -189,6 +189,14 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
               handleWidgetState(payload);
               break;
 
+            case 'search':
+              handleSearch(payload);
+              break;
+
+            case 'search_navigate':
+              handleSearchNavigate(payload);
+              break;
+
             // Comm bridge messages - handled by React widget system, ignore here
             case 'bridge_ready':
             case 'comm_open':
@@ -380,6 +388,85 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
         // Widget state updates are handled by the injected renderer bundle
         // This is a placeholder that fires a custom event
         window.dispatchEvent(new CustomEvent('widget_state', { detail: payload }));
+      }
+
+      // --- Search ---
+      var searchMarks = [];
+      var currentSearchIndex = -1;
+
+      function handleSearch(payload) {
+        var query = (payload && payload.query) || '';
+        var caseSensitive = payload && payload.caseSensitive;
+        clearSearchMarks();
+        if (!query) {
+          send('search_results', { count: 0 });
+          return;
+        }
+        var marks = [];
+        var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+        var node;
+        var compareQuery = caseSensitive ? query : query.toLowerCase();
+        // Collect all text nodes and their match positions
+        var matches = [];
+        while ((node = walker.nextNode())) {
+          var text = node.nodeValue || '';
+          var compareText = caseSensitive ? text : text.toLowerCase();
+          var pos = 0;
+          while ((pos = compareText.indexOf(compareQuery, pos)) !== -1) {
+            matches.push({ node: node, offset: pos, length: query.length });
+            pos += query.length;
+          }
+        }
+        // Highlight matches in reverse order to preserve offsets
+        for (var i = matches.length - 1; i >= 0; i--) {
+          var m = matches[i];
+          try {
+            var range = document.createRange();
+            range.setStart(m.node, m.offset);
+            range.setEnd(m.node, m.offset + m.length);
+            var mark = document.createElement('mark');
+            mark.className = 'global-find-match';
+            mark.style.cssText = 'background: #fbbf24; color: #000; border-radius: 2px; padding: 0;';
+            range.surroundContents(mark);
+            marks.unshift(mark);
+          } catch (e) {
+            // surroundContents can fail if range crosses element boundaries
+          }
+        }
+        searchMarks = marks;
+        currentSearchIndex = -1;
+        send('search_results', { count: marks.length });
+      }
+
+      function handleSearchNavigate(payload) {
+        var matchIndex = (payload && payload.matchIndex) || 0;
+        if (searchMarks.length === 0) return;
+        // Clear previous active highlight
+        if (currentSearchIndex >= 0 && currentSearchIndex < searchMarks.length) {
+          searchMarks[currentSearchIndex].style.cssText = 'background: #fbbf24; color: #000; border-radius: 2px; padding: 0;';
+        }
+        currentSearchIndex = matchIndex;
+        if (currentSearchIndex >= 0 && currentSearchIndex < searchMarks.length) {
+          var active = searchMarks[currentSearchIndex];
+          active.style.cssText = 'background: #f97316; color: #000; border-radius: 2px; padding: 0;';
+          active.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+      }
+
+      function clearSearchMarks() {
+        for (var i = 0; i < searchMarks.length; i++) {
+          var mark = searchMarks[i];
+          var parent = mark.parentNode;
+          if (parent) {
+            while (mark.firstChild) {
+              parent.insertBefore(mark.firstChild, mark);
+            }
+            parent.removeChild(mark);
+            parent.normalize();
+          }
+        }
+        searchMarks = [];
+        currentSearchIndex = -1;
       }
 
       // --- Utilities ---
