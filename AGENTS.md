@@ -107,6 +107,14 @@ RUNTIMED_DEV=1 runt daemon status
 
 Per-worktree state is stored in `~/.cache/runt/worktrees/{hash}/`.
 
+### Do NOT Use pkill or killall
+
+**Never** use `pkill runtimed`, `killall runtimed`, or similar commands to stop the daemon. These commands kill **all** runtimed processes system-wide, disrupting other agents and worktrees.
+
+Use the proper commands instead:
+- `./target/debug/runt daemon stop` — stops only your worktree's daemon
+- `cargo xtask install-daemon` — gracefully reinstalls the system daemon
+
 ### Agent Access to Dev Daemon (Conductor Workspaces)
 
 When working in a Conductor workspace, the following environment variables are set automatically:
