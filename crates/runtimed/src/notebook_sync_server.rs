@@ -1084,12 +1084,11 @@ async fn auto_launch_kernel(
             .ok()
             .map(PathBuf::from)
             .filter(|p| p.is_dir())
-            .map(|p| {
+            .inspect(|p| {
                 info!(
                     "[notebook-sync] Using RUNTIMED_UNTITLED_BASE_PATH for untitled notebook: {}",
                     p.display()
                 );
-                p
             })
     } else {
         None
