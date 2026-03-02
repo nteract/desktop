@@ -18,8 +18,7 @@ jobs:
       release_title: "Preview Release"
       version_suffix: "preview"
       manifest_notes_prefix: "Preview release"
-      release_heading: "Weekly Preview Release"
-      release_intro: "Automated preview from `main`."
+      release_intro: "It's runtime funtime! Grab the latest nteract preview for macOS, Windows, or Linux. Signed, notarized, and ready to run your notebooks."
       github_release_prerelease: false
       updater_channel_tag: "preview-latest"
       updater_channel_title: "Preview Update Channel"

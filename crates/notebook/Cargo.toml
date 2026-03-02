@@ -1,6 +1,6 @@
 [package]
 name = "notebook"
-version = "1.4.0"
+version = "1.4.1"
 edition = "2021"
 description = "Tauri-based notebook UI for Jupyter kernels"
 repository = "https://github.com/nteract/desktop"

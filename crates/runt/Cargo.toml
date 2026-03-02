@@ -1,6 +1,6 @@
 [package]
 name = "runt-cli"
-version = "1.4.0"
+version = "1.4.1"
 edition.workspace = true
 description = "CLI for Jupyter Runtimes — install via GitHub Releases or `pip install runtimed`, not crates.io"
 repository.workspace = true

@@ -15,10 +15,6 @@ on:
         description: Prefix for latest.json notes field
         required: true
         type: string
-      release_heading:
-        description: Markdown heading for the GitHub release body
-        required: true
-        type: string
       release_intro:
         description: Intro sentence in the GitHub release body
         required: true
@@ -52,11 +48,28 @@ env:
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
 jobs:
+  compute-version:
+    name: Compute Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute version
+        id: version
+        run: |
+          CURRENT_VERSION=$(grep '^version' crates/runt/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          TIMESTAMP=$(date -u +%Y%m%d%H%M)
+          VERSION="${CURRENT_VERSION}-${{ inputs.version_suffix }}.${TIMESTAMP}"
+          echo "Setting version to: ${VERSION}"
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+
   build-linux:
     name: Build Linux Executables
     runs-on: ubuntu-22.04
-    outputs:
-      version: ${{ steps.version.outputs.VERSION }}
+    needs: compute-version
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -101,16 +114,10 @@ jobs:
       - name: Build sidecar UI
         run: pnpm build
 
-      - name: Set version
-        id: version
+      - name: Set version in Cargo.toml
         run: |
-          CURRENT_VERSION=$(grep '^version' crates/runt/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          COMMIT_SHA=${GITHUB_SHA::7}
-          VERSION="${CURRENT_VERSION}-${{ inputs.version_suffix }}.${COMMIT_SHA}"
+          VERSION="${{ needs.compute-version.outputs.version }}"
           echo "Setting version to: ${VERSION}"
-          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
-
-          # Update version in Cargo.toml
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
 
       - name: Build for Linux x64
@@ -131,8 +138,7 @@ jobs:
   build-macos:
     name: Build macOS ARM64 Executables
     runs-on: macos-latest
-    outputs:
-      version: ${{ steps.version.outputs.VERSION }}
+    needs: compute-version
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -175,13 +181,9 @@ jobs:
         run: pnpm build
 
       - name: Set version in Cargo.toml
-        id: version
         run: |
-          CURRENT_VERSION=$(grep '^version' crates/runt/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          COMMIT_SHA=${GITHUB_SHA::7}
-          VERSION="${CURRENT_VERSION}-${{ inputs.version_suffix }}.${COMMIT_SHA}"
+          VERSION="${{ needs.compute-version.outputs.version }}"
           echo "Setting version to: ${VERSION}"
-          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
 
       - name: Build for macOS ARM64
@@ -202,6 +204,7 @@ jobs:
   build-notebook-macos-arm64:
     name: Build macOS ARM64 Notebook
     runs-on: macos-latest
+    needs: compute-version
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -284,9 +287,7 @@ jobs:
 
       - name: Set version in tauri.conf.json
         run: |
-          CURRENT_VERSION=$(grep '^version' crates/runt/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          COMMIT_SHA=${GITHUB_SHA::7}
-          VERSION="${CURRENT_VERSION}-${{ inputs.version_suffix }}.${COMMIT_SHA}"
+          VERSION="${{ needs.compute-version.outputs.version }}"
           echo "Setting version to: ${VERSION}"
           sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" crates/notebook/tauri.conf.json
           sed -i '' "s#https://github.com/nteract/desktop/releases/download/preview-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
@@ -361,6 +362,7 @@ jobs:
   build-notebook-windows-x64:
     name: Build Windows x64 Notebook
     runs-on: windows-latest
+    needs: compute-version
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -414,12 +416,7 @@ jobs:
       - name: Set version in tauri.conf.json
         shell: pwsh
         run: |
-          $content = Get-Content crates/runt/Cargo.toml -Raw
-          if ($content -match 'version = "([^"]+)"') {
-            $currentVersion = $matches[1]
-          }
-          $commitSha = "$env:GITHUB_SHA".Substring(0, 7)
-          $version = "$currentVersion-${{ inputs.version_suffix }}.$commitSha"
+          $version = "${{ needs.compute-version.outputs.version }}"
           Write-Host "Setting version to: $version"
           $tauriConf = Get-Content crates/notebook/tauri.conf.json -Raw
           $tauriConf = $tauriConf -replace '"version": "[^"]+"', "`"version`": `"$version`""
@@ -480,6 +477,7 @@ jobs:
   build-notebook-linux-x64:
     name: Build Linux x64 Notebook
     runs-on: ubuntu-22.04
+    needs: compute-version
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -540,9 +538,7 @@ jobs:
 
       - name: Set version in tauri.conf.json
         run: |
-          CURRENT_VERSION=$(grep '^version' crates/runt/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          COMMIT_SHA=${GITHUB_SHA::7}
-          VERSION="${CURRENT_VERSION}-${{ inputs.version_suffix }}.${COMMIT_SHA}"
+          VERSION="${{ needs.compute-version.outputs.version }}"
           echo "Setting version to: ${VERSION}"
           sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" crates/notebook/tauri.conf.json
           sed -i "s#https://github.com/nteract/desktop/releases/download/preview-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
@@ -656,6 +652,7 @@ jobs:
       id-token: write
     needs:
       [
+        compute-version,
         build-linux,
         build-macos,
         build-notebook-macos-arm64,
@@ -717,8 +714,8 @@ jobs:
 
       - name: Generate updater manifest (latest.json)
         env:
-          VERSION: ${{ needs.build-linux.outputs.version }}
-          TAG_NAME: v${{ needs.build-linux.outputs.version }}
+          VERSION: ${{ needs.compute-version.outputs.version }}
+          TAG_NAME: v${{ needs.compute-version.outputs.version }}
           REPO: ${{ github.repository }}
         run: |
           RELEASE_BASE="https://github.com/${REPO}/releases/download/${TAG_NAME}"
@@ -794,14 +791,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: v${{ needs.build-linux.outputs.version }}
-          name: nteract v${{ needs.build-linux.outputs.version }}
+          tag_name: v${{ needs.compute-version.outputs.version }}
+          name: nteract v${{ needs.compute-version.outputs.version }}
           body: |
-            ## ${{ inputs.release_heading }}
+            ${{ inputs.release_intro }}
 
-            ${{ inputs.release_intro }} **Commit:** ${{ github.sha }}
+            ---
 
-            ### nteract (desktop app)
+            **Commit:** `${{ github.sha }}`
+
+            ## nteract (desktop app)
 
             | Platform | Architecture | Download |
             |----------|--------------|----------|
@@ -813,7 +812,7 @@ jobs:
 
             This release includes auto-update support. Existing installations will be notified of this update automatically.
 
-            ### runt (CLI)
+            ## runt (CLI)
 
             Also bundled inside the desktop app. Standalone binaries:
 
@@ -822,7 +821,7 @@ jobs:
             | Linux | x64 | `runt-linux-x64` |
             | macOS | ARM64 | `runt-darwin-arm64` |
 
-            ### runtimed (Python — macOS, Linux, Windows)
+            ## runtimed (Python — macOS, Linux, Windows)
 
             ```bash
             pip install runtimed --pre
