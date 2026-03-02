@@ -29,8 +29,8 @@ import type { UpdateStatus } from "../hooks/useUpdater";
 import type { KernelspecInfo } from "../types";
 
 /** Format seconds into human-readable duration */
-function formatDuration(secs: number): string {
-  if (secs >= 3600) return "Forever";
+function formatDuration(secs: number | null): string {
+  if (secs === null) return "Forever";
   if (secs >= 60) {
     const mins = Math.floor(secs / 60);
     const remainingSecs = secs % 60;
@@ -44,14 +44,18 @@ function KeepAliveSlider({
   value,
   onChange,
 }: {
-  value: number;
-  onChange: (value: number) => void;
+  value: number | null;
+  onChange: (value: number | null) => void;
 }) {
-  const [localValue, setLocalValue] = useState(value);
+  // When forever mode is on, value is null; slider uses last known numeric value
+  const [localValue, setLocalValue] = useState(value ?? 30);
+  const isForever = value === null;
 
-  // Sync local value when prop changes externally
+  // Sync local value when prop changes externally (only for numeric values)
   useEffect(() => {
-    setLocalValue(value);
+    if (value !== null) {
+      setLocalValue(value);
+    }
   }, [value]);
 
   return (
@@ -67,27 +71,50 @@ function KeepAliveSlider({
             Keep Alive
           </span>
           <span className="text-xs font-medium text-foreground tabular-nums">
-            {formatDuration(localValue)}
+            {formatDuration(isForever ? null : localValue)}
           </span>
         </div>
         <p className="text-[10px] text-muted-foreground/70">
           Time to keep notebook runtime alive after closing
         </p>
       </div>
-      <div className="py-2">
-        <Slider
-          value={[localValue]}
-          min={5}
-          max={3600}
-          step={5}
-          onValueChange={(v) => setLocalValue(v[0])}
-          onValueCommit={(v) => onChange(v[0])}
+      {/* Forever checkbox */}
+      <label className="flex items-center gap-2 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={isForever}
+          onChange={(e) => {
+            if (e.target.checked) {
+              onChange(null);
+            } else {
+              onChange(localValue);
+            }
+          }}
+          className="h-3.5 w-3.5 rounded border-muted-foreground/50 text-primary focus:ring-primary/50"
         />
-      </div>
-      <div className="flex justify-between text-[10px] text-muted-foreground/70">
-        <span>5s</span>
-        <span>Forever</span>
-      </div>
+        <span className="text-xs text-muted-foreground">
+          Keep alive forever
+        </span>
+      </label>
+      {/* Slider - only shown when not in forever mode */}
+      {!isForever && (
+        <>
+          <div className="py-2">
+            <Slider
+              value={[localValue]}
+              min={5}
+              max={3600}
+              step={5}
+              onValueChange={(v) => setLocalValue(v[0])}
+              onValueCommit={(v) => onChange(v[0])}
+            />
+          </div>
+          <div className="flex justify-between text-[10px] text-muted-foreground/70">
+            <span>5s</span>
+            <span>1 hour</span>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -225,8 +252,8 @@ interface NotebookToolbarProps {
   onDefaultUvPackagesChange?: (packages: string[]) => void;
   defaultCondaPackages?: string[];
   onDefaultCondaPackagesChange?: (packages: string[]) => void;
-  keepAliveSecs?: number;
-  onKeepAliveSecsChange?: (secs: number) => void;
+  keepAliveSecs?: number | null;
+  onKeepAliveSecsChange?: (secs: number | null) => void;
   onSave: () => void;
   onStartKernel: (name: string) => void;
   onInterruptKernel: () => void;

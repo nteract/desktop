@@ -40,6 +40,12 @@ pub enum Request {
 
     /// List all active notebook rooms.
     ListRooms,
+
+    /// Shutdown a notebook's kernel and evict its room.
+    ShutdownNotebook {
+        /// The notebook ID (file path used as identifier).
+        notebook_id: String,
+    },
 }
 
 /// Responses from the daemon to clients.
@@ -84,6 +90,12 @@ pub enum Response {
 
     /// List of active notebook rooms.
     RoomsList { rooms: Vec<RoomInfo> },
+
+    /// Notebook shutdown result.
+    NotebookShutdown {
+        /// Whether the notebook was found and shut down.
+        found: bool,
+    },
 }
 
 /// Kernel info for a notebook room.

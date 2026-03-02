@@ -392,20 +392,31 @@ impl Daemon {
 
     /// Get the room eviction delay.
     ///
+    /// Returns `None` for "forever" mode (no eviction), or `Some(Duration)`
+    /// for timed eviction.
+    ///
     /// Uses the config override if set (for tests), otherwise reads from
     /// the user's `keep_alive_secs` setting. Enforces a minimum of 5 seconds
     /// to prevent accidental instant eviction from misconfigured settings.
-    pub async fn room_eviction_delay(&self) -> std::time::Duration {
+    pub async fn room_eviction_delay(&self) -> Option<std::time::Duration> {
+        // Test override always returns Some (tests need predictable eviction)
         if let Some(ms) = self.config.room_eviction_delay_ms {
-            return std::time::Duration::from_millis(ms);
+            return Some(std::time::Duration::from_millis(ms));
         }
         let settings = self.settings.read().await;
-        let secs = settings
-            .get_u64("keep_alive_secs")
-            .unwrap_or(crate::settings_doc::DEFAULT_KEEP_ALIVE_SECS);
-        // Enforce minimum to prevent instant eviction from bad settings
-        let secs = secs.max(crate::settings_doc::MIN_KEEP_ALIVE_SECS);
-        std::time::Duration::from_secs(secs)
+        match settings.get_u64_option("keep_alive_secs") {
+            // Key is null -> forever mode, no eviction
+            Some(None) => None,
+            // Key has value -> use it (with minimum enforcement)
+            Some(Some(secs)) => {
+                let secs = secs.max(crate::settings_doc::MIN_KEEP_ALIVE_SECS);
+                Some(std::time::Duration::from_secs(secs))
+            }
+            // Key missing -> use default
+            None => Some(std::time::Duration::from_secs(
+                crate::settings_doc::DEFAULT_KEEP_ALIVE_SECS,
+            )),
+        }
     }
 
     /// Run the daemon server.
@@ -1271,6 +1282,26 @@ impl Daemon {
                     });
                 }
                 Response::RoomsList { rooms: room_infos }
+            }
+
+            Request::ShutdownNotebook { notebook_id } => {
+                let mut rooms = self.notebook_rooms.lock().await;
+                if let Some(room) = rooms.remove(&notebook_id) {
+                    // Shutdown kernel if running
+                    if let Some(mut kernel) = room.kernel.lock().await.take() {
+                        info!(
+                            "[runtimed] Shutting down kernel for notebook: {}",
+                            notebook_id
+                        );
+                        if let Err(e) = kernel.shutdown().await {
+                            warn!("[runtimed] Error shutting down kernel: {}", e);
+                        }
+                    }
+                    info!("[runtimed] Evicted room for notebook: {}", notebook_id);
+                    Response::NotebookShutdown { found: true }
+                } else {
+                    Response::NotebookShutdown { found: false }
+                }
             }
         }
     }

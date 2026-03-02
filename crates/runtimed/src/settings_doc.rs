@@ -167,9 +167,10 @@ pub struct SyncedSettings {
 
     /// How long (in seconds) to keep notebook rooms alive after all clients disconnect.
     /// This allows you to close and reopen the window without losing your kernel state.
-    /// Minimum is 5 seconds to prevent accidental instant eviction.
+    /// `None` means keep alive forever (no automatic eviction).
+    /// When set to a value, minimum is 5 seconds to prevent accidental instant eviction.
     #[serde(default = "default_keep_alive_secs")]
-    pub keep_alive_secs: u64,
+    pub keep_alive_secs: Option<u64>,
 }
 
 impl Default for SyncedSettings {
@@ -180,13 +181,13 @@ impl Default for SyncedSettings {
             default_python_env: PythonEnvType::default(),
             uv: UvDefaults::default(),
             conda: CondaDefaults::default(),
-            keep_alive_secs: DEFAULT_KEEP_ALIVE_SECS,
+            keep_alive_secs: Some(DEFAULT_KEEP_ALIVE_SECS),
         }
     }
 }
 
-fn default_keep_alive_secs() -> u64 {
-    DEFAULT_KEEP_ALIVE_SECS
+fn default_keep_alive_secs() -> Option<u64> {
+    Some(DEFAULT_KEEP_ALIVE_SECS)
 }
 
 /// Generate a JSON Schema string for the settings file.
@@ -231,11 +232,19 @@ impl SettingsDoc {
             "default_python_env",
             defaults.default_python_env.to_string(),
         );
-        let _ = doc.put(
-            automerge::ROOT,
-            "keep_alive_secs",
-            defaults.keep_alive_secs as i64,
-        );
+        // keep_alive_secs: Some(n) -> store n, None -> store null (forever)
+        match defaults.keep_alive_secs {
+            Some(secs) => {
+                let _ = doc.put(automerge::ROOT, "keep_alive_secs", secs as i64);
+            }
+            None => {
+                let _ = doc.put(
+                    automerge::ROOT,
+                    "keep_alive_secs",
+                    automerge::ScalarValue::Null,
+                );
+            }
+        }
 
         // Nested uv map with empty package list
         if let Ok(uv_id) = doc.put_object(automerge::ROOT, "uv", ObjType::Map) {
@@ -317,8 +326,13 @@ impl SettingsDoc {
         if let Some(env) = json.get("default_python_env").and_then(|v| v.as_str()) {
             settings.put("default_python_env", env);
         }
-        if let Some(secs) = json.get("keep_alive_secs").and_then(|v| v.as_u64()) {
-            settings.put_u64("keep_alive_secs", secs);
+        // keep_alive_secs: null = forever, number = timeout in seconds
+        if let Some(value) = json.get("keep_alive_secs") {
+            if value.is_null() {
+                settings.put_null("keep_alive_secs");
+            } else if let Some(secs) = value.as_u64() {
+                settings.put_u64("keep_alive_secs", secs);
+            }
         }
 
         let uv_packages = Self::extract_packages_from_json(json, "uv");
@@ -483,6 +497,30 @@ impl SettingsDoc {
         let _ = self.doc.put(automerge::ROOT, key, value as i64);
     }
 
+    /// Set a null value at the root (for optional fields like keep_alive_secs).
+    pub fn put_null(&mut self, key: &str) {
+        let _ = self
+            .doc
+            .put(automerge::ROOT, key, automerge::ScalarValue::Null);
+    }
+
+    /// Get an optional u64 setting value from the root.
+    /// Returns `Some(None)` if the key exists and is null (forever),
+    /// `Some(Some(value))` if the key exists with a numeric value,
+    /// `None` if the key doesn't exist.
+    pub fn get_u64_option(&self, key: &str) -> Option<Option<u64>> {
+        match self.doc.get(automerge::ROOT, key).ok().flatten() {
+            Some((automerge::Value::Scalar(s), _)) => match s.as_ref() {
+                automerge::ScalarValue::Null => Some(None), // Explicit null = forever
+                automerge::ScalarValue::Int(i) => Some(u64::try_from(*i).ok()),
+                automerge::ScalarValue::Uint(u) => Some(Some(*u)),
+                automerge::ScalarValue::Str(s) => s.parse().ok().map(Some),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Set a scalar setting value, supporting dotted paths for nested maps.
     pub fn put(&mut self, key: &str, value: &str) {
         if let Some((map_key, sub_key)) = key.split_once('.') {
@@ -567,6 +605,7 @@ impl SettingsDoc {
                     self.put_u64(key, u);
                 }
             }
+            serde_json::Value::Null => self.put_null(key),
             _ => {}
         }
     }
@@ -647,9 +686,10 @@ impl SettingsDoc {
             conda: CondaDefaults {
                 default_packages: conda_packages,
             },
-            keep_alive_secs: self
-                .get_u64("keep_alive_secs")
-                .unwrap_or(defaults.keep_alive_secs),
+            keep_alive_secs: match self.get_u64_option("keep_alive_secs") {
+                Some(opt) => opt,                 // Use stored value (could be None = forever)
+                None => defaults.keep_alive_secs, // Key missing, use default
+            },
         }
     }
 
@@ -707,15 +747,24 @@ impl SettingsDoc {
             }
         }
 
-        // keep_alive_secs (numeric)
-        if let Some(value) = json.get("keep_alive_secs").and_then(|v| v.as_u64()) {
-            let current = self.get_u64("keep_alive_secs");
-            if current != Some(value) {
+        // keep_alive_secs (numeric or null for forever)
+        if let Some(json_value) = json.get("keep_alive_secs") {
+            let new_value: Option<u64> = if json_value.is_null() {
+                None
+            } else {
+                json_value.as_u64()
+            };
+
+            let current = self.get_u64_option("keep_alive_secs").flatten();
+            if current != new_value {
                 info!(
-                    "[settings] apply_json_changes: keep_alive_secs changed {:?} -> {value}",
-                    current
+                    "[settings] apply_json_changes: keep_alive_secs changed {:?} -> {:?}",
+                    current, new_value
                 );
-                self.put_u64("keep_alive_secs", value);
+                match new_value {
+                    Some(secs) => self.put_u64("keep_alive_secs", secs),
+                    None => self.put_null("keep_alive_secs"),
+                }
                 changed = true;
             }
         }

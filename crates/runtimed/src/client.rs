@@ -225,6 +225,25 @@ impl PoolClient {
         }
     }
 
+    /// Shutdown a notebook's kernel and evict its room.
+    ///
+    /// Returns `Ok(true)` if the notebook was found and shut down,
+    /// `Ok(false)` if no such notebook was open.
+    pub async fn shutdown_notebook(&self, notebook_id: &str) -> Result<bool, ClientError> {
+        let response = self
+            .send_request(Request::ShutdownNotebook {
+                notebook_id: notebook_id.to_string(),
+            })
+            .await?;
+        match response {
+            Response::NotebookShutdown { found } => Ok(found),
+            Response::Error { message } => Err(ClientError::DaemonError(message)),
+            _ => Err(ClientError::ProtocolError(
+                "Unexpected response".to_string(),
+            )),
+        }
+    }
+
     /// Send a request to the daemon and receive a response.
     async fn send_request(&self, request: Request) -> Result<Response, ClientError> {
         #[cfg(unix)]

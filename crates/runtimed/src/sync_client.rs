@@ -347,20 +347,21 @@ fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
             })
     };
 
-    let get_u64 = |key: &str| -> Option<u64> {
-        doc.get(automerge::ROOT, key)
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| match value {
-                automerge::Value::Scalar(s) => match s.as_ref() {
-                    // Use try_from to prevent negative values wrapping to huge u64
-                    automerge::ScalarValue::Int(i) => u64::try_from(*i).ok(),
-                    automerge::ScalarValue::Uint(u) => Some(*u),
-                    automerge::ScalarValue::Str(s) => s.parse().ok(),
-                    _ => None,
-                },
+    // Returns Option<Option<u64>> to distinguish:
+    // - None = key doesn't exist
+    // - Some(None) = key exists with null value (forever)
+    // - Some(Some(u64)) = key exists with numeric value
+    let get_u64_option = |key: &str| -> Option<Option<u64>> {
+        match doc.get(automerge::ROOT, key).ok().flatten() {
+            Some((automerge::Value::Scalar(s), _)) => match s.as_ref() {
+                automerge::ScalarValue::Null => Some(None),
+                automerge::ScalarValue::Int(i) => Some(u64::try_from(*i).ok()),
+                automerge::ScalarValue::Uint(u) => Some(Some(*u)),
+                automerge::ScalarValue::Str(s) => s.parse().ok().map(Some),
                 _ => None,
-            })
+            },
+            _ => None,
+        }
     };
 
     // Read uv packages: try nested list, fall back to flat comma string
@@ -403,7 +404,7 @@ fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         conda: CondaDefaults {
             default_packages: conda_packages,
         },
-        keep_alive_secs: get_u64("keep_alive_secs").unwrap_or(defaults.keep_alive_secs),
+        keep_alive_secs: get_u64_option("keep_alive_secs").unwrap_or(defaults.keep_alive_secs),
     }
 }
 

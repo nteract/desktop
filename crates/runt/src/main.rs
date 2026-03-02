@@ -155,6 +155,11 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Shutdown a notebook's kernel and evict its room
+    Shutdown {
+        /// Path to the notebook file
+        path: PathBuf,
+    },
     /// Inspect the Automerge state for a notebook (debug command)
     #[command(hide = true)]
     Inspect {
@@ -482,6 +487,7 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
         Some(Commands::Jupyter { command }) => jupyter_command(command).await?,
         Some(Commands::Daemon { command }) => daemon_command(command).await?,
         Some(Commands::Notebooks { json }) => list_notebooks(json).await?,
+        Some(Commands::Shutdown { path }) => shutdown_notebook(&path).await?,
         Some(Commands::Inspect {
             path,
             full_outputs,
@@ -1805,6 +1811,44 @@ async fn list_notebooks(json_output: bool) -> Result<()> {
         }
         Err(e) => {
             eprintln!("Failed to list notebooks: {}", e);
+            eprintln!("Is the daemon running? Try 'runt daemon status'");
+            std::process::exit(1)
+        }
+    }
+
+    Ok(())
+}
+
+/// Shutdown a notebook's kernel and evict its room from the daemon.
+async fn shutdown_notebook(path: &PathBuf) -> Result<()> {
+    use runtimed::client::PoolClient;
+    use runtimed::singleton::get_running_daemon_info;
+
+    // Convert to absolute path (notebook_id is the absolute path)
+    let notebook_path = if path.is_absolute() {
+        path.clone()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let notebook_id = notebook_path.to_string_lossy().to_string();
+
+    // Use daemon's actual endpoint if available
+    let client = match get_running_daemon_info() {
+        Some(info) => PoolClient::new(PathBuf::from(&info.endpoint)),
+        None => PoolClient::default(),
+    };
+
+    match client.shutdown_notebook(&notebook_id).await {
+        Ok(true) => {
+            println!("Shutdown notebook: {}", shorten_path(&notebook_path));
+        }
+        Ok(false) => {
+            eprintln!("Notebook not found: {}", shorten_path(&notebook_path));
+            eprintln!("Use 'runt notebooks' to see open notebooks.");
+            std::process::exit(1)
+        }
+        Err(e) => {
+            eprintln!("Failed to shutdown notebook: {}", e);
             eprintln!("Is the daemon running? Try 'runt daemon status'");
             std::process::exit(1)
         }
