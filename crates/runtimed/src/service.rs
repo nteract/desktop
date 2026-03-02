@@ -583,6 +583,27 @@ fn windows_startup_path() -> PathBuf {
         .join("runtimed.vbs")
 }
 
+/// Get the path to the service configuration file.
+/// Used by doctor command for diagnostics.
+pub fn service_config_path() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        plist_path()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        systemd_service_path()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        windows_startup_path()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        PathBuf::from("/dev/null")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
