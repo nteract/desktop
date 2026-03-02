@@ -1050,6 +1050,11 @@ async fn acquire_pool_env_for_source(
     }
 }
 
+/// Check if a notebook_id is a UUID (untitled/unsaved notebook).
+fn is_untitled_notebook(notebook_id: &str) -> bool {
+    uuid::Uuid::parse_str(notebook_id).is_ok()
+}
+
 /// Auto-launch kernel for a trusted notebook when first peer connects.
 /// This is similar to handle_notebook_request(LaunchKernel) but without a request/response.
 ///
@@ -1073,6 +1078,19 @@ async fn auto_launch_kernel(
     let notebook_path = PathBuf::from(notebook_id);
     let notebook_path_opt = if notebook_path.exists() {
         Some(notebook_path.clone())
+    } else if is_untitled_notebook(notebook_id) {
+        // For untitled notebooks, check RUNTIMED_UNTITLED_BASE_PATH for project file detection
+        std::env::var("RUNTIMED_UNTITLED_BASE_PATH")
+            .ok()
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
+            .map(|p| {
+                info!(
+                    "[notebook-sync] Using RUNTIMED_UNTITLED_BASE_PATH for untitled notebook: {}",
+                    p.display()
+                );
+                p
+            })
     } else {
         None
     };
@@ -3039,5 +3057,18 @@ mod tests {
         } else {
             panic!("Expected code cell");
         }
+    }
+
+    #[test]
+    fn test_is_untitled_notebook_with_uuid() {
+        assert!(is_untitled_notebook("550e8400-e29b-41d4-a716-446655440000"));
+        assert!(is_untitled_notebook("a1b2c3d4-e5f6-7890-abcd-ef1234567890"));
+    }
+
+    #[test]
+    fn test_is_untitled_notebook_with_path() {
+        assert!(!is_untitled_notebook("/home/user/notebook.ipynb"));
+        assert!(!is_untitled_notebook("./relative/path.ipynb"));
+        assert!(!is_untitled_notebook("notebook.ipynb"));
     }
 }
