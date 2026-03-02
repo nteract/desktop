@@ -270,6 +270,7 @@ impl SettingsDoc {
                     info!("[settings] Loaded Automerge doc from {:?}", automerge_path);
                     let mut settings = Self { doc };
                     settings.migrate_flat_to_nested();
+                    settings.migrate_null_keep_alive();
 
                     // Reconcile with settings.json so manual edits made while the
                     // daemon was stopped are picked up (the file watcher only
@@ -322,8 +323,14 @@ impl SettingsDoc {
             settings.put("default_python_env", env);
         }
         // keep_alive_secs: numeric value in seconds (5 to 604800)
-        if let Some(secs) = json.get("keep_alive_secs").and_then(|v| v.as_u64()) {
-            settings.put_u64("keep_alive_secs", secs);
+        // Legacy null means "forever", which we migrate to MAX_KEEP_ALIVE_SECS
+        if let Some(val) = json.get("keep_alive_secs") {
+            if val.is_null() {
+                // Migration: null (legacy "forever" mode) -> MAX_KEEP_ALIVE_SECS
+                settings.put_u64("keep_alive_secs", MAX_KEEP_ALIVE_SECS);
+            } else if let Some(secs) = val.as_u64() {
+                settings.put_u64("keep_alive_secs", secs);
+            }
         }
 
         let uv_packages = Self::extract_packages_from_json(json, "uv");
@@ -375,6 +382,21 @@ impl SettingsDoc {
             }
             let _ = self.doc.delete(automerge::ROOT, "default_conda_packages");
             info!("[settings] Migrated default_conda_packages to conda.default_packages");
+        }
+    }
+
+    /// Migrate legacy null keep_alive_secs (from "forever" mode) to MAX_KEEP_ALIVE_SECS.
+    ///
+    /// Previously, `null` meant "keep alive forever". Now we use a fixed maximum of 7 days.
+    /// This migration ensures users who had "forever" mode get the longest available duration
+    /// instead of silently falling back to the 30-second default.
+    fn migrate_null_keep_alive(&mut self) {
+        if self.is_null("keep_alive_secs") {
+            info!(
+                "[settings] Migrating null keep_alive_secs to MAX_KEEP_ALIVE_SECS ({})",
+                MAX_KEEP_ALIVE_SECS
+            );
+            self.put_u64("keep_alive_secs", MAX_KEEP_ALIVE_SECS);
         }
     }
 
@@ -483,9 +505,22 @@ impl SettingsDoc {
     }
 
     /// Set a u64 setting value at the root.
+    ///
+    /// Values are clamped to i64::MAX to prevent overflow during conversion.
     pub fn put_u64(&mut self, key: &str, value: u64) {
-        // Store as i64 since Automerge's Int is more widely supported
-        let _ = self.doc.put(automerge::ROOT, key, value as i64);
+        // Clamp to i64::MAX to prevent overflow (Automerge stores as signed int)
+        let clamped = value.min(i64::MAX as u64);
+        let _ = self.doc.put(automerge::ROOT, key, clamped as i64);
+    }
+
+    /// Check if a key exists in the document but has a null value.
+    fn is_null(&self, key: &str) -> bool {
+        self.doc
+            .get(automerge::ROOT, key)
+            .ok()
+            .flatten()
+            .map(|(value, _)| matches!(value, automerge::Value::Scalar(s) if matches!(s.as_ref(), automerge::ScalarValue::Null)))
+            .unwrap_or(false)
     }
 
     /// Set a scalar setting value, supporting dotted paths for nested maps.
@@ -1303,5 +1338,82 @@ mod tests {
         // Negative Int should return None (invalid)
         let result = doc.get_u64("keep_alive_secs");
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_migrate_null_keep_alive_to_max() {
+        use automerge::AutoCommit;
+
+        // Manually create a doc with null keep_alive_secs (legacy "forever" mode)
+        let mut automerge_doc = AutoCommit::new();
+        let _ = automerge_doc.put(
+            automerge::ROOT,
+            "keep_alive_secs",
+            automerge::ScalarValue::Null,
+        );
+
+        let mut doc = SettingsDoc { doc: automerge_doc };
+
+        // Verify it's detected as null
+        assert!(doc.is_null("keep_alive_secs"));
+        assert_eq!(doc.get_u64("keep_alive_secs"), None);
+
+        // Run migration
+        doc.migrate_null_keep_alive();
+
+        // Should now be MAX_KEEP_ALIVE_SECS
+        assert!(!doc.is_null("keep_alive_secs"));
+        assert_eq!(doc.get_u64("keep_alive_secs"), Some(MAX_KEEP_ALIVE_SECS));
+
+        let settings = doc.get_all();
+        assert_eq!(settings.keep_alive_secs, MAX_KEEP_ALIVE_SECS);
+    }
+
+    #[test]
+    fn test_from_json_null_keep_alive_migrates_to_max() {
+        // JSON with null keep_alive_secs (legacy "forever" mode)
+        let json = serde_json::json!({
+            "theme": "dark",
+            "keep_alive_secs": null
+        });
+
+        let doc = SettingsDoc::from_json(&json);
+        let settings = doc.get_all();
+
+        // Should be MAX_KEEP_ALIVE_SECS, not the default 30s
+        assert_eq!(settings.keep_alive_secs, MAX_KEEP_ALIVE_SECS);
+        assert_eq!(settings.theme, ThemeMode::Dark);
+    }
+
+    #[test]
+    fn test_put_u64_clamps_extreme_values() {
+        let mut doc = SettingsDoc::new();
+
+        // Very large value that would overflow i64
+        let extreme_value = u64::MAX;
+        doc.put_u64("keep_alive_secs", extreme_value);
+
+        // Should be clamped to i64::MAX
+        let result = doc.get_u64("keep_alive_secs");
+        assert_eq!(result, Some(i64::MAX as u64));
+    }
+
+    #[test]
+    fn test_is_null_returns_false_for_numeric() {
+        let doc = SettingsDoc::new();
+        // New doc has numeric keep_alive_secs (default 30)
+        assert!(!doc.is_null("keep_alive_secs"));
+    }
+
+    #[test]
+    fn test_is_null_returns_false_for_missing_key() {
+        use automerge::AutoCommit;
+
+        // Empty doc with no keep_alive_secs key
+        let automerge_doc = AutoCommit::new();
+        let doc = SettingsDoc { doc: automerge_doc };
+
+        // Missing key is not the same as null
+        assert!(!doc.is_null("keep_alive_secs"));
     }
 }
