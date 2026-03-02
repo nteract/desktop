@@ -103,6 +103,10 @@ enum SyncCommand {
     SendRequest {
         request: NotebookRequest,
         reply: oneshot::Sender<Result<NotebookResponse, NotebookSyncError>>,
+        /// Optional broadcast sender for delivering broadcasts during long-running requests.
+        /// If provided, broadcasts received while waiting for the response are sent immediately
+        /// instead of being queued for later delivery.
+        broadcast_tx: Option<mpsc::Sender<NotebookBroadcast>>,
     },
 }
 
@@ -286,6 +290,31 @@ impl NotebookSyncHandle {
             .send(SyncCommand::SendRequest {
                 request,
                 reply: reply_tx,
+                broadcast_tx: None,
+            })
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?;
+        reply_rx
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?
+    }
+
+    /// Send a request to the daemon, delivering broadcasts immediately as they arrive.
+    ///
+    /// This is useful for long-running requests (like `LaunchKernel`) where you want
+    /// progress updates delivered in real-time instead of being queued until the
+    /// response is received.
+    pub async fn send_request_with_broadcast(
+        &self,
+        request: NotebookRequest,
+        broadcast_tx: mpsc::Sender<NotebookBroadcast>,
+    ) -> Result<NotebookResponse, NotebookSyncError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(SyncCommand::SendRequest {
+                request,
+                reply: reply_tx,
+                broadcast_tx: Some(broadcast_tx),
             })
             .await
             .map_err(|_| NotebookSyncError::ChannelClosed)?;
@@ -1142,6 +1171,19 @@ where
         &mut self,
         request: &NotebookRequest,
     ) -> Result<NotebookResponse, NotebookSyncError> {
+        self.send_request_with_broadcast(request, None).await
+    }
+
+    /// Send a request to the daemon, optionally delivering broadcasts immediately.
+    ///
+    /// If `broadcast_tx` is provided, broadcasts received while waiting for the response
+    /// are sent immediately instead of being queued. This is useful for long-running
+    /// requests like `LaunchKernel` where progress updates should be delivered in real-time.
+    pub async fn send_request_with_broadcast(
+        &mut self,
+        request: &NotebookRequest,
+        broadcast_tx: Option<&mpsc::Sender<NotebookBroadcast>>,
+    ) -> Result<NotebookResponse, NotebookSyncError> {
         if !self.use_typed_frames {
             return Err(NotebookSyncError::SyncError(
                 "send_request requires v2 protocol".to_string(),
@@ -1156,14 +1198,30 @@ where
             .await?;
 
         // Wait for a Response frame (with timeout)
-        match tokio::time::timeout(Duration::from_secs(30), self.wait_for_response()).await {
+        // Use longer timeout for requests that may create environments
+        let timeout_secs = match request {
+            NotebookRequest::LaunchKernel { .. } => 300, // 5 minutes for env creation
+            _ => 30,
+        };
+        match tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            self.wait_for_response_with_broadcast(broadcast_tx),
+        )
+        .await
+        {
             Ok(result) => result,
             Err(_) => Err(NotebookSyncError::Timeout),
         }
     }
 
-    /// Wait for a Response frame, handling other frame types that may arrive first.
-    async fn wait_for_response(&mut self) -> Result<NotebookResponse, NotebookSyncError> {
+    /// Wait for a Response frame, optionally delivering broadcasts immediately.
+    ///
+    /// If `broadcast_tx` is provided, broadcasts are sent immediately instead of
+    /// being queued. This enables real-time progress updates during long-running requests.
+    async fn wait_for_response_with_broadcast(
+        &mut self,
+        broadcast_tx: Option<&mpsc::Sender<NotebookBroadcast>>,
+    ) -> Result<NotebookResponse, NotebookSyncError> {
         loop {
             match connection::recv_typed_frame(&mut self.stream).await? {
                 Some(frame) => match frame.frame_type {
@@ -1185,12 +1243,18 @@ where
                         // Continue waiting for Response
                     }
                     NotebookFrameType::Broadcast => {
-                        // Collect broadcasts received while waiting for response
-                        // They'll be delivered via recv_frame_any() later
+                        // Parse the broadcast
                         if let Ok(broadcast) =
                             serde_json::from_slice::<NotebookBroadcast>(&frame.payload)
                         {
-                            self.pending_broadcasts.push(broadcast);
+                            // If we have a broadcast sender, deliver immediately
+                            // Otherwise queue for later delivery
+                            if let Some(tx) = broadcast_tx {
+                                // Fire and forget - don't block on slow receivers
+                                let _ = tx.try_send(broadcast);
+                            } else {
+                                self.pending_broadcasts.push(broadcast);
+                            }
                         }
                         continue;
                     }
@@ -1466,8 +1530,11 @@ async fn run_sync_task<S>(
                                 let result = client.get_metadata(&key);
                                 let _ = reply.send(result);
                             }
-                            SyncCommand::SendRequest { request, reply } => {
-                                let result = client.send_request(&request).await;
+                            SyncCommand::SendRequest { request, reply, broadcast_tx: override_tx } => {
+                                // Use the override broadcast_tx if provided, otherwise use the task's broadcast_tx
+                                // This allows broadcasts to be delivered immediately during long-running requests
+                                let tx_to_use = override_tx.as_ref().unwrap_or(&broadcast_tx);
+                                let result = client.send_request_with_broadcast(&request, Some(tx_to_use)).await;
                                 let _ = reply.send(result);
                             }
                         }
