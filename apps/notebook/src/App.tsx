@@ -11,7 +11,6 @@ import {
 import { WidgetView } from "@/components/widgets/widget-view";
 import { useSyncedSettings, useSyncedTheme } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
-import { logger } from "./lib/logger";
 import { CondaDependencyHeader } from "./components/CondaDependencyHeader";
 import {
   type DaemonStatus,
@@ -32,6 +31,7 @@ import { useDaemonInfo, useGitInfo } from "./hooks/useGitInfo";
 import { useNotebook } from "./hooks/useNotebook";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
+import { logger } from "./lib/logger";
 import type { JupyterMessage } from "./types";
 
 /** MIME bundle type for page payloads */
