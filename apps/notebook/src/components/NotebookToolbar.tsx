@@ -20,6 +20,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { Slider } from "@/components/ui/slider";
 import type { ThemeMode } from "@/hooks/useSyncedSettings";
 import { isKnownPythonEnv, isKnownRuntime } from "@/hooks/useSyncedSettings";
 import { cn } from "@/lib/utils";
@@ -38,7 +39,7 @@ function formatDuration(secs: number): string {
   return `${secs}s`;
 }
 
-/** Keep Alive slider with fill effect - only emits on release */
+/** Keep Alive slider - uses Radix Slider for consistency with widget controls */
 function KeepAliveSlider({
   value,
   onChange,
@@ -47,28 +48,11 @@ function KeepAliveSlider({
   onChange: (value: number) => void;
 }) {
   const [localValue, setLocalValue] = useState(value);
-  const isDragging = useRef(false);
 
-  // Sync local value when prop changes (but not during drag)
+  // Sync local value when prop changes externally
   useEffect(() => {
-    if (!isDragging.current) {
-      setLocalValue(value);
-    }
+    setLocalValue(value);
   }, [value]);
-
-  const min = 5;
-  const max = 3600;
-  const percentage = ((localValue - min) / (max - min)) * 100;
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    isDragging.current = true;
-    setLocalValue(Number(e.target.value));
-  };
-
-  const handleRelease = () => {
-    isDragging.current = false;
-    onChange(localValue);
-  };
 
   return (
     <div className="space-y-3 pt-2 border-t border-border/50">
@@ -90,31 +74,17 @@ function KeepAliveSlider({
           Time to keep notebook runtime alive after closing
         </p>
       </div>
-      <div className="px-1 py-2">
-        <div className="relative h-2">
-          {/* Track background */}
-          <div className="absolute inset-0 rounded-full bg-muted" />
-          {/* Fill */}
-          <div
-            className="absolute inset-y-0 left-0 rounded-full bg-primary/80"
-            style={{ width: `${percentage}%` }}
-          />
-          {/* Input */}
-          <input
-            type="range"
-            min={min}
-            max={max}
-            step={5}
-            value={localValue}
-            onChange={handleChange}
-            onMouseUp={handleRelease}
-            onTouchEnd={handleRelease}
-            onKeyUp={handleRelease}
-            className="absolute inset-0 w-full h-full appearance-none bg-transparent cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-background [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-primary [&::-moz-range-thumb]:shadow-sm [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-background [&::-moz-range-thumb]:cursor-pointer"
-          />
-        </div>
+      <div className="py-2">
+        <Slider
+          value={[localValue]}
+          min={5}
+          max={3600}
+          step={5}
+          onValueChange={(v) => setLocalValue(v[0])}
+          onValueCommit={(v) => onChange(v[0])}
+        />
       </div>
-      <div className="flex justify-between text-[10px] text-muted-foreground/70 px-1">
+      <div className="flex justify-between text-[10px] text-muted-foreground/70">
         <span>5s</span>
         <span>Forever</span>
       </div>
