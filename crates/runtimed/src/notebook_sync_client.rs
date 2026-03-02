@@ -1250,8 +1250,14 @@ where
                             // If we have a broadcast sender, deliver immediately
                             // Otherwise queue for later delivery
                             if let Some(tx) = broadcast_tx {
-                                // Fire and forget - don't block on slow receivers
-                                let _ = tx.try_send(broadcast);
+                                // Try non-blocking send first for real-time delivery
+                                if let Err(tokio::sync::mpsc::error::TrySendError::Full(b)) =
+                                    tx.try_send(broadcast)
+                                {
+                                    // Channel full - queue for later to avoid dropping
+                                    // Terminal events (ready, error) are especially important
+                                    self.pending_broadcasts.push(b);
+                                }
                             } else {
                                 self.pending_broadcasts.push(broadcast);
                             }
