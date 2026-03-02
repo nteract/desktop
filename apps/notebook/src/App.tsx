@@ -11,7 +11,7 @@ import {
 import { WidgetView } from "@/components/widgets/widget-view";
 import { useSyncedSettings, useSyncedTheme } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
-import { logger } from "@/lib/logger";
+import { logger } from "./lib/logger";
 import { CondaDependencyHeader } from "./components/CondaDependencyHeader";
 import {
   type DaemonStatus,
