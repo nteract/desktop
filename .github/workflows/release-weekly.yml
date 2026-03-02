@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   release:
-    uses: ./.github/workflows/releases/release-common.yml
+    uses: ./.github/workflows/release-common.yml
     secrets: inherit
     with:
       release_title: "Preview Release"
