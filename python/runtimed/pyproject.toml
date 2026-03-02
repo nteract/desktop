@@ -7,12 +7,16 @@ license = "BSD-3-Clause"
 authors = [
     { name = "Kyle Kelley", email = "rgbkrk@gmail.com" }
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
 kernel = ["ipykernel>=6.0"]
 bridge = ["pyzmq>=25.0"]
+mcp = ["mcp>=1.26.0"]
+
+[project.scripts]
+runtimed-mcp = "runtimed._mcp_server:main"
 
 [build-system]
 requires = ["maturin>=1.0,<2.0"]
