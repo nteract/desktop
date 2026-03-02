@@ -113,6 +113,20 @@ pre, code {
   @apply font-mono text-sm;
 }
 
+/* ANSI output styling - ensure consistent appearance with non-isolated outputs */
+[data-slot="ansi-output"] {
+  @apply font-mono text-sm whitespace-pre-wrap leading-relaxed;
+}
+
+[data-slot="ansi-stream-output"] {
+  @apply py-2 text-gray-700;
+}
+
+.dark [data-slot="ansi-stream-output"],
+[data-theme="dark"] [data-slot="ansi-stream-output"] {
+  @apply text-gray-300;
+}
+
 /* Output item spacing */
 .output-item {
   margin-bottom: 8px;
