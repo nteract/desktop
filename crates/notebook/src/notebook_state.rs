@@ -152,6 +152,9 @@ pub struct NotebookState {
     pub notebook: Notebook,
     pub path: Option<PathBuf>,
     pub dirty: bool,
+    /// Working directory for untitled notebooks (used for project file detection).
+    /// Set from --cwd CLI argument and preserved across daemon reconnects.
+    pub working_dir: Option<PathBuf>,
 }
 
 impl NotebookState {
@@ -216,6 +219,7 @@ impl NotebookState {
             },
             path: None,
             dirty: false,
+            working_dir: None,
         }
     }
 
@@ -319,6 +323,7 @@ impl NotebookState {
             },
             path: None,
             dirty: false,
+            working_dir: None,
         }
     }
 
@@ -378,6 +383,7 @@ impl NotebookState {
             },
             path: None,
             dirty: false,
+            working_dir: None,
         }
     }
 
@@ -429,6 +435,7 @@ impl NotebookState {
             },
             path: None,
             dirty: false,
+            working_dir: None,
         }
     }
 
@@ -437,6 +444,7 @@ impl NotebookState {
             notebook,
             path: Some(path),
             dirty: false,
+            working_dir: None, // Saved notebooks use path for project detection
         }
     }
 

@@ -2,11 +2,10 @@
  * E2E Test: Untitled Notebook with pyproject.toml
  *
  * Verifies that untitled notebooks can detect pyproject.toml
- * when RUNTIMED_UNTITLED_BASE_PATH is set.
+ * when launched with --cwd pointing to a project directory.
  *
- * This test opens a fresh untitled notebook (no NOTEBOOK_PATH)
- * but sets RUNTIMED_UNTITLED_BASE_PATH to a fixture directory
- * containing pyproject.toml with pandas and numpy.
+ * This test opens a fresh untitled notebook with --cwd set to
+ * a fixture directory containing pyproject.toml with pandas.
  *
  * Run with: ./e2e/dev.sh test-untitled-pyproject
  */

@@ -1737,7 +1737,11 @@ async fn reconnect_to_daemon(
     }
 
     // Re-initialize notebook sync
-    // On reconnect, the room may already have working_dir stored if it was an untitled notebook
+    // Get working_dir from notebook state to preserve on daemon restart
+    let working_dir = {
+        let state = notebook_state.lock().map_err(|e| e.to_string())?;
+        state.working_dir.clone()
+    };
     let webview_window = window
         .app_handle()
         .get_webview_window(window.label())
@@ -1747,7 +1751,7 @@ async fn reconnect_to_daemon(
         notebook_state,
         notebook_sync,
         sync_generation,
-        None, // Room preserves working_dir from initial connection
+        working_dir,
     )
     .await;
 
@@ -3193,7 +3197,7 @@ pub fn run(
     };
 
     // Determine initial state for main window
-    let initial_state = match notebook_path.as_ref() {
+    let mut initial_state = match notebook_path.as_ref() {
         Some(path) => load_notebook_state_for_path(path, runtime).map_err(anyhow::Error::msg)?,
         None => {
             // Try to restore from session
@@ -3217,6 +3221,10 @@ pub fn run(
             }
         }
     };
+    // Store working_dir in notebook state for untitled notebooks (used on daemon reconnect)
+    if initial_state.path.is_none() {
+        initial_state.working_dir = working_dir.clone();
+    }
 
     let window_title = match &initial_state.path {
         Some(path) => path
