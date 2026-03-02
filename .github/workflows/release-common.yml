@@ -560,7 +560,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: crates/notebook
-          args: --bundles appimage --config '{"build":{"beforeBuildCommand":""}}'
+          args: --bundles appimage,deb --config '{"build":{"beforeBuildCommand":""}}'
           includeUpdaterJson: false
 
       - name: Collect artifacts
@@ -571,6 +571,8 @@ jobs:
           for f in target/release/bundle/appimage/*.AppImage.sig; do
             [ -f "$f" ] && cp "$f" artifacts/nteract-linux-x64.AppImage.sig
           done
+          DEB_PATH=$(find target/release/bundle/deb -name "*.deb" | head -1)
+          cp "$DEB_PATH" artifacts/nteract-linux-x64.deb
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -706,6 +708,7 @@ jobs:
           cp notebook-macos-arm64/nteract-darwin-arm64.dmg release-assets/
           cp notebook-windows-x64/nteract-windows-x64.exe release-assets/
           cp notebook-linux-x64/nteract-linux-x64.AppImage release-assets/
+          cp notebook-linux-x64/nteract-linux-x64.deb release-assets/
           # Updater bundles + signatures
           cp notebook-macos-arm64/nteract-darwin-arm64.app.tar.gz release-assets/
           cp notebook-macos-arm64/nteract-darwin-arm64.app.tar.gz.sig release-assets/
@@ -807,8 +810,9 @@ jobs:
             | macOS | ARM64 (Apple Silicon) | `nteract-darwin-arm64.dmg` |
             | Windows | x64 | `nteract-windows-x64.exe` |
             | Linux | x64 | `nteract-linux-x64.AppImage` |
+            | Linux | x64 (deb) | `nteract-linux-x64.deb` |
 
-            macOS builds are signed and notarized. Windows is not code signed — expect a SmartScreen prompt. Linux AppImage: `chmod +x` and run.
+            macOS builds are signed and notarized. Windows is not code signed — expect a SmartScreen prompt. Linux AppImage: `chmod +x` and run. Linux DEB: `sudo dpkg -i nteract-linux-x64.deb`.
 
             This release includes auto-update support. Existing installations will be notified of this update automatically.
 
@@ -833,6 +837,7 @@ jobs:
             ./release-assets/runt-darwin-arm64
             ./release-assets/nteract-linux-x64.AppImage
             ./release-assets/nteract-linux-x64.AppImage.sig
+            ./release-assets/nteract-linux-x64.deb
             ./release-assets/nteract-darwin-arm64.dmg
             ./release-assets/nteract-darwin-arm64.app.tar.gz
             ./release-assets/nteract-darwin-arm64.app.tar.gz.sig
