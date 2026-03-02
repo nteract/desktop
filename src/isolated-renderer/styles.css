@@ -107,16 +107,9 @@ html, body {
 }
 
 
-/* Code font - match main app's monospace font stack and size */
+/* Code font - match main app's monospace font stack */
 pre, code {
   font-family: "SF Mono", Consolas, Monaco, "Andale Mono", monospace;
-}
-
-/* ANSI output - override text-sm's rem-based size with explicit 14px to match main app */
-[data-slot="ansi-output"],
-[data-slot="ansi-output"] code {
-  font-size: 14px;
-  line-height: 1.625;
 }
 
 /* Output item spacing */

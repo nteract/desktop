@@ -58,14 +58,9 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
       margin: 0;
       padding: 0;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      font-size: 14px;
       line-height: 1.5;
       background: transparent;
       color: var(--text-primary);
-    }
-
-    body {
-      padding: 8px;
     }
 
     /* Output container */
