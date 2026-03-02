@@ -195,16 +195,12 @@ function PackageBadgeInput({
   const [inputValue, setInputValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const addPackages = useCallback(
+  const addPackage = useCallback(
     (raw: string) => {
-      const names = raw
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      if (names.length === 0) return;
-      const unique = names.filter((n) => !packages.includes(n));
-      if (unique.length > 0) {
-        onChange([...packages, ...unique]);
+      const name = raw.trim();
+      if (!name) return;
+      if (!packages.includes(name)) {
+        onChange([...packages, name]);
       }
       setInputValue("");
     },
@@ -247,9 +243,9 @@ function PackageBadgeInput({
         value={inputValue}
         onChange={(e) => setInputValue(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === ",") {
+          if (e.key === "Enter") {
             e.preventDefault();
-            addPackages(inputValue);
+            addPackage(inputValue);
           } else if (
             e.key === "Backspace" &&
             inputValue === "" &&
@@ -260,14 +256,7 @@ function PackageBadgeInput({
         }}
         onBlur={() => {
           if (inputValue.trim()) {
-            addPackages(inputValue);
-          }
-        }}
-        onPaste={(e) => {
-          const text = e.clipboardData.getData("text");
-          if (text.includes(",")) {
-            e.preventDefault();
-            addPackages(text);
+            addPackage(inputValue);
           }
         }}
         placeholder={packages.length === 0 ? placeholder : ""}
