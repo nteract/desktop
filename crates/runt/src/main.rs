@@ -122,15 +122,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// List all running kernels (connection-file and daemon-managed)
-    Ps {
-        /// Output in JSON format
-        #[arg(long)]
-        json: bool,
-        /// Show verbose output including port numbers
-        #[arg(short, long)]
-        verbose: bool,
-    },
     /// Open the notebook application
     Notebook {
         /// Path to notebook file or directory to open
@@ -150,6 +141,7 @@ enum Commands {
         command: DaemonCommands,
     },
     /// List open notebooks with kernel and peer info
+    #[command(alias = "ps")]
     Notebooks {
         /// Output in JSON format
         #[arg(long)]
@@ -253,6 +245,15 @@ enum Commands {
 /// Jupyter kernel management commands
 #[derive(Subcommand)]
 enum JupyterCommands {
+    /// List standalone kernels (launched via `runt jupyter start`)
+    Ps {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+        /// Show verbose output including port numbers
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// Start a kernel given a name
     Start {
         /// The name of the kernel to launch (e.g., python3, julia)
@@ -482,7 +483,6 @@ fn open_notebook(path: Option<PathBuf>, runtime: Option<String>) -> Result<()> {
 async fn async_main(command: Option<Commands>) -> Result<()> {
     match command {
         // Primary commands
-        Some(Commands::Ps { json, verbose }) => list_kernels(json, verbose).await?,
         Some(Commands::Notebook { .. }) => unreachable!(), // handled in main()
         Some(Commands::Jupyter { command }) => jupyter_command(command).await?,
         Some(Commands::Daemon { command }) => daemon_command(command).await?,
@@ -559,6 +559,7 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
 
 async fn jupyter_command(command: JupyterCommands) -> Result<()> {
     match command {
+        JupyterCommands::Ps { json, verbose } => list_kernels(json, verbose).await,
         JupyterCommands::Start { name } => start_kernel(&name).await,
         JupyterCommands::Stop { id, all } => stop_kernels(id.as_deref(), all).await,
         JupyterCommands::Interrupt { id } => interrupt_kernel(&id).await,
