@@ -119,6 +119,7 @@ mod tests {
                 default_packages: vec!["numpy".into(), "pandas".into()],
             },
             conda: CondaDefaults::default(),
+            keep_alive_secs: 30,
         };
 
         let json = serde_json::to_string(&settings).unwrap();
@@ -253,6 +254,10 @@ mod tests {
                 .get("conda")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or(defaults.conda),
+            keep_alive_secs: json_val
+                .get("keep_alive_secs")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or(defaults.keep_alive_secs),
         };
         // Valid fields are preserved
         assert_eq!(settings.theme, ThemeMode::Dark);
