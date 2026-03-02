@@ -11,6 +11,7 @@ import {
 import { WidgetView } from "@/components/widgets/widget-view";
 import { useSyncedSettings, useSyncedTheme } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
+import { logger } from "@/lib/logger";
 import { CondaDependencyHeader } from "./components/CondaDependencyHeader";
 import {
   type DaemonStatus,
@@ -67,10 +68,10 @@ async function sendMessage(message: unknown): Promise<void> {
     if (daemonCommSender) {
       await daemonCommSender(message);
     } else {
-      console.warn("[widget] sendMessage called but daemon sender not ready");
+      logger.debug("[widget] sendMessage called but daemon sender not ready");
     }
   } catch (e) {
-    console.error("[widget] send_comm_message failed:", e);
+    logger.error("[widget] send_comm_message failed:", e);
   }
 }
 
@@ -371,7 +372,7 @@ function AppContent() {
       // Both kernel_type and env_source use "auto" - daemon detects from Automerge doc
       const response = await launchKernel("auto", "auto");
       if (response.result === "error") {
-        console.error("[App] tryStartKernel: daemon error", response.error);
+        logger.error("[App] tryStartKernel: daemon error", response.error);
         return false;
       }
       return true;
@@ -403,11 +404,11 @@ function AppContent() {
       envSyncState?.diff?.added?.length && !envSyncState?.diff?.removed?.length;
 
     if (isUvInline && hasOnlyAdditions) {
-      console.log("[App] Trying hot-sync for UV additions (trusted)");
+      logger.debug("[App] Trying hot-sync for UV additions");
       const response = await syncEnvironment();
 
       if (response.result === "sync_environment_complete") {
-        console.log("[App] Hot-sync succeeded:", response.synced_packages);
+        logger.debug("[App] Hot-sync succeeded");
         return true;
       }
 
@@ -416,12 +417,12 @@ function AppContent() {
         !response.needs_restart
       ) {
         // Error but doesn't need restart (e.g., install failed)
-        console.error("[App] Hot-sync failed:", response.error);
+        logger.error("[App] Hot-sync failed:", response.error);
         return false;
       }
 
       // needs_restart or other error - fall through to restart flow
-      console.log("[App] Hot-sync requires restart, falling back");
+      logger.debug("[App] Hot-sync requires restart, falling back");
     }
 
     // Restart flow - deps are already trusted from check above
@@ -454,18 +455,16 @@ function AppContent() {
     // Start kernel - returns false if not started (e.g., trust dialog)
     const kernelStarted = await tryStartKernel();
     if (!kernelStarted) {
-      console.log(
-        "[App] restartAndRunAll: kernel not started, skipping run all",
-      );
+      logger.debug("[App] restartAndRunAll: kernel not started, skipping");
       return;
     }
 
     // Daemon reads cell sources from Automerge doc and queues them
     const response = await daemonRunAllCells();
     if (response.result === "error") {
-      console.error("[App] restartAndRunAll: daemon error", response.error);
+      logger.error("[App] restartAndRunAll: daemon error", response.error);
     } else if (response.result === "no_kernel") {
-      console.warn("[App] restartAndRunAll: no kernel available");
+      logger.warn("[App] restartAndRunAll: no kernel available");
     }
   }, [
     cells,
@@ -498,7 +497,7 @@ function AppContent() {
   const handleStartKernelWithPyproject = useCallback(async () => {
     const response = await launchKernel("python", "uv:pyproject");
     if (response.result === "error") {
-      console.error(
+      logger.error(
         "[App] handleStartKernelWithPyproject: daemon error",
         response.error,
       );
@@ -526,9 +525,9 @@ function AppContent() {
       }
       const response = await executeCell(cellId);
       if (response.result === "error") {
-        console.error("[App] handleExecuteCell: daemon error", response.error);
+        logger.error("[App] handleExecuteCell: daemon error", response.error);
       } else if (response.result === "no_kernel") {
-        console.warn("[App] handleExecuteCell: no kernel available");
+        logger.warn("[App] handleExecuteCell: no kernel available");
       }
     },
     [
@@ -579,9 +578,7 @@ function AppContent() {
     if (kernelStatus === "not_started") {
       const started = await tryStartKernel();
       if (!started) {
-        console.log(
-          "[App] handleRunAllCells: kernel not started, skipping run all",
-        );
+        logger.debug("[App] handleRunAllCells: kernel not started, skipping");
         return;
       }
     }
@@ -589,9 +586,9 @@ function AppContent() {
     // Daemon reads cell sources from Automerge doc and queues them
     const response = await daemonRunAllCells();
     if (response.result === "error") {
-      console.error("[App] handleRunAllCells: daemon error", response.error);
+      logger.error("[App] handleRunAllCells: daemon error", response.error);
     } else if (response.result === "no_kernel") {
-      console.warn("[App] handleRunAllCells: no kernel available");
+      logger.warn("[App] handleRunAllCells: no kernel available");
     }
   }, [
     kernelStatus,

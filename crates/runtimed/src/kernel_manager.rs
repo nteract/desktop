@@ -1228,8 +1228,8 @@ impl RoomKernel {
                                 let data = serde_json::to_value(&open.data).unwrap_or_default();
 
                                 debug!(
-                                    "[comm_open] comm_id={} target={} data={}",
-                                    open.comm_id.0, open.target_name, data
+                                    "[comm_open] comm_id={} target={}",
+                                    open.comm_id.0, open.target_name
                                 );
                                 comm_state
                                     .on_comm_open(
@@ -1258,9 +1258,10 @@ impl RoomKernel {
 
                                 // Track state updates (method="update") for multi-window sync
                                 let data = serde_json::to_value(&msg.data).unwrap_or_default();
+                                let method = data.get("method").and_then(|m| m.as_str());
 
-                                debug!("[comm_msg] comm_id={} data={}", msg.comm_id.0, data);
-                                if data.get("method").and_then(|m| m.as_str()) == Some("update") {
+                                debug!("[comm_msg] comm_id={} method={:?}", msg.comm_id.0, method);
+                                if method == Some("update") {
                                     if let Some(state) = data.get("state") {
                                         comm_state.on_comm_update(&msg.comm_id.0, state).await;
                                     }

@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use automerge::sync;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, Mutex, RwLock};
 
@@ -383,7 +383,7 @@ async fn resolve_metadata_snapshot(
         let doc = room.doc.read().await;
         if let Some(meta_json) = doc.get_metadata(NOTEBOOK_METADATA_KEY) {
             if let Ok(snapshot) = serde_json::from_str::<NotebookMetadataSnapshot>(&meta_json) {
-                info!("[notebook-sync] Resolved metadata snapshot from Automerge doc");
+                debug!("[notebook-sync] Resolved metadata snapshot from Automerge doc");
                 return Some(snapshot);
             }
         }
@@ -395,7 +395,7 @@ async fn resolve_metadata_snapshot(
             if let Ok(nb) = serde_json::from_str::<serde_json::Value>(&content) {
                 if let Some(metadata) = nb.get("metadata") {
                     let snapshot = NotebookMetadataSnapshot::from_metadata_value(metadata);
-                    info!("[notebook-sync] Resolved metadata snapshot from disk (doc not yet populated)");
+                    debug!("[notebook-sync] Resolved metadata snapshot from disk");
                     return Some(snapshot);
                 }
             }
@@ -599,7 +599,7 @@ pub fn get_or_create_room(
     rooms
         .entry(notebook_id.to_string())
         .or_insert_with(|| {
-            info!("[notebook-sync] Creating room for {}", notebook_id);
+            debug!("[notebook-sync] Creating room for {}", notebook_id);
             Arc::new(NotebookRoom::new_fresh(notebook_id, docs_dir, blob_store))
         })
         .clone()
@@ -1065,7 +1065,7 @@ async fn auto_launch_kernel(
     // Check if room still has peers (protect against race condition where client disconnects
     // before we finish launching)
     if room.active_peers.load(std::sync::atomic::Ordering::Relaxed) == 0 {
-        info!("[notebook-sync] Auto-launch aborted: no peers remaining");
+        debug!("[notebook-sync] Auto-launch aborted: no peers remaining");
         return;
     }
 
@@ -1085,14 +1085,14 @@ async fn auto_launch_kernel(
     // Double-check no kernel is already running
     if let Some(ref kernel) = *kernel_guard {
         if kernel.is_running() {
-            info!("[notebook-sync] Auto-launch skipped: kernel already running");
+            debug!("[notebook-sync] Auto-launch skipped: kernel already running");
             return;
         }
     }
 
     // Re-check peers after acquiring lock (another race check)
     if room.active_peers.load(std::sync::atomic::Ordering::Relaxed) == 0 {
-        info!("[notebook-sync] Auto-launch aborted: no peers remaining (after lock)");
+        debug!("[notebook-sync] Auto-launch aborted: no peers (after lock)");
         return;
     }
 
@@ -1394,7 +1394,7 @@ async fn auto_launch_kernel(
                     while let Some(cmd) = cmd_rx.recv().await {
                         match cmd {
                             QueueCommand::ExecutionDone { cell_id } => {
-                                info!("[notebook-sync] Processing ExecutionDone for {}", cell_id);
+                                debug!("[notebook-sync] ExecutionDone for {}", cell_id);
                                 let mut guard = room_kernel.lock().await;
                                 if let Some(ref mut k) = *guard {
                                     if let Err(e) = k.execution_done(&cell_id).await {
@@ -1444,7 +1444,7 @@ async fn handle_notebook_request(
     request: NotebookRequest,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
 ) -> NotebookResponse {
-    info!("[notebook-sync] Handling request: {:?}", request);
+    debug!("[notebook-sync] Handling request: {:?}", request);
 
     match request {
         NotebookRequest::LaunchKernel {
