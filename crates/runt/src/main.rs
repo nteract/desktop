@@ -157,7 +157,7 @@ enum Commands {
     },
     /// Shutdown a notebook's kernel and evict its room
     Shutdown {
-        /// Path to the notebook file
+        /// Path to the notebook file, or notebook ID (UUID) for untitled notebooks
         path: PathBuf,
     },
     /// Inspect the Automerge state for a notebook (debug command)
@@ -1824,13 +1824,23 @@ async fn shutdown_notebook(path: &PathBuf) -> Result<()> {
     use runtimed::client::PoolClient;
     use runtimed::singleton::get_running_daemon_info;
 
-    // Convert to absolute path (notebook_id is the absolute path)
-    let notebook_path = if path.is_absolute() {
-        path.clone()
+    let path_str = path.to_string_lossy();
+
+    // Check if it looks like a UUID (untitled notebook) - no path separators
+    let is_uuid = !path_str.contains('/') && !path_str.contains('\\');
+
+    let notebook_id = if is_uuid {
+        // Use UUID directly for untitled notebooks
+        path_str.to_string()
     } else {
-        std::env::current_dir()?.join(path)
+        // Convert to absolute path for file-based notebooks
+        let notebook_path = if path.is_absolute() {
+            path.clone()
+        } else {
+            std::env::current_dir()?.join(path)
+        };
+        notebook_path.to_string_lossy().to_string()
     };
-    let notebook_id = notebook_path.to_string_lossy().to_string();
 
     // Use daemon's actual endpoint if available
     let client = match get_running_daemon_info() {
@@ -1840,10 +1850,10 @@ async fn shutdown_notebook(path: &PathBuf) -> Result<()> {
 
     match client.shutdown_notebook(&notebook_id).await {
         Ok(true) => {
-            println!("Shutdown notebook: {}", shorten_path(&notebook_path));
+            println!("Shutdown notebook: {}", notebook_id);
         }
         Ok(false) => {
-            eprintln!("Notebook not found: {}", shorten_path(&notebook_path));
+            eprintln!("Notebook not found: {}", notebook_id);
             eprintln!("Use 'runt notebooks' to see open notebooks.");
             std::process::exit(1)
         }
