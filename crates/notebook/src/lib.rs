@@ -2823,26 +2823,6 @@ async fn get_settings() -> runtimed::settings_doc::SyncedSettings {
     settings::load_settings()
 }
 
-/// Set the default runtime preference
-#[tauri::command]
-async fn set_default_runtime(runtime: Runtime) -> Result<(), String> {
-    let mut settings = settings::load_settings();
-    settings.default_runtime = runtime;
-    settings::save_settings(&settings).map_err(|e| e.to_string())
-}
-
-/// Set the default Python environment type (uv or conda)
-#[tauri::command]
-async fn set_default_python_env(env_type: String) -> Result<(), String> {
-    let python_env: settings::PythonEnvType = env_type
-        .parse()
-        .expect("FromStr for PythonEnvType is infallible");
-
-    let mut settings = settings::load_settings();
-    settings.default_python_env = python_env;
-    settings::save_settings(&settings).map_err(|e| e.to_string())
-}
-
 /// Get synced settings from the Automerge settings document via runtimed.
 /// Falls back to reading settings.json when the daemon is unavailable,
 /// so the frontend always gets real settings instead of hardcoded defaults.
@@ -2873,116 +2853,25 @@ async fn get_synced_settings() -> Result<runtimed::settings_doc::SyncedSettings,
     }
 }
 
-/// Persist a setting to local settings.json (for keys that have local representation).
-fn save_setting_locally(key: &str, value: &serde_json::Value) -> Result<(), String> {
-    match key {
-        "theme" => {
-            let value_str = value.as_str().ok_or("expected string")?;
-            let theme: runtimed::settings_doc::ThemeMode =
-                serde_json::from_str(&format!("\"{value_str}\"")).map_err(|e| e.to_string())?;
-            let mut s = settings::load_settings();
-            s.theme = theme;
-            settings::save_settings(&s).map_err(|e| e.to_string())
-        }
-        "default_runtime" => {
-            let value_str = value.as_str().ok_or("expected string")?;
-            let runtime: Runtime =
-                serde_json::from_str(&format!("\"{}\"", value_str)).map_err(|e| e.to_string())?;
-            let mut s = settings::load_settings();
-            s.default_runtime = runtime;
-            settings::save_settings(&s).map_err(|e| e.to_string())
-        }
-        "default_python_env" => {
-            let value_str = value.as_str().ok_or("expected string")?;
-            let env_type: settings::PythonEnvType = value_str
-                .parse()
-                .expect("FromStr for PythonEnvType is infallible");
-            let mut s = settings::load_settings();
-            s.default_python_env = env_type;
-            settings::save_settings(&s).map_err(|e| e.to_string())
-        }
-        "uv.default_packages" => {
-            let packages = json_value_to_string_vec(value);
-            let mut s = settings::load_settings();
-            s.uv.default_packages = packages;
-            settings::save_settings(&s).map_err(|e| e.to_string())
-        }
-        "conda.default_packages" => {
-            let packages = json_value_to_string_vec(value);
-            let mut s = settings::load_settings();
-            s.conda.default_packages = packages;
-            settings::save_settings(&s).map_err(|e| e.to_string())
-        }
-        "keep_alive_secs" => {
-            let secs = value.as_u64().ok_or("expected number")?;
-            let mut s = settings::load_settings();
-            s.keep_alive_secs = secs;
-            settings::save_settings(&s).map_err(|e| e.to_string())
-        }
-        _ => Ok(()),
-    }
-}
-
-/// Extract a Vec<String> from a JSON value (array of strings).
-fn json_value_to_string_vec(value: &serde_json::Value) -> Vec<String> {
-    match value {
-        serde_json::Value::Array(arr) => arr
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect(),
-        serde_json::Value::String(s) => runtimed::settings_doc::split_comma_list(s),
-        _ => vec![],
-    }
-}
-
-/// Update a synced setting via the daemon and persist locally.
+/// Update a synced setting via the daemon.
+///
+/// The daemon is the sole writer to settings.json to prevent race conditions
+/// when multiple notebook windows are open. The daemon persists settings to disk
+/// after receiving the sync message.
 #[tauri::command]
 async fn set_synced_setting(key: String, value: serde_json::Value) -> Result<(), String> {
-    // Always persist to local settings.json so the menu handler can read it synchronously
-    save_setting_locally(&key, &value)?;
+    let socket_path = runtimed::default_socket_path();
+    let mut client = runtimed::sync_client::SyncClient::connect_with_timeout(
+        socket_path,
+        std::time::Duration::from_millis(500),
+    )
+    .await
+    .map_err(|e| format!("Daemon unavailable: {}. Setting not persisted.", e))?;
 
-    // Best-effort sync via daemon — use a short timeout since local write already succeeded
-    #[cfg(unix)]
-    {
-        let socket_path = runtimed::default_socket_path();
-        match runtimed::sync_client::SyncClient::connect_with_timeout(
-            socket_path,
-            std::time::Duration::from_millis(500),
-        )
+    client
+        .put_value(&key, &value)
         .await
-        {
-            Ok(mut client) => {
-                client
-                    .put_value(&key, &value)
-                    .await
-                    .map_err(|e| format!("sync error: {}", e))?;
-            }
-            Err(e) => {
-                log::warn!("[settings] Sync daemon unavailable ({}), local-only", e);
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        let socket_path = runtimed::default_socket_path();
-        match runtimed::sync_client::SyncClient::connect_with_timeout(
-            socket_path,
-            std::time::Duration::from_millis(500),
-        )
-        .await
-        {
-            Ok(mut client) => {
-                client
-                    .put_value(&key, &value)
-                    .await
-                    .map_err(|e| format!("sync error: {}", e))?;
-            }
-            Err(e) => {
-                log::warn!("[settings] Sync daemon unavailable ({}), local-only", e);
-            }
-        }
-    }
+        .map_err(|e| format!("sync error: {}", e))?;
 
     Ok(())
 }
@@ -3354,8 +3243,6 @@ pub fn run(
             check_formatter_available,
             // Settings
             get_settings,
-            set_default_runtime,
-            set_default_python_env,
             // Synced settings (via runtimed Automerge)
             get_synced_settings,
             set_synced_setting,
