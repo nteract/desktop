@@ -1,6 +1,6 @@
 # Logging and Debugging
 
-This guide explains how to access and enable verbose logging in Runt.
+This guide explains how to access and enable verbose logging in nteract Desktop.
 
 ## Daemon Logs
 

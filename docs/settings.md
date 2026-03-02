@@ -1,6 +1,6 @@
 # Settings
 
-Runt notebook settings control default behavior for new notebooks, appearance, and runtime configuration.
+nteract Desktop settings control default behavior for new notebooks, appearance, and runtime configuration.
 
 ## Quick Reference
 

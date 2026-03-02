@@ -1,14 +1,14 @@
 # Environments
 
-Runt automatically manages Python and Deno environments for your notebooks. You don't need to manually create virtual environments or install packages — Runt handles it based on what's in your notebook and what project files are nearby.
+nteract Desktop automatically manages Python and Deno environments for your notebooks. You don't need to manually create virtual environments or install packages — the app handles it based on what's in your notebook and what project files are nearby.
 
 ## How It Works
 
-When you open a notebook, Runt uses a two-stage detection:
+When you open a notebook, nteract Desktop uses a two-stage detection:
 
 ### Stage 1: Which runtime? (Python or Deno)
 
-Runt checks the notebook's stored kernel type:
+nteract Desktop checks the notebook's stored kernel type:
 - If the notebook says it's a **Deno notebook** → Deno kernel
 - If the notebook says it's a **Python notebook** → Python kernel (then proceeds to Stage 2)
 - New notebooks use your **default runtime** preference
@@ -17,10 +17,10 @@ This means Python and Deno notebooks can coexist in the same project directory �
 
 ### Stage 2: Which Python environment?
 
-For Python notebooks, Runt looks for dependencies in this order:
+For Python notebooks, nteract Desktop looks for dependencies in this order:
 
 1. **Inline dependencies** stored in the notebook itself
-2. **Closest project file** — Runt walks up from the notebook's directory looking for `pyproject.toml`, `pixi.toml`, or `environment.yml`. The closest match wins, regardless of file type. If the same directory has multiple project files, the tiebreaker is: pyproject.toml > pixi.toml > environment.yml
+2. **Closest project file** — nteract Desktop walks up from the notebook's directory looking for `pyproject.toml`, `pixi.toml`, or `environment.yml`. The closest match wins, regardless of file type. If the same directory has multiple project files, the tiebreaker is: pyproject.toml > pixi.toml > environment.yml
 3. If none found, a **prewarmed environment** with just the basics
 
 The search stops at git repository boundaries and your home directory, so project files from unrelated repos won't interfere.
@@ -37,7 +37,7 @@ The simplest way to manage packages. Dependencies are stored directly in the not
 
 ## Working with pyproject.toml
 
-If your notebook is in a directory with a `pyproject.toml`, Runt auto-detects it and uses `uv run` to start the kernel in the project's virtual environment.
+If your notebook is in a directory with a `pyproject.toml`, nteract Desktop auto-detects it and uses `uv run` to start the kernel in the project's virtual environment.
 
 - The project's `.venv/` is used directly — no separate cached environment
 - Dependencies stay in sync with the project
@@ -49,13 +49,13 @@ The dependency panel offers two actions:
 
 ## Working with environment.yml
 
-Conda `environment.yml` files are auto-detected. Runt parses the channels, conda dependencies, and pip dependencies from the file and creates a conda environment using rattler.
+Conda `environment.yml` files are auto-detected. nteract Desktop parses the channels, conda dependencies, and pip dependencies from the file and creates a conda environment using rattler.
 
 The dependency panel shows the environment.yml dependencies and offers an "Import to notebook" action to copy them into the notebook's conda metadata for portability.
 
 ## Working with pixi.toml
 
-Pixi project files are auto-detected. Runt converts pixi dependencies to conda format and creates the environment using rattler. Both `[dependencies]` (conda packages) and `[pypi-dependencies]` (pip packages) are supported.
+Pixi project files are auto-detected. nteract Desktop converts pixi dependencies to conda format and creates the environment using rattler. Both `[dependencies]` (conda packages) and `[pypi-dependencies]` (pip packages) are supported.
 
 The dependency panel shows pixi dependencies and offers an "Import to notebook" action.
 
@@ -64,8 +64,8 @@ The dependency panel shows pixi dependencies and offers an "Import to notebook" 
 Deno notebooks use the Deno runtime for TypeScript/JavaScript. Unlike Python, Deno manages its own dependencies through import maps and URL imports, so there's no separate environment to create.
 
 **How Deno is obtained:**
-- Runt first checks if `deno` is on your PATH
-- If not found, Runt automatically installs Deno from conda-forge (stored in `~/.cache/runt/tools/`)
+- nteract Desktop first checks if `deno` is on your PATH
+- If not found, nteract Desktop automatically installs Deno from conda-forge (stored in `~/.cache/runt/tools/`)
 
 This means Deno notebooks work out of the box — you don't need to install Deno manually.
 
@@ -85,23 +85,23 @@ Choose which package manager to use for Python notebooks:
 - **UV** (default) — fast, pip-compatible package management
 - **Conda** — supports conda packages (useful for non-Python dependencies like CUDA libraries)
 
-This preference is used when no project files are detected and the notebook has no inline dependencies. When a project file is present, Runt picks the appropriate backend automatically (UV for pyproject.toml, Conda for environment.yml and pixi.toml).
+This preference is used when no project files are detected and the notebook has no inline dependencies. When a project file is present, nteract Desktop picks the appropriate backend automatically (UV for pyproject.toml, Conda for environment.yml and pixi.toml).
 
 See [Settings](settings.md) for how to change these defaults.
 
 ## Trust Dialog
 
-When you open a notebook with dependencies for the first time, Runt may show a trust dialog asking you to approve the dependency installation. This happens because:
+When you open a notebook with dependencies for the first time, nteract Desktop may show a trust dialog asking you to approve the dependency installation. This happens because:
 
 - Dependencies are signed with a per-machine key
 - Notebooks from other machines (shared by a colleague, cloned from a repo) have a different signature
-- Runt asks you to verify the dependencies before installing anything
+- nteract Desktop asks you to verify the dependencies before installing anything
 
 After you approve, the notebook is re-signed with your machine's key and won't prompt again.
 
 ## Cache and Cleanup
 
-Runt caches environments so notebooks with the same dependencies share a single environment, making subsequent opens instant.
+nteract Desktop caches environments so notebooks with the same dependencies share a single environment, making subsequent opens instant.
 
 | What | Location |
 |------|----------|
@@ -110,7 +110,7 @@ Runt caches environments so notebooks with the same dependencies share a single 
 | Tools (uv, deno) | `~/.cache/runt/tools/` |
 | Trust key | `~/.config/runt/trust-key` |
 
-To reclaim disk space, delete the environment cache directories. Runt will recreate environments as needed.
+To reclaim disk space, delete the environment cache directories. nteract Desktop will recreate environments as needed.
 
 ## Troubleshooting
 
@@ -118,6 +118,6 @@ To reclaim disk space, delete the environment cache directories. Runt will recre
 
 **Wrong environment**: If the kernel started with a prewarmed environment instead of your project's dependencies, check that your project file (pyproject.toml, environment.yml, pixi.toml) is in the notebook's directory or a parent directory within the same git repository.
 
-**Slow first start**: The first time a notebook opens with dependencies, Runt needs to download and install packages. Subsequent opens with the same dependencies are instant due to caching.
+**Slow first start**: The first time a notebook opens with dependencies, nteract Desktop needs to download and install packages. Subsequent opens with the same dependencies are instant due to caching.
 
-**Trust dialog keeps appearing**: This happens when the notebook's dependency signature doesn't match your machine's key. Approve the dependencies once and Runt will re-sign the notebook.
+**Trust dialog keeps appearing**: This happens when the notebook's dependency signature doesn't match your machine's key. Approve the dependencies once and nteract Desktop will re-sign the notebook.

@@ -1,6 +1,6 @@
 # Widget Support
 
-This guide covers ipywidgets and anywidget support in Runt.
+This guide covers ipywidgets and anywidget support in nteract Desktop.
 
 ## Quick Reference
 
@@ -17,7 +17,7 @@ This guide covers ipywidgets and anywidget support in Runt.
 
 | Widget | Why | Alternative |
 |--------|-----|-------------|
-| JupyterLab extensions | Runt is not JupyterLab | — |
+| JupyterLab extensions | nteract Desktop is not JupyterLab | — |
 | jupyterlab-sidecar | JupyterLab extension | Use notebook outputs |
 | bqplot | Extends IPython's DOMWidget | Plotly, Altair, Vega-Lite |
 
@@ -66,7 +66,7 @@ ipycanvas has a custom implementation (tested with v0.14.3). This is a from-scra
 
 ### anywidget
 
-Runt fully implements the [AFM (AnyWidget Frontend Module) spec](https://anywidget.dev/en/afm/). Any widget following this spec will work.
+nteract Desktop fully implements the [AFM (AnyWidget Frontend Module) spec](https://anywidget.dev/en/afm/). Any widget following this spec will work.
 
 **Tested widgets:**
 - **quak** — DataFrame viewer (custom messages work)
@@ -91,7 +91,7 @@ Rich display outputs work via the display protocol (not as widgets):
 
 ### JupyterLab Extensions
 
-**Runt is NOT JupyterLab.** Anything requiring `@jupyterlab/*` APIs won't work:
+**nteract Desktop is NOT JupyterLab.** Anything requiring `@jupyterlab/*` APIs won't work:
 
 - `jupyterlab-sidecar` — Creates JupyterLab panels, requires `@jupyterlab/application`
 - Any widget that imports from `@jupyterlab/services`, `@jupyterlab/apputils`, etc.
@@ -106,7 +106,7 @@ Some widgets extend IPython's `DOMWidget` class instead of the standard `@jupyte
 
 ## Why These Limitations?
 
-Runt runs widgets in isolated iframes for security. The architecture is:
+nteract Desktop runs widgets in isolated iframes for security. The architecture is:
 
 ```
 Parent Window (Tauri app)
