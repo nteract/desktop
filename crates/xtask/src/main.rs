@@ -459,9 +459,14 @@ fn cmd_dev_daemon() {
         .join("runt")
         .join("worktrees");
 
+    let state_dir = match runt_workspace::get_workspace_path() {
+        Some(path) => cache_base.join(runt_workspace::worktree_hash(&path)),
+        None => cache_base.join("<unknown>"),
+    };
+
     println!();
     println!("Starting development daemon for this worktree...");
-    println!("State will be stored in {}/<hash>/", cache_base.display());
+    println!("State will be stored in {}/", state_dir.display());
     println!("Press Ctrl+C to stop.");
     println!();
 

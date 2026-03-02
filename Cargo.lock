@@ -8682,6 +8682,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "dirs 5.0.1",
+ "runt-workspace",
  "serde_json",
 ]
 

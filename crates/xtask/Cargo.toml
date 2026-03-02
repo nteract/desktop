@@ -9,4 +9,5 @@ workspace = true
 
 [dependencies]
 dirs = "5"
+runt-workspace = { path = "../runt-workspace" }
 serde_json.workspace = true
