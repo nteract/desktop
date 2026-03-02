@@ -166,12 +166,15 @@ When starting a kernel, you can specify the environment source:
 
 | Source | Description |
 |--------|-------------|
-| `uv:prewarmed` | Fast startup from UV pool (default) |
+| `auto` | Auto-detect from notebook metadata or project files (default) |
+| `uv:prewarmed` | Fast startup from UV pool |
 | `conda:prewarmed` | Conda environment from pool |
 | `uv:inline` | Use notebook's inline UV dependencies |
 | `conda:inline` | Use notebook's inline conda dependencies |
 | `uv:pyproject` | Use pyproject.toml in notebook's directory |
 | `conda:env_yml` | Use environment.yml in notebook's directory |
+
+**Note:** For Deno kernels (`kernel_type="deno"`), the `env_source` is ignored and always uses `"deno"`.
 
 ## Development
 
