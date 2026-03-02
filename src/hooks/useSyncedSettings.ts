@@ -174,8 +174,8 @@ export function useSyncedSettings() {
   const setTheme = useCallback((newTheme: ThemeMode) => {
     setThemeState(newTheme);
     setStoredTheme(newTheme);
-    invoke("set_synced_setting", { key: "theme", value: newTheme }).catch(
-      () => {},
+    invoke("set_synced_setting", { key: "theme", value: newTheme }).catch((e) =>
+      console.warn("[settings] Failed to persist theme:", e),
     );
   }, []);
 
@@ -184,7 +184,7 @@ export function useSyncedSettings() {
     invoke("set_synced_setting", {
       key: "default_runtime",
       value: newRuntime,
-    }).catch(() => {});
+    }).catch((e) => console.warn("[settings] Failed to persist runtime:", e));
   }, []);
 
   const setDefaultPythonEnv = useCallback((newEnv: string) => {
@@ -192,7 +192,9 @@ export function useSyncedSettings() {
     invoke("set_synced_setting", {
       key: "default_python_env",
       value: newEnv,
-    }).catch(() => {});
+    }).catch((e) =>
+      console.warn("[settings] Failed to persist python env:", e),
+    );
   }, []);
 
   const setDefaultUvPackages = useCallback((packages: string[]) => {
@@ -200,7 +202,9 @@ export function useSyncedSettings() {
     invoke("set_synced_setting", {
       key: "uv.default_packages",
       value: packages,
-    }).catch(() => {});
+    }).catch((e) =>
+      console.warn("[settings] Failed to persist uv packages:", e),
+    );
   }, []);
 
   const setDefaultCondaPackages = useCallback((packages: string[]) => {
@@ -208,7 +212,9 @@ export function useSyncedSettings() {
     invoke("set_synced_setting", {
       key: "conda.default_packages",
       value: packages,
-    }).catch(() => {});
+    }).catch((e) =>
+      console.warn("[settings] Failed to persist conda packages:", e),
+    );
   }, []);
 
   const setKeepAliveSecs = useCallback((secs: number) => {
@@ -216,7 +222,9 @@ export function useSyncedSettings() {
     invoke("set_synced_setting", {
       key: "keep_alive_secs",
       value: secs,
-    }).catch(() => {});
+    }).catch((e) =>
+      console.warn("[settings] Failed to persist keep_alive_secs:", e),
+    );
   }, []);
 
   return {
