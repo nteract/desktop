@@ -94,7 +94,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                   ribbonColor,
                 )}
               />
-              <div className="min-w-0 flex-1 py-3 pl-5 pr-3">{codeContent}</div>
+              <div className="min-w-0 flex-1 py-3 pl-6 pr-3">{codeContent}</div>
             </div>
             {/* Output row - ribbon + content together */}
             {hasOutput && (
@@ -107,7 +107,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 />
                 <div
                   className={cn(
-                    "min-w-0 flex-1 py-2 pl-5 pr-3 transition-opacity duration-150",
+                    "min-w-0 flex-1 py-2 pl-6 pr-3 transition-opacity duration-150",
                     !isFocused && "opacity-70",
                   )}
                 >
@@ -125,7 +125,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 ribbonColor,
               )}
             />
-            <div className="min-w-0 flex-1 py-3 pl-5 pr-3">{children}</div>
+            <div className="min-w-0 flex-1 py-3 pl-6 pr-3">{children}</div>
           </div>
         )}
         {/* Right margin - pt-3 aligns with left gutter, appears on hover/focus */}
