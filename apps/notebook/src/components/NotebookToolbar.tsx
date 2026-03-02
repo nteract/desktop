@@ -854,27 +854,35 @@ export function NotebookToolbar({
                     Advanced
                   </span>
                 </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-xs font-medium text-muted-foreground">
-                    Keep Alive
-                  </span>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      Keep Alive
+                    </span>
+                    <span className="text-xs font-medium text-foreground tabular-nums">
+                      {keepAliveSecs >= 3600
+                        ? "Forever"
+                        : keepAliveSecs >= 60
+                          ? `${Math.floor(keepAliveSecs / 60)}m ${keepAliveSecs % 60}s`
+                          : `${keepAliveSecs}s`}
+                    </span>
+                  </div>
                   <input
-                    type="number"
-                    min={0}
+                    type="range"
+                    min={5}
                     max={3600}
                     step={5}
                     value={keepAliveSecs}
                     onChange={(e) =>
-                      onKeepAliveSecsChange(
-                        Math.max(0, Math.min(3600, Number(e.target.value))),
-                      )
+                      onKeepAliveSecsChange(Number(e.target.value))
                     }
-                    className="w-20 rounded-md border bg-muted/50 px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                    className="w-full h-1.5 rounded-full bg-muted appearance-none cursor-pointer accent-primary [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-primary [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:cursor-pointer"
                   />
-                  <span className="text-xs text-muted-foreground">seconds</span>
-                  <span className="text-[10px] text-muted-foreground/70 ml-2">
-                    Time to keep notebook room alive after closing
-                  </span>
+                  <div className="flex justify-between text-[10px] text-muted-foreground/70">
+                    <span>5s</span>
+                    <span>Time to keep notebook room alive after closing</span>
+                    <span>Forever</span>
+                  </div>
                 </div>
               </div>
             )}

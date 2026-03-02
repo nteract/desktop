@@ -605,7 +605,7 @@ pub fn get_or_create_room(
     rooms
         .entry(notebook_id.to_string())
         .or_insert_with(|| {
-            debug!("[notebook-sync] Creating room for {}", notebook_id);
+            info!("[notebook-sync] Creating room for {}", notebook_id);
             Arc::new(NotebookRoom::new_fresh(notebook_id, docs_dir, blob_store))
         })
         .clone()

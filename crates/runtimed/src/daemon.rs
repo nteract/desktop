@@ -393,7 +393,8 @@ impl Daemon {
     /// Get the room eviction delay.
     ///
     /// Uses the config override if set (for tests), otherwise reads from
-    /// the user's `keep_alive_secs` setting.
+    /// the user's `keep_alive_secs` setting. Enforces a minimum of 5 seconds
+    /// to prevent accidental instant eviction from misconfigured settings.
     pub async fn room_eviction_delay(&self) -> std::time::Duration {
         if let Some(ms) = self.config.room_eviction_delay_ms {
             return std::time::Duration::from_millis(ms);
@@ -402,6 +403,8 @@ impl Daemon {
         let secs = settings
             .get_u64("keep_alive_secs")
             .unwrap_or(crate::settings_doc::DEFAULT_KEEP_ALIVE_SECS);
+        // Enforce minimum to prevent instant eviction from bad settings
+        let secs = secs.max(crate::settings_doc::MIN_KEEP_ALIVE_SECS);
         std::time::Duration::from_secs(secs)
     }
 

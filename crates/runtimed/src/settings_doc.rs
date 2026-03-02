@@ -138,8 +138,11 @@ pub struct CondaDefaults {
 /// When all clients disconnect, the daemon waits this long before evicting the room.
 pub const DEFAULT_KEEP_ALIVE_SECS: u64 = 30;
 
+/// Minimum keep-alive duration (5 seconds) to prevent accidental instant eviction.
+pub const MIN_KEEP_ALIVE_SECS: u64 = 5;
+
 /// Snapshot of all synced settings.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
 #[ts(export)]
 pub struct SyncedSettings {
     /// UI theme
@@ -164,8 +167,22 @@ pub struct SyncedSettings {
 
     /// How long (in seconds) to keep notebook rooms alive after all clients disconnect.
     /// This allows you to close and reopen the window without losing your kernel state.
+    /// Minimum is 5 seconds to prevent accidental instant eviction.
     #[serde(default = "default_keep_alive_secs")]
     pub keep_alive_secs: u64,
+}
+
+impl Default for SyncedSettings {
+    fn default() -> Self {
+        Self {
+            theme: ThemeMode::default(),
+            default_runtime: Runtime::default(),
+            default_python_env: PythonEnvType::default(),
+            uv: UvDefaults::default(),
+            conda: CondaDefaults::default(),
+            keep_alive_secs: DEFAULT_KEEP_ALIVE_SECS,
+        }
+    }
 }
 
 fn default_keep_alive_secs() -> u64 {
