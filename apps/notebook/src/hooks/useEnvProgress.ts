@@ -218,11 +218,18 @@ export function useEnvProgress() {
       "daemon:broadcast",
       (event) => {
         const broadcast = event.payload;
-        console.log("[useEnvProgress] daemon:broadcast received:", broadcast.event, broadcast);
+        console.log(
+          "[useEnvProgress] daemon:broadcast received:",
+          broadcast.event,
+          broadcast,
+        );
         if (broadcast.event === "env_progress") {
           // The daemon broadcast has the same shape as EnvProgressEvent
           // (env_type + flattened phase fields) plus the "event" tag
-          console.log("[useEnvProgress] Processing env_progress event:", broadcast);
+          console.log(
+            "[useEnvProgress] Processing env_progress event:",
+            broadcast,
+          );
           processEvent(broadcast as unknown as EnvProgressEvent);
         }
       },
