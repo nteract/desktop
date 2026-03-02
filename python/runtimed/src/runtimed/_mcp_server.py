@@ -205,7 +205,7 @@ async def list_notebooks() -> list[dict[str, Any]]:
 @mcp.tool()
 async def start_kernel(
     kernel_type: str = "python",
-    env_source: str = "uv:prewarmed",
+    env_source: str = "auto",
 ) -> dict[str, Any]:
     """Start a kernel for the current session.
 
@@ -215,10 +215,12 @@ async def start_kernel(
     Args:
         kernel_type: Type of kernel - "python" or "deno".
         env_source: Environment source. Options:
-            - "uv:prewarmed" (default) - Fast startup from pool
+            - "auto" (default) - Auto-detect from notebook metadata/project files
+            - "uv:prewarmed" - Fast startup from UV pool
             - "conda:prewarmed" - Conda environment from pool
             - "uv:inline" - Use notebook's inline UV dependencies
             - "conda:inline" - Use notebook's inline conda dependencies
+            For Deno kernels, this is ignored (always uses "deno").
 
     Returns:
         Kernel info including the actual env_source used.

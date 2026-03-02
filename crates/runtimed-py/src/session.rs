@@ -181,15 +181,16 @@ impl Session {
     ///
     /// Args:
     ///     kernel_type: Type of kernel ("python" or "deno"). Defaults to "python".
-    ///     env_source: Environment source. Defaults to "uv:prewarmed".
-    ///         Use "auto" to auto-detect from inline deps or project files.
+    ///     env_source: Environment source. Defaults to "auto" (auto-detect from
+    ///         inline deps or project files). For Deno kernels, this is ignored
+    ///         and always uses "deno".
     ///     notebook_path: Optional path to the notebook file on disk.
     ///         Used for project file detection (pyproject.toml, pixi.toml,
     ///         environment.yml) when env_source is "auto".
     ///
     /// If a kernel is already running for this session's notebook_id,
     /// this returns immediately without starting a new one.
-    #[pyo3(signature = (kernel_type="python", env_source="uv:prewarmed", notebook_path=None))]
+    #[pyo3(signature = (kernel_type="python", env_source="auto", notebook_path=None))]
     fn start_kernel(
         &self,
         kernel_type: &str,
@@ -458,7 +459,7 @@ impl Session {
             let state = self.runtime.block_on(self.state.lock());
             if !state.kernel_started {
                 drop(state);
-                self.start_kernel("python", "uv:prewarmed", None)?;
+                self.start_kernel("python", "auto", None)?;
             }
         }
 

@@ -1499,45 +1499,55 @@ async fn handle_notebook_request(
                 resolved_kernel_type, kernel_type
             );
 
-            // Auto-detect environment if env_source is "auto" or empty
-            let resolved_env_source =
-                if env_source == "auto" || env_source.is_empty() || env_source == "prewarmed" {
-                    // Deno kernels don't use Python environments - always use "deno"
-                    if resolved_kernel_type == "deno" {
-                        info!("[notebook-sync] Deno kernel detected, using 'deno' env_source");
-                        "deno".to_string()
-                    }
-                    // Priority 1: Check inline deps in notebook metadata
-                    else if let Some(inline_source) =
-                        metadata_snapshot.as_ref().and_then(check_inline_deps)
-                    {
-                        info!(
-                            "[notebook-sync] Found inline deps in notebook metadata -> {}",
-                            inline_source
-                        );
-                        inline_source
-                    }
-                    // Priority 2: Detect project files near notebook path
-                    else if let Some(detected) = notebook_path
-                        .as_ref()
-                        .and_then(|path| crate::project_file::detect_project_file(path))
-                    {
-                        info!(
-                            "[notebook-sync] Auto-detected project file: {:?} -> {}",
-                            detected.path,
-                            detected.to_env_source()
-                        );
-                        detected.to_env_source().to_string()
-                    }
-                    // Priority 3: Fall back to prewarmed (Python only)
-                    else {
-                        info!("[notebook-sync] No project file detected, using prewarmed");
-                        "uv:prewarmed".to_string()
-                    }
+            // Deno kernels don't use Python environments - always use "deno" regardless
+            // of what env_source was requested. Log a warning if caller passed a Python env.
+            let resolved_env_source = if resolved_kernel_type == "deno" {
+                if !env_source.is_empty()
+                    && env_source != "auto"
+                    && env_source != "deno"
+                    && env_source != "prewarmed"
+                {
+                    warn!(
+                        "[notebook-sync] Deno kernel requested with Python env_source '{}' - \
+                         ignoring and using 'deno' instead",
+                        env_source
+                    );
                 } else {
-                    // Use explicit env_source (e.g., "uv:inline", "conda:inline")
-                    env_source.clone()
-                };
+                    info!("[notebook-sync] Deno kernel detected, using 'deno' env_source");
+                }
+                "deno".to_string()
+            } else if env_source == "auto" || env_source.is_empty() || env_source == "prewarmed" {
+                // Auto-detect Python environment
+                // Priority 1: Check inline deps in notebook metadata
+                if let Some(inline_source) = metadata_snapshot.as_ref().and_then(check_inline_deps)
+                {
+                    info!(
+                        "[notebook-sync] Found inline deps in notebook metadata -> {}",
+                        inline_source
+                    );
+                    inline_source
+                }
+                // Priority 2: Detect project files near notebook path
+                else if let Some(detected) = notebook_path
+                    .as_ref()
+                    .and_then(|path| crate::project_file::detect_project_file(path))
+                {
+                    info!(
+                        "[notebook-sync] Auto-detected project file: {:?} -> {}",
+                        detected.path,
+                        detected.to_env_source()
+                    );
+                    detected.to_env_source().to_string()
+                }
+                // Priority 3: Fall back to prewarmed
+                else {
+                    info!("[notebook-sync] No project file detected, using prewarmed");
+                    "uv:prewarmed".to_string()
+                }
+            } else {
+                // Use explicit env_source (e.g., "uv:inline", "conda:inline")
+                env_source.clone()
+            };
 
             // Deno kernels don't need pooled environments
             let pooled_env = if resolved_kernel_type == "deno" {

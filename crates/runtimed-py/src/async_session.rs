@@ -195,13 +195,15 @@ impl AsyncSession {
     ///
     /// Args:
     ///     kernel_type: Type of kernel ("python" or "deno"). Defaults to "python".
-    ///     env_source: Environment source. Defaults to "uv:prewarmed".
+    ///     env_source: Environment source. Defaults to "auto" (auto-detect from
+    ///         notebook metadata or project files). For Deno kernels, this is
+    ///         ignored and always uses "deno".
     ///
     /// If a kernel is already running for this session's notebook_id,
     /// this returns immediately without starting a new one.
     ///
     /// Returns a coroutine.
-    #[pyo3(signature = (kernel_type="python", env_source="uv:prewarmed"))]
+    #[pyo3(signature = (kernel_type="python", env_source="auto"))]
     fn start_kernel<'py>(
         &self,
         py: Python<'py>,
