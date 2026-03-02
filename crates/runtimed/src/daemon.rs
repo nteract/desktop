@@ -838,12 +838,14 @@ impl Daemon {
             Handshake::NotebookSync {
                 notebook_id,
                 protocol,
+                working_dir,
             } => {
                 let use_typed_frames = protocol.as_deref() == Some(connection::PROTOCOL_V2);
                 info!(
-                    "[runtimed] NotebookSync requested for {} (protocol: {})",
+                    "[runtimed] NotebookSync requested for {} (protocol: {}, working_dir: {:?})",
                     notebook_id,
-                    protocol.as_deref().unwrap_or("v1")
+                    protocol.as_deref().unwrap_or("v1"),
+                    working_dir
                 );
                 let docs_dir = self.config.notebook_docs_dir.clone();
                 let room = {
@@ -860,6 +862,8 @@ impl Daemon {
                 let settings = self.settings.read().await.get_all();
                 let default_runtime = settings.default_runtime;
                 let default_python_env = settings.default_python_env;
+                // Convert working_dir String to PathBuf
+                let working_dir_path = working_dir.map(std::path::PathBuf::from);
                 crate::notebook_sync_server::handle_notebook_sync_connection(
                     reader,
                     writer,
@@ -870,6 +874,7 @@ impl Daemon {
                     default_runtime,
                     default_python_env,
                     self.clone(),
+                    working_dir_path,
                 )
                 .await
             }

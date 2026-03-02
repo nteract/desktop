@@ -53,6 +53,11 @@ pub enum Handshake {
         /// Protocol version requested by client. Default is "v1" (raw frames).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         protocol: Option<String>,
+        /// Working directory for untitled notebooks (used for project file detection).
+        /// When a notebook_id is a UUID (untitled), this provides the directory context
+        /// for finding pyproject.toml, pixi.toml, or environment.yaml.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        working_dir: Option<String>,
     },
     /// Blob store: write blobs, query port.
     Blob,
@@ -316,6 +321,7 @@ mod tests {
         let json = serde_json::to_string(&Handshake::NotebookSync {
             notebook_id: "abc".into(),
             protocol: None,
+            working_dir: None,
         })
         .unwrap();
         assert_eq!(json, r#"{"channel":"notebook_sync","notebook_id":"abc"}"#);
@@ -324,11 +330,24 @@ mod tests {
         let json = serde_json::to_string(&Handshake::NotebookSync {
             notebook_id: "abc".into(),
             protocol: Some("v2".into()),
+            working_dir: None,
         })
         .unwrap();
         assert_eq!(
             json,
             r#"{"channel":"notebook_sync","notebook_id":"abc","protocol":"v2"}"#
+        );
+
+        // NotebookSync with working_dir for untitled notebook
+        let json = serde_json::to_string(&Handshake::NotebookSync {
+            notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            protocol: Some("v2".into()),
+            working_dir: Some("/home/user/project".into()),
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"channel":"notebook_sync","notebook_id":"550e8400-e29b-41d4-a716-446655440000","protocol":"v2","working_dir":"/home/user/project"}"#
         );
 
         // Blob

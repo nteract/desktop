@@ -255,6 +255,7 @@ async fn initialize_notebook_sync(
     notebook_state: Arc<Mutex<NotebookState>>,
     notebook_sync: SharedNotebookSync,
     sync_generation: Arc<AtomicU64>,
+    working_dir: Option<PathBuf>,
 ) -> Result<(), String> {
     // Increment generation to invalidate any stale cleanup from previous connections
     let current_generation = sync_generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -266,16 +267,22 @@ async fn initialize_notebook_sync(
 
     let socket_path = runtimed::default_socket_path();
     info!(
-        "[notebook-sync] Connecting to daemon for notebook: {} ({})",
+        "[notebook-sync] Connecting to daemon for notebook: {} ({}) (working_dir: {:?})",
         notebook_id,
-        socket_path.display()
+        socket_path.display(),
+        working_dir
     );
 
     // Connect using the split pattern - returns handle, receiver, broadcast receiver, initial cells, and initial metadata
+    // Pass working_dir for untitled notebooks so daemon can detect project files
     let (handle, mut receiver, mut broadcast_receiver, initial_cells, initial_metadata) =
-        NotebookSyncClient::connect_split(socket_path, notebook_id.clone())
-            .await
-            .map_err(|e| format!("sync connect: {}", e))?;
+        NotebookSyncClient::connect_split_with_options(
+            socket_path,
+            notebook_id.clone(),
+            working_dir,
+        )
+        .await
+        .map_err(|e| format!("sync connect: {}", e))?;
 
     // Populate Automerge doc if empty (new room or first window)
     if initial_cells.is_empty() {
@@ -1033,8 +1040,9 @@ async fn save_notebook_as(
         .app_handle()
         .get_webview_window(window.label())
         .ok_or_else(|| "Current webview window not found".to_string())?;
+    // Saved notebooks have a path, so no working_dir needed for project detection
     if let Err(e) =
-        initialize_notebook_sync(webview_window, state, notebook_sync, sync_generation).await
+        initialize_notebook_sync(webview_window, state, notebook_sync, sync_generation, None).await
     {
         warn!("[save-as] Daemon reconnect failed (save succeeded): {}", e);
     }
@@ -1164,11 +1172,13 @@ fn create_notebook_window_with_label(
 
     let context = registry.get(&label)?;
     tauri::async_runtime::spawn(async move {
+        // New windows opened from file have a path, so no working_dir needed
         if let Err(e) = initialize_notebook_sync(
             window,
             context.notebook_state,
             context.notebook_sync,
             context.sync_generation,
+            None,
         )
         .await
         {
@@ -1727,6 +1737,7 @@ async fn reconnect_to_daemon(
     }
 
     // Re-initialize notebook sync
+    // On reconnect, the room may already have working_dir stored if it was an untitled notebook
     let webview_window = window
         .app_handle()
         .get_webview_window(window.label())
@@ -1736,6 +1747,7 @@ async fn reconnect_to_daemon(
         notebook_state,
         notebook_sync,
         sync_generation,
+        None, // Room preserves working_dir from initial connection
     )
     .await;
 
@@ -3159,9 +3171,12 @@ fn create_window_context(state: NotebookState) -> WindowNotebookContext {
 /// If `notebook_path` is Some, opens that file. If None, creates a new empty notebook.
 /// The `runtime` parameter specifies which runtime to use for new notebooks.
 /// If None, falls back to user's default runtime from settings.
+/// The `working_dir` parameter provides directory context for untitled notebooks,
+/// enabling project file detection (pyproject.toml, pixi.toml, environment.yaml).
 pub fn run(
     notebook_path: Option<PathBuf>,
     runtime: Option<Runtime>,
+    working_dir: Option<PathBuf>,
     #[allow(unused_variables)] webdriver_port: Option<u16>,
 ) -> anyhow::Result<()> {
     env_logger::init();
@@ -3417,6 +3432,8 @@ pub fn run(
             let app_for_sync = app.handle().clone();
             let app_for_notebook_sync = app.handle().clone();
             let registry_for_notebook_sync = registry_for_sync.clone();
+            // Capture working_dir for untitled notebook project file detection
+            let working_dir_for_sync = working_dir.clone();
             tauri::async_runtime::spawn(async move {
                 // Get path to bundled runtimed binary (for auto-installation)
                 let binary_path = get_bundled_runtimed_path(&app_for_daemon);
@@ -3461,6 +3478,7 @@ pub fn run(
                                 context.notebook_state,
                                 context.notebook_sync,
                                 context.sync_generation,
+                                working_dir_for_sync,
                             )
                             .await
                             {

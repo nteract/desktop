@@ -297,18 +297,18 @@ case "${1:-help}" in
     ;;
 
   test-untitled-pyproject)
-    # Test untitled notebook with pyproject.toml detection via RUNTIMED_UNTITLED_BASE_PATH
+    # Test untitled notebook with pyproject.toml detection via --cwd
     cd "$PROJECT_ROOT"
     require_binary
     $0 stop 2>/dev/null || true
     sleep 1
     start_daemon
 
-    # Set the base path for untitled notebooks to use the pyproject fixture
-    export RUNTIMED_UNTITLED_BASE_PATH="$PROJECT_ROOT/crates/notebook/fixtures/audit-test/pyproject-project"
+    # Use --cwd to set the working directory for untitled notebook project file detection
+    FIXTURE_DIR="$PROJECT_ROOT/crates/notebook/fixtures/audit-test/pyproject-project"
 
-    echo "Starting untitled notebook with RUNTIMED_UNTITLED_BASE_PATH=$RUNTIMED_UNTITLED_BASE_PATH"
-    RUST_LOG="${RUST_LOG:-info}" "$BINARY" --webdriver-port "$PORT" &
+    echo "Starting untitled notebook with --cwd $FIXTURE_DIR"
+    RUST_LOG="${RUST_LOG:-info}" "$BINARY" --webdriver-port "$PORT" --cwd "$FIXTURE_DIR" &
     wait_for_server 30
     TEST_EXIT=0
     E2E_SPEC="e2e/specs/untitled-pyproject.spec.js" WEBDRIVER_PORT="$PORT" pnpm exec wdio run e2e/wdio.conf.js || TEST_EXIT=$?
