@@ -1502,8 +1502,13 @@ async fn handle_notebook_request(
             // Auto-detect environment if env_source is "auto" or empty
             let resolved_env_source =
                 if env_source == "auto" || env_source.is_empty() || env_source == "prewarmed" {
+                    // Deno kernels don't use Python environments - always use "deno"
+                    if resolved_kernel_type == "deno" {
+                        info!("[notebook-sync] Deno kernel detected, using 'deno' env_source");
+                        "deno".to_string()
+                    }
                     // Priority 1: Check inline deps in notebook metadata
-                    if let Some(inline_source) =
+                    else if let Some(inline_source) =
                         metadata_snapshot.as_ref().and_then(check_inline_deps)
                     {
                         info!(
@@ -1524,7 +1529,7 @@ async fn handle_notebook_request(
                         );
                         detected.to_env_source().to_string()
                     }
-                    // Priority 3: Fall back to prewarmed
+                    // Priority 3: Fall back to prewarmed (Python only)
                     else {
                         info!("[notebook-sync] No project file detected, using prewarmed");
                         "uv:prewarmed".to_string()
@@ -2710,6 +2715,107 @@ mod tests {
             },
         };
         assert_eq!(check_inline_deps(&snapshot), Some("deno".to_string()));
+    }
+
+    // ── Tests for detect_notebook_kernel_type ──────────────────────────────
+
+    #[test]
+    fn test_detect_notebook_kernel_type_deno_kernelspec() {
+        // Deno kernelspec name should be detected
+        let snapshot = NotebookMetadataSnapshot {
+            kernelspec: Some(crate::notebook_metadata::KernelspecSnapshot {
+                name: "deno".to_string(),
+                display_name: "Deno".to_string(),
+                language: Some("typescript".to_string()),
+            }),
+            language_info: None,
+            runt: crate::notebook_metadata::RuntMetadata {
+                schema_version: "1".to_string(),
+                env_id: None,
+                uv: None,
+                conda: None,
+                deno: None,
+            },
+        };
+        assert_eq!(
+            detect_notebook_kernel_type(&snapshot),
+            Some("deno".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_notebook_kernel_type_typescript_language() {
+        // Kernelspec with typescript language should return deno
+        let snapshot = NotebookMetadataSnapshot {
+            kernelspec: Some(crate::notebook_metadata::KernelspecSnapshot {
+                name: "some-kernel".to_string(),
+                display_name: "Some Kernel".to_string(),
+                language: Some("typescript".to_string()),
+            }),
+            language_info: None,
+            runt: crate::notebook_metadata::RuntMetadata {
+                schema_version: "1".to_string(),
+                env_id: None,
+                uv: None,
+                conda: None,
+                deno: None,
+            },
+        };
+        assert_eq!(
+            detect_notebook_kernel_type(&snapshot),
+            Some("deno".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_notebook_kernel_type_python() {
+        // Python kernelspec should be detected
+        let snapshot = NotebookMetadataSnapshot {
+            kernelspec: Some(crate::notebook_metadata::KernelspecSnapshot {
+                name: "python3".to_string(),
+                display_name: "Python 3".to_string(),
+                language: Some("python".to_string()),
+            }),
+            language_info: None,
+            runt: crate::notebook_metadata::RuntMetadata {
+                schema_version: "1".to_string(),
+                env_id: None,
+                uv: None,
+                conda: None,
+                deno: None,
+            },
+        };
+        assert_eq!(
+            detect_notebook_kernel_type(&snapshot),
+            Some("python".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_notebook_kernel_type_language_info_fallback() {
+        // Falls back to language_info when kernelspec doesn't match
+        let snapshot = NotebookMetadataSnapshot {
+            kernelspec: Some(crate::notebook_metadata::KernelspecSnapshot {
+                name: "unknown-kernel".to_string(),
+                display_name: "Unknown".to_string(),
+                language: None,
+            }),
+            language_info: Some(crate::notebook_metadata::LanguageInfoSnapshot {
+                name: "typescript".to_string(),
+                version: None,
+            }),
+            runt: crate::notebook_metadata::RuntMetadata {
+                schema_version: "1".to_string(),
+                env_id: None,
+                uv: None,
+                conda: None,
+                deno: None,
+            },
+        };
+        assert_eq!(
+            detect_notebook_kernel_type(&snapshot),
+            Some("deno".to_string())
+        );
     }
 
     // ── Integration tests for save_notebook_to_disk ────────────────────────
