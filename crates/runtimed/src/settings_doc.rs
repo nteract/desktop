@@ -1271,4 +1271,122 @@ mod tests {
         let changed = doc.apply_json_changes(&json);
         assert!(!changed);
     }
+
+    #[test]
+    fn test_keep_alive_secs_null_is_forever() {
+        let mut doc = SettingsDoc::new();
+        doc.put_null("keep_alive_secs");
+
+        // get_u64_option should return Some(None) for explicit null
+        let result = doc.get_u64_option("keep_alive_secs");
+        assert_eq!(result, Some(None));
+
+        // get_all should have None for forever mode
+        let settings = doc.get_all();
+        assert_eq!(settings.keep_alive_secs, None);
+    }
+
+    #[test]
+    fn test_keep_alive_secs_valid_number() {
+        let mut doc = SettingsDoc::new();
+        doc.put_u64("keep_alive_secs", 60);
+
+        let result = doc.get_u64_option("keep_alive_secs");
+        assert_eq!(result, Some(Some(60)));
+
+        let settings = doc.get_all();
+        assert_eq!(settings.keep_alive_secs, Some(60));
+    }
+
+    #[test]
+    fn test_keep_alive_secs_default() {
+        let doc = SettingsDoc::new();
+        let settings = doc.get_all();
+
+        // Default should be Some(30), not forever
+        assert_eq!(settings.keep_alive_secs, Some(DEFAULT_KEEP_ALIVE_SECS));
+    }
+
+    #[test]
+    fn test_apply_json_changes_keep_alive_explicit_null() {
+        let mut doc = SettingsDoc::new();
+
+        // Explicit null in JSON should set forever mode
+        let json = serde_json::json!({
+            "keep_alive_secs": null
+        });
+        let changed = doc.apply_json_changes(&json);
+        assert!(changed);
+
+        let settings = doc.get_all();
+        assert_eq!(settings.keep_alive_secs, None);
+    }
+
+    #[test]
+    fn test_apply_json_changes_keep_alive_valid_number() {
+        let mut doc = SettingsDoc::new();
+
+        let json = serde_json::json!({
+            "keep_alive_secs": 120
+        });
+        let changed = doc.apply_json_changes(&json);
+        assert!(changed);
+
+        let settings = doc.get_all();
+        assert_eq!(settings.keep_alive_secs, Some(120));
+    }
+
+    #[test]
+    fn test_apply_json_changes_keep_alive_invalid_ignored() {
+        let mut doc = SettingsDoc::new();
+        // Set a known value first
+        doc.put_u64("keep_alive_secs", 60);
+
+        // Invalid values should be ignored, not treated as forever
+        // Test negative number (can't be represented as u64 in JSON)
+        let json = serde_json::json!({
+            "keep_alive_secs": -1
+        });
+        let changed = doc.apply_json_changes(&json);
+        assert!(!changed); // Should be no change
+
+        let settings = doc.get_all();
+        assert_eq!(settings.keep_alive_secs, Some(60)); // Original preserved
+
+        // Test string value
+        let json = serde_json::json!({
+            "keep_alive_secs": "30"
+        });
+        let changed = doc.apply_json_changes(&json);
+        assert!(!changed);
+
+        let settings = doc.get_all();
+        assert_eq!(settings.keep_alive_secs, Some(60)); // Original preserved
+
+        // Test object value
+        let json = serde_json::json!({
+            "keep_alive_secs": {}
+        });
+        let changed = doc.apply_json_changes(&json);
+        assert!(!changed);
+
+        let settings = doc.get_all();
+        assert_eq!(settings.keep_alive_secs, Some(60)); // Original preserved
+    }
+
+    #[test]
+    fn test_get_u64_option_negative_int_not_forever() {
+        use automerge::{AutoCommit, ReadDoc};
+
+        // Manually create a doc with a negative Int value
+        let mut automerge_doc = AutoCommit::new();
+        let _ = automerge_doc.put(automerge::ROOT, "keep_alive_secs", -5_i64);
+
+        // Wrap in SettingsDoc
+        let doc = SettingsDoc { doc: automerge_doc };
+
+        // Negative Int should return None (not present), not Some(None) (forever)
+        let result = doc.get_u64_option("keep_alive_secs");
+        assert_eq!(result, None);
+    }
 }
