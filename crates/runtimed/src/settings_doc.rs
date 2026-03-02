@@ -300,6 +300,9 @@ impl SettingsDoc {
         if let Some(env) = json.get("default_python_env").and_then(|v| v.as_str()) {
             settings.put("default_python_env", env);
         }
+        if let Some(secs) = json.get("keep_alive_secs").and_then(|v| v.as_u64()) {
+            settings.put_u64("keep_alive_secs", secs);
+        }
 
         let uv_packages = Self::extract_packages_from_json(json, "uv");
         if !uv_packages.is_empty() {
@@ -446,7 +449,8 @@ impl SettingsDoc {
             .flatten()
             .and_then(|(value, _)| match value {
                 automerge::Value::Scalar(s) => match s.as_ref() {
-                    automerge::ScalarValue::Int(i) => Some(*i as u64),
+                    // Use try_from to prevent negative values wrapping to huge u64
+                    automerge::ScalarValue::Int(i) => u64::try_from(*i).ok(),
                     automerge::ScalarValue::Uint(u) => Some(*u),
                     // Also support string for migration/JSON compatibility
                     automerge::ScalarValue::Str(s) => s.parse().ok(),

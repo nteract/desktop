@@ -238,6 +238,14 @@ where
                     .collect();
                 self.put_list(key, &items)?;
             }
+            serde_json::Value::Number(n) => {
+                if let Some(u) = n.as_u64() {
+                    // Store as i64 since Automerge's Int is more widely supported
+                    self.doc
+                        .put(automerge::ROOT, key, u as i64)
+                        .map_err(|e| SyncClientError::SyncError(format!("put u64: {}", e)))?;
+                }
+            }
             _ => {}
         }
 
@@ -345,7 +353,8 @@ fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
             .flatten()
             .and_then(|(value, _)| match value {
                 automerge::Value::Scalar(s) => match s.as_ref() {
-                    automerge::ScalarValue::Int(i) => Some(*i as u64),
+                    // Use try_from to prevent negative values wrapping to huge u64
+                    automerge::ScalarValue::Int(i) => u64::try_from(*i).ok(),
                     automerge::ScalarValue::Uint(u) => Some(*u),
                     automerge::ScalarValue::Str(s) => s.parse().ok(),
                     _ => None,

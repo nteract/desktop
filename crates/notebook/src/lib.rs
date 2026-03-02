@@ -2897,6 +2897,12 @@ fn save_setting_locally(key: &str, value: &serde_json::Value) -> Result<(), Stri
             s.conda.default_packages = packages;
             settings::save_settings(&s).map_err(|e| e.to_string())
         }
+        "keep_alive_secs" => {
+            let secs = value.as_u64().ok_or("expected number")?;
+            let mut s = settings::load_settings();
+            s.keep_alive_secs = secs;
+            settings::save_settings(&s).map_err(|e| e.to_string())
+        }
         _ => Ok(()),
     }
 }
