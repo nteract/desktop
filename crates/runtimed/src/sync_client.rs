@@ -246,6 +246,11 @@ where
                         .map_err(|e| SyncClientError::SyncError(format!("put u64: {}", e)))?;
                 }
             }
+            serde_json::Value::Null => {
+                self.doc
+                    .put(automerge::ROOT, key, automerge::ScalarValue::Null)
+                    .map_err(|e| SyncClientError::SyncError(format!("put null: {}", e)))?;
+            }
             _ => {}
         }
 
