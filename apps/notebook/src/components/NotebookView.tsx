@@ -151,7 +151,7 @@ function NotebookViewContent({
   useEffect(() => {
     if (!searchCurrentMatch) return;
     const cellEl = containerRef.current?.querySelector(
-      `[data-cell-id="${searchCurrentMatch.cellId}"]`,
+      `[data-cell-id="${CSS.escape(searchCurrentMatch.cellId)}"]`,
     );
     if (cellEl) {
       cellEl.scrollIntoView({ block: "nearest", behavior: "smooth" });

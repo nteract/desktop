@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { NotebookCell } from "../types";
 
 /** A single search match location. */
@@ -78,19 +78,12 @@ export function useGlobalFind(cells: NotebookCell[]): GlobalFindState {
     Map<string, number>
   >(new Map());
 
-  // Track previous query to reset output counts when query changes
-  const prevQueryRef = useRef(query);
-  if (prevQueryRef.current !== query) {
-    prevQueryRef.current = query;
-    // Clear stale output counts — OutputArea will re-report for the new query
-    if (outputMatchCounts.size > 0) {
-      setOutputMatchCounts(new Map());
-    }
-  }
-
   const reportOutputMatchCount = useCallback(
     (cellId: string, count: number) => {
       setOutputMatchCounts((prev) => {
+        // Bail out when count is 0 and cellId isn't tracked — avoids creating
+        // a new Map on every output change when find is inactive (#1)
+        if (count === 0 && !prev.has(cellId)) return prev;
         if (prev.get(cellId) === count) return prev;
         const next = new Map(prev);
         if (count === 0) {
@@ -159,6 +152,8 @@ export function useGlobalFind(cells: NotebookCell[]): GlobalFindState {
   const setQuery = useCallback((newQuery: string) => {
     setQueryState(newQuery);
     setCurrentMatchIndex(0);
+    // Clear stale output counts — OutputArea will re-report for the new query
+    setOutputMatchCounts(new Map());
   }, []);
 
   const nextMatch = useCallback(() => {

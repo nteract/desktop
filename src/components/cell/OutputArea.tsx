@@ -455,14 +455,12 @@ export function OutputArea({
   // Re-run when outputs array ref changes so new content gets highlighted
   useEffect(() => {
     if (shouldIsolate) return; // iframe reports its own count via search_results
-    if (!inDomOutputRef.current || outputs.length === 0) {
-      onSearchMatchCount?.(0);
+    if (!searchQuery || !inDomOutputRef.current || outputs.length === 0) {
+      // Only report 0 if we were previously tracking matches for this cell
+      if (searchQuery) onSearchMatchCount?.(0);
       return;
     }
-    const cleanup = highlightTextInDom(
-      inDomOutputRef.current,
-      searchQuery || "",
-    );
+    const cleanup = highlightTextInDom(inDomOutputRef.current, searchQuery);
     const count =
       inDomOutputRef.current.querySelectorAll(".global-find-match").length;
     onSearchMatchCount?.(count);
