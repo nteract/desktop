@@ -11,8 +11,8 @@ target/
 .ipynb_checkpoints
 Untitled*.ipynb
 
-# Dev mode notebooks directory
-notebooks/
+# Dev mode notebooks directory (repo root only)
+/notebooks/
 
 # Local sqlite db files
 *.db

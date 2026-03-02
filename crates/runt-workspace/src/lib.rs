@@ -106,23 +106,31 @@ pub fn daemon_base_dir() -> PathBuf {
 
 /// Get the default directory for saving notebooks.
 ///
-/// In dev mode with a workspace path: `{workspace}/notebooks/`
+/// In dev mode with a workspace path: tries `{workspace}/notebooks/` first,
+/// falling back to `~/notebooks/` if the workspace dir can't be created.
 /// Otherwise: `~/notebooks/`
 ///
 /// Creates the directory if it doesn't exist.
 pub fn default_notebooks_dir() -> Result<PathBuf, String> {
-    let notebooks_dir = if is_dev_mode() {
+    // In dev mode, try workspace notebooks first with fallback to home
+    if is_dev_mode() {
         if let Some(workspace) = get_workspace_path() {
-            workspace.join("notebooks")
-        } else {
-            home_notebooks_dir()?
+            let workspace_notebooks = workspace.join("notebooks");
+            if ensure_dir_exists(&workspace_notebooks).is_ok() {
+                return Ok(workspace_notebooks);
+            }
+            // Workspace dir failed (stale path, permissions, etc.) - fall back to ~/notebooks
+            eprintln!(
+                "Warning: Could not create {}, falling back to ~/notebooks",
+                workspace_notebooks.display()
+            );
         }
-    } else {
-        home_notebooks_dir()?
-    };
+    }
 
-    ensure_dir_exists(&notebooks_dir)?;
-    Ok(notebooks_dir)
+    // Default to ~/notebooks
+    let home_notebooks = home_notebooks_dir()?;
+    ensure_dir_exists(&home_notebooks)?;
+    Ok(home_notebooks)
 }
 
 /// Get the ~/notebooks directory path.
