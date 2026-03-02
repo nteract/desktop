@@ -212,7 +212,13 @@ jobs:
     runs-on: ${{ needs.changes.outputs.source_changed == 'true' && matrix.platform.runner || 'ubuntu-latest' }}
     strategy:
       matrix:
-        platform: ${{ fromJSON(github.event_name == 'pull_request' && '[{"name":"macOS","runner":"macos-latest","setup":"echo No extra deps needed on macOS"}]' || '[{"name":"macOS","runner":"macos-latest","setup":"echo No extra deps needed on macOS"},{"name":"Windows","runner":"windows-latest","setup":"echo No extra deps needed on Windows"}]') }}
+        platform:
+          - name: macOS
+            runner: macos-latest
+            setup: echo "No extra deps needed on macOS"
+          - name: Windows
+            runner: windows-latest
+            setup: echo "No extra deps needed on Windows"
     steps:
       - name: Skip non-source changes
         if: needs.changes.outputs.source_changed != 'true'
