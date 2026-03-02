@@ -111,6 +111,8 @@ function AppContent() {
   const [showIsolationTest, setShowIsolationTest] = useState(false);
   const [trustDialogOpen, setTrustDialogOpen] = useState(false);
   const [clearingDeps, setClearingDeps] = useState(false);
+  // Track when sync/restart just completed for success feedback
+  const [justSynced, setJustSynced] = useState(false);
 
   // Daemon startup status (installing, starting, failed, etc.)
   const [daemonStatus, setDaemonStatus] = useState<DaemonStatus>(null);
@@ -138,6 +140,13 @@ function AppContent() {
       setRuntime(r as "python" | "deno");
     });
   }, []);
+
+  // Auto-clear justSynced after 3 seconds
+  useEffect(() => {
+    if (!justSynced) return;
+    const timer = setTimeout(() => setJustSynced(false), 3000);
+    return () => clearTimeout(timer);
+  }, [justSynced]);
 
   // Page payload state: maps cell_id -> payload (transient, not saved)
   const [pagePayloads, setPagePayloads] = useState<
@@ -420,6 +429,7 @@ function AppContent() {
 
       if (response.result === "sync_environment_complete") {
         console.log("[App] Hot-sync succeeded:", response.synced_packages);
+        setJustSynced(true);
         return true;
       }
 
@@ -438,7 +448,11 @@ function AppContent() {
 
     // Restart flow - deps are already trusted from check above
     await shutdownKernel();
-    return tryStartKernel();
+    const started = await tryStartKernel();
+    if (started) {
+      setJustSynced(true);
+    }
+    return started;
   }, [
     envSource,
     envSyncState,
@@ -956,6 +970,7 @@ function AppContent() {
           syncState={denoDerivedSyncState}
           syncing={kernelStatus === "starting"}
           onSyncNow={handleSyncDeps}
+          justSynced={justSynced}
         />
       )}
       {dependencyHeaderOpen && runtime === "python" && envType === "conda" && (
@@ -979,6 +994,7 @@ function AppContent() {
           environmentYmlDeps={environmentYmlDeps}
           pixiInfo={pixiInfo}
           onImportFromPixi={importFromPixi}
+          justSynced={justSynced}
         />
       )}
       {dependencyHeaderOpen && runtime === "python" && envType !== "conda" && (
@@ -998,6 +1014,7 @@ function AppContent() {
           onImportFromPyproject={importFromPyproject}
           onUseProjectEnv={handleStartKernelWithPyproject}
           isUsingProjectEnv={envSource === "uv:pyproject"}
+          justSynced={justSynced}
         />
       )}
       {showIsolationTest && <IsolationTest />}

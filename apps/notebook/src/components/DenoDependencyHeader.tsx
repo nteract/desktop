@@ -1,4 +1,11 @@
-import { ExternalLink, FileText, Info, Package, RefreshCw } from "lucide-react";
+import {
+  Check,
+  ExternalLink,
+  FileText,
+  Info,
+  Package,
+  RefreshCw,
+} from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import type { DenoConfigInfo } from "../hooks/useDenoDependencies";
@@ -12,6 +19,8 @@ interface DenoDependencyHeaderProps {
   syncState?: { status: "synced" | "dirty" } | null;
   syncing?: boolean;
   onSyncNow?: () => Promise<boolean>;
+  /** Show success feedback after sync completed */
+  justSynced?: boolean;
 }
 
 export function DenoDependencyHeader({
@@ -22,6 +31,7 @@ export function DenoDependencyHeader({
   syncState,
   syncing,
   onSyncNow,
+  justSynced,
 }: DenoDependencyHeaderProps) {
   return (
     <div className="border-b bg-emerald-50/30 dark:bg-emerald-950/10">
@@ -33,6 +43,14 @@ export function DenoDependencyHeader({
           </span>
           <span className="text-xs text-muted-foreground">Dependencies</span>
         </div>
+
+        {/* Success feedback after sync completed */}
+        {justSynced && (
+          <div className="mb-3 flex items-center gap-2 rounded bg-emerald-500/10 px-2 py-1.5 text-xs text-emerald-700 dark:text-emerald-400">
+            <Check className="h-3.5 w-3.5 shrink-0" />
+            <span>Kernel restarted — configuration applied</span>
+          </div>
+        )}
 
         {/* Config drift notice - kernel restart needed */}
         {syncState?.status === "dirty" && onSyncNow && (

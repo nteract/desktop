@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  Check,
   Download,
   FileText,
   Info,
@@ -42,6 +43,8 @@ interface CondaDependencyHeaderProps {
   pixiInfo?: PixiInfo | null;
   /** Import pixi.toml deps into notebook conda metadata */
   onImportFromPixi?: () => Promise<void>;
+  /** Show success feedback after sync completed */
+  justSynced?: boolean;
 }
 
 export function CondaDependencyHeader({
@@ -64,6 +67,7 @@ export function CondaDependencyHeader({
   environmentYmlDeps,
   pixiInfo,
   onImportFromPixi,
+  justSynced,
 }: CondaDependencyHeaderProps) {
   const [newDep, setNewDep] = useState("");
   const [newChannel, setNewChannel] = useState("");
@@ -177,6 +181,14 @@ export function CondaDependencyHeader({
                 </button>
               )}
             </div>
+          </div>
+        )}
+
+        {/* Success feedback after sync completed */}
+        {justSynced && (
+          <div className="mb-3 flex items-center gap-2 rounded bg-emerald-500/10 px-2 py-1.5 text-xs text-emerald-700 dark:text-emerald-400">
+            <Check className="h-3.5 w-3.5 shrink-0" />
+            <span>Environment synced — dependencies are ready to use</span>
           </div>
         )}
 
