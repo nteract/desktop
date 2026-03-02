@@ -527,25 +527,10 @@ impl RoomKernel {
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(std::env::temp_dir)
         } else {
-            // For untitled notebooks, use ~/notebooks to avoid macOS permission prompts
+            // For untitled notebooks, use default notebooks directory to avoid macOS permission prompts
             // (using $HOME triggers "allow access to Music/Documents/etc" popups)
-            if let Some(home) = dirs::home_dir() {
-                let notebooks_dir = home.join("notebooks");
-                // Create if needed (app setup should have done this, but be defensive)
-                match std::fs::create_dir(&notebooks_dir) {
-                    Ok(()) => notebooks_dir,
-                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                        if notebooks_dir.is_dir() {
-                            notebooks_dir
-                        } else {
-                            std::env::temp_dir()
-                        }
-                    }
-                    Err(_) => std::env::temp_dir(),
-                }
-            } else {
-                std::env::temp_dir()
-            }
+            // In dev mode, this will be {workspace}/notebooks instead of ~/notebooks
+            runt_workspace::default_notebooks_dir().unwrap_or_else(|_| std::env::temp_dir())
         };
 
         // Build kernel command based on kernel type

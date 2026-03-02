@@ -2989,25 +2989,12 @@ fn spawn_new_notebook(
     create_notebook_window(app, registry, state).map(|_| ())
 }
 
-/// Ensure ~/notebooks directory exists and return its path.
+/// Ensure notebooks directory exists and return its path.
+///
+/// In dev mode with a workspace path, uses {workspace}/notebooks.
+/// Otherwise uses ~/notebooks.
 fn ensure_notebooks_directory() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
-    let notebooks_dir = home.join("notebooks");
-    match std::fs::create_dir(&notebooks_dir) {
-        Ok(()) => Ok(notebooks_dir),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            // Only return the path if it's actually a directory
-            if notebooks_dir.is_dir() {
-                Ok(notebooks_dir)
-            } else {
-                Err(format!(
-                    "~/notebooks exists but is not a directory: {}",
-                    notebooks_dir.display()
-                ))
-            }
-        }
-        Err(e) => Err(format!("Failed to create ~/notebooks directory: {}", e)),
-    }
+    runt_workspace::default_notebooks_dir()
 }
 
 /// Get the default directory for saving new notebooks.

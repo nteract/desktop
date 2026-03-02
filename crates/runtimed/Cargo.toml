@@ -68,6 +68,9 @@ automerge = "0.7"
 # Trust verification (shared with notebook crate)
 runt-trust = { path = "../runt-trust" }
 
+# Workspace and dev mode utilities
+runt-workspace = { path = "../runt-workspace" }
+
 # Shared kernel launching and tool bootstrapping
 kernel-launch = { path = "../kernel-launch" }
 

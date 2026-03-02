@@ -1,0 +1,10 @@
+[package]
+name = "runt-workspace"
+version = "0.1.0"
+edition = "2021"
+description = "Workspace and dev mode utilities for Runt"
+
+[dependencies]
+dirs = "5"
+hex = "0.4"
+sha2 = "0.10"
