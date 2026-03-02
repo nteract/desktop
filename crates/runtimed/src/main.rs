@@ -20,7 +20,7 @@ struct Cli {
     command: Option<Commands>,
 
     /// Log level
-    #[arg(long, global = true, default_value = "info")]
+    #[arg(long, global = true, default_value = "warn")]
     log_level: String,
 
     /// Run in development mode (per-worktree isolation)

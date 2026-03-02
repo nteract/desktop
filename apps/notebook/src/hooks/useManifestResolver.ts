@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { logger } from "../lib/logger";
 import type { JupyterOutput } from "../types";
 
 /**
@@ -171,7 +172,7 @@ export async function fetchBlobPortWithRetry(
       if (attempt < maxAttempts) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       } else {
-        console.warn(
+        logger.warn(
           `[manifest-resolver] Failed to get blob port after ${maxAttempts} attempts:`,
           e,
         );
@@ -199,10 +200,7 @@ export async function resolveOutputString(
     try {
       return JSON.parse(outputStr) as JupyterOutput;
     } catch {
-      console.warn(
-        "[manifest-resolver] Failed to parse output as JSON:",
-        outputStr.substring(0, 100),
-      );
+      logger.warn("[manifest-resolver] Failed to parse output as JSON");
       return null;
     }
   }
@@ -213,8 +211,8 @@ export async function resolveOutputString(
       `http://127.0.0.1:${blobPort}/blob/${outputStr}`,
     );
     if (!response.ok) {
-      console.warn(
-        `[manifest-resolver] Failed to fetch manifest ${outputStr}: ${response.status}`,
+      logger.warn(
+        `[manifest-resolver] Failed to fetch manifest: ${response.status}`,
       );
       return null;
     }
@@ -223,7 +221,7 @@ export async function resolveOutputString(
     const manifest = JSON.parse(manifestJson) as OutputManifest;
     return resolveManifest(manifest, blobPort);
   } catch (e) {
-    console.warn(`[manifest-resolver] Failed to resolve ${outputStr}:`, e);
+    logger.warn("[manifest-resolver] Failed to resolve manifest:", e);
     return null;
   }
 }
@@ -279,17 +277,14 @@ export function useManifestResolver() {
           cacheRef.current.set(outputStr, output);
           return output;
         } catch {
-          console.warn(
-            "[manifest-resolver] Failed to parse output as JSON:",
-            outputStr.substring(0, 100),
-          );
+          logger.warn("[manifest-resolver] Failed to parse output as JSON");
           return null;
         }
       }
 
       // Need blob port for manifest resolution
       if (blobPort === null) {
-        console.warn("[manifest-resolver] Blob port not available yet");
+        logger.debug("[manifest-resolver] Blob port not available yet");
         return null;
       }
 
@@ -301,8 +296,8 @@ export function useManifestResolver() {
             `http://127.0.0.1:${blobPort}/blob/${outputStr}`,
           );
           if (!response.ok) {
-            console.warn(
-              `[manifest-resolver] Failed to fetch manifest ${outputStr}: ${response.status}`,
+            logger.warn(
+              `[manifest-resolver] Failed to fetch manifest: ${response.status}`,
             );
             return null;
           }
@@ -315,10 +310,7 @@ export function useManifestResolver() {
           cacheRef.current.set(outputStr, output);
           return output;
         } catch (e) {
-          console.warn(
-            `[manifest-resolver] Failed to resolve ${outputStr}:`,
-            e,
-          );
+          logger.warn("[manifest-resolver] Failed to resolve manifest:", e);
           return null;
         } finally {
           // Remove from pending

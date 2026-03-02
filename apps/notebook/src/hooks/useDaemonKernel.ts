@@ -9,6 +9,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { logger } from "../lib/logger";
 import type {
   DaemonBroadcast,
   DaemonNotebookResponse,
@@ -222,7 +223,7 @@ export function useDaemonKernel({
                 }
               }
               if (!port) {
-                console.error(
+                logger.error(
                   "[daemon-kernel] Blob port unavailable, cannot resolve output",
                 );
                 return;
@@ -233,13 +234,13 @@ export function useDaemonKernel({
                 callbacksRef.current.onOutput(cellId, output);
               } else if (!retried) {
                 // Resolution failed - port may be stale, refresh and retry once
-                console.warn(
-                  "[daemon-kernel] Output resolution failed, refreshing port and retrying",
+                logger.debug(
+                  "[daemon-kernel] Output resolution failed, refreshing port",
                 );
                 blobPortRef.current = 0;
                 await resolveWithRetry(true);
               } else {
-                console.error(
+                logger.error(
                   "[daemon-kernel] Failed to resolve output for cell:",
                   cellId,
                 );
@@ -247,7 +248,7 @@ export function useDaemonKernel({
             };
 
             resolveWithRetry().catch((e) => {
-              console.error("[daemon-kernel] Failed to resolve output:", e);
+              logger.error("[daemon-kernel] Failed to resolve output:", e);
             });
             break;
           }
@@ -321,12 +322,9 @@ export function useDaemonKernel({
             // Initial comm state sync from daemon for multi-window widget reconstruction
             // Replay all comms as comm_open messages to the widget store
             const { onCommMessage } = callbacksRef.current;
-            console.log(
-              `[daemon-kernel] Received comm_sync event with ${broadcast.comms?.length ?? 0} comms, handler=${!!onCommMessage}`,
-            );
             if (onCommMessage && broadcast.comms) {
-              console.log(
-                `[daemon-kernel] Processing comm_sync: replaying ${broadcast.comms.length} comms`,
+              logger.debug(
+                `[daemon-kernel] comm_sync: replaying ${broadcast.comms.length} comms`,
               );
               for (const comm of broadcast.comms) {
                 // Synthesize a comm_open message for each active comm
@@ -356,8 +354,8 @@ export function useDaemonKernel({
                 onCommMessage(msg);
               }
             } else if (!onCommMessage) {
-              console.warn(
-                "[daemon-kernel] comm_sync received but onCommMessage not set!",
+              logger.debug(
+                "[daemon-kernel] comm_sync received but onCommMessage not set",
               );
             }
             break;
@@ -394,7 +392,7 @@ export function useDaemonKernel({
 
           default: {
             // Log unknown events to help debug unexpected broadcast types
-            console.log(
+            logger.debug(
               `[daemon-kernel] Unknown broadcast event: ${(broadcast as { event: string }).event}`,
             );
           }
@@ -409,13 +407,6 @@ export function useDaemonKernel({
         .then((response) => {
           if (cancelled) return;
           if (response.result === "kernel_info") {
-            console.log(
-              "[daemon-kernel] Got kernel info:",
-              response.status,
-              response.kernel_type,
-              `(retry ${retryCount})`,
-            );
-
             // If kernel is not started and we haven't retried too many times,
             // wait a bit and try again (kernel may be auto-launching)
             if (response.status === "not_started" && retryCount < 5) {
@@ -425,6 +416,11 @@ export function useDaemonKernel({
               return;
             }
 
+            logger.debug(
+              "[daemon-kernel] Kernel info:",
+              response.status,
+              response.kernel_type,
+            );
             setKernelInfo({
               kernelType: response.kernel_type,
               envSource: response.env_source,
@@ -442,9 +438,7 @@ export function useDaemonKernel({
       "daemon:disconnected",
       async () => {
         if (cancelled) return;
-        console.warn(
-          "[daemon-kernel] Daemon disconnected, resetting kernel state",
-        );
+        logger.warn("[daemon-kernel] Daemon disconnected, resetting state");
         setKernelStatus("not_started");
         setKernelInfo({});
         setQueueState({ executing: null, queued: [] });
@@ -453,17 +447,14 @@ export function useDaemonKernel({
         blobPortRef.current = 0;
 
         // Attempt to reconnect to the daemon
-        console.log("[daemon-kernel] Attempting to reconnect to daemon...");
         try {
           await invoke("reconnect_to_daemon");
-          console.log(
-            "[daemon-kernel] Reconnected to daemon, fetching kernel info",
-          );
+          logger.debug("[daemon-kernel] Reconnected to daemon");
           // After reconnecting, refresh blob port (daemon may have new port) and kernel info
           refreshBlobPort();
           fetchKernelInfo();
         } catch (e) {
-          console.error("[daemon-kernel] Failed to reconnect:", e);
+          logger.error("[daemon-kernel] Failed to reconnect:", e);
         }
       },
     );
@@ -471,9 +462,7 @@ export function useDaemonKernel({
     // Listen for daemon ready signal
     const unlistenReady = webview.listen("daemon:ready", () => {
       if (cancelled) return;
-      console.log(
-        "[daemon-kernel] Daemon ready, refreshing blob port and kernel info",
-      );
+      logger.debug("[daemon-kernel] Daemon ready");
       refreshBlobPort();
       fetchKernelInfo();
     });
@@ -502,12 +491,7 @@ export function useDaemonKernel({
       envSource: string,
       notebookPath?: string,
     ): Promise<DaemonNotebookResponse> => {
-      console.log(
-        "[daemon-kernel] launching kernel:",
-        kernelType,
-        envSource,
-        notebookPath,
-      );
+      logger.debug("[daemon-kernel] Launching kernel:", kernelType, envSource);
       setKernelStatus("starting");
 
       try {
@@ -531,7 +515,7 @@ export function useDaemonKernel({
 
         return response;
       } catch (e) {
-        console.error("[daemon-kernel] launch failed:", e);
+        logger.error("[daemon-kernel] Launch failed:", e);
         setKernelStatus("error");
         throw e;
       }
@@ -542,13 +526,13 @@ export function useDaemonKernel({
   /** Execute a cell via the daemon (reads source from synced document) */
   const executeCell = useCallback(
     async (cellId: string): Promise<DaemonNotebookResponse> => {
-      console.log("[daemon-kernel] executing cell:", cellId);
+      logger.debug("[daemon-kernel] Executing cell:", cellId);
       try {
         return await invoke<DaemonNotebookResponse>("execute_cell_via_daemon", {
           cellId,
         });
       } catch (e) {
-        console.error("[daemon-kernel] execute failed:", e);
+        logger.error("[daemon-kernel] Execute failed:", e);
         throw e;
       }
     },
@@ -558,7 +542,7 @@ export function useDaemonKernel({
   /** Clear outputs for a cell via the daemon */
   const clearOutputs = useCallback(
     async (cellId: string): Promise<DaemonNotebookResponse> => {
-      console.log("[daemon-kernel] clearing outputs:", cellId);
+      logger.debug("[daemon-kernel] Clearing outputs:", cellId);
       try {
         return await invoke<DaemonNotebookResponse>(
           "clear_outputs_via_daemon",
@@ -567,7 +551,7 @@ export function useDaemonKernel({
           },
         );
       } catch (e) {
-        console.error("[daemon-kernel] clear outputs failed:", e);
+        logger.error("[daemon-kernel] Clear outputs failed:", e);
         throw e;
       }
     },
@@ -577,11 +561,11 @@ export function useDaemonKernel({
   /** Interrupt kernel execution via the daemon */
   const interruptKernel =
     useCallback(async (): Promise<DaemonNotebookResponse> => {
-      console.log("[daemon-kernel] interrupting kernel");
+      logger.debug("[daemon-kernel] Interrupting kernel");
       try {
         return await invoke<DaemonNotebookResponse>("interrupt_via_daemon");
       } catch (e) {
-        console.error("[daemon-kernel] interrupt failed:", e);
+        logger.error("[daemon-kernel] Interrupt failed:", e);
         throw e;
       }
     }, []);
@@ -589,7 +573,7 @@ export function useDaemonKernel({
   /** Shutdown the kernel via the daemon */
   const shutdownKernel =
     useCallback(async (): Promise<DaemonNotebookResponse> => {
-      console.log("[daemon-kernel] shutting down kernel");
+      logger.info("[daemon-kernel] Shutting down kernel");
       try {
         const response = await invoke<DaemonNotebookResponse>(
           "shutdown_kernel_via_daemon",
@@ -598,7 +582,7 @@ export function useDaemonKernel({
         setKernelInfo({});
         return response;
       } catch (e) {
-        console.error("[daemon-kernel] shutdown failed:", e);
+        logger.error("[daemon-kernel] Shutdown failed:", e);
         throw e;
       }
     }, []);
@@ -606,19 +590,19 @@ export function useDaemonKernel({
   /** Hot-sync environment - install new packages without restart (UV only) */
   const syncEnvironment =
     useCallback(async (): Promise<DaemonNotebookResponse> => {
-      console.log("[daemon-kernel] syncing environment");
+      logger.info("[daemon-kernel] Syncing environment");
       try {
         const response = await invoke<DaemonNotebookResponse>(
           "sync_environment_via_daemon",
         );
         if (response.result === "sync_environment_complete") {
-          console.log(
-            "[daemon-kernel] sync complete:",
+          logger.info(
+            "[daemon-kernel] Sync complete:",
             response.synced_packages,
           );
         } else if (response.result === "sync_environment_failed") {
-          console.warn(
-            "[daemon-kernel] sync failed:",
+          logger.warn(
+            "[daemon-kernel] Sync failed:",
             response.error,
             "needs_restart:",
             response.needs_restart,
@@ -626,7 +610,7 @@ export function useDaemonKernel({
         }
         return response;
       } catch (e) {
-        console.error("[daemon-kernel] sync environment failed:", e);
+        logger.error("[daemon-kernel] Sync environment failed:", e);
         throw e;
       }
     }, []);
@@ -644,17 +628,17 @@ export function useDaemonKernel({
         });
       }
     } catch (e) {
-      console.error("[daemon-kernel] get queue state failed:", e);
+      logger.error("[daemon-kernel] Get queue state failed:", e);
     }
   }, []);
 
   /** Run all code cells via the daemon (reads from synced doc) */
   const runAllCells = useCallback(async (): Promise<DaemonNotebookResponse> => {
-    console.log("[daemon-kernel] running all cells");
+    logger.debug("[daemon-kernel] Running all cells");
     try {
       return await invoke<DaemonNotebookResponse>("run_all_cells_via_daemon");
     } catch (e) {
-      console.error("[daemon-kernel] run all cells failed:", e);
+      logger.error("[daemon-kernel] Run all cells failed:", e);
       throw e;
     }
   }, []);
@@ -670,7 +654,7 @@ export function useDaemonKernel({
       channel?: string;
     }): Promise<void> => {
       const msgType = message.header.msg_type as string;
-      console.log("[daemon-kernel] sending comm message:", msgType);
+      logger.debug("[daemon-kernel] Sending comm message:", msgType);
       try {
         // Convert ArrayBuffer[] to number[][] for JSON serialization
         const buffers: number[][] = (message.buffers ?? []).map((buf) =>
@@ -693,12 +677,12 @@ export function useDaemonKernel({
         );
 
         if (response.result === "error") {
-          console.error("[daemon-kernel] send comm failed:", response.error);
+          logger.error("[daemon-kernel] Send comm failed:", response.error);
         } else if (response.result === "no_kernel") {
-          console.error("[daemon-kernel] send comm failed: no kernel running");
+          logger.error("[daemon-kernel] Send comm failed: no kernel running");
         }
       } catch (e) {
-        console.error("[daemon-kernel] send comm failed:", e);
+        logger.error("[daemon-kernel] Send comm failed:", e);
         throw e;
       }
     },

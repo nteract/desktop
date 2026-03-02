@@ -527,25 +527,10 @@ impl RoomKernel {
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(std::env::temp_dir)
         } else {
-            // For untitled notebooks, use ~/notebooks to avoid macOS permission prompts
+            // For untitled notebooks, use default notebooks directory to avoid macOS permission prompts
             // (using $HOME triggers "allow access to Music/Documents/etc" popups)
-            if let Some(home) = dirs::home_dir() {
-                let notebooks_dir = home.join("notebooks");
-                // Create if needed (app setup should have done this, but be defensive)
-                match std::fs::create_dir(&notebooks_dir) {
-                    Ok(()) => notebooks_dir,
-                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                        if notebooks_dir.is_dir() {
-                            notebooks_dir
-                        } else {
-                            std::env::temp_dir()
-                        }
-                    }
-                    Err(_) => std::env::temp_dir(),
-                }
-            } else {
-                std::env::temp_dir()
-            }
+            // In dev mode, this will be {workspace}/notebooks instead of ~/notebooks
+            runt_workspace::default_notebooks_dir().unwrap_or_else(|_| std::env::temp_dir())
         };
 
         // Build kernel command based on kernel type
@@ -1228,8 +1213,8 @@ impl RoomKernel {
                                 let data = serde_json::to_value(&open.data).unwrap_or_default();
 
                                 debug!(
-                                    "[comm_open] comm_id={} target={} data={}",
-                                    open.comm_id.0, open.target_name, data
+                                    "[comm_open] comm_id={} target={}",
+                                    open.comm_id.0, open.target_name
                                 );
                                 comm_state
                                     .on_comm_open(
@@ -1258,9 +1243,10 @@ impl RoomKernel {
 
                                 // Track state updates (method="update") for multi-window sync
                                 let data = serde_json::to_value(&msg.data).unwrap_or_default();
+                                let method = data.get("method").and_then(|m| m.as_str());
 
-                                debug!("[comm_msg] comm_id={} data={}", msg.comm_id.0, data);
-                                if data.get("method").and_then(|m| m.as_str()) == Some("update") {
+                                debug!("[comm_msg] comm_id={} method={:?}", msg.comm_id.0, method);
+                                if method == Some("update") {
                                     if let Some(state) = data.get("state") {
                                         comm_state.on_comm_update(&msg.comm_id.0, state).await;
                                     }

@@ -37,6 +37,7 @@ runtimelib = { workspace = true, features = ["tokio-runtime", "ring"] }
 tauri-jupyter = { path = "../tauri-jupyter" }
 runtimed = { path = "../runtimed" }
 runt-trust = { path = "../runt-trust" }
+runt-workspace = { path = "../runt-workspace" }
 kernel-launch = { path = "../kernel-launch" }
 kernel-env = { path = "../kernel-env" }
 nbformat = "1.2.0"

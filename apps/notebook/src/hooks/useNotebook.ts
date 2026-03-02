@@ -5,6 +5,7 @@ import {
   save as saveDialog,
 } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { logger } from "../lib/logger";
 import type { JupyterOutput, NotebookCell } from "../types";
 
 /**
@@ -171,17 +172,14 @@ async function resolveOutput(
       cache.set(outputStr, output);
       return output;
     } catch {
-      console.warn(
-        "[notebook-sync] Failed to parse output JSON:",
-        outputStr.substring(0, 100),
-      );
+      logger.warn("[notebook-sync] Failed to parse output JSON");
       return null;
     }
   }
 
   // It's a manifest hash - need blob port to resolve
   if (blobPort === null) {
-    console.warn("[notebook-sync] Manifest hash but no blob port:", outputStr);
+    logger.warn("[notebook-sync] Manifest hash but no blob port");
     return null;
   }
 
@@ -191,8 +189,8 @@ async function resolveOutput(
       `http://127.0.0.1:${blobPort}/blob/${outputStr}`,
     );
     if (!response.ok) {
-      console.warn(
-        `[notebook-sync] Failed to fetch manifest ${outputStr}: ${response.status}`,
+      logger.warn(
+        `[notebook-sync] Failed to fetch manifest: ${response.status}`,
       );
       return null;
     }
@@ -204,7 +202,7 @@ async function resolveOutput(
     cache.set(outputStr, output);
     return output;
   } catch (e) {
-    console.warn(`[notebook-sync] Failed to resolve manifest ${outputStr}:`, e);
+    logger.warn("[notebook-sync] Failed to resolve manifest:", e);
     return null;
   }
 }
@@ -295,7 +293,7 @@ export function useNotebook() {
   // Helper to refresh blob port (called on mount and daemon:ready)
   const refreshBlobPort = useCallback(() => {
     blobPortPromiseRef.current = invoke<number>("get_blob_port").catch((e) => {
-      console.warn("[notebook] Failed to get blob port:", e);
+      logger.warn("[notebook] Failed to get blob port:", e);
       return null;
     });
   }, []);
@@ -313,7 +311,7 @@ export function useNotebook() {
           setFocusedCellId(loadedCells[0].id);
         }
       })
-      .catch(console.error);
+      .catch((e) => logger.error("[notebook] Load failed:", e));
   }, []);
 
   useEffect(() => {
@@ -409,7 +407,7 @@ export function useNotebook() {
       // Refresh blob port (daemon may have restarted with new port)
       refreshBlobPort();
       invoke("refresh_from_automerge").catch((e) =>
-        console.warn("[notebook-sync] refresh_from_automerge failed:", e),
+        logger.warn("[notebook-sync] refresh_from_automerge failed:", e),
       );
     });
 
@@ -431,7 +429,9 @@ export function useNotebook() {
       prev.map((c) => (c.id === cellId ? { ...c, source } : c)),
     );
     setDirty(true);
-    invoke("update_cell_source", { cellId, source }).catch(console.error);
+    invoke("update_cell_source", { cellId, source }).catch((e) =>
+      logger.error("[notebook] Update cell source failed:", e),
+    );
   }, []);
 
   /**
@@ -467,7 +467,7 @@ export function useNotebook() {
         setDirty(true);
         return newCell;
       } catch (e) {
-        console.error("add_cell failed:", e);
+        logger.error("[notebook] Add cell failed:", e);
         return null;
       }
     },
@@ -480,7 +480,7 @@ export function useNotebook() {
       setCells((prev) => prev.filter((c) => c.id !== cellId));
       setDirty(true);
     } catch (e) {
-      console.error("delete_cell failed:", e);
+      logger.error("[notebook] Delete cell failed:", e);
     }
   }, []);
 
@@ -513,7 +513,7 @@ export function useNotebook() {
 
       setDirty(false);
     } catch (e) {
-      console.error("save_notebook failed:", e);
+      logger.error("[notebook] Save failed:", e);
     }
   }, []);
 
@@ -532,7 +532,7 @@ export function useNotebook() {
       // Open the notebook in a new window
       await invoke("open_notebook_in_new_window", { path: filePath });
     } catch (e) {
-      console.error("open_notebook failed:", e);
+      logger.error("[notebook] Open failed:", e);
     }
   }, []);
 
@@ -557,7 +557,7 @@ export function useNotebook() {
       // Open the cloned notebook in a new window
       await invoke("open_notebook_in_new_window", { path: filePath });
     } catch (e) {
-      console.error("clone_notebook failed:", e);
+      logger.error("[notebook] Clone failed:", e);
     }
   }, []);
 
@@ -634,12 +634,12 @@ export function useNotebook() {
       }>("format_cell", { cellId });
 
       if (result.error) {
-        console.warn("[notebook] format_cell warning:", result.error);
+        logger.warn("[notebook] Format cell warning:", result.error);
       }
 
       return result;
     } catch (e) {
-      console.error("[notebook] format_cell failed:", e);
+      logger.error("[notebook] Format cell failed:", e);
       return null;
     }
   }, []);

@@ -24,6 +24,7 @@ import {
 import { useWidgetStore } from "@/components/widgets/widget-store-context";
 import { isDarkMode as detectDarkMode } from "@/lib/dark-mode";
 import { ErrorBoundary } from "@/lib/error-boundary";
+import { highlightTextInDom } from "@/lib/highlight-text";
 import { OutputErrorFallback } from "@/lib/output-error-fallback";
 import { cn } from "@/lib/utils";
 
@@ -108,6 +109,16 @@ interface OutputAreaProps {
    * @deprecated Use the comm bridge instead for full widget support
    */
   onWidgetUpdate?: (commId: string, state: Record<string, unknown>) => void;
+  /**
+   * Search query to highlight in iframe outputs.
+   * Empty string or undefined clears highlights.
+   */
+  searchQuery?: string;
+  /**
+   * Callback reporting how many search matches were found in this cell's outputs.
+   * Called when iframe reports search_results or in-DOM highlighting completes.
+   */
+  onSearchMatchCount?: (count: number) => void;
 }
 
 /**
@@ -280,10 +291,15 @@ export function OutputArea({
   preloadIframe = false,
   onLinkClick,
   onWidgetUpdate,
+  searchQuery,
+  onSearchMatchCount,
 }: OutputAreaProps) {
   const id = useId();
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const bridgeRef = useRef<CommBridgeManager | null>(null);
+  const inDomOutputRef = useRef<HTMLDivElement>(null);
+  const searchQueryRef = useRef(searchQuery);
+  searchQueryRef.current = searchQuery;
 
   // Track dark mode state and observe changes
   const [darkMode, setDarkMode] = useState(() => detectDarkMode());
@@ -320,7 +336,6 @@ export function OutputArea({
   const shouldUseBridge = shouldIsolate && hasWidgets && widgetContext !== null;
 
   const hasCollapseControl = onToggleCollapse !== undefined;
-  const outputCount = outputs.length;
 
   // Handle messages from iframe, routing widget messages to comm bridge
   const handleIframeMessage = useCallback(
@@ -334,8 +349,13 @@ export function OutputArea({
       if (message.type === "widget_update" && onWidgetUpdate) {
         onWidgetUpdate(message.payload.commId, message.payload.state);
       }
+
+      // Capture search result count from iframe
+      if (message.type === "search_results") {
+        onSearchMatchCount?.(message.payload.count);
+      }
     },
-    [onWidgetUpdate],
+    [onWidgetUpdate, onSearchMatchCount],
   );
 
   // Callback when frame is ready - set up bridge and render outputs
@@ -400,6 +420,11 @@ export function OutputArea({
         });
       }
     });
+
+    // Re-apply search highlights after rendering new content
+    if (searchQueryRef.current) {
+      frameRef.current?.search(searchQueryRef.current);
+    }
   }, [outputs, priority, shouldUseBridge, widgetContext]);
 
   // Clean up bridge on unmount
@@ -418,6 +443,29 @@ export function OutputArea({
       handleFrameReady();
     }
   }, [handleFrameReady]);
+
+  // Forward search query to the iframe (for isolated outputs)
+  useEffect(() => {
+    if (frameRef.current?.isIframeReady) {
+      frameRef.current.search(searchQuery || "");
+    }
+  }, [searchQuery]);
+
+  // Highlight search matches in in-DOM outputs
+  // Re-run when outputs array ref changes so new content gets highlighted
+  useEffect(() => {
+    if (shouldIsolate) return; // iframe reports its own count via search_results
+    if (!searchQuery || !inDomOutputRef.current || outputs.length === 0) {
+      // Only report 0 if we were previously tracking matches for this cell
+      if (searchQuery) onSearchMatchCount?.(0);
+      return;
+    }
+    const cleanup = highlightTextInDom(inDomOutputRef.current, searchQuery);
+    const count =
+      inDomOutputRef.current.querySelectorAll(".global-find-match").length;
+    onSearchMatchCount?.(count);
+    return cleanup;
+  }, [searchQuery, shouldIsolate, outputs, onSearchMatchCount]);
 
   // Empty state: render nothing (unless preloading iframe)
   if (outputs.length === 0 && !showPreloadedIframe) {
@@ -448,7 +496,7 @@ export function OutputArea({
           )}
           <span>
             {collapsed
-              ? `Show ${outputCount} output${outputCount > 1 ? "s" : ""}`
+              ? `Show ${outputs.length} output${outputs.length > 1 ? "s" : ""}`
               : "Hide outputs"}
           </span>
         </button>
@@ -481,34 +529,37 @@ export function OutputArea({
           )}
 
           {/* In-DOM outputs (when not using isolation) */}
-          {!shouldIsolate &&
-            outputs.map((output, index) => (
-              <div
-                key={`output-${index}`}
-                data-slot="output-item"
-                data-output-index={index}
-              >
-                <ErrorBoundary
-                  resetKeys={[JSON.stringify(output)]}
-                  fallback={(error, reset) => (
-                    <OutputErrorFallback
-                      error={error}
-                      outputIndex={index}
-                      onRetry={reset}
-                    />
-                  )}
-                  onError={(error, errorInfo) => {
-                    console.error(
-                      `[OutputArea] Error rendering output ${index}:`,
-                      error,
-                      errorInfo.componentStack,
-                    );
-                  }}
+          {!shouldIsolate && (
+            <div ref={inDomOutputRef}>
+              {outputs.map((output, index) => (
+                <div
+                  key={`output-${index}`}
+                  data-slot="output-item"
+                  data-output-index={index}
                 >
-                  {renderOutput(output, index, renderers, priority)}
-                </ErrorBoundary>
-              </div>
-            ))}
+                  <ErrorBoundary
+                    resetKeys={[JSON.stringify(output)]}
+                    fallback={(error, reset) => (
+                      <OutputErrorFallback
+                        error={error}
+                        outputIndex={index}
+                        onRetry={reset}
+                      />
+                    )}
+                    onError={(error, errorInfo) => {
+                      console.error(
+                        `[OutputArea] Error rendering output ${index}:`,
+                        error,
+                        errorInfo.componentStack,
+                      );
+                    }}
+                  >
+                    {renderOutput(output, index, renderers, priority)}
+                  </ErrorBoundary>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

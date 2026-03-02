@@ -1,0 +1,27 @@
+name: Nightly Release
+
+on:
+  schedule:
+    # Every day at 9am UTC (24h cadence)
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    uses: ./.github/workflows/releases/release-common.yml
+    secrets: inherit
+    with:
+      release_title: "Nightly Release"
+      version_suffix: "nightly"
+      manifest_notes_prefix: "Nightly release"
+      release_heading: "Nightly Release"
+      release_intro: "Automated nightly release from `main`."
+      github_release_prerelease: true
+      updater_channel_tag: "nightly-latest"
+      updater_channel_title: "Nightly Update Channel"
+      updater_channel_notes: "Rolling release for the nightly auto-update channel. This release always contains the latest updater manifest. Do not delete this release."
+      updater_channel_prerelease: true

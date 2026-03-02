@@ -19,6 +19,7 @@ import {
 import { DebugBanner } from "./components/DebugBanner";
 import { DenoDependencyHeader } from "./components/DenoDependencyHeader";
 import { DependencyHeader } from "./components/DependencyHeader";
+import { GlobalFindBar } from "./components/GlobalFindBar";
 import { NotebookToolbar } from "./components/NotebookToolbar";
 import { NotebookView } from "./components/NotebookView";
 import { TrustDialog } from "./components/TrustDialog";
@@ -28,9 +29,11 @@ import { useDenoDependencies } from "./hooks/useDenoDependencies";
 import { type EnvSyncState, useDependencies } from "./hooks/useDependencies";
 import { useEnvProgress } from "./hooks/useEnvProgress";
 import { useDaemonInfo, useGitInfo } from "./hooks/useGitInfo";
+import { useGlobalFind } from "./hooks/useGlobalFind";
 import { useNotebook } from "./hooks/useNotebook";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
+import { logger } from "./lib/logger";
 import type { JupyterMessage } from "./types";
 
 /** MIME bundle type for page payloads */
@@ -67,10 +70,10 @@ async function sendMessage(message: unknown): Promise<void> {
     if (daemonCommSender) {
       await daemonCommSender(message);
     } else {
-      console.warn("[widget] sendMessage called but daemon sender not ready");
+      logger.debug("[widget] sendMessage called but daemon sender not ready");
     }
   } catch (e) {
-    console.error("[widget] send_comm_message failed:", e);
+    logger.error("[widget] send_comm_message failed:", e);
   }
 }
 
@@ -106,6 +109,9 @@ function AppContent() {
     clearCellOutputs,
     formatCell,
   } = useNotebook();
+
+  // Global find (Cmd+F)
+  const globalFind = useGlobalFind(cells);
 
   const [dependencyHeaderOpen, setDependencyHeaderOpen] = useState(false);
   const [showIsolationTest, setShowIsolationTest] = useState(false);
@@ -401,7 +407,7 @@ function AppContent() {
       // Both kernel_type and env_source use "auto" - daemon detects from Automerge doc
       const response = await launchKernel("auto", "auto");
       if (response.result === "error") {
-        console.error("[App] tryStartKernel: daemon error", response.error);
+        logger.error("[App] tryStartKernel: daemon error", response.error);
         return false;
       }
       return true;
@@ -436,11 +442,11 @@ function AppContent() {
       envSyncState?.diff?.added?.length && !envSyncState?.diff?.removed?.length;
 
     if (isUvInline && hasOnlyAdditions) {
-      console.log("[App] Trying hot-sync for UV additions (trusted)");
+      logger.debug("[App] Trying hot-sync for UV additions");
       const response = await syncEnvironment();
 
       if (response.result === "sync_environment_complete") {
-        console.log("[App] Hot-sync succeeded:", response.synced_packages);
+        logger.debug("[App] Hot-sync succeeded:", response.synced_packages);
         setJustSynced(true);
         return true;
       }
@@ -450,12 +456,12 @@ function AppContent() {
         !response.needs_restart
       ) {
         // Error but doesn't need restart (e.g., install failed)
-        console.error("[App] Hot-sync failed:", response.error);
+        logger.error("[App] Hot-sync failed:", response.error);
         return false;
       }
 
       // needs_restart or other error - fall through to restart flow
-      console.log("[App] Hot-sync requires restart, falling back");
+      logger.debug("[App] Hot-sync requires restart, falling back");
     }
 
     // Restart flow - deps are already trusted from check above
@@ -493,18 +499,16 @@ function AppContent() {
     // Start kernel - returns false if not started (e.g., trust dialog)
     const kernelStarted = await tryStartKernel();
     if (!kernelStarted) {
-      console.log(
-        "[App] restartAndRunAll: kernel not started, skipping run all",
-      );
+      logger.debug("[App] restartAndRunAll: kernel not started, skipping");
       return;
     }
 
     // Daemon reads cell sources from Automerge doc and queues them
     const response = await daemonRunAllCells();
     if (response.result === "error") {
-      console.error("[App] restartAndRunAll: daemon error", response.error);
+      logger.error("[App] restartAndRunAll: daemon error", response.error);
     } else if (response.result === "no_kernel") {
-      console.warn("[App] restartAndRunAll: no kernel available");
+      logger.warn("[App] restartAndRunAll: no kernel available");
     }
   }, [
     cells,
@@ -537,7 +541,7 @@ function AppContent() {
   const handleStartKernelWithPyproject = useCallback(async () => {
     const response = await launchKernel("python", "uv:pyproject");
     if (response.result === "error") {
-      console.error(
+      logger.error(
         "[App] handleStartKernelWithPyproject: daemon error",
         response.error,
       );
@@ -565,9 +569,9 @@ function AppContent() {
       }
       const response = await executeCell(cellId);
       if (response.result === "error") {
-        console.error("[App] handleExecuteCell: daemon error", response.error);
+        logger.error("[App] handleExecuteCell: daemon error", response.error);
       } else if (response.result === "no_kernel") {
-        console.warn("[App] handleExecuteCell: no kernel available");
+        logger.warn("[App] handleExecuteCell: no kernel available");
       }
     },
     [
@@ -618,9 +622,7 @@ function AppContent() {
     if (kernelStatus === "not_started") {
       const started = await tryStartKernel();
       if (!started) {
-        console.log(
-          "[App] handleRunAllCells: kernel not started, skipping run all",
-        );
+        logger.debug("[App] handleRunAllCells: kernel not started, skipping");
         return;
       }
     }
@@ -628,9 +630,9 @@ function AppContent() {
     // Daemon reads cell sources from Automerge doc and queues them
     const response = await daemonRunAllCells();
     if (response.result === "error") {
-      console.error("[App] handleRunAllCells: daemon error", response.error);
+      logger.error("[App] handleRunAllCells: daemon error", response.error);
     } else if (response.result === "no_kernel") {
-      console.warn("[App] handleRunAllCells: no kernel available");
+      logger.warn("[App] handleRunAllCells: no kernel available");
     }
   }, [
     kernelStatus,
@@ -669,6 +671,18 @@ function AppContent() {
       unlistenPromise.then((unlisten) => unlisten());
     };
   }, [save]);
+
+  // Cmd+F to open global find
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        e.preventDefault();
+        globalFind.open();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [globalFind.open]);
 
   // Cmd+O to open (keyboard and native menu)
   useEffect(() => {
@@ -1030,6 +1044,17 @@ function AppContent() {
           justSynced={justSynced}
         />
       )}
+      {globalFind.isOpen && (
+        <GlobalFindBar
+          query={globalFind.query}
+          matchCount={globalFind.matches.length}
+          currentMatchIndex={globalFind.currentMatchIndex}
+          onQueryChange={globalFind.setQuery}
+          onNextMatch={globalFind.nextMatch}
+          onPrevMatch={globalFind.prevMatch}
+          onClose={globalFind.close}
+        />
+      )}
       {showIsolationTest && <IsolationTest />}
       <TrustDialog
         open={trustDialogOpen}
@@ -1047,6 +1072,8 @@ function AppContent() {
         executingCellIds={executingCellIds}
         pagePayloads={pagePayloads}
         runtime={runtime}
+        searchQuery={globalFind.query}
+        searchCurrentMatch={globalFind.currentMatch}
         onFocusCell={setFocusedCellId}
         onUpdateCellSource={updateCellSource}
         onExecuteCell={handleExecuteCell}
@@ -1055,6 +1082,7 @@ function AppContent() {
         onAddCell={handleAddCell}
         onClearPagePayload={clearPagePayload}
         onFormatCell={formatCell}
+        onReportOutputMatchCount={globalFind.reportOutputMatchCount}
       />
     </div>
   );

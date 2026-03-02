@@ -1,10 +1,48 @@
-name: Weekly Preview Release
+name: Release Pipeline (Reusable)
 
 on:
-  schedule:
-    # Every Monday at 9am UTC
-    - cron: "0 9 * * 1"
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      release_title:
+        description: Display name for the release job
+        required: true
+        type: string
+      version_suffix:
+        description: Suffix appended to version before short SHA
+        required: true
+        type: string
+      manifest_notes_prefix:
+        description: Prefix for latest.json notes field
+        required: true
+        type: string
+      release_heading:
+        description: Markdown heading for the GitHub release body
+        required: true
+        type: string
+      release_intro:
+        description: Intro sentence in the GitHub release body
+        required: true
+        type: string
+      github_release_prerelease:
+        description: Whether the GitHub release is marked prerelease
+        required: true
+        type: boolean
+      updater_channel_tag:
+        description: Rolling release tag that stores updater latest.json
+        required: true
+        type: string
+      updater_channel_title:
+        description: Rolling updater channel release title
+        required: true
+        type: string
+      updater_channel_notes:
+        description: Rolling updater channel release notes
+        required: true
+        type: string
+      updater_channel_prerelease:
+        description: Whether the updater channel release is prerelease
+        required: true
+        type: boolean
 
 permissions:
   contents: write
@@ -68,7 +106,7 @@ jobs:
         run: |
           CURRENT_VERSION=$(grep '^version' crates/runt/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           COMMIT_SHA=${GITHUB_SHA::7}
-          VERSION="${CURRENT_VERSION}-preview.${COMMIT_SHA}"
+          VERSION="${CURRENT_VERSION}-${{ inputs.version_suffix }}.${COMMIT_SHA}"
           echo "Setting version to: ${VERSION}"
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
 
@@ -141,7 +179,7 @@ jobs:
         run: |
           CURRENT_VERSION=$(grep '^version' crates/runt/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           COMMIT_SHA=${GITHUB_SHA::7}
-          VERSION="${CURRENT_VERSION}-preview.${COMMIT_SHA}"
+          VERSION="${CURRENT_VERSION}-${{ inputs.version_suffix }}.${COMMIT_SHA}"
           echo "Setting version to: ${VERSION}"
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
@@ -248,9 +286,10 @@ jobs:
         run: |
           CURRENT_VERSION=$(grep '^version' crates/runt/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           COMMIT_SHA=${GITHUB_SHA::7}
-          VERSION="${CURRENT_VERSION}-preview.${COMMIT_SHA}"
+          VERSION="${CURRENT_VERSION}-${{ inputs.version_suffix }}.${COMMIT_SHA}"
           echo "Setting version to: ${VERSION}"
           sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" crates/notebook/tauri.conf.json
+          sed -i '' "s#https://github.com/nteract/desktop/releases/download/preview-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
 
       - name: Generate Icons
         run: cargo xtask icons
@@ -273,7 +312,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: crates/notebook
-          args: --bundles dmg --config '{"build":{"beforeBuildCommand":""}}'
+          args: --bundles app,dmg --config '{"build":{"beforeBuildCommand":""}}'
           includeUpdaterJson: false
 
       - name: Cleanup keychain
@@ -301,13 +340,17 @@ jobs:
 
           cp "${DMG_BINARIES[0]}" artifacts/nteract-darwin-arm64.dmg
 
-          # Optional updater bundle (.tar.gz and .sig) for channels that publish updater artifacts.
-          if [ ${#TAR_GZ_BINARIES[@]} -gt 0 ]; then
-            cp "${TAR_GZ_BINARIES[0]}" artifacts/nteract-darwin-arm64.app.tar.gz
+          if [ ${#TAR_GZ_BINARIES[@]} -eq 0 ]; then
+            echo "::error::No macOS updater bundle (.app.tar.gz) found in target/release/bundle/macos"
+            exit 1
           fi
-          if [ ${#TAR_GZ_SIG_BINARIES[@]} -gt 0 ]; then
-            cp "${TAR_GZ_SIG_BINARIES[0]}" artifacts/nteract-darwin-arm64.app.tar.gz.sig
+          if [ ${#TAR_GZ_SIG_BINARIES[@]} -eq 0 ]; then
+            echo "::error::No macOS updater signature (.app.tar.gz.sig) found in target/release/bundle/macos"
+            exit 1
           fi
+
+          cp "${TAR_GZ_BINARIES[0]}" artifacts/nteract-darwin-arm64.app.tar.gz
+          cp "${TAR_GZ_SIG_BINARIES[0]}" artifacts/nteract-darwin-arm64.app.tar.gz.sig
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -376,10 +419,11 @@ jobs:
             $currentVersion = $matches[1]
           }
           $commitSha = "$env:GITHUB_SHA".Substring(0, 7)
-          $version = "$currentVersion-preview.$commitSha"
+          $version = "$currentVersion-${{ inputs.version_suffix }}.$commitSha"
           Write-Host "Setting version to: $version"
           $tauriConf = Get-Content crates/notebook/tauri.conf.json -Raw
           $tauriConf = $tauriConf -replace '"version": "[^"]+"', "`"version`": `"$version`""
+          $tauriConf = $tauriConf -replace 'https://github.com/nteract/desktop/releases/download/preview-latest/latest.json', 'https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json'
           Set-Content crates/notebook/tauri.conf.json $tauriConf
 
       - name: Generate Icons
@@ -498,9 +542,10 @@ jobs:
         run: |
           CURRENT_VERSION=$(grep '^version' crates/runt/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           COMMIT_SHA=${GITHUB_SHA::7}
-          VERSION="${CURRENT_VERSION}-preview.${COMMIT_SHA}"
+          VERSION="${CURRENT_VERSION}-${{ inputs.version_suffix }}.${COMMIT_SHA}"
           echo "Setting version to: ${VERSION}"
           sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" crates/notebook/tauri.conf.json
+          sed -i "s#https://github.com/nteract/desktop/releases/download/preview-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
 
       - name: Generate Icons
         run: cargo xtask icons
@@ -604,7 +649,7 @@ jobs:
           path: python/runtimed/dist
 
   prerelease:
-    name: Preview Release
+    name: ${{ inputs.release_title }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -665,8 +710,8 @@ jobs:
           cp notebook-windows-x64/nteract-windows-x64.exe release-assets/
           cp notebook-linux-x64/nteract-linux-x64.AppImage release-assets/
           # Updater bundles + signatures
-          cp notebook-macos-arm64/nteract-darwin-arm64.app.tar.gz release-assets/ 2>/dev/null || true
-          cp notebook-macos-arm64/nteract-darwin-arm64.app.tar.gz.sig release-assets/ 2>/dev/null || true
+          cp notebook-macos-arm64/nteract-darwin-arm64.app.tar.gz release-assets/
+          cp notebook-macos-arm64/nteract-darwin-arm64.app.tar.gz.sig release-assets/
           cp notebook-windows-x64/nteract-windows-x64.exe.sig release-assets/
           cp notebook-linux-x64/nteract-linux-x64.AppImage.sig release-assets/ 2>/dev/null || true
 
@@ -679,7 +724,28 @@ jobs:
           RELEASE_BASE="https://github.com/${REPO}/releases/download/${TAG_NAME}"
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          read_sig() { cat "$1" 2>/dev/null || echo ""; }
+          require_file() {
+            if [ ! -f "$1" ]; then
+              echo "::error::Missing required updater asset: $1"
+              exit 1
+            fi
+          }
+
+          require_sig() {
+            if [ ! -s "$1" ]; then
+              echo "::error::Missing or empty updater signature: $1"
+              exit 1
+            fi
+          }
+
+          read_sig() { cat "$1"; }
+
+          require_file release-assets/nteract-darwin-arm64.app.tar.gz
+          require_file release-assets/nteract-linux-x64.AppImage
+          require_file release-assets/nteract-windows-x64.exe
+          require_sig release-assets/nteract-darwin-arm64.app.tar.gz.sig
+          require_sig release-assets/nteract-linux-x64.AppImage.sig
+          require_sig release-assets/nteract-windows-x64.exe.sig
 
           SIG_DARWIN_ARM64=$(read_sig release-assets/nteract-darwin-arm64.app.tar.gz.sig)
           SIG_LINUX_X64=$(read_sig release-assets/nteract-linux-x64.AppImage.sig)
@@ -687,7 +753,7 @@ jobs:
 
           jq -n \
             --arg version "$VERSION" \
-            --arg notes "Preview release $TAG_NAME" \
+            --arg notes "${{ inputs.manifest_notes_prefix }} $TAG_NAME" \
             --arg pub_date "$PUB_DATE" \
             --arg sig_darwin_arm64 "$SIG_DARWIN_ARM64" \
             --arg url_darwin_arm64 "$RELEASE_BASE/nteract-darwin-arm64.app.tar.gz" \
@@ -723,7 +789,7 @@ jobs:
         continue-on-error: true
         run: uv publish --trusted-publishing always ./wheels/*.whl
 
-      - name: Create GitHub Preview Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -731,9 +797,9 @@ jobs:
           tag_name: v${{ needs.build-linux.outputs.version }}
           name: nteract v${{ needs.build-linux.outputs.version }}
           body: |
-            ## Weekly Preview Release
+            ## ${{ inputs.release_heading }}
 
-            Automated preview from `main`. **Commit:** ${{ github.sha }}
+            ${{ inputs.release_intro }} **Commit:** ${{ github.sha }}
 
             ### nteract (desktop app)
 
@@ -762,7 +828,7 @@ jobs:
             pip install runtimed --pre
             ```
           draft: false
-          prerelease: false
+          prerelease: ${{ inputs.github_release_prerelease }}
           files: |
             ./release-assets/runt-linux-x64
             ./release-assets/runt-darwin-arm64
@@ -776,16 +842,23 @@ jobs:
             ./release-assets/latest.json
             ./wheels/*.whl
 
-      - name: Update preview-latest updater channel
+      - name: Update ${{ inputs.updater_channel_tag }} updater channel
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Ensure the rolling preview-latest release exists as a normal release, then update latest.json
-          gh release create preview-latest \
-            --title "Preview Update Channel" \
-            --notes "Rolling release for the preview auto-update channel. This release always contains the latest updater manifest. Do not delete this release." \
+          if [ "${{ inputs.updater_channel_prerelease }}" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          else
+            PRERELEASE_FLAG=""
+          fi
+
+          # Ensure the rolling updater release exists, then update latest.json
+          gh release create "${{ inputs.updater_channel_tag }}" \
+            --title "${{ inputs.updater_channel_title }}" \
+            --notes "${{ inputs.updater_channel_notes }}" \
+            ${PRERELEASE_FLAG} \
             --latest=false 2>/dev/null || true
 
-          gh release edit preview-latest --prerelease=false --latest=false >/dev/null 2>&1 || true
+          gh release edit "${{ inputs.updater_channel_tag }}" --prerelease=${{ inputs.updater_channel_prerelease }} --latest=false >/dev/null 2>&1 || true
 
-          gh release upload preview-latest release-assets/latest.json --clobber
+          gh release upload "${{ inputs.updater_channel_tag }}" release-assets/latest.json --clobber

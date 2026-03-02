@@ -3371,6 +3371,7 @@ dependencies = [
  "reqwest 0.12.28",
  "reqwest-middleware",
  "runt-trust",
+ "runt-workspace",
  "runtimed",
  "runtimelib",
  "schemars 1.2.1",
@@ -5371,6 +5372,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "runt-workspace"
+version = "0.1.0"
+dependencies = [
+ "dirs 5.0.1",
+ "hex",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "runtimed"
 version = "0.1.0-dev.10"
 dependencies = [
@@ -5407,6 +5417,7 @@ dependencies = [
  "reqwest 0.12.28",
  "reqwest-middleware",
  "runt-trust",
+ "runt-workspace",
  "runtimelib",
  "schemars 1.2.1",
  "serde",

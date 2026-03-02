@@ -9,7 +9,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
 
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use notify_debouncer_mini::DebounceEventResult;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Mutex, Notify};
@@ -1053,7 +1053,7 @@ impl Daemon {
 
                 match env {
                     Some(env) => {
-                        info!("[runtimed] Took {} env: {:?}", env_type, env.venv_path);
+                        debug!("[runtimed] Took {} env: {:?}", env_type, env.venv_path);
                         // Spawn replenishment
                         let daemon = self.clone();
                         match env_type {
@@ -1071,7 +1071,7 @@ impl Daemon {
                         Response::Env { env }
                     }
                     None => {
-                        info!("[runtimed] Pool miss for {}", env_type);
+                        debug!("[runtimed] Pool miss for {}", env_type);
                         Response::Empty
                     }
                 }
@@ -1087,7 +1087,7 @@ impl Daemon {
                                 env: env.clone(),
                                 created_at: Instant::now(),
                             });
-                            info!("[runtimed] Returned UV env: {:?}", env.venv_path);
+                            debug!("[runtimed] Returned UV env: {:?}", env.venv_path);
                         } else {
                             // Pool is full, clean up
                             tokio::fs::remove_dir_all(&env.venv_path).await.ok();
@@ -1100,7 +1100,7 @@ impl Daemon {
                                 env: env.clone(),
                                 created_at: Instant::now(),
                             });
-                            info!("[runtimed] Returned Conda env: {:?}", env.venv_path);
+                            debug!("[runtimed] Returned Conda env: {:?}", env.venv_path);
                         } else {
                             tokio::fs::remove_dir_all(&env.venv_path).await.ok();
                         }

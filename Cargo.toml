@@ -3,6 +3,7 @@ members = [
     "crates/sidecar",
     "crates/runt",
     "crates/runt-trust",
+    "crates/runt-workspace",
     "crates/kernel-launch",
     "crates/kernel-env",
     "crates/notebook",

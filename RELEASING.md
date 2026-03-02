@@ -5,14 +5,15 @@
 | Stream | Tag | Trigger | Destination |
 |--------|-----|---------|-------------|
 | **Weekly preview** | `v{version}-preview.{sha}` | Cron (Monday 9am UTC) or manual | GitHub Releases |
+| **Nightly** | `v{version}-nightly.{sha}` | Cron (daily, 24h cadence) or manual | GitHub Pre-releases |
 | **Stable desktop** | `v{semver}` | Manual `workflow_dispatch` | GitHub Releases |
 | **Python package** | `python-v{semver}` | Manual tag push | PyPI + GitHub Releases |
 
 ## Desktop App (nteract)
 
-The desktop app, `runt` CLI, `runtimed` daemon, and `sidecar` are all built and released together via `weekly-preview.yml`.
+The desktop app, `runt` CLI, `runtimed` daemon, and `sidecar` are all built and released together via reusable workflow `.github/workflows/releases/release-common.yml`, invoked by `.github/workflows/releases/weekly.yml` and `.github/workflows/releases/nightly.yml`.
 
-Preview releases happen automatically every Monday. To cut a stable release, use the workflow dispatch with the stable flag.
+Weekly preview releases run every Monday, and nightly pre-releases run every 24 hours. Both can also be triggered manually.
 
 ### Artifacts
 
