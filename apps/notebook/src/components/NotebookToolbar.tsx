@@ -27,6 +27,101 @@ import type { EnvProgressState } from "../hooks/useEnvProgress";
 import type { UpdateStatus } from "../hooks/useUpdater";
 import type { KernelspecInfo } from "../types";
 
+/** Format seconds into human-readable duration */
+function formatDuration(secs: number): string {
+  if (secs >= 3600) return "Forever";
+  if (secs >= 60) {
+    const mins = Math.floor(secs / 60);
+    const remainingSecs = secs % 60;
+    return remainingSecs > 0 ? `${mins}m ${remainingSecs}s` : `${mins}m`;
+  }
+  return `${secs}s`;
+}
+
+/** Keep Alive slider with fill effect - only emits on release */
+function KeepAliveSlider({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const [localValue, setLocalValue] = useState(value);
+  const isDragging = useRef(false);
+
+  // Sync local value when prop changes (but not during drag)
+  useEffect(() => {
+    if (!isDragging.current) {
+      setLocalValue(value);
+    }
+  }, [value]);
+
+  const min = 5;
+  const max = 3600;
+  const percentage = ((localValue - min) / (max - min)) * 100;
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    isDragging.current = true;
+    setLocalValue(Number(e.target.value));
+  };
+
+  const handleRelease = () => {
+    isDragging.current = false;
+    onChange(localValue);
+  };
+
+  return (
+    <div className="space-y-3 pt-2 border-t border-border/50">
+      <div>
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+          Advanced
+        </span>
+      </div>
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-muted-foreground">
+            Keep Alive
+          </span>
+          <span className="text-xs font-medium text-foreground tabular-nums">
+            {formatDuration(localValue)}
+          </span>
+        </div>
+        <p className="text-[10px] text-muted-foreground/70">
+          Time to keep notebook runtime alive after closing
+        </p>
+      </div>
+      <div className="px-1 py-2">
+        <div className="relative h-2">
+          {/* Track background */}
+          <div className="absolute inset-0 rounded-full bg-muted" />
+          {/* Fill */}
+          <div
+            className="absolute inset-y-0 left-0 rounded-full bg-primary/80"
+            style={{ width: `${percentage}%` }}
+          />
+          {/* Input */}
+          <input
+            type="range"
+            min={min}
+            max={max}
+            step={5}
+            value={localValue}
+            onChange={handleChange}
+            onMouseUp={handleRelease}
+            onTouchEnd={handleRelease}
+            onKeyUp={handleRelease}
+            className="absolute inset-0 w-full h-full appearance-none bg-transparent cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-background [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-primary [&::-moz-range-thumb]:shadow-sm [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-background [&::-moz-range-thumb]:cursor-pointer"
+          />
+        </div>
+      </div>
+      <div className="flex justify-between text-[10px] text-muted-foreground/70 px-1">
+        <span>5s</span>
+        <span>Forever</span>
+      </div>
+    </div>
+  );
+}
+
 /** Deno logo icon (from tabler icons) */
 function DenoIcon({ className }: { className?: string }) {
   return (
@@ -848,43 +943,10 @@ export function NotebookToolbar({
 
             {/* Advanced settings */}
             {onKeepAliveSecsChange && (
-              <div className="space-y-2 pt-2 border-t border-border/50">
-                <div>
-                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                    Advanced
-                  </span>
-                </div>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium text-muted-foreground">
-                      Keep Alive
-                    </span>
-                    <span className="text-xs font-medium text-foreground tabular-nums">
-                      {keepAliveSecs >= 3600
-                        ? "Forever"
-                        : keepAliveSecs >= 60
-                          ? `${Math.floor(keepAliveSecs / 60)}m ${keepAliveSecs % 60}s`
-                          : `${keepAliveSecs}s`}
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min={5}
-                    max={3600}
-                    step={5}
-                    value={keepAliveSecs}
-                    onChange={(e) =>
-                      onKeepAliveSecsChange(Number(e.target.value))
-                    }
-                    className="w-full h-1.5 rounded-full bg-muted appearance-none cursor-pointer accent-primary [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-primary [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:cursor-pointer"
-                  />
-                  <div className="flex justify-between text-[10px] text-muted-foreground/70">
-                    <span>5s</span>
-                    <span>Time to keep notebook room alive after closing</span>
-                    <span>Forever</span>
-                  </div>
-                </div>
-              </div>
+              <KeepAliveSlider
+                value={keepAliveSecs}
+                onChange={onKeepAliveSecsChange}
+              />
             )}
           </div>
         </CollapsibleContent>
