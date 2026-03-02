@@ -11,7 +11,7 @@
 
 ## Desktop App (nteract)
 
-The desktop app, `runt` CLI, `runtimed` daemon, and `sidecar` are all built and released together via `.github/workflows/releases/weekly.yml` and `.github/workflows/releases/nightly.yml`.
+The desktop app, `runt` CLI, `runtimed` daemon, and `sidecar` are all built and released together via reusable workflow `.github/workflows/releases/release-common.yml`, invoked by `.github/workflows/releases/weekly.yml` and `.github/workflows/releases/nightly.yml`.
 
 Weekly preview releases run every Monday, and nightly pre-releases run every 24 hours. Both can also be triggered manually.
 
