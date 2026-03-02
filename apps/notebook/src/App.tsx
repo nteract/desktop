@@ -333,6 +333,15 @@ function AppContent() {
   // Environment preparation progress
   const envProgress = useEnvProgress();
 
+  // Reset progress error when dependencies change (allows retry after fixing issues)
+  const progressError = envProgress.error;
+  const progressReset = envProgress.reset;
+  useEffect(() => {
+    if (envSyncState && !envSyncState.inSync && progressError) {
+      progressReset();
+    }
+  }, [envSyncState, progressError, progressReset]);
+
   // Derive sync state from daemon's envSyncState for inline environments
   // This overrides the disabled syncState from useDependencies/useCondaDependencies
   // Also shows for prewarmed kernels when user adds inline deps (prewarmed→inline drift)
@@ -406,6 +415,9 @@ function AppContent() {
   // Handler to sync deps - tries hot-sync for UV additions, falls back to restart
   // Always checks trust before any operation that installs packages
   const handleSyncDeps = useCallback(async (): Promise<boolean> => {
+    // Reset any previous error state before attempting
+    envProgress.reset();
+
     // Check trust first - required before any package installation (hot-sync or restart)
     const info = await checkTrust();
     if (!info) return false;
@@ -456,6 +468,7 @@ function AppContent() {
   }, [
     envSource,
     envSyncState,
+    envProgress,
     syncEnvironment,
     checkTrust,
     shutdownKernel,
