@@ -37,9 +37,13 @@ export const tabCompletionKeymap: Extension = Prec.high(
     {
       key: "Tab",
       run: (view) => {
-        // If completion is active, accept it
-        if (completionStatus(view.state) === "active") {
-          return acceptCompletion(view);
+        const status = completionStatus(view.state);
+        // If completion is active or pending, always consume Tab to prevent focus escape.
+        // acceptCompletion can return false during interactionDelay (~75ms), but we
+        // still want Tab captured so it doesn't bubble out of the editor.
+        if (status === "active" || status === "pending") {
+          acceptCompletion(view);
+          return true;
         }
         // If after code, trigger completion
         if (shouldTriggerCompletion(view)) {
