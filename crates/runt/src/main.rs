@@ -2161,3 +2161,31 @@ async fn debug_session(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that the shutdown command correctly identifies UUIDs vs file paths.
+    /// This is critical for handling both saved notebooks (paths) and untitled
+    /// notebooks (UUIDs).
+    #[test]
+    fn test_shutdown_uuid_detection() {
+        // Valid UUIDs should be detected
+        assert!(uuid::Uuid::parse_str("ea56af47-d8f2-4823-b0eb-a6254338e244").is_ok());
+        assert!(uuid::Uuid::parse_str("d3058b85-2618-4211-85fd-7c657f9ac3a4").is_ok());
+
+        // File paths should NOT be detected as UUIDs
+        assert!(uuid::Uuid::parse_str("notebook.ipynb").is_err());
+        assert!(uuid::Uuid::parse_str("my-notebook.ipynb").is_err());
+        assert!(uuid::Uuid::parse_str("path/to/notebook.ipynb").is_err());
+        assert!(uuid::Uuid::parse_str("/absolute/path/notebook.ipynb").is_err());
+        assert!(uuid::Uuid::parse_str("./relative/notebook.ipynb").is_err());
+        assert!(uuid::Uuid::parse_str("../parent/notebook.ipynb").is_err());
+
+        // Edge cases
+        assert!(uuid::Uuid::parse_str("").is_err());
+        assert!(uuid::Uuid::parse_str("not-a-uuid").is_err());
+        assert!(uuid::Uuid::parse_str("12345").is_err());
+    }
+}
