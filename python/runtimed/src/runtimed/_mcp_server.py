@@ -9,22 +9,50 @@ Usage:
 
 Or via the entry point:
     runtimed-mcp
+
+Requires: pip install runtimed[mcp]
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import sys
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+
+    _MCP_AVAILABLE = True
+except ImportError:
+    _MCP_AVAILABLE = False
+    FastMCP = None  # type: ignore[misc, assignment]
 
 import runtimed
 
 logger = logging.getLogger(__name__)
 
-# Create the MCP server
-mcp = FastMCP("runtimed-mcp")
+# Create the MCP server (only if mcp package is available)
+if _MCP_AVAILABLE:
+    mcp = FastMCP("runtimed-mcp")
+else:
+    # Create a stub so decorators don't fail at import time
+    class _StubMCP:
+        """Stub MCP server for when mcp package isn't installed."""
+
+        def tool(self):
+            def decorator(func):
+                return func
+
+            return decorator
+
+        def resource(self, uri: str):
+            def decorator(func):
+                return func
+
+            return decorator
+
+    mcp = _StubMCP()  # type: ignore[assignment]
 
 # Session state - single active session at a time
 _session: runtimed.AsyncSession | None = None
@@ -459,6 +487,14 @@ async def resource_rooms() -> str:
 
 def main():
     """Run the MCP server."""
+    if not _MCP_AVAILABLE:
+        print(
+            "Error: MCP server requires the 'mcp' package.\n"
+            "Install with: pip install runtimed[mcp]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
