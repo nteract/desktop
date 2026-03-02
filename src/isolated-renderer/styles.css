@@ -107,9 +107,9 @@ html, body {
 }
 
 
-/* Code font */
+/* Code font - match main app's monospace font stack */
 pre, code {
-  @apply font-mono;
+  font-family: "SF Mono", Consolas, Monaco, "Andale Mono", monospace;
 }
 
 /* Output item spacing */
