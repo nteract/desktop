@@ -1055,6 +1055,7 @@ function AppContent() {
         onAddCell={handleAddCell}
         onClearPagePayload={clearPagePayload}
         onFormatCell={formatCell}
+        onReportOutputMatchCount={globalFind.reportOutputMatchCount}
       />
     </div>
   );

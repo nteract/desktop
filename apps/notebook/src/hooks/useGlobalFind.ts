@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type { NotebookCell } from "../types";
 
 /** A single search match location. */
@@ -7,11 +7,11 @@ export interface FindMatch {
   cellId: string;
   /** Index of the cell in the notebook */
   cellIndex: number;
-  /** Whether this match is in the cell source or output text */
+  /** Whether this match is in the cell source or output */
   type: "source" | "output";
-  /** Character offset within the searched text */
+  /** For source matches: character offset within the source text. For output matches: local index within this cell's output matches. */
   offset: number;
-  /** Length of the match */
+  /** For source matches: length of the match. For output matches: 0. */
   length: number;
 }
 
@@ -37,35 +37,11 @@ export interface GlobalFindState {
   nextMatch: () => void;
   /** Navigate to the previous match */
   prevMatch: () => void;
-}
-
-/**
- * Extract searchable text from a cell's outputs.
- * Returns concatenated text from stream, error, and text/plain outputs.
- */
-function extractOutputText(cell: NotebookCell): string {
-  if (cell.cell_type !== "code") return "";
-  const parts: string[] = [];
-  for (const output of cell.outputs) {
-    if (output.output_type === "stream") {
-      const text = typeof output.text === "string" ? output.text : output.text;
-      parts.push(text);
-    } else if (output.output_type === "error") {
-      parts.push(output.traceback.join("\n"));
-    } else if (
-      output.output_type === "execute_result" ||
-      output.output_type === "display_data"
-    ) {
-      // Search text/plain representation if available
-      const plain = output.data["text/plain"];
-      if (typeof plain === "string") {
-        parts.push(plain);
-      } else if (Array.isArray(plain)) {
-        parts.push(plain.join(""));
-      }
-    }
-  }
-  return parts.join("\n");
+  /**
+   * Report the number of search matches found in a cell's output.
+   * Called by OutputArea when iframe reports search_results or in-DOM highlighting completes.
+   */
+  reportOutputMatchCount: (cellId: string, count: number) => void;
 }
 
 /**
@@ -90,15 +66,45 @@ function findInText(
 /**
  * Hook for managing global find state across the notebook.
  *
- * Searches through cell sources and output text, providing
- * match navigation and the current active match for highlighting.
+ * Source matches are computed directly from cell source text.
+ * Output matches are reported asynchronously by OutputArea components
+ * (via iframe postMessage search_results or in-DOM highlight counts).
  */
 export function useGlobalFind(cells: NotebookCell[]): GlobalFindState {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQueryState] = useState("");
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
+  const [outputMatchCounts, setOutputMatchCounts] = useState<
+    Map<string, number>
+  >(new Map());
 
-  // Compute all matches whenever query or cells change
+  // Track previous query to reset output counts when query changes
+  const prevQueryRef = useRef(query);
+  if (prevQueryRef.current !== query) {
+    prevQueryRef.current = query;
+    // Clear stale output counts — OutputArea will re-report for the new query
+    if (outputMatchCounts.size > 0) {
+      setOutputMatchCounts(new Map());
+    }
+  }
+
+  const reportOutputMatchCount = useCallback(
+    (cellId: string, count: number) => {
+      setOutputMatchCounts((prev) => {
+        if (prev.get(cellId) === count) return prev;
+        const next = new Map(prev);
+        if (count === 0) {
+          next.delete(cellId);
+        } else {
+          next.set(cellId, count);
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
+  // Compute all matches: source matches directly, output matches from reported counts
   const matches = useMemo(() => {
     if (!query) return [];
     const allMatches: FindMatch[] = [];
@@ -106,7 +112,7 @@ export function useGlobalFind(cells: NotebookCell[]): GlobalFindState {
     for (let i = 0; i < cells.length; i++) {
       const cell = cells[i];
 
-      // Search cell source
+      // Source matches (computed directly)
       const sourceMatches = findInText(cell.source, query);
       for (const m of sourceMatches) {
         allMatches.push({
@@ -118,22 +124,21 @@ export function useGlobalFind(cells: NotebookCell[]): GlobalFindState {
         });
       }
 
-      // Search output text
-      const outputText = extractOutputText(cell);
-      const outputMatches = findInText(outputText, query);
-      for (const m of outputMatches) {
+      // Output matches (from reported counts)
+      const outputCount = outputMatchCounts.get(cell.id) || 0;
+      for (let j = 0; j < outputCount; j++) {
         allMatches.push({
           cellId: cell.id,
           cellIndex: i,
           type: "output",
-          offset: m.offset,
-          length: m.length,
+          offset: j,
+          length: 0,
         });
       }
     }
 
     return allMatches;
-  }, [query, cells]);
+  }, [query, cells, outputMatchCounts]);
 
   const currentMatch =
     matches.length > 0 && currentMatchIndex >= 0
@@ -148,6 +153,7 @@ export function useGlobalFind(cells: NotebookCell[]): GlobalFindState {
     setIsOpen(false);
     setQueryState("");
     setCurrentMatchIndex(0);
+    setOutputMatchCounts(new Map());
   }, []);
 
   const setQuery = useCallback((newQuery: string) => {
@@ -179,5 +185,6 @@ export function useGlobalFind(cells: NotebookCell[]): GlobalFindState {
     setQuery,
     nextMatch,
     prevMatch,
+    reportOutputMatchCount,
   };
 }

@@ -29,6 +29,7 @@ interface NotebookViewProps {
   onAddCell: (type: "code" | "markdown", afterCellId?: string | null) => void;
   onClearPagePayload: (cellId: string) => void;
   onFormatCell?: (cellId: string) => void;
+  onReportOutputMatchCount?: (cellId: string, count: number) => void;
 }
 
 function AddCellButtons({
@@ -138,6 +139,7 @@ function NotebookViewContent({
   onAddCell,
   onClearPagePayload,
   onFormatCell,
+  onReportOutputMatchCount,
 }: NotebookViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { focusCell } = useEditorRegistry();
@@ -199,6 +201,11 @@ function NotebookViewContent({
             pagePayload={pagePayload}
             searchQuery={searchQuery}
             searchActiveOffset={activeSourceOffset}
+            onSearchMatchCount={
+              onReportOutputMatchCount
+                ? (count: number) => onReportOutputMatchCount(cell.id, count)
+                : undefined
+            }
             onFocus={() => onFocusCell(cell.id)}
             onUpdateSource={(source) => onUpdateCellSource(cell.id, source)}
             onExecute={() => onExecuteCell(cell.id)}
@@ -258,6 +265,7 @@ function NotebookViewContent({
       onAddCell,
       onClearPagePayload,
       onFormatCell,
+      onReportOutputMatchCount,
       focusCell,
     ],
   );

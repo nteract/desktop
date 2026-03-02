@@ -82,6 +82,7 @@ interface CodeCellProps {
   pagePayload: CellPagePayload | null;
   searchQuery?: string;
   searchActiveOffset?: number;
+  onSearchMatchCount?: (count: number) => void;
   onFocus: () => void;
   onUpdateSource: (source: string) => void;
   onExecute: () => void;
@@ -103,6 +104,7 @@ export function CodeCell({
   pagePayload,
   searchQuery,
   searchActiveOffset = -1,
+  onSearchMatchCount,
   onFocus,
   onUpdateSource,
   onExecute,
@@ -290,6 +292,7 @@ export function CodeCell({
             outputs={cell.outputs}
             preloadIframe
             searchQuery={searchQuery}
+            onSearchMatchCount={onSearchMatchCount}
           />
         }
         hideOutput={cell.outputs.length === 0}

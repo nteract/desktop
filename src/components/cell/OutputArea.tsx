@@ -114,6 +114,11 @@ interface OutputAreaProps {
    * Empty string or undefined clears highlights.
    */
   searchQuery?: string;
+  /**
+   * Callback reporting how many search matches were found in this cell's outputs.
+   * Called when iframe reports search_results or in-DOM highlighting completes.
+   */
+  onSearchMatchCount?: (count: number) => void;
 }
 
 /**
@@ -287,11 +292,14 @@ export function OutputArea({
   onLinkClick,
   onWidgetUpdate,
   searchQuery,
+  onSearchMatchCount,
 }: OutputAreaProps) {
   const id = useId();
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const bridgeRef = useRef<CommBridgeManager | null>(null);
   const inDomOutputRef = useRef<HTMLDivElement>(null);
+  const searchQueryRef = useRef(searchQuery);
+  searchQueryRef.current = searchQuery;
 
   // Track dark mode state and observe changes
   const [darkMode, setDarkMode] = useState(() => detectDarkMode());
@@ -328,7 +336,6 @@ export function OutputArea({
   const shouldUseBridge = shouldIsolate && hasWidgets && widgetContext !== null;
 
   const hasCollapseControl = onToggleCollapse !== undefined;
-  const outputCount = outputs.length;
 
   // Handle messages from iframe, routing widget messages to comm bridge
   const handleIframeMessage = useCallback(
@@ -342,8 +349,13 @@ export function OutputArea({
       if (message.type === "widget_update" && onWidgetUpdate) {
         onWidgetUpdate(message.payload.commId, message.payload.state);
       }
+
+      // Capture search result count from iframe
+      if (message.type === "search_results") {
+        onSearchMatchCount?.(message.payload.count);
+      }
     },
-    [onWidgetUpdate],
+    [onWidgetUpdate, onSearchMatchCount],
   );
 
   // Callback when frame is ready - set up bridge and render outputs
@@ -408,6 +420,11 @@ export function OutputArea({
         });
       }
     });
+
+    // Re-apply search highlights after rendering new content
+    if (searchQueryRef.current) {
+      frameRef.current?.search(searchQueryRef.current);
+    }
   }, [outputs, priority, shouldUseBridge, widgetContext]);
 
   // Clean up bridge on unmount
@@ -435,11 +452,22 @@ export function OutputArea({
   }, [searchQuery]);
 
   // Highlight search matches in in-DOM outputs
-  // Re-run when outputs change (outputCount tracks this) so new content gets highlighted
+  // Re-run when outputs array ref changes so new content gets highlighted
   useEffect(() => {
-    if (!inDomOutputRef.current || shouldIsolate || outputCount === 0) return;
-    return highlightTextInDom(inDomOutputRef.current, searchQuery || "");
-  }, [searchQuery, shouldIsolate, outputCount]);
+    if (shouldIsolate) return; // iframe reports its own count via search_results
+    if (!inDomOutputRef.current || outputs.length === 0) {
+      onSearchMatchCount?.(0);
+      return;
+    }
+    const cleanup = highlightTextInDom(
+      inDomOutputRef.current,
+      searchQuery || "",
+    );
+    const count =
+      inDomOutputRef.current.querySelectorAll(".global-find-match").length;
+    onSearchMatchCount?.(count);
+    return cleanup;
+  }, [searchQuery, shouldIsolate, outputs, onSearchMatchCount]);
 
   // Empty state: render nothing (unless preloading iframe)
   if (outputs.length === 0 && !showPreloadedIframe) {
@@ -470,7 +498,7 @@ export function OutputArea({
           )}
           <span>
             {collapsed
-              ? `Show ${outputCount} output${outputCount > 1 ? "s" : ""}`
+              ? `Show ${outputs.length} output${outputs.length > 1 ? "s" : ""}`
               : "Hide outputs"}
           </span>
         </button>
