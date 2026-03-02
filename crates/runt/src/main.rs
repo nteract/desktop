@@ -1826,8 +1826,8 @@ async fn shutdown_notebook(path: &PathBuf) -> Result<()> {
 
     let path_str = path.to_string_lossy();
 
-    // Check if it looks like a UUID (untitled notebook) - no path separators
-    let is_uuid = !path_str.contains('/') && !path_str.contains('\\');
+    // Check if it's a valid UUID (untitled notebook ID)
+    let is_uuid = uuid::Uuid::parse_str(&path_str).is_ok();
 
     let notebook_id = if is_uuid {
         // Use UUID directly for untitled notebooks
