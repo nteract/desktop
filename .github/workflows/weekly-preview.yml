@@ -273,7 +273,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: crates/notebook
-          args: --bundles dmg --config '{"build":{"beforeBuildCommand":""}}'
+          args: --bundles app,dmg --config '{"build":{"beforeBuildCommand":""}}'
           includeUpdaterJson: false
 
       - name: Cleanup keychain
@@ -301,13 +301,17 @@ jobs:
 
           cp "${DMG_BINARIES[0]}" artifacts/nteract-darwin-arm64.dmg
 
-          # Optional updater bundle (.tar.gz and .sig) for channels that publish updater artifacts.
-          if [ ${#TAR_GZ_BINARIES[@]} -gt 0 ]; then
-            cp "${TAR_GZ_BINARIES[0]}" artifacts/nteract-darwin-arm64.app.tar.gz
+          if [ ${#TAR_GZ_BINARIES[@]} -eq 0 ]; then
+            echo "::error::No macOS updater bundle (.app.tar.gz) found in target/release/bundle/macos"
+            exit 1
           fi
-          if [ ${#TAR_GZ_SIG_BINARIES[@]} -gt 0 ]; then
-            cp "${TAR_GZ_SIG_BINARIES[0]}" artifacts/nteract-darwin-arm64.app.tar.gz.sig
+          if [ ${#TAR_GZ_SIG_BINARIES[@]} -eq 0 ]; then
+            echo "::error::No macOS updater signature (.app.tar.gz.sig) found in target/release/bundle/macos"
+            exit 1
           fi
+
+          cp "${TAR_GZ_BINARIES[0]}" artifacts/nteract-darwin-arm64.app.tar.gz
+          cp "${TAR_GZ_SIG_BINARIES[0]}" artifacts/nteract-darwin-arm64.app.tar.gz.sig
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -665,8 +669,8 @@ jobs:
           cp notebook-windows-x64/nteract-windows-x64.exe release-assets/
           cp notebook-linux-x64/nteract-linux-x64.AppImage release-assets/
           # Updater bundles + signatures
-          cp notebook-macos-arm64/nteract-darwin-arm64.app.tar.gz release-assets/ 2>/dev/null || true
-          cp notebook-macos-arm64/nteract-darwin-arm64.app.tar.gz.sig release-assets/ 2>/dev/null || true
+          cp notebook-macos-arm64/nteract-darwin-arm64.app.tar.gz release-assets/
+          cp notebook-macos-arm64/nteract-darwin-arm64.app.tar.gz.sig release-assets/
           cp notebook-windows-x64/nteract-windows-x64.exe.sig release-assets/
           cp notebook-linux-x64/nteract-linux-x64.AppImage.sig release-assets/ 2>/dev/null || true
 
@@ -679,7 +683,28 @@ jobs:
           RELEASE_BASE="https://github.com/${REPO}/releases/download/${TAG_NAME}"
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          read_sig() { cat "$1" 2>/dev/null || echo ""; }
+          require_file() {
+            if [ ! -f "$1" ]; then
+              echo "::error::Missing required updater asset: $1"
+              exit 1
+            fi
+          }
+
+          require_sig() {
+            if [ ! -s "$1" ]; then
+              echo "::error::Missing or empty updater signature: $1"
+              exit 1
+            fi
+          }
+
+          read_sig() { cat "$1"; }
+
+          require_file release-assets/nteract-darwin-arm64.app.tar.gz
+          require_file release-assets/nteract-linux-x64.AppImage
+          require_file release-assets/nteract-windows-x64.exe
+          require_sig release-assets/nteract-darwin-arm64.app.tar.gz.sig
+          require_sig release-assets/nteract-linux-x64.AppImage.sig
+          require_sig release-assets/nteract-windows-x64.exe.sig
 
           SIG_DARWIN_ARM64=$(read_sig release-assets/nteract-darwin-arm64.app.tar.gz.sig)
           SIG_LINUX_X64=$(read_sig release-assets/nteract-linux-x64.AppImage.sig)
