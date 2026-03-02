@@ -24,7 +24,7 @@ use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, AutomergeError, ObjId, ObjType, ReadDoc};
-use log::info;
+use log::{info, warn};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -506,13 +506,16 @@ impl SettingsDoc {
 
     /// Get an optional u64 setting value from the root.
     /// Returns `Some(None)` if the key exists and is null (forever),
-    /// `Some(Some(value))` if the key exists with a numeric value,
-    /// `None` if the key doesn't exist.
+    /// `Some(Some(value))` if the key exists with a valid numeric value,
+    /// `None` if the key doesn't exist or has an invalid value.
+    ///
+    /// Invalid values (negative numbers, unparseable strings) are treated as
+    /// "key not present" to avoid accidentally enabling forever mode.
     pub fn get_u64_option(&self, key: &str) -> Option<Option<u64>> {
         match self.doc.get(automerge::ROOT, key).ok().flatten() {
             Some((automerge::Value::Scalar(s), _)) => match s.as_ref() {
                 automerge::ScalarValue::Null => Some(None), // Explicit null = forever
-                automerge::ScalarValue::Int(i) => Some(u64::try_from(*i).ok()),
+                automerge::ScalarValue::Int(i) => u64::try_from(*i).ok().map(Some),
                 automerge::ScalarValue::Uint(u) => Some(Some(*u)),
                 automerge::ScalarValue::Str(s) => s.parse().ok().map(Some),
                 _ => None,
@@ -748,24 +751,34 @@ impl SettingsDoc {
         }
 
         // keep_alive_secs (numeric or null for forever)
+        // Only explicit null means forever; invalid values are ignored
         if let Some(json_value) = json.get("keep_alive_secs") {
-            let new_value: Option<u64> = if json_value.is_null() {
-                None
+            let new_value: Option<Option<u64>> = if json_value.is_null() {
+                Some(None) // Explicit null = forever
+            } else if let Some(secs) = json_value.as_u64() {
+                Some(Some(secs)) // Valid numeric value
             } else {
-                json_value.as_u64()
+                // Invalid value (negative, string, object, etc.) - ignore
+                warn!(
+                    "[settings] apply_json_changes: ignoring invalid keep_alive_secs value: {:?}",
+                    json_value
+                );
+                None
             };
 
-            let current = self.get_u64_option("keep_alive_secs").flatten();
-            if current != new_value {
-                info!(
-                    "[settings] apply_json_changes: keep_alive_secs changed {:?} -> {:?}",
-                    current, new_value
-                );
-                match new_value {
-                    Some(secs) => self.put_u64("keep_alive_secs", secs),
-                    None => self.put_null("keep_alive_secs"),
+            if let Some(new_value) = new_value {
+                let current = self.get_u64_option("keep_alive_secs").flatten();
+                if current != new_value {
+                    info!(
+                        "[settings] apply_json_changes: keep_alive_secs changed {:?} -> {:?}",
+                        current, new_value
+                    );
+                    match new_value {
+                        Some(secs) => self.put_u64("keep_alive_secs", secs),
+                        None => self.put_null("keep_alive_secs"),
+                    }
+                    changed = true;
                 }
-                changed = true;
             }
         }
 

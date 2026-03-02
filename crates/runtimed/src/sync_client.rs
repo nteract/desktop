@@ -348,14 +348,16 @@ fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
     };
 
     // Returns Option<Option<u64>> to distinguish:
-    // - None = key doesn't exist
+    // - None = key doesn't exist or has invalid value
     // - Some(None) = key exists with null value (forever)
-    // - Some(Some(u64)) = key exists with numeric value
+    // - Some(Some(u64)) = key exists with valid numeric value
+    // Invalid values (negative numbers, unparseable strings) are treated as
+    // "key not present" to avoid accidentally enabling forever mode.
     let get_u64_option = |key: &str| -> Option<Option<u64>> {
         match doc.get(automerge::ROOT, key).ok().flatten() {
             Some((automerge::Value::Scalar(s), _)) => match s.as_ref() {
                 automerge::ScalarValue::Null => Some(None),
-                automerge::ScalarValue::Int(i) => Some(u64::try_from(*i).ok()),
+                automerge::ScalarValue::Int(i) => u64::try_from(*i).ok().map(Some),
                 automerge::ScalarValue::Uint(u) => Some(Some(*u)),
                 automerge::ScalarValue::Str(s) => s.parse().ok().map(Some),
                 _ => None,
