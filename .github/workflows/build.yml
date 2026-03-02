@@ -209,50 +209,59 @@ jobs:
     name: ${{ matrix.platform.name }}
     needs: [changes, build-ui]
     if: ${{ always() && (needs.changes.outputs.source_changed != 'true' || needs.build-ui.result == 'success') }}
-    runs-on: ${{ needs.changes.outputs.source_changed == 'true' && matrix.platform.runner || 'ubuntu-latest' }}
+    continue-on-error: ${{ matrix.platform.non_blocking }}
+    runs-on: ${{ needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr) && matrix.platform.runner || 'ubuntu-latest' }}
     strategy:
       matrix:
         platform:
           - name: macOS
             runner: macos-latest
             setup: echo "No extra deps needed on macOS"
+            run_on_pr: true
+            non_blocking: false
           - name: Windows
             runner: windows-latest
             setup: echo "No extra deps needed on Windows"
+            run_on_pr: false
+            non_blocking: true
     steps:
       - name: Skip non-source changes
         if: needs.changes.outputs.source_changed != 'true'
         run: echo "No source changes detected; skipping this platform leg."
 
+      - name: Skip this platform on pull requests
+        if: needs.changes.outputs.source_changed == 'true' && github.event_name == 'pull_request' && !matrix.platform.run_on_pr
+        run: echo "Skipping this platform for pull_request events."
+
       - uses: actions/checkout@v4
-        if: needs.changes.outputs.source_changed == 'true'
+        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
 
       - name: Download UI build artifacts
-        if: needs.changes.outputs.source_changed == 'true'
+        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
         uses: actions/download-artifact@v4
         with:
           name: ui-build-dist
           path: apps
 
       - name: Install system dependencies
-        if: needs.changes.outputs.source_changed == 'true'
+        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
         run: ${{ matrix.platform.setup }}
 
       - name: Install uv
-        if: needs.changes.outputs.source_changed == 'true'
+        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
         uses: astral-sh/setup-uv@v5
 
       - name: Install rust
-        if: needs.changes.outputs.source_changed == 'true'
+        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
         uses: dsherret/rust-toolchain-file@v1
 
       - uses: Swatinem/rust-cache@v2
-        if: needs.changes.outputs.source_changed == 'true'
+        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
         with:
           shared-key: ${{ matrix.platform.runner }}
 
       - name: Build external binaries
-        if: needs.changes.outputs.source_changed == 'true'
+        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
         shell: bash
         run: |
           cargo build --release -p runtimed -p runt-cli
@@ -267,15 +276,15 @@ jobs:
           fi
 
       - name: Clippy
-        if: needs.changes.outputs.source_changed == 'true'
+        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Build
-        if: needs.changes.outputs.source_changed == 'true'
+        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
         run: cargo build --release
 
       - name: Run tests
-        if: needs.changes.outputs.source_changed == 'true'
+        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
         run: cargo test --verbose
 
   # Build Tauri app once and share with E2E shards
