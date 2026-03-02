@@ -787,7 +787,7 @@ jobs:
             pip install runtimed --pre
             ```
           draft: false
-          prerelease: false
+          prerelease: true
           files: |
             ./release-assets/runt-linux-x64
             ./release-assets/runt-darwin-arm64
@@ -805,12 +805,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Ensure the rolling preview-latest release exists as a normal release, then update latest.json
+          # Ensure the rolling preview-latest release exists as a pre-release, then update latest.json
           gh release create preview-latest \
             --title "Preview Update Channel" \
             --notes "Rolling release for the preview auto-update channel. This release always contains the latest updater manifest. Do not delete this release." \
+            --prerelease \
             --latest=false 2>/dev/null || true
 
-          gh release edit preview-latest --prerelease=false --latest=false >/dev/null 2>&1 || true
+          gh release edit preview-latest --prerelease=true --latest=false >/dev/null 2>&1 || true
 
           gh release upload preview-latest release-assets/latest.json --clobber
