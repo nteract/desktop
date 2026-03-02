@@ -297,18 +297,19 @@ case "${1:-help}" in
     ;;
 
   test-untitled-pyproject)
-    # Test untitled notebook with pyproject.toml detection via --cwd
-    cd "$PROJECT_ROOT"
+    # Test untitled notebook with pyproject.toml detection
+    # The app captures CWD at startup, so we run it from the fixture directory
     require_binary
     $0 stop 2>/dev/null || true
     sleep 1
     start_daemon
 
-    # Use --cwd to set the working directory for untitled notebook project file detection
     FIXTURE_DIR="$PROJECT_ROOT/crates/notebook/fixtures/audit-test/pyproject-project"
 
-    echo "Starting untitled notebook with --cwd $FIXTURE_DIR"
-    RUST_LOG="${RUST_LOG:-info}" "$BINARY" --webdriver-port "$PORT" --cwd "$FIXTURE_DIR" &
+    echo "Starting untitled notebook from $FIXTURE_DIR (app will detect pyproject.toml)"
+    cd "$FIXTURE_DIR"
+    RUST_LOG="${RUST_LOG:-info}" "$BINARY" --webdriver-port "$PORT" &
+    cd "$PROJECT_ROOT"
     wait_for_server 30
     TEST_EXIT=0
     E2E_SPEC="e2e/specs/untitled-pyproject.spec.js" WEBDRIVER_PORT="$PORT" pnpm exec wdio run e2e/wdio.conf.js || TEST_EXIT=$?

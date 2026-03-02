@@ -3175,16 +3175,24 @@ fn create_window_context(state: NotebookState) -> WindowNotebookContext {
 /// If `notebook_path` is Some, opens that file. If None, creates a new empty notebook.
 /// The `runtime` parameter specifies which runtime to use for new notebooks.
 /// If None, falls back to user's default runtime from settings.
-/// The `working_dir` parameter provides directory context for untitled notebooks,
-/// enabling project file detection (pyproject.toml, pixi.toml, environment.yaml).
+///
+/// For untitled notebooks, the current working directory is captured at startup
+/// for project file detection (pyproject.toml, pixi.toml, environment.yaml).
 pub fn run(
     notebook_path: Option<PathBuf>,
     runtime: Option<Runtime>,
-    working_dir: Option<PathBuf>,
     #[allow(unused_variables)] webdriver_port: Option<u16>,
 ) -> anyhow::Result<()> {
     env_logger::init();
     shell_env::load_shell_environment();
+
+    // Capture working directory early for untitled notebook project detection.
+    // This must happen before Tauri startup, which may change the CWD.
+    let working_dir = if notebook_path.is_none() {
+        std::env::current_dir().ok()
+    } else {
+        None
+    };
 
     // Use provided runtime or fall back to user's default from settings
     let runtime = runtime.unwrap_or_else(|| settings::load_settings().default_runtime);

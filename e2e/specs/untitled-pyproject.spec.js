@@ -2,10 +2,11 @@
  * E2E Test: Untitled Notebook with pyproject.toml
  *
  * Verifies that untitled notebooks can detect pyproject.toml
- * when launched with --cwd pointing to a project directory.
+ * when launched from a project directory.
  *
- * This test opens a fresh untitled notebook with --cwd set to
- * a fixture directory containing pyproject.toml with pandas.
+ * The app captures its working directory at startup and uses it
+ * for project file detection. This test runs the app from a fixture
+ * directory containing pyproject.toml with pandas.
  *
  * Run with: ./e2e/dev.sh test-untitled-pyproject
  */

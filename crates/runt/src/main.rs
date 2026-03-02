@@ -404,7 +404,10 @@ fn main() -> Result<()> {
     }
 }
 
-/// Open the notebook application with optional path and runtime arguments
+/// Open the notebook application with optional path and runtime arguments.
+///
+/// The app automatically captures its working directory at startup for untitled
+/// notebooks, so we don't need to pass --cwd explicitly.
 fn open_notebook(path: Option<PathBuf>, runtime: Option<String>) -> Result<()> {
     // Convert relative paths to absolute
     let abs_path = path.map(|p| {
@@ -415,19 +418,12 @@ fn open_notebook(path: Option<PathBuf>, runtime: Option<String>) -> Result<()> {
         }
     });
 
-    // For untitled notebooks, capture current working directory for project file detection
-    let cwd = if abs_path.is_none() {
-        std::env::current_dir().ok()
-    } else {
-        None
-    };
-
     #[cfg(target_os = "macos")]
     {
         let mut cmd = std::process::Command::new("open");
         cmd.arg("-a").arg("nteract");
 
-        if abs_path.is_some() || runtime.is_some() || cwd.is_some() {
+        if abs_path.is_some() || runtime.is_some() {
             cmd.arg("--args");
         }
         if let Some(p) = abs_path {
@@ -435,9 +431,6 @@ fn open_notebook(path: Option<PathBuf>, runtime: Option<String>) -> Result<()> {
         }
         if let Some(r) = runtime {
             cmd.arg("--runtime").arg(r);
-        }
-        if let Some(wd) = &cwd {
-            cmd.arg("--cwd").arg(wd);
         }
 
         cmd.spawn()
@@ -456,9 +449,6 @@ fn open_notebook(path: Option<PathBuf>, runtime: Option<String>) -> Result<()> {
         if let Some(r) = runtime {
             cmd.arg("--runtime").arg(r);
         }
-        if let Some(wd) = &cwd {
-            cmd.arg("--cwd").arg(wd);
-        }
 
         cmd.spawn()
             .map_err(|e| anyhow::anyhow!("Failed to launch nteract: {}", e))?;
@@ -475,9 +465,6 @@ fn open_notebook(path: Option<PathBuf>, runtime: Option<String>) -> Result<()> {
         }
         if let Some(r) = runtime {
             cmd.arg("--runtime").arg(r);
-        }
-        if let Some(wd) = &cwd {
-            cmd.arg("--cwd").arg(wd);
         }
 
         cmd.spawn()
