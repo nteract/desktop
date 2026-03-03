@@ -3592,7 +3592,7 @@ pub fn run(
                             // Show success dialog
                             tauri::async_runtime::spawn(async move {
                                 let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
-                                    .message("The 'runt' and 'nb' commands have been installed to /usr/local/bin.\n\nYou can now use:\n  runt notebook    - Open notebook app\n  nb               - Shorthand for above")
+                                    .message("The 'runt' and 'nb' commands have been installed to /usr/local/bin.\n\nYou can now use:\n- runt notebook: Open notebook app\n- nb: Shorthand for above")
                                     .title("CLI Installed")
                                     .kind(tauri_plugin_dialog::MessageDialogKind::Info)
                                     .blocking_show();
