@@ -220,7 +220,10 @@ impl ServiceManager {
             std::fs::set_permissions(&self.config.binary_path, perms)?;
         }
 
-        // Service config already exists, just restart
+        // Refresh service config so PATH and other settings stay up to date.
+        self.create_service_config()?;
+
+        // Restart the service with the updated binary and config.
         self.start()?;
 
         info!("[service] Upgrade completed successfully");
@@ -459,7 +462,7 @@ impl ServiceManager {
     // Linux-specific implementations
     #[cfg(target_os = "linux")]
     fn create_linux_systemd(&self) -> ServiceResult<()> {
-        let service_path = service_path_with_local_bin(&["/usr/local/bin", "/usr/bin", "/bin"]);
+        let service_env_path = service_path_with_local_bin(&["/usr/local/bin", "/usr/bin", "/bin"]);
         let service_content = format!(
             r#"[Unit]
 Description=runtimed - Jupyter Runtime Daemon
@@ -476,16 +479,16 @@ Environment=PATH={}
 WantedBy=default.target
 "#,
             self.config.binary_path.display(),
-            service_path,
+            service_env_path,
         );
 
-        let service_path = systemd_service_path();
-        if let Some(parent) = service_path.parent() {
+        let service_file_path = systemd_service_path();
+        if let Some(parent) = service_file_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        std::fs::write(&service_path, service_content)?;
-        info!("[service] Created {:?}", service_path);
+        std::fs::write(&service_file_path, service_content)?;
+        info!("[service] Created {:?}", service_file_path);
 
         // Reload systemd
         std::process::Command::new("systemctl")
