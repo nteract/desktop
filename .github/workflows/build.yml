@@ -35,6 +35,7 @@ jobs:
               - "bin/**"
               - "crates/**"
               - "e2e/**"
+              - "!e2e/*.md"
               - "python/**"
               - "scripts/**"
               - "src/**"
