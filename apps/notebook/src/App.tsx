@@ -868,9 +868,9 @@ function AppContent() {
     };
   }, []);
 
-  // Check for first launch - both on mount and via event
+  // Check for first launch
   useEffect(() => {
-    // Check settings directly on mount (in case event fired before listener)
+    // Check settings directly on mount
     invoke<{ onboarding_completed?: boolean }>("get_synced_settings")
       .then((settings) => {
         if (settings.onboarding_completed === false) {
@@ -880,14 +880,6 @@ function AppContent() {
       .catch(() => {
         // Daemon unavailable - don't show onboarding, let app work normally
       });
-
-    // Also listen for event (belt and suspenders)
-    const unlisten = listen("app:first_launch", () => {
-      setShowOnboarding(true);
-    });
-    return () => {
-      unlisten.then((u) => u()).catch(() => {});
-    };
   }, []);
 
   // Cmd+Shift+I to toggle isolation test panel (dev only)
@@ -904,7 +896,20 @@ function AppContent() {
 
   // Show onboarding screen for first launch
   if (showOnboarding) {
-    return <OnboardingScreen onComplete={() => setShowOnboarding(false)} />;
+    return (
+      <OnboardingScreen
+        onComplete={async () => {
+          // Close this window and open a fresh notebook with proper working directory
+          try {
+            await invoke("complete_onboarding");
+          } catch (e) {
+            // If complete_onboarding fails, fall back to just hiding the overlay
+            logger.error("complete_onboarding failed:", e);
+            setShowOnboarding(false);
+          }
+        }}
+      />
+    );
   }
 
   return (

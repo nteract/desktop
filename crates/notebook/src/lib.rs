@@ -607,6 +607,109 @@ mod tests {
     }
 }
 
+/// Get the version string of the bundled daemon.
+/// Format: "{CARGO_PKG_VERSION}+{GIT_COMMIT}" e.g., "1.4.1+a1b2c3d"
+fn bundled_daemon_version() -> String {
+    format!("{}+{}", env!("CARGO_PKG_VERSION"), env!("GIT_COMMIT"))
+}
+
+/// Upgrade the daemon via sidecar when version mismatch detected.
+///
+/// Runs `runtimed install` which handles: stop old → copy binary → start new.
+async fn upgrade_daemon_via_sidecar<F>(
+    app: &tauri::AppHandle,
+    on_progress: F,
+) -> Result<String, String>
+where
+    F: Fn(runtimed::client::DaemonProgress) + Clone + Send + 'static,
+{
+    use runtimed::client::DaemonProgress;
+    use tauri_plugin_shell::{process::CommandEvent, ShellExt};
+
+    log::info!("[startup] Upgrading daemon to bundled version...");
+    on_progress(DaemonProgress::Installing); // Reuse "installing" state for upgrade
+
+    // "runtimed install" handles: stop old → copy binary → start new
+    let (mut rx, _child) = app
+        .shell()
+        .sidecar("runtimed")
+        .map_err(|e| format!("Failed to create sidecar: {}", e))?
+        .args(["install"])
+        .spawn()
+        .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
+
+    // Collect output for logging
+    let mut exit_code = None;
+    while let Some(event) = rx.recv().await {
+        match event {
+            CommandEvent::Stdout(line) => {
+                log::info!(
+                    "[runtimed upgrade] {}",
+                    String::from_utf8_lossy(&line).trim()
+                );
+            }
+            CommandEvent::Stderr(line) => {
+                log::warn!(
+                    "[runtimed upgrade] {}",
+                    String::from_utf8_lossy(&line).trim()
+                );
+            }
+            CommandEvent::Terminated(status) => {
+                exit_code = status.code;
+            }
+            _ => {}
+        }
+    }
+
+    if exit_code != Some(0) {
+        let error = format!("Daemon upgrade failed with code {:?}", exit_code);
+        log::error!("[startup] {}", error);
+        on_progress(DaemonProgress::Failed {
+            error: error.clone(),
+            guidance: "Try running: runtimed install".to_string(),
+        });
+        return Err(error);
+    }
+
+    // Wait for upgraded daemon to be ready
+    log::info!("[startup] Upgrade completed, waiting for daemon to be ready...");
+    on_progress(DaemonProgress::Starting);
+
+    let client = runtimed::client::PoolClient::default();
+    let max_attempts = 20;
+    for attempt in 1..=max_attempts {
+        on_progress(DaemonProgress::WaitingForReady {
+            attempt,
+            max_attempts,
+        });
+
+        if client.ping().await.is_ok() {
+            let endpoint = runtimed::default_socket_path()
+                .to_string_lossy()
+                .to_string();
+            log::info!(
+                "[startup] Upgraded daemon ready at {} (attempt {})",
+                endpoint,
+                attempt
+            );
+            on_progress(DaemonProgress::Ready {
+                endpoint: endpoint.clone(),
+            });
+            return Ok(endpoint);
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    }
+
+    let error = "Upgraded daemon did not become ready within timeout".to_string();
+    log::error!("[startup] {}", error);
+    on_progress(DaemonProgress::Failed {
+        error: error.clone(),
+        guidance: "Check daemon logs: runt daemon logs".to_string(),
+    });
+    Err(error)
+}
+
 /// Ensure the daemon is running using Tauri's sidecar API.
 ///
 /// This replaces the old `ensure_daemon_running` flow that used ServiceManager directly.
@@ -631,6 +734,26 @@ where
     // Check if daemon is already running
     let client = PoolClient::default();
     if let Ok(()) = client.ping().await {
+        // Daemon is running - check version alignment (production only)
+        if !runtimed::is_dev_mode() {
+            let bundled_version = bundled_daemon_version();
+            if let Some(info) = runtimed::singleton::get_running_daemon_info() {
+                if info.version != bundled_version {
+                    log::info!(
+                        "[startup] Daemon version mismatch: running={}, bundled={}",
+                        info.version,
+                        bundled_version
+                    );
+                    // Upgrade daemon to match bundled version
+                    return upgrade_daemon_via_sidecar(app, on_progress).await;
+                }
+                log::info!(
+                    "[startup] Daemon version matches bundled: {}",
+                    bundled_version
+                );
+            }
+        }
+
         let endpoint = runtimed::default_socket_path()
             .to_string_lossy()
             .to_string();
@@ -824,6 +947,67 @@ async fn get_blob_port() -> Result<u16, String> {
         .ok_or_else(|| "Daemon not running".to_string())?;
     info.blob_port
         .ok_or_else(|| "Blob server not available".to_string())
+}
+
+/// Complete onboarding and open a fresh notebook window.
+///
+/// Called from the frontend when the user finishes the onboarding flow.
+/// This closes any onboarding-only window and creates a proper notebook
+/// window with the correct working directory.
+#[tauri::command]
+async fn complete_onboarding(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+    registry: tauri::State<'_, WindowNotebookRegistry>,
+) -> Result<(), String> {
+    info!("[onboarding] Completing onboarding, closing current window and opening notebook");
+
+    // Get user's preferred runtime from settings (which was just set during onboarding)
+    let runtime = settings::load_settings().default_runtime;
+
+    // Use notebooks directory as working directory for the new notebook
+    let working_dir = ensure_notebooks_directory().ok();
+
+    // Create new notebook state with proper working directory
+    let mut state = NotebookState::new_empty_with_runtime(runtime);
+    state.working_dir = working_dir.clone();
+
+    // Create the notebook window
+    let label = create_notebook_window(&app, registry.inner(), state)?;
+    info!("[onboarding] Created notebook window with label: {}", label);
+
+    // Initialize notebook sync for the new window
+    if let Ok(context) = registry.get(&label) {
+        if let Some(new_window) = app.get_webview_window(&label) {
+            // Spawn async task for notebook sync initialization
+            let notebook_state = context.notebook_state.clone();
+            let notebook_sync = context.notebook_sync.clone();
+            let sync_generation = context.sync_generation.clone();
+            tauri::async_runtime::spawn(async move {
+                match initialize_notebook_sync(
+                    new_window,
+                    notebook_state,
+                    notebook_sync,
+                    sync_generation,
+                    working_dir,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        info!("[onboarding] Notebook sync initialized for new window");
+                    }
+                    Err(e) => {
+                        warn!("[onboarding] Notebook sync failed: {}", e);
+                    }
+                }
+            });
+        }
+    }
+
+    // Close the onboarding window (the one that called this command)
+    window.close().map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -3143,6 +3327,12 @@ pub fn run(
     env_logger::init();
     shell_env::load_shell_environment();
 
+    // Check if onboarding is needed EARLY, before setting up notebook state.
+    // If onboarding is needed and no notebook path provided, we'll show the
+    // onboarding window instead of creating a notebook.
+    let app_settings = settings::load_settings();
+    let needs_onboarding = !app_settings.onboarding_completed && notebook_path.is_none();
+
     // Capture working directory early for untitled notebook project detection.
     // This must happen before Tauri startup, which may change the CWD.
     let working_dir = if notebook_path.is_none() {
@@ -3152,59 +3342,72 @@ pub fn run(
     };
 
     // Use provided runtime or fall back to user's default from settings
-    let runtime = runtime.unwrap_or_else(|| settings::load_settings().default_runtime);
+    let runtime = runtime.unwrap_or(app_settings.default_runtime);
 
-    // Try to restore session if no notebook path provided
-    let restored_session = if notebook_path.is_none() {
+    // Try to restore session if no notebook path provided and not onboarding
+    let restored_session = if notebook_path.is_none() && !needs_onboarding {
         session::load_session()
     } else {
         None
     };
 
-    // Determine initial state for main window
-    let mut initial_state = match notebook_path.as_ref() {
-        Some(path) => load_notebook_state_for_path(path, runtime).map_err(anyhow::Error::msg)?,
-        None => {
-            // Try to restore from session
-            if let Some(ref session) = restored_session {
-                if let Some(main_session) = session.windows.iter().find(|w| w.label == "main") {
-                    match session::load_window_session_state(main_session) {
-                        Ok(state) => {
-                            info!("[session] Restored main window from session");
-                            state
+    // Window registry is always needed for multi-window support
+    let window_registry = WindowNotebookRegistry::default();
+
+    // Only set up initial notebook state if not showing onboarding
+    let (window_title, _main_context) = if needs_onboarding {
+        info!("[startup] Onboarding needed, skipping notebook state setup");
+        // No main context - onboarding window doesn't need notebook state
+        ("Welcome to nteract".to_string(), None)
+    } else {
+        // Determine initial state for main window
+        let mut initial_state = match notebook_path.as_ref() {
+            Some(path) => {
+                load_notebook_state_for_path(path, runtime).map_err(anyhow::Error::msg)?
+            }
+            None => {
+                // Try to restore from session
+                if let Some(ref session) = restored_session {
+                    if let Some(main_session) = session.windows.iter().find(|w| w.label == "main") {
+                        match session::load_window_session_state(main_session) {
+                            Ok(state) => {
+                                info!("[session] Restored main window from session");
+                                state
+                            }
+                            Err(e) => {
+                                warn!("[session] Failed to restore main window: {}", e);
+                                NotebookState::new_empty_with_runtime(runtime)
+                            }
                         }
-                        Err(e) => {
-                            warn!("[session] Failed to restore main window: {}", e);
-                            NotebookState::new_empty_with_runtime(runtime)
-                        }
+                    } else {
+                        NotebookState::new_empty_with_runtime(runtime)
                     }
                 } else {
                     NotebookState::new_empty_with_runtime(runtime)
                 }
-            } else {
-                NotebookState::new_empty_with_runtime(runtime)
             }
+        };
+        // Store working_dir in notebook state for untitled notebooks (used on daemon reconnect)
+        if initial_state.path.is_none() {
+            initial_state.working_dir = working_dir.clone();
         }
-    };
-    // Store working_dir in notebook state for untitled notebooks (used on daemon reconnect)
-    if initial_state.path.is_none() {
-        initial_state.working_dir = working_dir.clone();
-    }
 
-    let window_title = match &initial_state.path {
-        Some(path) => path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("Untitled.ipynb")
-            .to_string(),
-        None => "Untitled.ipynb".to_string(),
-    };
+        let title = match &initial_state.path {
+            Some(path) => path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("Untitled.ipynb")
+                .to_string(),
+            None => "Untitled.ipynb".to_string(),
+        };
 
-    let window_registry = WindowNotebookRegistry::default();
-    let main_context = create_window_context(initial_state);
-    window_registry
-        .insert("main", main_context.clone())
-        .map_err(anyhow::Error::msg)?;
+        let context = create_window_context(initial_state);
+        window_registry
+            .insert("main", context.clone())
+            .map_err(anyhow::Error::msg)?;
+
+        (title, Some(context))
+    };
 
     // Guard against concurrent reconnect attempts
     let reconnect_in_progress = ReconnectInProgress(Arc::new(AtomicBool::new(false)));
@@ -3316,6 +3519,8 @@ pub fn run(
             // Synced settings (via runtimed Automerge)
             get_synced_settings,
             set_synced_setting,
+            // Onboarding
+            complete_onboarding,
             // Debug info
             get_git_info,
             get_daemon_info,
@@ -3402,16 +3607,6 @@ pub fn run(
                 // This allows retry on next startup if all windows failed
                 if !restore_failed || session.windows.iter().any(|w| w.label == "main") {
                     session::clear_session();
-                }
-            }
-
-            // Check if this is first launch (onboarding not completed)
-            // Emit event before daemon starts so UI can show onboarding in parallel
-            {
-                let settings = crate::settings::load_settings();
-                if !settings.onboarding_completed {
-                    log::info!("[startup] First launch detected, emitting app:first_launch event");
-                    let _ = app.emit("app:first_launch", ());
                 }
             }
 
