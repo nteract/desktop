@@ -3642,13 +3642,23 @@ pub fn run(
     let registry_for_open = window_registry.clone();
     let registry_for_session = window_registry.clone();
     let registry_for_window_close = window_registry.clone();
-    app.run(move |_app_handle, _event| {
+    app.run(move |app_handle, event| {
+        // Keep the app process alive when the final window is closed.
+        // This allows behavior like reopening from app-level affordances
+        // without requiring a full process restart.
+        if let RunEvent::ExitRequested { code, api, .. } = &event {
+            if code.is_none() && app_handle.webview_windows().is_empty() {
+                log::info!("[app] Preventing exit after closing last window");
+                api.prevent_exit();
+            }
+        }
+
         // Clean up registry entries when windows are destroyed
         if let RunEvent::WindowEvent {
             label,
             event: WindowEvent::Destroyed,
             ..
-        } = &_event
+        } = &event
         {
             // Don't remove main window from registry - it persists for the app lifetime
             if label != "main" {
@@ -3665,7 +3675,7 @@ pub fn run(
 
         // Save session state when app is about to exit
         // Use Exit (not ExitRequested) as it fires reliably on all platforms
-        if let RunEvent::Exit = &_event {
+        if let RunEvent::Exit = &event {
             log::info!("[session] App exiting, saving session...");
             if let Err(e) = session::save_session(&registry_for_session) {
                 log::error!("[session] Failed to save session: {}", e);
@@ -3676,7 +3686,7 @@ pub fn run(
 
         // Handle file associations (macOS only)
         #[cfg(any(target_os = "macos", target_os = "ios"))]
-        if let RunEvent::Opened { urls } = &_event {
+        if let RunEvent::Opened { urls } = &event {
             for url in urls {
                 let path = match url.scheme() {
                     "file" => url.to_file_path().ok(),
@@ -3711,7 +3721,7 @@ pub fn run(
                                 }
                             }
 
-                            if let Some(window) = _app_handle.get_webview_window("main") {
+                            if let Some(window) = app_handle.get_webview_window("main") {
                                 let title = path
                                     .file_name()
                                     .and_then(|n| n.to_str())
@@ -3727,8 +3737,7 @@ pub fn run(
                         }
                         Err(e) => log::error!("Failed to load notebook file: {}", e),
                     }
-                } else if let Err(e) = open_notebook_window(_app_handle, &registry_for_open, &path)
-                {
+                } else if let Err(e) = open_notebook_window(app_handle, &registry_for_open, &path) {
                     log::error!("Failed to open notebook in new window: {}", e);
                 }
             }
