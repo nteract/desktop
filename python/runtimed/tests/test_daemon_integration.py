@@ -171,19 +171,24 @@ def daemon_process():
         # RUNTIMED_SOCKET_PATH for CI mode.
         uv_ready = False
         conda_ready = False
+        import re
+        # Match "UV pool: N/M available" where N > 0 (works for any pool size)
+        uv_pattern = re.compile(r"UV pool: (\d+)/\d+ available")
+        conda_pattern = re.compile(r"Conda pool: (\d+)/\d+ available")
         for i in range(120):
             try:
                 log_contents = log_file.read_text()
-                if not uv_ready and "UV pool:" in log_contents and "available" in log_contents:
-                    # Look for "UV pool: N/N available" where N > 0
+                if not uv_ready:
                     for line in log_contents.splitlines():
-                        if "UV pool:" in line and "/2 available" in line:
+                        match = uv_pattern.search(line)
+                        if match and int(match.group(1)) > 0:
                             uv_ready = True
                             print(f"[test] UV pool ready after {i + 1}s", file=sys.stderr)
                             break
-                if not conda_ready and "Conda pool:" in log_contents:
+                if not conda_ready:
                     for line in log_contents.splitlines():
-                        if "Conda pool:" in line and "/2 available" in line:
+                        match = conda_pattern.search(line)
+                        if match and int(match.group(1)) > 0:
                             conda_ready = True
                             print(f"[test] Conda pool ready after {i + 1}s", file=sys.stderr)
                             break
