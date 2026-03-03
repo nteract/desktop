@@ -1231,17 +1231,55 @@ class TestCondaInlineDeps:
     creates a cached conda environment via rattler. First creation is
     slow (rattler solve + install); subsequent launches with the same
     deps hit the cache at ~/.cache/runt/inline-envs/.
+
+    Uses a class-scoped fixture to share the kernel between tests,
+    avoiding duplicate env creation and reducing flakiness from
+    broadcast race conditions on cold startup.
     """
 
-    def test_conda_inline_deps(self, session):
-        """Conda inline deps from metadata launches kernel with deps installed."""
+    @pytest.fixture(scope="class")
+    def conda_inline_session(self, daemon_process):
+        """Create a session with conda inline deps, shared across tests in this class."""
         import json
 
+        socket_path, _ = daemon_process
+
+        # Set socket path env var so Session.connect() uses the right daemon
+        old_socket_path = os.environ.get("RUNTIMED_SOCKET_PATH")
+        if socket_path is not None:
+            os.environ["RUNTIMED_SOCKET_PATH"] = str(socket_path)
+
+        # Create session with unique notebook ID
+        notebook_id = f"test-conda-inline-{uuid.uuid4()}"
+        sess = runtimed.Session(notebook_id=notebook_id)
+        sess.connect()
+
+        # Set up conda inline deps metadata
         snapshot = _python_kernelspec_metadata(with_conda_deps=["filelock"])
-        session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
+        sess.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
         time.sleep(0.3)
 
-        session.start_kernel(kernel_type="python", env_source="conda:inline")
+        # Start kernel once for all tests in class
+        sess.start_kernel(kernel_type="python", env_source="conda:inline")
+
+        yield sess
+
+        # Cleanup
+        try:
+            if sess.kernel_started:
+                sess.shutdown_kernel()
+        except Exception:
+            pass
+        finally:
+            # Restore env var
+            if old_socket_path is not None:
+                os.environ["RUNTIMED_SOCKET_PATH"] = old_socket_path
+            elif "RUNTIMED_SOCKET_PATH" in os.environ:
+                del os.environ["RUNTIMED_SOCKET_PATH"]
+
+    def test_conda_inline_deps(self, conda_inline_session):
+        """Conda inline deps from metadata launches kernel with deps installed."""
+        session = conda_inline_session
 
         assert session.env_source == "conda:inline"
 
@@ -1249,15 +1287,9 @@ class TestCondaInlineDeps:
         assert result.success, f"Failed to import filelock: {result.stderr}"
         assert result.stdout.strip(), "filelock version should not be empty"
 
-    def test_conda_inline_env_has_python(self, session):
+    def test_conda_inline_env_has_python(self, conda_inline_session):
         """Conda inline env has a working Python in a conda prefix."""
-        import json
-
-        snapshot = _python_kernelspec_metadata(with_conda_deps=["filelock"])
-        session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
-        time.sleep(0.3)
-
-        session.start_kernel(kernel_type="python", env_source="conda:inline")
+        session = conda_inline_session
 
         result = session.run("import sys; print(sys.prefix)")
         assert result.success
