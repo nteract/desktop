@@ -3569,11 +3569,13 @@ pub fn run(
                     let _ = window.close();
                 }
 
-                // Create dedicated onboarding window with fixed size appropriate for content
+                // Create dedicated onboarding window with fixed size appropriate for content.
+                // Uses the separate onboarding app bundle (not the notebook bundle) to avoid
+                // loading notebook hooks that don't apply to the onboarding window.
                 let _onboarding_window = tauri::WebviewWindowBuilder::new(
                     app,
                     "onboarding",
-                    tauri::WebviewUrl::default(),
+                    tauri::WebviewUrl::App("onboarding/index.html".into()),
                 )
                 .title("Welcome to nteract")
                 .inner_size(1024.0, 768.0)
