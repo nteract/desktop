@@ -653,7 +653,6 @@ print()  # Final newline
         assert "Loading: 0%" not in result.stdout
         assert "Loading: 20%" not in result.stdout
 
-    @pytest.mark.skip(reason="Trailing newline stripped by stream_terminal.rs - see future work")
     def test_consecutive_prints_merged(self, session):
         """Consecutive print statements should be merged into one output."""
         session.start_kernel()
@@ -1662,7 +1661,6 @@ class TestAsyncKernelLifecycle:
 class TestAsyncOutputTypes:
     """Test different output types from execution with AsyncSession."""
 
-    @pytest.mark.skip(reason="Trailing newline stripped by stream_terminal.rs - see future work")
     @pytest.mark.asyncio
     async def test_async_stdout_output(self, async_session):
         """Captures stdout output."""

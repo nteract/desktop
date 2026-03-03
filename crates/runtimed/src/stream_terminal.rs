@@ -176,6 +176,7 @@ impl StreamTerminals {
 fn serialize_to_ansi(term: &Term<VoidListener>) -> String {
     let grid = term.grid();
     let columns = grid.columns();
+    let cursor_line = grid.cursor.point.line.0;
 
     // First pass: find the last line with actual content (across full history)
     let topmost = grid.topmost_line();
@@ -358,7 +359,15 @@ fn serialize_to_ansi(term: &Term<VoidListener>) -> String {
         final_lines.pop();
     }
 
-    final_lines.join("\n")
+    let mut output = final_lines.join("\n");
+
+    // Preserve trailing newline if cursor is on a line after the last content.
+    // This happens when output ended with \n (e.g., print("hello") outputs "hello\n").
+    if cursor_line > max_line_with_content && !output.is_empty() {
+        output.push('\n');
+    }
+
+    output
 }
 
 /// Convert a Color to ANSI escape sequence.
