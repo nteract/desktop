@@ -188,8 +188,8 @@ pub fn create_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     edit_menu.append(&PredefinedMenuItem::select_all(app, None)?)?;
     menu.append(&edit_menu)?;
 
-    // Kernel menu
-    let kernel_menu = Submenu::new(app, "Kernel", true)?;
+    // Runtime menu
+    let kernel_menu = Submenu::new(app, "Runtime", true)?;
     kernel_menu.append(&MenuItem::with_id(
         app,
         MENU_RUN_ALL_CELLS,
