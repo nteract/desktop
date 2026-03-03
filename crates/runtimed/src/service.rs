@@ -68,28 +68,6 @@ pub fn default_log_path() -> PathBuf {
         .join("runtimed.log")
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn build_service_path(home_dir: Option<PathBuf>, base_paths: &[&str]) -> String {
-    let mut path_entries = Vec::with_capacity(base_paths.len() + 1);
-    if let Some(home) = home_dir {
-        path_entries.push(
-            home.join(".local")
-                .join("bin")
-                .to_string_lossy()
-                .into_owned(),
-        );
-    }
-
-    path_entries.extend(base_paths.iter().map(|entry| (*entry).to_string()));
-    path_entries.join(":")
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn service_path_with_local_bin(base_paths: &[&str]) -> String {
-    let home_dir = dirs::home_dir().or_else(|| std::env::var_os("HOME").map(PathBuf::from));
-    build_service_path(home_dir, base_paths)
-}
-
 /// Result type for service operations.
 pub type ServiceResult<T> = Result<T, ServiceError>;
 
@@ -365,12 +343,6 @@ impl ServiceManager {
     // macOS-specific implementations
     #[cfg(target_os = "macos")]
     fn create_macos_plist(&self) -> ServiceResult<()> {
-        let service_path = service_path_with_local_bin(&[
-            "/usr/local/bin",
-            "/usr/bin",
-            "/bin",
-            "/opt/homebrew/bin",
-        ]);
         let plist_content = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -396,7 +368,7 @@ impl ServiceManager {
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>{}</string>
+        <string>~/.local/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
     </dict>
 </dict>
 </plist>
@@ -404,7 +376,6 @@ impl ServiceManager {
             self.config.binary_path.display(),
             self.config.log_path.display(),
             self.config.log_path.display(),
-            service_path,
         );
 
         let plist_path = plist_path();
@@ -459,7 +430,6 @@ impl ServiceManager {
     // Linux-specific implementations
     #[cfg(target_os = "linux")]
     fn create_linux_systemd(&self) -> ServiceResult<()> {
-        let service_env_path = service_path_with_local_bin(&["/usr/local/bin", "/usr/bin", "/bin"]);
         let service_content = format!(
             r#"[Unit]
 Description=runtimed - Jupyter Runtime Daemon
@@ -470,13 +440,12 @@ Type=simple
 ExecStart={}
 Restart=on-failure
 RestartSec=5
-Environment=PATH={}
+Environment=PATH=~/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=default.target
 "#,
             self.config.binary_path.display(),
-            service_env_path,
         );
 
         let service_file_path = systemd_service_path();
@@ -654,25 +623,5 @@ mod tests {
         let manager = ServiceManager::default();
         // Just verify it doesn't panic
         let _ = manager.is_installed();
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn test_build_service_path_prepends_home_local_bin() {
-        let path = build_service_path(
-            Some(PathBuf::from("/tmp/test-home")),
-            &["/usr/local/bin", "/usr/bin", "/bin"],
-        );
-        assert_eq!(
-            path,
-            "/tmp/test-home/.local/bin:/usr/local/bin:/usr/bin:/bin"
-        );
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn test_build_service_path_without_home_uses_base_paths_only() {
-        let path = build_service_path(None, &["/usr/local/bin", "/usr/bin", "/bin"]);
-        assert_eq!(path, "/usr/local/bin:/usr/bin:/bin");
     }
 }
