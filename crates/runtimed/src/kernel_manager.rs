@@ -22,7 +22,7 @@ use jupyter_protocol::{
 };
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
+use tokio::sync::{broadcast, mpsc, oneshot, watch, RwLock};
 use uuid::Uuid;
 
 use crate::blob_store::BlobStore;
@@ -319,8 +319,8 @@ pub struct RoomKernel {
     cmd_rx: Option<mpsc::Receiver<QueueCommand>>,
     /// Automerge document for persisting outputs
     doc: Arc<RwLock<NotebookDoc>>,
-    /// Channel to send doc bytes to debounced persistence task
-    persist_tx: mpsc::Sender<Vec<u8>>,
+    /// Channel to send doc bytes to debounced persistence task (watch keeps latest)
+    persist_tx: watch::Sender<Option<Vec<u8>>>,
     /// Channel to notify peers of document changes
     changed_tx: broadcast::Sender<()>,
     /// Blob store for output manifests
@@ -361,7 +361,7 @@ impl RoomKernel {
     pub fn new(
         broadcast_tx: broadcast::Sender<NotebookBroadcast>,
         doc: Arc<RwLock<NotebookDoc>>,
-        persist_tx: mpsc::Sender<Vec<u8>>,
+        persist_tx: watch::Sender<Option<Vec<u8>>>,
         changed_tx: broadcast::Sender<()>,
         blob_store: Arc<BlobStore>,
         comm_state: Arc<CommState>,
@@ -760,7 +760,7 @@ impl RoomKernel {
                                         let _ = changed_tx.send(());
                                         bytes
                                     };
-                                    let _ = persist_tx.try_send(persist_bytes);
+                                    let _ = persist_tx.send(Some(persist_bytes));
 
                                     let _ =
                                         broadcast_tx.send(NotebookBroadcast::ExecutionStarted {
@@ -900,7 +900,7 @@ impl RoomKernel {
                                         let _ = changed_tx.send(());
                                         bytes
                                     };
-                                    let _ = persist_tx.try_send(persist_bytes);
+                                    let _ = persist_tx.send(Some(persist_bytes));
 
                                     let _ = broadcast_tx.send(NotebookBroadcast::Output {
                                         cell_id: cid.clone(),
@@ -1014,7 +1014,7 @@ impl RoomKernel {
                                             let _ = changed_tx.send(());
                                             bytes
                                         };
-                                        let _ = persist_tx.try_send(persist_bytes);
+                                        let _ = persist_tx.send(Some(persist_bytes));
 
                                         let _ = broadcast_tx.send(NotebookBroadcast::Output {
                                             cell_id: cid.clone(),
@@ -1064,7 +1064,7 @@ impl RoomKernel {
                                         let _ = changed_tx.send(());
                                         bytes
                                     };
-                                    let _ = persist_tx.try_send(persist_bytes);
+                                    let _ = persist_tx.send(Some(persist_bytes));
 
                                     // Broadcast for immediate UI update
                                     // Frontend will receive via Automerge sync, but broadcast for speed
@@ -1170,7 +1170,7 @@ impl RoomKernel {
                                             let _ = changed_tx.send(());
                                             bytes
                                         };
-                                        let _ = persist_tx.try_send(persist_bytes);
+                                        let _ = persist_tx.send(Some(persist_bytes));
 
                                         let _ = broadcast_tx.send(NotebookBroadcast::Output {
                                             cell_id: cid.clone(),
@@ -1430,7 +1430,7 @@ impl RoomKernel {
                                                 let _ = shell_changed_tx.send(());
                                                 bytes
                                             };
-                                            let _ = shell_persist_tx.try_send(persist_bytes);
+                                            let _ = shell_persist_tx.send(Some(persist_bytes));
 
                                             // Broadcast to all windows
                                             let _ = shell_broadcast_tx.send(
@@ -2049,7 +2049,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let (tx, _rx) = broadcast::channel(16);
         let (changed_tx, _changed_rx) = broadcast::channel(16);
-        let (persist_tx, _persist_rx) = mpsc::channel::<Vec<u8>>(16);
+        let (persist_tx, _persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
         let doc = Arc::new(RwLock::new(NotebookDoc::new("test-notebook")));
         let blob_store = Arc::new(BlobStore::new(tmp.path().join("blobs")));
         let comm_state = Arc::new(CommState::new());

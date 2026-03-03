@@ -13,7 +13,7 @@
 //! 3. Additional windows join the same room
 //! 4. Changes from any peer broadcast to all others in the room
 //! 5. When the last peer disconnects, the room is evicted from memory
-//!    (the doc is already persisted on every change)
+//!    (any pending doc bytes are flushed to disk via debounced persistence)
 //! 6. Documents persist to `~/.cache/runt/notebook-docs/{hash}.automerge`
 //!
 //! ## Phase 8: Daemon-owned kernel execution
@@ -32,7 +32,7 @@ use std::sync::Arc;
 use automerge::sync;
 use log::{debug, error, info, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tokio::sync::{broadcast, watch, Mutex, RwLock};
 
 use crate::blob_store::BlobStore;
 use crate::comm_state::CommState;
@@ -455,7 +455,8 @@ pub struct NotebookRoom {
     /// Broadcast channel for kernel events (outputs, status changes).
     pub kernel_broadcast_tx: broadcast::Sender<NotebookBroadcast>,
     /// Channel to send doc bytes to the debounced persistence task.
-    pub persist_tx: mpsc::Sender<Vec<u8>>,
+    /// Uses watch for "latest value" semantics - always keeps most recent state.
+    pub persist_tx: watch::Sender<Option<Vec<u8>>>,
     /// Persistence path for this room's document.
     pub persist_path: PathBuf,
     /// Number of active peer connections in this room.
@@ -512,8 +513,8 @@ impl NotebookRoom {
         let (changed_tx, _) = broadcast::channel(16);
         let (kernel_broadcast_tx, _) = broadcast::channel(64);
 
-        // Spawn debounced persistence task
-        let (persist_tx, persist_rx) = mpsc::channel::<Vec<u8>>(16);
+        // Spawn debounced persistence task (watch channel keeps latest value only)
+        let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
         spawn_persist_debouncer(persist_rx, persist_path.clone());
 
         // Verify trust from the notebook file
@@ -553,7 +554,7 @@ impl NotebookRoom {
         let doc = NotebookDoc::load_or_create(&persist_path, notebook_id);
         let (changed_tx, _) = broadcast::channel(16);
         let (kernel_broadcast_tx, _) = broadcast::channel(64);
-        let (persist_tx, persist_rx) = mpsc::channel::<Vec<u8>>(16);
+        let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
         spawn_persist_debouncer(persist_rx, persist_path.clone());
         let notebook_path = PathBuf::from(notebook_id);
         let trust_state = verify_trust_from_file(&notebook_path);
@@ -630,8 +631,8 @@ pub fn get_or_create_room(
 ///    exchange sync messages to propagate
 ///
 /// When the connection closes (client disconnect or error), the peer count
-/// is decremented. If it reaches zero, the room is evicted from the rooms
-/// map (the doc has already been persisted on every change).
+/// is decremented. If it reaches zero, the room is evicted and any pending
+/// doc bytes are flushed via debounced persistence.
 ///
 /// The `use_typed_frames` parameter determines the protocol version:
 /// - `false` (v1): Raw Automerge frames (legacy, for old clients)
@@ -858,7 +859,7 @@ where
                         };
 
                         // Send to debounced persistence task
-                        let _ = room.persist_tx.try_send(persist_bytes);
+                        let _ = room.persist_tx.send(Some(persist_bytes));
                     }
                     None => {
                         // Client disconnected
@@ -960,7 +961,7 @@ where
                                 };
 
                                 // Send to debounced persistence task
-                                let _ = room.persist_tx.try_send(persist_bytes);
+                                let _ = room.persist_tx.send(Some(persist_bytes));
 
                                 // Check if metadata changed and kernel is running - broadcast sync state
                                 check_and_broadcast_sync_state(room).await;
@@ -1894,7 +1895,7 @@ async fn handle_notebook_request(
             };
 
             // 2. Send to debounced persistence task
-            let _ = room.persist_tx.try_send(persist_bytes);
+            let _ = room.persist_tx.send(Some(persist_bytes));
 
             // 3. Broadcast for cross-window UI sync (fast path)
             let _ = room
@@ -2484,47 +2485,58 @@ async fn resolve_cell_output(output_str: &str, blob_store: &BlobStore) -> serde_
 
 /// Spawn a debounced persistence task that coalesces writes.
 ///
-/// Instead of writing to disk on every iopub message, this task waits 500ms
-/// after the last update before persisting. This dramatically reduces disk I/O
-/// during rapid output (loops, progress bars) while ensuring data is eventually
-/// persisted.
-fn spawn_persist_debouncer(mut persist_rx: mpsc::Receiver<Vec<u8>>, persist_path: PathBuf) {
+/// Uses a `watch` channel for "latest value" semantics - new values replace old ones,
+/// so we always persist the most recent state. No backpressure issues.
+///
+/// Persistence strategy:
+/// - **Debounce (500ms)**: Wait 500ms after last update before writing
+/// - **Max interval (5s)**: During continuous output, flush at least every 5s
+/// - **Shutdown flush**: Persist any pending data when channel closes
+///
+/// This reduces disk I/O during rapid output while ensuring durability.
+fn spawn_persist_debouncer(
+    mut persist_rx: watch::Receiver<Option<Vec<u8>>>,
+    persist_path: PathBuf,
+) {
     tokio::spawn(async move {
         use std::time::Duration;
-        use tokio::time::{interval, Instant, MissedTickBehavior};
+        use tokio::time::Instant;
 
         let debounce_duration = Duration::from_millis(500);
-        let mut pending: Option<Vec<u8>> = None;
-        let mut last_receive: Option<Instant> = None;
+        let max_flush_interval = Duration::from_secs(5);
 
-        // Check every 100ms if we should flush
-        let mut check_interval = interval(Duration::from_millis(100));
-        check_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut last_receive: Option<Instant> = None;
+        let mut last_flush: Option<Instant> = None;
 
         loop {
+            // Wait for changes or timeout
+            let timeout = tokio::time::sleep(Duration::from_millis(100));
             tokio::select! {
-                // Receive new bytes to persist
-                result = persist_rx.recv() => {
-                    match result {
-                        Some(bytes) => {
-                            pending = Some(bytes);
-                            last_receive = Some(Instant::now());
+                result = persist_rx.changed() => {
+                    if result.is_err() {
+                        // Channel closed - flush any pending data and exit
+                        let bytes = persist_rx.borrow().clone();
+                        if let Some(data) = bytes {
+                            do_persist(&data, &persist_path);
                         }
-                        None => {
-                            // Channel closed - flush any pending data and exit
-                            if let Some(bytes) = pending.take() {
-                                persist_notebook_bytes(&bytes, &persist_path);
-                            }
-                            break;
-                        }
+                        break;
                     }
+                    last_receive = Some(Instant::now());
                 }
-                // Periodic check for debounce timeout
-                _ = check_interval.tick() => {
-                    if let (Some(bytes), Some(last)) = (pending.as_ref(), last_receive) {
-                        if last.elapsed() >= debounce_duration {
-                            persist_notebook_bytes(bytes, &persist_path);
-                            pending = None;
+                _ = timeout => {
+                    // Check if we should flush based on debounce or max interval
+                    let should_flush = match (last_receive, last_flush) {
+                        (Some(recv), _) if recv.elapsed() >= debounce_duration => true,
+                        (Some(_), Some(flush)) if flush.elapsed() >= max_flush_interval => true,
+                        (Some(_), None) if last_receive.map(|r| r.elapsed() >= max_flush_interval).unwrap_or(false) => true,
+                        _ => false,
+                    };
+
+                    if should_flush {
+                        let bytes = persist_rx.borrow().clone();
+                        if let Some(data) = bytes {
+                            do_persist(&data, &persist_path);
+                            last_flush = Some(Instant::now());
                             last_receive = None;
                         }
                     }
@@ -2532,6 +2544,19 @@ fn spawn_persist_debouncer(mut persist_rx: mpsc::Receiver<Vec<u8>>, persist_path
             }
         }
     });
+}
+
+/// Actually persist bytes to disk, logging if it takes too long.
+fn do_persist(data: &[u8], path: &Path) {
+    let start = std::time::Instant::now();
+    persist_notebook_bytes(data, path);
+    let elapsed = start.elapsed();
+    if elapsed > std::time::Duration::from_millis(500) {
+        warn!(
+            "[persist-debouncer] Slow write: {:?} took {:?}",
+            path, elapsed
+        );
+    }
 }
 
 /// Persist pre-serialized notebook bytes to disk.
@@ -2932,7 +2957,7 @@ mod tests {
         let (changed_tx, _) = broadcast::channel(16);
         let (kernel_broadcast_tx, _) = broadcast::channel(64);
         let persist_path = tmp.path().join("doc.automerge");
-        let (persist_tx, persist_rx) = mpsc::channel::<Vec<u8>>(16);
+        let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
         spawn_persist_debouncer(persist_rx, persist_path.clone());
 
         let room = NotebookRoom {
