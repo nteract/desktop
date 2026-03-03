@@ -1232,12 +1232,11 @@ class TestCondaInlineDeps:
     deps hit the cache at ~/.cache/runt/inline-envs/.
     """
 
-    @pytest.mark.skip(reason="Conda inline env creation via rattler can exceed 60s timeout in CI")
     def test_conda_inline_deps(self, session):
         """Conda inline deps from metadata launches kernel with deps installed."""
         import json
 
-        snapshot = _python_kernelspec_metadata(with_conda_deps=["numpy"])
+        snapshot = _python_kernelspec_metadata(with_conda_deps=["filelock"])
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
         time.sleep(0.3)
 
@@ -1245,15 +1244,15 @@ class TestCondaInlineDeps:
 
         assert session.env_source == "conda:inline"
 
-        result = session.run("import numpy; print(numpy.__version__)")
-        assert result.success, f"Failed to import numpy: {result.stderr}"
-        assert result.stdout.strip(), "numpy version should not be empty"
+        result = session.run("import filelock; print(filelock.__version__)")
+        assert result.success, f"Failed to import filelock: {result.stderr}"
+        assert result.stdout.strip(), "filelock version should not be empty"
 
     def test_conda_inline_env_has_python(self, session):
         """Conda inline env has a working Python in a conda prefix."""
         import json
 
-        snapshot = _python_kernelspec_metadata(with_conda_deps=["numpy"])
+        snapshot = _python_kernelspec_metadata(with_conda_deps=["filelock"])
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
         time.sleep(0.3)
 
