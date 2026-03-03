@@ -16,6 +16,8 @@ log = "0.4"
 dirs = "5"
 sha2 = "0.10"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
+flate2 = "1"
+tar = "0.4"
 
 # Conda/rattler for tool bootstrapping
 rattler = { version = "0.39", default-features = false, features = ["native-tls"] }

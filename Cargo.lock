@@ -2890,6 +2890,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
+ "flate2",
  "log",
  "rattler",
  "rattler_cache",
@@ -2900,6 +2901,7 @@ dependencies = [
  "reqwest 0.12.28",
  "reqwest-middleware",
  "sha2 0.10.9",
+ "tar",
  "tempfile",
  "tokio",
  "zip 2.4.2",

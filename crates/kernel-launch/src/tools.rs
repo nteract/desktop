@@ -24,12 +24,15 @@ use zip::ZipArchive;
 /// Target Deno version for GitHub download.
 pub const DENO_TARGET_VERSION: &str = "2.7.1";
 
+/// Target UV version for GitHub download.
+pub const UV_TARGET_VERSION: &str = "0.10.8";
+
 /// Minimum acceptable Deno major version for system deno.
 /// If system deno is below this version, we download a newer one.
 pub const DENO_MIN_MAJOR_VERSION: u32 = 2;
 
-/// Platform information for Deno GitHub release assets.
-struct DenoPlatform {
+/// Platform information for GitHub release assets (shared by Deno and UV).
+struct GithubPlatform {
     arch: &'static str,
     platform: &'static str,
 }
@@ -302,21 +305,21 @@ pub async fn check_deno_available_without_bootstrap() -> bool {
 }
 
 /// Get the GitHub release asset platform string for the current system.
-fn get_deno_platform() -> Result<DenoPlatform> {
+fn get_github_platform() -> Result<GithubPlatform> {
     let arch = match std::env::consts::ARCH {
         "aarch64" => "aarch64",
         "x86_64" => "x86_64",
-        other => return Err(anyhow!("Unsupported architecture for Deno: {}", other)),
+        other => return Err(anyhow!("Unsupported architecture: {}", other)),
     };
 
     let platform = match std::env::consts::OS {
         "macos" => "apple-darwin",
         "linux" => "unknown-linux-gnu",
         "windows" => "pc-windows-msvc",
-        other => return Err(anyhow!("Unsupported platform for Deno: {}", other)),
+        other => return Err(anyhow!("Unsupported platform: {}", other)),
     };
 
-    Ok(DenoPlatform { arch, platform })
+    Ok(GithubPlatform { arch, platform })
 }
 
 /// Parse a version string and return the major version number.
@@ -399,7 +402,7 @@ fn extract_deno_zip(zip_bytes: &[u8], dest_dir: &Path) -> Result<PathBuf> {
 
 /// Download and verify the deno binary from GitHub releases.
 async fn download_deno_from_github(version: &str) -> Result<BootstrappedTool> {
-    let platform = get_deno_platform()?;
+    let platform = get_github_platform()?;
     let asset_name = format!("deno-{}-{}.zip", platform.arch, platform.platform);
 
     // Build URLs
@@ -562,22 +565,220 @@ pub async fn get_deno_path() -> Result<PathBuf> {
     }
 }
 
+/// Extract the uv binary from a tar.gz archive.
+fn extract_uv_tarball(tarball_bytes: &[u8], dest_dir: &Path) -> Result<PathBuf> {
+    use flate2::read::GzDecoder;
+    use tar::Archive;
+
+    // Create destination directory structure
+    let bin_dir = if cfg!(windows) {
+        dest_dir.join("Scripts")
+    } else {
+        dest_dir.join("bin")
+    };
+    std::fs::create_dir_all(&bin_dir)?;
+
+    // Decompress and extract
+    let decoder = GzDecoder::new(Cursor::new(tarball_bytes));
+    let mut archive = Archive::new(decoder);
+
+    // The uv tarball contains files in a directory like "uv-aarch64-apple-darwin/"
+    // We need to find the uv binary and extract it
+    let binary_name = if cfg!(windows) { "uv.exe" } else { "uv" };
+    let dest_path = bin_dir.join(binary_name);
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?;
+
+        // Look for the uv binary (may be at root or in a subdirectory)
+        if let Some(file_name) = path.file_name() {
+            if file_name == binary_name {
+                let mut dest_file = std::fs::File::create(&dest_path)?;
+                std::io::copy(&mut entry, &mut dest_file)?;
+
+                // Set executable permission on Unix
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let perms = std::fs::Permissions::from_mode(0o755);
+                    std::fs::set_permissions(&dest_path, perms)?;
+                }
+
+                return Ok(dest_path);
+            }
+        }
+    }
+
+    Err(anyhow!("uv binary not found in tarball"))
+}
+
+/// Extract the uv binary from a zip archive (Windows).
+#[cfg(target_os = "windows")]
+fn extract_uv_zip(zip_bytes: &[u8], dest_dir: &Path) -> Result<PathBuf> {
+    let bin_dir = dest_dir.join("Scripts");
+    std::fs::create_dir_all(&bin_dir)?;
+
+    let cursor = Cursor::new(zip_bytes);
+    let mut archive = ZipArchive::new(cursor)?;
+
+    let binary_name = "uv.exe";
+    let dest_path = bin_dir.join(binary_name);
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let name = file.name().to_string();
+
+        if name.ends_with(binary_name) {
+            let mut dest_file = std::fs::File::create(&dest_path)?;
+            std::io::copy(&mut file, &mut dest_file)?;
+            return Ok(dest_path);
+        }
+    }
+
+    Err(anyhow!("uv.exe not found in zip archive"))
+}
+
+/// Download and verify the uv binary from GitHub releases.
+async fn download_uv_from_github(version: &str) -> Result<BootstrappedTool> {
+    let platform = get_github_platform()?;
+
+    // UV uses tar.gz on Unix, zip on Windows
+    let (asset_name, is_zip) = if cfg!(windows) {
+        (
+            format!("uv-{}-{}.zip", platform.arch, platform.platform),
+            true,
+        )
+    } else {
+        (
+            format!("uv-{}-{}.tar.gz", platform.arch, platform.platform),
+            false,
+        )
+    };
+
+    // Build URLs
+    let download_url = format!(
+        "https://github.com/astral-sh/uv/releases/download/{}/{}",
+        version, asset_name
+    );
+    let checksum_url = format!("{}.sha256", download_url);
+
+    info!("Downloading uv {} from GitHub...", version);
+
+    // Setup cache directory
+    let cache_dir = tools_cache_dir();
+    let hash = compute_tool_hash("uv", Some(version));
+    let env_path = cache_dir.join(format!("uv-{}", hash));
+    let binary_path = binary_path_for_env(&env_path, "uv");
+
+    // Check if already cached
+    if binary_path.exists() {
+        info!("Using cached uv at {:?}", binary_path);
+        return Ok(BootstrappedTool {
+            binary_path,
+            env_path,
+        });
+    }
+
+    // Ensure cache directory exists
+    tokio::fs::create_dir_all(&cache_dir).await?;
+
+    // Remove partial environment if it exists
+    if env_path.exists() {
+        tokio::fs::remove_dir_all(&env_path).await?;
+    }
+
+    // Create HTTP client
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()?;
+
+    // Download checksum first
+    info!("Fetching checksum from {}...", checksum_url);
+    let checksum_response = client.get(&checksum_url).send().await?;
+    if !checksum_response.status().is_success() {
+        return Err(anyhow!(
+            "Failed to download checksum: {}",
+            checksum_response.status()
+        ));
+    }
+    let checksum_text = checksum_response.text().await?;
+    // UV checksums are just the hash (no filename)
+    let expected_hash = checksum_text.trim().to_lowercase();
+
+    // Download archive
+    info!("Downloading {}...", asset_name);
+    let archive_response = client.get(&download_url).send().await?;
+    if !archive_response.status().is_success() {
+        return Err(anyhow!(
+            "Failed to download uv: {}",
+            archive_response.status()
+        ));
+    }
+    let archive_bytes = archive_response.bytes().await?;
+
+    // Verify checksum
+    info!("Verifying checksum...");
+    let mut hasher = Sha256::new();
+    hasher.update(&archive_bytes);
+    let actual_hash = format!("{:x}", hasher.finalize());
+
+    if actual_hash != expected_hash {
+        return Err(anyhow!(
+            "Checksum mismatch: expected {}, got {}",
+            expected_hash,
+            actual_hash
+        ));
+    }
+
+    // Extract archive (blocking IO, run on blocking thread pool)
+    info!("Extracting uv to {:?}...", env_path);
+    let env_path_clone = env_path.clone();
+    let binary_path_clone = binary_path.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        if is_zip {
+            #[cfg(target_os = "windows")]
+            extract_uv_zip(&archive_bytes, &env_path_clone)?;
+            #[cfg(not(target_os = "windows"))]
+            return Err(anyhow!("Unexpected zip archive on non-Windows platform"));
+        } else {
+            extract_uv_tarball(&archive_bytes, &env_path_clone)?;
+        }
+
+        // Verify binary exists at expected location
+        if !binary_path_clone.exists() {
+            return Err(anyhow!(
+                "uv binary not found after extraction at {:?}",
+                binary_path_clone
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| anyhow!("Extraction task panicked: {}", e))??;
+
+    info!("Successfully installed uv {} at {:?}", version, binary_path);
+    Ok(BootstrappedTool {
+        binary_path,
+        env_path,
+    })
+}
+
 /// Global cache for the uv binary path.
 /// This avoids repeated lookups once uv is bootstrapped.
 static UV_PATH: OnceCell<Arc<Result<PathBuf, String>>> = OnceCell::const_new();
 
-/// Get the path to uv, bootstrapping it if necessary.
+/// Get the path to uv, with the following priority:
 ///
-/// This function:
-/// 1. First checks if uv is available on PATH (fast path)
-/// 2. If not, bootstraps it via rattler from conda-forge
-/// 3. Caches the result for subsequent calls
+/// 1. System uv if available on PATH (fast path, respects user's installation)
+/// 2. Download from GitHub releases (v0.10.8) - most reliable source
+/// 3. Fallback to rattler/conda-forge if GitHub download fails
 ///
-/// Returns the path to the uv binary, or an error if it can't be obtained.
+/// Results are cached for subsequent calls.
 pub async fn get_uv_path() -> Result<PathBuf> {
     let result = UV_PATH
         .get_or_init(|| async {
-            // First, check if uv is on PATH
+            // 1. Check for system uv on PATH
             if let Ok(output) = tokio::process::Command::new("uv")
                 .arg("--version")
                 .output()
@@ -589,8 +790,20 @@ pub async fn get_uv_path() -> Result<PathBuf> {
                 }
             }
 
-            // Not on PATH, bootstrap via rattler
-            info!("uv not found on PATH, bootstrapping via rattler...");
+            // 2. Try GitHub download (primary method)
+            info!(
+                "Downloading uv {} from GitHub releases...",
+                UV_TARGET_VERSION
+            );
+            match download_uv_from_github(UV_TARGET_VERSION).await {
+                Ok(tool) => return Arc::new(Ok(tool.binary_path)),
+                Err(e) => {
+                    info!("GitHub download failed: {}. Falling back to rattler...", e);
+                }
+            }
+
+            // 3. Fallback to rattler
+            info!("Bootstrapping uv via rattler from conda-forge...");
             match bootstrap_tool("uv", None).await {
                 Ok(tool) => Arc::new(Ok(tool.binary_path)),
                 Err(e) => Arc::new(Err(e.to_string())),
@@ -691,8 +904,8 @@ mod tests {
     }
 
     #[test]
-    fn test_get_deno_platform() {
-        let result = get_deno_platform();
+    fn test_get_github_platform() {
+        let result = get_github_platform();
         // Should succeed on supported platforms (macOS, Linux, Windows on x86_64 or aarch64)
         #[cfg(any(
             all(target_arch = "aarch64", target_os = "macos"),
@@ -715,45 +928,44 @@ mod tests {
         // Verify platform strings match GitHub release asset naming
         #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
         {
-            let p = get_deno_platform().unwrap();
+            let p = get_github_platform().unwrap();
             assert_eq!(p.arch, "aarch64");
             assert_eq!(p.platform, "apple-darwin");
         }
 
         #[cfg(all(target_arch = "x86_64", target_os = "macos"))]
         {
-            let p = get_deno_platform().unwrap();
+            let p = get_github_platform().unwrap();
             assert_eq!(p.arch, "x86_64");
             assert_eq!(p.platform, "apple-darwin");
         }
 
         #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
         {
-            let p = get_deno_platform().unwrap();
+            let p = get_github_platform().unwrap();
             assert_eq!(p.arch, "x86_64");
             assert_eq!(p.platform, "unknown-linux-gnu");
         }
 
         #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
         {
-            let p = get_deno_platform().unwrap();
+            let p = get_github_platform().unwrap();
             assert_eq!(p.arch, "aarch64");
             assert_eq!(p.platform, "unknown-linux-gnu");
         }
 
         #[cfg(all(target_arch = "x86_64", target_os = "windows"))]
         {
-            let p = get_deno_platform().unwrap();
+            let p = get_github_platform().unwrap();
             assert_eq!(p.arch, "x86_64");
             assert_eq!(p.platform, "pc-windows-msvc");
         }
     }
 
     #[test]
-    fn test_deno_version_constants() {
-        // Ensure constants are sensible
-        assert!(!DENO_TARGET_VERSION.is_empty());
+    fn test_version_constants() {
+        // Ensure constants are sensible - version strings contain dots
         assert!(DENO_TARGET_VERSION.contains('.'));
-        assert!(DENO_MIN_MAJOR_VERSION >= 2);
+        assert!(UV_TARGET_VERSION.contains('.'));
     }
 }
