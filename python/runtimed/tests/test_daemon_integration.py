@@ -548,7 +548,7 @@ class TestKernelLifecycle:
 class TestOutputTypes:
     """Test different output types from execution."""
 
-    @pytest.mark.skip(reason="Pool exhaustion - needs larger pool or test isolation")
+    @pytest.mark.skip(reason="Trailing newline stripped by stream_terminal.rs")
     def test_stdout_output(self, session):
         """Captures stdout output."""
         session.start_kernel()
@@ -559,7 +559,6 @@ class TestOutputTypes:
         assert result.success
         assert result.stdout == "hello stdout\n"
 
-    @pytest.mark.skip(reason="Pool exhaustion - needs larger pool or test isolation")
     def test_stderr_output(self, session):
         """Captures stderr output."""
         session.start_kernel()
@@ -697,7 +696,6 @@ print("out2")
         assert "err1" not in result.stdout
         assert "out1" not in result.stderr
 
-    @pytest.mark.skip(reason="Pool exhaustion - needs larger pool or test isolation")
     def test_ansi_colors_preserved(self, session):
         """ANSI color codes should be preserved in output."""
         session.start_kernel()
