@@ -974,7 +974,7 @@ async fn complete_onboarding(
     app: tauri::AppHandle,
     registry: tauri::State<'_, WindowNotebookRegistry>,
     default_runtime: String,
-    #[allow(unused_variables)] default_python_env: String,
+    default_python_env: String,
 ) -> Result<(), String> {
     info!(
         "[onboarding] Completing onboarding with runtime={}, python_env={}",
@@ -983,6 +983,11 @@ async fn complete_onboarding(
 
     // Parse runtime from frontend - use Python as fallback
     let runtime: Runtime = default_runtime.parse().unwrap_or(Runtime::Python);
+
+    // Note: default_python_env is already persisted via set_synced_setting before this call.
+    // The daemon reads it from synced settings when auto-launching Python kernels.
+    // We log it here for debugging but don't need to pass it further - the daemon has it.
+    let _ = &default_python_env; // Explicitly mark as intentionally received but daemon-handled
 
     // Use notebooks directory as working directory for the new notebook
     let working_dir = ensure_notebooks_directory().ok();
@@ -3741,6 +3746,11 @@ pub fn run(
                             log::warn!("[startup] Main notebook context missing: {}", e);
                         }
                     }
+                } else if daemon_available && skip_notebook_sync {
+                    // Onboarding mode: daemon is available, notebook sync deliberately skipped
+                    // Mark as success so autolaunch task doesn't emit error events
+                    log::info!("[startup] Skipping notebook sync during onboarding");
+                    daemon_sync_success_for_init.store(true, Ordering::SeqCst);
                 }
                 // Signal that daemon sync attempt is complete (success or failure)
                 daemon_sync_complete_for_init.store(true, Ordering::SeqCst);

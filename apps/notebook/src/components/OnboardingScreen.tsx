@@ -299,6 +299,7 @@ export function OnboardingScreen({ onComplete }: OnboardingScreenProps) {
     if (!daemonReady || !poolReady) return;
 
     try {
+      // Save settings to daemon
       await invoke("set_synced_setting", {
         key: "default_runtime",
         value: runtime,
@@ -312,11 +313,20 @@ export function OnboardingScreen({ onComplete }: OnboardingScreenProps) {
         value: true,
       });
 
+      // Show completing state while we create the notebook window
       setSetupComplete(true);
+
       // Pass selected values directly to avoid settings race condition
-      setTimeout(() => {
-        onComplete(runtime, pythonEnv);
-      }, 500);
+      // Await onComplete so we can handle failures properly
+      try {
+        await onComplete(runtime, pythonEnv);
+        // Window closes itself on success - no further action needed
+      } catch (completeError) {
+        // onComplete failed - reset state so user can retry
+        console.error("Failed to complete onboarding:", completeError);
+        setSetupComplete(false);
+        setErrorMessage("Failed to create notebook window. Please try again.");
+      }
     } catch (e) {
       console.error("Failed to save onboarding settings:", e);
       setErrorMessage("Failed to save settings. Please try again.");
