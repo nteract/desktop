@@ -1302,13 +1302,24 @@ impl Daemon {
 
     /// UV warming loop - maintains the UV pool.
     async fn uv_warming_loop(&self) {
-        // Check if uv is available
-        if !self.check_uv_available().await {
-            warn!("[runtimed] uv not available, UV warming disabled");
-            return;
-        }
+        // Bootstrap uv via rattler if not on PATH (this is cached via OnceCell)
+        let uv_path = match kernel_launch::tools::get_uv_path().await {
+            Ok(path) => {
+                info!("[runtimed] UV warming using uv at: {:?}", path);
+                path
+            }
+            Err(e) => {
+                warn!(
+                    "[runtimed] Failed to bootstrap uv: {}, UV warming disabled",
+                    e
+                );
+                return;
+            }
+        };
 
         info!("[runtimed] Starting UV warming loop");
+        // Store uv_path for use in create_uv_env - it's cached so get_uv_path() is instant
+        let _ = uv_path;
 
         loop {
             if *self.shutdown.lock().await {
@@ -1828,20 +1839,25 @@ print("warmup complete")
         let _ = self.pool_state_changed.send(broadcast);
     }
 
-    /// Check if uv is available on PATH.
-    async fn check_uv_available(&self) -> bool {
-        tokio::process::Command::new("uv")
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-
     /// Create a single UV environment and add it to the pool.
     async fn create_uv_env(&self) {
+        // Get uv path (cached via OnceCell, so this is instant after initial bootstrap)
+        let uv_path = match kernel_launch::tools::get_uv_path().await {
+            Ok(path) => path,
+            Err(e) => {
+                error!("[runtimed] Failed to get uv path: {}", e);
+                self.uv_pool
+                    .lock()
+                    .await
+                    .warming_failed_with_error(Some(PackageInstallError {
+                        failed_package: None,
+                        error_message: format!("Failed to get uv path: {}", e),
+                    }));
+                self.broadcast_pool_state().await;
+                return;
+            }
+        };
+
         let temp_id = format!("runtimed-uv-{}", uuid::Uuid::new_v4());
         let venv_path = self.config.cache_dir.join(&temp_id);
 
@@ -1869,7 +1885,7 @@ print("warmup complete")
         // Create venv (60 second timeout)
         let venv_result = tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            tokio::process::Command::new("uv")
+            tokio::process::Command::new(&uv_path)
                 .arg("venv")
                 .arg(&venv_path)
                 .stdout(Stdio::piped())
@@ -1949,7 +1965,7 @@ print("warmup complete")
 
         let install_result = tokio::time::timeout(
             std::time::Duration::from_secs(120),
-            tokio::process::Command::new("uv")
+            tokio::process::Command::new(&uv_path)
                 .args(&install_args)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())

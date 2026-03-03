@@ -1098,12 +1098,18 @@ async fn auto_launch_kernel(
         return;
     }
 
-    // notebook_path is only valid if it's a real file (not a UUID for new notebooks)
+    // notebook_path_opt is ONLY for saved notebooks (actual file paths).
+    // For untitled notebooks, kernel_manager will use default_notebooks_dir() for CWD.
     let notebook_path = PathBuf::from(notebook_id);
     let notebook_path_opt = if notebook_path.exists() {
         Some(notebook_path.clone())
-    } else if is_untitled_notebook(notebook_id) {
-        // For untitled notebooks, use the working_dir from the handshake for project file detection
+    } else {
+        None
+    };
+
+    // For untitled notebooks, get working_dir separately for project file detection.
+    // This is NOT passed to kernel.launch() - that would cause .parent() to give wrong CWD.
+    let working_dir_for_detection = if is_untitled_notebook(notebook_id) {
         let working_dir = room.working_dir.read().await;
         working_dir.clone().inspect(|p| {
             info!(
@@ -1162,8 +1168,11 @@ async fn auto_launch_kernel(
     let inline_source = metadata_snapshot.as_ref().and_then(check_inline_deps);
 
     // Step 3: Check project files (for Python environment resolution)
-    let project_source = notebook_path_opt
+    // Use notebook path for saved notebooks, or working_dir for untitled notebooks
+    let detection_path = notebook_path_opt
         .as_ref()
+        .or(working_dir_for_detection.as_ref());
+    let project_source = detection_path
         .and_then(|path| crate::project_file::detect_project_file(path))
         .map(|detected| {
             info!(
