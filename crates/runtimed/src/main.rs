@@ -318,15 +318,17 @@ fn install_service(binary: Option<PathBuf>) -> anyhow::Result<()> {
     let manager = ServiceManager::default();
 
     if manager.is_installed() {
-        println!("Service already installed. Use 'uninstall' first to reinstall.");
-        std::process::exit(1);
+        // Already installed - upgrade the binary instead of failing
+        println!("Service already installed, upgrading...");
+        manager.upgrade(&source_binary)?;
+        println!("Starting daemon...");
+        manager.start()?;
+    } else {
+        // Fresh install
+        manager.install(&source_binary)?;
+        println!("Starting daemon...");
+        manager.start()?;
     }
-
-    manager.install(&source_binary)?;
-
-    // Start the daemon immediately (don't wait for login)
-    println!("Starting daemon...");
-    manager.start()?;
 
     println!();
     println!("Service installed and running!");

@@ -12,7 +12,7 @@ type Runtime = "python" | "deno";
 type PythonEnv = "uv" | "conda";
 
 interface OnboardingScreenProps {
-  onComplete: () => void;
+  onComplete: () => void | Promise<void>;
 }
 
 type SetupStep = {
@@ -323,8 +323,8 @@ export function OnboardingScreen({ onComplete }: OnboardingScreenProps) {
   }, [daemonReady, poolReady, runtime, pythonEnv, onComplete]);
 
   // Skip onboarding when daemon failed
-  const handleSkip = useCallback(() => {
-    onComplete();
+  const handleSkip = useCallback(async () => {
+    await onComplete();
   }, [onComplete]);
 
   const completedSteps = steps.filter((s) => s.status === "completed").length;
