@@ -613,6 +613,12 @@ fn bundled_daemon_version() -> String {
     format!("{}+{}", env!("CARGO_PKG_VERSION"), env!("GIT_COMMIT"))
 }
 
+/// Extract the commit hash from a version string.
+/// Version format: "X.Y.Z+COMMIT" -> returns "COMMIT"
+fn extract_commit_hash(version: &str) -> Option<&str> {
+    version.split('+').nth(1)
+}
+
 /// Upgrade the daemon via sidecar when version mismatch detected.
 ///
 /// Runs `runtimed install` which handles: stop old → copy binary → start new.
@@ -738,9 +744,14 @@ where
         if !runtimed::is_dev_mode() {
             let bundled_version = bundled_daemon_version();
             if let Some(info) = runtimed::singleton::get_running_daemon_info() {
-                if info.version != bundled_version {
+                // Compare commit hashes only - package versions differ between crates
+                // (notebook has version like "1.4.1", runtimed has "0.1.0-dev.10")
+                let running_commit = extract_commit_hash(&info.version);
+                let bundled_commit = extract_commit_hash(&bundled_version);
+
+                if running_commit != bundled_commit {
                     log::info!(
-                        "[startup] Daemon version mismatch: running={}, bundled={}",
+                        "[startup] Daemon commit mismatch: running={}, bundled={}",
                         info.version,
                         bundled_version
                     );
@@ -748,8 +759,8 @@ where
                     return upgrade_daemon_via_sidecar(app, on_progress).await;
                 }
                 log::info!(
-                    "[startup] Daemon version matches bundled: {}",
-                    bundled_version
+                    "[startup] Daemon commit matches bundled: {:?}",
+                    bundled_commit
                 );
             }
         }
@@ -954,16 +965,24 @@ async fn get_blob_port() -> Result<u16, String> {
 /// Called from the frontend when the user finishes the onboarding flow.
 /// This closes any onboarding-only window and creates a proper notebook
 /// window with the correct working directory.
+///
+/// Settings are passed directly from the frontend to avoid race conditions
+/// where the JSON settings file may not have been persisted yet by the daemon.
 #[tauri::command]
 async fn complete_onboarding(
     window: tauri::Window,
     app: tauri::AppHandle,
     registry: tauri::State<'_, WindowNotebookRegistry>,
+    default_runtime: String,
+    #[allow(unused_variables)] default_python_env: String,
 ) -> Result<(), String> {
-    info!("[onboarding] Completing onboarding, closing current window and opening notebook");
+    info!(
+        "[onboarding] Completing onboarding with runtime={}, python_env={}",
+        default_runtime, default_python_env
+    );
 
-    // Get user's preferred runtime from settings (which was just set during onboarding)
-    let runtime = settings::load_settings().default_runtime;
+    // Parse runtime from frontend - use Python as fallback
+    let runtime: Runtime = default_runtime.parse().unwrap_or(Runtime::Python);
 
     // Use notebooks directory as working directory for the new notebook
     let working_dir = ensure_notebooks_directory().ok();
@@ -3435,7 +3454,11 @@ pub fn run(
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_denylist(&["onboarding"])
+                .build(),
+        )
         .manage(window_registry.clone())
         .manage(reconnect_in_progress)
         .manage(daemon_status_state)
@@ -3535,8 +3558,30 @@ pub fn run(
                 .map_err(Box::<dyn std::error::Error>::from)?;
             log::info!("[startup] Notebooks directory: {}", notebooks_dir.display());
 
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_title(&window_title);
+            if needs_onboarding {
+                // Close the default main window - we'll create an onboarding-specific one
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.close();
+                }
+
+                // Create dedicated onboarding window with fixed size appropriate for content
+                let _onboarding_window = tauri::WebviewWindowBuilder::new(
+                    app,
+                    "onboarding",
+                    tauri::WebviewUrl::default(),
+                )
+                .title("Welcome to nteract")
+                .inner_size(550.0, 650.0)
+                .resizable(false)
+                .center()
+                .build()?;
+
+                log::info!("[startup] Created dedicated onboarding window");
+            } else {
+                // Normal startup - just set the title on the main window
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_title(&window_title);
+                }
             }
 
             // Start WebDriver server for native E2E testing (if enabled)

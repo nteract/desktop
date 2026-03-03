@@ -12,7 +12,7 @@ type Runtime = "python" | "deno";
 type PythonEnv = "uv" | "conda";
 
 interface OnboardingScreenProps {
-  onComplete: () => void | Promise<void>;
+  onComplete: (runtime: string, pythonEnv: string) => void | Promise<void>;
 }
 
 type SetupStep = {
@@ -313,8 +313,9 @@ export function OnboardingScreen({ onComplete }: OnboardingScreenProps) {
       });
 
       setSetupComplete(true);
+      // Pass selected values directly to avoid settings race condition
       setTimeout(() => {
-        onComplete();
+        onComplete(runtime, pythonEnv);
       }, 500);
     } catch (e) {
       console.error("Failed to save onboarding settings:", e);
@@ -322,10 +323,10 @@ export function OnboardingScreen({ onComplete }: OnboardingScreenProps) {
     }
   }, [daemonReady, poolReady, runtime, pythonEnv, onComplete]);
 
-  // Skip onboarding when daemon failed
+  // Skip onboarding when daemon failed - use current selections or defaults
   const handleSkip = useCallback(async () => {
-    await onComplete();
-  }, [onComplete]);
+    await onComplete(runtime ?? "python", pythonEnv ?? "uv");
+  }, [onComplete, runtime, pythonEnv]);
 
   const completedSteps = steps.filter((s) => s.status === "completed").length;
   const totalSteps = steps.length;

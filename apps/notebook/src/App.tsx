@@ -898,14 +898,19 @@ function AppContent() {
   if (showOnboarding) {
     return (
       <OnboardingScreen
-        onComplete={async () => {
+        onComplete={async (runtime, pythonEnv) => {
           // Close this window and open a fresh notebook with proper working directory
+          // Settings are passed directly to avoid race condition with settings persistence
           try {
-            await invoke("complete_onboarding");
+            await invoke("complete_onboarding", {
+              default_runtime: runtime,
+              default_python_env: pythonEnv,
+            });
+            // Window closes itself on success - no action needed here
           } catch (e) {
-            // If complete_onboarding fails, fall back to just hiding the overlay
+            // Keep onboarding visible on error - don't fall back to broken app state
+            // The user can retry or close the window manually
             logger.error("complete_onboarding failed:", e);
-            setShowOnboarding(false);
           }
         }}
       />

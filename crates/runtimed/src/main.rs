@@ -319,10 +319,9 @@ fn install_service(binary: Option<PathBuf>) -> anyhow::Result<()> {
 
     if manager.is_installed() {
         // Already installed - upgrade the binary instead of failing
+        // upgrade() handles: stop old -> copy binary -> start new
         println!("Service already installed, upgrading...");
         manager.upgrade(&source_binary)?;
-        println!("Starting daemon...");
-        manager.start()?;
     } else {
         // Fresh install
         manager.install(&source_binary)?;
