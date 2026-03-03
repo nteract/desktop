@@ -903,8 +903,8 @@ function AppContent() {
           // Settings are passed directly to avoid race condition with settings persistence
           try {
             await invoke("complete_onboarding", {
-              default_runtime: runtime,
-              default_python_env: pythonEnv,
+              defaultRuntime: runtime,
+              defaultPythonEnv: pythonEnv,
             });
             // Window closes itself on success - no action needed here
           } catch (e) {
