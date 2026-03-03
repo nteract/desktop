@@ -10,6 +10,15 @@
     "core:window:allow-set-theme",
     "dialog:default",
     "process:allow-restart",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "binaries/runtimed",
+          "sidecar": true
+        }
+      ]
+    },
     "updater:default",
     "window-state:default"
   ]

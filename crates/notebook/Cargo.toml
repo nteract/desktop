@@ -23,6 +23,7 @@ clap = { version = "4", features = ["derive"] }
 tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-process = "2"
+tauri-plugin-shell = "2"
 tauri-plugin-updater = { version = "2", default-features = false, features = ["native-tls", "zip"] }
 tauri-plugin-window-state = "2"
 serde = { workspace = true }

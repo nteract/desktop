@@ -607,97 +607,135 @@ mod tests {
     }
 }
 
-/// Get the path to the bundled runtimed binary.
+/// Ensure the daemon is running using Tauri's sidecar API.
 ///
-/// Tauri places external binaries differently depending on the build type:
-/// - Bundled macOS apps: Contents/MacOS/runtimed (no target suffix)
-/// - Development/no-bundle: target/{debug,release}/binaries/runtimed-{target}
-fn get_bundled_runtimed_path(app: &tauri::AppHandle) -> Option<PathBuf> {
-    // First, try the bundled app location
-    // Tauri places externalBin differently per platform:
-    // - macOS: Contents/MacOS/runtimed
-    // - Linux: next to executable or in ../lib/{app}/
-    // - Windows: next to executable
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(exe_dir) = app.path().resource_dir() {
-            // resource_dir on macOS points to Contents/Resources
-            // The binary is in Contents/MacOS, which is ../MacOS from Resources
-            let macos_dir = exe_dir.parent()?.join("MacOS");
-            let bundled_path = macos_dir.join("runtimed");
-            if bundled_path.exists() {
-                log::debug!("[startup] Found bundled runtimed at {:?}", bundled_path);
-                return Some(bundled_path);
+/// This replaces the old `ensure_daemon_running` flow that used ServiceManager directly.
+/// The new flow:
+/// 1. Ping to check if daemon is running
+/// 2. If not, spawn `runtimed install` via sidecar (which also starts it)
+/// 3. Wait for daemon to become ready
+/// 4. Emit progress events throughout
+async fn ensure_daemon_via_sidecar<F>(
+    app: &tauri::AppHandle,
+    on_progress: F,
+) -> Result<String, String>
+where
+    F: Fn(runtimed::client::DaemonProgress) + Clone + Send + 'static,
+{
+    use runtimed::client::{DaemonProgress, PoolClient};
+    use tauri_plugin_shell::{process::CommandEvent, ShellExt};
+
+    log::info!("[startup] Checking if daemon is running...");
+    on_progress(DaemonProgress::Checking);
+
+    // Check if daemon is already running
+    let client = PoolClient::default();
+    if let Ok(()) = client.ping().await {
+        let endpoint = runtimed::default_socket_path()
+            .to_string_lossy()
+            .to_string();
+        log::info!("[startup] Daemon already running at {}", endpoint);
+        on_progress(DaemonProgress::Ready {
+            endpoint: endpoint.clone(),
+        });
+        return Ok(endpoint);
+    }
+
+    // In dev mode, don't auto-install - user should run dev-daemon manually
+    if runtimed::is_dev_mode() {
+        log::info!("[startup] Dev mode: daemon not running, skipping auto-install");
+        let guidance = "Start it with: cargo xtask dev-daemon".to_string();
+        on_progress(DaemonProgress::Failed {
+            error: "Dev daemon not running".to_string(),
+            guidance: guidance.clone(),
+        });
+        return Err(format!(
+            "Dev daemon not running at {:?}. {}",
+            runtimed::default_socket_path(),
+            guidance
+        ));
+    }
+
+    // Daemon not running - spawn sidecar to install and start
+    log::info!("[startup] Daemon not responding, spawning runtimed install via sidecar...");
+    on_progress(DaemonProgress::Installing);
+
+    let sidecar_result = app
+        .shell()
+        .sidecar("binaries/runtimed")
+        .map_err(|e| format!("Failed to create sidecar command: {}", e))?
+        .args(["install"])
+        .spawn();
+
+    let (mut rx, _child) = sidecar_result.map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
+
+    // Collect output for logging
+    let mut exit_code = None;
+    while let Some(event) = rx.recv().await {
+        match event {
+            CommandEvent::Stdout(line) => {
+                let line_str = String::from_utf8_lossy(&line);
+                log::info!("[runtimed install] {}", line_str.trim());
             }
-            log::debug!("[startup] Bundled runtimed not found at {:?}", bundled_path);
+            CommandEvent::Stderr(line) => {
+                let line_str = String::from_utf8_lossy(&line);
+                log::warn!("[runtimed install] {}", line_str.trim());
+            }
+            CommandEvent::Terminated(status) => {
+                exit_code = status.code;
+            }
+            _ => {}
         }
     }
 
-    #[cfg(target_os = "linux")]
-    {
-        // On Linux, Tauri places binaries next to the executable
-        if let Ok(resource_dir) = app.path().resource_dir() {
-            let bundled_path = resource_dir.join("runtimed");
-            if bundled_path.exists() {
-                log::debug!("[startup] Found bundled runtimed at {:?}", bundled_path);
-                return Some(bundled_path);
-            }
-            log::debug!("[startup] Bundled runtimed not found at {:?}", bundled_path);
-        }
+    // Check exit code
+    if exit_code != Some(0) {
+        let error = format!("runtimed install failed with code {:?}", exit_code);
+        log::error!("[startup] {}", error);
+        on_progress(DaemonProgress::Failed {
+            error: error.clone(),
+            guidance: "Try running: runtimed install".to_string(),
+        });
+        return Err(error);
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        // On Windows, Tauri places binaries next to the executable
-        if let Ok(resource_dir) = app.path().resource_dir() {
-            let bundled_path = resource_dir.join("runtimed.exe");
-            if bundled_path.exists() {
-                log::debug!("[startup] Found bundled runtimed at {:?}", bundled_path);
-                return Some(bundled_path);
-            }
-            log::debug!("[startup] Bundled runtimed not found at {:?}", bundled_path);
+    log::info!("[startup] runtimed install completed, waiting for daemon to be ready...");
+    on_progress(DaemonProgress::Starting);
+
+    // Wait for daemon to become ready (up to 10 seconds)
+    let max_attempts = 20;
+    for attempt in 1..=max_attempts {
+        on_progress(DaemonProgress::WaitingForReady {
+            attempt,
+            max_attempts,
+        });
+
+        if client.ping().await.is_ok() {
+            let endpoint = runtimed::default_socket_path()
+                .to_string_lossy()
+                .to_string();
+            log::info!(
+                "[startup] Daemon ready at {} (attempt {})",
+                endpoint,
+                attempt
+            );
+            on_progress(DaemonProgress::Ready {
+                endpoint: endpoint.clone(),
+            });
+            return Ok(endpoint);
         }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
 
-    // Fallback: try the development path (target/*/binaries/runtimed-{target})
-    let target = if cfg!(target_os = "macos") {
-        if cfg!(target_arch = "aarch64") {
-            "aarch64-apple-darwin"
-        } else {
-            "x86_64-apple-darwin"
-        }
-    } else if cfg!(target_os = "linux") {
-        if cfg!(target_arch = "aarch64") {
-            "aarch64-unknown-linux-gnu"
-        } else {
-            "x86_64-unknown-linux-gnu"
-        }
-    } else if cfg!(target_os = "windows") {
-        "x86_64-pc-windows-msvc"
-    } else {
-        return None;
-    };
-
-    let binary_name = if cfg!(windows) {
-        format!("runtimed-{}.exe", target)
-    } else {
-        format!("runtimed-{}", target)
-    };
-
-    // Try to find it relative to the executable (for no-bundle dev builds)
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            // Check binaries/ directory next to the executable
-            let dev_path = exe_dir.join("binaries").join(&binary_name);
-            if dev_path.exists() {
-                log::debug!("[startup] Found dev runtimed at {:?}", dev_path);
-                return Some(dev_path);
-            }
-            log::debug!("[startup] Dev runtimed not found at {:?}", dev_path);
-        }
-    }
-
-    None
+    // Timed out
+    let error = "Daemon did not become ready within timeout".to_string();
+    log::error!("[startup] {}", error);
+    on_progress(DaemonProgress::Failed {
+        error: error.clone(),
+        guidance: "Check daemon logs: runt daemon logs".to_string(),
+    });
+    Err(error)
 }
 
 /// Get git information for the debug banner.
@@ -3191,6 +3229,7 @@ pub fn run(
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(window_registry.clone())
@@ -3385,9 +3424,6 @@ pub fn run(
             let working_dir_for_sync = working_dir.clone();
             let daemon_status_for_callback = daemon_status_for_startup.clone();
             tauri::async_runtime::spawn(async move {
-                // Get path to bundled runtimed binary (for auto-installation)
-                let binary_path = get_bundled_runtimed_path(&app_for_daemon);
-
                 // Create progress callback to emit Tauri events for UI feedback
                 // Also stores status for later queries (handles race conditions)
                 let app_for_progress = app_for_daemon.clone();
@@ -3400,17 +3436,16 @@ pub fn run(
                     let _ = app_for_progress.emit("daemon:progress", &progress);
                 };
 
+                // Use sidecar-based daemon startup (spawns `runtimed install` if needed)
                 let daemon_available =
-                    match runtimed::client::ensure_daemon_running(binary_path, Some(on_progress))
-                        .await
-                    {
+                    match ensure_daemon_via_sidecar(&app_for_daemon, on_progress).await {
                         Ok(endpoint) => {
                             log::info!("[startup] runtimed running at {}", endpoint);
                             true
                         }
                         Err(e) => {
                             // Not critical - in-process prewarming will work as fallback
-                            // The failure event was already emitted by ensure_daemon_running
+                            // The failure event was already emitted by ensure_daemon_via_sidecar
                             log::warn!(
                                 "[startup] runtimed not available: {}. Using in-process prewarming.",
                                 e

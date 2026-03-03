@@ -324,11 +324,14 @@ fn install_service(binary: Option<PathBuf>) -> anyhow::Result<()> {
 
     manager.install(&source_binary)?;
 
+    // Start the daemon immediately (don't wait for login)
+    println!("Starting daemon...");
+    manager.start()?;
+
     println!();
-    println!("Service installed successfully!");
+    println!("Service installed and running!");
     println!("The daemon will start automatically at login.");
     println!();
-    println!("To start now:    runt daemon start");
     println!("To check status: runt daemon status");
     println!("To uninstall:    runt daemon uninstall");
 
