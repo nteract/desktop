@@ -22,6 +22,7 @@ import { DependencyHeader } from "./components/DependencyHeader";
 import { GlobalFindBar } from "./components/GlobalFindBar";
 import { NotebookToolbar } from "./components/NotebookToolbar";
 import { NotebookView } from "./components/NotebookView";
+import { OnboardingScreen } from "./components/OnboardingScreen";
 import { TrustDialog } from "./components/TrustDialog";
 import { useCondaDependencies } from "./hooks/useCondaDependencies";
 import { useDaemonKernel } from "./hooks/useDaemonKernel";
@@ -126,6 +127,9 @@ function AppContent() {
   const [daemonStatus, setDaemonStatus] = useState<DaemonStatus>(null);
   // Track ready timeout so we can cancel it if status changes
   const readyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // First-launch onboarding
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   // Trust verification for notebook dependencies
   const {
@@ -863,6 +867,28 @@ function AppContent() {
     };
   }, []);
 
+  // Check for first launch - both on mount and via event
+  useEffect(() => {
+    // Check settings directly on mount (in case event fired before listener)
+    invoke<{ onboarding_completed?: boolean }>("get_synced_settings")
+      .then((settings) => {
+        if (settings.onboarding_completed === false) {
+          setShowOnboarding(true);
+        }
+      })
+      .catch(() => {
+        // Daemon unavailable - don't show onboarding, let app work normally
+      });
+
+    // Also listen for event (belt and suspenders)
+    const unlisten = listen("app:first_launch", () => {
+      setShowOnboarding(true);
+    });
+    return () => {
+      unlisten.then((u) => u()).catch(() => {});
+    };
+  }, []);
+
   // Cmd+Shift+I to toggle isolation test panel (dev only)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -874,6 +900,11 @@ function AppContent() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
+
+  // Show onboarding screen for first launch
+  if (showOnboarding) {
+    return <OnboardingScreen onComplete={() => setShowOnboarding(false)} />;
+  }
 
   return (
     <div className="flex h-full flex-col bg-background overflow-hidden">

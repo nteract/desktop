@@ -75,6 +75,10 @@ impl WindowNotebookRegistry {
 /// Newtype wrapper for reconnect-in-progress flag (distinguishes from other AtomicBool states).
 struct ReconnectInProgress(Arc<AtomicBool>);
 
+/// Tracks the last daemon progress status for UI queries.
+/// This allows the frontend to check status on mount (in case events were missed).
+struct DaemonStatusState(Arc<Mutex<Option<runtimed::client::DaemonProgress>>>);
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1543,6 +1547,25 @@ async fn is_daemon_connected(
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
     let guard = notebook_sync.lock().await;
     Ok(guard.is_some())
+}
+
+/// Get the last daemon progress status (for UI to check on mount).
+#[tauri::command]
+fn get_daemon_status(
+    status_state: tauri::State<'_, DaemonStatusState>,
+) -> Option<runtimed::client::DaemonProgress> {
+    status_state.0.lock().ok().and_then(|guard| guard.clone())
+}
+
+/// Get pool statistics from the daemon.
+/// Returns number of available/warming environments for UV and Conda.
+#[tauri::command]
+async fn get_pool_status() -> Result<runtimed::PoolStats, String> {
+    let client = runtimed::client::PoolClient::default();
+    client
+        .status()
+        .await
+        .map_err(|e| format!("Failed to get pool status: {}", e))
 }
 
 /// Get execution queue state from the daemon.
@@ -3147,6 +3170,10 @@ pub fn run(
     // Guard against concurrent reconnect attempts
     let reconnect_in_progress = ReconnectInProgress(Arc::new(AtomicBool::new(false)));
 
+    // Track last daemon progress status for UI queries (handles race conditions)
+    let daemon_status_state = DaemonStatusState(Arc::new(Mutex::new(None)));
+    let daemon_status_for_startup = daemon_status_state.0.clone();
+
     // Daemon sync completion flag - set when notebook sync initialization completes
     // Used to coordinate auto-launch decision with daemon connection status
     let daemon_sync_complete = Arc::new(AtomicBool::new(false));
@@ -3168,6 +3195,7 @@ pub fn run(
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(window_registry.clone())
         .manage(reconnect_in_progress)
+        .manage(daemon_status_state)
         .invoke_handler(tauri::generate_handler![
             // Notebook file operations
             load_notebook,
@@ -3191,6 +3219,8 @@ pub fn run(
             sync_environment_via_daemon,
             get_daemon_kernel_info,
             is_daemon_connected,
+            get_daemon_status,
+            get_pool_status,
             get_daemon_queue_state,
             run_all_cells_via_daemon,
             send_comm_via_daemon,
@@ -3335,6 +3365,16 @@ pub fn run(
                 }
             }
 
+            // Check if this is first launch (onboarding not completed)
+            // Emit event before daemon starts so UI can show onboarding in parallel
+            {
+                let settings = crate::settings::load_settings();
+                if !settings.onboarding_completed {
+                    log::info!("[startup] First launch detected, emitting app:first_launch event");
+                    let _ = app.emit("app:first_launch", ());
+                }
+            }
+
             // Ensure runtimed is running (required for daemon-only mode)
             // The daemon provides centralized prewarming across all notebook windows
             let app_for_daemon = app.handle().clone();
@@ -3343,13 +3383,20 @@ pub fn run(
             let registry_for_notebook_sync = registry_for_sync.clone();
             // Capture working_dir for untitled notebook project file detection
             let working_dir_for_sync = working_dir.clone();
+            let daemon_status_for_callback = daemon_status_for_startup.clone();
             tauri::async_runtime::spawn(async move {
                 // Get path to bundled runtimed binary (for auto-installation)
                 let binary_path = get_bundled_runtimed_path(&app_for_daemon);
 
                 // Create progress callback to emit Tauri events for UI feedback
+                // Also stores status for later queries (handles race conditions)
                 let app_for_progress = app_for_daemon.clone();
                 let on_progress = move |progress: runtimed::client::DaemonProgress| {
+                    // Store for later queries
+                    if let Ok(mut guard) = daemon_status_for_callback.lock() {
+                        *guard = Some(progress.clone());
+                    }
+                    // Emit event for listeners
                     let _ = app_for_progress.emit("daemon:progress", &progress);
                 };
 
@@ -3363,7 +3410,8 @@ pub fn run(
                         }
                         Err(e) => {
                             // Not critical - in-process prewarming will work as fallback
-                            log::info!(
+                            // The failure event was already emitted by ensure_daemon_running
+                            log::warn!(
                                 "[startup] runtimed not available: {}. Using in-process prewarming.",
                                 e
                             );

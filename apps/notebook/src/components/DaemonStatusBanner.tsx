@@ -11,7 +11,7 @@ export type DaemonStatus =
   | { status: "starting" }
   | { status: "waiting_for_ready"; attempt: number; max_attempts: number }
   | { status: "ready"; endpoint: string }
-  | { status: "failed"; error: string }
+  | { status: "failed"; error: string; guidance?: string }
   | null;
 
 interface DaemonStatusBannerProps {
@@ -41,35 +41,42 @@ export function DaemonStatusBanner({
   // Failed state - amber banner with error message and retry button
   if (status.status === "failed") {
     return (
-      <div className="flex items-center justify-between gap-2 bg-amber-600/90 px-3 py-1 text-xs text-white">
-        <div className="flex items-center gap-2 min-w-0">
-          <AlertTriangle className="h-3 w-3 flex-shrink-0" />
-          <span className="font-medium flex-shrink-0">Runtime unavailable</span>
-          <span className="text-amber-200 flex-shrink-0">—</span>
-          <span className="text-amber-100 truncate">{status.error}</span>
+      <div className="flex flex-col gap-1 bg-amber-600/90 px-3 py-2 text-xs text-white">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+            <span className="font-medium flex-shrink-0">
+              Runtime unavailable
+            </span>
+            <span className="text-amber-200 flex-shrink-0">—</span>
+            <span className="text-amber-100 truncate">{status.error}</span>
+          </div>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            {onRetry && (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="flex items-center gap-1 rounded px-2 py-0.5 hover:bg-amber-500/50 transition-colors"
+              >
+                <RefreshCw className="h-3 w-3" />
+                <span>Retry</span>
+              </button>
+            )}
+            {onDismiss && (
+              <button
+                type="button"
+                onClick={onDismiss}
+                className="rounded p-0.5 hover:bg-amber-500/50 transition-colors"
+                aria-label="Dismiss"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-1 flex-shrink-0">
-          {onRetry && (
-            <button
-              type="button"
-              onClick={onRetry}
-              className="flex items-center gap-1 rounded px-2 py-0.5 hover:bg-amber-500/50 transition-colors"
-            >
-              <RefreshCw className="h-3 w-3" />
-              <span>Retry</span>
-            </button>
-          )}
-          {onDismiss && (
-            <button
-              type="button"
-              onClick={onDismiss}
-              className="rounded p-0.5 hover:bg-amber-500/50 transition-colors"
-              aria-label="Dismiss"
-            >
-              <X className="h-3 w-3" />
-            </button>
-          )}
-        </div>
+        {status.guidance && (
+          <div className="text-amber-100 pl-5">{status.guidance}</div>
+        )}
       </div>
     );
   }

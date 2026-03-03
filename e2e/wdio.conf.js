@@ -37,6 +37,35 @@ const FIXTURE_SPECS = [
   "uv-pyproject.spec.js",
 ];
 
+/**
+ * Create settings file to skip onboarding screen in E2E tests.
+ * Settings path varies by platform:
+ * - Linux: ~/.config/nteract/settings.json
+ * - macOS: ~/Library/Application Support/nteract/settings.json
+ */
+function ensureOnboardingSkipped() {
+  const homeDir = process.env.HOME || process.env.USERPROFILE;
+  const settingsDir =
+    process.platform === "darwin"
+      ? path.join(homeDir, "Library", "Application Support", "nteract")
+      : path.join(homeDir, ".config", "nteract");
+  const settingsPath = path.join(settingsDir, "settings.json");
+
+  fs.mkdirSync(settingsDir, { recursive: true });
+
+  // Read existing settings or start fresh
+  let settings = {};
+  try {
+    settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+  } catch {
+    // File doesn't exist or is invalid
+  }
+
+  // Mark onboarding as completed so tests don't get stuck
+  settings.onboarding_completed = true;
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+}
+
 export const config = {
   runner: "local",
 
@@ -94,6 +123,14 @@ export const config = {
   mochaOpts: {
     ui: "bdd",
     timeout: 180000, // 3 minutes to handle kernel startup scenarios
+  },
+
+  /**
+   * Hook that gets executed before any workers launch.
+   * Creates settings file to skip onboarding screen.
+   */
+  onPrepare: () => {
+    ensureOnboardingSkipped();
   },
 
   /**

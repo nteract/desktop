@@ -173,6 +173,11 @@ pub struct SyncedSettings {
     /// Range: 5 seconds to 7 days (604800 seconds).
     #[serde(default = "default_keep_alive_secs")]
     pub keep_alive_secs: u64,
+
+    /// Whether the user has completed the first-launch onboarding flow.
+    /// When false, the app shows the onboarding screen on startup.
+    #[serde(default)]
+    pub onboarding_completed: bool,
 }
 
 impl Default for SyncedSettings {
@@ -184,6 +189,7 @@ impl Default for SyncedSettings {
             uv: UvDefaults::default(),
             conda: CondaDefaults::default(),
             keep_alive_secs: DEFAULT_KEEP_ALIVE_SECS,
+            onboarding_completed: false,
         }
     }
 }
@@ -240,6 +246,8 @@ impl SettingsDoc {
             "keep_alive_secs",
             defaults.keep_alive_secs as i64,
         );
+        // Store onboarding_completed as boolean
+        let _ = doc.put(automerge::ROOT, "onboarding_completed", false);
 
         // Nested uv map with empty package list
         if let Ok(uv_id) = doc.put_object(automerge::ROOT, "uv", ObjType::Map) {
@@ -331,6 +339,10 @@ impl SettingsDoc {
             } else if let Some(secs) = val.as_u64() {
                 settings.put_u64("keep_alive_secs", secs);
             }
+        }
+        // onboarding_completed: boolean
+        if let Some(completed) = json.get("onboarding_completed").and_then(|v| v.as_bool()) {
+            settings.put_bool("onboarding_completed", completed);
         }
 
         let uv_packages = Self::extract_packages_from_json(json, "uv");
@@ -690,6 +702,12 @@ impl SettingsDoc {
             keep_alive_secs: self
                 .get_u64("keep_alive_secs")
                 .unwrap_or(defaults.keep_alive_secs),
+            // For existing users: if onboarding_completed is missing but other settings exist,
+            // assume they're upgrading from before onboarding was added → treat as completed
+            onboarding_completed: self.get_bool("onboarding_completed").unwrap_or_else(|| {
+                // Check if this is an existing user by looking for other settings
+                self.get("theme").is_some() || self.get("default_runtime").is_some()
+            }),
         }
     }
 
@@ -757,6 +775,19 @@ impl SettingsDoc {
                     current, new_secs
                 );
                 self.put_u64("keep_alive_secs", new_secs);
+                changed = true;
+            }
+        }
+
+        // onboarding_completed: boolean
+        if let Some(completed) = json.get("onboarding_completed").and_then(|v| v.as_bool()) {
+            let current = self.get_bool("onboarding_completed");
+            if current != Some(completed) {
+                info!(
+                    "[settings] apply_json_changes: onboarding_completed changed {:?} -> {}",
+                    current, completed
+                );
+                self.put_bool("onboarding_completed", completed);
                 changed = true;
             }
         }

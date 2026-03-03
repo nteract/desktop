@@ -74,6 +74,12 @@ pub fn load_settings() -> SyncedSettings {
             .get("keep_alive_secs")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or(defaults.keep_alive_secs),
+        // For existing users: if file exists but field is missing, assume onboarding completed
+        // (they're upgrading from a version before onboarding existed)
+        onboarding_completed: json
+            .get("onboarding_completed")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or(true),
     }
 }
 
@@ -102,6 +108,7 @@ mod tests {
             },
             conda: CondaDefaults::default(),
             keep_alive_secs: 30,
+            onboarding_completed: false,
         };
 
         let json = serde_json::to_string(&settings).unwrap();
@@ -240,6 +247,10 @@ mod tests {
                 .get("keep_alive_secs")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or(defaults.keep_alive_secs),
+            onboarding_completed: json_val
+                .get("onboarding_completed")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or(defaults.onboarding_completed),
         };
         // Valid fields are preserved
         assert_eq!(settings.theme, ThemeMode::Dark);
