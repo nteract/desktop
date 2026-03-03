@@ -246,6 +246,18 @@ where
                         .map_err(|e| SyncClientError::SyncError(format!("put u64: {}", e)))?;
                 }
             }
+            serde_json::Value::Bool(b) => {
+                if let Some((map_key, sub_key)) = key.split_once('.') {
+                    let map_id = self.ensure_map(map_key)?;
+                    self.doc.put(&map_id, sub_key, *b).map_err(|e| {
+                        SyncClientError::SyncError(format!("put nested bool: {}", e))
+                    })?;
+                } else {
+                    self.doc
+                        .put(automerge::ROOT, key, *b)
+                        .map_err(|e| SyncClientError::SyncError(format!("put bool: {}", e)))?;
+                }
+            }
             _ => {}
         }
 
@@ -360,6 +372,17 @@ fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         }
     };
 
+    // Get a bool value from the doc
+    let get_bool = |key: &str| -> Option<bool> {
+        match doc.get(automerge::ROOT, key).ok().flatten() {
+            Some((automerge::Value::Scalar(s), _)) => match s.as_ref() {
+                automerge::ScalarValue::Boolean(b) => Some(*b),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+
     // Read uv packages: try nested list, fall back to flat comma string
     let uv_packages = {
         let nested = read_nested_list(doc, "uv", "default_packages");
@@ -401,6 +424,10 @@ fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
             default_packages: conda_packages,
         },
         keep_alive_secs: get_u64("keep_alive_secs").unwrap_or(defaults.keep_alive_secs),
+        // For existing users: if onboarding_completed is missing but other settings exist,
+        // assume they're upgrading from before onboarding was added → treat as completed
+        onboarding_completed: get_bool("onboarding_completed")
+            .unwrap_or_else(|| get_str("theme").is_some() || get_str("default_runtime").is_some()),
     }
 }
 
@@ -490,5 +517,35 @@ mod tests {
 
         let settings = get_all_from_doc(&doc);
         assert_eq!(settings.uv.default_packages, vec!["numpy", "scipy"]);
+    }
+
+    #[test]
+    fn test_get_all_reads_onboarding_completed_bool() {
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "onboarding_completed", true)
+            .unwrap();
+
+        let settings = get_all_from_doc(&doc);
+        assert!(settings.onboarding_completed);
+    }
+
+    #[test]
+    fn test_get_all_onboarding_defaults_false_for_fresh_install() {
+        // Fresh install: no settings at all
+        let doc = AutoCommit::new();
+        let settings = get_all_from_doc(&doc);
+        // Should be false because no other settings exist
+        assert!(!settings.onboarding_completed);
+    }
+
+    #[test]
+    fn test_get_all_onboarding_defaults_true_for_existing_user() {
+        // Existing user: has theme but no onboarding_completed
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "theme", "dark").unwrap();
+
+        let settings = get_all_from_doc(&doc);
+        // Should be true because theme exists (migration scenario)
+        assert!(settings.onboarding_completed);
     }
 }

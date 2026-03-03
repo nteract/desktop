@@ -36,7 +36,11 @@ pub enum DaemonProgress {
     /// Daemon is ready
     Ready { endpoint: String },
     /// Daemon failed to start
-    Failed { error: String },
+    Failed {
+        error: String,
+        /// Actionable guidance for the user
+        guidance: String,
+    },
 }
 
 #[cfg(unix)]
@@ -405,7 +409,8 @@ where
         // Dev daemon not running - provide helpful error
         let socket_path = crate::default_socket_path();
         emit(DaemonProgress::Failed {
-            error: "Dev daemon not running. Start it with: cargo xtask dev-daemon".to_string(),
+            error: "Dev daemon not running".to_string(),
+            guidance: "Start it with: cargo xtask dev-daemon".to_string(),
         });
         return Err(EnsureDaemonError::DevDaemonNotRunning(socket_path));
     }
@@ -430,6 +435,9 @@ where
                     if !binary_path.exists() {
                         emit(DaemonProgress::Failed {
                             error: format!("Binary not found: {}", binary_path.display()),
+                            guidance:
+                                "The bundled daemon binary is missing. Try reinstalling the app."
+                                    .to_string(),
                         });
                         return Err(EnsureDaemonError::BinaryNotFound(binary_path.clone()));
                     }
@@ -439,6 +447,8 @@ where
                     if let Err(e) = manager.upgrade(binary_path) {
                         emit(DaemonProgress::Failed {
                             error: format!("Upgrade failed: {}", e),
+                            guidance: "Run 'runt daemon doctor --fix' to diagnose and repair."
+                                .to_string(),
                         });
                         return Err(EnsureDaemonError::UpgradeFailed(e.to_string()));
                     }
@@ -468,6 +478,8 @@ where
         let binary_path = daemon_binary.ok_or_else(|| {
             emit(DaemonProgress::Failed {
                 error: "No binary path provided for installation".to_string(),
+                guidance: "Launch the app from the installed location, not directly from the DMG."
+                    .to_string(),
             });
             EnsureDaemonError::NoBinaryPath
         })?;
@@ -475,6 +487,8 @@ where
         if !binary_path.exists() {
             emit(DaemonProgress::Failed {
                 error: format!("Binary not found: {}", binary_path.display()),
+                guidance: "The bundled daemon binary is missing. Try reinstalling the app."
+                    .to_string(),
             });
             return Err(EnsureDaemonError::BinaryNotFound(binary_path));
         }
@@ -483,6 +497,7 @@ where
         if let Err(e) = manager.install(&binary_path) {
             emit(DaemonProgress::Failed {
                 error: format!("Install failed: {}", e),
+                guidance: "Run 'runt daemon doctor --fix' to diagnose and repair.".to_string(),
             });
             return Err(EnsureDaemonError::InstallFailed(e.to_string()));
         }
@@ -494,6 +509,7 @@ where
     if let Err(e) = manager.start() {
         emit(DaemonProgress::Failed {
             error: format!("Start failed: {}", e),
+            guidance: "Run 'runt daemon doctor --fix' to diagnose and repair.".to_string(),
         });
         return Err(EnsureDaemonError::StartFailed(e.to_string()));
     }
@@ -540,6 +556,9 @@ where
 
     emit(DaemonProgress::Failed {
         error: "Daemon did not become ready within timeout".to_string(),
+        guidance:
+            "Check daemon logs with 'runt daemon logs' or run 'runt daemon doctor' to diagnose."
+                .to_string(),
     });
     Err(EnsureDaemonError::Timeout)
 }
