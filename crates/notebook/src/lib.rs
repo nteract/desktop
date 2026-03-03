@@ -1415,6 +1415,8 @@ fn create_notebook_window_with_label(
         }
     });
 
+    refresh_native_menu(app);
+
     Ok(label)
 }
 
@@ -3130,6 +3132,19 @@ fn focused_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
         .find(|window| window.is_focused().ok() == Some(true))
 }
 
+fn refresh_native_menu(app: &tauri::AppHandle) {
+    match crate::menu::create_menu(app) {
+        Ok(menu) => {
+            if let Err(error) = app.set_menu(menu) {
+                warn!("[menu] Failed to update native menu: {}", error);
+            }
+        }
+        Err(error) => {
+            warn!("[menu] Failed to rebuild native menu: {}", error);
+        }
+    }
+}
+
 /// Create a new notebook window with the specified runtime.
 fn spawn_new_notebook(
     app: &tauri::AppHandle,
@@ -3794,6 +3809,19 @@ pub fn run(
         })
         .on_menu_event(|app, event| {
             let menu_id = event.id().as_ref();
+            if let Some(window_label) = crate::menu::window_label_for_menu_item_id(menu_id) {
+                if let Some(window) = app.get_webview_window(window_label) {
+                    if let Err(error) = window.set_focus() {
+                        warn!(
+                            "[menu] Failed to focus selected window '{}': {}",
+                            window_label, error
+                        );
+                    }
+                } else {
+                    warn!("[menu] Selected window '{}' is no longer available", window_label);
+                }
+                return;
+            }
             let registry = app.state::<WindowNotebookRegistry>();
             match menu_id {
                 crate::menu::MENU_NEW_NOTEBOOK => {
@@ -3942,6 +3970,7 @@ pub fn run(
                     }
                 }
             }
+            refresh_native_menu(app_handle);
         }
 
         // Save session state when app is about to exit
