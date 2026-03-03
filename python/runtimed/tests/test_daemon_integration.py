@@ -35,6 +35,35 @@ import runtimed
 
 
 # ============================================================================
+# Test utilities
+# ============================================================================
+
+
+def wait_for_sync(check_fn, *, timeout=3.0, interval=0.1, description="sync"):
+    """Poll until check_fn returns True or timeout.
+
+    Args:
+        check_fn: Callable that returns True when sync is complete
+        timeout: Maximum time to wait in seconds
+        interval: Initial polling interval (grows with backoff)
+        description: Description for error message
+
+    Returns:
+        True if sync completed within timeout
+
+    Raises:
+        AssertionError: If timeout exceeded
+    """
+    start = time.time()
+    while time.time() - start < timeout:
+        if check_fn():
+            return True
+        time.sleep(interval)
+        interval = min(interval * 1.5, 0.5)  # Backoff up to 0.5s
+    raise AssertionError(f"Timed out waiting for {description} after {timeout}s")
+
+
+# ============================================================================
 # Fixtures for daemon management
 # ============================================================================
 
@@ -79,7 +108,11 @@ def _get_socket_path():
         return None  # Will be set by the daemon fixture
 
     # Otherwise, use default (assumes dev daemon is running)
-    return runtimed.default_socket_path() if hasattr(runtimed, "default_socket_path") else None
+    return (
+        runtimed.default_socket_path()
+        if hasattr(runtimed, "default_socket_path")
+        else None
+    )
 
 
 @pytest.fixture(scope="module")
@@ -98,7 +131,10 @@ def daemon_process():
         if socket_path is None:
             # Try the default
             import runtimed as rt
-            socket_path = rt.default_socket_path() if hasattr(rt, "default_socket_path") else None
+
+            socket_path = (
+                rt.default_socket_path() if hasattr(rt, "default_socket_path") else None
+            )
 
         if socket_path and not socket_path.exists():
             pytest.skip(
@@ -128,11 +164,16 @@ def daemon_process():
         cmd = [
             str(binary),
             "run",
-            "--socket", str(socket_path),
-            "--cache-dir", str(cache_dir),
-            "--blob-store-dir", str(blob_dir),
-            "--uv-pool-size", "3",  # Pool for sequential tests (need headroom for replenishment)
-            "--conda-pool-size", "3",  # Need headroom for conda project file tests + inline fallback
+            "--socket",
+            str(socket_path),
+            "--cache-dir",
+            str(cache_dir),
+            "--blob-store-dir",
+            str(blob_dir),
+            "--uv-pool-size",
+            "3",  # Pool for sequential tests (need headroom for replenishment)
+            "--conda-pool-size",
+            "3",  # Need headroom for conda project file tests + inline fallback
         ]
 
         print(f"\n[test] Starting daemon: {' '.join(cmd)}", file=sys.stderr)
@@ -158,7 +199,9 @@ def daemon_process():
                 break
             if proc.poll() is not None:
                 # Daemon died - print logs and fail
-                print(f"[test] Daemon died with code {proc.returncode}", file=sys.stderr)
+                print(
+                    f"[test] Daemon died with code {proc.returncode}", file=sys.stderr
+                )
                 print(f"[test] Daemon logs:\n{log_file.read_text()}", file=sys.stderr)
                 pytest.fail("Daemon process died during startup")
             time.sleep(1)
@@ -174,6 +217,7 @@ def daemon_process():
         uv_ready = False
         conda_ready = False
         import re
+
         # Match "UV pool: N/M available" where N > 0 (works for any pool size)
         uv_pattern = re.compile(r"UV pool: (\d+)/\d+ available")
         conda_pattern = re.compile(r"Conda pool: (\d+)/\d+ available")
@@ -185,14 +229,19 @@ def daemon_process():
                         match = uv_pattern.search(line)
                         if match and int(match.group(1)) > 0:
                             uv_ready = True
-                            print(f"[test] UV pool ready after {i + 1}s", file=sys.stderr)
+                            print(
+                                f"[test] UV pool ready after {i + 1}s", file=sys.stderr
+                            )
                             break
                 if not conda_ready:
                     for line in log_contents.splitlines():
                         match = conda_pattern.search(line)
                         if match and int(match.group(1)) > 0:
                             conda_ready = True
-                            print(f"[test] Conda pool ready after {i + 1}s", file=sys.stderr)
+                            print(
+                                f"[test] Conda pool ready after {i + 1}s",
+                                file=sys.stderr,
+                            )
                             break
             except Exception:
                 pass
@@ -459,20 +508,31 @@ class TestMultiClientSync:
         assert len(found) == 1
         assert found[0].source == "shared_var = 42"
 
-    @pytest.mark.skip(reason="Flaky - sync timing race condition, needs longer delay or retry")
     def test_source_update_syncs_between_peers(self, two_sessions):
         """Source updates sync between peers."""
         s1, s2 = two_sessions
 
         # Session 1 creates cell
         cell_id = s1.create_cell("original")
-        time.sleep(0.3)
+
+        # Wait for cell to sync to session 2
+        def cell_visible_to_s2():
+            cells = s2.get_cells()
+            return any(c.id == cell_id for c in cells)
+
+        wait_for_sync(cell_visible_to_s2, description="cell visible to s2")
 
         # Session 2 updates it
         s2.set_source(cell_id, "updated by s2")
-        time.sleep(0.3)
 
-        # Session 1 should see the update
+        # Wait for update to sync back to session 1
+        def update_visible_to_s1():
+            cell = s1.get_cell(cell_id)
+            return cell.source == "updated by s2"
+
+        wait_for_sync(update_visible_to_s1, description="update visible to s1")
+
+        # Final assertion
         cell = s1.get_cell(cell_id)
         assert cell.source == "updated by s2"
 
@@ -619,11 +679,11 @@ class TestTerminalEmulation:
         """
         session.start_kernel()
 
-        cell_id = session.create_cell(r'''
+        cell_id = session.create_cell(r"""
 import sys
 sys.stdout.write("Progress: 50%\rProgress: 100%")
 sys.stdout.flush()
-''')
+""")
         result = session.execute_cell(cell_id)
 
         assert result.success
@@ -636,7 +696,7 @@ sys.stdout.flush()
         """Simulated progress bar should show only final state."""
         session.start_kernel()
 
-        cell_id = session.create_cell(r'''
+        cell_id = session.create_cell(r"""
 import sys
 import time
 for i in range(0, 101, 20):
@@ -644,7 +704,7 @@ for i in range(0, 101, 20):
     sys.stdout.flush()
     time.sleep(0.05)
 print()  # Final newline
-''')
+""")
         result = session.execute_cell(cell_id)
 
         assert result.success
@@ -658,11 +718,11 @@ print()  # Final newline
         """Consecutive print statements should be merged into one output."""
         session.start_kernel()
 
-        cell_id = session.create_cell('''
+        cell_id = session.create_cell("""
 print("line 1")
 print("line 2")
 print("line 3")
-''')
+""")
         result = session.execute_cell(cell_id)
 
         assert result.success
@@ -678,13 +738,13 @@ print("line 3")
         """Interleaved stdout and stderr should remain separate streams."""
         session.start_kernel()
 
-        cell_id = session.create_cell('''
+        cell_id = session.create_cell("""
 import sys
 print("out1")
 sys.stderr.write("err1\\n")
 sys.stderr.flush()
 print("out2")
-''')
+""")
         result = session.execute_cell(cell_id)
 
         assert result.success
@@ -701,10 +761,10 @@ print("out2")
         """ANSI color codes should be preserved in output."""
         session.start_kernel()
 
-        cell_id = session.create_cell(r'''
+        cell_id = session.create_cell(r"""
 # Print with ANSI red color
 print("\x1b[31mRed text\x1b[0m Normal text")
-''')
+""")
         result = session.execute_cell(cell_id)
 
         assert result.success
@@ -718,12 +778,12 @@ print("\x1b[31mRed text\x1b[0m Normal text")
         """Backspace character should delete previous character."""
         session.start_kernel()
 
-        cell_id = session.create_cell(r'''
+        cell_id = session.create_cell(r"""
 import sys
 sys.stdout.write("abc\b\bd")
 sys.stdout.flush()
 print()
-''')
+""")
         result = session.execute_cell(cell_id)
 
         assert result.success
@@ -735,12 +795,12 @@ print()
         """ANSI colors combined with carriage return work correctly."""
         session.start_kernel()
 
-        cell_id = session.create_cell(r'''
+        cell_id = session.create_cell(r"""
 import sys
 # Print colored text, then overwrite with different color
 sys.stdout.write("\x1b[31mRed\x1b[0m\r\x1b[32mGreen\x1b[0m")
 sys.stdout.flush()
-''')
+""")
         result = session.execute_cell(cell_id)
 
         assert result.success
@@ -858,9 +918,7 @@ class TestOutputHandling:
         session.start_kernel()
 
         result = session.run(
-            'import sys\n'
-            'print("to stdout")\n'
-            'sys.stderr.write("to stderr\\n")'
+            'import sys\nprint("to stdout")\nsys.stderr.write("to stderr\\n")'
         )
 
         assert result.success
@@ -884,11 +942,11 @@ class TestOutputHandling:
         session.start_kernel()
 
         result = session.run(
-            'def inner():\n'
+            "def inner():\n"
             '    raise RuntimeError("deep error")\n'
-            'def outer():\n'
-            '    inner()\n'
-            'outer()'
+            "def outer():\n"
+            "    inner()\n"
+            "outer()"
         )
 
         assert not result.success
@@ -908,8 +966,9 @@ class TestOutputHandling:
 NOTEBOOK_METADATA_KEY = "notebook_metadata"
 
 
-def _python_kernelspec_metadata(*, with_uv_deps=None, with_conda_deps=None,
-                                  with_conda_channels=None):
+def _python_kernelspec_metadata(
+    *, with_uv_deps=None, with_conda_deps=None, with_conda_channels=None
+):
     """Build a NotebookMetadataSnapshot JSON dict with a Python kernelspec."""
     snapshot = {
         "kernelspec": {
@@ -1036,8 +1095,7 @@ class TestKernelLaunchMetadata:
         assert env_source is not None
         # Should be one of the known env_source values
         assert any(
-            env_source.startswith(prefix)
-            for prefix in ("uv:", "conda:", "deno")
+            env_source.startswith(prefix) for prefix in ("uv:", "conda:", "deno")
         ), f"Unexpected env_source: {env_source}"
 
     @pytest.mark.skip(reason="Flaky - sync timing race condition in CI")
@@ -1275,7 +1333,13 @@ class TestCondaInlineDeps:
 
 
 # Fixture directory for project file tests
-FIXTURES_DIR = Path(__file__).parent.parent.parent.parent / "crates" / "notebook" / "fixtures" / "audit-test"
+FIXTURES_DIR = (
+    Path(__file__).parent.parent.parent.parent
+    / "crates"
+    / "notebook"
+    / "fixtures"
+    / "audit-test"
+)
 
 
 class TestProjectFileDetection:
@@ -1314,7 +1378,9 @@ class TestProjectFileDetection:
 
         # The fixture pyproject.toml declares numpy as a dependency
         result = session.run("import numpy; print(numpy.__version__)")
-        assert result.success, f"Failed to import numpy from pyproject env: {result.stderr}"
+        assert result.success, (
+            f"Failed to import numpy from pyproject env: {result.stderr}"
+        )
 
     def test_pixi_auto_detection(self, session):
         """notebook_path near pixi.toml auto-detects conda:pixi.
@@ -1350,7 +1416,9 @@ class TestProjectFileDetection:
         """
         import json
 
-        notebook_path = str(FIXTURES_DIR / "conda-env-project" / "7-environment-yml.ipynb")
+        notebook_path = str(
+            FIXTURES_DIR / "conda-env-project" / "7-environment-yml.ipynb"
+        )
 
         snapshot = _python_kernelspec_metadata()
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
@@ -1556,7 +1624,9 @@ class TestAsyncDocumentFirstExecution:
         """Execution errors are captured in result."""
         await async_session.start_kernel()
 
-        cell_id = await async_session.create_cell("raise ValueError('async test error')")
+        cell_id = await async_session.create_cell(
+            "raise ValueError('async test error')"
+        )
         result = await async_session.execute_cell(cell_id)
 
         assert not result.success
@@ -1678,7 +1748,9 @@ class TestAsyncOutputTypes:
         """Captures stderr output."""
         await async_session.start_kernel()
 
-        cell_id = await async_session.create_cell("import sys; sys.stderr.write('async hello stderr\\n')")
+        cell_id = await async_session.create_cell(
+            "import sys; sys.stderr.write('async hello stderr\\n')"
+        )
         result = await async_session.execute_cell(cell_id)
 
         assert result.success
@@ -1743,7 +1815,7 @@ class TestAsyncContextManager:
 
         # After exit, kernel should be shut down
         # Verify by checking the room no longer has an active kernel
-        # Note: The daemon may be terminated by fixture teardown before we can verify,
+# Note: The daemon may be terminated by fixture teardown before we can verify,
         # which is fine - it means cleanup already completed
         try:
             client = runtimed.DaemonClient()
