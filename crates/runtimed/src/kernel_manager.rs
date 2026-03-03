@@ -28,7 +28,6 @@ use uuid::Uuid;
 use crate::blob_store::BlobStore;
 use crate::comm_state::CommState;
 use crate::notebook_doc::NotebookDoc;
-use crate::notebook_sync_server::persist_notebook_bytes;
 use crate::output_store::{self, DEFAULT_INLINE_THRESHOLD};
 use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast};
 use crate::stream_terminal::{StreamOutputState, StreamTerminals};
@@ -320,8 +319,8 @@ pub struct RoomKernel {
     cmd_rx: Option<mpsc::Receiver<QueueCommand>>,
     /// Automerge document for persisting outputs
     doc: Arc<RwLock<NotebookDoc>>,
-    /// Path for persisting the document
-    persist_path: PathBuf,
+    /// Channel to send doc bytes to debounced persistence task
+    persist_tx: mpsc::Sender<Vec<u8>>,
     /// Channel to notify peers of document changes
     changed_tx: broadcast::Sender<()>,
     /// Blob store for output manifests
@@ -362,7 +361,7 @@ impl RoomKernel {
     pub fn new(
         broadcast_tx: broadcast::Sender<NotebookBroadcast>,
         doc: Arc<RwLock<NotebookDoc>>,
-        persist_path: PathBuf,
+        persist_tx: mpsc::Sender<Vec<u8>>,
         changed_tx: broadcast::Sender<()>,
         blob_store: Arc<BlobStore>,
         comm_state: Arc<CommState>,
@@ -388,7 +387,7 @@ impl RoomKernel {
             cmd_tx: None,
             cmd_rx: None,
             doc,
-            persist_path,
+            persist_tx,
             changed_tx,
             blob_store,
             comm_state,
@@ -692,7 +691,7 @@ impl RoomKernel {
         let cell_id_map = self.cell_id_map.clone();
         let iopub_cmd_tx = cmd_tx.clone();
         let doc = self.doc.clone();
-        let persist_path = self.persist_path.clone();
+        let persist_tx = self.persist_tx.clone();
         let changed_tx = self.changed_tx.clone();
         let blob_store = self.blob_store.clone();
         let comm_state = self.comm_state.clone();
@@ -761,7 +760,7 @@ impl RoomKernel {
                                         let _ = changed_tx.send(());
                                         bytes
                                     };
-                                    persist_notebook_bytes(&persist_bytes, &persist_path);
+                                    let _ = persist_tx.try_send(persist_bytes);
 
                                     let _ =
                                         broadcast_tx.send(NotebookBroadcast::ExecutionStarted {
@@ -901,7 +900,7 @@ impl RoomKernel {
                                         let _ = changed_tx.send(());
                                         bytes
                                     };
-                                    persist_notebook_bytes(&persist_bytes, &persist_path);
+                                    let _ = persist_tx.try_send(persist_bytes);
 
                                     let _ = broadcast_tx.send(NotebookBroadcast::Output {
                                         cell_id: cid.clone(),
@@ -1015,7 +1014,7 @@ impl RoomKernel {
                                             let _ = changed_tx.send(());
                                             bytes
                                         };
-                                        persist_notebook_bytes(&persist_bytes, &persist_path);
+                                        let _ = persist_tx.try_send(persist_bytes);
 
                                         let _ = broadcast_tx.send(NotebookBroadcast::Output {
                                             cell_id: cid.clone(),
@@ -1065,7 +1064,7 @@ impl RoomKernel {
                                         let _ = changed_tx.send(());
                                         bytes
                                     };
-                                    persist_notebook_bytes(&persist_bytes, &persist_path);
+                                    let _ = persist_tx.try_send(persist_bytes);
 
                                     // Broadcast for immediate UI update
                                     // Frontend will receive via Automerge sync, but broadcast for speed
@@ -1171,7 +1170,7 @@ impl RoomKernel {
                                             let _ = changed_tx.send(());
                                             bytes
                                         };
-                                        persist_notebook_bytes(&persist_bytes, &persist_path);
+                                        let _ = persist_tx.try_send(persist_bytes);
 
                                         let _ = broadcast_tx.send(NotebookBroadcast::Output {
                                             cell_id: cid.clone(),
@@ -1356,7 +1355,7 @@ impl RoomKernel {
         // Additional resources for handling page payloads (IPython ? and ?? help)
         let shell_doc = self.doc.clone();
         let shell_blob_store = self.blob_store.clone();
-        let shell_persist_path = self.persist_path.clone();
+        let shell_persist_tx = self.persist_tx.clone();
         let shell_changed_tx = self.changed_tx.clone();
 
         let shell_reader_task = tokio::spawn(async move {
@@ -1431,10 +1430,7 @@ impl RoomKernel {
                                                 let _ = shell_changed_tx.send(());
                                                 bytes
                                             };
-                                            persist_notebook_bytes(
-                                                &persist_bytes,
-                                                &shell_persist_path,
-                                            );
+                                            let _ = shell_persist_tx.try_send(persist_bytes);
 
                                             // Broadcast to all windows
                                             let _ = shell_broadcast_tx.send(
@@ -2053,11 +2049,11 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let (tx, _rx) = broadcast::channel(16);
         let (changed_tx, _changed_rx) = broadcast::channel(16);
+        let (persist_tx, _persist_rx) = mpsc::channel::<Vec<u8>>(16);
         let doc = Arc::new(RwLock::new(NotebookDoc::new("test-notebook")));
-        let persist_path = PathBuf::from("/tmp/test.automerge");
         let blob_store = Arc::new(BlobStore::new(tmp.path().join("blobs")));
         let comm_state = Arc::new(CommState::new());
-        let kernel = RoomKernel::new(tx, doc, persist_path, changed_tx, blob_store, comm_state);
+        let kernel = RoomKernel::new(tx, doc, persist_tx, changed_tx, blob_store, comm_state);
 
         assert!(!kernel.is_running());
         assert!(kernel.executing_cell().is_none());

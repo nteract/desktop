@@ -32,7 +32,7 @@ use std::sync::Arc;
 use automerge::sync;
 use log::{debug, error, info, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 
 use crate::blob_store::BlobStore;
 use crate::comm_state::CommState;
@@ -454,6 +454,8 @@ pub struct NotebookRoom {
     pub changed_tx: broadcast::Sender<()>,
     /// Broadcast channel for kernel events (outputs, status changes).
     pub kernel_broadcast_tx: broadcast::Sender<NotebookBroadcast>,
+    /// Channel to send doc bytes to the debounced persistence task.
+    pub persist_tx: mpsc::Sender<Vec<u8>>,
     /// Persistence path for this room's document.
     pub persist_path: PathBuf,
     /// Number of active peer connections in this room.
@@ -510,6 +512,10 @@ impl NotebookRoom {
         let (changed_tx, _) = broadcast::channel(16);
         let (kernel_broadcast_tx, _) = broadcast::channel(64);
 
+        // Spawn debounced persistence task
+        let (persist_tx, persist_rx) = mpsc::channel::<Vec<u8>>(16);
+        spawn_persist_debouncer(persist_rx, persist_path.clone());
+
         // Verify trust from the notebook file
         let notebook_path = PathBuf::from(notebook_id);
         let trust_state = verify_trust_from_file(&notebook_path);
@@ -522,6 +528,7 @@ impl NotebookRoom {
             doc: Arc::new(RwLock::new(doc)),
             changed_tx,
             kernel_broadcast_tx,
+            persist_tx,
             persist_path,
             active_peers: AtomicUsize::new(0),
             kernel: Arc::new(Mutex::new(None)),
@@ -546,12 +553,15 @@ impl NotebookRoom {
         let doc = NotebookDoc::load_or_create(&persist_path, notebook_id);
         let (changed_tx, _) = broadcast::channel(16);
         let (kernel_broadcast_tx, _) = broadcast::channel(64);
+        let (persist_tx, persist_rx) = mpsc::channel::<Vec<u8>>(16);
+        spawn_persist_debouncer(persist_rx, persist_path.clone());
         let notebook_path = PathBuf::from(notebook_id);
         let trust_state = verify_trust_from_file(&notebook_path);
         Self {
             doc: Arc::new(RwLock::new(doc)),
             changed_tx,
             kernel_broadcast_tx,
+            persist_tx,
             persist_path,
             active_peers: AtomicUsize::new(0),
             kernel: Arc::new(Mutex::new(None)),
@@ -847,8 +857,8 @@ where
                             bytes
                         };
 
-                        // Persist outside the write lock
-                        persist_notebook_bytes(&persist_bytes, &room.persist_path);
+                        // Send to debounced persistence task
+                        let _ = room.persist_tx.try_send(persist_bytes);
                     }
                     None => {
                         // Client disconnected
@@ -949,8 +959,8 @@ where
                                     bytes
                                 };
 
-                                // Persist outside the write lock
-                                persist_notebook_bytes(&persist_bytes, &room.persist_path);
+                                // Send to debounced persistence task
+                                let _ = room.persist_tx.try_send(persist_bytes);
 
                                 // Check if metadata changed and kernel is running - broadcast sync state
                                 check_and_broadcast_sync_state(room).await;
@@ -1130,7 +1140,7 @@ async fn auto_launch_kernel(
     let mut kernel = RoomKernel::new(
         room.kernel_broadcast_tx.clone(),
         room.doc.clone(),
-        room.persist_path.clone(),
+        room.persist_tx.clone(),
         room.changed_tx.clone(),
         room.blob_store.clone(),
         room.comm_state.clone(),
@@ -1499,7 +1509,7 @@ async fn handle_notebook_request(
             let mut kernel = RoomKernel::new(
                 room.kernel_broadcast_tx.clone(),
                 room.doc.clone(),
-                room.persist_path.clone(),
+                room.persist_tx.clone(),
                 room.changed_tx.clone(),
                 room.blob_store.clone(),
                 room.comm_state.clone(),
@@ -1883,8 +1893,8 @@ async fn handle_notebook_request(
                 bytes
             };
 
-            // 2. Persist outside the write lock
-            persist_notebook_bytes(&persist_bytes, &room.persist_path);
+            // 2. Send to debounced persistence task
+            let _ = room.persist_tx.try_send(persist_bytes);
 
             // 3. Broadcast for cross-window UI sync (fast path)
             let _ = room
@@ -2472,6 +2482,58 @@ async fn resolve_cell_output(output_str: &str, blob_store: &BlobStore) -> serde_
     }
 }
 
+/// Spawn a debounced persistence task that coalesces writes.
+///
+/// Instead of writing to disk on every iopub message, this task waits 500ms
+/// after the last update before persisting. This dramatically reduces disk I/O
+/// during rapid output (loops, progress bars) while ensuring data is eventually
+/// persisted.
+fn spawn_persist_debouncer(mut persist_rx: mpsc::Receiver<Vec<u8>>, persist_path: PathBuf) {
+    tokio::spawn(async move {
+        use std::time::Duration;
+        use tokio::time::{interval, Instant, MissedTickBehavior};
+
+        let debounce_duration = Duration::from_millis(500);
+        let mut pending: Option<Vec<u8>> = None;
+        let mut last_receive: Option<Instant> = None;
+
+        // Check every 100ms if we should flush
+        let mut check_interval = interval(Duration::from_millis(100));
+        check_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                // Receive new bytes to persist
+                result = persist_rx.recv() => {
+                    match result {
+                        Some(bytes) => {
+                            pending = Some(bytes);
+                            last_receive = Some(Instant::now());
+                        }
+                        None => {
+                            // Channel closed - flush any pending data and exit
+                            if let Some(bytes) = pending.take() {
+                                persist_notebook_bytes(&bytes, &persist_path);
+                            }
+                            break;
+                        }
+                    }
+                }
+                // Periodic check for debounce timeout
+                _ = check_interval.tick() => {
+                    if let (Some(bytes), Some(last)) = (pending.as_ref(), last_receive) {
+                        if last.elapsed() >= debounce_duration {
+                            persist_notebook_bytes(bytes, &persist_path);
+                            pending = None;
+                            last_receive = None;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
 /// Persist pre-serialized notebook bytes to disk.
 pub(crate) fn persist_notebook_bytes(data: &[u8], path: &Path) {
     if let Some(parent) = path.parent() {
@@ -2497,8 +2559,8 @@ mod tests {
         Arc::new(BlobStore::new(tmp.path().join("blobs")))
     }
 
-    #[test]
-    fn test_room_load_or_create_new() {
+    #[tokio::test]
+    async fn test_room_load_or_create_new() {
         let tmp = tempfile::TempDir::new().unwrap();
         let blob_store = test_blob_store(&tmp);
         let room = NotebookRoom::load_or_create("test-nb", tmp.path(), blob_store);
@@ -2509,8 +2571,8 @@ mod tests {
         assert_eq!(room.active_peers.load(Ordering::Relaxed), 0);
     }
 
-    #[test]
-    fn test_room_persists_and_reloads() {
+    #[tokio::test]
+    async fn test_room_persists_and_reloads() {
         let tmp = tempfile::TempDir::new().unwrap();
         let blob_store = test_blob_store(&tmp);
 
@@ -2534,8 +2596,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_get_or_create_room_reuses_existing() {
+    #[tokio::test]
+    async fn test_get_or_create_room_reuses_existing() {
         let tmp = tempfile::TempDir::new().unwrap();
         let blob_store = test_blob_store(&tmp);
         let mut rooms = HashMap::new();
@@ -2547,8 +2609,8 @@ mod tests {
         assert!(Arc::ptr_eq(&room1, &room2));
     }
 
-    #[test]
-    fn test_get_or_create_room_different_notebooks() {
+    #[tokio::test]
+    async fn test_get_or_create_room_different_notebooks() {
         let tmp = tempfile::TempDir::new().unwrap();
         let blob_store = test_blob_store(&tmp);
         let mut rooms = HashMap::new();
@@ -2561,8 +2623,8 @@ mod tests {
         assert_eq!(rooms.len(), 2);
     }
 
-    #[test]
-    fn test_room_peer_counting() {
+    #[tokio::test]
+    async fn test_room_peer_counting() {
         let tmp = tempfile::TempDir::new().unwrap();
         let blob_store = test_blob_store(&tmp);
         let room = NotebookRoom::load_or_create("peer-test", tmp.path(), blob_store);
@@ -2580,8 +2642,8 @@ mod tests {
         assert_eq!(room.active_peers.load(Ordering::Relaxed), 0);
     }
 
-    #[test]
-    fn test_new_fresh_creates_empty_doc() {
+    #[tokio::test]
+    async fn test_new_fresh_creates_empty_doc() {
         let tmp = tempfile::TempDir::new().unwrap();
         let blob_store = test_blob_store(&tmp);
         let room = NotebookRoom::new_fresh("fresh-test", tmp.path(), blob_store);
@@ -2591,8 +2653,8 @@ mod tests {
         assert_eq!(doc.cell_count(), 0);
     }
 
-    #[test]
-    fn test_new_fresh_deletes_stale_persisted_doc() {
+    #[tokio::test]
+    async fn test_new_fresh_deletes_stale_persisted_doc() {
         let tmp = tempfile::TempDir::new().unwrap();
         let blob_store = test_blob_store(&tmp);
 
@@ -2869,12 +2931,16 @@ mod tests {
         let doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
         let (changed_tx, _) = broadcast::channel(16);
         let (kernel_broadcast_tx, _) = broadcast::channel(64);
+        let persist_path = tmp.path().join("doc.automerge");
+        let (persist_tx, persist_rx) = mpsc::channel::<Vec<u8>>(16);
+        spawn_persist_debouncer(persist_rx, persist_path.clone());
 
         let room = NotebookRoom {
             doc: Arc::new(RwLock::new(doc)),
             changed_tx,
             kernel_broadcast_tx,
-            persist_path: tmp.path().join("doc.automerge"),
+            persist_tx,
+            persist_path,
             active_peers: AtomicUsize::new(0),
             kernel: Arc::new(Mutex::new(None)),
             blob_store,
