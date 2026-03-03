@@ -3435,7 +3435,11 @@ pub fn run(
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_denylist(&["onboarding"])
+                .build(),
+        )
         .manage(window_registry.clone())
         .manage(reconnect_in_progress)
         .manage(daemon_status_state)
@@ -3535,8 +3539,30 @@ pub fn run(
                 .map_err(Box::<dyn std::error::Error>::from)?;
             log::info!("[startup] Notebooks directory: {}", notebooks_dir.display());
 
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_title(&window_title);
+            if needs_onboarding {
+                // Close the default main window - we'll create an onboarding-specific one
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.close();
+                }
+
+                // Create dedicated onboarding window with fixed size appropriate for content
+                let _onboarding_window = tauri::WebviewWindowBuilder::new(
+                    app,
+                    "onboarding",
+                    tauri::WebviewUrl::default(),
+                )
+                .title("Welcome to nteract")
+                .inner_size(550.0, 650.0)
+                .resizable(false)
+                .center()
+                .build()?;
+
+                log::info!("[startup] Created dedicated onboarding window");
+            } else {
+                // Normal startup - just set the title on the main window
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_title(&window_title);
+                }
             }
 
             // Start WebDriver server for native E2E testing (if enabled)
