@@ -744,10 +744,29 @@ impl RoomKernel {
 
                             JupyterMessageContent::ExecuteInput(input) => {
                                 if let Some(ref cid) = cell_id {
+                                    // Persist execution count in Automerge before notifying clients
+                                    // so UI reads the updated value immediately.
+                                    let execution_count = input.execution_count.0 as i64;
+                                    let persist_bytes = {
+                                        let mut doc_guard = doc.write().await;
+                                        if let Err(e) = doc_guard
+                                            .set_execution_count(cid, &execution_count.to_string())
+                                        {
+                                            warn!(
+                                                "[kernel-manager] Failed to set execution_count in doc: {}",
+                                                e
+                                            );
+                                        }
+                                        let bytes = doc_guard.save();
+                                        let _ = changed_tx.send(());
+                                        bytes
+                                    };
+                                    persist_notebook_bytes(&persist_bytes, &persist_path);
+
                                     let _ =
                                         broadcast_tx.send(NotebookBroadcast::ExecutionStarted {
                                             cell_id: cid.clone(),
-                                            execution_count: input.execution_count.0 as i64,
+                                            execution_count,
                                         });
                                 }
                             }
