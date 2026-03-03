@@ -37,5 +37,8 @@ fn main() {
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/index");
 
+    // Re-run if frontend dist changes (ensures fresh frontend is embedded)
+    println!("cargo:rerun-if-changed=../../apps/notebook/dist");
+
     tauri_build::build()
 }
