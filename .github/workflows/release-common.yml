@@ -291,6 +291,7 @@ jobs:
           echo "Setting version to: ${VERSION}"
           sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" crates/notebook/tauri.conf.json
           sed -i '' "s#https://github.com/nteract/desktop/releases/download/preview-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
+          sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
 
       - name: Generate Icons
         run: cargo xtask icons
@@ -422,6 +423,9 @@ jobs:
           $tauriConf = $tauriConf -replace '"version": "[^"]+"', "`"version`": `"$version`""
           $tauriConf = $tauriConf -replace 'https://github.com/nteract/desktop/releases/download/preview-latest/latest.json', 'https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json'
           Set-Content crates/notebook/tauri.conf.json $tauriConf
+          $runtCargo = Get-Content crates/runt/Cargo.toml -Raw
+          $runtCargo = $runtCargo -replace '(?m)^version = ".*"$', "version = `"$version`""
+          Set-Content crates/runt/Cargo.toml $runtCargo
 
       - name: Generate Icons
         run: cargo xtask icons
@@ -542,6 +546,7 @@ jobs:
           echo "Setting version to: ${VERSION}"
           sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" crates/notebook/tauri.conf.json
           sed -i "s#https://github.com/nteract/desktop/releases/download/preview-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
+          sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
 
       - name: Generate Icons
         run: cargo xtask icons
