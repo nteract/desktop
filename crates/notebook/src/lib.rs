@@ -996,37 +996,10 @@ async fn complete_onboarding(
     let mut state = NotebookState::new_empty_with_runtime(runtime);
     state.working_dir = working_dir.clone();
 
-    // Create the notebook window
+    // Create the notebook window (this also initializes notebook sync via create_notebook_window)
+    // Note: state.working_dir is passed through to the daemon for project file detection
     let label = create_notebook_window(&app, registry.inner(), state)?;
     info!("[onboarding] Created notebook window with label: {}", label);
-
-    // Initialize notebook sync for the new window
-    if let Ok(context) = registry.get(&label) {
-        if let Some(new_window) = app.get_webview_window(&label) {
-            // Spawn async task for notebook sync initialization
-            let notebook_state = context.notebook_state.clone();
-            let notebook_sync = context.notebook_sync.clone();
-            let sync_generation = context.sync_generation.clone();
-            tauri::async_runtime::spawn(async move {
-                match initialize_notebook_sync(
-                    new_window,
-                    notebook_state,
-                    notebook_sync,
-                    sync_generation,
-                    working_dir,
-                )
-                .await
-                {
-                    Ok(()) => {
-                        info!("[onboarding] Notebook sync initialized for new window");
-                    }
-                    Err(e) => {
-                        warn!("[onboarding] Notebook sync failed: {}", e);
-                    }
-                }
-            });
-        }
-    }
 
     // Close the onboarding window (the one that called this command)
     window.close().map_err(|e| e.to_string())?;
@@ -1403,6 +1376,10 @@ fn create_notebook_window_with_label(
             }
         }
     });
+    // Extract working_dir before moving state into context
+    // This is needed for untitled notebooks to detect project files (pyproject.toml, etc.)
+    let working_dir = state.working_dir.clone();
+
     let context = create_window_context(state);
     registry.insert(label.clone(), context.clone())?;
 
@@ -1423,13 +1400,14 @@ fn create_notebook_window_with_label(
 
     let context = registry.get(&label)?;
     tauri::async_runtime::spawn(async move {
-        // New windows opened from file have a path, so no working_dir needed
+        // Pass working_dir for project file detection (pyproject.toml, environment.yml, etc.)
+        // For notebooks with a path, the daemon uses the path; for untitled, it uses working_dir
         if let Err(e) = initialize_notebook_sync(
             window,
             context.notebook_state,
             context.notebook_sync,
             context.sync_generation,
-            None,
+            working_dir,
         )
         .await
         {
