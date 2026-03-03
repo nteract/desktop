@@ -458,6 +458,7 @@ jobs:
       - name: Run E2E smoke test
         timeout-minutes: 5
         run: |
+          set -o pipefail
           mkdir -p e2e-logs
 
           # Start Xvfb
@@ -712,6 +713,7 @@ jobs:
         timeout-minutes: 10
         working-directory: python/runtimed
         run: |
+          set -o pipefail
           mkdir -p integration-logs
 
           # Set environment for CI mode
