@@ -57,7 +57,7 @@ This ensures the app works standalone without requiring users to install Python 
 ```mermaid
 graph TB
     subgraph Frontend ["Frontend (TypeScript)"]
-        UK[useDaemonKernel.ts]
+        UDK[useDaemonKernel.ts]
         UD[useDependencies.ts]
         UCD[useCondaDependencies.ts]
         DH[DependencyHeader.tsx]
@@ -68,58 +68,50 @@ graph TB
     end
 
     subgraph TauriCmds ["Tauri Commands (lib.rs)"]
-        SDK[start_default_kernel]
-        SKUV[start_kernel_with_uv]
-        SKC[start_kernel_with_conda]
-        SKPP[start_kernel_with_pyproject]
-        SKEY[start_kernel_with_environment_yml]
-        SKD[start_kernel_with_deno]
-        SDKI[start_default_python_kernel_impl]
+        LKD[launch_kernel_via_daemon]
+        SKD[shutdown_kernel_via_daemon]
+        GKINFO[get_daemon_kernel_info]
         VNT[verify_notebook_trust]
-        SYN[sync_kernel_dependencies]
         DETP[detect_pyproject / detect_pixi_toml / detect_environment_yml]
     end
 
-    subgraph Detection ["Project File Detection"]
-        PF[project_file.rs<br/>find_nearest_project_file]
-        PP[pyproject.rs<br/>parse_pyproject]
-        PX[pixi.rs<br/>parse_pixi_toml]
-        EY[environment_yml.rs<br/>parse_environment_yml]
-    end
+    subgraph Daemon ["runtimed Daemon (owns kernels)"]
+        NSS[notebook_sync_server.rs<br/>auto_launch_kernel]
+        KM[kernel_manager.rs<br/>RoomKernel::launch]
 
-    subgraph EnvCreation ["Environment Creation"]
-        UE[uv_env.rs<br/>prepare_environment<br/>create_prewarmed_environment]
-        CE[conda_env.rs<br/>create_conda_environment<br/>create_prewarmed_conda_environment]
-        DE[deno_env.rs<br/>check_deno_available]
-    end
+        subgraph Detection ["Project File Detection"]
+            PF[project_file.rs<br/>find_nearest_project_file]
+            PP[pyproject.rs]
+            PX[pixi.rs]
+            EY[environment_yml.rs]
+        end
 
-    subgraph Pool ["Prewarmed Pool (env_pool.rs)"]
-        TUV[take_uv_env]
-        TCD[take_conda_env]
-        IPP[In-Process Pool<br/>Vec&lt;PrewarmedEnv&gt;]
-    end
+        subgraph EnvCreation ["Environment Creation"]
+            IE[inline_env.rs<br/>prepare_uv_inline_env<br/>prepare_conda_inline_env]
+            UE[uv_env.rs]
+            CE[conda_env.rs]
+        end
 
-    subgraph Kernel ["Kernel Process (kernel.rs)"]
-        KUV[start_with_uv]
-        KPUV[start_with_prewarmed_uv]
-        KUR[start_with_uv_run]
-        KC[start_with_conda]
-        KPC[start_with_prewarmed_conda]
-        KD[start_with_deno]
-        JP[Jupyter Protocol<br/>ZMQ shell/iopub/stdin]
-    end
+        subgraph Pool ["Prewarmed Pool"]
+            DM[daemon.rs<br/>Pool Management]
+            UWL[UV Warming Loop]
+            CWL[Conda Warming Loop]
+        end
 
-    subgraph Daemon ["runtimed Daemon (separate process)"]
-        DM[daemon.rs<br/>Pool Management]
-        UWL[UV Warming Loop<br/>every 30s]
-        CWL[Conda Warming Loop<br/>every 30s]
-        SS[Settings Sync Server<br/>Automerge CRDT]
-        PC[PoolClient<br/>IPC: Unix socket / Named pipe]
-        PROT[Length-prefixed JSON<br/>Take / Return / Status / Ping]
+        subgraph Sync ["CRDT Sync"]
+            SS[Settings Sync Server]
+            NDS[Notebook Doc Sync]
+        end
 
+        NSS --> KM
+        NSS --> PF
+        PF --> PP
+        PF --> PX
+        PF --> EY
+        KM --> IE
+        KM --> DM
         DM --> UWL
         DM --> CWL
-        DM --> SS
     end
 
     subgraph External ["External Tools"]
@@ -129,98 +121,37 @@ graph TB
         PY[Python / ipykernel]
     end
 
-    %% Frontend → Tauri commands
-    UK -->|"invoke(start_default_kernel)"| SDK
-    UK -->|"invoke(start_kernel_with_uv)"| SKUV
-    UK -->|"invoke(start_kernel_with_conda)"| SKC
-    UK -->|"invoke(start_kernel_with_pyproject)"| SKPP
-    UK -->|"invoke(start_kernel_with_environment_yml)"| SKEY
-    UK -->|"invoke(start_kernel_with_deno)"| SKD
-    UD -->|"invoke(sync_kernel_dependencies)"| SYN
-    UD -->|"invoke(add/remove_dependency)"| SKUV
-    UCD -->|"invoke(add/remove_conda_dependency)"| SKC
+    %% Frontend → Tauri → Daemon
+    UDK -->|"invoke(launch_kernel_via_daemon)"| LKD
+    LKD -->|"IPC request"| NSS
     UD -->|"invoke(detect_pyproject)"| DETP
-    UCD -->|"invoke(detect_pixi_toml, detect_environment_yml)"| DETP
+    UCD -->|"invoke(detect_pixi_toml)"| DETP
 
-    %% Tauri events back to frontend
-    SDK -.->|"emit kernel:lifecycle {state, env_source}"| UK
+    %% Daemon broadcasts back to frontend
+    NSS -.->|"daemon:broadcast {KernelLaunched, env_source}"| UDK
+    KM -.->|"daemon:broadcast {Output, KernelStatus}"| UDK
     VNT -.->|trust status| UD
 
-    %% Tauri command orchestration
-    SDK --> SDKI
-    SDKI -->|"1. Check inline deps<br/>metadata.uv / metadata.conda"| SKUV
-    SDKI -->|"2. Closest project file?"| PF
-    SDKI -->|"3. No deps → prewarmed"| TUV
-    SDKI -->|"3. No deps → prewarmed"| TCD
-
-    %% Project file detection → env creation
-    PF -->|pyproject.toml| PP
-    PF -->|pixi.toml| PX
-    PF -->|environment.yml| EY
-    PP --> KUR
-    PX -->|convert to CondaDependencies| KC
-    EY -->|convert to CondaDependencies| KC
-
-    %% start_kernel commands → kernel methods
-    SKUV --> KUV
-    SKC --> KC
-    SKPP --> KUR
-    SKEY --> KC
-    SKD --> KD
-
-    %% Pool → daemon (try daemon first, then in-process)
-    TUV -->|"1. runtimed::client::try_get_pooled_env(Uv)"| PC
-    TCD -->|"1. runtimed::client::try_get_pooled_env(Conda)"| PC
-    TUV -->|"2. Fallback: in-process pool"| IPP
-    TCD -->|"2. Fallback: in-process pool"| IPP
-    PC -->|NDJSON over IPC| PROT
-    PROT --> DM
-
-    %% Pool → kernel start
-    TUV --> KPUV
-    TCD --> KPC
-
     %% Environment creation → external tools
-    KUV --> UE
-    UE -->|"uv venv + uv pip install"| UV
-    KUR -->|"uv run --with ipykernel"| UV
-    KC --> CE
-    CE -->|"solve + install"| RAT
-    KD -->|"deno jupyter --kernel"| DENO
-
-    %% Daemon warming → external tools
-    UWL -->|"uv venv + uv pip install + warmup"| UV
-    CWL -->|"rattler solve + install + warmup"| RAT
-
-    %% Kernel → Jupyter protocol
-    KPUV --> JP
-    KUV --> JP
-    KUR --> JP
-    KC --> JP
-    KPC --> JP
-    KD --> JP
-    JP -->|"spawn python -m ipykernel_launcher"| PY
+    IE -->|"uv venv + uv pip install"| UV
+    IE -->|"rattler solve + install"| RAT
+    UWL -->|"uv venv + warmup"| UV
+    CWL -->|"rattler + warmup"| RAT
+    KM -->|"deno jupyter --kernel"| DENO
+    KM -->|"spawn python -m ipykernel_launcher"| PY
 
     %% Settings sync
-    SS <-->|"Automerge sync messages<br/>length-prefixed binary"| UK
+    SS <-->|"Automerge sync"| UDK
 
     %% Styling
     classDef frontend fill:#e1f5fe,stroke:#0288d1
     classDef tauri fill:#fff3e0,stroke:#f57c00
-    classDef detection fill:#f3e5f5,stroke:#7b1fa2
-    classDef env fill:#e8f5e9,stroke:#388e3c
-    classDef pool fill:#fce4ec,stroke:#c62828
-    classDef kernel fill:#fff9c4,stroke:#f9a825
     classDef daemon fill:#e8eaf6,stroke:#283593
     classDef external fill:#f5f5f5,stroke:#616161
 
-    class UK,UD,UCD,DH,CDH frontend
-    class SDK,SKUV,SKC,SKPP,SKEY,SKD,SDKI,VNT,SYN,DETP tauri
-    class PF,PP,PX,EY detection
-    class UE,CE,DE env
-    class TUV,TCD,IPP pool
-    class KUV,KPUV,KUR,KC,KPC,KD,JP kernel
-    class DM,UWL,CWL,SS,PC,PROT daemon
+    class UDK,UD,UCD,DH,CDH frontend
+    class LKD,SKD,GKINFO,VNT,DETP tauri
+    class NSS,KM,PF,PP,PX,EY,IE,UE,CE,DM,UWL,CWL,SS,NDS daemon
     class UV,RAT,DENO,PY external
 ```
 
@@ -230,80 +161,55 @@ graph TB
 sequenceDiagram
     participant FE as Frontend<br/>useDaemonKernel.ts
     participant TC as Tauri Backend<br/>lib.rs
+    participant DM as runtimed Daemon<br/>notebook_sync_server.rs
     participant PF as Project File<br/>Detection
-    participant EP as env_pool.rs
-    participant DC as PoolClient
-    participant DM as runtimed<br/>Daemon
-    participant ENV as Env Creation<br/>uv_env / conda_env
-    participant K as kernel.rs
+    participant IE as inline_env.rs
+    participant KM as kernel_manager.rs
     participant PY as Python<br/>ipykernel
 
     FE->>FE: Notebook opened, auto-launch
+    FE->>TC: invoke("launch_kernel_via_daemon")
+    TC->>DM: LaunchKernel request via IPC
 
-    alt Has inline UV deps
-        FE->>TC: invoke("start_kernel_with_uv")
-        TC->>ENV: prepare_environment(deps, env_id)
-        ENV-->>TC: UvEnvironment{venv_path, python_path}
-    else Has inline Conda deps
-        FE->>TC: invoke("start_kernel_with_conda")
-        TC->>ENV: create_conda_environment(deps)
-        ENV-->>TC: CondaEnvironment{env_path, python_path}
-    else No inline deps (most common)
-        FE->>TC: invoke("start_default_kernel")
-        TC->>TC: start_default_python_kernel_impl
+    DM->>DM: auto_launch_kernel()
 
-        TC->>PF: find_nearest_project_file(notebook_path)
+    alt Has inline UV deps (metadata.uv.dependencies)
+        DM->>IE: prepare_uv_inline_env(deps)
+        IE-->>DM: PreparedEnv{python_path}
+        DM-->>DM: env_source = "uv:inline"
+    else Has inline Conda deps (metadata.conda.dependencies)
+        DM->>IE: prepare_conda_inline_env(deps)
+        IE-->>DM: PreparedEnv{python_path}
+        DM-->>DM: env_source = "conda:inline"
+    else No inline deps
+        DM->>PF: find_nearest_project_file(notebook_path)
         alt pyproject.toml found
-            PF-->>TC: DetectedProjectFile{PyprojectToml}
-            TC->>K: start_with_uv_run(project_dir)
-            K-->>TC: env_source = "uv:pyproject"
+            PF-->>DM: DetectedProjectFile{PyprojectToml}
+            DM-->>DM: env_source = "uv:pyproject"
         else pixi.toml found
-            PF-->>TC: DetectedProjectFile{PixiToml}
-            TC->>K: start_with_conda(pixi_deps)
-            K-->>TC: env_source = "conda:pixi"
+            PF-->>DM: DetectedProjectFile{PixiToml}
+            DM-->>DM: env_source = "conda:pixi"
         else environment.yml found
-            PF-->>TC: DetectedProjectFile{EnvironmentYml}
-            TC->>K: start_with_conda(yml_deps)
-            K-->>TC: env_source = "conda:env_yml"
+            PF-->>DM: DetectedProjectFile{EnvironmentYml}
+            DM-->>DM: env_source = "conda:env_yml"
         else No project file
-            PF-->>TC: None
-            TC->>EP: take_uv_env(pool)
-            EP->>DC: try_get_pooled_env(Uv)
-            DC->>DM: Request::Take{env_type: Uv}
-            alt Daemon has env
-                DM-->>DC: Response::Env{pooled_env}
-                DC-->>EP: Some(PooledEnv)
-                EP-->>TC: PrewarmedEnv
-                TC->>K: start_with_prewarmed_uv(env)
-                K-->>TC: env_source = "uv:prewarmed"
-            else Daemon empty/unavailable
-                DM-->>DC: Response::Empty
-                DC-->>EP: None
-                EP->>EP: in-process pool.take()
-                alt In-process pool hit
-                    EP-->>TC: PrewarmedEnv
-                    TC->>K: start_with_prewarmed_uv(env)
-                    K-->>TC: env_source = "uv:prewarmed"
-                else Pool miss
-                    EP-->>TC: None
-                    TC->>ENV: create fresh environment
-                    ENV-->>TC: UvEnvironment
-                    TC->>K: start_with_uv(env)
-                    K-->>TC: env_source = "uv:fresh"
-                end
-            end
+            PF-->>DM: None
+            DM->>DM: Take from prewarmed pool
+            DM-->>DM: env_source = "uv:prewarmed" or "conda:prewarmed"
         end
     end
 
-    K->>K: Reserve 5 TCP ports
-    K->>K: Write connection.json
-    K->>PY: spawn python -m ipykernel_launcher -f connection.json
-    K->>K: Connect ZMQ shell + iopub
-    K->>PY: kernel_info_request
-    PY-->>K: kernel_info_reply
-    K-->>TC: Kernel ready
+    DM->>KM: RoomKernel::launch(env_source, python_path)
+    KM->>KM: Reserve 5 TCP ports
+    KM->>KM: Write connection.json
+    KM->>PY: spawn python -m ipykernel_launcher -f connection.json
+    KM->>KM: Connect ZMQ shell + iopub
+    KM->>PY: kernel_info_request
+    PY-->>KM: kernel_info_reply
+    KM-->>DM: Kernel ready
 
-    TC-->>FE: emit("kernel:lifecycle", {state: "ready", env_source})
+    DM-->>TC: KernelLaunched response
+    TC-->>FE: daemon:broadcast {KernelLaunched, env_source}
 ```
 
 ### Daemon Pool Architecture
@@ -386,17 +292,15 @@ graph TB
 
 ### Reading the Diagrams
 
-The diagrams show three main layers and a separate daemon process:
+The diagrams show two main layers:
 
-1. **Frontend** (blue) — React hooks that invoke Tauri commands and listen for daemon broadcasts. `useDaemonKernel.ts` handles kernel status, execution queue, and environment sync state, while `App.tsx` orchestrates launch logic.
+1. **Frontend** (blue) — React hooks that invoke Tauri commands and listen for `daemon:broadcast` events. `useDaemonKernel.ts` handles kernel lifecycle via the daemon.
 
-2. **Tauri Backend** (orange) — `start_default_python_kernel_impl` runs the detection priority chain: inline deps first, then closest project file, then prewarmed pool. Each path delegates to a kernel start method.
+2. **runtimed Daemon** (indigo) — A singleton background process that owns kernel processes and manages prewarmed UV and Conda environment pools. The daemon runs the detection priority chain: inline deps first, then closest project file, then prewarmed pool. Communicates via length-prefixed JSON over Unix domain sockets (or Windows named pipes). Also runs an Automerge CRDT sync server for cross-window settings and notebook state.
 
-3. **runtimed Daemon** (indigo) — A singleton background process managing prewarmed UV and Conda environment pools across all notebook windows. Communicates via length-prefixed JSON over Unix domain sockets (or Windows named pipes). Also runs an Automerge CRDT sync server for cross-window settings.
+3. **External Tools** (grey) — `uv` for pip-compatible package management, `rattler` for conda solving/installing, and `deno` for TypeScript notebooks.
 
-4. **External Tools** (grey) — `uv` for pip-compatible package management, `rattler` for conda solving/installing, and `deno` for TypeScript notebooks.
-
-The prewarmed pool has a two-tier fallback: try the daemon first (shared across windows), then the in-process pool (local to this window), then create a fresh environment.
+The Tauri backend (orange) acts as a thin relay layer, forwarding kernel requests to the daemon via IPC.
 
 ## Detection Priority Chain
 
@@ -470,24 +374,20 @@ Cache hit check: verify that `{hash}/bin/python` (Unix) or `{hash}/Scripts/pytho
 
 ## Prewarming and the Daemon Pool
 
-To make notebook startup instant, Runt maintains a pool of pre-created environments with just `ipykernel` and `ipywidgets` installed.
+To make notebook startup instant, the daemon maintains a pool of pre-created environments with just `ipykernel` and `ipywidgets` installed.
 
-**In-process pool** (`env_pool.rs`):
-- Default size: 3 environments
-- Max age: 2 days (172800 seconds)
-- Maintained as `Vec<PrewarmedEnv>` in `EnvPool`
-
-**Daemon pool** (`crates/runtimed/`):
+**Daemon pool** (`crates/runtimed/src/daemon.rs`):
 - The `runtimed` daemon runs as a background process
-- Manages its own environment pool across notebook windows
-- Accessed via `runtimed::client::try_get_pooled_env()`
-- Falls back to in-process pool if daemon is unavailable
+- Manages UV and Conda environment pools across notebook windows
+- Default pool size: 3 environments per type
+- Max age: 2 days (172800 seconds)
+- Warming loops replenish environments as they're consumed
 
 Prewarmed environments have no `env_id` so they can be reused by any notebook that needs a bare environment.
 
 ## Project File Discovery
 
-The unified project file detection lives in `project_file.rs` and is used by `start_default_python_kernel_impl` for kernel launch decisions:
+The unified project file detection lives in `project_file.rs` and is used by the daemon's `auto_launch_kernel()` for kernel launch decisions:
 
 | Module | Purpose |
 |--------|---------|
@@ -506,7 +406,8 @@ All walk-up functions (both unified and individual) stop at `.git` boundaries an
 
 Each per-format module provides:
 - A parse function to extract dependencies
-- Tauri commands for frontend detection (`detect_*`), dependency listing (`get_*_dependencies`), and import (`import_*_dependencies`)
+- Tauri commands for frontend detection (`detect_*`) and dependency listing (`get_*_dependencies`)
+- Import commands (`import_*_dependencies`) for pyproject.toml and pixi.toml (environment.yml does not have an import command)
 
 ## Notebook Metadata Schema
 
@@ -567,11 +468,11 @@ Two parallel UI components manage dependencies:
 | `CondaDependencyHeader.tsx` | `useCondaDependencies.ts` | Conda deps, environment.yml and pixi.toml detection |
 
 The kernel lifecycle is managed by `useDaemonKernel.ts`, which:
-- Listens for daemon broadcasts (`kernel_status`, `execution_*`, `env_sync_state`, etc.)
+- Listens for `daemon:broadcast` events from the backend
+- Captures the `env_source` string (e.g. `"uv:pyproject"`, `"conda:pixi"`) from `KernelLaunched` responses
 - Tracks kernel status and execution queue
 - Provides `launchKernel()`, `executeCell()`, `syncEnvironment()` methods
-
-Launch orchestration lives in `App.tsx`, which handles trust verification and auto-launch.
+- Runs auto-launch detection on notebook open
 
 ## Testing
 
@@ -609,12 +510,10 @@ Launch orchestration lives in `App.tsx`, which handles trust verification and au
 
 | File | Role |
 |------|------|
-| `crates/notebook/src/lib.rs` | Tauri commands, `start_default_python_kernel_impl` |
+| `crates/notebook/src/lib.rs` | Tauri commands, `launch_kernel_via_daemon` |
 | `crates/notebook/src/project_file.rs` | Unified closest-wins project file detection |
-| `crates/notebook/src/kernel.rs` | Kernel process management, `start_with_uv`/`start_with_conda`/`start_with_uv_run` |
 | `crates/notebook/src/uv_env.rs` | UV environment creation, dep hashing, caching |
 | `crates/notebook/src/conda_env.rs` | Conda environment creation via rattler |
-| `crates/notebook/src/env_pool.rs` | Prewarmed environment pool (daemon + in-process) |
 | `crates/notebook/src/pyproject.rs` | pyproject.toml discovery and parsing |
 | `crates/notebook/src/pixi.rs` | pixi.toml discovery and parsing |
 | `crates/notebook/src/environment_yml.rs` | environment.yml discovery and parsing |

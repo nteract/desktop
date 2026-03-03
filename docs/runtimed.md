@@ -495,9 +495,9 @@ The frontend doesn't know about automerge. It still calls Tauri commands and rec
 
 | File | Role |
 |------|------|
-| `crates/notebook/src/lib.rs` | Tauri commands — rewire to use sync client |
-| `crates/notebook/src/notebook_state.rs` | Replace with sync client handle |
-| `crates/notebook/src/kernel.rs` | iopub listener writes outputs to automerge |
+| `crates/notebook/src/lib.rs` | Tauri commands using sync client |
+| `crates/notebook/src/notebook_state.rs` | Notebook metadata and state |
+| `crates/runtimed/src/kernel_manager.rs` | Daemon-side kernel and iopub handling |
 | `apps/notebook/src/hooks/useNotebook.ts` | Listen to `notebook:updated` events |
 
 ---
@@ -647,9 +647,9 @@ This needs a loading state per output (while manifest is being fetched) and cach
 |------|------|
 | `crates/runtimed/src/output_store.rs` | Manifest construction, ContentRef, inlining threshold |
 | `crates/runtimed/src/blob_server.rs` | Add `GET /output/{id}` endpoint |
-| `crates/notebook/src/kernel.rs` | iopub listener constructs manifests and stores blobs |
-| `apps/notebook/src/components/cell/OutputArea.tsx` | Fetch manifests, resolve blob URLs |
-| `apps/notebook/src/hooks/useOutputManifest.ts` | Hook for fetching/caching output manifests |
+| `crates/runtimed/src/kernel_manager.rs` | iopub listener constructs manifests and stores blobs |
+| `src/components/cell/OutputArea.tsx` | Fetch manifests, resolve blob URLs |
+| `apps/notebook/src/hooks/useManifestResolver.ts` | Hook for fetching/caching output manifests |
 
 ---
 
@@ -692,11 +692,10 @@ Advisory — if the blob is missing, re-import from inline data.
 
 The .ipynb is always the durable format. If blobs are missing (cache cleared, new machine), fall back to inline data from the file.
 
-### Key files
+### Key files (planned)
 
 | File | Role |
 |------|------|
-| `crates/runtimed/src/ipynb.rs` | Load/save, base64, metadata hints |
 | `crates/runtimed/src/output_store.rs` | Manifest construction during load |
 | `crates/notebook/src/lib.rs` | Tauri save/load commands use blob-aware round-tripping |
 
@@ -706,7 +705,7 @@ The .ipynb is always the durable format. If blobs are missing (cache cleared, ne
 
 > **Implemented** (PRs #258, #259, #265, #267, #271)
 
-The daemon owns kernel processes and the output pipeline. Notebook windows are views. This is behind the `daemon_execution` feature flag in settings.
+The daemon owns kernel processes and the output pipeline. Notebook windows are views. This is now the default and only kernel execution path.
 
 ### Architecture (implemented)
 
@@ -796,7 +795,6 @@ The implementation:
 | `crates/runtimed/src/notebook_doc.rs` | Automerge doc operations, output persistence |
 | `crates/notebook/src/lib.rs` | Tauri commands (`launch_kernel_via_daemon`, etc.) |
 | `apps/notebook/src/hooks/useDaemonKernel.ts` | Frontend daemon kernel hook |
-| `src/hooks/useSyncedSettings.ts` | `daemon_execution` feature flag |
 
 ---
 

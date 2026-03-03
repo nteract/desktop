@@ -231,7 +231,7 @@ Deno kernels don't use environment pools. The daemon:
 
 ### Environment Source Labels
 
-The backend returns an `env_source` string with the `kernel:lifecycle` event so the frontend can display the environment origin. Values:
+The backend returns an `env_source` string with the `KernelLaunched` response (via `daemon:broadcast`) so the frontend can display the environment origin. Values:
 
 - `"uv:inline"` / `"uv:pyproject"` / `"uv:prewarmed"`
 - `"conda:inline"` / `"conda:env_yml"` / `"conda:pixi"` / `"conda:prewarmed"`
@@ -253,16 +253,14 @@ For notebooks with inline UV dependencies (`metadata.runt.uv.dependencies`), the
 
 **Cache hit = instant startup.** First launch with new deps takes time to `uv venv` + `uv pip install`.
 
-**Note:** `conda:inline` is not yet implemented (falls back to prewarmed pool).
-
 ### Adding a New Project File Format
 
 Follow the pattern established by `environment_yml.rs` and `pixi.rs`:
 
 1. Create `crates/notebook/src/{format}.rs` with `find_{format}()` (directory walk) and `parse_{format}()` functions
 2. Add Tauri commands in `lib.rs`: `detect_{format}`, `get_{format}_dependencies`, `import_{format}_dependencies`
-3. Wire detection into `start_default_python_kernel_impl` at the correct priority position
-4. Add frontend detection in `App.tsx` auto-launch and `useCondaDependencies.ts` or `useDependencies.ts`
+3. Wire detection into the daemon's `auto_launch_kernel()` in `notebook_sync_server.rs` at the correct priority position
+4. Add frontend detection in `useDaemonKernel.ts` and `useCondaDependencies.ts` or `useDependencies.ts`
 5. Add test fixture in `crates/notebook/fixtures/audit-test/`
 
 ### Trust System
@@ -277,13 +275,11 @@ Dependencies are signed with HMAC-SHA256 using a per-machine key at `~/.config/r
 | `crates/kernel-launch/src/tools.rs` | Tool bootstrapping (deno, uv, ruff) via rattler |
 | `crates/runtimed/src/notebook_sync_server.rs` | `auto_launch_kernel()` — runtime detection and environment resolution |
 | `crates/runtimed/src/kernel_manager.rs` | `RoomKernel::launch()` — spawns Python or Deno kernel processes |
-| `crates/runtimed/src/inline_env.rs` | Cached environment creation for inline UV deps |
+| `crates/runtimed/src/inline_env.rs` | Cached environment creation for inline deps (UV and Conda) |
 | `crates/notebook/src/lib.rs` | Tauri commands, kernel launch orchestration |
 | `crates/notebook/src/project_file.rs` | Unified closest-wins project file detection |
-| `crates/notebook/src/kernel.rs` | Kernel process management |
 | `crates/notebook/src/uv_env.rs` | UV environment creation and caching |
 | `crates/notebook/src/conda_env.rs` | Conda environment creation via rattler |
-| `crates/notebook/src/env_pool.rs` | Prewarmed environment pool |
 | `crates/notebook/src/pyproject.rs` | pyproject.toml discovery and parsing |
 | `crates/notebook/src/pixi.rs` | pixi.toml discovery and parsing |
 | `crates/notebook/src/environment_yml.rs` | environment.yml discovery and parsing |

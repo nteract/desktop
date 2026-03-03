@@ -71,9 +71,15 @@ nteract/desktop
 ├── crates/                 # Rust code
 │   ├── runt/              # CLI binary
 │   ├── runtimed/          # Background daemon
+│   ├── runtimed-py/       # Python bindings for the daemon
 │   ├── notebook/          # Notebook Tauri app
 │   ├── sidecar/           # Sidecar wry/tao app
-│   └── tauri-jupyter/     # Shared Tauri/Jupyter utilities
+│   ├── tauri-jupyter/     # Shared Tauri/Jupyter utilities
+│   ├── kernel-launch/     # Shared kernel launching API
+│   ├── kernel-env/        # Environment progress reporting
+│   ├── runt-trust/        # HMAC trust verification
+│   ├── runt-workspace/    # Workspace detection utilities
+│   └── xtask/             # Build automation tasks
 ├── docs/                   # Architecture documentation
 └── contributing/           # Developer guides
 ```
