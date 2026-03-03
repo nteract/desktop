@@ -220,10 +220,7 @@ impl ServiceManager {
             std::fs::set_permissions(&self.config.binary_path, perms)?;
         }
 
-        // Refresh service config so PATH and other settings stay up to date.
-        self.create_service_config()?;
-
-        // Restart the service with the updated binary and config.
+        // Service config already exists, just restart.
         self.start()?;
 
         info!("[service] Upgrade completed successfully");
