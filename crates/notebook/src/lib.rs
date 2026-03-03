@@ -3576,7 +3576,7 @@ pub fn run(
                     tauri::WebviewUrl::default(),
                 )
                 .title("Welcome to nteract")
-                .inner_size(550.0, 650.0)
+                .inner_size(1024.0, 768.0)
                 .resizable(false)
                 .center()
                 .build()?;
