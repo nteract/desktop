@@ -9,6 +9,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  isKernelStatus,
+  KERNEL_STATUS,
+  type KernelStatus,
+} from "../lib/kernel-status";
 import { logger } from "../lib/logger";
 import type {
   DaemonBroadcast,
@@ -22,13 +27,7 @@ import {
 } from "./useManifestResolver";
 
 /** Kernel status from daemon */
-export type DaemonKernelStatus =
-  | "not_started"
-  | "starting"
-  | "idle"
-  | "busy"
-  | "error"
-  | "shutdown";
+export type DaemonKernelStatus = KernelStatus;
 
 /** Queue state from daemon */
 export interface DaemonQueueState {
@@ -72,8 +71,9 @@ export function useDaemonKernel({
   onClearOutputs,
   onCommMessage,
 }: UseDaemonKernelOptions) {
-  const [kernelStatus, setKernelStatus] =
-    useState<DaemonKernelStatus>("not_started");
+  const [kernelStatus, setKernelStatus] = useState<DaemonKernelStatus>(
+    KERNEL_STATUS.NOT_STARTED,
+  );
   const [queueState, setQueueState] = useState<DaemonQueueState>({
     executing: null,
     queued: [],
@@ -151,22 +151,29 @@ export function useDaemonKernel({
 
         switch (broadcast.event) {
           case "kernel_status": {
-            const status = broadcast.status as DaemonKernelStatus;
+            const rawStatus = broadcast.status;
+            if (!isKernelStatus(rawStatus)) {
+              logger.warn(
+                `[daemon-kernel] Ignoring unknown kernel status: ${rawStatus}`,
+              );
+              break;
+            }
+            const status: DaemonKernelStatus = rawStatus;
 
-            if (status === "busy") {
+            if (status === KERNEL_STATUS.BUSY) {
               // Throttle busy: only show if it persists past threshold
               // This ignores transient busy states from completions
               if (busyTimerRef.current === null) {
                 busyTimerRef.current = window.setTimeout(() => {
                   busyTimerRef.current = null;
-                  setKernelStatus("busy");
+                  setKernelStatus(KERNEL_STATUS.BUSY);
                   callbacksRef.current.onStatusChange?.(
-                    "busy",
+                    KERNEL_STATUS.BUSY,
                     broadcast.cell_id,
                   );
                 }, 60);
               }
-            } else if (status === "idle") {
+            } else if (status === KERNEL_STATUS.IDLE) {
               // Cancel pending busy transition if idle arrives quickly
               if (busyTimerRef.current !== null) {
                 clearTimeout(busyTimerRef.current);
@@ -191,7 +198,7 @@ export function useDaemonKernel({
               callbacksRef.current.onStatusChange?.(status, broadcast.cell_id);
 
               // Clear sync state when kernel shuts down
-              if (status === "shutdown") {
+              if (status === KERNEL_STATUS.SHUTDOWN) {
                 setEnvSyncState(null);
               }
             }
@@ -282,7 +289,7 @@ export function useDaemonKernel({
           }
 
           case "kernel_error": {
-            setKernelStatus("error");
+            setKernelStatus(KERNEL_STATUS.ERROR);
             callbacksRef.current.onKernelError?.(broadcast.error);
             break;
           }
@@ -407,9 +414,17 @@ export function useDaemonKernel({
         .then((response) => {
           if (cancelled) return;
           if (response.result === "kernel_info") {
+            if (!isKernelStatus(response.status)) {
+              logger.warn(
+                `[daemon-kernel] Ignoring unknown kernel_info status: ${response.status}`,
+              );
+              return;
+            }
+            const status: DaemonKernelStatus = response.status;
+
             // If kernel is not started and we haven't retried too many times,
             // wait a bit and try again (kernel may be auto-launching)
-            if (response.status === "not_started" && retryCount < 5) {
+            if (status === KERNEL_STATUS.NOT_STARTED && retryCount < 5) {
               setTimeout(() => {
                 if (!cancelled) fetchKernelInfo(retryCount + 1);
               }, 500);
@@ -425,7 +440,7 @@ export function useDaemonKernel({
               kernelType: response.kernel_type,
               envSource: response.env_source,
             });
-            setKernelStatus(response.status as DaemonKernelStatus);
+            setKernelStatus(status);
           }
         })
         .catch(() => {
@@ -439,7 +454,7 @@ export function useDaemonKernel({
       async () => {
         if (cancelled) return;
         logger.warn("[daemon-kernel] Daemon disconnected, resetting state");
-        setKernelStatus("not_started");
+        setKernelStatus(KERNEL_STATUS.NOT_STARTED);
         setKernelInfo({});
         setQueueState({ executing: null, queued: [] });
         setEnvSyncState(null);
@@ -492,7 +507,7 @@ export function useDaemonKernel({
       notebookPath?: string,
     ): Promise<DaemonNotebookResponse> => {
       logger.debug("[daemon-kernel] Launching kernel:", kernelType, envSource);
-      setKernelStatus("starting");
+      setKernelStatus(KERNEL_STATUS.STARTING);
 
       try {
         const response = await invoke<DaemonNotebookResponse>(
@@ -508,15 +523,15 @@ export function useDaemonKernel({
             kernelType: response.kernel_type,
             envSource: response.env_source,
           });
-          setKernelStatus("idle");
+          setKernelStatus(KERNEL_STATUS.IDLE);
         } else if (response.result === "error") {
-          setKernelStatus("error");
+          setKernelStatus(KERNEL_STATUS.ERROR);
         }
 
         return response;
       } catch (e) {
         logger.error("[daemon-kernel] Launch failed:", e);
-        setKernelStatus("error");
+        setKernelStatus(KERNEL_STATUS.ERROR);
         throw e;
       }
     },
@@ -578,7 +593,7 @@ export function useDaemonKernel({
         const response = await invoke<DaemonNotebookResponse>(
           "shutdown_kernel_via_daemon",
         );
-        setKernelStatus("not_started");
+        setKernelStatus(KERNEL_STATUS.NOT_STARTED);
         setKernelInfo({});
         return response;
       } catch (e) {

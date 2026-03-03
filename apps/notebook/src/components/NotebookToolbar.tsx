@@ -26,6 +26,11 @@ import { isKnownPythonEnv, isKnownRuntime } from "@/hooks/useSyncedSettings";
 import { cn } from "@/lib/utils";
 import type { EnvProgressState } from "../hooks/useEnvProgress";
 import type { UpdateStatus } from "../hooks/useUpdater";
+import {
+  getKernelStatusLabel,
+  KERNEL_STATUS,
+  type KernelStatus,
+} from "../lib/kernel-status";
 import type { KernelspecInfo } from "../types";
 
 /** Format seconds into human-readable duration */
@@ -238,7 +243,7 @@ function PixiIcon({ className }: { className?: string }) {
 type EnvBadgeVariant = "uv" | "conda" | "pixi";
 
 interface NotebookToolbarProps {
-  kernelStatus: string;
+  kernelStatus: KernelStatus;
   kernelErrorMessage?: string | null;
   envSource: string | null;
   /** Pre-start hint: "uv" | "conda" | "pixi" | null, derived from notebook metadata */
@@ -430,17 +435,20 @@ export function NotebookToolbar({
   }, [kernelspecs, onStartKernel, listKernelspecs]);
 
   const isKernelRunning =
-    kernelStatus === "idle" ||
-    kernelStatus === "busy" ||
-    kernelStatus === "starting";
-  const kernelStatusText = kernelStatus.replace(/_/g, " ");
+    kernelStatus === KERNEL_STATUS.IDLE ||
+    kernelStatus === KERNEL_STATUS.BUSY ||
+    kernelStatus === KERNEL_STATUS.STARTING;
+  const kernelStatusText = getKernelStatusLabel(kernelStatus);
   const isKernelNotStarted =
-    kernelStatus === "not_started" || kernelStatus === "not started";
+    kernelStatus === KERNEL_STATUS.NOT_STARTED ||
+    kernelStatus === KERNEL_STATUS.SHUTDOWN;
 
   // Derive env manager label for the runtime pill (e.g. "uv", "conda", "pixi")
   const envManager: EnvBadgeVariant | null =
     runtime === "python"
-      ? envSource && (kernelStatus === "idle" || kernelStatus === "busy")
+      ? envSource &&
+        (kernelStatus === KERNEL_STATUS.IDLE ||
+          kernelStatus === KERNEL_STATUS.BUSY)
         ? envSource.startsWith("conda:pixi")
           ? "pixi"
           : envSource.startsWith("conda")
@@ -547,7 +555,7 @@ export function NotebookToolbar({
               onClick={onInterruptKernel}
               className={cn(
                 "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
-                kernelStatus === "busy"
+                kernelStatus === KERNEL_STATUS.BUSY
                   ? "text-destructive hover:bg-destructive/10"
                   : "text-foreground hover:bg-muted",
               )}
@@ -556,7 +564,9 @@ export function NotebookToolbar({
             >
               <Square
                 className="h-3 w-3"
-                fill={kernelStatus === "busy" ? "currentColor" : "none"}
+                fill={
+                  kernelStatus === KERNEL_STATUS.BUSY ? "currentColor" : "none"
+                }
               />
               Interrupt
             </button>
@@ -657,7 +667,7 @@ export function NotebookToolbar({
                 ? envProgress.statusText
                 : envProgress?.error
                   ? envProgress.statusText
-                  : kernelStatus === "error" && kernelErrorMessage
+                  : kernelStatus === KERNEL_STATUS.ERROR && kernelErrorMessage
                     ? `Error \u2014 ${kernelErrorMessage}`
                     : kernelStatusText
             }`}
@@ -666,7 +676,7 @@ export function NotebookToolbar({
                 ? envProgress.statusText
                 : envProgress?.error
                   ? envProgress.error
-                  : kernelStatus === "error" && kernelErrorMessage
+                  : kernelStatus === KERNEL_STATUS.ERROR && kernelErrorMessage
                     ? `Error \u2014 ${kernelErrorMessage}`
                     : kernelStatusText
             }
@@ -674,11 +684,12 @@ export function NotebookToolbar({
             <div
               className={cn(
                 "h-2 w-2 shrink-0 rounded-full",
-                kernelStatus === "idle" && "bg-green-500",
-                kernelStatus === "busy" && "bg-amber-500",
-                kernelStatus === "starting" && "bg-blue-500 animate-pulse",
+                kernelStatus === KERNEL_STATUS.IDLE && "bg-green-500",
+                kernelStatus === KERNEL_STATUS.BUSY && "bg-amber-500",
+                kernelStatus === KERNEL_STATUS.STARTING &&
+                  "bg-blue-500 animate-pulse",
                 isKernelNotStarted && "bg-gray-400 dark:bg-gray-500",
-                kernelStatus === "error" && "bg-red-500",
+                kernelStatus === KERNEL_STATUS.ERROR && "bg-red-500",
               )}
             />
             <span className="text-xs text-muted-foreground whitespace-nowrap">
@@ -692,7 +703,7 @@ export function NotebookToolbar({
                 <span
                   className={cn(
                     "capitalize",
-                    kernelStatus === "error" &&
+                    kernelStatus === KERNEL_STATUS.ERROR &&
                       "text-red-600 dark:text-red-400",
                   )}
                 >
@@ -721,7 +732,7 @@ export function NotebookToolbar({
 
         {/* Deno install prompt */}
         {runtime === "deno" &&
-          kernelStatus === "error" &&
+          kernelStatus === KERNEL_STATUS.ERROR &&
           kernelErrorMessage && (
             <div className="border-t px-3 py-2">
               <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
