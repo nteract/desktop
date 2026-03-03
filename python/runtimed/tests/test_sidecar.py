@@ -14,8 +14,10 @@ def test_sidecar_with_explicit_connection_file(tmp_path):
 
     mock_popen = MagicMock()
     mock_popen.poll.return_value = None
-    with patch("runtimed._sidecar.find_binary", return_value="/usr/bin/runt"), \
-         patch("subprocess.Popen", return_value=mock_popen) as popen_call:
+    with (
+        patch("runtimed._sidecar.find_binary", return_value="/usr/bin/runt"),
+        patch("subprocess.Popen", return_value=mock_popen) as popen_call,
+    ):
         result = sidecar(str(conn_file))
 
         assert isinstance(result, Sidecar)
@@ -37,8 +39,10 @@ def test_sidecar_without_quiet(tmp_path):
     conn_file.write_text('{"key": "test"}')
 
     mock_popen = MagicMock()
-    with patch("runtimed._sidecar.find_binary", return_value="/usr/bin/runt"), \
-         patch("subprocess.Popen", return_value=mock_popen) as popen_call:
+    with (
+        patch("runtimed._sidecar.find_binary", return_value="/usr/bin/runt"),
+        patch("subprocess.Popen", return_value=mock_popen) as popen_call,
+    ):
         sidecar(str(conn_file), quiet=False)
 
         cmd = popen_call.call_args[0][0]
@@ -52,8 +56,10 @@ def test_sidecar_with_dump(tmp_path):
     dump_file = tmp_path / "dump.json"
 
     mock_popen = MagicMock()
-    with patch("runtimed._sidecar.find_binary", return_value="/usr/bin/runt"), \
-         patch("subprocess.Popen", return_value=mock_popen) as popen_call:
+    with (
+        patch("runtimed._sidecar.find_binary", return_value="/usr/bin/runt"),
+        patch("subprocess.Popen", return_value=mock_popen) as popen_call,
+    ):
         sidecar(str(conn_file), dump=str(dump_file))
 
         cmd = popen_call.call_args[0][0]
@@ -81,8 +87,10 @@ def test_sidecar_close(tmp_path):
     conn_file.write_text('{"key": "test"}')
 
     mock_popen = MagicMock()
-    with patch("runtimed._sidecar.find_binary", return_value="/usr/bin/runt"), \
-         patch("subprocess.Popen", return_value=mock_popen):
+    with (
+        patch("runtimed._sidecar.find_binary", return_value="/usr/bin/runt"),
+        patch("subprocess.Popen", return_value=mock_popen),
+    ):
         s = sidecar(str(conn_file))
         s.close()
         mock_popen.terminate.assert_called_once()
@@ -98,11 +106,14 @@ def test_sidecar_terminal_ipython_launches_bridge():
     mock_popen.poll.return_value = None
 
     import builtins
+
     original = getattr(builtins, "get_ipython", None)
     builtins.get_ipython = lambda: mock_shell
     try:
-        with patch("runtimed._sidecar.find_binary", return_value="/usr/bin/runt"), \
-             patch("subprocess.Popen", return_value=mock_popen):
+        with (
+            patch("runtimed._sidecar.find_binary", return_value="/usr/bin/runt"),
+            patch("subprocess.Popen", return_value=mock_popen),
+        ):
             result = sidecar()
             assert isinstance(result, BridgedSidecar)
             assert result.running is True
@@ -121,6 +132,7 @@ def test_sidecar_terminal_ipython_no_pyzmq():
     type(mock_shell).__name__ = "TerminalInteractiveShell"
 
     import builtins
+
     original = getattr(builtins, "get_ipython", None)
     builtins.get_ipython = lambda: mock_shell
     try:
@@ -138,6 +150,7 @@ def test_sidecar_terminal_ipython_no_pyzmq():
 
 def test_sidecar_auto_detect_catches_non_runtime_errors():
     """Catches exceptions like MultipleInstanceError from get_connection_file."""
+
     class MultipleInstanceError(Exception):
         pass
 
@@ -148,14 +161,18 @@ def test_sidecar_auto_detect_catches_non_runtime_errors():
 
     # Ensure get_ipython is not defined (skip the terminal check)
     import builtins
+
     original = getattr(builtins, "get_ipython", None)
     if hasattr(builtins, "get_ipython"):
         delattr(builtins, "get_ipython")
     try:
-        with patch.dict("sys.modules", {
-            "ipykernel": MagicMock(),
-            "ipykernel.connect": mock_module,
-        }):
+        with patch.dict(
+            "sys.modules",
+            {
+                "ipykernel": MagicMock(),
+                "ipykernel.connect": mock_module,
+            },
+        ):
             with pytest.raises(RuntimeError, match="MultipleInstanceError"):
                 sidecar()
     finally:
@@ -171,7 +188,9 @@ def test_sidecar_repr_exited(tmp_path):
     mock_popen = MagicMock()
     mock_popen.poll.return_value = 0
     mock_popen.returncode = 0
-    with patch("runtimed._sidecar.find_binary", return_value="/usr/bin/runt"), \
-         patch("subprocess.Popen", return_value=mock_popen):
+    with (
+        patch("runtimed._sidecar.find_binary", return_value="/usr/bin/runt"),
+        patch("subprocess.Popen", return_value=mock_popen),
+    ):
         s = sidecar(str(conn_file))
         assert "exited (0)" in repr(s)

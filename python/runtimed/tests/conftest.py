@@ -13,9 +13,7 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "integration: marks tests as integration tests (may need daemon)"
     )
-    config.addinivalue_line(
-        "markers", "slow: marks tests as slow running"
-    )
+    config.addinivalue_line("markers", "slow: marks tests as slow running")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -33,6 +31,7 @@ def pytest_collection_modifyitems(config, items):
 
     if skip_integration:
         import pytest
+
         skip_marker = pytest.mark.skip(reason="Integration tests disabled")
         for item in items:
             if "integration" in item.keywords:

@@ -18,7 +18,9 @@ class TestMcpServerImports:
             assert hasattr(_mcp_server, "main")
         except ImportError as e:
             if "mcp" in str(e):
-                pytest.skip("mcp package not installed (install with: pip install runtimed[mcp])")
+                pytest.skip(
+                    "mcp package not installed (install with: pip install runtimed[mcp])"
+                )
             raise
 
 

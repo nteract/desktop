@@ -25,17 +25,27 @@ def test_find_binary_via_path(tmp_path):
     fake_bin.touch()
     fake_bin.chmod(0o755)
 
-    with patch("runtimed._binary.sysconfig.get_path", return_value=str(tmp_path / "no_scripts")), \
-         patch("shutil.which", return_value=str(fake_bin)):
+    with (
+        patch(
+            "runtimed._binary.sysconfig.get_path",
+            return_value=str(tmp_path / "no_scripts"),
+        ),
+        patch("shutil.which", return_value=str(fake_bin)),
+    ):
         result = find_binary("runt")
         assert result == str(fake_bin)
 
 
 def test_find_binary_not_found(tmp_path):
     """BinaryNotFoundError raised when binary not found anywhere."""
-    with patch.dict(os.environ, {}, clear=True), \
-         patch("runtimed._binary.sysconfig.get_path", return_value=str(tmp_path / "no_scripts")), \
-         patch("shutil.which", return_value=None):
+    with (
+        patch.dict(os.environ, {}, clear=True),
+        patch(
+            "runtimed._binary.sysconfig.get_path",
+            return_value=str(tmp_path / "no_scripts"),
+        ),
+        patch("shutil.which", return_value=None),
+    ):
         with pytest.raises(BinaryNotFoundError, match="runt"):
             find_binary("runt")
 
@@ -50,7 +60,9 @@ def test_env_var_takes_precedence(tmp_path):
     path_bin.touch()
     path_bin.chmod(0o755)
 
-    with patch.dict(os.environ, {"RUNTIMED_RUNT_PATH": str(env_bin)}), \
-         patch("shutil.which", return_value=str(path_bin)):
+    with (
+        patch.dict(os.environ, {"RUNTIMED_RUNT_PATH": str(env_bin)}),
+        patch("shutil.which", return_value=str(path_bin)),
+    ):
         result = find_binary("runt")
         assert result == str(env_bin)

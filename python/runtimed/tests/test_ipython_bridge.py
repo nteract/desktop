@@ -26,8 +26,13 @@ class TestIPythonBridge:
             assert info["transport"] == "tcp"
             assert info["signature_scheme"] == "hmac-sha256"
             assert info["kernel_name"] == "python3"
-            for key in ("shell_port", "iopub_port", "stdin_port",
-                        "control_port", "hb_port"):
+            for key in (
+                "shell_port",
+                "iopub_port",
+                "stdin_port",
+                "control_port",
+                "hb_port",
+            ):
                 assert isinstance(info[key], int)
                 assert info[key] > 0
             assert len(info["key"]) == 32  # uuid4 hex
@@ -83,14 +88,17 @@ class TestIPythonBridge:
             # Build a kernel_info_request
             import hashlib
             import hmac as hmac_mod
-            header = json.dumps({
-                "msg_id": "test-123",
-                "msg_type": "kernel_info_request",
-                "username": "test",
-                "session": "test-session",
-                "date": "2025-01-01T00:00:00Z",
-                "version": "5.3",
-            }).encode()
+
+            header = json.dumps(
+                {
+                    "msg_id": "test-123",
+                    "msg_type": "kernel_info_request",
+                    "username": "test",
+                    "session": "test-session",
+                    "date": "2025-01-01T00:00:00Z",
+                    "version": "5.3",
+                }
+            ).encode()
             parent = b"{}"
             metadata = b"{}"
             content = b"{}"
@@ -102,9 +110,9 @@ class TestIPythonBridge:
             h.update(content)
             sig = h.hexdigest().encode()
 
-            dealer.send_multipart([
-                b"<IDS|MSG>", sig, header, parent, metadata, content
-            ])
+            dealer.send_multipart(
+                [b"<IDS|MSG>", sig, header, parent, metadata, content]
+            )
 
             # Wait for reply
             assert dealer.poll(3000)
@@ -134,24 +142,29 @@ class TestIPythonBridge:
 
             import hashlib
             import hmac as hmac_mod
-            header = json.dumps({
-                "msg_id": "test-456",
-                "msg_type": "execute_request",
-                "username": "test",
-                "session": "test-session",
-                "date": "2025-01-01T00:00:00Z",
-                "version": "5.3",
-            }).encode()
+
+            header = json.dumps(
+                {
+                    "msg_id": "test-456",
+                    "msg_type": "execute_request",
+                    "username": "test",
+                    "session": "test-session",
+                    "date": "2025-01-01T00:00:00Z",
+                    "version": "5.3",
+                }
+            ).encode()
             parent = b"{}"
             metadata = b"{}"
-            content = json.dumps({
-                "code": "",
-                "silent": True,
-                "store_history": False,
-                "user_expressions": {"cwd": "__import__('os').getcwd()"},
-                "allow_stdin": False,
-                "stop_on_error": False,
-            }).encode()
+            content = json.dumps(
+                {
+                    "code": "",
+                    "silent": True,
+                    "store_history": False,
+                    "user_expressions": {"cwd": "__import__('os').getcwd()"},
+                    "allow_stdin": False,
+                    "stop_on_error": False,
+                }
+            ).encode()
 
             h = hmac_mod.new(info["key"].encode(), digestmod=hashlib.sha256)
             h.update(header)
@@ -160,9 +173,9 @@ class TestIPythonBridge:
             h.update(content)
             sig = h.hexdigest().encode()
 
-            dealer.send_multipart([
-                b"<IDS|MSG>", sig, header, parent, metadata, content
-            ])
+            dealer.send_multipart(
+                [b"<IDS|MSG>", sig, header, parent, metadata, content]
+            )
 
             assert dealer.poll(3000)
             parts = dealer.recv_multipart()
@@ -210,9 +223,7 @@ class TestIPythonBridge:
             sub.connect(f"tcp://127.0.0.1:{info['iopub_port']}")
             time.sleep(0.1)
 
-            bridge.publish_execute_result(
-                {"text/plain": "42"}, {}, execution_count=1
-            )
+            bridge.publish_execute_result({"text/plain": "42"}, {}, execution_count=1)
 
             assert sub.poll(2000)
             parts = sub.recv_multipart()
@@ -353,13 +364,19 @@ class TestInstallBridge:
 
         bridge = install_bridge(ip)
         try:
-            ip.events.register.assert_called_once_with("post_run_cell", bridge._post_run_cell if hasattr(bridge, '_post_run_cell') else ip.events.register.call_args[0][1])
+            ip.events.register.assert_called_once_with(
+                "post_run_cell",
+                bridge._post_run_cell
+                if hasattr(bridge, "_post_run_cell")
+                else ip.events.register.call_args[0][1],
+            )
             assert bridge.connection_file.exists()
         finally:
             bridge.close()
 
     def test_install_wraps_stdout_stderr(self):
         import sys
+
         original_stdout = sys.stdout
         original_stderr = sys.stderr
         ip = MagicMock()
