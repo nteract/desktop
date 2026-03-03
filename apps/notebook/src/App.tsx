@@ -34,6 +34,7 @@ import { useGlobalFind } from "./hooks/useGlobalFind";
 import { useNotebook } from "./hooks/useNotebook";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
+import { KERNEL_STATUS } from "./lib/kernel-status";
 import { logger } from "./lib/logger";
 import type { JupyterMessage } from "./types";
 
@@ -567,7 +568,7 @@ function AppContent() {
       await clearOutputs(cellId);
 
       // Start kernel via daemon if not running, then queue cell.
-      if (kernelStatus === "not_started") {
+      if (kernelStatus === KERNEL_STATUS.NOT_STARTED) {
         const started = await tryStartKernel();
         // Only block execution when trust approval is pending.
         // For startup races (e.g. daemon already auto-starting), still try execute.
@@ -625,7 +626,7 @@ function AppContent() {
     await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
 
     // Start kernel via daemon if not running
-    if (kernelStatus === "not_started") {
+    if (kernelStatus === KERNEL_STATUS.NOT_STARTED) {
       const started = await tryStartKernel();
       if (!started) {
         logger.debug("[App] handleRunAllCells: kernel not started, skipping");
@@ -1030,7 +1031,7 @@ function AppContent() {
           flexibleNpmImports={flexibleNpmImports}
           onSetFlexibleNpmImports={setFlexibleNpmImports}
           syncState={denoDerivedSyncState}
-          syncing={kernelStatus === "starting"}
+          syncing={kernelStatus === KERNEL_STATUS.STARTING}
           onSyncNow={handleSyncDeps}
           justSynced={justSynced}
         />
