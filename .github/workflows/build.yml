@@ -633,6 +633,42 @@ jobs:
             return $exit_code
           }
 
+          # Helper function to run untitled notebook test from a specific directory
+          # This test requires the app to be launched from a directory containing pyproject.toml
+          run_untitled_test() {
+            local fixture_dir="$1"
+            local spec="$2"
+            local name="$3"
+
+            echo "=== Running $name ==="
+
+            # Start daemon with fixture directory as workspace path
+            TARGET=$(ls target/release/binaries/ | grep runtimed | head -1)
+            CONDUCTOR_WORKSPACE_PATH="$fixture_dir" \
+              ./target/release/binaries/$TARGET --dev run \
+              --uv-pool-size 2 --conda-pool-size 0 &
+            DAEMON_PID=$!
+            sleep 20
+
+            # Start tauri-driver from fixture directory so app inherits that CWD
+            (cd "$fixture_dir" && ~/.cargo/bin/tauri-driver --port 4444) &
+            DRIVER_PID=$!
+            sleep 3
+
+            # Run test WITHOUT NOTEBOOK_PATH (untitled notebook)
+            local exit_code=0
+            E2E_SPEC="$spec" CONDUCTOR_WORKSPACE_PATH="$fixture_dir" \
+              pnpm test:e2e 2>&1 | tee -a e2e-logs/fixtures-output.log || exit_code=$?
+
+            # Cleanup
+            kill $DRIVER_PID 2>/dev/null || true
+            kill $DAEMON_PID 2>/dev/null || true
+            sleep 2
+
+            echo "=== $name complete (exit: $exit_code) ==="
+            return $exit_code
+          }
+
           # Run each fixture test
           run_fixture_test \
             "crates/notebook/fixtures/audit-test/1-vanilla.ipynb" \
@@ -643,6 +679,12 @@ jobs:
             "crates/notebook/fixtures/audit-test/10-deno.ipynb" \
             "e2e/specs/deno.spec.js" \
             "Deno Kernel Test" || FAIL=1
+
+          # Run untitled notebook test from pyproject fixture directory
+          run_untitled_test \
+            "${GITHUB_WORKSPACE}/crates/notebook/fixtures/audit-test/pyproject-project" \
+            "e2e/specs/untitled-pyproject.spec.js" \
+            "Untitled Pyproject Test" || FAIL=1
 
           exit $FAIL
         env:
