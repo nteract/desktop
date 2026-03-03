@@ -5,15 +5,16 @@ import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
-import type { DaemonStatus } from "./DaemonStatusBanner";
-import { CondaIcon, DenoIcon, PythonIcon, UvIcon } from "./icons";
+import {
+  CondaIcon,
+  DenoIcon,
+  PythonIcon,
+  UvIcon,
+} from "../src/components/icons";
+import type { DaemonStatus } from "./types";
 
 type Runtime = "python" | "deno";
 type PythonEnv = "uv" | "conda";
-
-interface OnboardingScreenProps {
-  onComplete: (runtime: string, pythonEnv: string) => void | Promise<void>;
-}
 
 type SetupStep = {
   id: string;
@@ -164,7 +165,7 @@ const BRAND_COLORS = {
  *
  * Daemon installation runs in background throughout.
  */
-export function OnboardingScreen({ onComplete }: OnboardingScreenProps) {
+export default function App() {
   const [page, setPage] = useState<1 | 2>(1);
   const [runtime, setRuntime] = useState<Runtime | null>(null);
   const [pythonEnv, setPythonEnv] = useState<PythonEnv | null>(null);
@@ -319,7 +320,10 @@ export function OnboardingScreen({ onComplete }: OnboardingScreenProps) {
       // Pass selected values directly to avoid settings race condition
       // Await onComplete so we can handle failures properly
       try {
-        await onComplete(runtime, pythonEnv);
+        await invoke("complete_onboarding", {
+          defaultRuntime: runtime,
+          defaultPythonEnv: pythonEnv,
+        });
         // Window closes itself on success - no further action needed
       } catch (completeError) {
         // onComplete failed - reset state so user can retry
@@ -331,12 +335,15 @@ export function OnboardingScreen({ onComplete }: OnboardingScreenProps) {
       console.error("Failed to save onboarding settings:", e);
       setErrorMessage("Failed to save settings. Please try again.");
     }
-  }, [daemonReady, poolReady, runtime, pythonEnv, onComplete]);
+  }, [daemonReady, poolReady, runtime, pythonEnv]);
 
   // Skip onboarding when daemon failed - use current selections or defaults
   const handleSkip = useCallback(async () => {
-    await onComplete(runtime ?? "python", pythonEnv ?? "uv");
-  }, [onComplete, runtime, pythonEnv]);
+    await invoke("complete_onboarding", {
+      defaultRuntime: runtime ?? "python",
+      defaultPythonEnv: pythonEnv ?? "uv",
+    });
+  }, [runtime, pythonEnv]);
 
   const completedSteps = steps.filter((s) => s.status === "completed").length;
   const totalSteps = steps.length;

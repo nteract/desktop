@@ -22,7 +22,6 @@ import { DependencyHeader } from "./components/DependencyHeader";
 import { GlobalFindBar } from "./components/GlobalFindBar";
 import { NotebookToolbar } from "./components/NotebookToolbar";
 import { NotebookView } from "./components/NotebookView";
-import { OnboardingScreen } from "./components/OnboardingScreen";
 import { TrustDialog } from "./components/TrustDialog";
 import { useCondaDependencies } from "./hooks/useCondaDependencies";
 import { useDaemonKernel } from "./hooks/useDaemonKernel";
@@ -128,9 +127,6 @@ function AppContent() {
   const [daemonStatus, setDaemonStatus] = useState<DaemonStatus>(null);
   // Track ready timeout so we can cancel it if status changes
   const readyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // First-launch onboarding
-  const [showOnboarding, setShowOnboarding] = useState(false);
 
   // Trust verification for notebook dependencies
   const {
@@ -868,20 +864,6 @@ function AppContent() {
     };
   }, []);
 
-  // Check for first launch
-  useEffect(() => {
-    // Check settings directly on mount
-    invoke<{ onboarding_completed?: boolean }>("get_synced_settings")
-      .then((settings) => {
-        if (settings.onboarding_completed === false) {
-          setShowOnboarding(true);
-        }
-      })
-      .catch(() => {
-        // Daemon unavailable - don't show onboarding, let app work normally
-      });
-  }, []);
-
   // Cmd+Shift+I to toggle isolation test panel (dev only)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -893,29 +875,6 @@ function AppContent() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
-
-  // Show onboarding screen for first launch
-  if (showOnboarding) {
-    return (
-      <OnboardingScreen
-        onComplete={async (runtime, pythonEnv) => {
-          // Close this window and open a fresh notebook with proper working directory
-          // Settings are passed directly to avoid race condition with settings persistence
-          try {
-            await invoke("complete_onboarding", {
-              defaultRuntime: runtime,
-              defaultPythonEnv: pythonEnv,
-            });
-            // Window closes itself on success - no action needed here
-          } catch (e) {
-            // Keep onboarding visible on error - don't fall back to broken app state
-            // The user can retry or close the window manually
-            logger.error("complete_onboarding failed:", e);
-          }
-        }}
-      />
-    );
-  }
 
   return (
     <div className="flex h-full flex-col bg-background overflow-hidden">

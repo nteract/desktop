@@ -27,6 +27,10 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+        onboarding: path.resolve(__dirname, "onboarding/index.html"),
+      },
       output: {
         entryFileNames: "assets/[name].js",
         chunkFileNames: "assets/[name].js",
