@@ -27,12 +27,13 @@ const SCREENSHOT_FAILURES_DIR = path.join(SCREENSHOT_DIR, "failures");
 // Ensure screenshot directories exist
 fs.mkdirSync(SCREENSHOT_FAILURES_DIR, { recursive: true });
 
-// Fixture specs require NOTEBOOK_PATH to be set and are excluded from the default run.
-// Use ./e2e/dev.sh test-fixture <notebook> <spec> to run them individually.
+// Fixture specs require special setup (NOTEBOOK_PATH or working directory) and are excluded
+// from the default run. Use ./e2e/dev.sh test-fixture or test-untitled-pyproject to run them.
 const FIXTURE_SPECS = [
   "conda-inline.spec.js",
   "deno.spec.js",
   "prewarmed-uv.spec.js",
+  "untitled-pyproject.spec.js", // Requires working dir to be pyproject fixture directory
   "uv-inline.spec.js",
   "uv-pyproject.spec.js",
 ];
