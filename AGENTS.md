@@ -262,7 +262,7 @@ Follow the pattern established by `environment_yml.rs` and `pixi.rs`:
 1. Create `crates/notebook/src/{format}.rs` with `find_{format}()` (directory walk) and `parse_{format}()` functions
 2. Add Tauri commands in `lib.rs`: `detect_{format}`, `get_{format}_dependencies`, `import_{format}_dependencies`
 3. Wire detection into `start_default_python_kernel_impl` at the correct priority position
-4. Add frontend detection in `useKernel.ts` auto-launch and `useCondaDependencies.ts` or `useDependencies.ts`
+4. Add frontend detection in `App.tsx` auto-launch and `useCondaDependencies.ts` or `useDependencies.ts`
 5. Add test fixture in `crates/notebook/fixtures/audit-test/`
 
 ### Trust System
@@ -289,6 +289,6 @@ Dependencies are signed with HMAC-SHA256 using a per-machine key at `~/.config/r
 | `crates/notebook/src/environment_yml.rs` | environment.yml discovery and parsing |
 | `crates/notebook/src/deno_env.rs` | Deno config detection and version checking |
 | `crates/notebook/src/trust.rs` | HMAC trust verification |
-| `apps/notebook/src/hooks/useKernel.ts` | Frontend kernel lifecycle and auto-launch |
+| `apps/notebook/src/hooks/useDaemonKernel.ts` | Daemon-owned kernel execution, status broadcasts, environment sync |
 | `apps/notebook/src/hooks/useDependencies.ts` | Frontend UV dependency management |
 | `apps/notebook/src/hooks/useCondaDependencies.ts` | Frontend conda dependency management |
