@@ -433,6 +433,9 @@ export function NotebookToolbar({
     kernelStatus === "idle" ||
     kernelStatus === "busy" ||
     kernelStatus === "starting";
+  const kernelStatusText = kernelStatus.replace(/_/g, " ");
+  const isKernelNotStarted =
+    kernelStatus === "not_started" || kernelStatus === "not started";
 
   // Derive env manager label for the runtime pill (e.g. "uv", "conda", "pixi")
   const envManager: EnvBadgeVariant | null =
@@ -647,7 +650,7 @@ export function NotebookToolbar({
 
           {/* Kernel status */}
           <div
-            className="flex w-[3rem] items-center gap-1.5"
+            className="flex items-center gap-1.5 whitespace-nowrap"
             role="status"
             aria-label={`Kernel: ${
               envProgress?.isActive
@@ -656,7 +659,7 @@ export function NotebookToolbar({
                   ? envProgress.statusText
                   : kernelStatus === "error" && kernelErrorMessage
                     ? `Error \u2014 ${kernelErrorMessage}`
-                    : kernelStatus
+                    : kernelStatusText
             }`}
             title={
               envProgress?.isActive
@@ -665,7 +668,7 @@ export function NotebookToolbar({
                   ? envProgress.error
                   : kernelStatus === "error" && kernelErrorMessage
                     ? `Error \u2014 ${kernelErrorMessage}`
-                    : kernelStatus
+                    : kernelStatusText
             }
           >
             <div
@@ -674,12 +677,11 @@ export function NotebookToolbar({
                 kernelStatus === "idle" && "bg-green-500",
                 kernelStatus === "busy" && "bg-amber-500",
                 kernelStatus === "starting" && "bg-blue-500 animate-pulse",
-                kernelStatus === "not started" &&
-                  "bg-gray-400 dark:bg-gray-500",
+                isKernelNotStarted && "bg-gray-400 dark:bg-gray-500",
                 kernelStatus === "error" && "bg-red-500",
               )}
             />
-            <span className="text-xs text-muted-foreground truncate">
+            <span className="text-xs text-muted-foreground whitespace-nowrap">
               {envProgress?.isActive ? (
                 envProgress.statusText
               ) : envProgress?.error ? (
@@ -694,11 +696,7 @@ export function NotebookToolbar({
                       "text-red-600 dark:text-red-400",
                   )}
                 >
-                  {kernelStatus === "not started"
-                    ? "off"
-                    : kernelStatus === "starting"
-                      ? "init"
-                      : kernelStatus}
+                  {kernelStatusText}
                 </span>
               )}
             </span>
