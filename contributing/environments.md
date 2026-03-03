@@ -62,6 +62,7 @@ graph TB
         UCD[useCondaDependencies.ts]
         DH[DependencyHeader.tsx]
         CDH[CondaDependencyHeader.tsx]
+        DDH[DenoDependencyHeader.tsx]
 
         DH --> UD
         CDH --> UCD
@@ -460,12 +461,13 @@ Changes to the dependency metadata structure require updating the signing logic 
 
 ## Frontend Architecture
 
-Two parallel UI components manage dependencies:
+Three UI components manage dependencies for different runtimes:
 
 | Component | Hook | Manages |
 |-----------|------|---------|
 | `DependencyHeader.tsx` | `useDependencies.ts` | UV deps, pyproject.toml detection |
 | `CondaDependencyHeader.tsx` | `useCondaDependencies.ts` | Conda deps, environment.yml and pixi.toml detection |
+| `DenoDependencyHeader.tsx` | — | Deno configuration and deno.json detection |
 
 The kernel lifecycle is managed by `useDaemonKernel.ts`, which:
 - Listens for `daemon:broadcast` events from the backend
@@ -531,3 +533,4 @@ The kernel lifecycle is managed by `useDaemonKernel.ts`, which:
 | `apps/notebook/src/hooks/useCondaDependencies.ts` | Frontend conda dep management |
 | `apps/notebook/src/components/DependencyHeader.tsx` | UV dependency UI panel |
 | `apps/notebook/src/components/CondaDependencyHeader.tsx` | Conda dependency UI panel |
+| `apps/notebook/src/components/DenoDependencyHeader.tsx` | Deno configuration UI panel |

@@ -1,6 +1,6 @@
 # Logging Guidelines
 
-This guide covers logging conventions for contributors working on the Columbus codebase.
+This guide covers logging conventions for contributors working on the nteract desktop codebase.
 
 ## Rust Logging
 

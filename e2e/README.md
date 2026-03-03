@@ -18,29 +18,27 @@ pnpm test:e2e:docker
 
 This takes 4-5 minutes due to Rust compilation.
 
-### Dev Mode (Fast Iteration)
+### Native Mode (macOS, faster iteration)
 
-For rapid iteration during development. Uses cached dependencies:
+For local development on macOS with the built-in WebDriver server:
 
 ```bash
-# First time only: Build base image with cached deps (takes ~5 min)
-pnpm e2e:base:build
+# Build with WebDriver support
+./e2e/dev.sh build
 
-# Then iterate quickly (takes ~1-2 min)
-pnpm test:e2e:dev
+# Start app with WebDriver server (in one terminal)
+./e2e/dev.sh start
+
+# Run tests (in another terminal)
+./e2e/dev.sh test
 ```
-
-The base image caches:
-- System dependencies (xvfb, webkit2gtk-driver)
-- tauri-cli installation
-- Rust dependency downloads
 
 ### Interactive Debugging
 
-Drop into a shell with the test environment ready:
+Drop into a shell with the Docker test environment ready:
 
 ```bash
-pnpm e2e:dev:shell
+pnpm e2e:docker:shell
 ```
 
 Inside the container:
@@ -49,33 +47,31 @@ Inside the container:
 pnpm test:e2e
 
 # Run a single spec file
-pnpm wdio run e2e/wdio.conf.js --spec e2e/specs/notebook-execution.spec.js
+pnpm wdio run e2e/wdio.conf.js --spec e2e/specs/smoke.spec.js
 ```
 
 ## Test Files
 
 | File | Description |
 |------|-------------|
-| `specs/iframe-isolation.spec.js` | Security tests for iframe sandbox isolation |
-| `specs/notebook-execution.spec.js` | Happy path: create, edit, run cell, see output |
-
-## Dockerfile Variants
-
-| File | Purpose |
-|------|---------|
-| `Dockerfile` | CI mode - full isolated build |
-| `Dockerfile.base` | Base image with cached dependencies |
-| `Dockerfile.dev` | Dev mode - builds on base image |
+| `specs/smoke.spec.js` | Basic cell execution and output |
+| `specs/prewarmed-uv.spec.js` | Prewarmed UV environment pool |
+| `specs/uv-inline.spec.js` | UV inline dependency resolution |
+| `specs/conda-inline.spec.js` | Conda inline dependency resolution |
+| `specs/deno.spec.js` | Deno kernel start + TypeScript execution |
+| `specs/uv-pyproject.spec.js` | pyproject.toml environment detection |
+| `specs/tab-completion.spec.js` | Tab completion in code cells |
+| `specs/untitled-pyproject.spec.js` | Untitled notebook in pyproject.toml directory |
 
 ## npm Scripts
 
 | Script | Description |
 |--------|-------------|
-| `test:e2e:docker` | Run tests in CI mode (full build) |
-| `test:e2e:dev` | Run tests in dev mode (fast, needs base image) |
-| `e2e:base:build` | Build the base image (run once) |
-| `e2e:dev:build` | Rebuild dev image after code changes |
-| `e2e:dev:shell` | Interactive shell for debugging |
+| `test:e2e` | Run tests with WebdriverIO |
+| `test:e2e:docker` | Run tests in Docker container |
+| `test:e2e:native` | Run tests natively (same as test:e2e) |
+| `e2e:docker:build` | Build the Docker image |
+| `e2e:docker:shell` | Interactive shell for debugging |
 
 ## Writing Tests
 

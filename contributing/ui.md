@@ -37,4 +37,4 @@ Both apps access shared components via the `@/` path alias, which resolves to `.
 
 ## Package Management Recommendation
 
-When updating shadcn components in this project, use `pnpm` as the preferred package manager. The repository has experienced issues with `npm install` when resolving `@repo/*` workspace packages without a root JavaScript workspace configuration.
+When updating shadcn components in this project, use `pnpm` as the preferred package manager.

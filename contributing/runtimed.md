@@ -133,7 +133,15 @@ crates/runtimed/
 │   ├── notebook_sync_client.rs  # Notebook sync client library
 │   ├── blob_store.rs            # Content-addressed blob store with metadata sidecars
 │   ├── blob_server.rs           # HTTP read server for blobs (hyper 1.x)
-│   └── runtime.rs               # Runtime detection (Python/Deno)
+│   ├── runtime.rs               # Runtime detection (Python/Deno)
+│   ├── kernel_manager.rs        # Kernel lifecycle, ZMQ iopub watching, execution queue
+│   ├── inline_env.rs            # Inline dependency environment caching (UV/Conda)
+│   ├── project_file.rs          # Project file detection (pyproject.toml, pixi.toml, etc.)
+│   ├── comm_state.rs            # Comm message state for ipywidgets
+│   ├── output_store.rs          # Output persistence and retrieval
+│   ├── notebook_metadata.rs     # Notebook metadata parsing
+│   ├── stream_terminal.rs       # Stream terminal output handling
+│   └── terminal_size.rs         # Terminal size tracking
 └── tests/
     └── integration.rs           # Integration tests (daemon, pool, settings sync, notebook sync)
 ```
@@ -261,78 +269,3 @@ systemctl --user start runtimed.service
 | Daemon info | `~/Library/Caches/runt/daemon.json` |
 | Logs | `~/Library/Caches/runt/runtimed.log` |
 
----
-
-## Daemon Execution Mode
-
-When `daemon_execution: true` is enabled in settings, the daemon owns kernel execution and output handling. This is an experimental feature that enables multi-window kernel sharing.
-
-### How it works
-
-```
-Frontend ──LaunchKernel/QueueCell──> Daemon ──ZMQ──> Kernel
-Frontend <──Broadcasts/Automerge──── Daemon <──iopub── Kernel
-```
-
-The frontend becomes a thin view:
-- Sends execution requests to daemon
-- Receives real-time broadcasts (KernelStatus, Output)
-- Syncs cell source via Automerge
-- Renders outputs from Automerge doc
-
-### Enabling daemon execution
-
-In the app settings or via code:
-```typescript
-// src/hooks/useSyncedSettings.ts
-const [daemonExecution, setDaemonExecutionState] = useState<boolean>(true);
-```
-
-### Testing daemon execution changes
-
-When you modify daemon code related to kernel execution:
-
-```bash
-# 1. Rebuild and reinstall daemon
-cargo xtask install-daemon
-
-# 2. Verify version
-cat ~/Library/Caches/runt/daemon.json | grep version
-
-# 3. Watch logs
-tail -f ~/Library/Caches/runt/runtimed.log
-
-# 4. Open a notebook with daemon_execution enabled
-```
-
-### Project file auto-detection
-
-When the frontend sends `LaunchKernel { env_source: "auto" }`, the daemon auto-detects the environment:
-
-1. Walks up from notebook directory
-2. Looks for pyproject.toml, pixi.toml, environment.yml
-3. First (closest) match wins
-4. Falls back to prewarmed if no match
-
-Detection logs:
-```
-[notebook-sync] Auto-detected project file: "/path/to/pyproject.toml" -> uv:pyproject
-```
-
-### Known limitation: Widgets
-
-ipywidgets don't work in daemon mode because comm messages (`comm_open`, `comm_msg`) need bidirectional routing through the daemon. For now:
-- **Daemon mode**: Basic execution works, widgets don't
-- **Non-daemon mode**: Everything works including widgets
-
-This is why `daemon_execution` remains opt-in.
-
-### Key files for daemon execution
-
-| File | Role |
-|------|------|
-| `crates/runtimed/src/kernel_manager.rs` | Kernel lifecycle, iopub watching |
-| `crates/runtimed/src/notebook_sync_server.rs` | Request handling, broadcasts |
-| `crates/runtimed/src/project_file.rs` | Project file detection |
-| `apps/notebook/src/hooks/useDaemonKernel.ts` | Frontend daemon kernel hook |
-| `src/hooks/useSyncedSettings.ts` | Feature flag |

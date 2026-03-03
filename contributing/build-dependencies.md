@@ -97,19 +97,32 @@ graph BT
     RC["runt-cli"]
     NB["notebook"]
     XT["xtask"]
+    KL["kernel-launch"]
+    KE["kernel-env"]
+    RT["runt-trust"]
+    RW["runt-workspace"]
+    RDPY["runtimed-py"]
 
     SC -->|"depends on"| TJ
     NB -->|"depends on"| TJ
     NB -->|"depends on"| RD
-    RC -->|"depends on"| SC
+    NB -->|"depends on"| KL
+    NB -->|"depends on"| KE
+    NB -->|"depends on"| RT
+    NB -->|"depends on"| RW
     RC -->|"depends on"| RD
+    RD -->|"depends on"| KL
+    RD -->|"depends on"| KE
+    RDPY -->|"depends on"| RD
 
     classDef standalone fill:#fff9c4,stroke:#f9a825
     classDef leaf fill:#c8e6c9,stroke:#388e3c
+    classDef shared fill:#e3f2fd,stroke:#1976d2
 
-    class TJ,RD standalone
+    class TJ,KL,KE,RT,RW standalone
     class XT standalone
-    class NB,RC leaf
+    class NB,RC,RDPY leaf
+    class RD shared
 ```
 
 ## Key Points

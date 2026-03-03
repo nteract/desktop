@@ -100,23 +100,16 @@ Use a regular test when:
 
 | Notebook | Spec | What it tests |
 |----------|------|---------------|
-| `1-vanilla.ipynb` | `vanilla-startup.spec.js` | UV prewarmed env startup |
-| `1-vanilla.ipynb` | `settings-panel.spec.js` | Settings panel UI (daemon-independent) |
-| `2-uv-inline.ipynb` | `uv-inline-deps.spec.js` | UV inline dependency resolution |
-| `2-uv-inline.ipynb` | `deps-panel.spec.js` | UV deps panel UI |
-| `2-uv-inline.ipynb` | `trust-decline.spec.js` | Trust dialog rejection |
-| `3-conda-inline.ipynb` | `conda-inline-deps.spec.js` | Conda inline dependency resolution |
-| `3-conda-inline.ipynb` | `conda-deps-panel.spec.js` | Conda deps panel UI |
-| `4-both-deps.ipynb` | `both-deps-panel.spec.js` | Dual UV + Conda deps |
-| `5-pyproject.ipynb` | `pyproject-startup.spec.js` | pyproject.toml environment detection |
-| `6-pixi.ipynb` | `pixi-env-detection.spec.js` | pixi.toml environment detection |
-| `7-environment-yml.ipynb` | `environment-yml-detection.spec.js` | environment.yml detection |
-| `8-multi-cell.ipynb` | `run-all-cells.spec.js` | Run All / Restart & Run All |
-| `9-html-output.ipynb` | `iframe-isolation.spec.js` | Iframe sandbox security |
-| `10-deno.ipynb` | `deno-runtime.spec.js` | Deno kernel start + TypeScript execution |
-| `1-vanilla.ipynb` | `save-dirty-state.spec.js` | Save button dirty state indicator |
-| `11-rich-outputs.ipynb` | `rich-outputs.spec.js` | Rich output rendering (PNG, HTML, DataFrame, ANSI) |
-| `12-error-outputs.ipynb` | `error-handling.spec.js` | Error traceback rendering |
+| `1-vanilla.ipynb` | `prewarmed-uv.spec.js` | UV prewarmed environment pool |
+| `2-uv-inline.ipynb` | `uv-inline.spec.js` | UV inline dependency resolution |
+| `3-conda-inline.ipynb` | `conda-inline.spec.js` | Conda inline dependency resolution |
+| `10-deno.ipynb` | `deno.spec.js` | Deno kernel start + TypeScript execution |
+| `pyproject-project/5-pyproject.ipynb` | `uv-pyproject.spec.js` | pyproject.toml environment detection |
+
+**Regular specs** (run against default app, not fixtures):
+- `smoke.spec.js` — Basic cell execution and output
+- `tab-completion.spec.js` — Tab completion in code cells
+- `untitled-pyproject.spec.js` — Untitled notebook in pyproject.toml directory
 
 Multiple specs can reuse the same fixture notebook — each gets its own fresh app instance.
 

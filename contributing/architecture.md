@@ -95,7 +95,7 @@ Client                              Daemon
 
 ## Testing Philosophy
 
-- **E2E tests** (Playwright): Slow but comprehensive, test full user journeys
+- **E2E tests** (WebdriverIO): Slow but comprehensive, test full user journeys
 - **Integration tests** (Python bindings): Fast daemon interaction tests via `runtimed-py`
 - **Unit tests**: Pure logic, no I/O, fast feedback
 
@@ -108,13 +108,13 @@ We are working toward full conformance with these principles.
 | Principle | Status |
 |-----------|--------|
 | Daemon as source of truth | Conformant |
-| Automerge as canonical state | Partial |
+| Automerge as canonical state | Mostly Conformant |
 | On-disk as checkpoint | Conformant |
-| Local-first editing, synced execution | Partial |
+| Local-first editing, synced execution | Mostly Conformant |
 | Binary separation | Conformant |
 | Daemon manages resources | Conformant |
 
-**In progress:** Adding `ExecuteCell` request that reads from the document instead of accepting code as a parameter. This will bring us to full conformance with principles 2 and 4.
+`ExecuteCell` is implemented and reads from the synced document. The deprecated `QueueCell` (which accepts code as a parameter) is retained only for `runtimed-py` backwards compatibility.
 
 ## References
 
