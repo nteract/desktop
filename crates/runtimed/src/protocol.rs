@@ -386,6 +386,10 @@ pub enum NotebookBroadcast {
         cell_id: String,
         output_type: String, // "stream", "display_data", "execute_result", "error"
         output_json: String, // Serialized Jupyter output content
+        /// If Some, this is an update to an existing output at the given index.
+        /// If None, this is a new output to append.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_index: Option<usize>,
     },
 
     /// Display output updated in place (update_display_data).
@@ -783,20 +787,43 @@ mod tests {
             cell_id: "cell-1".into(),
             output_type: "stream".into(),
             output_json: r#"{"name":"stdout","text":"hello\n"}"#.into(),
+            output_index: None,
         };
         let json = serde_json::to_string(&broadcast).unwrap();
         assert!(json.contains("output"));
         assert!(json.contains("cell-1"));
+        // output_index is None, so it should be skipped in serialization
+        assert!(!json.contains("output_index"));
 
         let parsed: NotebookBroadcast = serde_json::from_str(&json).unwrap();
         match parsed {
             NotebookBroadcast::Output {
                 cell_id,
                 output_type,
+                output_index,
                 ..
             } => {
                 assert_eq!(cell_id, "cell-1");
                 assert_eq!(output_type, "stream");
+                assert_eq!(output_index, None);
+            }
+            _ => panic!("unexpected broadcast type"),
+        }
+
+        // Test with output_index set
+        let broadcast_with_index = NotebookBroadcast::Output {
+            cell_id: "cell-2".into(),
+            output_type: "stream".into(),
+            output_json: r#"{"name":"stdout","text":"hello\n"}"#.into(),
+            output_index: Some(0),
+        };
+        let json_with_index = serde_json::to_string(&broadcast_with_index).unwrap();
+        assert!(json_with_index.contains("output_index"));
+
+        let parsed_with_index: NotebookBroadcast = serde_json::from_str(&json_with_index).unwrap();
+        match parsed_with_index {
+            NotebookBroadcast::Output { output_index, .. } => {
+                assert_eq!(output_index, Some(0));
             }
             _ => panic!("unexpected broadcast type"),
         }

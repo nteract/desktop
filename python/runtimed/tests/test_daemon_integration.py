@@ -691,7 +691,6 @@ sys.stdout.flush()
         assert "Progress: 100%" in result.stdout
         assert "Progress: 50%" not in result.stdout
 
-    @pytest.mark.skip(reason="Terminal emulation edge case with looped CR")
     def test_progress_bar_simulation(self, session):
         """Simulated progress bar should show only final state."""
         session.start_kernel()

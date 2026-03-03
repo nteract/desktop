@@ -972,6 +972,7 @@ async fn collect_outputs_async(
                         cell_id: msg_cell_id,
                         output_type,
                         output_json,
+                        output_index,
                     } => {
                         if msg_cell_id == cell_id {
                             if let Some(output) = parse_output_async(
@@ -985,7 +986,16 @@ async fn collect_outputs_async(
                                 if output.output_type == "error" {
                                     success = false;
                                 }
-                                outputs.push(output);
+                                // If output_index is provided, update in place; otherwise append
+                                if let Some(idx) = output_index {
+                                    if idx < outputs.len() {
+                                        outputs[idx] = output;
+                                    } else {
+                                        outputs.push(output);
+                                    }
+                                } else {
+                                    outputs.push(output);
+                                }
                             }
                         }
                     }

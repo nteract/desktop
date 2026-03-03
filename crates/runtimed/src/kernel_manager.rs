@@ -869,36 +869,44 @@ impl RoomKernel {
                                     };
 
                                     // Upsert stream output (update if validated, append if not)
-                                    let persist_bytes = {
+                                    let (persist_bytes, broadcast_output_index) = {
                                         let mut doc_guard = doc.write().await;
-                                        match doc_guard.upsert_stream_output(
+                                        let upsert_result = doc_guard.upsert_stream_output(
                                             cid,
                                             stream_name,
                                             &output_ref,
                                             known_state.as_ref(),
-                                        ) {
-                                            Ok((_updated, output_index)) => {
+                                        );
+                                        let broadcast_idx = match &upsert_result {
+                                            Ok((updated, output_index)) => {
                                                 // Store new state (index + hash) for future validation
                                                 let mut terminals = stream_terminals.lock().await;
                                                 terminals.set_output_state(
                                                     cid,
                                                     stream_name,
                                                     StreamOutputState {
-                                                        index: output_index,
+                                                        index: *output_index,
                                                         manifest_hash: output_ref.clone(),
                                                     },
                                                 );
+                                                // Include output_index in broadcast if this was an update
+                                                if *updated {
+                                                    Some(*output_index)
+                                                } else {
+                                                    None
+                                                }
                                             }
                                             Err(e) => {
                                                 warn!(
                                                     "[kernel-manager] Failed to upsert stream output: {}",
                                                     e
                                                 );
+                                                None
                                             }
-                                        }
+                                        };
                                         let bytes = doc_guard.save();
                                         let _ = changed_tx.send(());
-                                        bytes
+                                        (bytes, broadcast_idx)
                                     };
                                     let _ = persist_tx.send(Some(persist_bytes));
 
@@ -906,6 +914,7 @@ impl RoomKernel {
                                         cell_id: cid.clone(),
                                         output_type: "stream".to_string(),
                                         output_json: output_ref,
+                                        output_index: broadcast_output_index,
                                     });
                                 }
                             }
@@ -1020,6 +1029,7 @@ impl RoomKernel {
                                             cell_id: cid.clone(),
                                             output_type: output_type.to_string(),
                                             output_json: output_ref,
+                                            output_index: None,
                                         });
                                     }
                                 }
@@ -1176,6 +1186,7 @@ impl RoomKernel {
                                             cell_id: cid.clone(),
                                             output_type: "error".to_string(),
                                             output_json: output_ref,
+                                            output_index: None,
                                         });
                                     }
 
@@ -1438,6 +1449,7 @@ impl RoomKernel {
                                                     cell_id: cid.clone(),
                                                     output_type: "display_data".to_string(),
                                                     output_json: output_ref,
+                                                    output_index: None,
                                                 },
                                             );
                                         }
