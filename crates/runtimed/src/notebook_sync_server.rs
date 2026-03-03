@@ -2483,6 +2483,27 @@ async fn resolve_cell_output(output_str: &str, blob_store: &BlobStore) -> serde_
     }
 }
 
+/// Configuration for the persist debouncer timing.
+#[derive(Clone, Copy)]
+struct PersistDebouncerConfig {
+    /// How long to wait after last update before flushing (debounce window)
+    debounce_ms: u64,
+    /// Maximum time between flushes during continuous updates
+    max_interval_ms: u64,
+    /// How often to check if we should flush
+    check_interval_ms: u64,
+}
+
+impl Default for PersistDebouncerConfig {
+    fn default() -> Self {
+        Self {
+            debounce_ms: 500,
+            max_interval_ms: 5000,
+            check_interval_ms: 100,
+        }
+    }
+}
+
 /// Spawn a debounced persistence task that coalesces writes.
 ///
 /// Uses a `watch` channel for "latest value" semantics - new values replace old ones,
@@ -2494,23 +2515,36 @@ async fn resolve_cell_output(output_str: &str, blob_store: &BlobStore) -> serde_
 /// - **Shutdown flush**: Persist any pending data when channel closes
 ///
 /// This reduces disk I/O during rapid output while ensuring durability.
-fn spawn_persist_debouncer(
+fn spawn_persist_debouncer(persist_rx: watch::Receiver<Option<Vec<u8>>>, persist_path: PathBuf) {
+    spawn_persist_debouncer_with_config(
+        persist_rx,
+        persist_path,
+        PersistDebouncerConfig::default(),
+    );
+}
+
+/// Spawn debouncer with custom timing configuration (for testing).
+fn spawn_persist_debouncer_with_config(
     mut persist_rx: watch::Receiver<Option<Vec<u8>>>,
     persist_path: PathBuf,
+    config: PersistDebouncerConfig,
 ) {
     tokio::spawn(async move {
         use std::time::Duration;
-        use tokio::time::Instant;
+        use tokio::time::{interval, Instant, MissedTickBehavior};
 
-        let debounce_duration = Duration::from_millis(500);
-        let max_flush_interval = Duration::from_secs(5);
+        let debounce_duration = Duration::from_millis(config.debounce_ms);
+        let max_flush_interval = Duration::from_millis(config.max_interval_ms);
 
         let mut last_receive: Option<Instant> = None;
         let mut last_flush: Option<Instant> = None;
 
+        // Persistent interval - fires regularly regardless of how often changed() fires.
+        // This ensures we always check debounce/max-interval even during rapid updates.
+        let mut check_interval = interval(Duration::from_millis(config.check_interval_ms));
+        check_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
         loop {
-            // Wait for changes or timeout
-            let timeout = tokio::time::sleep(Duration::from_millis(100));
             tokio::select! {
                 result = persist_rx.changed() => {
                     if result.is_err() {
@@ -2523,13 +2557,18 @@ fn spawn_persist_debouncer(
                     }
                     last_receive = Some(Instant::now());
                 }
-                _ = timeout => {
+                _ = check_interval.tick() => {
                     // Check if we should flush based on debounce or max interval
-                    let should_flush = match (last_receive, last_flush) {
-                        (Some(recv), _) if recv.elapsed() >= debounce_duration => true,
-                        (Some(_), Some(flush)) if flush.elapsed() >= max_flush_interval => true,
-                        (Some(_), None) if last_receive.map(|r| r.elapsed() >= max_flush_interval).unwrap_or(false) => true,
-                        _ => false,
+                    let should_flush = if let Some(recv) = last_receive {
+                        // Debounce: 500ms quiet period since last receive
+                        let debounce_ready = recv.elapsed() >= debounce_duration;
+                        // Max interval: 5s since last flush (or since first receive)
+                        let max_interval_ready = last_flush
+                            .map(|f| f.elapsed() >= max_flush_interval)
+                            .unwrap_or(recv.elapsed() >= max_flush_interval);
+                        debounce_ready || max_interval_ready
+                    } else {
+                        false
                     };
 
                     if should_flush {
@@ -3171,5 +3210,50 @@ mod tests {
         assert!(!is_untitled_notebook("/home/user/notebook.ipynb"));
         assert!(!is_untitled_notebook("./relative/path.ipynb"));
         assert!(!is_untitled_notebook("notebook.ipynb"));
+    }
+
+    /// Test that the debouncer flushes at max interval even during continuous updates.
+    ///
+    /// Uses short intervals (50ms debounce, 200ms max) for fast testing.
+    #[tokio::test]
+    async fn test_persist_debouncer_max_interval_flush() {
+        use std::time::Duration;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let persist_path = tmp.path().join("test.automerge");
+
+        // Create watch channel and spawn debouncer with short intervals for testing
+        let (tx, rx) = watch::channel::<Option<Vec<u8>>>(None);
+        let config = PersistDebouncerConfig {
+            debounce_ms: 50,       // 50ms debounce window
+            max_interval_ms: 200,  // 200ms max between flushes
+            check_interval_ms: 10, // Check every 10ms
+        };
+        spawn_persist_debouncer_with_config(rx, persist_path.clone(), config);
+
+        // Send updates every 20ms (faster than 50ms debounce, so debounce never triggers)
+        // The 200ms max interval should force a flush even without a quiet period.
+        for i in 0..20 {
+            let data = format!("update-{}", i).into_bytes();
+            tx.send(Some(data)).unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Total time: 20 * 20ms = 400ms, which is > 200ms max interval
+
+        // Give debouncer time to flush
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(
+            persist_path.exists(),
+            "File should exist after max interval even with continuous updates"
+        );
+
+        // Verify content is from an update
+        let content = std::fs::read(&persist_path).unwrap();
+        let content_str = String::from_utf8_lossy(&content);
+        assert!(
+            content_str.starts_with("update-"),
+            "Content should be from an update"
+        );
     }
 }
