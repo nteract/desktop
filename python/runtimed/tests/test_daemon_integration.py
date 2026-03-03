@@ -114,7 +114,9 @@ def daemon_process():
     log_level = os.environ.get("RUNTIMED_LOG_LEVEL", "info")
 
     # Create a temp directory for this test run
-    with tempfile.TemporaryDirectory(prefix="runtimed-test-") as tmpdir:
+    # ignore_cleanup_errors=True prevents OSError when ipykernel leaves behind
+    # directories like 'magics' that aren't empty during cleanup
+    with tempfile.TemporaryDirectory(prefix="runtimed-test-", ignore_cleanup_errors=True) as tmpdir:
         tmpdir = Path(tmpdir)
         socket_path = tmpdir / "runtimed.sock"
         cache_dir = tmpdir / "cache"
