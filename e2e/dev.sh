@@ -63,7 +63,7 @@ start_daemon() {
 
   echo "Starting E2E daemon with worktree isolation..."
   RUST_LOG="${RUST_LOG:-info}" "$DAEMON_BINARY" --dev run \
-    --uv-pool-size 2 --conda-pool-size 0 &
+    --uv-pool-size 3 --conda-pool-size 2 &
   local daemon_pid=$!
   echo "$daemon_pid" > "$DAEMON_PID_FILE"
   echo "Daemon started (PID $daemon_pid)"

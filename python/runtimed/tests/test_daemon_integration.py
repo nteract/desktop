@@ -129,8 +129,8 @@ def daemon_process():
             "--socket", str(socket_path),
             "--cache-dir", str(cache_dir),
             "--blob-store-dir", str(blob_dir),
-            "--uv-pool-size", "2",  # Small pool for tests (need >1 for sequential tests)
-            "--conda-pool-size", "2",  # Need >=2 for conda project file tests (pixi + env_yml)
+            "--uv-pool-size", "3",  # Pool for sequential tests (need headroom for replenishment)
+            "--conda-pool-size", "3",  # Need headroom for conda project file tests + inline fallback
         ]
 
         print(f"\n[test] Starting daemon: {' '.join(cmd)}", file=sys.stderr)
