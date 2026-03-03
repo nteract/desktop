@@ -14,7 +14,7 @@
       "identifier": "shell:allow-spawn",
       "allow": [
         {
-          "name": "binaries/runtimed",
+          "name": "runtimed",
           "sidecar": true
         }
       ]

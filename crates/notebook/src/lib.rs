@@ -660,9 +660,10 @@ where
     log::info!("[startup] Daemon not responding, spawning runtimed install via sidecar...");
     on_progress(DaemonProgress::Installing);
 
+    // Note: Use just the binary name (not the path) for sidecar
     let sidecar_result = app
         .shell()
-        .sidecar("binaries/runtimed")
+        .sidecar("runtimed")
         .map_err(|e| format!("Failed to create sidecar command: {}", e))?
         .args(["install"])
         .spawn();
