@@ -3664,6 +3664,8 @@ pub fn run(
             // Capture working_dir for untitled notebook project file detection
             let working_dir_for_sync = working_dir.clone();
             let daemon_status_for_callback = daemon_status_for_startup.clone();
+            // Capture for async block - onboarding doesn't need notebook sync
+            let skip_notebook_sync = needs_onboarding;
             tauri::async_runtime::spawn(async move {
                 // Create progress callback to emit Tauri events for UI feedback
                 // Also stores status for later queries (handles race conditions)
@@ -3700,7 +3702,9 @@ pub fn run(
                 tokio::spawn(run_settings_sync(app_for_sync));
 
                 // Initialize notebook sync if daemon is available
-                if daemon_available {
+                // Skip during onboarding - the onboarding window doesn't need notebook sync,
+                // it just needs daemon progress events
+                if daemon_available && !skip_notebook_sync {
                     match (
                         app_for_notebook_sync.get_webview_window("main"),
                         registry_for_notebook_sync.get("main"),
