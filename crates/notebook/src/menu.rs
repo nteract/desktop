@@ -1,4 +1,6 @@
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{
+    AboutMetadata, AboutMetadataBuilder, Menu, MenuItem, PredefinedMenuItem, Submenu,
+};
 use tauri::{AppHandle, Wry};
 
 pub struct BundledSampleNotebook {
@@ -28,6 +30,11 @@ pub const MENU_RESTART_AND_RUN_ALL: &str = "restart_and_run_all";
 
 // Menu item IDs for CLI installation
 pub const MENU_INSTALL_CLI: &str = "install_cli";
+pub const MENU_ABOUT_NTERACT: &str = "About nteract";
+pub const APP_NAME: &str = "nteract";
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const APP_COMMIT_SHA: &str = env!("GIT_COMMIT");
+pub const APP_RELEASE_DATE: &str = env!("GIT_COMMIT_DATE");
 
 pub const BUNDLED_SAMPLE_NOTEBOOKS: &[BundledSampleNotebook] = &[
     BundledSampleNotebook {
@@ -61,13 +68,28 @@ pub fn sample_for_menu_item_id(menu_id: &str) -> Option<&'static BundledSampleNo
         .find(|sample| sample.id == sample_id)
 }
 
+fn build_about_metadata() -> AboutMetadata<'static> {
+    AboutMetadataBuilder::new()
+        .name(Some(APP_NAME))
+        .version(Some(APP_VERSION))
+        .comments(Some(format!(
+            "Commit SHA: {APP_COMMIT_SHA}\nRelease Date: {APP_RELEASE_DATE}"
+        )))
+        .build()
+}
+
 /// Build the application menu bar
 pub fn create_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let menu = Menu::new(app)?;
+    let about_metadata = build_about_metadata();
 
     // App menu (macOS standard - shows app name)
-    let app_menu = Submenu::new(app, "nteract", true)?;
-    app_menu.append(&PredefinedMenuItem::about(app, Some("nteract"), None)?)?;
+    let app_menu = Submenu::new(app, APP_NAME, true)?;
+    app_menu.append(&PredefinedMenuItem::about(
+        app,
+        Some(MENU_ABOUT_NTERACT),
+        Some(about_metadata),
+    )?)?;
     app_menu.append(&PredefinedMenuItem::separator(app)?)?;
     app_menu.append(&MenuItem::with_id(
         app,
@@ -220,7 +242,10 @@ pub fn create_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{sample_for_menu_item_id, sample_menu_item_id, BUNDLED_SAMPLE_NOTEBOOKS};
+    use super::{
+        build_about_metadata, sample_for_menu_item_id, sample_menu_item_id, APP_COMMIT_SHA,
+        APP_NAME, APP_RELEASE_DATE, APP_VERSION, BUNDLED_SAMPLE_NOTEBOOKS, MENU_ABOUT_NTERACT,
+    };
     use std::collections::HashSet;
 
     #[test]
@@ -259,5 +284,29 @@ mod tests {
             nbformat::parse_notebook(sample.contents)
                 .unwrap_or_else(|e| panic!("{} should parse: {}", sample.file_name, e));
         }
+    }
+
+    #[test]
+    fn about_menu_label_is_explicit() {
+        assert_eq!(MENU_ABOUT_NTERACT, "About nteract");
+    }
+
+    #[test]
+    fn about_metadata_includes_required_release_fields() {
+        let metadata = build_about_metadata();
+        assert_eq!(metadata.name.as_deref(), Some(APP_NAME));
+        assert_eq!(metadata.version.as_deref(), Some(APP_VERSION));
+        let comments = metadata
+            .comments
+            .as_deref()
+            .expect("about metadata should include comments");
+        assert!(
+            comments.contains(APP_COMMIT_SHA),
+            "comments should include commit SHA"
+        );
+        assert!(
+            comments.contains(APP_RELEASE_DATE),
+            "comments should include release date"
+        );
     }
 }
