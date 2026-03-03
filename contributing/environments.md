@@ -57,7 +57,7 @@ This ensures the app works standalone without requiring users to install Python 
 ```mermaid
 graph TB
     subgraph Frontend ["Frontend (TypeScript)"]
-        UK[useKernel.ts]
+        UK[useDaemonKernel.ts]
         UD[useDependencies.ts]
         UCD[useCondaDependencies.ts]
         DH[DependencyHeader.tsx]
@@ -228,7 +228,7 @@ graph TB
 
 ```mermaid
 sequenceDiagram
-    participant FE as Frontend<br/>useKernel.ts
+    participant FE as Frontend<br/>useDaemonKernel.ts
     participant TC as Tauri Backend<br/>lib.rs
     participant PF as Project File<br/>Detection
     participant EP as env_pool.rs
@@ -388,7 +388,7 @@ graph TB
 
 The diagrams show three main layers and a separate daemon process:
 
-1. **Frontend** (blue) — React hooks that invoke Tauri commands and listen for `kernel:lifecycle` events. `useKernel.ts` handles inline deps and Deno detection locally, then defers to the backend for project file detection via `startDefaultKernel()`.
+1. **Frontend** (blue) — React hooks that invoke Tauri commands and listen for daemon broadcasts. `useDaemonKernel.ts` handles kernel status, execution queue, and environment sync state, while `App.tsx` orchestrates launch logic.
 
 2. **Tauri Backend** (orange) — `start_default_python_kernel_impl` runs the detection priority chain: inline deps first, then closest project file, then prewarmed pool. Each path delegates to a kernel start method.
 
@@ -566,10 +566,12 @@ Two parallel UI components manage dependencies:
 | `DependencyHeader.tsx` | `useDependencies.ts` | UV deps, pyproject.toml detection |
 | `CondaDependencyHeader.tsx` | `useCondaDependencies.ts` | Conda deps, environment.yml and pixi.toml detection |
 
-The kernel lifecycle is managed by `useKernel.ts`, which:
-- Listens for `kernel:lifecycle` events from the backend
-- Captures the `env_source` string (e.g. `"uv:pyproject"`, `"conda:pixi"`)
-- Runs auto-launch detection on notebook open
+The kernel lifecycle is managed by `useDaemonKernel.ts`, which:
+- Listens for daemon broadcasts (`kernel_status`, `execution_*`, `env_sync_state`, etc.)
+- Tracks kernel status and execution queue
+- Provides `launchKernel()`, `executeCell()`, `syncEnvironment()` methods
+
+Launch orchestration lives in `App.tsx`, which handles trust verification and auto-launch.
 
 ## Testing
 
@@ -625,7 +627,7 @@ The kernel lifecycle is managed by `useKernel.ts`, which:
 
 | File | Role |
 |------|------|
-| `apps/notebook/src/hooks/useKernel.ts` | Frontend kernel lifecycle and auto-launch |
+| `apps/notebook/src/hooks/useDaemonKernel.ts` | Daemon-owned kernel execution, status broadcasts, environment sync |
 | `apps/notebook/src/hooks/useDependencies.ts` | Frontend UV dep management |
 | `apps/notebook/src/hooks/useCondaDependencies.ts` | Frontend conda dep management |
 | `apps/notebook/src/components/DependencyHeader.tsx` | UV dependency UI panel |
