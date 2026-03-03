@@ -3676,6 +3676,7 @@ pub fn run(
                 // Also stores status for later queries (handles race conditions)
                 let app_for_progress = app_for_daemon.clone();
                 let on_progress = move |progress: runtimed::client::DaemonProgress| {
+                    log::info!("[daemon:progress] Emitting event: {:?}", progress);
                     // Store for later queries
                     if let Ok(mut guard) = daemon_status_for_callback.lock() {
                         *guard = Some(progress.clone());
