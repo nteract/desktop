@@ -1247,7 +1247,7 @@ async fn save_notebook_as(
         nb.path = Some(save_path);
         nb.dirty = false;
     }
-    refresh_native_menu(&window.app_handle(), registry.inner());
+    refresh_native_menu(window.app_handle(), registry.inner());
 
     // Reconnect to the daemon with the new path-based room ID.
     // This ensures realtime sync uses the correct file path as the room identifier.
