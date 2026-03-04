@@ -421,22 +421,27 @@ impl AsyncSession {
         let cell_id = cell_id.to_string();
 
         future_into_py(py, async move {
-            let state_guard = state.lock().await;
-            let handle = state_guard
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
+            // Get snapshot and blob config while holding lock
+            let (snapshot, blob_base_url, blob_store_path) = {
+                let state_guard = state.lock().await;
+                let handle = state_guard
+                    .handle
+                    .as_ref()
+                    .ok_or_else(|| to_py_err("Not connected"))?;
 
-            let blob_base_url = state_guard.blob_base_url.clone();
-            let blob_store_path = state_guard.blob_store_path.clone();
+                let blob_base_url = state_guard.blob_base_url.clone();
+                let blob_store_path = state_guard.blob_store_path.clone();
 
-            let cells = handle.get_cells().await.map_err(to_py_err)?;
-            let snapshot = cells
-                .into_iter()
-                .find(|c| c.id == cell_id)
-                .ok_or_else(|| to_py_err(format!("Cell not found: {}", cell_id)))?;
+                let cells = handle.get_cells().await.map_err(to_py_err)?;
+                let snapshot = cells
+                    .into_iter()
+                    .find(|c| c.id == cell_id)
+                    .ok_or_else(|| to_py_err(format!("Cell not found: {}", cell_id)))?;
 
-            // Resolve outputs from automerge document
+                (snapshot, blob_base_url, blob_store_path)
+            }; // Lock released here
+
+            // Resolve outputs outside the lock
             let outputs = output_resolver::resolve_cell_outputs(
                 &snapshot.outputs,
                 &blob_base_url,
@@ -455,18 +460,22 @@ impl AsyncSession {
         let state = Arc::clone(&self.state);
 
         future_into_py(py, async move {
-            let state_guard = state.lock().await;
-            let handle = state_guard
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
+            // Get snapshots and blob config while holding lock
+            let (snapshots, blob_base_url, blob_store_path) = {
+                let state_guard = state.lock().await;
+                let handle = state_guard
+                    .handle
+                    .as_ref()
+                    .ok_or_else(|| to_py_err("Not connected"))?;
 
-            let blob_base_url = state_guard.blob_base_url.clone();
-            let blob_store_path = state_guard.blob_store_path.clone();
+                let blob_base_url = state_guard.blob_base_url.clone();
+                let blob_store_path = state_guard.blob_store_path.clone();
 
-            let snapshots = handle.get_cells().await.map_err(to_py_err)?;
+                let snapshots = handle.get_cells().await.map_err(to_py_err)?;
+                (snapshots, blob_base_url, blob_store_path)
+            }; // Lock released here
 
-            // Resolve outputs for all cells
+            // Resolve outputs for all cells outside the lock
             let mut cells = Vec::with_capacity(snapshots.len());
             for snapshot in snapshots {
                 let outputs = output_resolver::resolve_cell_outputs(

@@ -43,7 +43,7 @@ pub async fn resolve_output_string(
             let blob_path = store_path.join(prefix).join(rest);
             log::debug!("[output_resolver] Trying blob path: {:?}", blob_path);
 
-            if let Ok(contents) = std::fs::read_to_string(&blob_path) {
+            if let Ok(contents) = tokio::fs::read_to_string(&blob_path).await {
                 log::debug!(
                     "[output_resolver] Read blob file, contents len: {}",
                     contents.len()
@@ -87,12 +87,18 @@ pub async fn resolve_output_string(
         }
     }
 
-    // Unable to resolve
+    // Unable to resolve - return a fallback error output to preserve visibility
     log::debug!(
         "[output_resolver] Failed to resolve output string: {}",
         &output_str[..output_str.len().min(100)]
     );
-    None
+    Some(Output::stream(
+        "stderr",
+        &format!(
+            "Failed to resolve output: {}",
+            &output_str[..output_str.len().min(64)]
+        ),
+    ))
 }
 
 /// Resolve an output with a known output_type.
@@ -120,7 +126,7 @@ pub async fn resolve_output_with_type(
             let blob_path = store_path.join(prefix).join(rest);
             log::debug!("[output_resolver] Trying blob path: {:?}", blob_path);
 
-            if let Ok(contents) = std::fs::read_to_string(&blob_path) {
+            if let Ok(contents) = tokio::fs::read_to_string(&blob_path).await {
                 log::debug!(
                     "[output_resolver] Read blob file, contents len: {}",
                     contents.len()
@@ -301,7 +307,7 @@ pub async fn resolve_content_ref(
                 let rest = &blob_hash[2..];
                 let blob_path = store_path.join(prefix).join(rest);
 
-                if let Ok(contents) = std::fs::read_to_string(&blob_path) {
+                if let Ok(contents) = tokio::fs::read_to_string(&blob_path).await {
                     return Some(contents);
                 }
             }
