@@ -206,7 +206,10 @@ impl ServiceManager {
             std::fs::set_permissions(&self.config.binary_path, perms)?;
         }
 
-        // Service config already exists, just restart.
+        // Recreate service config to apply any template changes (e.g., new env vars)
+        self.create_service_config()?;
+        info!("[service] Updated service config");
+
         self.start()?;
 
         info!("[service] Upgrade completed successfully");
@@ -673,5 +676,48 @@ mod tests {
         let manager = ServiceManager::default();
         // Just verify it doesn't panic
         let _ = manager.is_installed();
+    }
+
+    /// Verify the macOS plist template includes HOME env var (prevents startup failures)
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_plist_template_contains_home_env() {
+        // Verify that dirs::home_dir() returns Some (prerequisite for the template)
+        assert!(
+            dirs::home_dir().is_some(),
+            "HOME must be available for plist generation"
+        );
+
+        // Check the actual plist file if it exists (from a previous install)
+        let plist_path = plist_path();
+        if plist_path.exists() {
+            let content = std::fs::read_to_string(&plist_path).unwrap();
+            assert!(
+                content.contains("<key>HOME</key>"),
+                "Installed plist should contain HOME env var. \
+                 If this fails, run 'runt daemon doctor --fix' to update the plist."
+            );
+        }
+    }
+
+    /// Verify the Linux systemd template includes HOME env var
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_systemd_template_contains_home_env() {
+        // Verify that dirs::home_dir() returns Some (prerequisite for the template)
+        assert!(
+            dirs::home_dir().is_some(),
+            "HOME must be available for systemd service generation"
+        );
+
+        // Check the actual service file if it exists
+        let service_path = systemd_service_path();
+        if service_path.exists() {
+            let content = std::fs::read_to_string(&service_path).unwrap();
+            assert!(
+                content.contains("Environment=HOME="),
+                "Installed systemd service should contain HOME env var"
+            );
+        }
     }
 }
