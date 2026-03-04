@@ -308,7 +308,13 @@ jobs:
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
 
       - name: Generate Icons
-        run: cargo xtask icons
+        run: |
+          CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
+          ICON_SOURCE="crates/notebook/icons/source.png"
+          if [ "$CHANNEL" = "nightly" ] && [ -f "crates/notebook/icons/source-nightly.png" ]; then
+            ICON_SOURCE="crates/notebook/icons/source-nightly.png"
+          fi
+          cargo xtask icons "$ICON_SOURCE"
 
       - name: Build external binaries
         run: |
@@ -459,7 +465,14 @@ jobs:
           Set-Content crates/runt/Cargo.toml $runtCargo
 
       - name: Generate Icons
-        run: cargo xtask icons
+        shell: pwsh
+        run: |
+          $channel = "${{ env.RUNT_BUILD_CHANNEL }}".ToLowerInvariant()
+          $iconSource = "crates/notebook/icons/source.png"
+          if ($channel -eq "nightly" -and (Test-Path "crates/notebook/icons/source-nightly.png")) {
+            $iconSource = "crates/notebook/icons/source-nightly.png"
+          }
+          cargo xtask icons $iconSource
 
       - name: Build external binaries
         shell: bash
@@ -593,7 +606,13 @@ jobs:
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
 
       - name: Generate Icons
-        run: cargo xtask icons
+        run: |
+          CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
+          ICON_SOURCE="crates/notebook/icons/source.png"
+          if [ "$CHANNEL" = "nightly" ] && [ -f "crates/notebook/icons/source-nightly.png" ]; then
+            ICON_SOURCE="crates/notebook/icons/source-nightly.png"
+          fi
+          cargo xtask icons "$ICON_SOURCE"
 
       - name: Build external binaries
         run: |
