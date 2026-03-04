@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use tauri::menu::{
     AboutMetadata, AboutMetadataBuilder, Menu, MenuItem, PredefinedMenuItem, Submenu,
 };
-use tauri::{AppHandle, Wry};
+use tauri::{AppHandle, Manager, Wry};
 
 pub struct BundledSampleNotebook {
     pub id: &'static str,
@@ -18,6 +19,7 @@ pub const MENU_OPEN: &str = "open";
 pub const MENU_OPEN_SAMPLE_PREFIX: &str = "open_sample:";
 pub const MENU_SAVE: &str = "save";
 pub const MENU_CLONE_NOTEBOOK: &str = "clone_notebook";
+pub const MENU_WINDOW_FOCUS_PREFIX: &str = "focus_window:";
 
 // Menu item IDs for zoom
 pub const MENU_ZOOM_IN: &str = "zoom_in";
@@ -68,6 +70,14 @@ pub fn sample_for_menu_item_id(menu_id: &str) -> Option<&'static BundledSampleNo
         .find(|sample| sample.id == sample_id)
 }
 
+pub fn window_menu_item_id(window_label: &str) -> String {
+    format!("{MENU_WINDOW_FOCUS_PREFIX}{window_label}")
+}
+
+pub fn window_label_for_menu_item_id(menu_id: &str) -> Option<&str> {
+    menu_id.strip_prefix(MENU_WINDOW_FOCUS_PREFIX)
+}
+
 fn build_about_metadata() -> AboutMetadata<'static> {
     AboutMetadataBuilder::new()
         .name(Some(APP_NAME))
@@ -79,7 +89,10 @@ fn build_about_metadata() -> AboutMetadata<'static> {
 }
 
 /// Build the application menu bar
-pub fn create_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
+pub fn create_menu(
+    app: &AppHandle,
+    window_display_names: &HashMap<String, String>,
+) -> tauri::Result<Menu<Wry>> {
     let menu = Menu::new(app)?;
     let about_metadata = build_about_metadata();
 
@@ -235,6 +248,32 @@ pub fn create_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let window_menu = Submenu::new(app, "Window", true)?;
     window_menu.append(&PredefinedMenuItem::minimize(app, None)?)?;
     window_menu.append(&PredefinedMenuItem::close_window(app, None)?)?;
+    let mut window_entries: Vec<_> = app
+        .webview_windows()
+        .into_keys()
+        .map(|window_label| {
+            let display_name = window_display_names
+                .get(&window_label)
+                .cloned()
+                .unwrap_or_else(|| window_label.clone());
+            (window_label, display_name)
+        })
+        .collect();
+    window_entries.sort_by(|(label_a, title_a), (label_b, title_b)| {
+        title_a.cmp(title_b).then_with(|| label_a.cmp(label_b))
+    });
+    if !window_entries.is_empty() {
+        window_menu.append(&PredefinedMenuItem::separator(app)?)?;
+        for (window_label, display_name) in window_entries {
+            window_menu.append(&MenuItem::with_id(
+                app,
+                window_menu_item_id(&window_label),
+                display_name,
+                true,
+                None::<&str>,
+            )?)?;
+        }
+    }
     menu.append(&window_menu)?;
 
     Ok(menu)
@@ -243,8 +282,9 @@ pub fn create_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_about_metadata, sample_for_menu_item_id, sample_menu_item_id, APP_COMMIT_SHA,
-        APP_NAME, APP_RELEASE_DATE, APP_VERSION, BUNDLED_SAMPLE_NOTEBOOKS, MENU_ABOUT_NTERACT,
+        build_about_metadata, sample_for_menu_item_id, sample_menu_item_id,
+        window_label_for_menu_item_id, window_menu_item_id, APP_COMMIT_SHA, APP_NAME,
+        APP_RELEASE_DATE, APP_VERSION, BUNDLED_SAMPLE_NOTEBOOKS, MENU_ABOUT_NTERACT,
     };
     use std::collections::HashSet;
 
@@ -276,6 +316,16 @@ mod tests {
             let resolved = sample_for_menu_item_id(&menu_id).expect("sample should resolve");
             assert_eq!(resolved.id, sample.id);
         }
+    }
+
+    #[test]
+    fn window_menu_ids_round_trip() {
+        for label in ["main", "onboarding", "notebook-123"] {
+            let menu_id = window_menu_item_id(label);
+            let resolved = window_label_for_menu_item_id(&menu_id).expect("window should resolve");
+            assert_eq!(resolved, label);
+        }
+        assert!(window_label_for_menu_item_id("new_notebook").is_none());
     }
 
     #[test]

@@ -1258,6 +1258,7 @@ async fn save_notebook_as(
         nb.path = Some(save_path);
         nb.dirty = false;
     }
+    refresh_native_menu(window.app_handle(), registry.inner());
 
     // Reconnect to the daemon with the new path-based room ID.
     // This ensures realtime sync uses the correct file path as the room identifier.
@@ -1425,6 +1426,8 @@ fn create_notebook_window_with_label(
             warn!("[startup] Notebook sync initialization failed: {}", e);
         }
     });
+
+    refresh_native_menu(app, registry);
 
     Ok(label)
 }
@@ -3141,6 +3144,56 @@ fn focused_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
         .find(|window| window.is_focused().ok() == Some(true))
 }
 
+fn window_menu_display_name(
+    app: &tauri::AppHandle,
+    registry: &WindowNotebookRegistry,
+    window_label: &str,
+) -> String {
+    if let Ok(context) = registry.get(window_label) {
+        if let Ok(state) = context.notebook_state.lock() {
+            return state
+                .path
+                .as_ref()
+                .and_then(|path| path.file_name())
+                .and_then(|name| name.to_str())
+                .unwrap_or("Untitled.ipynb")
+                .to_string();
+        }
+    }
+
+    app.get_webview_window(window_label)
+        .and_then(|window| window.title().ok())
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| window_label.to_string())
+}
+
+fn window_menu_display_names(
+    app: &tauri::AppHandle,
+    registry: &WindowNotebookRegistry,
+) -> HashMap<String, String> {
+    app.webview_windows()
+        .into_keys()
+        .map(|window_label| {
+            let display_name = window_menu_display_name(app, registry, &window_label);
+            (window_label, display_name)
+        })
+        .collect()
+}
+
+fn refresh_native_menu(app: &tauri::AppHandle, registry: &WindowNotebookRegistry) {
+    let window_display_names = window_menu_display_names(app, registry);
+    match crate::menu::create_menu(app, &window_display_names) {
+        Ok(menu) => {
+            if let Err(error) = app.set_menu(menu) {
+                warn!("[menu] Failed to update native menu: {}", error);
+            }
+        }
+        Err(error) => {
+            warn!("[menu] Failed to rebuild native menu: {}", error);
+        }
+    }
+}
+
 /// Create a new notebook window with the specified runtime.
 fn spawn_new_notebook(
     app: &tauri::AppHandle,
@@ -3577,6 +3630,10 @@ pub fn run(
                 // Normal startup - just set the title on the main window
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_title(&window_title);
+                    refresh_native_menu(
+                        app.handle(),
+                        app.state::<WindowNotebookRegistry>().inner(),
+                    );
                 }
             }
 
@@ -3599,7 +3656,9 @@ pub fn run(
             }
 
             // Set up native menu bar
-            let menu = crate::menu::create_menu(app.handle())?;
+            let window_display_names =
+                window_menu_display_names(app.handle(), app.state::<WindowNotebookRegistry>().inner());
+            let menu = crate::menu::create_menu(app.handle(), &window_display_names)?;
             app.set_menu(menu)?;
 
             // Restore additional windows from session (main window already restored above)
@@ -3805,6 +3864,19 @@ pub fn run(
         })
         .on_menu_event(|app, event| {
             let menu_id = event.id().as_ref();
+            if let Some(window_label) = crate::menu::window_label_for_menu_item_id(menu_id) {
+                if let Some(window) = app.get_webview_window(window_label) {
+                    if let Err(error) = window.set_focus() {
+                        warn!(
+                            "[menu] Failed to focus selected window '{}': {}",
+                            window_label, error
+                        );
+                    }
+                } else {
+                    warn!("[menu] Selected window '{}' is no longer available", window_label);
+                }
+                return;
+            }
             let registry = app.state::<WindowNotebookRegistry>();
             match menu_id {
                 crate::menu::MENU_NEW_NOTEBOOK => {
@@ -3953,6 +4025,7 @@ pub fn run(
                     }
                 }
             }
+            refresh_native_menu(app_handle, &registry_for_window_close);
         }
 
         // Save session state when app is about to exit
@@ -4009,6 +4082,7 @@ pub fn run(
                                     .and_then(|n| n.to_str())
                                     .unwrap_or("Untitled.ipynb");
                                 let _ = window.set_title(title);
+                                refresh_native_menu(app_handle, &registry_for_open);
                                 let _ = emit_to_label::<_, _, _>(
                                     &window,
                                     window.label(),
