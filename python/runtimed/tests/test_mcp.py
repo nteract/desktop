@@ -9,19 +9,10 @@ class TestMcpServerImports:
 
     def test_import_mcp_server(self):
         """Verify the MCP server module can be imported."""
-        # This will fail if mcp isn't installed, which is expected
-        # for the base package without the [mcp] extra
-        try:
-            from runtimed import _mcp_server
+        from runtimed import _mcp_server
 
-            assert hasattr(_mcp_server, "mcp")
-            assert hasattr(_mcp_server, "main")
-        except ImportError as e:
-            if "mcp" in str(e):
-                pytest.skip(
-                    "mcp package not installed (install with: pip install runtimed[mcp])"
-                )
-            raise
+        assert hasattr(_mcp_server, "mcp")
+        assert hasattr(_mcp_server, "main")
 
 
 class TestHelperFunctions:
@@ -65,15 +56,12 @@ class TestMcpServerIntegration:
     @pytest.mark.asyncio
     async def test_connect_and_run_code(self, daemon_running):
         """Test connecting and running code via MCP tools."""
-        try:
-            from runtimed._mcp_server import (
-                connect_notebook,
-                start_kernel,
-                run_code,
-                disconnect_notebook,
-            )
-        except ImportError:
-            pytest.skip("mcp package not installed")
+        from runtimed._mcp_server import (
+            connect_notebook,
+            start_kernel,
+            run_code,
+            disconnect_notebook,
+        )
 
         # Connect
         result = await connect_notebook()
@@ -87,7 +75,16 @@ class TestMcpServerIntegration:
             # Run some code
             result = await run_code("x = 42\nprint(x)")
             assert result["success"] is True
-            assert "42" in result["stdout"]
+            # Output comes through the outputs list
+            assert len(result["outputs"]) > 0
+            # Find the stream output with stdout
+            stdout_output = None
+            for output in result["outputs"]:
+                if output.get("output_type") == "stream" and output.get("name") == "stdout":
+                    stdout_output = output
+                    break
+            assert stdout_output is not None, f"No stdout output found in {result['outputs']}"
+            assert "42" in stdout_output.get("text", ""), f"Expected '42' in output: {stdout_output}"
         finally:
             # Disconnect
             await disconnect_notebook()
@@ -95,18 +92,15 @@ class TestMcpServerIntegration:
     @pytest.mark.asyncio
     async def test_create_and_execute_cell(self, daemon_running):
         """Test creating and executing a cell."""
-        try:
-            from runtimed._mcp_server import (
-                connect_notebook,
-                start_kernel,
-                create_cell,
-                execute_cell,
-                get_cell,
-                delete_cell,
-                disconnect_notebook,
-            )
-        except ImportError:
-            pytest.skip("mcp package not installed")
+        from runtimed._mcp_server import (
+            connect_notebook,
+            start_kernel,
+            create_cell,
+            execute_cell,
+            get_cell,
+            delete_cell,
+            disconnect_notebook,
+        )
 
         # Connect
         await connect_notebook()
@@ -128,7 +122,16 @@ class TestMcpServerIntegration:
             # Execute it
             result = await execute_cell(cell_id)
             assert result["success"] is True
-            assert "hello from MCP" in result["stdout"]
+            # Output comes through the outputs list
+            assert len(result["outputs"]) > 0
+            # Find the stream output with stdout
+            stdout_output = None
+            for output in result["outputs"]:
+                if output.get("output_type") == "stream" and output.get("name") == "stdout":
+                    stdout_output = output
+                    break
+            assert stdout_output is not None, f"No stdout output found in {result['outputs']}"
+            assert "hello from MCP" in stdout_output.get("text", ""), f"Expected 'hello from MCP' in output: {stdout_output}"
 
             # Clean up
             await delete_cell(cell_id)
@@ -138,10 +141,7 @@ class TestMcpServerIntegration:
     @pytest.mark.asyncio
     async def test_list_notebooks(self, daemon_running):
         """Test listing notebook rooms."""
-        try:
-            from runtimed._mcp_server import list_notebooks
-        except ImportError:
-            pytest.skip("mcp package not installed")
+        from runtimed._mcp_server import list_notebooks
 
         rooms = await list_notebooks()
         assert isinstance(rooms, list)
@@ -165,10 +165,7 @@ class TestMcpResources:
     @pytest.mark.asyncio
     async def test_resource_status_no_session(self, daemon_running):
         """Test status resource without active session."""
-        try:
-            from runtimed._mcp_server import resource_status
-        except ImportError:
-            pytest.skip("mcp package not installed")
+        from runtimed._mcp_server import resource_status
 
         result = await resource_status()
         data = json.loads(result)
@@ -177,10 +174,7 @@ class TestMcpResources:
     @pytest.mark.asyncio
     async def test_resource_rooms(self, daemon_running):
         """Test rooms resource."""
-        try:
-            from runtimed._mcp_server import resource_rooms
-        except ImportError:
-            pytest.skip("mcp package not installed")
+        from runtimed._mcp_server import resource_rooms
 
         result = await resource_rooms()
         data = json.loads(result)

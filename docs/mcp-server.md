@@ -4,16 +4,24 @@ The `runtimed` package includes an MCP (Model Context Protocol) server that enab
 
 ## Installation
 
-Install with the MCP extra:
+Install runtimed (MCP support is included by default):
 
 ```bash
-pip install runtimed[mcp]
+pip install runtimed
 ```
 
 Or with uv:
 
 ```bash
-uv pip install "runtimed[mcp]"
+uv pip install runtimed
+```
+
+**Note:** While runtimed is in pre-release, you may need to allow pre-releases:
+
+```bash
+pip install --pre runtimed
+# or
+uv pip install --prerelease=allow runtimed
 ```
 
 ## Running the Server
@@ -30,19 +38,27 @@ python -m runtimed._mcp_server
 
 ## Claude Code Configuration
 
-Add to your Claude Code MCP configuration:
+Add the MCP server using the Claude CLI:
+
+```bash
+# Using uvx (recommended for pre-release)
+claude mcp add --scope user runtimed-mcp -- uvx --prerelease=allow runtimed-mcp
+```
+
+Or add to your Claude Code MCP configuration manually:
 
 ```json
 {
   "mcpServers": {
     "runtimed-mcp": {
-      "command": "runtimed-mcp"
+      "command": "uvx",
+      "args": ["--prerelease=allow", "runtimed-mcp"]
     }
   }
 }
 ```
 
-Or if using uv in a development environment:
+For development with local source:
 
 ```json
 {

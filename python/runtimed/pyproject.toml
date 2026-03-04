@@ -8,12 +8,14 @@ authors = [
     { name = "Kyle Kelley", email = "rgbkrk@gmail.com" }
 ]
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "mcp>=1.26.0",
+    "httpx>=0.27.0,<1.0",  # Pin to stable, avoid 1.0 dev releases
+]
 
 [project.optional-dependencies]
 kernel = ["ipykernel>=6.0"]
 bridge = ["pyzmq>=25.0"]
-mcp = ["mcp>=1.26.0"]
 
 [project.scripts]
 runtimed-mcp = "runtimed._mcp_server:main"
