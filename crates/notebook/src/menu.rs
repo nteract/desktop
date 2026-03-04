@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use tauri::menu::{
     AboutMetadata, AboutMetadataBuilder, Menu, MenuItem, PredefinedMenuItem, Submenu,
 };
@@ -88,7 +89,10 @@ fn build_about_metadata() -> AboutMetadata<'static> {
 }
 
 /// Build the application menu bar
-pub fn create_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
+pub fn create_menu(
+    app: &AppHandle,
+    window_display_names: &HashMap<String, String>,
+) -> tauri::Result<Menu<Wry>> {
     let menu = Menu::new(app)?;
     let about_metadata = build_about_metadata();
 
@@ -244,15 +248,27 @@ pub fn create_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let window_menu = Submenu::new(app, "Window", true)?;
     window_menu.append(&PredefinedMenuItem::minimize(app, None)?)?;
     window_menu.append(&PredefinedMenuItem::close_window(app, None)?)?;
-    let mut window_labels: Vec<_> = app.webview_windows().into_keys().collect();
-    window_labels.sort();
-    if !window_labels.is_empty() {
+    let mut window_entries: Vec<_> = app
+        .webview_windows()
+        .into_keys()
+        .map(|window_label| {
+            let display_name = window_display_names
+                .get(&window_label)
+                .cloned()
+                .unwrap_or_else(|| window_label.clone());
+            (window_label, display_name)
+        })
+        .collect();
+    window_entries.sort_by(|(label_a, title_a), (label_b, title_b)| {
+        title_a.cmp(title_b).then_with(|| label_a.cmp(label_b))
+    });
+    if !window_entries.is_empty() {
         window_menu.append(&PredefinedMenuItem::separator(app)?)?;
-        for window_label in window_labels {
+        for (window_label, display_name) in window_entries {
             window_menu.append(&MenuItem::with_id(
                 app,
                 window_menu_item_id(&window_label),
-                window_label,
+                display_name,
                 true,
                 None::<&str>,
             )?)?;
