@@ -522,11 +522,17 @@ impl RoomKernel {
 
         // Determine working directory
         let cwd = if let Some(path) = notebook_path {
-            path.parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(std::env::temp_dir)
+            if path.is_dir() {
+                // For untitled notebooks, working_dir is already a directory
+                path.to_path_buf()
+            } else {
+                // For saved notebooks, get parent directory of the file
+                path.parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(std::env::temp_dir)
+            }
         } else {
-            // For untitled notebooks, use default notebooks directory to avoid macOS permission prompts
+            // No path at all - use default notebooks directory to avoid macOS permission prompts
             // (using $HOME triggers "allow access to Music/Documents/etc" popups)
             // In dev mode, this will be {workspace}/notebooks instead of ~/notebooks
             runt_workspace::default_notebooks_dir().unwrap_or_else(|_| std::env::temp_dir())
