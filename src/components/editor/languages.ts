@@ -4,6 +4,7 @@ import { json } from "@codemirror/lang-json";
 import { markdown } from "@codemirror/lang-markdown";
 import { python } from "@codemirror/lang-python";
 import { sql } from "@codemirror/lang-sql";
+import { indentUnit } from "@codemirror/language";
 import type { Extension } from "@codemirror/state";
 
 /**
@@ -25,7 +26,7 @@ export type SupportedLanguage =
 export function getLanguageExtension(language: SupportedLanguage): Extension {
   switch (language) {
     case "python":
-      return python();
+      return [python(), indentUnit.of("    ")];
     case "markdown":
       return markdown();
     case "sql":
