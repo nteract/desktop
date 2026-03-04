@@ -194,6 +194,88 @@ cargo run -p runt-cli -- ps                   # List all kernels (connection-fil
 cargo run -p runt-cli -- notebooks            # List open notebooks with kernel info
 ```
 
+## Python Bindings (runtimed-py)
+
+The `runtimed-py` crate provides Python bindings for interacting with the daemon programmatically. This is used by the nteract MCP server and can be used for testing.
+
+### Installation
+
+```bash
+cd crates/runtimed-py
+maturin develop
+```
+
+### Basic Usage
+
+```python
+import runtimed
+
+session = runtimed.Session()
+session.connect()
+session.start_kernel()
+
+result = session.run("print('hello')")
+print(result.stdout)  # "hello\n"
+print(result.outputs)  # [Output(stream, stdout: "hello\n")]
+
+# Get cell with outputs (includes historical outputs from other clients)
+cell = session.get_cell(result.cell_id)
+print(cell.outputs)  # [Output(stream, stdout: "hello\n")]
+```
+
+### Socket Path Configuration
+
+The Python bindings respect the `RUNTIMED_SOCKET_PATH` environment variable. This is important when testing with worktree daemons in Conductor workspaces.
+
+**System daemon (default):**
+```python
+# Connects to system daemon at ~/Library/Caches/runt/runtimed.sock
+session = runtimed.Session()
+session.connect()
+```
+
+**Worktree daemon (for development):**
+```bash
+# Find your worktree daemon socket
+cat ~/Library/Caches/runt/worktrees/*/daemon.json | grep -A1 worktree_path
+
+# Set the socket path before running Python
+export RUNTIMED_SOCKET_PATH="/Users/you/Library/Caches/runt/worktrees/{hash}/runtimed.sock"
+python your_script.py
+```
+
+**In Conductor workspaces**, the daemon socket path varies by worktree. To test against a specific worktree daemon:
+
+```bash
+# Start the dev daemon (Terminal 1)
+cargo xtask dev-daemon
+
+# Find and export the socket path (Terminal 2)
+export RUNTIMED_SOCKET_PATH=$(cat ~/Library/Caches/runt/worktrees/*/daemon.json | \
+  jq -r 'select(.worktree_path == "'$(pwd)'") | .endpoint')
+
+# Now Python bindings will use the worktree daemon
+python -c "import runtimed; s = runtimed.Session(); s.connect(); print('Connected!')"
+```
+
+### Cross-Session Output Visibility
+
+The `Cell.outputs` field is populated from the Automerge document, enabling agents to see outputs from cells executed by other clients:
+
+```python
+# Session 1 executes code
+s1 = runtimed.Session(notebook_id="shared")
+s1.connect()
+s1.start_kernel()
+s1.run("x = 42")
+
+# Session 2 sees outputs without executing
+s2 = runtimed.Session(notebook_id="shared")
+s2.connect()
+cells = s2.get_cells()
+print(cells[0].outputs)  # Shows outputs from s1's execution
+```
+
 ## Troubleshooting
 
 ### Daemon won't start (lock held)
@@ -215,6 +297,29 @@ Check that uv/conda are installed and working:
 uv --version
 ls -la ~/.cache/runt/envs/
 ```
+
+### Python bindings: "Failed to parse output" errors
+
+If `session.run()` returns outputs like `Output(stream, stderr: "Failed to parse output: <hash>")`, the bindings are connecting to the wrong daemon (one without access to the blob store).
+
+**Cause:** The blob store is per-daemon. When running from a Conductor workspace, you might be connecting to the system daemon while the blobs are stored in a worktree daemon's directory.
+
+**Fix:** Set `RUNTIMED_SOCKET_PATH` to the correct daemon socket:
+
+```bash
+# Find your worktree daemon
+cat ~/Library/Caches/runt/worktrees/*/daemon.json | jq -r '.worktree_path + " -> " + .endpoint'
+
+# Export the matching socket path
+export RUNTIMED_SOCKET_PATH="/Users/you/Library/Caches/runt/worktrees/{hash}/runtimed.sock"
+```
+
+### Python bindings: get_cell() returns empty outputs
+
+If `session.run()` shows outputs but `session.get_cell()` returns `outputs=[]`:
+
+1. **Check socket path** (see above) — the daemon needs access to the blob store
+2. **Timing issue** — outputs may not be written to Automerge yet. Try a small delay or re-fetch.
 
 ## Shipped App Behavior
 
