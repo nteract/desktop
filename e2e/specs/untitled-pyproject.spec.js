@@ -19,9 +19,7 @@ import {
   waitForKernelReady,
 } from "../helpers.js";
 
-// FIXME: pyproject.toml deps not being installed - pandas import fails
-// See: https://github.com/nteract/desktop/pull/487
-describe.skip("Untitled Notebook with pyproject.toml", () => {
+describe("Untitled Notebook with pyproject.toml", () => {
   it("should auto-launch kernel with project deps", async () => {
     // Wait for kernel to auto-launch using pyproject deps (120s, includes uv sync)
     await waitForKernelReady(120000);

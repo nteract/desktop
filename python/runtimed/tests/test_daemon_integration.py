@@ -74,9 +74,9 @@ def _find_runtimed_binary():
     if "RUNTIMED_BINARY" in os.environ:
         return Path(os.environ["RUNTIMED_BINARY"])
 
-    # Use CONDUCTOR_WORKSPACE_PATH if available (preferred in CI and worktrees)
-    if "CONDUCTOR_WORKSPACE_PATH" in os.environ:
-        repo_root = Path(os.environ["CONDUCTOR_WORKSPACE_PATH"])
+    # Use RUNTIMED_WORKSPACE_PATH if available (preferred in CI and worktrees)
+    if "RUNTIMED_WORKSPACE_PATH" in os.environ:
+        repo_root = Path(os.environ["RUNTIMED_WORKSPACE_PATH"])
     else:
         # Fallback: walk up from this file (python/runtimed/tests/test_*.py)
         repo_root = Path(__file__).parent.parent.parent.parent.parent

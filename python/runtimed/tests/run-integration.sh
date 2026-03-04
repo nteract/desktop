@@ -50,7 +50,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Enable worktree isolation (same as e2e tests)
-export CONDUCTOR_WORKSPACE_PATH="$PROJECT_ROOT"
+export RUNTIMED_WORKSPACE_PATH="$PROJECT_ROOT"
 
 cd "$PYTHON_DIR"
 

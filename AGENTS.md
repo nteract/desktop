@@ -117,18 +117,19 @@ Use the proper commands instead:
 
 ### Agent Access to Dev Daemon (Conductor Workspaces)
 
-When working in a Conductor workspace, the following environment variables are set automatically:
+When working in a Conductor workspace developing nteract/desktop, the xtask commands translate Conductor's environment variables to runtimed-specific ones:
 
-| Variable | Purpose | Used By |
-|----------|---------|---------|
-| `CONDUCTOR_WORKSPACE_PATH` | Enables dev mode; daemon state isolated to `~/.cache/runt/worktrees/{hash}/` | `runtimed::is_dev_mode()`, `daemon_base_dir()` |
-| `CONDUCTOR_WORKSPACE_NAME` | Human-readable workspace name for display | `runtimed::get_workspace_name()` |
-| `CONDUCTOR_PORT` | Vite dev server port (avoids conflicts between workspaces) | `cargo xtask dev`, `cargo xtask vite` |
-| `CONDUCTOR_DEFAULT_BRANCH` | Target branch for PRs (usually `main`) | Agent workflows |
+| Conductor Variable | Translated To | Purpose |
+|-------------------|---------------|---------|
+| `CONDUCTOR_WORKSPACE_PATH` | `RUNTIMED_WORKSPACE_PATH` | Daemon state isolated to `~/.cache/runt/worktrees/{hash}/` |
+| `CONDUCTOR_WORKSPACE_NAME` | `RUNTIMED_WORKSPACE_NAME` | Human-readable workspace name for display |
+| `CONDUCTOR_PORT` | (used directly) | Vite dev server port (avoids conflicts between workspaces) |
+
+**Important:** The translation only happens when running `cargo xtask dev` or `cargo xtask dev-daemon`. This allows using Conductor for unrelated projects without interfering with the system daemon.
 
 **Interacting with the daemon:**
 
-Use `./target/debug/runt` to interact with the worktree daemon. This binary automatically connects to the correct daemon based on `CONDUCTOR_WORKSPACE_PATH`.
+Use `./target/debug/runt` to interact with the worktree daemon. When started via `cargo xtask dev-daemon`, the daemon receives `RUNTIMED_WORKSPACE_PATH` and uses per-worktree isolation.
 
 ```bash
 # Check daemon status and pool info
@@ -147,7 +148,7 @@ Use `./target/debug/runt` to interact with the worktree daemon. This binary auto
 ./target/debug/runt daemon flush
 ```
 
-**Why `./target/debug/runt`?** The debug binary is built for the current worktree and reads `CONDUCTOR_WORKSPACE_PATH` to connect to the correct daemon. A system-installed `runt` would connect to the system daemon instead.
+**Why `./target/debug/runt`?** The debug binary is built with `RUNTIMED_WORKSPACE_PATH` in its environment (via xtask), so it connects to the worktree daemon. A system-installed `runt` connects to the system daemon instead.
 
 **Where state lives in dev mode:**
 ```

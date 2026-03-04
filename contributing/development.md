@@ -132,7 +132,7 @@ cargo xtask build --rust-only && cargo xtask run  # Fast iteration
 
 The app detects dev mode and connects to the per-worktree daemon instead of installing/starting the system daemon.
 
-**Conductor users:** Dev mode is automatic when `CONDUCTOR_WORKSPACE_PATH` is set.
+**Conductor users:** When using `cargo xtask dev` or `cargo xtask dev-daemon`, the xtask commands automatically translate `CONDUCTOR_WORKSPACE_PATH` to `RUNTIMED_WORKSPACE_PATH`, enabling dev mode.
 
 **Non-Conductor users:** Set `RUNTIMED_DEV=1`:
 
@@ -147,9 +147,9 @@ RUNTIMED_DEV=1 cargo xtask dev
 **Useful commands:**
 
 ```bash
-runt daemon status           # Shows dev mode, worktree path, version
-runt daemon list-worktrees   # List all running dev daemons
-runt daemon logs -f          # Tail logs (uses correct log path in dev mode)
+./target/debug/runt daemon status           # Shows dev mode, worktree path, version
+./target/debug/runt daemon list-worktrees   # List all running dev daemons
+./target/debug/runt daemon logs -f          # Tail logs (uses correct log path in dev mode)
 ```
 
 Per-worktree state is stored in `~/.cache/runt/worktrees/{hash}/`.
@@ -163,7 +163,7 @@ When you need to test the full production flow (daemon auto-install, upgrades, e
 ```bash
 # Make sure dev mode is NOT set
 unset RUNTIMED_DEV
-unset CONDUCTOR_WORKSPACE_PATH
+unset RUNTIMED_WORKSPACE_PATH
 
 # Rebuild and reinstall system daemon
 cargo xtask install-daemon
