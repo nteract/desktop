@@ -30,7 +30,7 @@ impl DaemonClient {
     ///
     /// Connects to the daemon at the default socket path, which is
     /// automatically determined based on environment variables
-    /// (CONDUCTOR_WORKSPACE_PATH for dev mode).
+    /// (RUNTIMED_WORKSPACE_PATH for dev mode).
     #[new]
     fn new() -> PyResult<Self> {
         let runtime = Runtime::new().map_err(to_py_err)?;

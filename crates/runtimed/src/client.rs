@@ -359,7 +359,7 @@ pub async fn try_get_pooled_env(env_type: EnvType) -> Option<PooledEnv> {
 /// 5. Starts the service if not running
 /// 6. Waits for the daemon to be ready
 ///
-/// In development mode (RUNTIMED_DEV=1 or CONDUCTOR_WORKSPACE_PATH set):
+/// In development mode (RUNTIMED_DEV=1 or RUNTIMED_WORKSPACE_PATH set):
 /// - Skips service installation/upgrade
 /// - Only checks if the per-worktree daemon is running
 /// - Returns an error with guidance if not running

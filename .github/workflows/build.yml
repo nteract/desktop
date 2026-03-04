@@ -447,7 +447,7 @@ jobs:
       - name: Start E2E daemon
         run: |
           TARGET=$(ls target/release/binaries/ | grep runtimed | head -1)
-          CONDUCTOR_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
+          RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
             ./target/release/binaries/$TARGET --dev run \
             --uv-pool-size 2 --conda-pool-size 0 &
           echo "RUNTIMED_PID=$!" >> $GITHUB_ENV
@@ -482,7 +482,7 @@ jobs:
           exit ${FAIL:-0}
         env:
           TAURI_APP_PATH: ./target/release/notebook
-          CONDUCTOR_WORKSPACE_PATH: ${{ github.workspace }}
+          RUNTIMED_WORKSPACE_PATH: ${{ github.workspace }}
           NO_AT_BRIDGE: 1
           LIBGL_ALWAYS_SOFTWARE: 1
           RUST_LOG: info,notebook=debug,runtimed=debug
@@ -608,7 +608,7 @@ jobs:
 
             # Start daemon fresh for each test
             TARGET=$(ls target/release/binaries/ | grep runtimed | head -1)
-            CONDUCTOR_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
+            RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
               ./target/release/binaries/$TARGET --dev run \
               --uv-pool-size 2 --conda-pool-size 0 &
             DAEMON_PID=$!
@@ -644,7 +644,7 @@ jobs:
 
             # Start daemon with fixture directory as workspace path
             TARGET=$(ls target/release/binaries/ | grep runtimed | head -1)
-            CONDUCTOR_WORKSPACE_PATH="$fixture_dir" \
+            RUNTIMED_WORKSPACE_PATH="$fixture_dir" \
               ./target/release/binaries/$TARGET --dev run \
               --uv-pool-size 2 --conda-pool-size 0 &
             DAEMON_PID=$!
@@ -652,9 +652,9 @@ jobs:
 
             # Start tauri-driver from fixture directory so app inherits that CWD
             # Use absolute path for the app binary since we're changing directories
-            # Set CONDUCTOR_WORKSPACE_PATH so app connects to the daemon we just started
+            # Set RUNTIMED_WORKSPACE_PATH so app connects to the daemon we just started
             (cd "$fixture_dir" && \
-              CONDUCTOR_WORKSPACE_PATH="$fixture_dir" \
+              RUNTIMED_WORKSPACE_PATH="$fixture_dir" \
               TAURI_APP_PATH="${GITHUB_WORKSPACE}/target/release/notebook" \
               ~/.cargo/bin/tauri-driver --port 4444) &
             DRIVER_PID=$!
@@ -663,7 +663,7 @@ jobs:
             # Run test WITHOUT NOTEBOOK_PATH (untitled notebook)
             # Use absolute path for TAURI_APP_PATH since tauri-driver runs from fixture dir
             local exit_code=0
-            E2E_SPEC="$spec" CONDUCTOR_WORKSPACE_PATH="$fixture_dir" \
+            E2E_SPEC="$spec" RUNTIMED_WORKSPACE_PATH="$fixture_dir" \
               TAURI_APP_PATH="${GITHUB_WORKSPACE}/target/release/notebook" \
               pnpm test:e2e 2>&1 | tee -a e2e-logs/fixtures-output.log || exit_code=$?
 
@@ -696,7 +696,7 @@ jobs:
           exit $FAIL
         env:
           TAURI_APP_PATH: ./target/release/notebook
-          CONDUCTOR_WORKSPACE_PATH: ${{ github.workspace }}
+          RUNTIMED_WORKSPACE_PATH: ${{ github.workspace }}
           NO_AT_BRIDGE: 1
           LIBGL_ALWAYS_SOFTWARE: 1
           RUST_LOG: info,notebook=debug,runtimed=debug
@@ -770,7 +770,7 @@ jobs:
           export RUNTIMED_INTEGRATION_TEST=1
           export RUNTIMED_BINARY="${GITHUB_WORKSPACE}/target/release/runtimed"
           export RUNTIMED_LOG_LEVEL=debug
-          export CONDUCTOR_WORKSPACE_PATH="${GITHUB_WORKSPACE}"
+          export RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}"
 
           # Run tests (daemon is spawned by the test fixture)
           uv run pytest tests/test_daemon_integration.py -v --tb=short 2>&1 | tee integration-logs/test-output.log || FAIL=1

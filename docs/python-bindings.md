@@ -389,7 +389,7 @@ Common error scenarios:
 
 | Variable | Description |
 |----------|-------------|
-| `CONDUCTOR_WORKSPACE_PATH` | Use dev daemon for this worktree |
+| `RUNTIMED_WORKSPACE_PATH` | Use dev daemon for this worktree |
 | `RUNTIMED_SOCKET_PATH` | Override daemon socket path |
 
 ## Sidecar (Rich Output Viewer)

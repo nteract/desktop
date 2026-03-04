@@ -471,14 +471,22 @@ fn cmd_dev_daemon() {
     println!();
 
     // Run the daemon with --dev flag
-    let status = Command::new(binary)
-        .args(["--dev", "run"])
-        .env("RUNTIMED_DEV", "1") // Also set env var for consistency
-        .status()
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to run runtimed: {e}");
-            exit(1);
-        });
+    let mut cmd = Command::new(binary);
+    cmd.args(["--dev", "run"]);
+    cmd.env("RUNTIMED_DEV", "1");
+
+    // Translate Conductor → Runtimed for Conductor workspace users
+    if let Ok(path) = env::var("CONDUCTOR_WORKSPACE_PATH") {
+        cmd.env("RUNTIMED_WORKSPACE_PATH", &path);
+    }
+    if let Ok(name) = env::var("CONDUCTOR_WORKSPACE_NAME") {
+        cmd.env("RUNTIMED_WORKSPACE_NAME", &name);
+    }
+
+    let status = cmd.status().unwrap_or_else(|e| {
+        eprintln!("Failed to run runtimed: {e}");
+        exit(1);
+    });
 
     if !status.success() {
         exit(status.code().unwrap_or(1));
@@ -585,17 +593,25 @@ fn run_cmd(cmd: &str, args: &[&str]) {
 
 /// Run a command with RUST_LOG set to enable info-level logging.
 /// This is useful for dev mode to see Rust logs from the notebook app.
+/// Also translates CONDUCTOR_* env vars to RUNTIMED_* for Conductor workspace users.
 fn run_cmd_with_rust_log(cmd: &str, args: &[&str]) {
     // Use existing RUST_LOG if set, otherwise default to info
     let rust_log = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
-    let status = Command::new(cmd)
-        .args(args)
-        .env("RUST_LOG", &rust_log)
-        .status()
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to run {cmd}: {e}");
-            exit(1);
-        });
+    let mut command = Command::new(cmd);
+    command.args(args).env("RUST_LOG", &rust_log);
+
+    // Translate Conductor → Runtimed for Conductor workspace users
+    if let Ok(path) = env::var("CONDUCTOR_WORKSPACE_PATH") {
+        command.env("RUNTIMED_WORKSPACE_PATH", &path);
+    }
+    if let Ok(name) = env::var("CONDUCTOR_WORKSPACE_NAME") {
+        command.env("RUNTIMED_WORKSPACE_NAME", &name);
+    }
+
+    let status = command.status().unwrap_or_else(|e| {
+        eprintln!("Failed to run {cmd}: {e}");
+        exit(1);
+    });
 
     if !status.success() {
         eprintln!("Command failed: {cmd} {}", args.join(" "));

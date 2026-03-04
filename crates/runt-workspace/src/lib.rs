@@ -18,7 +18,7 @@ use std::process::Command;
 ///
 /// Returns true if:
 /// - `RUNTIMED_DEV=1` is set (explicit opt-in), OR
-/// - `CONDUCTOR_WORKSPACE_PATH` is set (automatic for Conductor users)
+/// - `RUNTIMED_WORKSPACE_PATH` is set (explicit workspace isolation)
 pub fn is_dev_mode() -> bool {
     // Explicit opt-in
     if std::env::var("RUNTIMED_DEV")
@@ -27,16 +27,15 @@ pub fn is_dev_mode() -> bool {
     {
         return true;
     }
-    // Auto-detect Conductor workspace
-    std::env::var("CONDUCTOR_WORKSPACE_PATH").is_ok()
+    // Workspace path presence enables dev mode
+    std::env::var("RUNTIMED_WORKSPACE_PATH").is_ok()
 }
 
 /// Get the workspace path for dev mode.
 ///
-/// Uses `CONDUCTOR_WORKSPACE_PATH` if available, otherwise detects via git.
+/// Uses `RUNTIMED_WORKSPACE_PATH` if available, otherwise detects via git.
 pub fn get_workspace_path() -> Option<PathBuf> {
-    // Prefer Conductor's workspace path
-    if let Ok(path) = std::env::var("CONDUCTOR_WORKSPACE_PATH") {
+    if let Ok(path) = std::env::var("RUNTIMED_WORKSPACE_PATH") {
         return Some(PathBuf::from(path));
     }
     // Fallback to git detection
@@ -45,11 +44,10 @@ pub fn get_workspace_path() -> Option<PathBuf> {
 
 /// Get the workspace name for display.
 ///
-/// Uses `CONDUCTOR_WORKSPACE_NAME` if available, otherwise reads from
+/// Uses `RUNTIMED_WORKSPACE_NAME` if available, otherwise reads from
 /// `.context/workspace-description` file in the worktree.
 pub fn get_workspace_name() -> Option<String> {
-    // Prefer Conductor's workspace name
-    if let Ok(name) = std::env::var("CONDUCTOR_WORKSPACE_NAME") {
+    if let Ok(name) = std::env::var("RUNTIMED_WORKSPACE_NAME") {
         return Some(name);
     }
     // Fallback: read .context/workspace-description
