@@ -182,8 +182,8 @@ function NotebookViewContent({
 
       if (cell.cell_type === "code") {
         const pagePayload = pagePayloads.get(cell.id) ?? null;
-        // Use TypeScript for Deno, Python otherwise
-        const language = runtime === "deno" ? "typescript" : "python";
+        // Use TypeScript for Deno, IPython otherwise (for magic/shell highlighting)
+        const language = runtime === "deno" ? "typescript" : "ipython";
         // Determine active match offset for this cell's source
         const activeSourceOffset =
           searchCurrentMatch &&

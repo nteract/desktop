@@ -7,11 +7,22 @@ import { sql } from "@codemirror/lang-sql";
 import { indentUnit } from "@codemirror/language";
 import type { Extension } from "@codemirror/state";
 
+import {
+  CELL_MAGIC_LANGUAGES,
+  detectCellMagic,
+  getCellMagicLanguage,
+  ipythonHighlighting,
+  ipythonIndent,
+  ipythonStyles,
+  ipythonStylesDark,
+} from "./ipython";
+
 /**
  * Supported languages for the CodeMirror editor
  */
 export type SupportedLanguage =
   | "python"
+  | "ipython"
   | "markdown"
   | "sql"
   | "html"
@@ -23,10 +34,22 @@ export type SupportedLanguage =
 /**
  * Get the CodeMirror language extension for a given language
  */
+// PEP 8 specifies 4-space indentation for Python
+const pythonIndent = indentUnit.of("    ");
+
 export function getLanguageExtension(language: SupportedLanguage): Extension {
   switch (language) {
     case "python":
-      return [python(), indentUnit.of("    ")];
+      return [python(), pythonIndent];
+    case "ipython":
+      return [
+        python(),
+        pythonIndent,
+        ipythonIndent,
+        ipythonHighlighting(),
+        ipythonStyles,
+        ipythonStylesDark,
+      ];
     case "markdown":
       return markdown();
     case "sql":
@@ -45,10 +68,69 @@ export function getLanguageExtension(language: SupportedLanguage): Extension {
 }
 
 /**
+ * Get the language extension for IPython content, detecting cell magics.
+ *
+ * If the content starts with a cell magic (e.g., %%html, %%bash),
+ * returns the appropriate language extension for that magic.
+ * Otherwise returns the standard IPython extension.
+ *
+ * @param content - The editor content to analyze
+ * @returns Object with language extension and detected cell magic (if any)
+ *
+ * @example
+ * // Cell magic - returns HTML language
+ * getIPythonExtension("%%html\n<div>Hello</div>")
+ * // { extension: html(), cellMagic: "html", language: "html" }
+ *
+ * // No cell magic - returns IPython
+ * getIPythonExtension("%time x = sum(range(100))")
+ * // { extension: [python(), ...], cellMagic: null, language: "ipython" }
+ */
+export function getIPythonExtension(content: string): {
+  extension: Extension;
+  cellMagic: string | null;
+  language: SupportedLanguage;
+} {
+  const magic = detectCellMagic(content);
+
+  if (magic) {
+    const langId = getCellMagicLanguage(magic);
+    const language = (
+      langId in languageDisplayNames ? langId : "plain"
+    ) as SupportedLanguage;
+
+    // For cell magics, use the target language but add IPython decoration
+    // for the first line (the %%magic declaration)
+    const baseExtension = getLanguageExtension(language);
+    return {
+      extension: [
+        baseExtension,
+        ipythonHighlighting(),
+        ipythonStyles,
+        ipythonStylesDark,
+      ],
+      cellMagic: magic,
+      language,
+    };
+  }
+
+  // No cell magic - use standard IPython mode
+  return {
+    extension: getLanguageExtension("ipython"),
+    cellMagic: null,
+    language: "ipython",
+  };
+}
+
+// Re-export cell magic utilities for consumers
+export { CELL_MAGIC_LANGUAGES, detectCellMagic, getCellMagicLanguage };
+
+/**
  * Language display names for UI
  */
 export const languageDisplayNames: Record<SupportedLanguage, string> = {
   python: "Python",
+  ipython: "IPython",
   markdown: "Markdown",
   sql: "SQL",
   html: "HTML",
@@ -63,6 +145,7 @@ export const languageDisplayNames: Record<SupportedLanguage, string> = {
  */
 export const fileExtensionToLanguage: Record<string, SupportedLanguage> = {
   ".py": "python",
+  ".ipy": "ipython",
   ".md": "markdown",
   ".markdown": "markdown",
   ".sql": "sql",

@@ -17,7 +17,11 @@ import {
 
 import { cn } from "@/lib/utils";
 import { defaultExtensions } from "./extensions";
-import { getLanguageExtension, type SupportedLanguage } from "./languages";
+import {
+  getIPythonExtension,
+  getLanguageExtension,
+  type SupportedLanguage,
+} from "./languages";
 import { darkTheme, isDarkMode, lightTheme, type ThemeMode } from "./themes";
 
 export interface CodeMirrorEditorRef {
@@ -138,10 +142,13 @@ export const CodeMirrorEditor = forwardRef<
       };
     }, [theme]);
 
-    const langExtension = useMemo(
-      () => getLanguageExtension(language),
-      [language],
-    );
+    // For IPython, detect cell magics and switch to appropriate language mode
+    const langExtension = useMemo(() => {
+      if (language === "ipython") {
+        return getIPythonExtension(value).extension;
+      }
+      return getLanguageExtension(language);
+    }, [language, value]);
 
     // Determine which theme to use
     const themeExtension = useMemo(() => {

@@ -11,12 +11,23 @@ export {
   notebookEditorTheme,
 } from "./extensions";
 export {
+  CELL_MAGIC_LANGUAGES,
+  detectCellMagic,
+  getCellMagicLanguage,
+  ipythonHighlighting,
+  ipythonIndent,
+  ipythonStyles,
+  ipythonStylesDark,
+} from "./ipython";
+export {
   detectLanguage,
   fileExtensionToLanguage,
+  getIPythonExtension,
   getLanguageExtension,
   languageDisplayNames,
   type SupportedLanguage,
 } from "./languages";
+export { searchHighlight } from "./search-highlight";
 export {
   darkTheme,
   documentHasDarkMode,

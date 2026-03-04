@@ -94,6 +94,17 @@ function createSearchHighlightPlugin(query: string, activeOffset: number) {
  * @param query - The search string to highlight (case-insensitive). Empty string = no highlights.
  * @param activeOffset - Character offset of the "active" match to highlight differently (-1 for none).
  * @returns A CodeMirror Extension array to pass to the editor.
+ *
+ * @example
+ * ```tsx
+ * import { searchHighlight } from "@/registry/editor/search-highlight";
+ *
+ * // Highlight all occurrences of "function"
+ * <CodeMirrorEditor extensions={[searchHighlight("function")]} />
+ *
+ * // Highlight with active match at character offset 100
+ * <CodeMirrorEditor extensions={[searchHighlight("function", 100)]} />
+ * ```
  */
 export function searchHighlight(query: string, activeOffset = -1): Extension[] {
   if (!query) return [];
