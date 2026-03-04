@@ -3141,6 +3141,47 @@ fn focused_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
         .find(|window| window.is_focused().ok() == Some(true))
 }
 
+fn open_notebook_from_menu_without_window(
+    app: &tauri::AppHandle,
+    registry: &WindowNotebookRegistry,
+) {
+    use tauri_plugin_dialog::DialogExt;
+
+    let app_handle = app.clone();
+    let registry = registry.clone();
+
+    app.dialog()
+        .file()
+        .add_filter("Jupyter Notebook", &["ipynb"])
+        .pick_file(move |selected_path| {
+            let Some(selected_path) = selected_path else {
+                return;
+            };
+
+            let path = match selected_path.into_path() {
+                Ok(path) => path,
+                Err(e) => {
+                    log::error!("[menu] Failed to resolve selected notebook path: {}", e);
+                    return;
+                }
+            };
+
+            if let Err(e) = open_notebook_window(&app_handle, &registry, &path) {
+                log::error!("[menu] Failed to open notebook from File > Open: {}", e);
+
+                let app_handle = app_handle.clone();
+                let path_display = path.display().to_string();
+                tauri::async_runtime::spawn(async move {
+                    let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
+                        .message(format!("Failed to open notebook '{}': {}", path_display, e))
+                        .title("Open Notebook Error")
+                        .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                        .blocking_show();
+                });
+            }
+        });
+}
+
 /// Create a new notebook window with the specified runtime.
 fn spawn_new_notebook(
     app: &tauri::AppHandle,
@@ -3819,9 +3860,13 @@ pub fn run(
                     let _ = spawn_new_notebook(app, registry.inner(), Runtime::Deno);
                 }
                 crate::menu::MENU_OPEN => {
-                    // Emit event to frontend to trigger open dialog
+                    // Emit event to frontend to trigger open dialog when a window exists.
+                    // If all windows are closed (macOS app menu still active), fall back
+                    // to a native picker so File > Open still works.
                     if let Some(window) = focused_window(app) {
                         let _ = emit_to_label::<_, _, _>(&window, window.label(), "menu:open", ());
+                    } else {
+                        open_notebook_from_menu_without_window(app, registry.inner());
                     }
                 }
                 crate::menu::MENU_SAVE => {
@@ -3924,13 +3969,13 @@ pub fn run(
     let registry_for_open = window_registry.clone();
     let registry_for_session = window_registry.clone();
     let registry_for_window_close = window_registry.clone();
-    app.run(move |app_handle, event| {
-        // Keep the app process alive when the final window is closed.
-        // This allows behavior like reopening from app-level affordances
-        // without requiring a full process restart.
+    app.run(move |_app_handle, event| {
+        // Keep the app process alive when the final window is closed on macOS.
+        // Other platforms should exit when the final window closes.
+        #[cfg(target_os = "macos")]
         if let RunEvent::ExitRequested { code, api, .. } = &event {
-            if code.is_none() && app_handle.webview_windows().is_empty() {
-                log::info!("[app] Preventing exit after closing last window");
+            if code.is_none() && _app_handle.webview_windows().is_empty() {
+                log::info!("[app] Preventing exit after closing last window (macOS)");
                 api.prevent_exit();
             }
         }
