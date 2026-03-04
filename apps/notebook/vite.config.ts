@@ -1,8 +1,8 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import { visualizer } from "rollup-plugin-visualizer";
+import react from "@vitejs/plugin-react";
 import path from "path";
+import { visualizer } from "rollup-plugin-visualizer";
+import { defineConfig } from "vite";
 import { isolatedRendererPlugin } from "./vite-plugin-isolated-renderer";
 
 export default defineConfig({
@@ -39,7 +39,9 @@ export default defineConfig({
     },
   },
   server: {
-    port: parseInt(process.env.CONDUCTOR_PORT || "5174"),
+    port: parseInt(
+      process.env.RUNTIMED_VITE_PORT || process.env.CONDUCTOR_PORT || "5174",
+    ),
     strictPort: true,
   },
   base: "/",

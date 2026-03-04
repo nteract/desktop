@@ -85,8 +85,10 @@ fn cmd_dev(notebook: Option<&str>, attach: bool) {
     if attach {
         println!("Attaching to existing Vite server...");
 
-        // Use CONDUCTOR_PORT if set, otherwise default to 5174 (Vite's default)
-        let port = env::var("CONDUCTOR_PORT").unwrap_or_else(|_| "5174".to_string());
+        // Use RUNTIMED_VITE_PORT, fall back to CONDUCTOR_PORT, then default
+        let port = env::var("RUNTIMED_VITE_PORT")
+            .or_else(|_| env::var("CONDUCTOR_PORT"))
+            .unwrap_or_else(|_| "5174".to_string());
         println!("Connecting to Vite at http://localhost:{port}");
 
         // Skip beforeDevCommand (Vite is already running) and set devUrl
@@ -102,11 +104,15 @@ fn cmd_dev(notebook: Option<&str>, attach: bool) {
     } else {
         println!("Starting dev server with hot reload...");
 
-        // Check if CONDUCTOR_PORT is set and override devUrl accordingly
-        let config_override = env::var("CONDUCTOR_PORT").ok().map(|port| {
-            println!("Using CONDUCTOR_PORT={port}");
-            format!(r#"{{"build":{{"devUrl":"http://localhost:{port}"}}}}"#)
-        });
+        // Check for port override: RUNTIMED_VITE_PORT > CONDUCTOR_PORT
+        let config_override = env::var("RUNTIMED_VITE_PORT")
+            .map(|port| ("RUNTIMED_VITE_PORT", port))
+            .or_else(|_| env::var("CONDUCTOR_PORT").map(|port| ("CONDUCTOR_PORT", port)))
+            .ok()
+            .map(|(var, port)| {
+                println!("Using {var}={port}");
+                format!(r#"{{"build":{{"devUrl":"http://localhost:{port}"}}}}"#)
+            });
 
         let mut args = vec!["tauri", "dev"];
         if let Some(ref config) = config_override {
@@ -127,8 +133,10 @@ fn cmd_vite() {
     println!("Use `cargo xtask dev --attach` in another terminal to connect.");
     println!();
 
-    // Use CONDUCTOR_PORT if set
-    if let Ok(port) = env::var("CONDUCTOR_PORT") {
+    // Check for port override: RUNTIMED_VITE_PORT > CONDUCTOR_PORT
+    if let Ok(port) = env::var("RUNTIMED_VITE_PORT") {
+        println!("Using RUNTIMED_VITE_PORT={port}");
+    } else if let Ok(port) = env::var("CONDUCTOR_PORT") {
         println!("Using CONDUCTOR_PORT={port}");
     }
 
