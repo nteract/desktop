@@ -4041,12 +4041,12 @@ pub fn run(
     let registry_for_open = window_registry.clone();
     let registry_for_session = window_registry.clone();
     let registry_for_window_close = window_registry.clone();
-    app.run(move |_app_handle, event| {
+    app.run(move |app_handle, event| {
         // Keep the app process alive when the final window is closed on macOS.
         // Other platforms should exit when the final window closes.
         #[cfg(target_os = "macos")]
         if let RunEvent::ExitRequested { code, api, .. } = &event {
-            if code.is_none() && _app_handle.webview_windows().is_empty() {
+            if code.is_none() && app_handle.webview_windows().is_empty() {
                 log::info!("[app] Preventing exit after closing last window (macOS)");
                 api.prevent_exit();
             }
