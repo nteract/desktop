@@ -651,13 +651,17 @@ jobs:
             sleep 20
 
             # Start tauri-driver from fixture directory so app inherits that CWD
-            (cd "$fixture_dir" && ~/.cargo/bin/tauri-driver --port 4444) &
+            # Use absolute path for the app binary since we're changing directories
+            (cd "$fixture_dir" && TAURI_APP_PATH="${GITHUB_WORKSPACE}/target/release/notebook" \
+              ~/.cargo/bin/tauri-driver --port 4444) &
             DRIVER_PID=$!
             sleep 3
 
             # Run test WITHOUT NOTEBOOK_PATH (untitled notebook)
+            # Use absolute path for TAURI_APP_PATH since tauri-driver runs from fixture dir
             local exit_code=0
             E2E_SPEC="$spec" CONDUCTOR_WORKSPACE_PATH="$fixture_dir" \
+              TAURI_APP_PATH="${GITHUB_WORKSPACE}/target/release/notebook" \
               pnpm test:e2e 2>&1 | tee -a e2e-logs/fixtures-output.log || exit_code=$?
 
             # Cleanup
