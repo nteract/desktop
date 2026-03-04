@@ -683,7 +683,10 @@ where
         log::error!("[startup] {}", error);
         on_progress(DaemonProgress::Failed {
             error: error.clone(),
-            guidance: "Try running: runtimed install".to_string(),
+            guidance: format!(
+                "Try running: {} install",
+                runt_workspace::daemon_binary_basename()
+            ),
         });
         return Err(error);
     }
@@ -722,7 +725,10 @@ where
     log::error!("[startup] {}", error);
     on_progress(DaemonProgress::Failed {
         error: error.clone(),
-        guidance: "Check daemon logs: runt daemon logs".to_string(),
+        guidance: format!(
+            "Check daemon logs: {} daemon logs",
+            runt_workspace::cli_command_name()
+        ),
     });
     Err(error)
 }
@@ -836,11 +842,18 @@ where
 
     // Check exit code
     if exit_code != Some(0) {
-        let error = format!("runtimed install failed with code {:?}", exit_code);
+        let error = format!(
+            "{} install failed with code {:?}",
+            runt_workspace::daemon_binary_basename(),
+            exit_code
+        );
         log::error!("[startup] {}", error);
         on_progress(DaemonProgress::Failed {
             error: error.clone(),
-            guidance: "Try running: runtimed install".to_string(),
+            guidance: format!(
+                "Try running: {} install",
+                runt_workspace::daemon_binary_basename()
+            ),
         });
         return Err(error);
     }
@@ -879,7 +892,10 @@ where
     log::error!("[startup] {}", error);
     on_progress(DaemonProgress::Failed {
         error: error.clone(),
-        guidance: "Check daemon logs: runt daemon logs".to_string(),
+        guidance: format!(
+            "Check daemon logs: {} daemon logs",
+            runt_workspace::cli_command_name()
+        ),
     });
     Err(error)
 }
@@ -3371,7 +3387,10 @@ pub fn run(
     let (window_title, _main_context) = if needs_onboarding {
         info!("[startup] Onboarding needed, skipping notebook state setup");
         // No main context - onboarding window doesn't need notebook state
-        ("Welcome to nteract".to_string(), None)
+        (
+            format!("Welcome to {}", runt_workspace::desktop_display_name()),
+            None,
+        )
     } else {
         // Determine initial state for main window
         let mut initial_state = match notebook_path.as_ref() {
@@ -3566,7 +3585,10 @@ pub fn run(
                     "onboarding",
                     tauri::WebviewUrl::App("onboarding/index.html".into()),
                 )
-                .title("Welcome to nteract")
+                .title(format!(
+                    "Welcome to {}",
+                    runt_workspace::desktop_display_name()
+                ))
                 .inner_size(1024.0, 768.0)
                 .resizable(false)
                 .center()
@@ -3779,7 +3801,10 @@ pub fn run(
                     let _ = app_for_autolaunch.emit("daemon:unavailable", serde_json::json!({
                         "reason": "sync_timeout",
                         "message": "Daemon sync timed out. The runtime daemon may not be running.",
-                        "guidance": "Run 'cargo xtask dev-daemon' in another terminal (dev mode), or check daemon status with 'runt daemon status'."
+                        "guidance": format!(
+                            "Run 'cargo xtask dev-daemon' in another terminal (dev mode), or check daemon status with '{} daemon status'.",
+                            runt_workspace::cli_command_name()
+                        )
                     }));
                 } else if daemon_sync_success_for_autolaunch.load(Ordering::SeqCst) {
                     // Daemon sync succeeded - daemon handles auto-launch
@@ -3796,7 +3821,10 @@ pub fn run(
                     let _ = app_for_autolaunch.emit("daemon:unavailable", serde_json::json!({
                         "reason": "sync_failed",
                         "message": "Failed to connect to runtime daemon.",
-                        "guidance": "Run 'cargo xtask dev-daemon' in another terminal (dev mode), or check daemon status with 'runt daemon status'."
+                        "guidance": format!(
+                            "Run 'cargo xtask dev-daemon' in another terminal (dev mode), or check daemon status with '{} daemon status'.",
+                            runt_workspace::cli_command_name()
+                        )
                     }));
                 }
             });
@@ -3871,10 +3899,15 @@ pub fn run(
                     match crate::cli_install::install_cli(&app_handle) {
                         Ok(()) => {
                             log::info!("[cli_install] CLI installed successfully");
+                            let cli_cmd = runt_workspace::cli_command_name();
+                            let nb_cmd = runt_workspace::cli_notebook_alias_name();
+                            let success_message = format!(
+                                "The '{cli_cmd}' and '{nb_cmd}' commands have been installed to /usr/local/bin.\n\nYou can now use:\n- {cli_cmd} notebook: Open notebook app\n- {nb_cmd}: Shorthand for above"
+                            );
                             // Show success dialog
                             tauri::async_runtime::spawn(async move {
                                 let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
-                                    .message("The 'runt' and 'nb' commands have been installed to /usr/local/bin.\n\nYou can now use:\n- runt notebook: Open notebook app\n- nb: Shorthand for above")
+                                    .message(success_message)
                                     .title("CLI Installed")
                                     .kind(tauri_plugin_dialog::MessageDialogKind::Info)
                                     .blocking_show();

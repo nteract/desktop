@@ -41,7 +41,9 @@ pub mod terminal_size;
 
 // Re-export from runt-workspace for backwards compatibility
 pub use runt_workspace::{
-    daemon_base_dir, get_workspace_name, get_workspace_path, is_dev_mode, worktree_hash,
+    build_channel, cache_namespace, config_namespace, daemon_base_dir, daemon_binary_basename,
+    daemon_launchd_label, daemon_service_basename, desktop_display_name, desktop_product_name,
+    get_workspace_name, get_workspace_path, is_dev_mode, worktree_hash,
 };
 
 /// Get the default log path for the daemon.
@@ -109,7 +111,7 @@ pub struct PoolError {
 
 /// Get the default endpoint path for runtimed.
 ///
-/// On Unix, this returns a Unix socket path (e.g., ~/.cache/runt/runtimed.sock).
+/// On Unix, this returns a Unix socket path (e.g., ~/.cache/runt*/runtimed.sock).
 /// In dev mode, returns the per-worktree socket path.
 /// On Windows, this returns a named pipe path (e.g., \\.\pipe\runtimed).
 #[cfg(unix)]
@@ -119,19 +121,20 @@ pub fn default_socket_path() -> PathBuf {
 
 /// Get the default endpoint path for runtimed.
 ///
-/// On Unix, this returns a Unix socket path (e.g., ~/.cache/runt/runtimed.sock).
+/// On Unix, this returns a Unix socket path (e.g., ~/.cache/runt*/runtimed.sock).
 /// On Windows, this returns a named pipe path (e.g., \\.\pipe\runtimed).
 /// In dev mode on Windows, appends the worktree hash to the pipe name.
 #[cfg(windows)]
 pub fn default_socket_path() -> PathBuf {
+    let pipe_name = daemon_binary_basename();
     // Windows named pipes use the \\.\pipe\name format
     if is_dev_mode() {
         if let Some(worktree) = get_workspace_path() {
             let hash = worktree_hash(&worktree);
-            return PathBuf::from(format!(r"\\.\pipe\runtimed-{}", hash));
+            return PathBuf::from(format!(r"\\.\pipe\{}-{}", pipe_name, hash));
         }
     }
-    PathBuf::from(r"\\.\pipe\runtimed")
+    PathBuf::from(format!(r"\\.\pipe\{}", pipe_name))
 }
 
 /// Get the default cache directory for environments.
@@ -153,7 +156,7 @@ pub fn default_settings_doc_path() -> PathBuf {
 pub fn settings_json_path() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("nteract")
+        .join(config_namespace())
         .join("settings.json")
 }
 
@@ -169,7 +172,7 @@ pub fn session_state_path() -> PathBuf {
         // Production: config directory
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("nteract")
+            .join(config_namespace())
             .join("session.json")
     }
 }
@@ -178,7 +181,7 @@ pub fn session_state_path() -> PathBuf {
 pub fn settings_schema_path() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("nteract")
+        .join(config_namespace())
         .join("settings.schema.json")
 }
 

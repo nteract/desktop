@@ -423,6 +423,14 @@ fn main() -> Result<()> {
 ///
 /// The app automatically captures its working directory at startup for untitled
 /// notebooks, so we don't need to pass --cwd explicitly.
+fn desktop_app_launch_candidates() -> &'static [&'static str] {
+    match runt_workspace::build_channel() {
+        runt_workspace::BuildChannel::Stable => &["nteract"],
+        runt_workspace::BuildChannel::Preview => &["nteract-preview", "nteract Preview", "nteract"],
+        runt_workspace::BuildChannel::Nightly => &["nteract-nightly", "nteract Nightly", "nteract"],
+    }
+}
+
 fn open_notebook(path: Option<PathBuf>, runtime: Option<String>) -> Result<()> {
     // Convert relative paths to absolute
     let abs_path = path.map(|p| {
@@ -433,60 +441,98 @@ fn open_notebook(path: Option<PathBuf>, runtime: Option<String>) -> Result<()> {
         }
     });
 
-    #[cfg(target_os = "macos")]
-    {
-        let mut cmd = std::process::Command::new("open");
-        cmd.arg("-a").arg("nteract");
+    let launch_result: Result<()> = {
+        #[cfg(target_os = "macos")]
+        {
+            let mut last_error = None;
+            for app_name in desktop_app_launch_candidates() {
+                let mut cmd = std::process::Command::new("open");
+                cmd.arg("-a").arg(app_name);
 
-        if abs_path.is_some() || runtime.is_some() {
-            cmd.arg("--args");
+                if abs_path.is_some() || runtime.is_some() {
+                    cmd.arg("--args");
+                }
+                if let Some(ref p) = abs_path {
+                    cmd.arg(p);
+                }
+                if let Some(ref r) = runtime {
+                    cmd.arg("--runtime").arg(r);
+                }
+
+                match cmd.spawn() {
+                    Ok(_) => return Ok(()),
+                    Err(e) => last_error = Some((app_name, e)),
+                }
+            }
+
+            let detail = last_error
+                .map(|(candidate, e)| format!("last attempt ({candidate}) failed: {e}"))
+                .unwrap_or_else(|| "no launch candidates were attempted".to_string());
+            Err(anyhow::anyhow!(
+                "Failed to launch {}: {}",
+                runt_workspace::desktop_display_name(),
+                detail
+            ))
         }
-        if let Some(p) = abs_path {
-            cmd.arg(p);
+        #[cfg(target_os = "windows")]
+        {
+            let mut last_error = None;
+            for app_name in desktop_app_launch_candidates() {
+                let mut cmd = std::process::Command::new(app_name);
+
+                if let Some(ref p) = abs_path {
+                    cmd.arg(p);
+                }
+                if let Some(ref r) = runtime {
+                    cmd.arg("--runtime").arg(r);
+                }
+
+                match cmd.spawn() {
+                    Ok(_) => return Ok(()),
+                    Err(e) => last_error = Some((app_name, e)),
+                }
+            }
+
+            let detail = last_error
+                .map(|(candidate, e)| format!("last attempt ({candidate}) failed: {e}"))
+                .unwrap_or_else(|| "no launch candidates were attempted".to_string());
+            Err(anyhow::anyhow!(
+                "Failed to launch {}: {}",
+                runt_workspace::desktop_display_name(),
+                detail
+            ))
         }
-        if let Some(r) = runtime {
-            cmd.arg("--runtime").arg(r);
+        #[cfg(target_os = "linux")]
+        {
+            let mut last_error = None;
+            for app_name in desktop_app_launch_candidates() {
+                let mut cmd = std::process::Command::new(app_name);
+
+                if let Some(ref p) = abs_path {
+                    cmd.arg(p);
+                }
+                if let Some(ref r) = runtime {
+                    cmd.arg("--runtime").arg(r);
+                }
+
+                match cmd.spawn() {
+                    Ok(_) => return Ok(()),
+                    Err(e) => last_error = Some((app_name, e)),
+                }
+            }
+
+            let detail = last_error
+                .map(|(candidate, e)| format!("last attempt ({candidate}) failed: {e}"))
+                .unwrap_or_else(|| "no launch candidates were attempted".to_string());
+            Err(anyhow::anyhow!(
+                "Failed to launch {}: {}",
+                runt_workspace::desktop_display_name(),
+                detail
+            ))
         }
+    };
 
-        cmd.spawn()
-            .map_err(|e| anyhow::anyhow!("Failed to launch nteract: {}", e))?;
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        // On Windows, try common install locations or use shell execution
-        let app_name = "nteract.exe";
-        let mut cmd = std::process::Command::new(app_name);
-
-        if let Some(p) = abs_path {
-            cmd.arg(p);
-        }
-        if let Some(r) = runtime {
-            cmd.arg("--runtime").arg(r);
-        }
-
-        cmd.spawn()
-            .map_err(|e| anyhow::anyhow!("Failed to launch nteract: {}", e))?;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        // On Linux, try to find the app in PATH or common locations
-        let app_name = "nteract";
-        let mut cmd = std::process::Command::new(app_name);
-
-        if let Some(p) = abs_path {
-            cmd.arg(p);
-        }
-        if let Some(r) = runtime {
-            cmd.arg("--runtime").arg(r);
-        }
-
-        cmd.spawn()
-            .map_err(|e| anyhow::anyhow!("Failed to launch nteract: {}", e))?;
-    }
-
-    Ok(())
+    launch_result
 }
 
 async fn async_main(command: Option<Commands>) -> Result<()> {
@@ -1425,7 +1471,8 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 });
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
-                println!("runtimed Daemon Status");
+                let daemon_name = runt_workspace::daemon_service_basename();
+                println!("{} Daemon Status", daemon_name);
                 println!("======================");
                 println!(
                     "Service installed: {}",
@@ -1495,7 +1542,10 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 eprintln!("Service not installed. Run 'runt daemon install' first.");
                 std::process::exit(1);
             }
-            println!("Starting runtimed service...");
+            println!(
+                "Starting {} service...",
+                runt_workspace::daemon_service_basename()
+            );
             manager.start()?;
             println!("Service started.");
         }
@@ -1504,7 +1554,10 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 eprintln!("Service not installed.");
                 std::process::exit(1);
             }
-            println!("Stopping runtimed service...");
+            println!(
+                "Stopping {} service...",
+                runt_workspace::daemon_service_basename()
+            );
             manager.stop()?;
             println!("Service stopped.");
         }
@@ -1513,7 +1566,10 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 eprintln!("Service not installed. Run 'runt daemon install' first.");
                 std::process::exit(1);
             }
-            println!("Restarting runtimed service...");
+            println!(
+                "Restarting {} service...",
+                runt_workspace::daemon_service_basename()
+            );
             let _ = manager.stop(); // Ignore if not running
             manager.start()?;
             println!("Service restarted.");
@@ -1524,19 +1580,24 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 let current_exe =
                     std::env::current_exe().expect("Failed to get current executable path");
                 let exe_dir = current_exe.parent().unwrap();
+                let daemon_binary = runt_workspace::daemon_binary_basename();
                 exe_dir.join(if cfg!(windows) {
-                    "runtimed.exe"
+                    format!("{daemon_binary}.exe")
                 } else {
-                    "runtimed"
+                    daemon_binary.to_string()
                 })
             });
 
             if !source.exists() {
                 eprintln!("Error: Daemon binary not found at: {}", source.display());
                 eprintln!();
-                eprintln!("The daemon is normally installed automatically by the nteract app.");
                 eprintln!(
-                    "Run 'runt daemon doctor' to diagnose issues, or launch nteract to install."
+                    "The daemon is normally installed automatically by the {} app.",
+                    runt_workspace::desktop_display_name()
+                );
+                eprintln!(
+                    "Run 'runt daemon doctor' to diagnose issues, or launch {} to install.",
+                    runt_workspace::desktop_display_name()
                 );
                 std::process::exit(1);
             }
@@ -1546,7 +1607,10 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 std::process::exit(1);
             }
 
-            println!("Installing runtimed service...");
+            println!(
+                "Installing {} service...",
+                runt_workspace::daemon_service_basename()
+            );
             println!("Source binary: {}", source.display());
             manager.install(&source)?;
             println!("Service installed. Run 'runt daemon start' to start it.");
@@ -1556,7 +1620,10 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 println!("Service not installed.");
                 return Ok(());
             }
-            println!("Uninstalling runtimed service...");
+            println!(
+                "Uninstalling {} service...",
+                runt_workspace::daemon_service_basename()
+            );
             manager.uninstall()?;
             println!("Service uninstalled.");
         }
@@ -1716,7 +1783,10 @@ async fn doctor_command(
         let diagnosis = if daemon_running_result {
             "Daemon is healthy and running.".to_string()
         } else if !binary_exists && !config_exists {
-            "Daemon service not installed. Launch the nteract app to install.".to_string()
+            format!(
+                "Daemon service not installed. Launch the {} app to install.",
+                runt_workspace::desktop_display_name()
+            )
         } else if !binary_exists && config_exists {
             "Service config exists but binary missing. Need to reinstall.".to_string()
         } else if binary_exists && config_exists && daemon_state_status == "stale" {
@@ -1824,7 +1894,10 @@ async fn doctor_command(
                 }
             } else if !json {
                 eprintln!("Could not find bundled runtimed binary.");
-                eprintln!("Launch the nteract application to install the daemon.");
+                eprintln!(
+                    "Launch the {} application to install the daemon.",
+                    runt_workspace::desktop_display_name()
+                );
             }
         }
 
@@ -1857,7 +1930,7 @@ async fn doctor_command(
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        println!("runtimed Health Check");
+        println!("{} Health Check", runt_workspace::daemon_service_basename());
         println!("=====================");
         println!(
             "Installed binary:   {} {}",
@@ -1968,12 +2041,15 @@ fn find_bundled_runtimed() -> Option<PathBuf> {
     // Common app locations on macOS
     #[cfg(target_os = "macos")]
     {
-        let locations = [
-            PathBuf::from("/Applications/nteract.app/Contents/MacOS/runtimed"),
-            dirs::home_dir()
-                .unwrap_or_default()
-                .join("Applications/nteract.app/Contents/MacOS/runtimed"),
-        ];
+        let mut locations = Vec::new();
+        for app_name in desktop_app_launch_candidates() {
+            locations.push(PathBuf::from(format!(
+                "/Applications/{app_name}.app/Contents/MacOS/{binary_name}"
+            )));
+            locations.push(dirs::home_dir().unwrap_or_default().join(format!(
+                "Applications/{app_name}.app/Contents/MacOS/{binary_name}"
+            )));
+        }
         for path in &locations {
             if path.exists() {
                 return Some(path.clone());
@@ -1984,12 +2060,15 @@ fn find_bundled_runtimed() -> Option<PathBuf> {
     // Linux: check common locations
     #[cfg(target_os = "linux")]
     {
-        let locations = [
-            PathBuf::from("/usr/share/nteract/runtimed"),
-            PathBuf::from("/opt/nteract/runtimed"),
-            // AppImage extracts to /tmp, check common paths
-            PathBuf::from("/usr/local/bin/runtimed"),
-        ];
+        let mut locations = Vec::new();
+        for app_name in desktop_app_launch_candidates() {
+            locations.push(PathBuf::from(format!(
+                "/usr/share/{app_name}/{binary_name}"
+            )));
+            locations.push(PathBuf::from(format!("/opt/{app_name}/{binary_name}")));
+        }
+        // AppImage extracts to /tmp, check common paths
+        locations.push(PathBuf::from(format!("/usr/local/bin/{binary_name}")));
         for path in &locations {
             if path.exists() {
                 return Some(path.clone());
@@ -2000,15 +2079,22 @@ fn find_bundled_runtimed() -> Option<PathBuf> {
     // Windows: check common locations
     #[cfg(target_os = "windows")]
     {
-        let locations = [
-            dirs::data_local_dir()
-                .unwrap_or_default()
-                .join("Programs")
-                .join("nteract")
-                .join("runtimed.exe"),
-            PathBuf::from("C:\\Program Files\\nteract\\runtimed.exe"),
-            PathBuf::from("C:\\Program Files (x86)\\nteract\\runtimed.exe"),
-        ];
+        let mut locations = Vec::new();
+        for app_name in desktop_app_launch_candidates() {
+            locations.push(
+                dirs::data_local_dir()
+                    .unwrap_or_default()
+                    .join("Programs")
+                    .join(app_name)
+                    .join(binary_name),
+            );
+            locations.push(PathBuf::from(format!(
+                "C:\\Program Files\\{app_name}\\{binary_name}"
+            )));
+            locations.push(PathBuf::from(format!(
+                "C:\\Program Files (x86)\\{app_name}\\{binary_name}"
+            )));
+        }
         for path in &locations {
             if path.exists() {
                 return Some(path.clone());
@@ -2609,8 +2695,6 @@ async fn debug_session(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// Test that the shutdown command correctly identifies UUIDs vs file paths.
     /// This is critical for handling both saved notebooks (paths) and untitled
     /// notebooks (UUIDs).

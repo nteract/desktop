@@ -30,8 +30,6 @@ pub const MENU_RESTART_AND_RUN_ALL: &str = "restart_and_run_all";
 
 // Menu item IDs for CLI installation
 pub const MENU_INSTALL_CLI: &str = "install_cli";
-pub const MENU_ABOUT_NTERACT: &str = "About nteract";
-pub const APP_NAME: &str = "nteract";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const APP_COMMIT_SHA: &str = env!("GIT_COMMIT");
 pub const APP_RELEASE_DATE: &str = env!("GIT_COMMIT_DATE");
@@ -68,9 +66,24 @@ pub fn sample_for_menu_item_id(menu_id: &str) -> Option<&'static BundledSampleNo
         .find(|sample| sample.id == sample_id)
 }
 
+pub fn app_name() -> &'static str {
+    runt_workspace::desktop_display_name()
+}
+
+pub fn about_menu_label() -> String {
+    format!("About {}", app_name())
+}
+
+pub fn install_cli_menu_label() -> String {
+    format!(
+        "Install '{}' Command in PATH...",
+        runt_workspace::cli_command_name()
+    )
+}
+
 fn build_about_metadata() -> AboutMetadata<'static> {
     AboutMetadataBuilder::new()
-        .name(Some(APP_NAME))
+        .name(Some(app_name()))
         .version(Some(APP_VERSION))
         .comments(Some(format!(
             "Commit SHA: {APP_COMMIT_SHA}\nRelease Date: {APP_RELEASE_DATE}"
@@ -82,19 +95,21 @@ fn build_about_metadata() -> AboutMetadata<'static> {
 pub fn create_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let menu = Menu::new(app)?;
     let about_metadata = build_about_metadata();
+    let about_label = about_menu_label();
+    let install_cli_label = install_cli_menu_label();
 
     // App menu (macOS standard - shows app name)
-    let app_menu = Submenu::new(app, APP_NAME, true)?;
+    let app_menu = Submenu::new(app, app_name(), true)?;
     app_menu.append(&PredefinedMenuItem::about(
         app,
-        Some(MENU_ABOUT_NTERACT),
+        Some(about_label.as_str()),
         Some(about_metadata),
     )?)?;
     app_menu.append(&PredefinedMenuItem::separator(app)?)?;
     app_menu.append(&MenuItem::with_id(
         app,
         MENU_INSTALL_CLI,
-        "Install 'runt' Command in PATH...",
+        install_cli_label.as_str(),
         true,
         None::<&str>,
     )?)?;
@@ -243,8 +258,9 @@ pub fn create_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_about_metadata, sample_for_menu_item_id, sample_menu_item_id, APP_COMMIT_SHA,
-        APP_NAME, APP_RELEASE_DATE, APP_VERSION, BUNDLED_SAMPLE_NOTEBOOKS, MENU_ABOUT_NTERACT,
+        about_menu_label, app_name, build_about_metadata, sample_for_menu_item_id,
+        sample_menu_item_id, APP_COMMIT_SHA, APP_RELEASE_DATE, APP_VERSION,
+        BUNDLED_SAMPLE_NOTEBOOKS,
     };
     use std::collections::HashSet;
 
@@ -287,14 +303,14 @@ mod tests {
     }
 
     #[test]
-    fn about_menu_label_is_explicit() {
-        assert_eq!(MENU_ABOUT_NTERACT, "About nteract");
+    fn about_menu_label_matches_app_name() {
+        assert_eq!(about_menu_label(), format!("About {}", app_name()));
     }
 
     #[test]
     fn about_metadata_includes_required_release_fields() {
         let metadata = build_about_metadata();
-        assert_eq!(metadata.name.as_deref(), Some(APP_NAME));
+        assert_eq!(metadata.name.as_deref(), Some(app_name()));
         assert_eq!(metadata.version.as_deref(), Some(APP_VERSION));
         let comments = metadata
             .comments

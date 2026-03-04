@@ -46,6 +46,7 @@ permissions:
 env:
   TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+  RUNT_BUILD_CHANNEL: ${{ inputs.version_suffix }}
 
 jobs:
   compute-version:
@@ -289,7 +290,20 @@ jobs:
         run: |
           VERSION="${{ needs.compute-version.outputs.version }}"
           echo "Setting version to: ${VERSION}"
+          CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
+          if [ "$CHANNEL" = "preview" ]; then
+            PRODUCT_NAME="nteract-preview"
+            BUNDLE_ID="org.nteract.desktop.preview"
+          elif [ "$CHANNEL" = "nightly" ]; then
+            PRODUCT_NAME="nteract-nightly"
+            BUNDLE_ID="org.nteract.desktop.nightly"
+          else
+            PRODUCT_NAME="nteract"
+            BUNDLE_ID="org.nteract.desktop"
+          fi
           sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" crates/notebook/tauri.conf.json
+          sed -i '' "s/\"productName\": \"[^\"]*\"/\"productName\": \"${PRODUCT_NAME}\"/" crates/notebook/tauri.conf.json
+          sed -i '' "s/\"identifier\": \"[^\"]*\"/\"identifier\": \"${BUNDLE_ID}\"/" crates/notebook/tauri.conf.json
           sed -i '' "s#https://github.com/nteract/desktop/releases/download/preview-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
 
@@ -418,9 +432,26 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ needs.compute-version.outputs.version }}"
+          $channel = "${{ env.RUNT_BUILD_CHANNEL }}".ToLowerInvariant()
+          switch ($channel) {
+            "preview" {
+              $productName = "nteract-preview"
+              $bundleId = "org.nteract.desktop.preview"
+            }
+            "nightly" {
+              $productName = "nteract-nightly"
+              $bundleId = "org.nteract.desktop.nightly"
+            }
+            default {
+              $productName = "nteract"
+              $bundleId = "org.nteract.desktop"
+            }
+          }
           Write-Host "Setting version to: $version"
           $tauriConf = Get-Content crates/notebook/tauri.conf.json -Raw
           $tauriConf = $tauriConf -replace '"version": "[^"]+"', "`"version`": `"$version`""
+          $tauriConf = $tauriConf -replace '"productName": "[^"]+"', "`"productName`": `"$productName`""
+          $tauriConf = $tauriConf -replace '"identifier": "[^"]+"', "`"identifier`": `"$bundleId`""
           $tauriConf = $tauriConf -replace 'https://github.com/nteract/desktop/releases/download/preview-latest/latest.json', 'https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json'
           Set-Content crates/notebook/tauri.conf.json $tauriConf
           $runtCargo = Get-Content crates/runt/Cargo.toml -Raw
@@ -544,7 +575,20 @@ jobs:
         run: |
           VERSION="${{ needs.compute-version.outputs.version }}"
           echo "Setting version to: ${VERSION}"
+          CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
+          if [ "$CHANNEL" = "preview" ]; then
+            PRODUCT_NAME="nteract-preview"
+            BUNDLE_ID="org.nteract.desktop.preview"
+          elif [ "$CHANNEL" = "nightly" ]; then
+            PRODUCT_NAME="nteract-nightly"
+            BUNDLE_ID="org.nteract.desktop.nightly"
+          else
+            PRODUCT_NAME="nteract"
+            BUNDLE_ID="org.nteract.desktop"
+          fi
           sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" crates/notebook/tauri.conf.json
+          sed -i "s/\"productName\": \"[^\"]*\"/\"productName\": \"${PRODUCT_NAME}\"/" crates/notebook/tauri.conf.json
+          sed -i "s/\"identifier\": \"[^\"]*\"/\"identifier\": \"${BUNDLE_ID}\"/" crates/notebook/tauri.conf.json
           sed -i "s#https://github.com/nteract/desktop/releases/download/preview-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
 

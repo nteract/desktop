@@ -1,13 +1,18 @@
 //! Cross-platform service management for runtimed.
 //!
 //! Handles installation and management of the daemon as a system service:
-//! - macOS: launchd user agent (`~/Library/LaunchAgents/io.nteract.runtimed.plist`)
-//! - Linux: systemd user service (`~/.config/systemd/user/runtimed.service`)
+//! - macOS: launchd user agent (channel-specific `io.nteract.runtimed*.plist`)
+//! - Linux: systemd user service (channel-specific `runtimed*.service`)
 //! - Windows: Startup shortcut
 
 use std::path::PathBuf;
 
 use log::info;
+#[cfg(target_os = "macos")]
+use runt_workspace::daemon_launchd_label;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use runt_workspace::daemon_service_basename;
+use runt_workspace::{cache_namespace, daemon_binary_basename};
 
 /// Service configuration.
 #[derive(Debug, Clone)]
@@ -33,27 +38,27 @@ pub fn default_binary_path() -> PathBuf {
     {
         dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("runt")
+            .join(cache_namespace())
             .join("bin")
-            .join("runtimed")
+            .join(daemon_binary_basename())
     }
 
     #[cfg(target_os = "linux")]
     {
         dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("runt")
+            .join(cache_namespace())
             .join("bin")
-            .join("runtimed")
+            .join(daemon_binary_basename())
     }
 
     #[cfg(target_os = "windows")]
     {
         dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("C:\\temp"))
-            .join("runt")
+            .join(cache_namespace())
             .join("bin")
-            .join("runtimed.exe")
+            .join(format!("{}.exe", daemon_binary_basename()))
     }
 }
 
@@ -64,7 +69,7 @@ pub fn default_binary_path() -> PathBuf {
 pub fn default_log_path() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("runt")
+        .join(cache_namespace())
         .join("runtimed.log")
 }
 
@@ -349,7 +354,7 @@ impl ServiceManager {
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>io.nteract.runtimed</string>
+    <string>{}</string>
     <key>ProgramArguments</key>
     <array>
         <string>{}</string>
@@ -373,6 +378,7 @@ impl ServiceManager {
 </dict>
 </plist>
 "#,
+            daemon_launchd_label(),
             self.config.binary_path.display(),
             self.config.log_path.display(),
             self.config.log_path.display(),
@@ -430,9 +436,10 @@ impl ServiceManager {
     // Linux-specific implementations
     #[cfg(target_os = "linux")]
     fn create_linux_systemd(&self) -> ServiceResult<()> {
+        let service_name = daemon_service_basename();
         let service_content = format!(
             r#"[Unit]
-Description=runtimed - Jupyter Runtime Daemon
+Description={} - Jupyter Runtime Daemon
 After=network.target
 
 [Service]
@@ -445,6 +452,7 @@ Environment=PATH=~/.local/bin:/usr/local/bin:/usr/bin:/bin
 [Install]
 WantedBy=default.target
 "#,
+            service_name,
             self.config.binary_path.display(),
         );
 
@@ -463,7 +471,8 @@ WantedBy=default.target
 
         // Enable the service
         std::process::Command::new("systemctl")
-            .args(["--user", "enable", "runtimed.service"])
+            .args(["--user", "enable"])
+            .arg(systemd_service_unit_name())
             .output()?;
 
         Ok(())
@@ -472,7 +481,8 @@ WantedBy=default.target
     #[cfg(target_os = "linux")]
     fn start_linux(&self) -> ServiceResult<()> {
         let output = std::process::Command::new("systemctl")
-            .args(["--user", "start", "runtimed.service"])
+            .args(["--user", "start"])
+            .arg(systemd_service_unit_name())
             .output()?;
 
         if !output.status.success() {
@@ -487,7 +497,8 @@ WantedBy=default.target
     #[cfg(target_os = "linux")]
     fn stop_linux(&self) -> ServiceResult<()> {
         let output = std::process::Command::new("systemctl")
-            .args(["--user", "stop", "runtimed.service"])
+            .args(["--user", "stop"])
+            .arg(systemd_service_unit_name())
             .output()?;
 
         if !output.status.success() {
@@ -540,9 +551,16 @@ Set WshShell = Nothing
 
     #[cfg(target_os = "windows")]
     fn stop_windows(&self) -> ServiceResult<()> {
+        let image_name = self
+            .config
+            .binary_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("runtimed.exe");
+
         // Kill the daemon process by name
         std::process::Command::new("taskkill")
-            .args(["/F", "/IM", "runtimed.exe"])
+            .args(["/F", "/IM", image_name])
             .output()
             .map_err(|e| ServiceError::StopFailed(e.to_string()))?;
 
@@ -559,7 +577,12 @@ fn plist_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("Library")
         .join("LaunchAgents")
-        .join("io.nteract.runtimed.plist")
+        .join(format!("{}.plist", daemon_launchd_label()))
+}
+
+#[cfg(target_os = "linux")]
+fn systemd_service_unit_name() -> String {
+    format!("{}.service", daemon_service_basename())
 }
 
 #[cfg(target_os = "linux")]
@@ -568,7 +591,7 @@ fn systemd_service_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("systemd")
         .join("user")
-        .join("runtimed.service")
+        .join(systemd_service_unit_name())
 }
 
 #[cfg(target_os = "windows")]
@@ -580,7 +603,7 @@ fn windows_startup_path() -> PathBuf {
         .join("Start Menu")
         .join("Programs")
         .join("Startup")
-        .join("runtimed.vbs")
+        .join(format!("{}.vbs", daemon_service_basename()))
 }
 
 /// Get the path to the service configuration file.
@@ -613,7 +636,7 @@ mod tests {
         let binary = default_binary_path();
         let log = default_log_path();
 
-        assert!(binary.to_string_lossy().contains("runt"));
+        assert!(binary.to_string_lossy().contains(cache_namespace()));
         assert!(binary.to_string_lossy().contains("runtimed"));
         assert!(log.to_string_lossy().contains("runtimed.log"));
     }

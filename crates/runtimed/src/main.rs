@@ -32,11 +32,23 @@ struct Cli {
     dev: bool,
 }
 
+fn daemon_binary_name() -> &'static str {
+    runt_workspace::daemon_binary_basename()
+}
+
+fn daemon_service_name() -> &'static str {
+    runt_workspace::daemon_service_basename()
+}
+
+fn cli_command_name() -> &'static str {
+    runt_workspace::cli_command_name()
+}
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Run the daemon (default if no command specified)
     Run {
-        /// Socket path for the unified IPC socket (default: ~/.cache/runt/runtimed.sock)
+        /// Socket path for the unified IPC socket (default: ~/.cache/runt*/runtimed.sock)
         #[arg(long)]
         socket: Option<PathBuf>,
 
@@ -215,27 +227,41 @@ async fn main() -> anyhow::Result<()> {
         // Deprecated commands - still work but print warnings
         Some(Commands::Uninstall) => {
             eprintln!(
-                "Warning: 'runtimed uninstall' is deprecated. Use 'runt daemon uninstall' instead."
+                "Warning: '{} uninstall' is deprecated. Use '{} daemon uninstall' instead.",
+                daemon_binary_name(),
+                cli_command_name()
             );
             uninstall_service()
         }
         Some(Commands::Status { json }) => {
             eprintln!(
-                "Warning: 'runtimed status' is deprecated. Use 'runt daemon status' instead."
+                "Warning: '{} status' is deprecated. Use '{} daemon status' instead.",
+                daemon_binary_name(),
+                cli_command_name()
             );
             status(json).await
         }
         Some(Commands::Start) => {
-            eprintln!("Warning: 'runtimed start' is deprecated. Use 'runt daemon start' instead.");
+            eprintln!(
+                "Warning: '{} start' is deprecated. Use '{} daemon start' instead.",
+                daemon_binary_name(),
+                cli_command_name()
+            );
             start_service()
         }
         Some(Commands::Stop) => {
-            eprintln!("Warning: 'runtimed stop' is deprecated. Use 'runt daemon stop' instead.");
+            eprintln!(
+                "Warning: '{} stop' is deprecated. Use '{} daemon stop' instead.",
+                daemon_binary_name(),
+                cli_command_name()
+            );
             stop_service()
         }
         Some(Commands::FlushPool) => {
             eprintln!(
-                "Warning: 'runtimed flush-pool' is deprecated. Use 'runt daemon flush' instead."
+                "Warning: '{} flush-pool' is deprecated. Use '{} daemon flush' instead.",
+                daemon_binary_name(),
+                cli_command_name()
             );
             flush_pool().await
         }
@@ -312,7 +338,7 @@ fn install_service(binary: Option<PathBuf>) -> anyhow::Result<()> {
     let source_binary = binary
         .unwrap_or_else(|| std::env::current_exe().expect("Failed to get current executable path"));
 
-    println!("Installing runtimed service...");
+    println!("Installing {} service...", daemon_service_name());
     println!("Source binary: {}", source_binary.display());
 
     let manager = ServiceManager::default();
@@ -333,14 +359,14 @@ fn install_service(binary: Option<PathBuf>) -> anyhow::Result<()> {
     println!("Service installed and running!");
     println!("The daemon will start automatically at login.");
     println!();
-    println!("To check status: runt daemon status");
-    println!("To uninstall:    runt daemon uninstall");
+    println!("To check status: {} daemon status", cli_command_name());
+    println!("To uninstall:    {} daemon uninstall", cli_command_name());
 
     Ok(())
 }
 
 fn uninstall_service() -> anyhow::Result<()> {
-    println!("Uninstalling runtimed service...");
+    println!("Uninstalling {} service...", daemon_service_name());
 
     let manager = ServiceManager::default();
 
@@ -387,7 +413,7 @@ async fn status(json: bool) -> anyhow::Result<()> {
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        println!("runtimed Status");
+        println!("{} Status", daemon_service_name());
         println!("===============");
         println!(
             "Service installed: {}",
@@ -427,11 +453,14 @@ fn start_service() -> anyhow::Result<()> {
     let manager = ServiceManager::default();
 
     if !manager.is_installed() {
-        eprintln!("Service not installed. Run 'runtimed install' first.");
+        eprintln!(
+            "Service not installed. Run '{} install' first.",
+            daemon_binary_name()
+        );
         std::process::exit(1);
     }
 
-    println!("Starting runtimed service...");
+    println!("Starting {} service...", daemon_service_name());
     manager.start()?;
     println!("Service started.");
 
@@ -446,7 +475,7 @@ fn stop_service() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    println!("Stopping runtimed service...");
+    println!("Stopping {} service...", daemon_service_name());
     manager.stop()?;
     println!("Service stopped.");
 
