@@ -188,7 +188,9 @@ where
 /// Convert a CellSnapshot from Automerge to an nbformat Cell.
 /// Used when joining an existing room to update local state.
 fn cell_snapshot_to_nbformat(snap: &CellSnapshot) -> Cell {
-    let id = CellId::from(uuid::Uuid::parse_str(&snap.id).unwrap_or_else(|_| uuid::Uuid::new_v4()));
+    // Preserve the original cell ID string (handles both UUID and "cell-UUID" formats)
+    let id =
+        CellId::try_from(snap.id.as_str()).unwrap_or_else(|_| CellId::from(uuid::Uuid::new_v4()));
     let source: Vec<String> = if snap.source.is_empty() {
         Vec::new()
     } else {
@@ -415,6 +417,15 @@ async fn initialize_notebook_sync(
                 &update.cells,
             ) {
                 warn!("[notebook-sync] Failed to emit notebook:updated: {}", e);
+            }
+
+            // Sync cells to NotebookState (for save-to-disk and delete_cell operations)
+            if let Ok(mut state) = notebook_state_for_receiver.lock() {
+                state.notebook.cells = update.cells.iter().map(cell_snapshot_to_nbformat).collect();
+                info!(
+                    "[notebook-sync] Updated local state with {} cells from peer",
+                    state.notebook.cells.len()
+                );
             }
 
             // If metadata changed, merge into local state and notify frontend
