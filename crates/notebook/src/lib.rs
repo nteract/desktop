@@ -3193,7 +3193,6 @@ fn refresh_native_menu(app: &tauri::AppHandle, registry: &WindowNotebookRegistry
         }
     }
 }
-
 fn open_notebook_from_menu_without_window(
     app: &tauri::AppHandle,
     registry: &WindowNotebookRegistry,
