@@ -8,6 +8,148 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 // ============================================================================
+// Build Channel Branding
+// ============================================================================
+
+/// Release channel for this build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildChannel {
+    Stable,
+    Preview,
+    Nightly,
+}
+
+fn build_channel_from_str(channel: Option<&str>) -> BuildChannel {
+    match channel {
+        Some(value) if value.eq_ignore_ascii_case("preview") => BuildChannel::Preview,
+        Some(value) if value.eq_ignore_ascii_case("weekly") => BuildChannel::Preview,
+        Some(value) if value.eq_ignore_ascii_case("nightly") => BuildChannel::Nightly,
+        _ => BuildChannel::Stable,
+    }
+}
+
+/// Build channel for this binary.
+///
+/// Controlled by the compile-time `RUNT_BUILD_CHANNEL` environment variable.
+/// Unset or unknown values fall back to `stable`.
+pub fn build_channel() -> BuildChannel {
+    build_channel_from_str(option_env!("RUNT_BUILD_CHANNEL"))
+}
+
+fn desktop_product_name_for(channel: BuildChannel) -> &'static str {
+    match channel {
+        BuildChannel::Stable => "nteract",
+        BuildChannel::Preview => "nteract-preview",
+        BuildChannel::Nightly => "nteract-nightly",
+    }
+}
+
+fn desktop_display_name_for(channel: BuildChannel) -> &'static str {
+    match channel {
+        BuildChannel::Stable => "nteract",
+        BuildChannel::Preview => "nteract Preview",
+        BuildChannel::Nightly => "nteract Nightly",
+    }
+}
+
+fn cache_namespace_for(channel: BuildChannel) -> &'static str {
+    match channel {
+        BuildChannel::Stable => "runt",
+        BuildChannel::Preview => "runt-preview",
+        BuildChannel::Nightly => "runt-nightly",
+    }
+}
+
+fn config_namespace_for(channel: BuildChannel) -> &'static str {
+    match channel {
+        BuildChannel::Stable => "nteract",
+        BuildChannel::Preview => "nteract-preview",
+        BuildChannel::Nightly => "nteract-nightly",
+    }
+}
+
+fn daemon_binary_basename_for(channel: BuildChannel) -> &'static str {
+    match channel {
+        BuildChannel::Stable => "runtimed",
+        BuildChannel::Preview => "runtimed-preview",
+        BuildChannel::Nightly => "runtimed-nightly",
+    }
+}
+
+fn daemon_service_basename_for(channel: BuildChannel) -> &'static str {
+    daemon_binary_basename_for(channel)
+}
+
+fn daemon_launchd_label_for(channel: BuildChannel) -> &'static str {
+    match channel {
+        BuildChannel::Stable => "io.nteract.runtimed",
+        BuildChannel::Preview => "io.nteract.runtimed.preview",
+        BuildChannel::Nightly => "io.nteract.runtimed.nightly",
+    }
+}
+
+fn cli_command_name_for(channel: BuildChannel) -> &'static str {
+    match channel {
+        BuildChannel::Stable => "runt",
+        BuildChannel::Preview => "runt-preview",
+        BuildChannel::Nightly => "runt-nightly",
+    }
+}
+
+fn cli_notebook_alias_name_for(channel: BuildChannel) -> &'static str {
+    match channel {
+        BuildChannel::Stable => "nb",
+        BuildChannel::Preview => "nb-preview",
+        BuildChannel::Nightly => "nb-nightly",
+    }
+}
+
+/// Desktop product name used for package/app identity.
+pub fn desktop_product_name() -> &'static str {
+    desktop_product_name_for(build_channel())
+}
+
+/// Human-readable desktop app name.
+pub fn desktop_display_name() -> &'static str {
+    desktop_display_name_for(build_channel())
+}
+
+/// Channel-specific cache root directory name.
+pub fn cache_namespace() -> &'static str {
+    cache_namespace_for(build_channel())
+}
+
+/// Channel-specific config root directory name.
+pub fn config_namespace() -> &'static str {
+    config_namespace_for(build_channel())
+}
+
+/// Channel-specific daemon executable base name (without extension).
+pub fn daemon_binary_basename() -> &'static str {
+    daemon_binary_basename_for(build_channel())
+}
+
+/// Channel-specific daemon service base name.
+pub fn daemon_service_basename() -> &'static str {
+    daemon_service_basename_for(build_channel())
+}
+
+/// Channel-specific macOS launchd label for daemon service.
+pub fn daemon_launchd_label() -> &'static str {
+    daemon_launchd_label_for(build_channel())
+}
+
+/// Channel-specific CLI command name.
+pub fn cli_command_name() -> &'static str {
+    cli_command_name_for(build_channel())
+}
+
+/// Channel-specific shorthand notebook command name.
+pub fn cli_notebook_alias_name() -> &'static str {
+    cli_notebook_alias_name_for(build_channel())
+}
+
+// ============================================================================
 // Development Mode Detection
 // ============================================================================
 
@@ -91,7 +233,7 @@ pub fn worktree_hash(path: &Path) -> String {
 pub fn daemon_base_dir() -> PathBuf {
     let base = dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("runt");
+        .join(cache_namespace());
 
     if is_dev_mode() {
         if let Some(worktree) = get_workspace_path() {
@@ -174,5 +316,89 @@ mod tests {
         let path1 = Path::new("/path/one");
         let path2 = Path::new("/path/two");
         assert_ne!(worktree_hash(path1), worktree_hash(path2));
+    }
+
+    #[test]
+    fn test_build_channel_parsing() {
+        assert_eq!(build_channel_from_str(None), BuildChannel::Stable);
+        assert_eq!(
+            build_channel_from_str(Some("preview")),
+            BuildChannel::Preview
+        );
+        assert_eq!(
+            build_channel_from_str(Some("weekly")),
+            BuildChannel::Preview
+        );
+        assert_eq!(
+            build_channel_from_str(Some("nightly")),
+            BuildChannel::Nightly
+        );
+        assert_eq!(
+            build_channel_from_str(Some("something-else")),
+            BuildChannel::Stable
+        );
+    }
+
+    #[test]
+    fn test_branding_matrix_values() {
+        assert_eq!(desktop_product_name_for(BuildChannel::Stable), "nteract");
+        assert_eq!(
+            desktop_product_name_for(BuildChannel::Preview),
+            "nteract-preview"
+        );
+        assert_eq!(
+            desktop_product_name_for(BuildChannel::Nightly),
+            "nteract-nightly"
+        );
+
+        assert_eq!(cache_namespace_for(BuildChannel::Stable), "runt");
+        assert_eq!(cache_namespace_for(BuildChannel::Preview), "runt-preview");
+        assert_eq!(cache_namespace_for(BuildChannel::Nightly), "runt-nightly");
+
+        assert_eq!(config_namespace_for(BuildChannel::Stable), "nteract");
+        assert_eq!(
+            config_namespace_for(BuildChannel::Preview),
+            "nteract-preview"
+        );
+        assert_eq!(
+            config_namespace_for(BuildChannel::Nightly),
+            "nteract-nightly"
+        );
+
+        assert_eq!(daemon_binary_basename_for(BuildChannel::Stable), "runtimed");
+        assert_eq!(
+            daemon_binary_basename_for(BuildChannel::Preview),
+            "runtimed-preview"
+        );
+        assert_eq!(
+            daemon_binary_basename_for(BuildChannel::Nightly),
+            "runtimed-nightly"
+        );
+
+        assert_eq!(cli_command_name_for(BuildChannel::Stable), "runt");
+        assert_eq!(cli_command_name_for(BuildChannel::Preview), "runt-preview");
+        assert_eq!(cli_command_name_for(BuildChannel::Nightly), "runt-nightly");
+        assert_eq!(cli_notebook_alias_name_for(BuildChannel::Stable), "nb");
+        assert_eq!(
+            cli_notebook_alias_name_for(BuildChannel::Preview),
+            "nb-preview"
+        );
+        assert_eq!(
+            cli_notebook_alias_name_for(BuildChannel::Nightly),
+            "nb-nightly"
+        );
+
+        assert_eq!(
+            daemon_launchd_label_for(BuildChannel::Stable),
+            "io.nteract.runtimed"
+        );
+        assert_eq!(
+            daemon_launchd_label_for(BuildChannel::Preview),
+            "io.nteract.runtimed.preview"
+        );
+        assert_eq!(
+            daemon_launchd_label_for(BuildChannel::Nightly),
+            "io.nteract.runtimed.nightly"
+        );
     }
 }

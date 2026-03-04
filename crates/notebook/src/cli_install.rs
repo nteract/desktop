@@ -1,6 +1,7 @@
-//! CLI installation module for copying the bundled `runt` binary to PATH
-//! and creating the `nb` wrapper script.
+//! CLI installation module for copying the bundled runt binary to PATH
+//! and creating the channel-specific notebook shorthand wrapper script.
 
+use runt_workspace::{cli_command_name, cli_notebook_alias_name};
 use std::fs;
 use std::io::Write;
 #[cfg(unix)]
@@ -101,9 +102,9 @@ pub fn get_bundled_runt_path(app: &tauri::AppHandle) -> Option<PathBuf> {
 
 /// Check if the CLI is already installed
 pub fn is_cli_installed() -> bool {
-    let runt_path = PathBuf::from(INSTALL_DIR).join("runt");
-    let nb_path = PathBuf::from(INSTALL_DIR).join("nb");
-    runt_path.exists() && nb_path.exists()
+    let cli_path = PathBuf::from(INSTALL_DIR).join(cli_command_name());
+    let nb_path = PathBuf::from(INSTALL_DIR).join(cli_notebook_alias_name());
+    cli_path.exists() && nb_path.exists()
 }
 
 /// Install the CLI to the system PATH
@@ -113,8 +114,8 @@ pub fn install_cli(app: &tauri::AppHandle) -> Result<(), String> {
         .ok_or_else(|| "Could not find bundled runt binary".to_string())?;
 
     let install_dir = PathBuf::from(INSTALL_DIR);
-    let runt_dest = install_dir.join("runt");
-    let nb_dest = install_dir.join("nb");
+    let runt_dest = install_dir.join(cli_command_name());
+    let nb_dest = install_dir.join(cli_notebook_alias_name());
 
     // Try direct copy first
     match try_install_direct(&bundled_runt, &runt_dest, &nb_dest) {
@@ -163,17 +164,22 @@ fn try_install_direct(
     }
 
     // Create nb wrapper script
-    create_nb_wrapper(nb_dest)?;
+    create_nb_wrapper(nb_dest, cli_command_name())?;
 
     Ok(())
 }
 
 /// Create the nb wrapper script
-fn create_nb_wrapper(nb_dest: &std::path::Path) -> Result<(), String> {
-    let script = r#"#!/bin/bash
-# nb - open notebooks faster than you can say runt notebook
-exec runt notebook "$@"
-"#;
+fn create_nb_wrapper(nb_dest: &std::path::Path, cli_command: &str) -> Result<(), String> {
+    let script = format!(
+        r#"#!/bin/bash
+# {} - open notebooks faster than you can say {} notebook
+exec {} notebook "$@"
+"#,
+        cli_notebook_alias_name(),
+        cli_command,
+        cli_command
+    );
 
     let mut file =
         fs::File::create(nb_dest).map_err(|e| format!("Failed to create nb script: {}", e))?;
@@ -204,8 +210,9 @@ fn install_with_admin_privileges(
 ) -> Result<(), String> {
     // Write nb wrapper to a temp file (no admin needed for temp dir),
     // reusing create_nb_wrapper to avoid duplicating the script content.
-    let temp_nb = std::env::temp_dir().join("runt-nb-install-script");
-    create_nb_wrapper(&temp_nb)?;
+    let temp_nb =
+        std::env::temp_dir().join(format!("{}-install-script", cli_notebook_alias_name()));
+    create_nb_wrapper(&temp_nb, cli_command_name())?;
 
     // Build shell commands -- just copy and chmod, no embedded script content.
     // This avoids escaping issues with AppleScript string parsing.
