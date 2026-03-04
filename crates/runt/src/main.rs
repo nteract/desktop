@@ -12,7 +12,7 @@ use runtimelib::{
     create_client_heartbeat_connection, create_client_shell_connection_with_identity,
     find_kernelspec, peer_identity_for_session, runtime_dir, ConnectionInfo,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::fs;
 use uuid::Uuid;
 
@@ -364,6 +364,27 @@ enum DaemonCommands {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
+    },
+    /// Clean up worktree daemon state directories
+    CleanWorktree {
+        /// Clean a specific worktree by its hash
+        #[arg(long)]
+        hash: Option<String>,
+        /// Clean all worktree daemons (does not affect system daemon)
+        #[arg(long)]
+        all: bool,
+        /// Clean only stale worktrees (where original path no longer exists)
+        #[arg(long)]
+        stale: bool,
+        /// Stop running daemon before cleaning (otherwise refuses if running)
+        #[arg(long)]
+        force: bool,
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+        /// Show what would be deleted without actually deleting
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -1668,6 +1689,16 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
         DaemonCommands::ListWorktrees { json } => {
             list_worktree_daemons(json).await?;
         }
+        DaemonCommands::CleanWorktree {
+            hash,
+            all,
+            stale,
+            force,
+            yes,
+            dry_run,
+        } => {
+            clean_worktree_command(hash, all, stale, force, yes, dry_run).await?;
+        }
     }
 
     Ok(())
@@ -2288,6 +2319,297 @@ async fn list_worktree_daemons(json_output: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Clean up worktree daemon state directories
+async fn clean_worktree_command(
+    hash: Option<String>,
+    all: bool,
+    stale: bool,
+    force: bool,
+    yes: bool,
+    dry_run: bool,
+) -> Result<()> {
+    use runtimed::client::PoolClient;
+    use runtimed::singleton::read_daemon_info;
+    use std::io::{self, Write};
+
+    let worktrees_dir = dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("runt")
+        .join("worktrees");
+
+    if !worktrees_dir.exists() {
+        println!("No worktree state directories found.");
+        return Ok(());
+    }
+
+    // Collect worktree targets
+    struct WorktreeTarget {
+        hash: String,
+        path: PathBuf,
+        worktree_path: Option<String>,
+        is_running: bool,
+        is_stale: bool,
+        size_bytes: u64,
+    }
+
+    let mut targets: Vec<WorktreeTarget> = Vec::new();
+
+    if let Some(h) = hash {
+        // Specific hash
+        let path = worktrees_dir.join(&h);
+        if !path.exists() {
+            anyhow::bail!("No worktree state found for hash: {}", h);
+        }
+        targets.push(WorktreeTarget {
+            hash: h,
+            path,
+            worktree_path: None,
+            is_running: false,
+            is_stale: false,
+            size_bytes: 0,
+        });
+    } else if all || stale {
+        // All or stale worktrees
+        let mut entries = fs::read_dir(&worktrees_dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let h = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            targets.push(WorktreeTarget {
+                hash: h,
+                path,
+                worktree_path: None,
+                is_running: false,
+                is_stale: false,
+                size_bytes: 0,
+            });
+        }
+    } else {
+        // Current worktree (default)
+        let workspace_path = runt_workspace::get_workspace_path().ok_or_else(|| {
+            anyhow::anyhow!("Not in a git worktree and RUNTIMED_WORKSPACE_PATH not set.\nUse --hash <hash> or --all to specify which worktree to clean.")
+        })?;
+        let h = runt_workspace::worktree_hash(&workspace_path);
+        let path = worktrees_dir.join(&h);
+        if !path.exists() {
+            anyhow::bail!(
+                "No worktree state found for {} (hash: {})",
+                workspace_path.display(),
+                h
+            );
+        }
+        targets.push(WorktreeTarget {
+            hash: h,
+            path,
+            worktree_path: Some(workspace_path.to_string_lossy().to_string()),
+            is_running: false,
+            is_stale: false,
+            size_bytes: 0,
+        });
+    }
+
+    if targets.is_empty() {
+        println!("No worktree state directories found.");
+        return Ok(());
+    }
+
+    // Check daemon status and calculate sizes for each target
+    for target in &mut targets {
+        // Read daemon info
+        let info_path = target.path.join("daemon.json");
+        if let Some(info) = read_daemon_info(&info_path) {
+            target.worktree_path = info.worktree_path.clone();
+
+            // Try to ping the daemon
+            let client = PoolClient::new(PathBuf::from(&info.endpoint));
+            target.is_running =
+                tokio::time::timeout(std::time::Duration::from_secs(2), client.ping())
+                    .await
+                    .map(|r| r.is_ok())
+                    .unwrap_or(false);
+
+            // Check if stale (original path no longer exists)
+            if let Some(ref wt_path) = target.worktree_path {
+                target.is_stale = !PathBuf::from(wt_path).exists();
+            }
+        }
+
+        // Calculate directory size
+        target.size_bytes = calculate_dir_size(&target.path);
+    }
+
+    // Filter to stale only if requested
+    if stale {
+        targets.retain(|t| t.is_stale);
+        if targets.is_empty() {
+            println!("No stale worktree state directories found.");
+            return Ok(());
+        }
+    }
+
+    // Check for running daemons
+    let running: Vec<_> = targets.iter().filter(|t| t.is_running).collect();
+    if !running.is_empty() && !force {
+        eprintln!("The following worktree daemons are still running:");
+        for t in &running {
+            eprintln!(
+                "  {} ({})",
+                t.hash,
+                t.worktree_path.as_deref().unwrap_or("unknown")
+            );
+        }
+        eprintln!();
+        eprintln!("Use --force to stop them first, or stop manually with:");
+        eprintln!("  runt daemon stop");
+        std::process::exit(1);
+    }
+
+    // Stop running daemons if --force
+    if force {
+        for target in &targets {
+            if target.is_running {
+                let info_path = target.path.join("daemon.json");
+                if let Some(info) = read_daemon_info(&info_path) {
+                    let client = PoolClient::new(PathBuf::from(&info.endpoint));
+                    print!("Stopping daemon {}... ", target.hash);
+                    io::stdout().flush()?;
+                    match client.shutdown().await {
+                        Ok(_) => {
+                            println!("done");
+                            // Brief wait for shutdown
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
+                        Err(e) => {
+                            println!("warning: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+        println!();
+    }
+
+    // Calculate total size
+    let total_size: u64 = targets.iter().map(|t| t.size_bytes).sum();
+
+    // Display summary
+    #[derive(Tabled)]
+    struct CleanupRow {
+        #[tabled(rename = "HASH")]
+        hash: String,
+        #[tabled(rename = "WORKTREE")]
+        worktree: String,
+        #[tabled(rename = "STATUS")]
+        status: String,
+        #[tabled(rename = "SIZE")]
+        size: String,
+    }
+
+    let rows: Vec<CleanupRow> = targets
+        .iter()
+        .map(|t| CleanupRow {
+            hash: t.hash.clone(),
+            worktree: t
+                .worktree_path
+                .as_ref()
+                .map(|p| shorten_path(&PathBuf::from(p)))
+                .unwrap_or_else(|| "-".to_string()),
+            status: if t.is_stale {
+                "stale".to_string()
+            } else if t.is_running {
+                "running".to_string()
+            } else {
+                "stopped".to_string()
+            },
+            size: format_size(t.size_bytes),
+        })
+        .collect();
+
+    let table = Table::new(&rows).with(Style::rounded()).to_string();
+    println!("{}", table);
+    println!();
+    println!(
+        "Will delete {} worktree state director{} ({})",
+        targets.len(),
+        if targets.len() == 1 { "y" } else { "ies" },
+        format_size(total_size)
+    );
+
+    if dry_run {
+        println!();
+        println!("(dry-run mode - no files deleted)");
+        return Ok(());
+    }
+
+    // Confirm unless --yes
+    if !yes {
+        print!("Continue? [y/N] ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    // Perform deletion
+    let mut success_count = 0;
+    let mut failure_count = 0;
+
+    for target in &targets {
+        match std::fs::remove_dir_all(&target.path) {
+            Ok(()) => {
+                println!("Deleted {}", target.hash);
+                success_count += 1;
+            }
+            Err(e) => {
+                eprintln!("Failed to delete {}: {}", target.hash, e);
+                failure_count += 1;
+            }
+        }
+    }
+
+    println!();
+    println!("Cleaned {} worktree(s)", success_count);
+    if failure_count > 0 {
+        eprintln!("{} failed (check permissions)", failure_count);
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+/// Calculate total size of a directory
+fn calculate_dir_size(path: &Path) -> u64 {
+    walkdir::WalkDir::new(path)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.metadata().ok())
+        .filter(|m| m.is_file())
+        .map(|m| m.len())
+        .sum()
+}
+
+/// Format bytes into human-readable size
+fn format_size(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 {
+        format!("{:.1} GB", bytes as f64 / 1_000_000_000.0)
+    } else if bytes >= 1_000_000 {
+        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+    } else if bytes >= 1_000 {
+        format!("{:.1} KB", bytes as f64 / 1_000.0)
+    } else {
+        format!("{} B", bytes)
+    }
 }
 
 // =============================================================================

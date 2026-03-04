@@ -5467,6 +5467,7 @@ dependencies = [
  "tabled",
  "tokio",
  "uuid",
+ "walkdir",
 ]
 
 [[package]]
