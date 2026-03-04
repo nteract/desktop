@@ -5,7 +5,6 @@
 
 use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::future_into_py;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -17,6 +16,7 @@ use runtimed::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 
 use crate::error::to_py_err;
 use crate::output::{Cell, ExecutionResult, Output};
+use crate::output_resolver;
 
 /// An async session for executing code via the runtimed daemon.
 ///
@@ -427,12 +427,24 @@ impl AsyncSession {
                 .as_ref()
                 .ok_or_else(|| to_py_err("Not connected"))?;
 
+            let blob_base_url = state_guard.blob_base_url.clone();
+            let blob_store_path = state_guard.blob_store_path.clone();
+
             let cells = handle.get_cells().await.map_err(to_py_err)?;
-            cells
+            let snapshot = cells
                 .into_iter()
                 .find(|c| c.id == cell_id)
-                .map(Cell::from_snapshot)
-                .ok_or_else(|| to_py_err(format!("Cell not found: {}", cell_id)))
+                .ok_or_else(|| to_py_err(format!("Cell not found: {}", cell_id)))?;
+
+            // Resolve outputs from automerge document
+            let outputs = output_resolver::resolve_cell_outputs(
+                &snapshot.outputs,
+                &blob_base_url,
+                &blob_store_path,
+            )
+            .await;
+
+            Ok(Cell::from_snapshot_with_outputs(snapshot, outputs))
         })
     }
 
@@ -449,11 +461,23 @@ impl AsyncSession {
                 .as_ref()
                 .ok_or_else(|| to_py_err("Not connected"))?;
 
-            let cells = handle.get_cells().await.map_err(to_py_err)?;
-            Ok(cells
-                .into_iter()
-                .map(Cell::from_snapshot)
-                .collect::<Vec<_>>())
+            let blob_base_url = state_guard.blob_base_url.clone();
+            let blob_store_path = state_guard.blob_store_path.clone();
+
+            let snapshots = handle.get_cells().await.map_err(to_py_err)?;
+
+            // Resolve outputs for all cells
+            let mut cells = Vec::with_capacity(snapshots.len());
+            for snapshot in snapshots {
+                let outputs = output_resolver::resolve_cell_outputs(
+                    &snapshot.outputs,
+                    &blob_base_url,
+                    &blob_store_path,
+                )
+                .await;
+                cells.push(Cell::from_snapshot_with_outputs(snapshot, outputs));
+            }
+            Ok(cells)
         })
     }
 
@@ -975,7 +999,7 @@ async fn collect_outputs_async(
                         output_index,
                     } => {
                         if msg_cell_id == cell_id {
-                            if let Some(output) = parse_output_async(
+                            if let Some(output) = output_resolver::resolve_output_with_type(
                                 &output_type,
                                 &output_json,
                                 &blob_base_url,
@@ -1038,188 +1062,4 @@ async fn collect_outputs_async(
         success,
         execution_count,
     })
-}
-
-/// Parse an output from the daemon broadcast.
-async fn parse_output_async(
-    output_type: &str,
-    output_json: &str,
-    blob_base_url: &Option<String>,
-    blob_store_path: &Option<PathBuf>,
-) -> Option<Output> {
-    // Try to parse output_json directly first
-    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(output_json) {
-        return output_from_json(output_type, &parsed);
-    }
-
-    // If it looks like a blob hash (64 hex chars), try to resolve it
-    if output_json.len() == 64 && output_json.chars().all(|c| c.is_ascii_hexdigit()) {
-        log::debug!("[async_session] Detected blob hash: {}", output_json);
-
-        // First try: read directly from disk
-        if let Some(store_path) = blob_store_path {
-            let prefix = &output_json[..2];
-            let rest = &output_json[2..];
-            let blob_path = store_path.join(prefix).join(rest);
-
-            if let Ok(contents) = tokio::fs::read_to_string(&blob_path).await {
-                if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&contents) {
-                    return output_from_manifest_async(output_type, &manifest, blob_store_path)
-                        .await;
-                }
-            }
-        }
-
-        // Second try: fetch from blob server
-        if let Some(base_url) = blob_base_url {
-            let url = format!("{}/blobs/{}", base_url, output_json);
-            if let Ok(response) = reqwest::get(&url).await {
-                if response.status().is_success() {
-                    if let Ok(manifest) = response.json::<serde_json::Value>().await {
-                        return output_from_manifest_async(output_type, &manifest, blob_store_path)
-                            .await;
-                    }
-                }
-            }
-        }
-    }
-
-    // Fallback
-    if output_type == "error" {
-        Some(Output::error(
-            "OutputParseError",
-            &format!("Failed to parse error output: {}", output_json),
-            vec![],
-        ))
-    } else {
-        Some(Output::stream(
-            "stderr",
-            &format!("Failed to parse output: {}", output_json),
-        ))
-    }
-}
-
-/// Convert a parsed JSON value to an Output.
-fn output_from_json(output_type: &str, json: &serde_json::Value) -> Option<Output> {
-    match output_type {
-        "stream" => {
-            let name = json.get("name")?.as_str()?;
-            let text = json.get("text")?.as_str()?;
-            Some(Output::stream(name, text))
-        }
-        "display_data" => {
-            let data = json.get("data")?.as_object()?;
-            let mut output_data = HashMap::new();
-            for (key, value) in data {
-                if let Some(s) = value.as_str() {
-                    output_data.insert(key.clone(), s.to_string());
-                } else {
-                    output_data.insert(key.clone(), value.to_string());
-                }
-            }
-            Some(Output::display_data(output_data))
-        }
-        "execute_result" => {
-            let data = json.get("data")?.as_object()?;
-            let execution_count = json.get("execution_count")?.as_i64()?;
-            let mut output_data = HashMap::new();
-            for (key, value) in data {
-                if let Some(s) = value.as_str() {
-                    output_data.insert(key.clone(), s.to_string());
-                } else {
-                    output_data.insert(key.clone(), value.to_string());
-                }
-            }
-            Some(Output::execute_result(output_data, execution_count))
-        }
-        "error" => {
-            let ename = json.get("ename")?.as_str()?.to_string();
-            let evalue = json.get("evalue")?.as_str()?.to_string();
-            let traceback = json
-                .get("traceback")?
-                .as_array()?
-                .iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect();
-            Some(Output::error(&ename, &evalue, traceback))
-        }
-        _ => None,
-    }
-}
-
-/// Convert a blob manifest to an Output.
-async fn output_from_manifest_async(
-    output_type: &str,
-    manifest: &serde_json::Value,
-    blob_store_path: &Option<PathBuf>,
-) -> Option<Output> {
-    match output_type {
-        "stream" => {
-            let name = manifest.get("name")?.as_str()?;
-            let text_ref = manifest.get("text")?;
-            let text = resolve_content_ref_async(text_ref, blob_store_path).await?;
-            Some(Output::stream(name, &text))
-        }
-        "display_data" | "execute_result" => {
-            let data_map = manifest.get("data")?.as_object()?;
-            let mut output_data = HashMap::new();
-
-            for (mime_type, content_ref) in data_map {
-                if let Some(content) = resolve_content_ref_async(content_ref, blob_store_path).await
-                {
-                    output_data.insert(mime_type.clone(), content);
-                }
-            }
-
-            if output_type == "execute_result" {
-                let execution_count = manifest.get("execution_count")?.as_i64()?;
-                Some(Output::execute_result(output_data, execution_count))
-            } else {
-                Some(Output::display_data(output_data))
-            }
-        }
-        "error" => {
-            let ename = manifest.get("ename")?.as_str()?.to_string();
-            let evalue = manifest.get("evalue")?.as_str()?.to_string();
-
-            let traceback_val = manifest.get("traceback")?;
-            let traceback = if let Some(arr) = traceback_val.as_array() {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect()
-            } else {
-                let tb_str = resolve_content_ref_async(traceback_val, blob_store_path).await?;
-                serde_json::from_str::<Vec<String>>(&tb_str).ok()?
-            };
-
-            Some(Output::error(&ename, &evalue, traceback))
-        }
-        _ => None,
-    }
-}
-
-/// Resolve a content reference from a blob manifest.
-async fn resolve_content_ref_async(
-    content_ref: &serde_json::Value,
-    blob_store_path: &Option<PathBuf>,
-) -> Option<String> {
-    if let Some(inline) = content_ref.get("inline") {
-        return inline.as_str().map(|s| s.to_string());
-    }
-
-    if let Some(blob_hash) = content_ref.get("blob").and_then(|v| v.as_str()) {
-        if let Some(store_path) = blob_store_path {
-            if blob_hash.len() >= 2 {
-                let prefix = &blob_hash[..2];
-                let rest = &blob_hash[2..];
-                let blob_path = store_path.join(prefix).join(rest);
-
-                if let Ok(contents) = tokio::fs::read_to_string(&blob_path).await {
-                    return Some(contents);
-                }
-            }
-        }
-    }
-
-    None
 }

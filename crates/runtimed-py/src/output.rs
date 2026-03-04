@@ -144,6 +144,10 @@ pub struct Cell {
     /// Execution count (None if not executed)
     #[pyo3(get)]
     pub execution_count: Option<i64>,
+
+    /// Cell outputs (resolved from automerge document)
+    #[pyo3(get)]
+    pub outputs: Vec<Output>,
 }
 
 #[pymethods]
@@ -152,14 +156,19 @@ impl Cell {
         let preview: String = self.source.chars().take(30).collect();
         let ellipsis = if self.source.len() > 30 { "..." } else { "" };
         format!(
-            "Cell(id={}, type={}, source={:?}{})",
-            self.id, self.cell_type, preview, ellipsis
+            "Cell(id={}, type={}, source={:?}{}, outputs={})",
+            self.id,
+            self.cell_type,
+            preview,
+            ellipsis,
+            self.outputs.len()
         )
     }
 }
 
 impl Cell {
-    /// Create a Cell from a CellSnapshot.
+    /// Create a Cell from a CellSnapshot without resolving outputs.
+    /// Use `from_snapshot_with_outputs` to include resolved outputs.
     pub fn from_snapshot(snapshot: runtimed::notebook_doc::CellSnapshot) -> Self {
         // Parse execution_count from JSON string ("5" or "null")
         let execution_count = snapshot.execution_count.parse::<i64>().ok();
@@ -169,6 +178,23 @@ impl Cell {
             cell_type: snapshot.cell_type,
             source: snapshot.source,
             execution_count,
+            outputs: Vec::new(),
+        }
+    }
+
+    /// Create a Cell from a CellSnapshot with pre-resolved outputs.
+    pub fn from_snapshot_with_outputs(
+        snapshot: runtimed::notebook_doc::CellSnapshot,
+        outputs: Vec<Output>,
+    ) -> Self {
+        let execution_count = snapshot.execution_count.parse::<i64>().ok();
+
+        Self {
+            id: snapshot.id,
+            cell_type: snapshot.cell_type,
+            source: snapshot.source,
+            execution_count,
+            outputs,
         }
     }
 }

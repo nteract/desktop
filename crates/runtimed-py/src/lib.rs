@@ -13,6 +13,7 @@ mod async_session;
 mod client;
 mod error;
 mod output;
+mod output_resolver;
 mod session;
 
 use async_session::AsyncSession;
