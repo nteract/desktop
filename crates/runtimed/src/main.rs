@@ -103,14 +103,58 @@ enum Commands {
     FlushPool,
 }
 
+/// Get a log path that works even when HOME is not set.
+/// Falls back to /tmp if the normal cache directory is unavailable.
+fn early_log_path() -> PathBuf {
+    // Try the standard location first
+    if let Some(cache) = dirs::cache_dir() {
+        let path = cache
+            .join(runt_workspace::cache_namespace())
+            .join("runtimed.log");
+        if let Some(parent) = path.parent() {
+            if std::fs::create_dir_all(parent).is_ok() {
+                return path;
+            }
+        }
+    }
+    // Fallback to /tmp which should always be writable
+    PathBuf::from("/tmp/runtimed-startup.log")
+}
+
+/// Write an early diagnostic message before logging is initialized.
+/// This ensures we capture startup failures even when HOME is not set.
+fn early_log(msg: &str) {
+    use std::io::Write;
+    let path = early_log_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let _ = writeln!(file, "{} [STARTUP] {}", timestamp, msg);
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Log startup diagnostics BEFORE anything else - helps debug launchd issues
+    early_log(&format!(
+        "runtimed starting: pid={}, HOME={:?}, USER={:?}",
+        std::process::id(),
+        std::env::var("HOME").ok(),
+        std::env::var("USER").ok()
+    ));
+
     // Install panic hook to ensure panics are logged to the daemon log file.
-    // This runs before logging is initialized, so we write directly to the file.
+    // Uses early_log_path() which falls back to /tmp if HOME is not set.
     std::panic::set_hook(Box::new(|panic_info| {
         use std::io::Write;
 
-        let log_path = runtimed::default_log_path();
+        let log_path = early_log_path();
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         let msg = format!("{} [PANIC] runtimed: {}", timestamp, panic_info);
 
@@ -118,7 +162,6 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("{}", msg);
 
         // Also append to log file so it's captured for debugging.
-        // Create the directory first in case this is first run.
         if let Some(parent) = log_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }

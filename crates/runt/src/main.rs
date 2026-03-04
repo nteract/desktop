@@ -1687,6 +1687,8 @@ async fn doctor_command(
     struct DoctorReport {
         installed_binary: CheckResult,
         service_config: CheckResult,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        plist_home_env: Option<CheckResult>,
         socket_file: CheckResult,
         daemon_state: CheckResult,
         daemon_running: CheckResult,
@@ -1728,6 +1730,39 @@ async fn doctor_command(
             status: if config_exists { "ok" } else { "missing" }.to_string(),
             detail: None,
         };
+
+        // Check 2b: On macOS, verify plist has HOME environment variable
+        #[cfg(target_os = "macos")]
+        let plist_home_env = if config_exists {
+            match std::fs::read_to_string(&service_config_path) {
+                Ok(content) => {
+                    if content.contains("<key>HOME</key>") {
+                        Some(CheckResult {
+                            path: "HOME env in plist".to_string(),
+                            status: "ok".to_string(),
+                            detail: None,
+                        })
+                    } else {
+                        Some(CheckResult {
+                            path: "HOME env in plist".to_string(),
+                            status: "missing".to_string(),
+                            detail: Some(
+                                "plist missing HOME - daemon may fail to start".to_string(),
+                            ),
+                        })
+                    }
+                }
+                Err(_) => Some(CheckResult {
+                    path: "HOME env in plist".to_string(),
+                    status: "error".to_string(),
+                    detail: Some("could not read plist".to_string()),
+                }),
+            }
+        } else {
+            None
+        };
+        #[cfg(not(target_os = "macos"))]
+        let plist_home_env: Option<CheckResult> = None;
 
         // Check 3: Socket file
         let socket_exists = socket_path.exists();
@@ -1802,6 +1837,7 @@ async fn doctor_command(
         DoctorReport {
             installed_binary,
             service_config,
+            plist_home_env,
             socket_file,
             daemon_state,
             daemon_running,
@@ -1821,6 +1857,15 @@ async fn doctor_command(
     let binary_exists = binary_path.exists();
     let config_exists = service_config_path.exists();
     let socket_exists = socket_path.exists();
+
+    // On macOS, check if plist is missing HOME env var
+    #[cfg(target_os = "macos")]
+    let plist_home_missing = config_exists
+        && std::fs::read_to_string(&service_config_path)
+            .map(|content| !content.contains("<key>HOME</key>"))
+            .unwrap_or(false);
+    #[cfg(not(target_os = "macos"))]
+    let plist_home_missing = false;
 
     // Check daemon state for fix operations
     let daemon_state_status = if let Some(info) = daemon_info {
@@ -1859,6 +1904,23 @@ async fn doctor_command(
                     }
                 } else {
                     actions_taken.push("Removed stale socket file".to_string());
+                }
+            }
+        }
+
+        // Fix plist missing HOME env var (causes daemon to fail on startup)
+        if plist_home_missing && binary_exists {
+            // Stop daemon first if running
+            if daemon_running_before {
+                let _ = manager.stop();
+            }
+            // Regenerate plist with HOME by calling upgrade with the existing binary
+            match manager.upgrade(&binary_path) {
+                Ok(()) => {
+                    actions_taken.push("Regenerated plist with HOME env var".to_string());
+                }
+                Err(e) => {
+                    eprintln!("Failed to regenerate plist: {}", e);
                 }
             }
         }
@@ -1942,6 +2004,17 @@ async fn doctor_command(
             report.service_config.path,
             status_icon(&report.service_config.status)
         );
+        if let Some(ref plist_check) = report.plist_home_env {
+            println!(
+                "Plist HOME env:     {}{}",
+                status_icon(&plist_check.status),
+                plist_check
+                    .detail
+                    .as_ref()
+                    .map(|d| format!(" ({})", d))
+                    .unwrap_or_default()
+            );
+        }
         println!(
             "Socket file:        {} {}",
             report.socket_file.path,
