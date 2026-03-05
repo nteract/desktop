@@ -126,10 +126,11 @@ const TAGLINES: &[&str] = &[
 ];
 
 fn random_tagline() -> String {
+    use colored::Colorize;
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
     let index = RandomState::new().build_hasher().finish() as usize % TAGLINES.len();
-    format!("Runt: {}", TAGLINES[index])
+    format!("{} {}", "Runt:".cyan().bold(), TAGLINES[index])
 }
 
 #[derive(Parser)]
