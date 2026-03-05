@@ -910,7 +910,12 @@ function AppContent() {
         }}
       />
       {needsApproval && kernelStatus === KERNEL_STATUS.NOT_STARTED && (
-        <UntrustedBanner onReviewClick={() => setTrustDialogOpen(true)} />
+        <UntrustedBanner
+          onReviewClick={() => {
+            pendingKernelStartRef.current = true;
+            setTrustDialogOpen(true);
+          }}
+        />
       )}
       <NotebookToolbar
         kernelStatus={kernelStatus}
