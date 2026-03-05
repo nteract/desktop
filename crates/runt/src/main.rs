@@ -1617,14 +1617,7 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 let channel = runt_workspace::channel_display_name();
 
                 // Header with purple bracket style
-                // Always "runtimed Daemon Status" - channel shown separately below
-                println!("{}", "╭─".purple());
-                println!(
-                    "{} {} Daemon Status",
-                    "│".purple(),
-                    "runtimed".purple().bold(),
-                );
-                println!("{}", "╰─".purple());
+                print_header("runtimed", "Daemon Status");
 
                 // Channel and status
                 println!("{:<19} {}", "Channel:".bold(), channel.cyan());
@@ -2201,7 +2194,7 @@ async fn doctor_command(
     } else {
         use colored::Colorize;
 
-        print_header("runtimed Health Check");
+        print_header("runtimed", "Health Check");
         println!(
             "{:<20} {} {}",
             "Installed binary:".bold(),
@@ -2422,11 +2415,17 @@ fn colored_yes_no(value: bool) -> colored::ColoredString {
     }
 }
 
-/// Print a purple bracket header
-fn print_header(title: &str) {
+/// Print a purple bracket header with colored prefix and regular suffix
+/// Example: print_header("runtimed", "Health Check") → "runtimed" purple, "Health Check" regular
+fn print_header(colored_prefix: &str, suffix: &str) {
     use colored::Colorize;
     println!("{}", "╭─".purple());
-    println!("{} {}", "│".purple(), title.purple().bold());
+    println!(
+        "{} {} {}",
+        "│".purple(),
+        colored_prefix.purple().bold(),
+        suffix
+    );
     println!("{}", "╰─".purple());
 }
 
