@@ -356,6 +356,36 @@ fn prepend_to_path(dir: &std::path::Path) -> String {
     }
 }
 
+/// Escape a search pattern for IPython's fnmatch-based history search.
+///
+/// IPython's history search uses fnmatch (glob) matching, so we need to:
+/// 1. Escape any glob metacharacters in the user's search term
+/// 2. Wrap with *...* for substring matching
+///
+/// Without this, a search for "for" would only match entries exactly equal
+/// to "for", not entries containing "for".
+fn escape_glob_pattern(pattern: Option<&str>) -> String {
+    match pattern {
+        Some(p) if !p.is_empty() => {
+            let mut escaped = String::with_capacity(p.len() + 2);
+            escaped.push('*');
+            for c in p.chars() {
+                match c {
+                    '*' | '?' | '[' | ']' => {
+                        escaped.push('[');
+                        escaped.push(c);
+                        escaped.push(']');
+                    }
+                    _ => escaped.push(c),
+                }
+            }
+            escaped.push('*');
+            escaped
+        }
+        _ => "*".to_string(),
+    }
+}
+
 impl RoomKernel {
     /// Create a new room kernel with a broadcast channel for outputs.
     pub fn new(
@@ -1844,9 +1874,9 @@ impl RoomKernel {
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("No kernel running"))?;
 
-        // Create history request
+        let glob_pattern = escape_glob_pattern(pattern.as_deref());
         let request = HistoryRequest::Search {
-            pattern: pattern.unwrap_or_else(|| "*".to_string()),
+            pattern: glob_pattern,
             unique,
             output: false,
             raw: true,
@@ -2077,5 +2107,35 @@ mod tests {
         assert!(kernel.executing_cell().is_none());
         assert!(kernel.queued_cells().is_empty());
         assert_eq!(kernel.status(), KernelStatus::Starting);
+    }
+
+    #[test]
+    fn test_escape_glob_pattern_none() {
+        assert_eq!(escape_glob_pattern(None), "*");
+    }
+
+    #[test]
+    fn test_escape_glob_pattern_empty() {
+        assert_eq!(escape_glob_pattern(Some("")), "*");
+    }
+
+    #[test]
+    fn test_escape_glob_pattern_simple() {
+        assert_eq!(escape_glob_pattern(Some("for")), "*for*");
+        assert_eq!(escape_glob_pattern(Some("import time")), "*import time*");
+    }
+
+    #[test]
+    fn test_escape_glob_pattern_metacharacters() {
+        // Each glob metacharacter should be wrapped in brackets to escape it
+        assert_eq!(escape_glob_pattern(Some("*")), "*[*]*");
+        assert_eq!(escape_glob_pattern(Some("?")), "*[?]*");
+        assert_eq!(escape_glob_pattern(Some("[test]")), "*[[]test[]]*");
+    }
+
+    #[test]
+    fn test_escape_glob_pattern_mixed() {
+        // Complex pattern with multiple metacharacters
+        assert_eq!(escape_glob_pattern(Some("a*b?c[d]")), "*a[*]b[?]c[[]d[]]*");
     }
 }

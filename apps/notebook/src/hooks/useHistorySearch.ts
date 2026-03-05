@@ -70,16 +70,20 @@ export function useHistorySearch() {
     setError(null);
 
     try {
-      const entries = await invoke<HistoryEntry[]>("get_history_via_daemon", {
+      const results = await invoke<HistoryEntry[]>("get_history_via_daemon", {
         pattern: pattern || null,
         n: 100,
       });
 
       // Only update if this is still the current search (avoid race conditions)
       if (currentSearchRef.current === pattern) {
-        setEntries(entries);
-        // Cache the result
-        setCacheResult(pattern, entries);
+        // Don't replace good entries with empty kernel results — the kernel
+        // glob search may legitimately return nothing for very narrow patterns
+        // while client-side filtering of the tail still has useful matches.
+        if (results.length > 0 || !pattern) {
+          setEntries(results);
+          setCacheResult(pattern, results);
+        }
       }
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : String(e);

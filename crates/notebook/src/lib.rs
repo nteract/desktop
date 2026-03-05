@@ -1901,7 +1901,7 @@ async fn get_history_via_daemon(
     window: tauri::Window,
     registry: tauri::State<'_, WindowNotebookRegistry>,
 ) -> Result<Vec<HistoryEntry>, String> {
-    info!(
+    debug!(
         "[daemon-kernel] get_history_via_daemon: pattern={:?}, n={}",
         pattern, n
     );
