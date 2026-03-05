@@ -6,27 +6,26 @@
       "RUNTIMED_DEV": "1",
       "RUNTIMED_WORKSPACE_PATH": "$ZED_WORKTREE_ROOT",
       "RUNTIMED_WORKSPACE_NAME": "desktop",
-      "RUNTIMED_VITE_PORT": "5174",
+      "RUNTIMED_VITE_PORT": "5174"
     },
     "use_new_terminal": true,
     "allow_concurrent_runs": false,
     "reveal": "always",
-    "reveal_target": "dock",
+    "reveal_target": "dock"
   },
   {
     "label": "Dev App",
     "command": "cargo xtask dev",
     "env": {
-      "PATH": "$ZED_WORKTREE_ROOT/bin:$PATH",
       "RUNTIMED_DEV": "1",
       "RUNTIMED_WORKSPACE_PATH": "$ZED_WORKTREE_ROOT",
       "RUNTIMED_WORKSPACE_NAME": "desktop",
-      "RUNTIMED_VITE_PORT": "5174",
+      "RUNTIMED_VITE_PORT": "5174"
     },
     "use_new_terminal": true,
     "allow_concurrent_runs": false,
     "reveal": "always",
-    "reveal_target": "dock",
+    "reveal_target": "dock"
   },
   {
     "label": "Setup",
@@ -34,37 +33,37 @@
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "reveal": "always",
-    "hide": "on_success",
+    "hide": "on_success"
   },
   {
     "label": "Daemon Status",
     "command": "./target/debug/runt daemon status",
     "env": {
       "RUNTIMED_DEV": "1",
-      "RUNTIMED_WORKSPACE_PATH": "$ZED_WORKTREE_ROOT",
+      "RUNTIMED_WORKSPACE_PATH": "$ZED_WORKTREE_ROOT"
     },
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
-    "reveal": "always",
+    "reveal": "always"
   },
   {
     "label": "Daemon Logs",
     "command": "./target/debug/runt daemon logs -f",
     "env": {
       "RUNTIMED_DEV": "1",
-      "RUNTIMED_WORKSPACE_PATH": "$ZED_WORKTREE_ROOT",
+      "RUNTIMED_WORKSPACE_PATH": "$ZED_WORKTREE_ROOT"
     },
     "use_new_terminal": true,
     "allow_concurrent_runs": false,
     "reveal": "always",
-    "reveal_target": "dock",
+    "reveal_target": "dock"
   },
   {
     "label": "Test (notebook crate)",
     "command": "cargo test -p notebook",
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
-    "reveal": "always",
+    "reveal": "always"
   },
   {
     "label": "Format",
@@ -72,6 +71,6 @@
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
     "reveal": "always",
-    "hide": "on_success",
-  },
+    "hide": "on_success"
+  }
 ]
