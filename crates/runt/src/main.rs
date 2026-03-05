@@ -120,6 +120,11 @@ struct Cli {
     command: Option<Commands>,
 }
 
+/// Check if dev mode is enabled via RUNTIMED_DEV environment variable
+fn is_dev_mode() -> bool {
+    std::env::var("RUNTIMED_DEV").is_ok()
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Open the notebook application
@@ -152,6 +157,41 @@ enum Commands {
         /// Path to the notebook file, or notebook ID (UUID) for untitled notebooks
         path: PathBuf,
     },
+
+    // =========================================================================
+    // Top-level convenience aliases
+    // =========================================================================
+    /// Show daemon status (alias for `daemon status`)
+    Status {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// Diagnose daemon installation issues (alias for `daemon doctor`)
+    Doctor {
+        /// Attempt to fix issues automatically
+        #[arg(long)]
+        fix: bool,
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+    /// Tail daemon log file (alias for `daemon logs`)
+    Logs {
+        /// Follow the log (like tail -f)
+        #[arg(short, long)]
+        follow: bool,
+        /// Number of lines to show
+        #[arg(short = 'n', long, default_value = "50")]
+        lines: usize,
+    },
+
+    // =========================================================================
+    // Development utilities (only shown when RUNTIMED_DEV=1)
+    // =========================================================================
+    /// Development utilities for runtimed contributors
+    #[command(subcommand, hide = true)]
+    Dev(DevCommands),
     /// Inspect the Automerge state for a notebook (debug command)
     #[command(hide = true)]
     Inspect {
@@ -359,14 +399,19 @@ enum DaemonCommands {
     Shutdown,
     /// Check if the daemon is running (returns exit code)
     Ping,
+}
+
+/// Development commands (only shown when RUNTIMED_DEV=1)
+#[derive(Subcommand)]
+enum DevCommands {
     /// List all running dev worktree daemons
-    ListWorktrees {
+    Worktrees {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
     },
     /// Clean up worktree daemon state directories
-    CleanWorktree {
+    Clean {
         /// Clean a specific worktree by its hash
         #[arg(long)]
         hash: Option<String>,
@@ -584,6 +629,27 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
                 wait,
             )
             .await?
+        }
+
+        // Top-level convenience aliases
+        Some(Commands::Status { json }) => daemon_command(DaemonCommands::Status { json }).await?,
+        Some(Commands::Doctor { fix, json }) => {
+            daemon_command(DaemonCommands::Doctor { fix, json }).await?
+        }
+        Some(Commands::Logs { follow, lines }) => {
+            daemon_command(DaemonCommands::Logs { follow, lines }).await?
+        }
+
+        // Development commands (requires RUNTIMED_DEV=1)
+        Some(Commands::Dev(dev_cmd)) => {
+            if !is_dev_mode() {
+                eprintln!(
+                    "Error: 'runt dev' commands require RUNTIMED_DEV=1 environment variable."
+                );
+                eprintln!("These commands are intended for runtimed development only.");
+                std::process::exit(1);
+            }
+            dev_command(dev_cmd).await?
         }
 
         // Deprecated aliases (with warnings)
@@ -1686,10 +1752,18 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 std::process::exit(1);
             }
         },
-        DaemonCommands::ListWorktrees { json } => {
+    }
+
+    Ok(())
+}
+
+/// Handle development commands (requires RUNTIMED_DEV=1)
+async fn dev_command(command: DevCommands) -> Result<()> {
+    match command {
+        DevCommands::Worktrees { json } => {
             list_worktree_daemons(json).await?;
         }
-        DaemonCommands::CleanWorktree {
+        DevCommands::Clean {
             hash,
             all,
             stale,
