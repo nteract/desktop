@@ -550,6 +550,49 @@ impl AsyncSession {
         })
     }
 
+    /// Save the notebook to a .ipynb file.
+    ///
+    /// Reads cells and metadata from the synced Automerge document, resolves
+    /// output manifests from the blob store, and writes standard nbformat v4 JSON.
+    ///
+    /// Args:
+    ///     path: Optional target path for the notebook file. If it doesn't end
+    ///           with .ipynb, the extension will be appended. If None, saves to
+    ///           the notebook's original file path (the notebook_id).
+    ///
+    /// Returns:
+    ///     A coroutine that resolves to the absolute path where the file was written.
+    ///
+    /// Raises:
+    ///     RuntimedError: If not connected or write fails.
+    #[pyo3(signature = (path=None))]
+    fn save<'py>(&self, py: Python<'py>, path: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let path = path.map(|s| s.to_string());
+
+        future_into_py(py, async move {
+            let state_guard = state.lock().await;
+            let handle = state_guard
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            let response = handle
+                .send_request(NotebookRequest::SaveNotebook {
+                    format_cells: false,
+                    path,
+                })
+                .await
+                .map_err(to_py_err)?;
+
+            match response {
+                NotebookResponse::NotebookSaved { path } => Ok(path),
+                NotebookResponse::Error { error } => Err(to_py_err(error)),
+                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
+            }
+        })
+    }
+
     // =========================================================================
     // Execution (document-first: reads source from automerge doc)
     // =========================================================================

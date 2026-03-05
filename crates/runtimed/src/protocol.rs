@@ -231,9 +231,15 @@ pub enum NotebookRequest {
     /// The daemon reads cells and metadata from the Automerge doc, merges
     /// with any existing .ipynb on disk (to preserve unknown metadata keys),
     /// and writes the result.
+    ///
+    /// If `path` is provided, saves to that path (with .ipynb appended if needed).
+    /// If `path` is None, saves to the room's notebook_path (original file location).
     SaveNotebook {
         /// If true, format code cells before saving (e.g., with ruff).
         format_cells: bool,
+        /// Optional target path. If None, uses the room's notebook_path.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
     },
 
     /// Sync environment with current metadata (hot-install new packages).
@@ -295,7 +301,10 @@ pub enum NotebookResponse {
     },
 
     /// Notebook saved successfully to disk.
-    NotebookSaved {},
+    NotebookSaved {
+        /// The absolute path where the notebook was written.
+        path: String,
+    },
 
     /// Generic success.
     Ok {},

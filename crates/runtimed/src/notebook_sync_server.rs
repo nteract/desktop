@@ -2130,10 +2130,13 @@ async fn handle_notebook_request(
             }
         }
 
-        NotebookRequest::SaveNotebook { format_cells: _ } => {
+        NotebookRequest::SaveNotebook {
+            format_cells: _,
+            path,
+        } => {
             // TODO: format_cells support (requires ruff/deno formatter access)
-            match save_notebook_to_disk(room).await {
-                Ok(()) => NotebookResponse::NotebookSaved {},
+            match save_notebook_to_disk(room, path.as_deref()).await {
+                Ok(saved_path) => NotebookResponse::NotebookSaved { path: saved_path },
                 Err(e) => NotebookResponse::Error {
                     error: format!("Failed to save notebook: {e}"),
                 },
@@ -2345,17 +2348,45 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
 
 /// Save the notebook from the Automerge doc to disk as .ipynb.
 ///
+/// If `target_path` is Some, saves to that path (with .ipynb appended if needed).
+/// If `target_path` is None, saves to `room.notebook_path` (original file location).
+///
 /// 1. Read existing .ipynb from disk (if it exists) to preserve unknown metadata
 /// 2. Read cells and metadata from the Automerge doc
 /// 3. Merge metadata: replace kernelspec, language_info, runt; preserve everything else
 /// 4. Reconstruct cells: source and outputs from Automerge, cell metadata from existing file
 /// 5. Write the merged notebook to disk
-async fn save_notebook_to_disk(room: &NotebookRoom) -> Result<(), String> {
-    let notebook_path = &room.notebook_path;
+///
+/// Returns the absolute path where the notebook was written.
+async fn save_notebook_to_disk(
+    room: &NotebookRoom,
+    target_path: Option<&str>,
+) -> Result<String, String> {
+    // Determine the actual save path
+    let notebook_path = match target_path {
+        Some(p) => {
+            // Ensure .ipynb extension
+            let path = if p.ends_with(".ipynb") {
+                PathBuf::from(p)
+            } else {
+                PathBuf::from(format!("{}.ipynb", p))
+            };
+            // Convert to absolute path
+            if path.is_relative() {
+                std::env::current_dir()
+                    .map_err(|e| format!("Failed to get current directory: {}", e))?
+                    .join(&path)
+            } else {
+                path
+            }
+        }
+        None => room.notebook_path.clone(),
+    };
 
     // Read existing .ipynb to preserve unknown metadata and cell metadata
     // Distinguish between file-not-found (ok, create new) and parse errors (warn, continue)
-    let existing: Option<serde_json::Value> = match tokio::fs::read_to_string(notebook_path).await {
+    let existing: Option<serde_json::Value> = match tokio::fs::read_to_string(&notebook_path).await
+    {
         Ok(content) => match serde_json::from_str(&content) {
             Ok(value) => Some(value),
             Err(e) => {
@@ -2493,7 +2524,7 @@ async fn save_notebook_to_disk(room: &NotebookRoom) -> Result<(), String> {
     let content_with_newline = format!("{content}\n");
 
     // Write to disk (async to avoid blocking the runtime)
-    tokio::fs::write(notebook_path, content_with_newline)
+    tokio::fs::write(&notebook_path, content_with_newline)
         .await
         .map_err(|e| format!("Failed to write notebook: {e}"))?;
 
@@ -2509,7 +2540,7 @@ async fn save_notebook_to_disk(room: &NotebookRoom) -> Result<(), String> {
         notebook_path, cell_count
     );
 
-    Ok(())
+    Ok(notebook_path.to_string_lossy().to_string())
 }
 
 /// Resolve a single cell output — handles both manifest hashes and raw JSON.
@@ -3548,7 +3579,7 @@ mod tests {
         }
 
         // Save to disk
-        save_notebook_to_disk(&room).await.unwrap();
+        save_notebook_to_disk(&room, None).await.unwrap();
 
         // Read and validate with nbformat
         let content = std::fs::read_to_string(&notebook_path).unwrap();
@@ -3595,7 +3626,7 @@ mod tests {
             doc.update_source("cell1", "x = 1").unwrap();
         }
 
-        save_notebook_to_disk(&room).await.unwrap();
+        save_notebook_to_disk(&room, None).await.unwrap();
 
         // Verify unknown metadata is preserved
         let content = std::fs::read_to_string(&notebook_path).unwrap();
@@ -3654,7 +3685,7 @@ mod tests {
             doc.add_cell(0, "cell-with-id", "code").unwrap();
         }
 
-        save_notebook_to_disk(&room).await.unwrap();
+        save_notebook_to_disk(&room, None).await.unwrap();
 
         // Verify nbformat_minor is upgraded to 5
         let content = std::fs::read_to_string(&notebook_path).unwrap();
@@ -3683,7 +3714,7 @@ mod tests {
             doc.set_execution_count("cell1", "1").unwrap();
         }
 
-        save_notebook_to_disk(&room).await.unwrap();
+        save_notebook_to_disk(&room, None).await.unwrap();
 
         // Read and validate
         let content = std::fs::read_to_string(&notebook_path).unwrap();

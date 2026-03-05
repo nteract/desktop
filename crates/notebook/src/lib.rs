@@ -1343,11 +1343,12 @@ async fn save_notebook(
         match handle
             .send_request(NotebookRequest::SaveNotebook {
                 format_cells: false, // Already formatted above
+                path: None,          // Use room's notebook_path
             })
             .await
         {
-            Ok(NotebookResponse::NotebookSaved {}) => {
-                info!("[save] Notebook saved via daemon");
+            Ok(NotebookResponse::NotebookSaved { path }) => {
+                info!("[save] Notebook saved via daemon to: {}", path);
                 true
             }
             Ok(NotebookResponse::Error { error }) => {

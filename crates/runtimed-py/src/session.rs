@@ -434,6 +434,50 @@ impl Session {
         })
     }
 
+    /// Save the notebook to a .ipynb file.
+    ///
+    /// Reads cells and metadata from the synced Automerge document, resolves
+    /// output manifests from the blob store, and writes standard nbformat v4 JSON.
+    ///
+    /// Args:
+    ///     path: Optional target path for the notebook file. If it doesn't end
+    ///           with .ipynb, the extension will be appended. If None, saves to
+    ///           the notebook's original file path (the notebook_id).
+    ///
+    /// Returns:
+    ///     The absolute path where the file was written.
+    ///
+    /// Raises:
+    ///     RuntimedError: If not connected or write fails.
+    #[pyo3(signature = (path=None))]
+    fn save(&self, path: Option<&str>) -> PyResult<String> {
+        self.connect()?;
+
+        let path = path.map(|s| s.to_string());
+
+        self.runtime.block_on(async {
+            let state = self.state.lock().await;
+            let handle = state
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            let response = handle
+                .send_request(NotebookRequest::SaveNotebook {
+                    format_cells: false,
+                    path,
+                })
+                .await
+                .map_err(to_py_err)?;
+
+            match response {
+                NotebookResponse::NotebookSaved { path } => Ok(path),
+                NotebookResponse::Error { error } => Err(to_py_err(error)),
+                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
+            }
+        })
+    }
+
     // =========================================================================
     // Metadata Operations (synced via automerge doc)
     // =========================================================================
