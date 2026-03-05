@@ -1590,8 +1590,20 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
             };
             let is_dev = runtimed::is_dev_mode();
 
+            // Get socket path from daemon info or default
+            let socket_path = daemon_info
+                .as_ref()
+                .map(|i| i.endpoint.clone())
+                .unwrap_or_else(|| {
+                    runtimed::default_socket_path()
+                        .to_string_lossy()
+                        .to_string()
+                });
+
             if json {
                 let output = serde_json::json!({
+                    "channel": runt_workspace::channel_display_name(),
+                    "socket_path": socket_path,
                     "installed": installed,
                     "running": running,
                     "dev_mode": is_dev,
@@ -1600,65 +1612,113 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 });
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
+                use colored::Colorize;
+
                 let daemon_name = runt_workspace::daemon_service_basename();
-                println!("{} Daemon Status", daemon_name);
-                println!("======================");
+                let channel = runt_workspace::channel_display_name();
+
+                // Header with purple bracket style
+                println!("{}", "╭─".purple());
                 println!(
-                    "Service installed: {}",
-                    if installed { "yes" } else { "no" }
+                    "{} {}",
+                    "│".purple(),
+                    format!("{} Daemon Status", daemon_name).purple().bold()
                 );
-                println!("Daemon running:    {}", if running { "yes" } else { "no" });
+                println!("{}", "╰─".purple());
+
+                // Channel and status
+                println!("{:<19} {}", "Channel:".bold(), channel.cyan());
+                println!(
+                    "{:<19} {}",
+                    "Service installed:".bold(),
+                    colored_yes_no(installed)
+                );
+                println!(
+                    "{:<19} {}",
+                    "Daemon running:".bold(),
+                    colored_yes_no(running)
+                );
+
+                // Socket path
+                println!(
+                    "{:<19} {}",
+                    "Socket:".bold(),
+                    shorten_path(&PathBuf::from(&socket_path)).dimmed()
+                );
 
                 // Show dev mode info
                 if is_dev {
-                    println!("Mode:              development");
+                    println!("{:<19} {}", "Mode:".bold(), "development".cyan());
                 }
                 if let Some(info) = &daemon_info {
                     if let Some(worktree) = &info.worktree_path {
                         println!(
-                            "Worktree:          {}",
-                            shorten_path(&PathBuf::from(worktree))
+                            "{:<19} {}",
+                            "Worktree:".bold(),
+                            shorten_path(&PathBuf::from(worktree)).dimmed()
                         );
                     }
                     if let Some(desc) = &info.workspace_description {
-                        println!("Description:       {}", desc);
+                        println!("{:<19} {}", "Description:".bold(), desc.cyan());
                     }
                 }
 
                 if let Some(info) = &daemon_info {
-                    println!("PID:               {}", info.pid);
-                    println!("Version:           {}", info.version);
+                    println!();
+                    println!("{:<19} {}", "PID:".bold(), info.pid);
+                    println!("{:<19} {}", "Version:".bold(), info.version);
                     if let Some(port) = info.blob_port {
-                        println!("Blob server:       http://127.0.0.1:{}", port);
+                        println!(
+                            "{:<19} {}",
+                            "Blob server:".bold(),
+                            format!("http://127.0.0.1:{}", port).cyan()
+                        );
                     }
                     let uptime = chrono::Utc::now() - info.started_at;
                     let hours = uptime.num_hours();
                     let mins = uptime.num_minutes() % 60;
-                    println!("Uptime:            {}h {}m", hours, mins);
+                    println!("{:<19} {}h {}m", "Uptime:".bold(), hours, mins);
                 }
 
                 if let Some(stats) = &stats {
                     println!();
-                    println!("Pool:");
+                    println!("{}", "Pool:".bold());
+
+                    let uv_total = stats.uv_available + stats.uv_warming;
+                    let uv_status = format!("{}/{} ready", stats.uv_available, uv_total);
+                    let uv_colored = if stats.uv_warming > 0 {
+                        uv_status.yellow()
+                    } else {
+                        uv_status.green()
+                    };
+                    let uv_warming_text = if stats.uv_warming > 0 {
+                        format!(" ({} warming)", stats.uv_warming)
+                            .dimmed()
+                            .to_string()
+                    } else {
+                        String::new()
+                    };
+                    println!("  {:<8} {}{}", "UV:".bold(), uv_colored, uv_warming_text);
+
+                    let conda_total = stats.conda_available + stats.conda_warming;
+                    let conda_status = format!("{}/{} ready", stats.conda_available, conda_total);
+                    let conda_colored = if stats.conda_warming > 0 {
+                        conda_status.yellow()
+                    } else {
+                        conda_status.green()
+                    };
+                    let conda_warming_text = if stats.conda_warming > 0 {
+                        format!(" ({} warming)", stats.conda_warming)
+                            .dimmed()
+                            .to_string()
+                    } else {
+                        String::new()
+                    };
                     println!(
-                        "  UV:    {}/{} ready{}",
-                        stats.uv_available,
-                        stats.uv_available + stats.uv_warming,
-                        if stats.uv_warming > 0 {
-                            format!(" ({} warming)", stats.uv_warming)
-                        } else {
-                            String::new()
-                        }
-                    );
-                    println!(
-                        "  Conda: {}/{} ready{}",
-                        stats.conda_available,
-                        stats.conda_available + stats.conda_warming,
-                        if stats.conda_warming > 0 {
-                            format!(" ({} warming)", stats.conda_warming)
-                        } else {
-                            String::new()
-                        }
+                        "  {:<8} {}{}",
+                        "Conda:".bold(),
+                        conda_colored,
+                        conda_warming_text
                     );
                 }
             }
@@ -2333,6 +2393,16 @@ fn status_icon(status: &str) -> &'static str {
         "stale" => "[stale]",
         "not_running" => "",
         _ => "[?]",
+    }
+}
+
+/// Return a colored yes/no status
+fn colored_yes_no(value: bool) -> colored::ColoredString {
+    use colored::Colorize;
+    if value {
+        "yes".green()
+    } else {
+        "no".red()
     }
 }
 

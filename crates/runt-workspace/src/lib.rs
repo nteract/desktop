@@ -149,6 +149,15 @@ pub fn cli_notebook_alias_name() -> &'static str {
     cli_notebook_alias_name_for(build_channel())
 }
 
+/// Human-readable channel name for display.
+pub fn channel_display_name() -> &'static str {
+    match build_channel() {
+        BuildChannel::Stable => "stable",
+        BuildChannel::Preview => "preview",
+        BuildChannel::Nightly => "nightly",
+    }
+}
+
 // ============================================================================
 // Development Mode Detection
 // ============================================================================
