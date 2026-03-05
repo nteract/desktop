@@ -2199,71 +2199,86 @@ async fn doctor_command(
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        println!("{} Health Check", runt_workspace::daemon_service_basename());
-        println!("=====================");
+        use colored::Colorize;
+
+        print_header("runtimed Health Check");
         println!(
-            "Installed binary:   {} {}",
-            report.installed_binary.path,
-            status_icon(&report.installed_binary.status)
+            "{:<20} {} {}",
+            "Installed binary:".bold(),
+            report.installed_binary.path.dimmed(),
+            colored_status_icon(&report.installed_binary.status)
         );
         println!(
-            "Service config:     {} {}",
-            report.service_config.path,
-            status_icon(&report.service_config.status)
+            "{:<20} {} {}",
+            "Service config:".bold(),
+            report.service_config.path.dimmed(),
+            colored_status_icon(&report.service_config.status)
         );
         if let Some(ref plist_check) = report.plist_home_env {
             println!(
-                "Plist HOME env:     {}{}",
-                status_icon(&plist_check.status),
+                "{:<20} {}{}",
+                "Plist HOME env:".bold(),
+                colored_status_icon(&plist_check.status),
                 plist_check
                     .detail
                     .as_ref()
-                    .map(|d| format!(" ({})", d))
+                    .map(|d| format!(" ({})", d).dimmed().to_string())
                     .unwrap_or_default()
             );
         }
         println!(
-            "Socket file:        {} {}",
-            report.socket_file.path,
-            status_icon(&report.socket_file.status)
+            "{:<20} {} {}",
+            "Socket file:".bold(),
+            report.socket_file.path.dimmed(),
+            colored_status_icon(&report.socket_file.status)
         );
         println!(
-            "Daemon state:       {} {}{}",
-            report.daemon_state.path,
-            status_icon(&report.daemon_state.status),
+            "{:<20} {} {}{}",
+            "Daemon state:".bold(),
+            report.daemon_state.path.dimmed(),
+            colored_status_icon(&report.daemon_state.status),
             report
                 .daemon_state
                 .detail
                 .as_ref()
-                .map(|d| format!(" ({})", d))
+                .map(|d| format!(" ({})", d).dimmed().to_string())
                 .unwrap_or_default()
         );
         println!(
-            "Daemon running:     {}{}",
-            if report.daemon_running.status == "ok" {
-                "yes"
-            } else {
-                "no"
-            },
+            "{:<20} {}{}",
+            "Daemon running:".bold(),
+            colored_yes_no(report.daemon_running.status == "ok"),
             report
                 .daemon_running
                 .detail
                 .as_ref()
-                .map(|d| format!(" ({})", d))
+                .map(|d| format!(" ({})", d).dimmed().to_string())
                 .unwrap_or_default()
         );
         println!();
-        println!("Diagnosis: {}", report.diagnosis);
+
+        // Color diagnosis based on health
+        let diagnosis_colored = if report.daemon_running.status == "ok" {
+            report.diagnosis.green()
+        } else if report.daemon_state.status == "stale" {
+            report.diagnosis.yellow()
+        } else {
+            report.diagnosis.red()
+        };
+        println!("{} {}", "Diagnosis:".bold(), diagnosis_colored);
 
         if !report.actions_taken.is_empty() {
             println!();
-            println!("Actions taken:");
+            println!("{}", "Actions taken:".bold());
             for action in &report.actions_taken {
-                println!("  - {}", action);
+                println!("  {} {}", "✓".green(), action);
             }
         } else if report.daemon_running.status != "ok" && !fix {
             println!();
-            println!("Run 'runt daemon doctor --fix' to attempt automatic repair.");
+            println!(
+                "{}",
+                "Run 'runt daemon doctor --fix' to attempt automatic repair.".cyan()
+            );
         }
     }
 
@@ -2385,14 +2400,15 @@ fn find_bundled_runtimed() -> Option<PathBuf> {
     None
 }
 
-/// Return a status icon for display
-fn status_icon(status: &str) -> &'static str {
+/// Return a colored status icon for display
+fn colored_status_icon(status: &str) -> colored::ColoredString {
+    use colored::Colorize;
     match status {
-        "ok" => "[ok]",
-        "missing" => "[missing]",
-        "stale" => "[stale]",
-        "not_running" => "",
-        _ => "[?]",
+        "ok" => "[ok]".green(),
+        "missing" => "[missing]".red(),
+        "stale" => "[stale]".yellow(),
+        "not_running" => "".normal(),
+        _ => "[?]".yellow(),
     }
 }
 
@@ -2404,6 +2420,14 @@ fn colored_yes_no(value: bool) -> colored::ColoredString {
     } else {
         "no".red()
     }
+}
+
+/// Print a purple bracket header
+fn print_header(title: &str) {
+    use colored::Colorize;
+    println!("{}", "╭─".purple());
+    println!("{} {}", "│".purple(), title.purple().bold());
+    println!("{}", "╰─".purple());
 }
 
 /// Native log file tailing implementation
