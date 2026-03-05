@@ -14,3 +14,7 @@ dist/
 # Python cache
 __pycache__/
 *.pyc
+
+# Staged binaries (CI copies these before wheel build)
+src/runtimed/_bin/runtimed
+src/runtimed/_bin/runtimed.exe

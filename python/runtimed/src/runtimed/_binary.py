@@ -52,17 +52,21 @@ def _well_known_paths(name: str) -> list[str]:
     return paths
 
 
+# Path to the _bin/ directory bundled inside this package.
+_BIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_bin")
+
+
 def find_binary(name: str) -> str:
     """Find a runtimed binary by name.
 
     Search order:
     1. Environment variable override (RUNTIMED_RUNT_PATH, etc.)
-    2. Python scripts directory (where pip/maturin install binaries)
+    2. Bundled in package (_bin/ directory inside the installed wheel)
     3. System PATH
     4. Well-known install locations (nteract.app, manual installs)
 
     Args:
-        name: Binary name (e.g., "runt")
+        name: Binary name (e.g., "runt", "runtimed")
 
     Returns:
         Absolute path to the binary.
@@ -83,11 +87,11 @@ def find_binary(name: str) -> str:
     exe_suffix = sysconfig.get_config_var("EXE") or ""
     exe_name = name + exe_suffix
 
-    # 2. Python scripts directory (where maturin/pip install binaries)
-    scripts_path = os.path.join(sysconfig.get_path("scripts"), exe_name)
-    if os.path.isfile(scripts_path):
-        return scripts_path
-    searched.append(f"scripts: {scripts_path}")
+    # 2. Bundled in package
+    bundled = os.path.join(_BIN_DIR, exe_name)
+    if os.path.isfile(bundled):
+        return bundled
+    searched.append(f"bundled: {bundled}")
 
     # 3. System PATH
     which_result = shutil.which(name)

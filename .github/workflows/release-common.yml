@@ -676,6 +676,20 @@ jobs:
         with:
           shared-key: "python-${{ matrix.platform.target }}"
 
+      - name: Build runtimed binary (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cargo build --release --target ${{ matrix.platform.target }} -p runtimed
+          cp target/${{ matrix.platform.target }}/release/runtimed python/runtimed/src/runtimed/_bin/
+          chmod +x python/runtimed/src/runtimed/_bin/runtimed
+
+      - name: Build runtimed binary (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo build --release --target ${{ matrix.platform.target }} -p runtimed
+          cp target/${{ matrix.platform.target }}/release/runtimed.exe python/runtimed/src/runtimed/_bin/
+
       - name: Set dev version (Unix)
         if: runner.os != 'Windows'
         run: |

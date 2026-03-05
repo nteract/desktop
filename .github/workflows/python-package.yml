@@ -1,8 +1,7 @@
 # Build and publish the runtimed Python package.
 #
-# The package provides PyO3 bindings for the runtimed daemon client.
-# It does NOT bundle the runt CLI binary — users get that from the
-# nteract desktop app or GitHub Releases.
+# The package provides PyO3 bindings for the runtimed daemon client,
+# and bundles the runtimed daemon binary.
 #
 # To publish: push a tag matching `python-v*` (e.g. `python-v0.1.0`).
 
@@ -43,6 +42,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - name: Install cross-compilation target
+        if: matrix.platform.target == 'x86_64-apple-darwin'
+        run: rustup target add x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "python-${{ matrix.platform.target }}"
+
+      - name: Build runtimed binary
+        run: |
+          cargo build --release --target ${{ matrix.platform.target }} -p runtimed
+          cp target/${{ matrix.platform.target }}/release/runtimed python/runtimed/src/runtimed/_bin/
+          chmod +x python/runtimed/src/runtimed/_bin/runtimed
+
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -62,6 +78,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "python-x86_64-unknown-linux-gnu"
+
+      - name: Build runtimed binary
+        run: |
+          cargo build --release --target x86_64-unknown-linux-gnu -p runtimed
+          cp target/x86_64-unknown-linux-gnu/release/runtimed python/runtimed/src/runtimed/_bin/
+          chmod +x python/runtimed/src/runtimed/_bin/runtimed
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
