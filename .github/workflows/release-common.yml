@@ -744,6 +744,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install git-cliff
+        run: |
+          curl -sSfL https://github.com/orhun/git-cliff/releases/download/v2.7.0/git-cliff-2.7.0-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          sudo mv git-cliff-*/git-cliff /usr/local/bin/
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          CHANGELOG=$(git-cliff --unreleased --strip header 2>/dev/null || echo "")
+          if [ -z "$CHANGELOG" ] || [ "$CHANGELOG" = "" ]; then
+            CHANGELOG="No user-facing changes in this release."
+          fi
+          echo "$CHANGELOG" > changelog-section.md
+
       - name: Download Linux executables
         uses: actions/download-artifact@v4
         with:
@@ -867,6 +881,51 @@ jobs:
         continue-on-error: true
         run: uv publish --trusted-publishing always ./wheels/*.whl
 
+      - name: Generate release body
+        env:
+          VERSION_SUFFIX: ${{ inputs.version_suffix }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          {
+            echo '${{ inputs.release_intro }}'
+            echo ''
+            echo '## What'\''s Changed'
+            echo ''
+            cat changelog-section.md
+            echo ''
+            echo '---'
+            echo ''
+            echo "**Commit:** \`${COMMIT_SHA}\`"
+            echo ''
+            echo '## nteract (desktop app)'
+            echo ''
+            echo '| Platform | Architecture | Download |'
+            echo '|----------|--------------|----------|'
+            echo "| macOS | ARM64 (Apple Silicon) | \`nteract-${VERSION_SUFFIX}-darwin-arm64.dmg\` |"
+            echo "| Windows | x64 | \`nteract-${VERSION_SUFFIX}-windows-x64.exe\` |"
+            echo "| Linux | x64 | \`nteract-${VERSION_SUFFIX}-linux-x64.AppImage\` |"
+            echo "| Linux | x64 (deb) | \`nteract-${VERSION_SUFFIX}-linux-x64.deb\` |"
+            echo ''
+            echo "macOS builds are signed and notarized. Windows is not code signed — expect a SmartScreen prompt. Linux AppImage: \`chmod +x\` and run. Linux DEB: \`sudo dpkg -i nteract-${VERSION_SUFFIX}-linux-x64.deb\`."
+            echo ''
+            echo 'This release includes auto-update support. Existing installations will be notified of this update automatically.'
+            echo ''
+            echo '## runt (CLI)'
+            echo ''
+            echo 'Also bundled inside the desktop app. Standalone binaries:'
+            echo ''
+            echo '| Platform | Architecture | Download |'
+            echo '|----------|--------------|----------|'
+            echo '| Linux | x64 | `runt-linux-x64` |'
+            echo '| macOS | ARM64 | `runt-darwin-arm64` |'
+            echo ''
+            echo '## runtimed (Python — macOS, Linux, Windows)'
+            echo ''
+            echo '```bash'
+            echo 'pip install runtimed --pre'
+            echo '```'
+          } > release-body.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         env:
@@ -874,40 +933,7 @@ jobs:
         with:
           tag_name: v${{ needs.compute-version.outputs.version }}
           name: nteract v${{ needs.compute-version.outputs.version }}
-          body: |
-            ${{ inputs.release_intro }}
-
-            ---
-
-            **Commit:** `${{ github.sha }}`
-
-            ## nteract (desktop app)
-
-            | Platform | Architecture | Download |
-            |----------|--------------|----------|
-            | macOS | ARM64 (Apple Silicon) | `nteract-${{ inputs.version_suffix }}-darwin-arm64.dmg` |
-            | Windows | x64 | `nteract-${{ inputs.version_suffix }}-windows-x64.exe` |
-            | Linux | x64 | `nteract-${{ inputs.version_suffix }}-linux-x64.AppImage` |
-            | Linux | x64 (deb) | `nteract-${{ inputs.version_suffix }}-linux-x64.deb` |
-
-            macOS builds are signed and notarized. Windows is not code signed — expect a SmartScreen prompt. Linux AppImage: `chmod +x` and run. Linux DEB: `sudo dpkg -i nteract-${{ inputs.version_suffix }}-linux-x64.deb`.
-
-            This release includes auto-update support. Existing installations will be notified of this update automatically.
-
-            ## runt (CLI)
-
-            Also bundled inside the desktop app. Standalone binaries:
-
-            | Platform | Architecture | Download |
-            |----------|--------------|----------|
-            | Linux | x64 | `runt-linux-x64` |
-            | macOS | ARM64 | `runt-darwin-arm64` |
-
-            ## runtimed (Python — macOS, Linux, Windows)
-
-            ```bash
-            pip install runtimed --pre
-            ```
+          body_path: release-body.md
           draft: false
           prerelease: ${{ inputs.github_release_prerelease }}
           files: |
