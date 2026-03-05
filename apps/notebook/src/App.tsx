@@ -527,9 +527,11 @@ function AppContent() {
     const success = await approveTrust();
     if (success && pendingKernelStartRef.current) {
       pendingKernelStartRef.current = false;
-      // Now start the kernel since trust was approved
+      // Fire and forget - dialog closes immediately, kernel starts in background
       // Use "auto" for both - daemon detects from Automerge doc
-      await launchKernel("auto", "auto");
+      launchKernel("auto", "auto").catch((e) => {
+        logger.error("[App] kernel launch after trust approval failed:", e);
+      });
     }
     return success;
   }, [approveTrust, launchKernel]);
