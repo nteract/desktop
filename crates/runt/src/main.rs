@@ -157,7 +157,8 @@ fn is_dev_mode() -> bool {
 #[derive(Subcommand)]
 enum Commands {
     /// Open the notebook application
-    Notebook {
+    #[command(alias = "notebook")]
+    Open {
         /// Path to notebook file or directory to open
         path: Option<PathBuf>,
         /// Runtime for new notebooks (python, deno)
@@ -165,6 +166,7 @@ enum Commands {
         runtime: Option<String>,
     },
     /// Jupyter kernel utilities
+    #[command(hide = true)]
     Jupyter {
         #[command(subcommand)]
         command: JupyterCommands,
@@ -175,14 +177,15 @@ enum Commands {
         command: DaemonCommands,
     },
     /// List open notebooks with kernel and peer info
-    #[command(alias = "ps")]
-    Notebooks {
+    #[command(alias = "notebooks")]
+    Ps {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
     },
-    /// Shutdown a notebook's kernel and evict its room
-    Shutdown {
+    /// Stop a notebook's kernel and evict its room
+    #[command(alias = "shutdown")]
+    Stop {
         /// Path to the notebook file, or notebook ID (UUID) for untitled notebooks
         path: PathBuf,
     },
@@ -259,8 +262,8 @@ enum Commands {
     #[command(hide = true)]
     Start { name: String },
     /// [DEPRECATED] Use 'runt jupyter stop' instead
-    #[command(hide = true)]
-    Stop {
+    #[command(hide = true, name = "stop-kernel")]
+    StopKernel {
         id: Option<String>,
         #[arg(long)]
         all: bool,
@@ -504,8 +507,8 @@ fn main() -> Result<()> {
             eprintln!("Warning: 'runt sidecar' is deprecated. Use 'runt jupyter sidecar' instead.");
             sidecar::launch(&file, quiet, dump.as_deref())
         }
-        // Notebook launches the desktop app (no tokio needed)
-        Some(Commands::Notebook { path, runtime }) => open_notebook(path, runtime),
+        // Open launches the desktop app (no tokio needed)
+        Some(Commands::Open { path, runtime }) => open_notebook(path, runtime),
         // All other subcommands use tokio
         other => {
             let rt = tokio::runtime::Runtime::new()?;
@@ -643,11 +646,11 @@ fn open_notebook(path: Option<PathBuf>, runtime: Option<String>) -> Result<()> {
 async fn async_main(command: Option<Commands>) -> Result<()> {
     match command {
         // Primary commands
-        Some(Commands::Notebook { .. }) => unreachable!(), // handled in main()
+        Some(Commands::Open { .. }) => unreachable!(), // handled in main()
         Some(Commands::Jupyter { command }) => jupyter_command(command).await?,
         Some(Commands::Daemon { command }) => daemon_command(command).await?,
-        Some(Commands::Notebooks { json }) => list_notebooks(json).await?,
-        Some(Commands::Shutdown { path }) => shutdown_notebook(&path).await?,
+        Some(Commands::Ps { json }) => list_notebooks(json).await?,
+        Some(Commands::Stop { path }) => shutdown_notebook(&path).await?,
         Some(Commands::Inspect {
             path,
             full_outputs,
@@ -696,8 +699,10 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
             eprintln!("Warning: 'runt start' is deprecated. Use 'runt jupyter start' instead.");
             start_kernel(&name).await?
         }
-        Some(Commands::Stop { id, all }) => {
-            eprintln!("Warning: 'runt stop' is deprecated. Use 'runt jupyter stop' instead.");
+        Some(Commands::StopKernel { id, all }) => {
+            eprintln!(
+                "Warning: 'runt stop-kernel' is deprecated. Use 'runt jupyter stop' instead."
+            );
             stop_kernels(id.as_deref(), all).await?
         }
         Some(Commands::Interrupt { id }) => {
