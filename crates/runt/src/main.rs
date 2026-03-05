@@ -693,7 +693,10 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
             list_notebooks(json).await?
         }
 
-        None => println!("No command specified. Use --help for usage information."),
+        None => {
+            use clap::CommandFactory;
+            Cli::command().print_help()?;
+        }
     }
 
     Ok(())
