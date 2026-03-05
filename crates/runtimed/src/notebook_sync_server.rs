@@ -2359,7 +2359,7 @@ async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
 
-    // Get runtime type from metadata
+    // Get runtime type from metadata - only format for known runtimes (Python/Deno)
     let metadata_json = {
         let doc = room.doc.read().await;
         doc.get_metadata(NOTEBOOK_METADATA_KEY)
@@ -2368,8 +2368,16 @@ async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
     let runtime = metadata_json
         .as_ref()
         .and_then(|json| serde_json::from_str::<NotebookMetadataSnapshot>(json).ok())
-        .and_then(|snapshot| detect_notebook_kernel_type(&snapshot))
-        .unwrap_or_else(|| "python".to_string());
+        .and_then(|snapshot| detect_notebook_kernel_type(&snapshot));
+
+    // Skip formatting for unknown kernelspec to avoid incorrectly reformatting non-Python/Deno notebooks
+    let runtime = match runtime {
+        Some(rt) => rt,
+        None => {
+            info!("[format] Skipping format: unknown kernelspec (no formatter available)");
+            return Ok(0);
+        }
+    };
 
     // Get all code cells
     let cells: Vec<(String, String)> = {
@@ -4167,5 +4175,107 @@ mod tests {
             new_cell.outputs,
             vec![r#"{"output_type":"execute_result"}"#]
         );
+    }
+
+    #[tokio::test]
+    async fn test_save_notebook_to_disk_with_target_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _original_path) = test_room_with_path(&tmp, "original.ipynb");
+
+        // Add a cell
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "cell1", "code").unwrap();
+            doc.update_source("cell1", "x = 1").unwrap();
+        }
+
+        // Save to a different absolute path
+        let new_path = tmp.path().join("new_location.ipynb");
+        let result = save_notebook_to_disk(&room, Some(new_path.to_str().unwrap())).await;
+
+        assert!(result.is_ok());
+        let saved_path = result.unwrap();
+        assert_eq!(saved_path, new_path.to_string_lossy());
+        assert!(new_path.exists(), "File should be created at new path");
+
+        // Verify content
+        let content = std::fs::read_to_string(&new_path).unwrap();
+        let notebook: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(notebook["cells"][0]["source"], serde_json::json!(["x = 1"]));
+    }
+
+    #[tokio::test]
+    async fn test_save_notebook_to_disk_appends_ipynb_extension() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _original_path) = test_room_with_path(&tmp, "original.ipynb");
+
+        // Add a cell
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "cell1", "code").unwrap();
+        }
+
+        // Save to path without .ipynb extension
+        let base_path = tmp.path().join("no_extension");
+        let result = save_notebook_to_disk(&room, Some(base_path.to_str().unwrap())).await;
+
+        assert!(result.is_ok());
+        let saved_path = result.unwrap();
+        assert!(
+            saved_path.ends_with(".ipynb"),
+            "Saved path should have .ipynb extension"
+        );
+
+        let expected_path = tmp.path().join("no_extension.ipynb");
+        assert!(
+            expected_path.exists(),
+            "File should exist with .ipynb extension"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_save_notebook_to_disk_rejects_relative_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _original_path) = test_room_with_path(&tmp, "original.ipynb");
+
+        // Try to save with a relative path
+        let result = save_notebook_to_disk(&room, Some("relative/path.ipynb")).await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("Relative paths are not supported"),
+            "Error should mention relative paths: {}",
+            error
+        );
+    }
+
+    #[tokio::test]
+    async fn test_format_notebook_cells_skips_unknown_runtime() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _notebook_path) = test_room_with_path(&tmp, "unknown_runtime.ipynb");
+
+        // Add a code cell (no kernelspec metadata set = unknown runtime)
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "cell1", "code").unwrap();
+            doc.update_source("cell1", "x=1").unwrap(); // Would be formatted if Python
+        }
+
+        // Run format - should skip (return 0) since no kernelspec
+        let result = format_notebook_cells(&room).await;
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            0,
+            "Should format 0 cells for unknown runtime"
+        );
+
+        // Source should be unchanged
+        let cells = {
+            let doc = room.doc.read().await;
+            doc.get_cells()
+        };
+        assert_eq!(cells[0].source, "x=1", "Source should remain unchanged");
     }
 }
