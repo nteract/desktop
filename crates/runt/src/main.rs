@@ -132,11 +132,13 @@ fn random_tagline() -> String {
     let index = RandomState::new().build_hasher().finish() as usize % TAGLINES.len();
 
     // 3-line purple bracket with tagline on middle row
+    // Only "runt" is purple, the colon and tagline are regular
     format!(
-        "{}\n{} {} {}\n{}",
+        "{}\n{} {}{} {}\n{}",
         "╭─".purple(),
         "│".purple(),
-        "Runt:".purple().bold(),
+        "runt".purple().bold(),
+        ":",
         TAGLINES[index],
         "╰─".purple()
     )
@@ -1618,11 +1620,14 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 let channel = runt_workspace::channel_display_name();
 
                 // Header with purple bracket style
+                // Only "runt" is purple, the rest (imed, -nightly, etc.) is regular
+                let daemon_suffix = daemon_name.strip_prefix("runt").unwrap_or("");
                 println!("{}", "╭─".purple());
                 println!(
-                    "{} {}",
+                    "{} {}{} Daemon Status",
                     "│".purple(),
-                    format!("{} Daemon Status", daemon_name).purple().bold()
+                    "runt".purple().bold(),
+                    daemon_suffix
                 );
                 println!("{}", "╰─".purple());
 
