@@ -197,30 +197,17 @@ export function useAutomergeNotebook() {
       initialize();
     });
 
-    // Listen for backend formatting changes
+    // Listen for backend formatting changes.
+    // The daemon writes formatted source to its Automerge doc, which arrives
+    // via automerge:from-daemon sync messages. We only update React state here
+    // for immediate visual feedback — no need to write to the local Automerge
+    // doc, which would cause a redundant double-write.
     const unlistenFormat = webview.listen<{
       cell_id: string;
       source: string;
     }>("cell:source_updated", (event) => {
       if (!isMounted) return;
-      // Apply formatting change to local doc
-      const doc = docRef.current;
-      if (doc) {
-        const cellIdx = doc.cells?.findIndex(
-          (c) => c.id === event.payload.cell_id,
-        );
-        if (cellIdx !== undefined && cellIdx >= 0) {
-          docRef.current = Automerge.change(doc, (d) => {
-            Automerge.updateText(
-              d,
-              ["cells", cellIdx, "source"],
-              event.payload.source,
-            );
-          });
-          syncToBackend();
-        }
-      }
-      // Also update React state directly for immediate feedback
+      // Update React state directly for immediate feedback only
       setCells((prev) =>
         prev.map((c) =>
           c.id === event.payload.cell_id
@@ -317,15 +304,13 @@ export function useAutomergeNotebook() {
 
         docRef.current = Automerge.change(doc, (d) => {
           if (!d.cells) return;
-          Automerge.splice(d, ["cells"], insertIdx, 0, [
-            {
-              id: cellId,
-              cell_type: cellType,
-              source: "",
-              execution_count: "null",
-              outputs: [],
-            },
-          ]);
+          Automerge.insertAt(d.cells, insertIdx, {
+            id: cellId,
+            cell_type: cellType,
+            source: "",
+            execution_count: "null",
+            outputs: [],
+          });
         });
         syncToBackend();
       }
@@ -341,13 +326,6 @@ export function useAutomergeNotebook() {
       });
       setFocusedCellId(cellId);
       setDirty(true);
-
-      // Fire-and-forget to backend for legacy compatibility
-      invoke("add_cell", {
-        cellId,
-        cellType,
-        afterCellId: afterCellId ?? null,
-      }).catch((e) => logger.error("[automerge-notebook] add_cell sync:", e));
 
       return newCell;
     },
@@ -366,7 +344,7 @@ export function useAutomergeNotebook() {
         ) {
           docRef.current = Automerge.change(doc, (d) => {
             if (!d.cells) return;
-            Automerge.splice(d, ["cells"], cellIdx, 1);
+            Automerge.deleteAt(d.cells, cellIdx);
           });
           syncToBackend();
         }
@@ -378,11 +356,6 @@ export function useAutomergeNotebook() {
         return prev.filter((c) => c.id !== cellId);
       });
       setDirty(true);
-
-      // Fire-and-forget for legacy compatibility
-      invoke("delete_cell", { cellId }).catch((e) =>
-        logger.error("[automerge-notebook] delete_cell sync:", e),
-      );
     },
     [syncToBackend],
   );
@@ -438,6 +411,16 @@ export function useAutomergeNotebook() {
   }, []);
 
   // ── Output callbacks (used by useDaemonKernel for real-time streaming) ──
+  //
+  // These maintain a dual-path for outputs:
+  // 1. daemon:broadcast → appendOutput/setExecutionCount (immediate React state)
+  // 2. automerge:from-daemon → materializeAndSetCells (eventual consistency)
+  //
+  // The broadcast path gives real-time streaming. When the next Automerge sync
+  // arrives, materializeAndSetCells replaces the cells array, reconciling any
+  // outputs that arrived via broadcast. Between sync cycles, broadcast outputs
+  // may be ahead of the Automerge state — this is expected and not a bug.
+  // The Automerge sync will catch up and produce the same final state.
 
   const appendOutput = useCallback((cellId: string, output: JupyterOutput) => {
     setCells((prev) =>
