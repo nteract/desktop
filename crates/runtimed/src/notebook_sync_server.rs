@@ -2130,11 +2130,14 @@ async fn handle_notebook_request(
             }
         }
 
-        NotebookRequest::SaveNotebook {
-            format_cells: _,
-            path,
-        } => {
-            // TODO: format_cells support (requires ruff/deno formatter access)
+        NotebookRequest::SaveNotebook { format_cells, path } => {
+            // Format cells if requested (before saving)
+            if format_cells {
+                if let Err(e) = format_notebook_cells(room).await {
+                    warn!("[save] Format cells failed (continuing with save): {}", e);
+                }
+            }
+
             match save_notebook_to_disk(room, path.as_deref()).await {
                 Ok(saved_path) => NotebookResponse::NotebookSaved { path: saved_path },
                 Err(e) => NotebookResponse::Error {
@@ -2346,6 +2349,143 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
     }
 }
 
+/// Format all code cells in a notebook using ruff (Python) or deno fmt (Deno).
+///
+/// Reads the runtime type from the notebook metadata and formats accordingly.
+/// Updates the Automerge doc with formatted sources and broadcasts changes.
+/// Formatting errors are logged but don't fail the operation (best-effort).
+async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
+    use kernel_launch::tools;
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+
+    // Get runtime type from metadata
+    let metadata_json = {
+        let doc = room.doc.read().await;
+        doc.get_metadata(NOTEBOOK_METADATA_KEY)
+    };
+
+    let runtime = metadata_json
+        .as_ref()
+        .and_then(|json| serde_json::from_str::<NotebookMetadataSnapshot>(json).ok())
+        .and_then(|snapshot| detect_notebook_kernel_type(&snapshot))
+        .unwrap_or_else(|| "python".to_string());
+
+    // Get all code cells
+    let cells: Vec<(String, String)> = {
+        let doc = room.doc.read().await;
+        doc.get_cells()
+            .into_iter()
+            .filter(|cell| cell.cell_type == "code" && !cell.source.trim().is_empty())
+            .map(|cell| (cell.id, cell.source))
+            .collect()
+    };
+
+    if cells.is_empty() {
+        return Ok(0);
+    }
+
+    let mut formatted_count = 0;
+
+    for (cell_id, source) in cells {
+        let format_result = match runtime.as_str() {
+            "python" => {
+                // Format with ruff
+                match tools::get_ruff_path().await {
+                    Ok(ruff_path) => {
+                        let mut child = match tokio::process::Command::new(&ruff_path)
+                            .args(["format", "--stdin-filename", "cell.py", "-"])
+                            .stdin(Stdio::piped())
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
+                            .spawn()
+                        {
+                            Ok(c) => c,
+                            Err(e) => {
+                                warn!("[format] Failed to spawn ruff: {}", e);
+                                continue;
+                            }
+                        };
+
+                        if let Some(mut stdin) = child.stdin.take() {
+                            if stdin.write_all(source.as_bytes()).await.is_err() {
+                                continue;
+                            }
+                        }
+
+                        match child.wait_with_output().await {
+                            Ok(output) if output.status.success() => {
+                                String::from_utf8(output.stdout).ok()
+                            }
+                            _ => None,
+                        }
+                    }
+                    Err(_) => None,
+                }
+            }
+            "deno" => {
+                // Format with deno fmt
+                match tools::get_deno_path().await {
+                    Ok(deno_path) => {
+                        let mut child = match tokio::process::Command::new(&deno_path)
+                            .args(["fmt", "--ext=ts", "-"])
+                            .stdin(Stdio::piped())
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
+                            .spawn()
+                        {
+                            Ok(c) => c,
+                            Err(e) => {
+                                warn!("[format] Failed to spawn deno fmt: {}", e);
+                                continue;
+                            }
+                        };
+
+                        if let Some(mut stdin) = child.stdin.take() {
+                            if stdin.write_all(source.as_bytes()).await.is_err() {
+                                continue;
+                            }
+                        }
+
+                        match child.wait_with_output().await {
+                            Ok(output) if output.status.success() => {
+                                String::from_utf8(output.stdout).ok()
+                            }
+                            _ => None,
+                        }
+                    }
+                    Err(_) => None,
+                }
+            }
+            _ => None,
+        };
+
+        if let Some(formatted) = format_result {
+            // Strip trailing newline (formatters always add one, but cells shouldn't have it)
+            let formatted = formatted.strip_suffix('\n').unwrap_or(&formatted);
+
+            if formatted != source {
+                // Update Automerge doc
+                let mut doc = room.doc.write().await;
+                if doc.update_source(&cell_id, formatted).is_ok() {
+                    formatted_count += 1;
+                }
+            }
+        }
+    }
+
+    // Broadcast changes to connected peers if any cells were formatted
+    if formatted_count > 0 {
+        let _ = room.changed_tx.send(());
+        info!(
+            "[format] Formatted {} code cells (runtime: {})",
+            formatted_count, runtime
+        );
+    }
+
+    Ok(formatted_count)
+}
+
 /// Save the notebook from the Automerge doc to disk as .ipynb.
 ///
 /// If `target_path` is Some, saves to that path (with .ipynb appended if needed).
@@ -2365,19 +2505,22 @@ async fn save_notebook_to_disk(
     // Determine the actual save path
     let notebook_path = match target_path {
         Some(p) => {
+            let path = PathBuf::from(p);
+
+            // Reject relative paths - daemon CWD is unpredictable (could be / when running as launchd)
+            // Clients (Tauri file dialog, Python SDK) should always provide absolute paths.
+            if path.is_relative() {
+                return Err(format!(
+                    "Relative paths are not supported for save: '{}'. Please provide an absolute path.",
+                    p
+                ));
+            }
+
             // Ensure .ipynb extension
-            let path = if p.ends_with(".ipynb") {
-                PathBuf::from(p)
+            if p.ends_with(".ipynb") {
+                path
             } else {
                 PathBuf::from(format!("{}.ipynb", p))
-            };
-            // Convert to absolute path
-            if path.is_relative() {
-                std::env::current_dir()
-                    .map_err(|e| format!("Failed to get current directory: {}", e))?
-                    .join(&path)
-            } else {
-                path
             }
         }
         None => room.notebook_path.clone(),
