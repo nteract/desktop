@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { open as openExternalUrl } from "@tauri-apps/plugin-shell";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IsolationTest } from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
@@ -22,6 +23,7 @@ import { DependencyHeader } from "./components/DependencyHeader";
 import { GlobalFindBar } from "./components/GlobalFindBar";
 import { NotebookToolbar } from "./components/NotebookToolbar";
 import { NotebookView } from "./components/NotebookView";
+import { ReportIssueDialog } from "./components/ReportIssueDialog";
 import { TrustDialog } from "./components/TrustDialog";
 import { useCondaDependencies } from "./hooks/useCondaDependencies";
 import { useDaemonKernel } from "./hooks/useDaemonKernel";
@@ -35,6 +37,11 @@ import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
 import { KERNEL_STATUS } from "./lib/kernel-status";
 import { logger } from "./lib/logger";
+import {
+  type IssueSubmissionRequest,
+  type PreparedIssueReport,
+  submitIssueReport,
+} from "./lib/reportIssue";
 import type { JupyterMessage } from "./types";
 
 /** MIME bundle type for page payloads */
@@ -119,6 +126,7 @@ function AppContent() {
   const [dependencyHeaderOpen, setDependencyHeaderOpen] = useState(false);
   const [showIsolationTest, setShowIsolationTest] = useState(false);
   const [trustDialogOpen, setTrustDialogOpen] = useState(false);
+  const [reportIssueDialogOpen, setReportIssueDialogOpen] = useState(false);
   const [clearingDeps, setClearingDeps] = useState(false);
   // Track when sync/restart just completed for success feedback
   const [justSynced, setJustSynced] = useState(false);
@@ -652,6 +660,25 @@ function AppContent() {
     await restartAndRunAll();
   }, [restartAndRunAll]);
 
+  const handleReportIssueSubmit = useCallback(
+    async ({ title, description }: IssueSubmissionRequest) =>
+      submitIssueReport(
+        { title, description },
+        {
+          prepareIssueReport: () =>
+            invoke<PreparedIssueReport>("prepare_issue_report"),
+          openIssueUrl: (url) => openExternalUrl(url),
+          copyToClipboard: async (reportMarkdown) => {
+            if (!navigator.clipboard?.writeText) {
+              throw new Error("Clipboard API unavailable");
+            }
+            await navigator.clipboard.writeText(reportMarkdown);
+          },
+        },
+      ),
+    [],
+  );
+
   // Cmd+S to save (keyboard and native menu)
   useEffect(() => {
     const webview = getCurrentWebview();
@@ -721,6 +748,17 @@ function AppContent() {
       unlistenPromise.then((unlisten) => unlisten());
     };
   }, [cloneNotebook]);
+
+  // Help menu: Report an Issue
+  useEffect(() => {
+    const webview = getCurrentWebview();
+    const unlistenPromise = webview.listen("menu:report-issue", () => {
+      setReportIssueDialogOpen(true);
+    });
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
 
   // Kernel menu: Run All Cells
   useEffect(() => {
@@ -1070,6 +1108,11 @@ function AppContent() {
         onDecline={handleTrustDecline}
         loading={trustLoading}
         daemonMode={true}
+      />
+      <ReportIssueDialog
+        open={reportIssueDialogOpen}
+        onOpenChange={setReportIssueDialogOpen}
+        onSubmit={handleReportIssueSubmit}
       />
       <NotebookView
         cells={cells}

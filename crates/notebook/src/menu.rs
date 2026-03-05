@@ -29,6 +29,7 @@ pub const MENU_ZOOM_RESET: &str = "zoom_reset";
 // Menu item IDs for kernel operations
 pub const MENU_RUN_ALL_CELLS: &str = "run_all_cells";
 pub const MENU_RESTART_AND_RUN_ALL: &str = "restart_and_run_all";
+pub const MENU_REPORT_ISSUE: &str = "report_issue";
 
 // Menu item IDs for CLI installation
 pub const MENU_INSTALL_CLI: &str = "install_cli";
@@ -259,6 +260,17 @@ pub fn create_menu(
     )?)?;
     menu.append(&view_menu)?;
 
+    // Help menu
+    let help_menu = Submenu::new(app, "Help", true)?;
+    help_menu.append(&MenuItem::with_id(
+        app,
+        MENU_REPORT_ISSUE,
+        "Report an Issue...",
+        true,
+        None::<&str>,
+    )?)?;
+    menu.append(&help_menu)?;
+
     // Window menu
     let window_menu = Submenu::new(app, "Window", true)?;
     window_menu.append(&PredefinedMenuItem::minimize(app, None)?)?;
@@ -299,7 +311,7 @@ mod tests {
     use super::{
         about_menu_label, app_name, build_about_metadata, sample_for_menu_item_id,
         sample_menu_item_id, window_label_for_menu_item_id, window_menu_item_id, APP_COMMIT_SHA,
-        APP_RELEASE_DATE, APP_VERSION, BUNDLED_SAMPLE_NOTEBOOKS,
+        APP_RELEASE_DATE, APP_VERSION, BUNDLED_SAMPLE_NOTEBOOKS, MENU_REPORT_ISSUE,
     };
     use std::collections::HashSet;
 
@@ -373,5 +385,10 @@ mod tests {
             comments.contains(APP_RELEASE_DATE),
             "comments should include release date"
         );
+    }
+
+    #[test]
+    fn report_issue_menu_item_id_is_stable() {
+        assert_eq!(MENU_REPORT_ISSUE, "report_issue");
     }
 }

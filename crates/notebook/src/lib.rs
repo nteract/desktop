@@ -3,6 +3,7 @@ pub mod conda_env;
 pub mod deno_env;
 pub mod environment_yml;
 pub mod format;
+pub mod issue_report;
 pub mod menu;
 pub mod notebook_state;
 pub mod pixi;
@@ -985,6 +986,11 @@ async fn get_blob_port() -> Result<u16, String> {
         .ok_or_else(|| "Daemon not running".to_string())?;
     info.blob_port
         .ok_or_else(|| "Blob server not available".to_string())
+}
+
+#[tauri::command]
+async fn prepare_issue_report() -> issue_report::IssueReportPayload {
+    issue_report::prepare_issue_report_payload()
 }
 
 /// Complete onboarding and open a fresh notebook window.
@@ -3160,6 +3166,34 @@ fn focused_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
         .find(|window| window.is_focused().ok() == Some(true))
 }
 
+fn menu_event_for_focused_webview(menu_id: &str) -> Option<&'static str> {
+    match menu_id {
+        crate::menu::MENU_OPEN => Some("menu:open"),
+        crate::menu::MENU_SAVE => Some("menu:save"),
+        crate::menu::MENU_CLONE_NOTEBOOK => Some("menu:clone"),
+        crate::menu::MENU_ZOOM_IN => Some("menu:zoom-in"),
+        crate::menu::MENU_ZOOM_OUT => Some("menu:zoom-out"),
+        crate::menu::MENU_ZOOM_RESET => Some("menu:zoom-reset"),
+        crate::menu::MENU_RUN_ALL_CELLS => Some("menu:run-all"),
+        crate::menu::MENU_RESTART_AND_RUN_ALL => Some("menu:restart-and-run-all"),
+        crate::menu::MENU_REPORT_ISSUE => Some("menu:report-issue"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod menu_event_tests {
+    use super::menu_event_for_focused_webview;
+
+    #[test]
+    fn report_issue_menu_maps_to_expected_event() {
+        assert_eq!(
+            menu_event_for_focused_webview(crate::menu::MENU_REPORT_ISSUE),
+            Some("menu:report-issue")
+        );
+    }
+}
+
 fn window_menu_display_name(
     app: &tauri::AppHandle,
     registry: &WindowNotebookRegistry,
@@ -3654,6 +3688,7 @@ pub fn run(
             get_git_info,
             get_daemon_info,
             get_blob_port,
+            prepare_issue_report,
         ])
         .setup(move |app| {
             let setup_start = std::time::Instant::now();
@@ -3963,51 +3998,27 @@ pub fn run(
                     // If all windows are closed (macOS app menu still active), fall back
                     // to a native picker so File > Open still works.
                     if let Some(window) = focused_window(app) {
-                        let _ = emit_to_label::<_, _, _>(&window, window.label(), "menu:open", ());
+                        if let Some(event_name) = menu_event_for_focused_webview(menu_id) {
+                            let _ =
+                                emit_to_label::<_, _, _>(&window, window.label(), event_name, ());
+                        }
                     } else {
                         open_notebook_from_menu_without_window(app, registry.inner());
                     }
                 }
-                crate::menu::MENU_SAVE => {
-                    // Emit event to frontend to trigger save
+                crate::menu::MENU_SAVE
+                | crate::menu::MENU_CLONE_NOTEBOOK
+                | crate::menu::MENU_ZOOM_IN
+                | crate::menu::MENU_ZOOM_OUT
+                | crate::menu::MENU_ZOOM_RESET
+                | crate::menu::MENU_RUN_ALL_CELLS
+                | crate::menu::MENU_RESTART_AND_RUN_ALL
+                | crate::menu::MENU_REPORT_ISSUE => {
                     if let Some(window) = focused_window(app) {
-                        let _ = emit_to_label::<_, _, _>(&window, window.label(), "menu:save", ());
-                    }
-                }
-                crate::menu::MENU_CLONE_NOTEBOOK => {
-                    // Emit event to frontend to trigger clone
-                    if let Some(window) = focused_window(app) {
-                        let _ = emit_to_label::<_, _, _>(&window, window.label(), "menu:clone", ());
-                    }
-                }
-                crate::menu::MENU_ZOOM_IN => {
-                    if let Some(window) = focused_window(app) {
-                        let _ = emit_to_label::<_, _, _>(&window, window.label(), "menu:zoom-in", ());
-                    }
-                }
-                crate::menu::MENU_ZOOM_OUT => {
-                    if let Some(window) = focused_window(app) {
-                        let _ = emit_to_label::<_, _, _>(&window, window.label(), "menu:zoom-out", ());
-                    }
-                }
-                crate::menu::MENU_ZOOM_RESET => {
-                    if let Some(window) = focused_window(app) {
-                        let _ = emit_to_label::<_, _, _>(&window, window.label(), "menu:zoom-reset", ());
-                    }
-                }
-                crate::menu::MENU_RUN_ALL_CELLS => {
-                    if let Some(window) = focused_window(app) {
-                        let _ = emit_to_label::<_, _, _>(&window, window.label(), "menu:run-all", ());
-                    }
-                }
-                crate::menu::MENU_RESTART_AND_RUN_ALL => {
-                    if let Some(window) = focused_window(app) {
-                        let _ = emit_to_label::<_, _, _>(
-                            &window,
-                            window.label(),
-                            "menu:restart-and-run-all",
-                            (),
-                        );
+                        if let Some(event_name) = menu_event_for_focused_webview(menu_id) {
+                            let _ =
+                                emit_to_label::<_, _, _>(&window, window.label(), event_name, ());
+                        }
                     }
                 }
                 crate::menu::MENU_INSTALL_CLI => {
