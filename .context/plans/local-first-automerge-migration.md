@@ -8,8 +8,8 @@
 |-------|--------|-------|
 | 0: Optimistic mutations | ✅ Done | [PR #542](https://github.com/nteract/desktop/pull/542) merged |
 | 1.1–1.3: Eliminate `NotebookState` dual-write | ✅ Done | [PR #544](https://github.com/nteract/desktop/pull/544) merged |
-| 1.4: Delegate save-to-disk to daemon | ⬜ Not started | `save_notebook`/`save_notebook_as` still use `NotebookState` |
-| 2: Frontend Automerge doc | ⬜ Not started | The real architectural shift |
+| 1.4: Delegate save-to-disk to daemon | ✅ Done | [PR #545](https://github.com/nteract/desktop/pull/545) merged |
+| 2: Frontend Automerge doc | ⬜ Not started | The real architectural shift — sub-PRs with feature flag |
 | 3: Authority boundary hardening | ⬜ Not started | Formalize writer roles per field |
 | 4: Optimize Tauri sync relay | ⬜ Not started | Binary IPC, reduce overhead |
 
@@ -235,22 +235,44 @@ All ~25 call sites in `crates/notebook/src/lib.rs` that dual-wrote to both `Note
 
 ---
 
-## Phase 1.4: Delegate save-to-disk to daemon
+<details>
+<summary><h2>Phase 1.4: Delegate save-to-disk to daemon ✅</h2></summary>
 
 **Goal:** Move notebook save-to-disk from the Tauri process to the daemon, eliminating the last major `NotebookState` consumer.
 
-**Effort:** Medium. **Risk:** Medium — save is critical path, format-on-save needs to move too.
+### What was done
 
-The daemon already has `save_notebook_to_disk` (`notebook_sync_server.rs:2333`) which reads cells from its canonical Automerge doc and writes `.ipynb`. The Tauri process currently does its own save with a format-on-save step and a local fallback.
+- `SaveNotebook` request now accepts `path: Option<String>` for save-as support and returns `NotebookSaved { path: String }` with the daemon-normalized absolute path (`.ipynb` appended if needed).
+- `save_notebook_to_disk()` refactored to accept optional target path. Relative paths are rejected (daemon CWD is unpredictable as a launchd service).
+- **Format-on-save moved to daemon.** New `format_notebook_cells()` function in `notebook_sync_server.rs` runs ruff (Python) or deno fmt (Deno) on all code cells, writes formatted source back to Automerge, and broadcasts changes to all peers. Client-side formatting loop removed from both `save_notebook` and `save_notebook_as`.
+- Local `NotebookState::serialize()` fallback removed. Daemon save is now required — disconnected daemon returns a clear error.
+- `save_notebook_as` uses the daemon-returned path as canonical for window title, `NotebookState.path`, `context.path`, and room reconnection.
+- Python bindings: `session.save(path=None)` and `await async_session.save(path=None)` added to both `Session` and `AsyncSession`.
 
-- [ ] Add `NotebookRequest::SaveToDisk` variant to the protocol
-- [ ] Handle in `handle_notebook_request`: call existing `save_notebook_to_disk`, return success/failure
-- [ ] Frontend's save command sends request to daemon via sync handle
-- [ ] Move format-on-save (ruff) to the daemon save path
-- [ ] For `save_notebook_as`: frontend handles file dialog (OS integration), sends new path to daemon, daemon writes, Tauri updates window title and re-derives notebook_id
-- [ ] Remove `NotebookState` serialization from `crates/notebook/src/lib.rs`
-- [ ] After this, `NotebookState` struct can be fully removed; keep only utility functions in `notebook_state.rs`
-- [ ] Fix `main_is_empty` check for macOS file association handler (dirty flag no longer set by cell mutations)
+### Known issue: save-as loses outputs
+
+When saving an untitled notebook via Save As, outputs from the current session are lost in the saved file. This happens because save-as creates a new room (new notebook_id derived from the new path), and the daemon's `save_notebook_to_disk` merges with the existing file (which doesn't exist yet for a new path). The outputs exist in the old room's Automerge doc but not the new one. This may be acceptable since save-as triggers a new kernel anyway, but worth evaluating.
+
+### Remaining `NotebookState` usage
+
+`NotebookState` is no longer used for persistence. Remaining 13 call sites are:
+- **Initial loading** — `create_window_context`, `initialize_notebook_sync` (first-peer population from disk)
+- **Path/dirty tracking** — `save_notebook` (path check), `save_notebook_as` (path + dirty update)
+- **Clone** — `clone_notebook_to_path` (local serialization for "Make a Copy")
+- **Reconnect** — `reconnect_to_daemon` (passes state to re-initialize sync)
+- **Disconnected fallbacks** — 8 metadata read commands fall back to `NotebookState` when daemon is down
+
+Full removal of the `NotebookState` struct is deferred — it still serves as the disconnected-daemon fallback and the initial notebook loading path. These will naturally go away as Phase 2 gives the frontend its own Automerge doc.
+
+- [x] Add `NotebookRequest::SaveToDisk` variant to the protocol
+- [x] Handle in `handle_notebook_request`: call existing `save_notebook_to_disk`, return success/failure
+- [x] Frontend's save command sends request to daemon via sync handle
+- [x] Move format-on-save (ruff/deno fmt) to the daemon save path
+- [x] For `save_notebook_as`: frontend handles file dialog, sends new path to daemon, daemon writes, Tauri uses daemon-returned path
+- [x] Remove `NotebookState` serialization from `crates/notebook/src/lib.rs`
+- [x] Python bindings for `save(path=None)`
+
+</details>
 
 ---
 
@@ -260,20 +282,19 @@ The daemon already has `save_notebook_to_disk` (`notebook_sync_server.rs:2333`) 
 
 **Effort:** Large (2-4 weeks). **Risk:** Medium — WASM bundle size (~200KB gzip), performance on large notebooks needs profiling.
 
-### 2.1 — Add `@automerge/automerge` to the frontend
+**Strategy:** Feature flag toggle with sub-PRs. Build `useAutomergeNotebook` alongside `useNotebook`, controlled by a feature flag (debug menu setting or env var). Both exist in the codebase during development. Each sub-PR is independently mergeable and testable. When the Automerge path is stable, flip the default and delete the old path.
 
-Use the WASM build of `@automerge/automerge` directly. We do NOT use `automerge-repo` — our sync protocol is custom (v2 typed frames) and `automerge-repo`'s transport abstraction adds complexity without value for our single-doc, known-peer-per-window setup.
+### Sub-PR 2A — WASM + schema setup
+
+Add `@automerge/automerge` to the frontend build pipeline. Zero runtime behavior change.
 
 - [ ] `npm install @automerge/automerge`
 - [ ] Add Vite WASM plugins: `vite-plugin-wasm`, `vite-plugin-top-level-await`
 - [ ] Verify WASM initialization works in dev and production builds
-
-### 2.2 — Define the TypeScript document schema
-
-Mirror the Rust `NotebookDoc` schema (`notebook_doc.rs:9-23`):
+- [ ] Define TypeScript document schema in `apps/notebook/src/automerge/schema.ts`:
 
 ```ts
-// Document schema — matches Rust NotebookDoc
+// Document schema — matches Rust NotebookDoc (notebook_doc.rs:9-23)
 interface NotebookDocSchema {
   notebook_id: string;
   cells: Array<{
@@ -290,116 +311,62 @@ interface NotebookDocSchema {
 }
 ```
 
-- [ ] Create `apps/notebook/src/automerge/schema.ts`
-- [ ] Type the document for use with `Automerge.from<NotebookDocSchema>()`
+- [ ] Add feature flag infrastructure (setting or env var for `USE_AUTOMERGE_NOTEBOOK`)
+- [ ] Measure WASM bundle size impact (target: <250KB gzip)
 
-### 2.3 — Create `useAutomergeNotebook` hook
+### Sub-PR 2B — Sync relay infrastructure
 
-This replaces `useNotebook` as the primary notebook state hook. The Automerge doc is the source of truth; React state is derived from it.
+Tauri event plumbing for binary Automerge sync messages. The old `useNotebook` path still runs — this just adds the new pipes.
 
-```ts
-function useAutomergeNotebook(initialDoc: Automerge.Doc<NotebookDocSchema>) {
-  const [doc, setDoc] = useState(initialDoc);
+| Event | Direction | Payload |
+|-------|-----------|---------|
+| `automerge:to-daemon` | Frontend → Tauri → Daemon | Binary (base64 initially, `Channel<Vec<u8>>` if needed) |
+| `automerge:from-daemon` | Daemon → Tauri → Frontend | Binary (base64 initially, `Channel<Vec<u8>>` if needed) |
 
-  // Derive React-friendly cell array from Automerge doc
-  const cells = useMemo(() => materializeCells(doc), [doc]);
+- [ ] Add Tauri commands/events that forward binary Automerge sync messages to/from the daemon Unix socket
+- [ ] Keep `NotebookSyncHandle.send_request()` for kernel commands (execute, interrupt, save, etc.)
+- [ ] Define initialization protocol: Tauri connects to daemon, performs initial sync exchange, sends doc bytes to frontend via one-shot event
+- [ ] Handle "first peer populates room" vs "joining existing room" cases
+- [ ] Ensure Python agents already connected to the room see the frontend's initial state
 
-  // Local mutations — instant, no invoke()
-  const addCell = useCallback((cellType, afterCellId?) => {
-    setDoc(prev => Automerge.change(prev, d => {
-      const newCell = { id: crypto.randomUUID(), cell_type: cellType, ... };
-      const idx = afterCellId
-        ? d.cells.findIndex(c => c.id === afterCellId) + 1
-        : 0;
-      d.cells.splice(idx, 0, newCell);
-    }));
-  }, []);
+### Sub-PR 2C — Hook replacement + migration (behind feature flag)
 
-  const deleteCell = useCallback((cellId) => {
-    setDoc(prev => Automerge.change(prev, d => {
-      if (d.cells.length <= 1) return;
-      const idx = d.cells.findIndex(c => c.id === cellId);
-      if (idx !== -1) d.cells.splice(idx, 1);
-    }));
-  }, []);
+The core architectural change. `useAutomergeNotebook` replaces `useNotebook` when the feature flag is enabled.
 
-  const updateCellSource = useCallback((cellId, newSource) => {
-    setDoc(prev => Automerge.change(prev, d => {
-      const cell = d.cells.find(c => c.id === cellId);
-      if (cell) Automerge.updateText(d, ["cells", d.cells.indexOf(cell), "source"], newSource);
-    }));
-  }, []);
-
-  // Incoming sync — apply remote changes
-  const applySyncMessage = useCallback((msg: Uint8Array) => {
-    setDoc(prev => {
-      const [newDoc] = Automerge.receiveSyncMessage(prev, syncState, msg);
-      return newDoc;
-    });
-  }, []);
-
-  return { doc, cells, addCell, deleteCell, updateCellSource, applySyncMessage, ... };
-}
-```
+- [ ] Create `apps/notebook/src/hooks/useAutomergeNotebook.ts`
+- [ ] Frontend owns a local Automerge doc — all cell mutations are local `Automerge.change()` calls:
+  - `addCell` — `crypto.randomUUID()`, insert into Automerge list
+  - `deleteCell` — remove from Automerge list (last-cell guard local)
+  - `updateCellSource` — `Automerge.updateText()` (Myers diff internally)
+  - Cell reorder — Automerge list move (new capability)
+- [ ] `materializeCells()` converts Automerge doc → `NotebookCell[]` for React rendering
+- [ ] Handle output manifest hash resolution (blob store HTTP fetch) — outputs arrive via Automerge sync from daemon
+- [ ] Frontend generates sync messages after each `Automerge.change()` via `Automerge.generateSyncMessage()`
+- [ ] Frontend applies incoming sync messages via `Automerge.receiveSyncMessage()`
+- [ ] Wire into `App.tsx` behind the feature flag toggle
+- [ ] Remove `invoke()` calls for cell mutations (add, delete, source edit) — keep for: execute, interrupt, shutdown, launch kernel, format cell, save
+- [ ] Replace `notebook:updated` event handling with Automerge sync message handling
 
 Key implementation details:
 - `Automerge.change()` returns a new immutable doc — compatible with React's `useState`
 - `Automerge.updateText()` does Myers diff on strings internally — same as the Rust `update_text`
-- `Automerge.splice()` for direct character-level edits (CodeMirror integration)
-- For cell source editing, use `Automerge.updateText(doc, path, newValue)` which computes minimal edits
+- `Automerge.splice()` for direct character-level edits (CodeMirror integration, future)
+- For cell source editing, `Automerge.updateText(doc, path, newValue)` computes minimal edits
 
-- [ ] Create `apps/notebook/src/hooks/useAutomergeNotebook.ts`
-- [ ] Implement all cell mutations as local `Automerge.change()` calls
-- [ ] Implement `materializeCells()` to convert Automerge doc → `NotebookCell[]`
-- [ ] Handle output manifest hash resolution (blob store HTTP fetch)
+### Sub-PR 2D — Cleanup (after feature flag is flipped)
 
-### 2.4 — Binary sync message relay via Tauri
+- [ ] Remove `useNotebook.ts`
+- [ ] Remove feature flag infrastructure
+- [ ] Remove `NotebookSyncClient` local Automerge doc from Tauri process (reduce to relay-only)
+- [ ] Remove remaining `NotebookState` disconnected-daemon fallbacks (frontend Automerge doc is the fallback)
+- [ ] Delete `notebook_state.rs` struct and unused methods
 
-Define two Tauri event channels for raw Automerge sync messages:
-
-| Event | Direction | Payload |
-|-------|-----------|---------|
-| `automerge:to-daemon` | Frontend → Tauri → Daemon | `Uint8Array` (Automerge sync message) |
-| `automerge:from-daemon` | Daemon → Tauri → Frontend | `Uint8Array` (Automerge sync message) |
-
-The Tauri process becomes a dumb pipe — no deserialization, no local doc.
-
-- [ ] Add Tauri event handlers that forward binary blobs to/from the daemon Unix socket
-- [ ] Frontend generates sync messages after each `Automerge.change()` via `Automerge.generateSyncMessage()`
-- [ ] Frontend applies incoming sync messages via `Automerge.receiveSyncMessage()`
-- [ ] Remove `NotebookSyncClient` from Tauri process (or reduce to relay-only)
-- [ ] Keep `NotebookSyncHandle.send_request()` for kernel commands (execute, interrupt, etc.)
-
-### 2.5 — Initialization flow
-
-When a notebook opens:
-
-1. Tauri loads `.ipynb` from disk, converts to initial Automerge doc
-2. Tauri connects to daemon, performs initial Automerge sync exchange
-3. If daemon has an existing room (another window is open), receive canonical doc state
-4. Send the initialized doc bytes to the frontend via a one-shot Tauri event
-5. Frontend creates local `Automerge.load(bytes)` and starts the hook
-6. Bidirectional sync begins
-
-- [ ] Define initialization protocol between Tauri and frontend
-- [ ] Handle the "first peer populates room" vs "joining existing room" cases
-- [ ] Ensure Python agents already connected to the room see the frontend's initial state
-
-### 2.6 — Replace `useNotebook` with `useAutomergeNotebook`
-
-- [ ] Migrate `App.tsx` to use new hook
-- [ ] Remove all `invoke()` calls for cell mutations (add, delete, source edit)
-- [ ] Keep `invoke()` for: execute, interrupt, shutdown, launch kernel, format cell, save
-- [ ] Remove `useNotebook.ts` or keep as thin compatibility shim during migration
-- [ ] Verify `notebook:updated` event handling is replaced by sync message handling
-
-### 2.7 — Performance validation
+### Performance validation (ongoing across sub-PRs)
 
 - [ ] Profile `Automerge.change()` + `materializeCells()` latency on 100-cell notebook
 - [ ] Profile on 500-cell notebook
 - [ ] Profile on 1000-cell notebook with large outputs
 - [ ] If needed: implement selective re-materialization (only re-read changed cells)
-- [ ] Measure WASM bundle size impact (target: <250KB gzip)
 
 ---
 
