@@ -113,8 +113,27 @@ fn truncate_error(msg: &str, max_len: usize) -> String {
     }
 }
 
+/// Random taglines for the CLI help
+const TAGLINES: &[&str] = &[
+    "It's Runtime Funtime",
+    "When Untitled229.ipynb just hits different",
+    "You can change these messages with one cool trick (make a PR)",
+    "While you're wrangling data, we're wrangling environments",
+    "Wrangling Jupyter runtimes so you don't have to",
+    "Your trusty Jupyter runtime companion",
+    "Notebooks, kernels, environments — all from your terminal",
+    "The CLI that makes notebooks go brrr",
+];
+
+fn random_tagline() -> &'static str {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    let index = RandomState::new().build_hasher().finish() as usize % TAGLINES.len();
+    TAGLINES[index]
+}
+
 #[derive(Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about = "CLI for Jupyter Runtimes", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -695,7 +714,7 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
 
         None => {
             use clap::CommandFactory;
-            Cli::command().print_help()?;
+            Cli::command().about(random_tagline()).print_help()?;
         }
     }
 
