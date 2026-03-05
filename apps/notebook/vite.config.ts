@@ -3,10 +3,14 @@ import react from "@vitejs/plugin-react";
 import path from "path";
 import { visualizer } from "rollup-plugin-visualizer";
 import { defineConfig } from "vite";
+import wasm from "vite-plugin-wasm";
+import topLevelAwait from "vite-plugin-top-level-await";
 import { isolatedRendererPlugin } from "./vite-plugin-isolated-renderer";
 
 export default defineConfig({
   plugins: [
+    wasm(),
+    topLevelAwait(),
     react(),
     tailwindcss(),
     isolatedRendererPlugin(),
