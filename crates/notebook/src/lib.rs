@@ -235,6 +235,9 @@ fn cell_snapshot_to_frontend(snap: &CellSnapshot) -> FrontendCell {
 }
 
 /// Get the runtime type from Automerge metadata.
+///
+/// Mirrors `NotebookState::get_runtime()` semantics: kernelspec.name first,
+/// then kernelspec.language, then language_info fallback, then default Python.
 async fn get_runtime_from_sync(handle: &NotebookSyncHandle) -> Runtime {
     let metadata_json = handle
         .get_metadata(runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY)
@@ -245,6 +248,7 @@ async fn get_runtime_from_sync(handle: &NotebookSyncHandle) -> Runtime {
         if let Ok(snapshot) =
             serde_json::from_str::<runtimed::notebook_metadata::NotebookMetadataSnapshot>(&json)
         {
+            // Check kernelspec.name first (most reliable)
             if let Some(ks) = &snapshot.kernelspec {
                 let name_lower = ks.name.to_lowercase();
                 if name_lower.contains("deno") {
@@ -253,16 +257,34 @@ async fn get_runtime_from_sync(handle: &NotebookSyncHandle) -> Runtime {
                 if name_lower.contains("python") {
                     return Runtime::Python;
                 }
+                // Check language field
                 if let Some(lang) = &ks.language {
                     let lang_lower = lang.to_lowercase();
                     if lang_lower == "typescript" || lang_lower == "javascript" {
                         return Runtime::Deno;
                     }
+                    if lang_lower == "python" {
+                        return Runtime::Python;
+                    }
                 }
+                // Unknown kernelspec — preserve as Other for round-tripping
                 return Runtime::Other(ks.name.clone());
+            }
+
+            // Fallback: check language_info.name
+            if let Some(li) = &snapshot.language_info {
+                let name_lower = li.name.to_lowercase();
+                if name_lower == "typescript" || name_lower == "javascript" || name_lower == "deno"
+                {
+                    return Runtime::Deno;
+                }
+                if name_lower == "python" {
+                    return Runtime::Python;
+                }
             }
         }
     }
+    // Default to Python only if no kernelspec and no language_info
     Runtime::Python
 }
 
@@ -287,6 +309,73 @@ async fn set_metadata_snapshot(
     let json = serde_json::to_string(snapshot).map_err(|e| format!("serialize metadata: {}", e))?;
     handle
         .set_metadata(runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY, &json)
+        .await
+        .map_err(|e| format!("set_metadata: {}", e))
+}
+
+/// Read the raw metadata `additional` fields from Automerge, preserving all
+/// unknown fields in `runt` (e.g. `trust_signature`, `trust_timestamp`).
+///
+/// Unlike `get_metadata_snapshot` → `metadata_from_snapshot`, this does not
+/// go through the typed `RuntMetadata` struct which would strip unknown keys.
+async fn get_raw_metadata_additional(
+    handle: &NotebookSyncHandle,
+) -> Option<HashMap<String, serde_json::Value>> {
+    let json_str = handle
+        .get_metadata(runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY)
+        .await
+        .ok()
+        .flatten()?;
+    let value: serde_json::Value = serde_json::from_str(&json_str).ok()?;
+    let obj = value.as_object()?;
+    let mut additional = HashMap::new();
+    if let Some(runt) = obj.get("runt") {
+        additional.insert("runt".to_string(), runt.clone());
+    }
+    Some(additional)
+}
+
+/// Write trust fields into the Automerge metadata JSON without going through
+/// the typed `NotebookMetadataSnapshot` round-trip (which strips unknown `runt` keys
+/// like `trust_signature` that aren't modeled in `RuntMetadata`).
+async fn set_raw_trust_in_metadata(
+    handle: &NotebookSyncHandle,
+    signature: &str,
+    timestamp: &str,
+) -> Result<(), String> {
+    let json_str = handle
+        .get_metadata(runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY)
+        .await
+        .map_err(|e| format!("get_metadata: {}", e))?
+        .ok_or("No metadata in Automerge doc")?;
+
+    let mut value: serde_json::Value =
+        serde_json::from_str(&json_str).map_err(|e| format!("parse metadata: {}", e))?;
+
+    let runt = value
+        .as_object_mut()
+        .ok_or("metadata is not an object")?
+        .entry("runt")
+        .or_insert_with(|| serde_json::json!({}));
+
+    if let Some(obj) = runt.as_object_mut() {
+        obj.insert(
+            "trust_signature".to_string(),
+            serde_json::Value::String(signature.to_string()),
+        );
+        obj.insert(
+            "trust_timestamp".to_string(),
+            serde_json::Value::String(timestamp.to_string()),
+        );
+    }
+
+    let new_json =
+        serde_json::to_string(&value).map_err(|e| format!("serialize metadata: {}", e))?;
+    handle
+        .set_metadata(
+            runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY,
+            &new_json,
+        )
         .await
         .map_err(|e| format!("set_metadata: {}", e))
 }
@@ -1369,6 +1458,27 @@ async fn save_notebook_as(
                         "source": cell_source,
                     }),
                 );
+            }
+        }
+    }
+
+    // Refresh NotebookState from Automerge before serializing — the receiver
+    // loop sync-back was removed, so NotebookState cells/metadata may be stale.
+    {
+        let sync_handle = notebook_sync.lock().await.clone();
+        if let Some(ref handle) = sync_handle {
+            if let Ok(cells) = handle.get_cells().await {
+                if let Ok(mut nb) = state.lock() {
+                    nb.notebook.cells = cells.iter().map(cell_snapshot_to_nbformat).collect();
+                }
+            }
+            if let Some(snapshot) = get_metadata_snapshot(handle).await {
+                if let Ok(mut nb) = state.lock() {
+                    notebook_state::merge_snapshot_into_nbformat(
+                        &snapshot,
+                        &mut nb.notebook.metadata,
+                    );
+                }
             }
         }
     }
@@ -2820,9 +2930,9 @@ async fn verify_notebook_trust(
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
     let guard = notebook_sync.lock().await;
     if let Some(handle) = guard.as_ref() {
-        if let Some(snapshot) = get_metadata_snapshot(handle).await {
-            let metadata = metadata_from_snapshot(&snapshot);
-            return trust::verify_notebook_trust(&metadata.additional);
+        // Use raw metadata to preserve trust_signature (not in the typed RuntMetadata struct)
+        if let Some(additional) = get_raw_metadata_additional(handle).await {
+            return trust::verify_notebook_trust(&additional);
         }
     }
     // Fallback
@@ -2844,31 +2954,16 @@ async fn approve_notebook_trust(
     let guard = notebook_sync.lock().await;
     let handle = guard.as_ref().ok_or("Not connected to daemon")?;
 
-    let snapshot = get_metadata_snapshot(handle).await;
-    let mut metadata = snapshot
-        .as_ref()
-        .map(metadata_from_snapshot)
-        .unwrap_or_else(|| metadata_from_snapshot(&default_metadata_snapshot()));
+    // Use raw metadata to read trust-relevant fields without stripping unknown runt keys
+    let additional = get_raw_metadata_additional(handle)
+        .await
+        .unwrap_or_default();
+    let signature = trust::sign_notebook_dependencies(&additional)?;
+    let timestamp = chrono::Utc::now().to_rfc3339();
 
-    let signature = trust::sign_notebook_dependencies(&metadata.additional)?;
-
-    let runt_value = metadata
-        .additional
-        .entry("runt".to_string())
-        .or_insert_with(|| serde_json::json!({}));
-    if let Some(obj) = runt_value.as_object_mut() {
-        obj.insert(
-            "trust_signature".to_string(),
-            serde_json::Value::String(signature),
-        );
-        obj.insert(
-            "trust_timestamp".to_string(),
-            serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
-        );
-    }
-
-    let new_snapshot = notebook_state::snapshot_from_nbformat(&metadata);
-    set_metadata_snapshot(handle, &new_snapshot).await
+    // Write trust fields directly into the raw Automerge JSON — avoids the typed
+    // NotebookMetadataSnapshot round-trip which would strip trust_signature/trust_timestamp
+    set_raw_trust_in_metadata(handle, &signature, &timestamp).await
 }
 
 /// Check packages for typosquatting (similar names to popular packages).
@@ -4413,6 +4508,10 @@ pub fn run(
                     continue;
                 }
 
+                // Note: only checks path, not dirty/content state. Cell edits
+                // no longer set NotebookState.dirty (mutations go through sync
+                // handle), so an untitled notebook with user edits may be reused.
+                // Phase 1.4 will move this check to the sync handle.
                 let main_is_empty = registry_for_open
                     .get("main")
                     .ok()
