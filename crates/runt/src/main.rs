@@ -138,7 +138,7 @@ fn random_tagline() -> String {
 }
 
 #[derive(Parser)]
-#[command(author, version, about = "CLI for Jupyter Runtimes", long_about = None)]
+#[command(name = "runt", author, version, about = "CLI for Jupyter Runtimes", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
