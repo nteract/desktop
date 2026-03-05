@@ -31,7 +31,7 @@ import { type EnvSyncState, useDependencies } from "./hooks/useDependencies";
 import { useEnvProgress } from "./hooks/useEnvProgress";
 import { useDaemonInfo, useGitInfo } from "./hooks/useGitInfo";
 import { useGlobalFind } from "./hooks/useGlobalFind";
-import { useNotebook } from "./hooks/useNotebook";
+import { useNotebookDispatch } from "./hooks/useNotebookDispatch";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
 import { KERNEL_STATUS } from "./lib/kernel-status";
@@ -112,7 +112,7 @@ function AppContent() {
     setExecutionCount,
     clearCellOutputs,
     formatCell,
-  } = useNotebook();
+  } = useNotebookDispatch();
 
   // Global find (Cmd+F)
   const globalFind = useGlobalFind(cells);
