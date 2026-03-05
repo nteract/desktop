@@ -2410,9 +2410,7 @@ async fn add_dependency(
 
     let snapshot = get_metadata_snapshot(handle).await;
     let metadata = snapshot.as_ref().map(metadata_from_snapshot);
-    let existing = metadata
-        .as_ref()
-        .and_then(|m| uv_env::extract_dependencies(m));
+    let existing = metadata.as_ref().and_then(uv_env::extract_dependencies);
 
     let mut deps = existing
         .as_ref()
@@ -2460,9 +2458,7 @@ async fn remove_dependency(
 
     let snapshot = get_metadata_snapshot(handle).await;
     let metadata = snapshot.as_ref().map(metadata_from_snapshot);
-    let existing = metadata
-        .as_ref()
-        .and_then(|m| uv_env::extract_dependencies(m));
+    let existing = metadata.as_ref().and_then(uv_env::extract_dependencies);
 
     if let Some(existing) = existing {
         let pkg_name = package
@@ -2621,9 +2617,7 @@ async fn add_conda_dependency(
 
     let snapshot = get_metadata_snapshot(handle).await;
     let metadata = snapshot.as_ref().map(metadata_from_snapshot);
-    let existing = metadata
-        .as_ref()
-        .and_then(|m| conda_env::extract_dependencies(m));
+    let existing = metadata.as_ref().and_then(conda_env::extract_dependencies);
 
     let mut deps = existing
         .as_ref()
@@ -2677,9 +2671,7 @@ async fn remove_conda_dependency(
 
     let snapshot = get_metadata_snapshot(handle).await;
     let metadata = snapshot.as_ref().map(metadata_from_snapshot);
-    let existing = metadata
-        .as_ref()
-        .and_then(|m| conda_env::extract_dependencies(m));
+    let existing = metadata.as_ref().and_then(conda_env::extract_dependencies);
 
     if let Some(existing) = existing {
         let pkg_name = package
