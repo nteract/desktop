@@ -293,11 +293,8 @@ jobs:
           VERSION="${{ needs.compute-version.outputs.version }}"
           echo "Setting version to: ${VERSION}"
           CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
-          if [ "$CHANNEL" = "preview" ]; then
-            PRODUCT_NAME="nteract (Preview)"
-            BUNDLE_ID="org.nteract.desktop.preview"
-          elif [ "$CHANNEL" = "nightly" ]; then
-            PRODUCT_NAME="nteract (Nightly)"
+          if [ "$CHANNEL" = "nightly" ]; then
+            PRODUCT_NAME="nteract Nightly"
             BUNDLE_ID="org.nteract.desktop.nightly"
           else
             PRODUCT_NAME="nteract"
@@ -306,7 +303,7 @@ jobs:
           sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" crates/notebook/tauri.conf.json
           sed -i '' "s/\"productName\": \"[^\"]*\"/\"productName\": \"${PRODUCT_NAME}\"/" crates/notebook/tauri.conf.json
           sed -i '' "s/\"identifier\": \"[^\"]*\"/\"identifier\": \"${BUNDLE_ID}\"/" crates/notebook/tauri.conf.json
-          sed -i '' "s#https://github.com/nteract/desktop/releases/download/preview-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
+          sed -i '' "s#https://github.com/nteract/desktop/releases/download/stable-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
 
       - name: Generate Icons
@@ -443,12 +440,8 @@ jobs:
           $version = "${{ needs.compute-version.outputs.version }}"
           $channel = "${{ env.RUNT_BUILD_CHANNEL }}".ToLowerInvariant()
           switch ($channel) {
-            "preview" {
-              $productName = "nteract (Preview)"
-              $bundleId = "org.nteract.desktop.preview"
-            }
             "nightly" {
-              $productName = "nteract (Nightly)"
+              $productName = "nteract Nightly"
               $bundleId = "org.nteract.desktop.nightly"
             }
             default {
@@ -461,7 +454,7 @@ jobs:
           $tauriConf = $tauriConf -replace '"version": "[^"]+"', "`"version`": `"$version`""
           $tauriConf = $tauriConf -replace '"productName": "[^"]+"', "`"productName`": `"$productName`""
           $tauriConf = $tauriConf -replace '"identifier": "[^"]+"', "`"identifier`": `"$bundleId`""
-          $tauriConf = $tauriConf -replace 'https://github.com/nteract/desktop/releases/download/preview-latest/latest.json', 'https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json'
+          $tauriConf = $tauriConf -replace 'https://github.com/nteract/desktop/releases/download/stable-latest/latest.json', 'https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json'
           Set-Content crates/notebook/tauri.conf.json $tauriConf
           $runtCargo = Get-Content crates/runt/Cargo.toml -Raw
           $runtCargo = $runtCargo -replace '(?m)^version = ".*"$', "version = `"$version`""
@@ -593,11 +586,8 @@ jobs:
           VERSION="${{ needs.compute-version.outputs.version }}"
           echo "Setting version to: ${VERSION}"
           CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
-          if [ "$CHANNEL" = "preview" ]; then
-            PRODUCT_NAME="nteract (Preview)"
-            BUNDLE_ID="org.nteract.desktop.preview"
-          elif [ "$CHANNEL" = "nightly" ]; then
-            PRODUCT_NAME="nteract (Nightly)"
+          if [ "$CHANNEL" = "nightly" ]; then
+            PRODUCT_NAME="nteract Nightly"
             BUNDLE_ID="org.nteract.desktop.nightly"
           else
             PRODUCT_NAME="nteract"
@@ -606,7 +596,7 @@ jobs:
           sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" crates/notebook/tauri.conf.json
           sed -i "s/\"productName\": \"[^\"]*\"/\"productName\": \"${PRODUCT_NAME}\"/" crates/notebook/tauri.conf.json
           sed -i "s/\"identifier\": \"[^\"]*\"/\"identifier\": \"${BUNDLE_ID}\"/" crates/notebook/tauri.conf.json
-          sed -i "s#https://github.com/nteract/desktop/releases/download/preview-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
+          sed -i "s#https://github.com/nteract/desktop/releases/download/stable-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
 
       - name: Generate Icons
@@ -805,10 +795,14 @@ jobs:
       - name: Prepare release assets
         run: |
           CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
+          CLI_NAME="runt"
+          if [ "$CHANNEL" = "nightly" ]; then
+            CLI_NAME="runt-nightly"
+          fi
           mkdir -p release-assets
           # CLI binaries
-          cp executables/runt-linux-x64 release-assets/
-          cp executables/runt-darwin-arm64 release-assets/
+          cp executables/runt-linux-x64 "release-assets/${CLI_NAME}-linux-x64"
+          cp executables/runt-darwin-arm64 "release-assets/${CLI_NAME}-darwin-arm64"
           # Notebook installers
           cp "notebook-macos-arm64/nteract-${CHANNEL}-darwin-arm64.dmg" release-assets/
           cp "notebook-windows-x64/nteract-${CHANNEL}-windows-x64.exe" release-assets/
@@ -901,6 +895,10 @@ jobs:
           COMMIT_SHA: ${{ github.sha }}
           RELEASE_INTRO: ${{ inputs.release_intro }}
         run: |
+          CLI_NAME="runt"
+          if [ "$VERSION_SUFFIX" = "nightly" ]; then
+            CLI_NAME="runt-nightly"
+          fi
           {
             echo "$RELEASE_INTRO"
             echo ''
@@ -925,14 +923,14 @@ jobs:
             echo ''
             echo 'This release includes auto-update support. Existing installations will be notified of this update automatically.'
             echo ''
-            echo '## runt (CLI)'
+            echo "## ${CLI_NAME} (CLI)"
             echo ''
             echo 'Also bundled inside the desktop app. Standalone binaries:'
             echo ''
             echo '| Platform | Architecture | Download |'
             echo '|----------|--------------|----------|'
-            echo '| Linux | x64 | `runt-linux-x64` |'
-            echo '| macOS | ARM64 | `runt-darwin-arm64` |'
+            echo "| Linux | x64 | \`${CLI_NAME}-linux-x64\` |"
+            echo "| macOS | ARM64 | \`${CLI_NAME}-darwin-arm64\` |"
             echo ''
             echo '## runtimed (Python — macOS, Linux, Windows)'
             echo ''
@@ -952,8 +950,8 @@ jobs:
           draft: false
           prerelease: ${{ inputs.github_release_prerelease }}
           files: |
-            ./release-assets/runt-linux-x64
-            ./release-assets/runt-darwin-arm64
+            ./release-assets/runt*-linux-x64
+            ./release-assets/runt*-darwin-arm64
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.AppImage
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.AppImage.sig
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.deb
