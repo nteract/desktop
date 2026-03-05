@@ -25,7 +25,9 @@ pub use runtime::Runtime;
 use notebook_state::{FrontendCell, NotebookState};
 use runtimed::notebook_doc::CellSnapshot;
 use runtimed::notebook_sync_client::{NotebookSyncClient, NotebookSyncHandle};
-use runtimed::protocol::{CompletionItem, HistoryEntry, NotebookRequest, NotebookResponse};
+use runtimed::protocol::{
+    CompletionItem, CursorPosition, HistoryEntry, NotebookRequest, NotebookResponse, UserInfo,
+};
 
 use log::{debug, info, warn};
 use nbformat::v4::{Cell, CellId, CellMetadata};
@@ -1764,6 +1766,26 @@ async fn sync_environment_via_daemon(
     handle
         .send_request(NotebookRequest::SyncEnvironment {})
         .await
+        .map_err(|e| format!("daemon request failed: {}", e))
+}
+
+/// Update presence state (cursor position, user info).
+/// Broadcasts to all other peers in the notebook room.
+#[tauri::command]
+async fn update_presence(
+    user: UserInfo,
+    cursor: Option<CursorPosition>,
+    window: tauri::Window,
+    registry: tauri::State<'_, WindowNotebookRegistry>,
+) -> Result<(), String> {
+    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
+    let guard = notebook_sync.lock().await;
+    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
+
+    handle
+        .send_request(NotebookRequest::UpdatePresence { user, cursor })
+        .await
+        .map(|_| ())
         .map_err(|e| format!("daemon request failed: {}", e))
 }
 
@@ -3635,6 +3657,7 @@ pub fn run(
             interrupt_via_daemon,
             shutdown_kernel_via_daemon,
             sync_environment_via_daemon,
+            update_presence,
             get_daemon_kernel_info,
             is_daemon_connected,
             get_daemon_status,

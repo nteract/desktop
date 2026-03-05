@@ -239,6 +239,16 @@ pub enum NotebookRequest {
     /// Sync environment with current metadata (hot-install new packages).
     /// Only supported for UV inline deps. Falls back to restart for removals/conda.
     SyncEnvironment {},
+
+    /// Update this peer's presence state (cursor position, user info).
+    /// Broadcasts to all other peers in the room.
+    UpdatePresence {
+        /// User display info (name, icon, color).
+        user: UserInfo,
+        /// Current cursor position (None to clear focus).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cursor: Option<CursorPosition>,
+    },
 }
 
 /// Responses from daemon to notebook app.
@@ -465,6 +475,25 @@ pub enum NotebookBroadcast {
         #[serde(skip_serializing_if = "Option::is_none")]
         diff: Option<EnvSyncDiff>,
     },
+
+    /// A peer's presence state changed (cursor moved, joined room, etc.).
+    PresenceUpdate {
+        /// The updated peer presence.
+        peer: PeerPresence,
+    },
+
+    /// A peer disconnected from the room.
+    PeerDisconnected {
+        /// The peer ID that disconnected.
+        peer_id: String,
+    },
+
+    /// Full presence state sync sent to newly connected peers.
+    /// Similar to CommSync, this gives new connections the current room state.
+    PresenceSync {
+        /// All currently connected peers.
+        peers: Vec<PeerPresence>,
+    },
 }
 
 /// Difference between launched environment config and current metadata.
@@ -483,6 +512,57 @@ pub struct EnvSyncDiff {
     /// Deno config changed (permissions, import_map, etc.)
     #[serde(default)]
     pub deno_changed: bool,
+}
+
+// =============================================================================
+// Presence Protocol (peer awareness in notebook rooms)
+// =============================================================================
+
+/// User display information for presence UI.
+///
+/// Used to show connected peers in the notebook toolbar with avatars,
+/// names, and cursor highlighting colors.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserInfo {
+    /// Display name (e.g., "Swift Fox" for anonymous, or real name for authenticated).
+    pub name: String,
+    /// Lucide icon name for avatar (e.g., "cat", "rabbit"). None uses initials.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// Color for cursor/selection highlighting (hex: "#FF5733" or hsl).
+    pub color: String,
+}
+
+/// Cursor position within the notebook.
+///
+/// Currently tracks cell-level focus. The offset and selection_end fields
+/// are reserved for future character-level cursor tracking.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CursorPosition {
+    /// Cell ID where the cursor/focus is located.
+    pub cell_id: String,
+    /// Character offset within the cell source (future: for remote cursors).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<usize>,
+    /// Selection end offset if text is selected (future: for remote selections).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection_end: Option<usize>,
+}
+
+/// Presence state for a single peer in a notebook room.
+///
+/// Tracks who is connected, their display info, and where they're focused.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerPresence {
+    /// Unique identifier for this peer (UUID generated per connection).
+    pub peer_id: String,
+    /// User display information (name, icon, color).
+    pub user: UserInfo,
+    /// Current cursor/focus position (None if not focused on a cell).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<CursorPosition>,
+    /// Timestamp of last activity (Unix epoch milliseconds).
+    pub last_active: u64,
 }
 
 // =============================================================================

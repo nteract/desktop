@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { CollaboratorAvatars } from "@/components/cell/CollaboratorAvatars";
 import {
   Collapsible,
   CollapsibleContent,
@@ -31,7 +32,7 @@ import {
   KERNEL_STATUS,
   type KernelStatus,
 } from "../lib/kernel-status";
-import type { KernelspecInfo } from "../types";
+import type { KernelspecInfo, PeerPresence } from "../types";
 import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "./icons";
 
 /** Format seconds into human-readable duration */
@@ -169,6 +170,8 @@ interface NotebookToolbarProps {
   updateVersion?: string | null;
   onDownloadUpdate?: () => void;
   onRestartToUpdate?: () => void;
+  /** Connected peers for presence display */
+  peers?: PeerPresence[];
 }
 
 const themeOptions: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
@@ -299,6 +302,7 @@ export function NotebookToolbar({
   updateVersion,
   onDownloadUpdate,
   onRestartToUpdate,
+  peers = [],
 }: NotebookToolbarProps) {
   const [kernelspecs, setKernelspecs] = useState<KernelspecInfo[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -464,6 +468,18 @@ export function NotebookToolbar({
           )}
 
           <div className="flex-1" />
+
+          {/* Connected peers (presence) */}
+          {peers.length > 0 && (
+            <CollaboratorAvatars
+              users={peers.map((p) => ({
+                id: p.peer_id,
+                name: p.user.name,
+                color: p.user.color,
+              }))}
+              size="sm"
+            />
+          )}
 
           {/* Update available */}
           {updateStatus === "available" && onDownloadUpdate && (

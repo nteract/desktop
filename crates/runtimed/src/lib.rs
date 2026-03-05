@@ -24,6 +24,7 @@ pub mod notebook_metadata;
 pub mod notebook_sync_client;
 pub mod notebook_sync_server;
 pub mod output_store;
+pub mod presence;
 pub mod project_file;
 pub mod protocol;
 pub mod runtime;

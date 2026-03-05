@@ -42,6 +42,7 @@ use crate::connection::{self, NotebookFrameType};
 use crate::kernel_manager::{DenoLaunchedConfig, LaunchedEnvConfig, RoomKernel};
 use crate::notebook_doc::{notebook_doc_filename, CellSnapshot, NotebookDoc};
 use crate::notebook_metadata::{NotebookMetadataSnapshot, NOTEBOOK_METADATA_KEY};
+use crate::presence::PresenceState;
 use crate::protocol::{EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse};
 
 /// Trust state for a notebook room.
@@ -490,6 +491,9 @@ pub struct NotebookRoom {
     /// Wrapped in Mutex to allow setting after Arc creation.
     /// Sent when the room is evicted to stop the watcher.
     watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    /// Peer presence state (who is connected, where they're focused).
+    /// Tracks connected agents/windows for presence UI.
+    pub presence: PresenceState,
 }
 
 impl NotebookRoom {
@@ -550,6 +554,7 @@ impl NotebookRoom {
             comm_state: Arc::new(CommState::new()),
             last_self_write: Arc::new(AtomicU64::new(0)),
             watcher_shutdown_tx: Mutex::new(None),
+            presence: PresenceState::new(),
         }
     }
 
@@ -585,6 +590,7 @@ impl NotebookRoom {
             comm_state: Arc::new(CommState::new()),
             last_self_write: Arc::new(AtomicU64::new(0)),
             watcher_shutdown_tx: Mutex::new(None),
+            presence: PresenceState::new(),
         }
     }
 
@@ -933,6 +939,10 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    // Generate unique peer_id for this connection
+    let peer_id = uuid::Uuid::new_v4().to_string();
+    debug!("[notebook-sync] New peer connection: {}", peer_id);
+
     let mut peer_state = sync::State::new();
     let mut changed_rx = room.changed_tx.subscribe();
     let mut kernel_broadcast_rx = room.kernel_broadcast_tx.subscribe();
@@ -946,7 +956,7 @@ where
         }
     }
 
-    // Phase 1.5: Send comm state sync for widget reconstruction
+    // Phase 1.5a: Send comm state sync for widget reconstruction
     // New clients need active comm channels to render widgets created before they connected
     {
         let comms = room.comm_state.get_all().await;
@@ -959,6 +969,24 @@ where
                 writer,
                 NotebookFrameType::Broadcast,
                 &NotebookBroadcast::CommSync { comms },
+            )
+            .await?;
+        }
+    }
+
+    // Phase 1.5b: Send presence state sync
+    // New clients see who else is already connected to this notebook
+    {
+        let peers = room.presence.get_all().await;
+        if !peers.is_empty() {
+            info!(
+                "[notebook-sync] Sending presence_sync with {} peers",
+                peers.len()
+            );
+            connection::send_typed_json_frame(
+                writer,
+                NotebookFrameType::Broadcast,
+                &NotebookBroadcast::PresenceSync { peers },
             )
             .await?;
         }
@@ -1011,7 +1039,7 @@ where
                                 // Handle NotebookRequest
                                 let request: NotebookRequest = serde_json::from_slice(&frame.payload)?;
                                 let response =
-                                    handle_notebook_request(room, request, daemon.clone()).await;
+                                    handle_notebook_request(room, request, daemon.clone(), &peer_id).await;
                                 connection::send_typed_json_frame(
                                     writer,
                                     NotebookFrameType::Response,
@@ -1030,7 +1058,18 @@ where
                         }
                     }
                     None => {
-                        // Client disconnected
+                        // Client disconnected — clean up presence
+                        if let Some(removed) = room.presence.remove(&peer_id).await {
+                            debug!(
+                                "[notebook-sync] Removed presence for disconnected peer: {}",
+                                removed.peer_id
+                            );
+                            let _ = room.kernel_broadcast_tx.send(
+                                NotebookBroadcast::PeerDisconnected {
+                                    peer_id: removed.peer_id,
+                                },
+                            );
+                        }
                         return Ok(());
                     }
                 }
@@ -1530,6 +1569,7 @@ async fn handle_notebook_request(
     room: &NotebookRoom,
     request: NotebookRequest,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
+    peer_id: &str,
 ) -> NotebookResponse {
     debug!("[notebook-sync] Handling request: {:?}", request);
 
@@ -2121,6 +2161,36 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::SyncEnvironment {} => handle_sync_environment(room).await,
+
+        NotebookRequest::UpdatePresence { user, cursor } => {
+            use crate::protocol::PeerPresence;
+            use std::time::{SystemTime, UNIX_EPOCH};
+
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+
+            let presence = PeerPresence {
+                peer_id: peer_id.to_string(),
+                user,
+                cursor,
+                last_active: now,
+            };
+
+            // Update presence state and broadcast to other peers
+            let is_new = room.presence.update(presence.clone()).await;
+            if is_new {
+                debug!("[notebook-sync] New peer joined: {}", peer_id);
+            }
+
+            // Broadcast presence update to all peers
+            let _ = room
+                .kernel_broadcast_tx
+                .send(NotebookBroadcast::PresenceUpdate { peer: presence });
+
+            NotebookResponse::Ok {}
+        }
     }
 }
 
@@ -3508,6 +3578,7 @@ mod tests {
             comm_state: Arc::new(crate::comm_state::CommState::new()),
             last_self_write: Arc::new(AtomicU64::new(0)),
             watcher_shutdown_tx: Mutex::new(None),
+            presence: PresenceState::new(),
         };
 
         (room, notebook_path)

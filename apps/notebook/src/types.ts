@@ -144,6 +144,42 @@ export interface CommSnapshot {
   buffers?: number[][];
 }
 
+// =============================================================================
+// Presence Types (Peer awareness in notebook rooms)
+// =============================================================================
+
+/** User display information for presence UI */
+export interface UserInfo {
+  /** Display name (e.g., "Swift Fox" for anonymous, or real name for authenticated) */
+  name: string;
+  /** Lucide icon name for avatar (e.g., "cat", "rabbit"). Undefined uses initials. */
+  icon?: string;
+  /** Color for cursor/selection highlighting (hex or hsl) */
+  color: string;
+}
+
+/** Cursor position within the notebook */
+export interface CursorPosition {
+  /** Cell ID where the cursor/focus is located */
+  cell_id: string;
+  /** Character offset within the cell source (future: for remote cursors) */
+  offset?: number;
+  /** Selection end offset if text is selected (future: for remote selections) */
+  selection_end?: number;
+}
+
+/** Presence state for a single peer in a notebook room */
+export interface PeerPresence {
+  /** Unique identifier for this peer (UUID generated per connection) */
+  peer_id: string;
+  /** User display information (name, icon, color) */
+  user: UserInfo;
+  /** Current cursor/focus position (undefined if not focused on a cell) */
+  cursor?: CursorPosition;
+  /** Timestamp of last activity (Unix epoch milliseconds) */
+  last_active: number;
+}
+
 /** Broadcast events from daemon for kernel operations */
 export type DaemonBroadcast =
   | {
@@ -219,6 +255,18 @@ export type DaemonBroadcast =
         outputs: string[];
       }[];
       metadata?: string;
+    }
+  | {
+      event: "presence_update";
+      peer: PeerPresence;
+    }
+  | {
+      event: "peer_disconnected";
+      peer_id: string;
+    }
+  | {
+      event: "presence_sync";
+      peers: PeerPresence[];
     };
 
 /** Response types from daemon notebook requests */

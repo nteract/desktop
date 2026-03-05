@@ -32,6 +32,7 @@ import { useEnvProgress } from "./hooks/useEnvProgress";
 import { useDaemonInfo, useGitInfo } from "./hooks/useGitInfo";
 import { useGlobalFind } from "./hooks/useGlobalFind";
 import { useNotebook } from "./hooks/useNotebook";
+import { usePresence } from "./hooks/usePresence";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
 import { KERNEL_STATUS } from "./lib/kernel-status";
@@ -82,6 +83,9 @@ async function sendMessage(message: unknown): Promise<void> {
 function AppContent() {
   const gitInfo = useGitInfo();
   const daemonInfo = useDaemonInfo();
+
+  // Presence tracking for connected peers (agents, windows)
+  const { peers } = usePresence();
 
   const { theme, setTheme } = useSyncedTheme();
   const {
@@ -952,6 +956,7 @@ function AppContent() {
         updateVersion={updateVersion}
         onDownloadUpdate={downloadUpdate}
         onRestartToUpdate={restartToUpdate}
+        peers={peers}
       />
       {/* Dual-dependency choice: both UV and conda deps exist, let user pick */}
       {dependencyHeaderOpen &&
