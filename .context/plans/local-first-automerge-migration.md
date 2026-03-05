@@ -94,7 +94,8 @@ All peers hold Automerge docs. Mutations are local-first. Sync is automatic and 
 
 ---
 
-## Phase 0: Make existing mutations optimistic
+<details>
+<summary><h2>Phase 0: Make existing mutations optimistic ✅</h2></summary>
 
 **Goal:** Eliminate user-visible latency for `addCell` and `deleteCell` without touching the sync layer.
 
@@ -179,6 +180,8 @@ const addCell = useCallback((cellType, afterCellId?) => {
 - [x] Test: add cell while daemon is disconnected → cell persists after reconnect
 - [x] Test: delete cell while daemon is disconnected → deletion syncs on reconnect
 - [x] Test: two windows delete the same cell concurrently → both converge
+
+</details>
 
 ---
 
