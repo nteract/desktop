@@ -1278,12 +1278,12 @@ async fn save_notebook(
     let state = notebook_state_for_window(&window, registry.inner())?;
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
     // First pass: collect cells to format (release lock for async formatting)
-    let (runtime, cells_to_format, path) = {
+    let (runtime, cells_to_format) = {
         let nb = state.lock().map_err(|e| e.to_string())?;
-        let path = nb
-            .path
-            .clone()
-            .ok_or_else(|| "No file path set - use save_notebook_as".to_string())?;
+        // Verify we have a path - daemon will use the room's notebook_path
+        if nb.path.is_none() {
+            return Err("No file path set - use save_notebook_as".to_string());
+        }
         let rt = nb.get_runtime();
 
         // Collect all code cells with their sources
@@ -1302,7 +1302,7 @@ async fn save_notebook(
             })
             .collect();
 
-        (rt, cells, path)
+        (rt, cells)
     };
 
     // Format each cell (async, outside the lock)
@@ -1336,63 +1336,29 @@ async fn save_notebook(
         // Formatting errors are silently ignored - save with original code
     }
 
-    // Try daemon save first (daemon merges metadata + cells from Automerge doc)
-    // Clone handle out of the mutex to avoid holding lock across await
+    // Save via daemon (daemon merges metadata + cells from Automerge doc)
     let sync_handle = notebook_sync.lock().await.clone();
-    let daemon_saved = if let Some(ref handle) = sync_handle {
-        match handle
-            .send_request(NotebookRequest::SaveNotebook {
-                format_cells: false, // Already formatted above
-                path: None,          // Use room's notebook_path
-            })
-            .await
-        {
-            Ok(NotebookResponse::NotebookSaved { path }) => {
-                info!("[save] Notebook saved via daemon to: {}", path);
-                true
-            }
-            Ok(NotebookResponse::Error { error }) => {
-                warn!(
-                    "[save] Daemon save failed: {}, falling back to local",
-                    error
-                );
-                false
-            }
-            Ok(_) => {
-                warn!("[save] Unexpected daemon response, falling back to local");
-                false
-            }
-            Err(e) => {
-                warn!("[save] Daemon request failed: {}, falling back to local", e);
-                false
-            }
-        }
-    } else {
-        false
-    };
+    let handle = sync_handle.ok_or("Not connected to daemon")?;
 
-    // Fallback: save locally if daemon save didn't work
-    if !daemon_saved {
-        // Refresh NotebookState from Automerge before serializing — the receiver
-        // loop sync-back was removed, so NotebookState cells/metadata may be stale.
-        if let Some(ref handle) = sync_handle {
-            if let Ok(cells) = handle.get_cells().await {
-                if let Ok(mut nb) = state.lock() {
-                    nb.notebook.cells = cells.iter().map(cell_snapshot_to_nbformat).collect();
-                }
-            }
-            if let Some(snapshot) = get_metadata_snapshot(handle).await {
-                if let Ok(mut nb) = state.lock() {
-                    notebook_state::merge_snapshot_into_nbformat(
-                        &snapshot,
-                        &mut nb.notebook.metadata,
-                    );
-                }
-            }
+    match handle
+        .send_request(NotebookRequest::SaveNotebook {
+            format_cells: false, // Already formatted above
+            path: None,          // Use room's notebook_path
+        })
+        .await
+    {
+        Ok(NotebookResponse::NotebookSaved { path }) => {
+            info!("[save] Notebook saved via daemon to: {}", path);
         }
-        let nb = state.lock().map_err(|e| e.to_string())?;
-        let content = nb.serialize()?;
-        std::fs::write(&path, &content).map_err(|e| e.to_string())?;
+        Ok(NotebookResponse::Error { error }) => {
+            return Err(format!("Daemon save failed: {}", error));
+        }
+        Ok(other) => {
+            return Err(format!("Unexpected daemon response: {:?}", other));
+        }
+        Err(e) => {
+            return Err(format!("Daemon request failed: {}", e));
+        }
     }
 
     // Mark as clean
@@ -1472,43 +1438,44 @@ async fn save_notebook_as(
         }
     }
 
-    // Refresh NotebookState from Automerge before serializing — the receiver
-    // loop sync-back was removed, so NotebookState cells/metadata may be stale.
+    // Save via daemon to the new path
+    let sync_handle = notebook_sync.lock().await.clone();
+    let handle = sync_handle.ok_or("Not connected to daemon")?;
+
+    match handle
+        .send_request(NotebookRequest::SaveNotebook {
+            format_cells: false, // Already formatted above
+            path: Some(path.clone()),
+        })
+        .await
     {
-        let sync_handle = notebook_sync.lock().await.clone();
-        if let Some(ref handle) = sync_handle {
-            if let Ok(cells) = handle.get_cells().await {
-                if let Ok(mut nb) = state.lock() {
-                    nb.notebook.cells = cells.iter().map(cell_snapshot_to_nbformat).collect();
-                }
-            }
-            if let Some(snapshot) = get_metadata_snapshot(handle).await {
-                if let Ok(mut nb) = state.lock() {
-                    notebook_state::merge_snapshot_into_nbformat(
-                        &snapshot,
-                        &mut nb.notebook.metadata,
-                    );
-                }
-            }
+        Ok(NotebookResponse::NotebookSaved { path: saved_path }) => {
+            info!("[save-as] Notebook saved via daemon to: {}", saved_path);
+        }
+        Ok(NotebookResponse::Error { error }) => {
+            return Err(format!("Daemon save failed: {}", error));
+        }
+        Ok(other) => {
+            return Err(format!("Unexpected daemon response: {:?}", other));
+        }
+        Err(e) => {
+            return Err(format!("Daemon request failed: {}", e));
         }
     }
 
-    // Now save
+    // Update the stored path and window title
+    let filename = save_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Untitled.ipynb");
+    let _ = window.set_title(filename);
+
     {
         let mut nb = state.lock().map_err(|e| e.to_string())?;
-        let content = nb.serialize()?;
-        std::fs::write(&save_path, &content).map_err(|e| e.to_string())?;
-
-        // Update the stored path and window title
-        let filename = save_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("Untitled.ipynb");
-        let _ = window.set_title(filename);
-
         nb.path = Some(save_path.clone());
         nb.dirty = false;
     }
+
     // Keep context.path in sync for non-save consumers
     if let Ok(ctx) = registry.get(window.label()) {
         if let Ok(mut p) = ctx.path.lock() {
