@@ -643,6 +643,9 @@ impl AsyncSession {
                         state_guard.broadcast_rx = Some(broadcast_rx);
                         state_guard.blob_base_url = blob_base_url;
                         state_guard.blob_store_path = blob_store_path;
+                    } else {
+                        // Already connected - drop the lock before starting kernel
+                        drop(state_guard);
                     }
 
                     // Start kernel
@@ -821,6 +824,9 @@ impl AsyncSession {
                         state_guard.broadcast_rx = Some(broadcast_rx);
                         state_guard.blob_base_url = blob_base_url;
                         state_guard.blob_store_path = blob_store_path;
+                    } else {
+                        // Already connected - drop the lock before starting kernel
+                        drop(state_guard);
                     }
 
                     // Start kernel
