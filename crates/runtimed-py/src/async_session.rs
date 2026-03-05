@@ -1175,6 +1175,86 @@ impl AsyncSession {
         })
     }
 
+    // =========================================================================
+    // Presence (peer awareness in notebook rooms)
+    // =========================================================================
+
+    /// Update this session's presence in the notebook room.
+    ///
+    /// Presence lets other connected clients (UI, agents, etc.) know about
+    /// this session's user and current focus. The daemon broadcasts presence
+    /// updates to all peers in the room.
+    ///
+    /// Args:
+    ///     name: Display name (e.g., "Swift Fox", "Claude Agent").
+    ///     color: Color for cursor/selection highlighting (hex like "#ff5733"
+    ///         or hsl like "hsl(200, 70%, 50%)").
+    ///     icon: Optional Lucide icon name for avatar (e.g., "cat", "bot").
+    ///         If not provided, initials from the name are used.
+    ///     cell_id: Optional cell ID where the cursor is focused. Pass None
+    ///         to indicate no cell focus (e.g., when unfocused or idle).
+    ///     offset: Optional character offset within the cell source (for
+    ///         future character-level cursor display).
+    ///     selection_end: Optional selection end offset (for future remote
+    ///         selection display).
+    ///
+    /// Returns a coroutine.
+    ///
+    /// Example:
+    ///     ```python
+    ///     # Announce presence with a name and color
+    ///     await session.update_presence(name="Claude Agent", color="#7c3aed", icon="bot")
+    ///
+    ///     # Update cursor position when focused on a cell
+    ///     await session.update_presence(
+    ///         name="Claude Agent",
+    ///         color="#7c3aed",
+    ///         icon="bot",
+    ///         cell_id="cell-abc123"
+    ///     )
+    ///     ```
+    #[pyo3(signature = (name, color, icon=None, cell_id=None, offset=None, selection_end=None))]
+    fn update_presence<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        color: String,
+        icon: Option<String>,
+        cell_id: Option<String>,
+        offset: Option<usize>,
+        selection_end: Option<usize>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+
+        future_into_py(py, async move {
+            let state_guard = state.lock().await;
+
+            let handle = state_guard
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            let user = runtimed::protocol::UserInfo { name, icon, color };
+
+            let cursor = cell_id.map(|cid| runtimed::protocol::CursorPosition {
+                cell_id: cid,
+                offset,
+                selection_end,
+            });
+
+            let response = handle
+                .send_request(NotebookRequest::UpdatePresence { user, cursor })
+                .await
+                .map_err(to_py_err)?;
+
+            match response {
+                NotebookResponse::Ok {} => Ok(()),
+                NotebookResponse::Error { error } => Err(to_py_err(error)),
+                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
+            }
+        })
+    }
+
     /// Close the session and shutdown the kernel if running.
     ///
     /// Returns a coroutine.
