@@ -30,6 +30,7 @@ Cell mutations like `addCell` and `deleteCell` use blocking RPC — the frontend
 - **Frontend has no Automerge doc.** It receives materialized `CellSnapshot[]` and can't do local CRDT mutations.
 - **`addCell` and `deleteCell` block on RPC** for things the frontend can determine locally (UUID generation, "last cell" validation).
 - **Full-state replacement on sync.** `notebook:updated` does `setCells(newCells)`, clobbering any in-flight optimistic state, which forces the blocking RPC pattern.
+- **No cell reorder operation.** Users cannot drag-and-drop to reorder cells — they must delete and re-add. With a frontend Automerge doc this becomes a trivial `doc.move()` operation.
 ### Peers to account for
 | Peer | Connection | Automerge doc? | Writes |
 |------|-----------|----------------|--------|
@@ -75,6 +76,10 @@ All peers hold Automerge docs. Mutations are local-first. Sync is automatic and 
 ## Phase 0: Make existing mutations optimistic
 **Goal:** Eliminate user-visible latency for `addCell` and `deleteCell` without touching the sync layer.
 **Effort:** Small (days). **Risk:** Low — `notebook:updated` full-replace acts as convergence.
+
+**Note:** `update_cell_source` is already optimistic — the frontend updates React state immediately and calls `invoke()` without `await` (`useNotebook.ts:427-435`). No changes needed there.
+
+**Limitation:** In Phase 0, optimistic mutations live only in React state. If the daemon is disconnected and the user closes the app, un-synced adds/deletes are lost. Phase 2 (frontend Automerge doc) would enable persisting the local doc to survive this, but for Phase 0 this is an acceptable tradeoff — it matches existing behavior for source edits.
 ### 0.1 — Optimistic `deleteCell`
 Current (`useNotebook.ts:477-485`):
 ```ts
@@ -90,20 +95,32 @@ Change to:
 ```ts
 const deleteCell = useCallback((cellId: string) => {
   // Validate locally — don't delete the last cell
+  pendingDeletesRef.current.add(cellId);
   setCells((prev) => {
-    if (prev.length <= 1) return prev;
+    if (prev.length <= 1) {
+      pendingDeletesRef.current.delete(cellId);
+      return prev;
+    }
     return prev.filter((c) => c.id !== cellId);
   });
   setDirty(true);
   // Fire-and-forget sync to backend
-  invoke("delete_cell", { cellId }).catch((e) =>
-    logger.error("[notebook] delete_cell sync failed:", e)
-  );
+  invoke("delete_cell", { cellId }).catch((e) => {
+    pendingDeletesRef.current.delete(cellId);
+    logger.error("[notebook] delete_cell sync failed:", e);
+    invoke("refresh_from_automerge").catch(() => {});
+  });
 }, []);
 ```
+The `pendingDeletesRef` prevents a race where a `notebook:updated` event arrives from another peer (e.g., Python agent triggering an Automerge sync) between the optimistic `setCells` and the backend confirming the delete. Without it, the incoming update still contains the deleted cell and would resurrect it. The existing `notebook:updated` handler already filters out pending deletes (`useNotebook.ts:408-421`).
+
+On sync failure, we clear the pending flag and call `refresh_from_automerge` to restore canonical state — the cell reappears if the backend rejected it (e.g., it was the last cell from the backend's perspective due to a race).
+
 - [ ] Move "last cell" check to frontend
 - [ ] `setCells()` runs before `invoke()`
 - [ ] `invoke()` is fire-and-forget (catch-only)
+- [ ] Keep `pendingDeletesRef` anti-resurrection mechanism for the `notebook:updated` race
+- [ ] On failure: clear pending flag + `refresh_from_automerge` for rollback
 - [ ] Backend `delete_cell` command becomes infallible from frontend's perspective
 ### 0.2 — Optimistic `addCell`
 Current (`useNotebook.ts:451-475`):
@@ -145,6 +162,8 @@ const addCell = useCallback((cellType, afterCellId?) => {
 - [ ] Test: add cell while daemon is disconnected → cell persists after reconnect
 - [ ] Test: delete cell while daemon is disconnected → deletion syncs on reconnect
 - [ ] Test: two windows delete the same cell concurrently → both converge
+- [ ] Test: Python agent adds cell while frontend has a pending delete → no resurrection
+- [ ] Test: save while add/delete is in-flight → saved notebook reflects optimistic state (known race, fixed in Phase 1.4)
 ---
 ## Phase 1: Eliminate `NotebookState`
 **Goal:** Remove the redundant `nbformat::Notebook` struct from the Tauri process. The sync client's `AutoCommit` doc becomes the single source of truth on the app side.
@@ -201,6 +220,14 @@ The daemon already has `save_notebook_to_disk` (`notebook_sync_server.rs:2333`) 
 - [ ] Daemon writes `.ipynb` from its canonical Automerge doc
 - [ ] Remove save logic from `crates/notebook/src/lib.rs`
 - [ ] Keep "save as" in Tauri (needs file dialog), but have it tell daemon the new path
+
+**Bonus: eliminates save-while-mutation race.** Today the Tauri process reads `NotebookState` for save, but cell mutations update it asynchronously. If the user saves while an `addCell` is in-flight, the saved `.ipynb` may miss the new cell. When save moves to the daemon, it writes from the canonical Automerge doc which is always consistent — mutations are atomic CRDT operations, never partially applied.
+
+### 1.5 — `refresh_from_automerge` lifecycle
+`refresh_from_automerge` (`lib.rs:2046-2067`) calls `handle.get_cells()` and emits `notebook:updated`. It's the frontend's rollback mechanism and initialization path.
+- [ ] In Phase 1: still works — sync handle's `get_cells()` is unaffected by `NotebookState` removal
+- [ ] In Phase 2: replaced by the Automerge doc initialization handshake (Phase 2.5) — remove the command
+- [ ] Ensure `daemon:ready` reconnect flow still works without `refresh_from_automerge` in Phase 2
 ---
 ## Phase 2: Frontend Automerge doc
 **Goal:** The frontend owns a local Automerge document. All document mutations happen instantly on the local doc. React state is derived from it. The Tauri process becomes a sync relay.
@@ -306,9 +333,13 @@ When a notebook opens:
 ### 2.6 — Replace `useNotebook` with `useAutomergeNotebook`
 - [ ] Migrate `App.tsx` to use new hook
 - [ ] Remove all `invoke()` calls for cell mutations (add, delete, source edit)
-- [ ] Keep `invoke()` for: execute, interrupt, shutdown, launch kernel, format cell, save
+- [ ] Keep `invoke()` for: execute, interrupt, shutdown, launch kernel, save
+- [ ] `format_cell` needs special handling: today it reads source from `NotebookState`, formats via ruff/biome, and emits `cell:source_updated`. In Phase 2, the backend reads source from its sync client doc (or the frontend sends source in the command), formats it, writes the result back to the Automerge doc via the sync client, and the formatted source arrives at the frontend via sync — no separate event needed
 - [ ] Remove `useNotebook.ts` or keep as thin compatibility shim during migration
 - [ ] Verify `notebook:updated` event handling is replaced by sync message handling
+- [ ] Remove `cell:source_updated` event listener — formatting results now flow through Automerge sync (backend writes formatted source to sync client doc → daemon → frontend receives via sync message)
+- [ ] Remove `cells:outputs_cleared` event listener — output clearing flows through Automerge sync
+- [ ] Remove `pendingDeletesRef` mechanism — no longer needed when frontend owns its Automerge doc (deletes are local CRDT ops, not optimistic guesses)
 ### 2.7 — Performance validation
 - [ ] Profile `Automerge.change()` + `materializeCells()` latency on 100-cell notebook
 - [ ] Profile on 500-cell notebook
@@ -338,11 +369,13 @@ When a notebook opens:
 | Agent appends source while user edits beginning | Text CRDT merges cleanly — append is position-independent |
 | Daemon writes outputs while frontend edits source | Different fields — no conflict |
 ### `clear_outputs` ownership
-Today the frontend clears outputs locally (`clearCellOutputs` in `useNotebook.ts:441`) AND the daemon clears via Automerge. In the new model:
-- [ ] Daemon owns output clearing — it clears when execution starts
-- [ ] Frontend stops rendering stale outputs when it sees `execution_started` broadcast
-- [ ] Remove frontend-side `clearCellOutputs` mutation on the Automerge doc
-- [ ] Frontend can show a visual indicator (dimming) while waiting for new outputs
+Today the frontend clears outputs locally (`clearCellOutputs` in `useNotebook.ts:441-449`) as a React-only state mutation — no Automerge write. The daemon also clears outputs in the Automerge doc when execution starts. This dual-write is redundant but harmless because the daemon's clear arrives via sync shortly after.
+
+In the new model, the frontend should not write to output fields at all:
+- [ ] Daemon owns output clearing — it clears when execution starts (already does this)
+- [ ] Frontend renders a visual transition (dimming/skeleton) between `execution_started` broadcast and first new output arriving via sync — this replaces the instant local clear
+- [ ] Remove frontend-side `clearCellOutputs` mutation entirely
+- [ ] The daemon's Automerge clear propagates to the frontend doc via sync, which triggers React re-render with empty outputs — this is the "real" clear
 ---
 ## Phase 4: Optimize Tauri sync relay (optional, future)
 **Goal:** Make the Tauri relay as thin and fast as possible. Tauri stays in the path — the frontend should never speak directly to the Unix socket for security reasons.
@@ -388,6 +421,12 @@ The blob store already has its own HTTP server (`http://127.0.0.1:{blobPort}/blo
 | `crates/runtimed-py/src/session.rs` | `Session` — Python API, full Automerge peer |
 | `crates/runtimed-py/src/async_session.rs` | `AsyncSession` — async variant |
 | `python/runtimed/src/runtimed/_mcp_server.py` | MCP server — AI agent tools |
+---
+## Future opportunities (enabled by this migration)
+These are not in scope but become straightforward once the frontend owns an Automerge doc:
+- **Cell reorder (drag-and-drop).** Currently impossible — no `moveCell` operation exists. With frontend Automerge, this is `doc.move(cellsId, fromIdx, toIdx)` — a single CRDT operation that syncs automatically.
+- **Undo/redo.** No undo/redo exists today. Automerge tracks full change history, but CRDT undo is not trivial — reversing a local change after remote changes have interleaved requires application-level design (e.g., undo stack of inverse operations, or branch-and-merge). Worth a separate design doc.
+- **Offline persistence.** With a frontend Automerge doc, the serialized doc bytes can be saved to IndexedDB or the filesystem on every change. If the daemon is down or the app crashes, the doc survives and can be synced on restart. Phase 0 optimistic mutations are lost on crash; Phase 2 enables crash recovery.
 ---
 ## Non-goals
 - **Frontend direct access to the daemon socket.** The daemon's Unix socket is unauthenticated — any process that connects can read/write any notebook room. Tauri must mediate all daemon communication so the webview renderer never holds a raw socket. This is a security boundary, not a performance optimization to remove later.
