@@ -3451,6 +3451,8 @@ mod tests {
                 }),
                 conda: None,
                 deno: None,
+                trust_signature: None,
+                trust_timestamp: None,
             },
         }
     }
@@ -3470,6 +3472,8 @@ mod tests {
                     python: None,
                 }),
                 deno: None,
+                trust_signature: None,
+                trust_timestamp: None,
             },
         }
     }
@@ -3485,6 +3489,8 @@ mod tests {
                 uv: None,
                 conda: None,
                 deno: None,
+                trust_signature: None,
+                trust_timestamp: None,
             },
         }
     }
@@ -3536,6 +3542,8 @@ mod tests {
                     python: None,
                 }),
                 deno: None,
+                trust_signature: None,
+                trust_timestamp: None,
             },
         };
         assert_eq!(check_inline_deps(&snapshot), Some("uv:inline".to_string()));
@@ -3561,6 +3569,8 @@ mod tests {
                     config: None,
                     flexible_npm_imports: None,
                 }),
+                trust_signature: None,
+                trust_timestamp: None,
             },
         };
         assert_eq!(check_inline_deps(&snapshot), Some("deno".to_string()));
@@ -3584,6 +3594,8 @@ mod tests {
                 uv: None,
                 conda: None,
                 deno: None,
+                trust_signature: None,
+                trust_timestamp: None,
             },
         };
         assert_eq!(
@@ -3608,6 +3620,8 @@ mod tests {
                 uv: None,
                 conda: None,
                 deno: None,
+                trust_signature: None,
+                trust_timestamp: None,
             },
         };
         assert_eq!(
@@ -3632,6 +3646,8 @@ mod tests {
                 uv: None,
                 conda: None,
                 deno: None,
+                trust_signature: None,
+                trust_timestamp: None,
             },
         };
         assert_eq!(
@@ -3659,6 +3675,8 @@ mod tests {
                 uv: None,
                 conda: None,
                 deno: None,
+                trust_signature: None,
+                trust_timestamp: None,
             },
         };
         assert_eq!(

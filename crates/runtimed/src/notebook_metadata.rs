@@ -44,6 +44,15 @@ pub struct RuntMetadata {
     /// Deno runtime configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deno: Option<DenoMetadata>,
+
+    /// HMAC-SHA256 signature of the dependency metadata for trust verification.
+    /// Format: "hmac-sha256:<hex-digest>"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust_signature: Option<String>,
+
+    /// Timestamp when the notebook was last trusted (RFC 3339 format).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust_timestamp: Option<String>,
 }
 
 /// UV inline dependency metadata (`metadata.runt.uv`).
@@ -181,6 +190,8 @@ impl NotebookMetadataSnapshot {
                     uv,
                     conda,
                     deno: None,
+                    trust_signature: None,
+                    trust_timestamp: None,
                 }
             });
 
@@ -267,6 +278,8 @@ impl RuntMetadata {
             }),
             conda: None,
             deno: None,
+            trust_signature: None,
+            trust_timestamp: None,
         }
     }
 
@@ -282,6 +295,8 @@ impl RuntMetadata {
                 python: None,
             }),
             deno: None,
+            trust_signature: None,
+            trust_timestamp: None,
         }
     }
 
@@ -298,6 +313,8 @@ impl RuntMetadata {
                 config: None,
                 flexible_npm_imports: None,
             }),
+            trust_signature: None,
+            trust_timestamp: None,
         }
     }
 }
@@ -360,6 +377,8 @@ mod tests {
                 }),
                 conda: None,
                 deno: None,
+                trust_signature: None,
+                trust_timestamp: None,
             },
         };
 
@@ -464,6 +483,8 @@ mod tests {
             uv: None,
             conda: None,
             deno: None,
+            trust_signature: None,
+            trust_timestamp: None,
         };
         let json = serde_json::to_value(&meta).unwrap();
         // None fields should not appear in JSON
@@ -471,6 +492,8 @@ mod tests {
         assert!(!json.as_object().unwrap().contains_key("uv"));
         assert!(!json.as_object().unwrap().contains_key("conda"));
         assert!(!json.as_object().unwrap().contains_key("deno"));
+        assert!(!json.as_object().unwrap().contains_key("trust_signature"));
+        assert!(!json.as_object().unwrap().contains_key("trust_timestamp"));
         // schema_version should always be present
         assert!(json.as_object().unwrap().contains_key("schema_version"));
     }

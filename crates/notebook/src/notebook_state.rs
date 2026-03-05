@@ -687,6 +687,8 @@ pub fn snapshot_from_nbformat(metadata: &nbformat::v4::Metadata) -> NotebookMeta
                 uv: None,
                 conda: None,
                 deno: None,
+                trust_signature: None,
+                trust_timestamp: None,
             });
 
         // Also check legacy top-level "deno" key - this is where the Tauri commands write
@@ -726,6 +728,8 @@ pub fn snapshot_from_nbformat(metadata: &nbformat::v4::Metadata) -> NotebookMeta
             uv,
             conda,
             deno,
+            trust_signature: None,
+            trust_timestamp: None,
         }
     };
 

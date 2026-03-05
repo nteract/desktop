@@ -425,6 +425,8 @@ fn default_metadata_snapshot() -> runtimed::notebook_metadata::NotebookMetadataS
             uv: None,
             conda: None,
             deno: None,
+            trust_signature: None,
+            trust_timestamp: None,
         },
     }
 }
