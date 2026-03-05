@@ -1541,6 +1541,7 @@ async fn update_cell_source(
 
 #[tauri::command]
 async fn add_cell(
+    cell_id: Option<String>,
     cell_type: String,
     after_cell_id: Option<String>,
     window: tauri::Window,
@@ -1559,7 +1560,7 @@ async fn add_cell(
         };
 
         let cell = s
-            .add_cell(&cell_type, after_cell_id.as_deref())
+            .add_cell(&cell_type, after_cell_id.as_deref(), cell_id.as_deref())
             .ok_or_else(|| format!("Invalid cell type: {}", cell_type))?;
 
         (cell, insert_index)
@@ -1595,11 +1596,16 @@ async fn delete_cell(
 ) -> Result<(), String> {
     let state = notebook_state_for_window(&window, registry.inner())?;
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-    // Delete from local state first
+    // Delete from local state — frontend owns the "last cell" guard,
+    // so a false return here is a no-op rather than an error.
     {
         let mut s = state.lock().map_err(|e| e.to_string())?;
         if !s.delete_cell(&cell_id) {
-            return Err("Cannot delete cell (last cell or not found)".to_string());
+            info!(
+                "[notebook] delete_cell skipped for {}: last cell or not found",
+                cell_id
+            );
+            return Ok(());
         }
     }
 

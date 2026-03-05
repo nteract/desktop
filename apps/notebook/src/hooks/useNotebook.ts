@@ -449,39 +449,50 @@ export function useNotebook() {
   }, []);
 
   const addCell = useCallback(
-    async (cellType: "code" | "markdown", afterCellId?: string | null) => {
-      try {
-        const newCell = await invoke<NotebookCell>("add_cell", {
-          cellType,
-          afterCellId: afterCellId ?? null,
-        });
-        setCells((prev) => {
-          if (!afterCellId) return [newCell, ...prev];
-          const idx = prev.findIndex((c) => c.id === afterCellId);
-          if (idx === -1) return [newCell, ...prev];
-          const next = [...prev];
-          next.splice(idx + 1, 0, newCell);
-          return next;
-        });
-        setFocusedCellId(newCell.id);
-        setDirty(true);
-        return newCell;
-      } catch (e) {
-        logger.error("[notebook] Add cell failed:", e);
-        return null;
-      }
+    (cellType: "code" | "markdown", afterCellId?: string | null) => {
+      const cellId = crypto.randomUUID();
+      const newCell: NotebookCell =
+        cellType === "code"
+          ? {
+              cell_type: "code",
+              id: cellId,
+              source: "",
+              outputs: [],
+              execution_count: null,
+            }
+          : { cell_type: "markdown", id: cellId, source: "" };
+      setCells((prev) => {
+        if (!afterCellId) return [newCell, ...prev];
+        const idx = prev.findIndex((c) => c.id === afterCellId);
+        if (idx === -1) return [newCell, ...prev];
+        const next = [...prev];
+        next.splice(idx + 1, 0, newCell);
+        return next;
+      });
+      setFocusedCellId(cellId);
+      setDirty(true);
+      // Fire-and-forget — backend uses the frontend-generated cellId
+      invoke("add_cell", {
+        cellId,
+        cellType,
+        afterCellId: afterCellId ?? null,
+      }).catch((e) => logger.error("[notebook] add_cell sync failed:", e));
+      return newCell;
     },
     [],
   );
 
-  const deleteCell = useCallback(async (cellId: string) => {
-    try {
-      await invoke("delete_cell", { cellId });
-      setCells((prev) => prev.filter((c) => c.id !== cellId));
-      setDirty(true);
-    } catch (e) {
-      logger.error("[notebook] Delete cell failed:", e);
-    }
+  const deleteCell = useCallback((cellId: string) => {
+    // Optimistic update — guard against deleting the last cell locally
+    setCells((prev) => {
+      if (prev.length <= 1) return prev;
+      return prev.filter((c) => c.id !== cellId);
+    });
+    setDirty(true);
+    // Fire-and-forget sync to backend
+    invoke("delete_cell", { cellId }).catch((e) =>
+      logger.error("[notebook] delete_cell sync failed:", e),
+    );
   }, []);
 
   const save = useCallback(async () => {

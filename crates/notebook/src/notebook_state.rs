@@ -542,8 +542,12 @@ impl NotebookState {
         &mut self,
         cell_type: &str,
         after_cell_id: Option<&str>,
+        cell_id: Option<&str>,
     ) -> Option<FrontendCell> {
-        let new_id = CellId::from(Uuid::new_v4());
+        let new_id = match cell_id {
+            Some(id) => CellId::from(Uuid::parse_str(id).unwrap_or_else(|_| Uuid::new_v4())),
+            None => CellId::from(Uuid::new_v4()),
+        };
         let cell = match cell_type {
             "code" => Cell::Code {
                 id: new_id,
@@ -982,7 +986,7 @@ mod tests {
     fn test_add_cell_code() {
         let mut state = NotebookState::new_empty();
 
-        let result = state.add_cell("code", None);
+        let result = state.add_cell("code", None, None);
 
         assert!(result.is_some());
         assert!(matches!(result.unwrap(), FrontendCell::Code { .. }));
@@ -993,7 +997,7 @@ mod tests {
     fn test_add_cell_markdown() {
         let mut state = NotebookState::new_empty();
 
-        let result = state.add_cell("markdown", None);
+        let result = state.add_cell("markdown", None, None);
 
         assert!(result.is_some());
         assert!(matches!(result.unwrap(), FrontendCell::Markdown { .. }));
@@ -1003,7 +1007,7 @@ mod tests {
     fn test_add_cell_raw() {
         let mut state = NotebookState::new_empty();
 
-        let result = state.add_cell("raw", None);
+        let result = state.add_cell("raw", None, None);
 
         assert!(result.is_some());
         assert!(matches!(result.unwrap(), FrontendCell::Raw { .. }));
@@ -1013,7 +1017,7 @@ mod tests {
     fn test_add_cell_invalid_type_returns_none() {
         let mut state = NotebookState::new_empty();
 
-        let result = state.add_cell("invalid", None);
+        let result = state.add_cell("invalid", None, None);
 
         assert!(result.is_none());
         assert_eq!(state.notebook.cells.len(), 1);
@@ -1024,7 +1028,7 @@ mod tests {
         let mut state = NotebookState::new_empty();
         let first_cell_id = state.notebook.cells[0].id().to_string();
 
-        state.add_cell("code", Some(&first_cell_id));
+        state.add_cell("code", Some(&first_cell_id), None);
 
         assert_eq!(state.notebook.cells.len(), 2);
         // New cell should be at index 1 (after first cell)
@@ -1032,11 +1036,34 @@ mod tests {
     }
 
     #[test]
+    fn test_add_cell_with_provided_id() {
+        let mut state = NotebookState::new_empty();
+        let provided_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+
+        let result = state.add_cell("code", None, Some(provided_id)).unwrap();
+
+        assert_eq!(result.id(), provided_id);
+        assert_eq!(state.notebook.cells[0].id().to_string(), provided_id);
+    }
+
+    #[test]
+    fn test_add_cell_with_provided_id_ignores_invalid_uuid() {
+        let mut state = NotebookState::new_empty();
+
+        // Invalid UUID should fall back to generating a new one
+        let result = state.add_cell("code", None, Some("not-a-uuid")).unwrap();
+
+        // Should still succeed — just with a generated UUID, not "not-a-uuid"
+        assert_ne!(result.id(), "not-a-uuid");
+        assert_eq!(state.notebook.cells.len(), 2);
+    }
+
+    #[test]
     fn test_add_cell_at_beginning_when_no_after() {
         let mut state = NotebookState::new_empty();
         let first_cell_id = state.notebook.cells[0].id().to_string();
 
-        let new_cell = state.add_cell("code", None).unwrap();
+        let new_cell = state.add_cell("code", None, None).unwrap();
 
         // New cell should be at index 0
         assert_eq!(state.notebook.cells[0].id().to_string(), new_cell.id());
@@ -1049,14 +1076,14 @@ mod tests {
         let mut state = NotebookState::new_empty();
 
         assert!(!state.dirty);
-        state.add_cell("code", None);
+        state.add_cell("code", None, None);
         assert!(state.dirty);
     }
 
     #[test]
     fn test_delete_cell_removes_cell() {
         let mut state = NotebookState::new_empty();
-        state.add_cell("code", None);
+        state.add_cell("code", None, None);
         let cell_to_delete = state.notebook.cells[0].id().to_string();
 
         let result = state.delete_cell(&cell_to_delete);
@@ -1079,7 +1106,7 @@ mod tests {
     #[test]
     fn test_delete_cell_returns_false_for_missing() {
         let mut state = NotebookState::new_empty();
-        state.add_cell("code", None);
+        state.add_cell("code", None, None);
 
         let result = state.delete_cell("nonexistent");
 
@@ -1090,7 +1117,7 @@ mod tests {
     #[test]
     fn test_delete_cell_sets_dirty_flag() {
         let mut state = NotebookState::new_empty();
-        state.add_cell("code", None);
+        state.add_cell("code", None, None);
         state.dirty = false;
         let cell_to_delete = state.notebook.cells[0].id().to_string();
 
@@ -1232,9 +1259,9 @@ mod tests {
         let first_code_id = state.notebook.cells[0].id().to_string();
 
         // Add markdown, then another code cell
-        state.add_cell("markdown", Some(&first_code_id));
+        state.add_cell("markdown", Some(&first_code_id), None);
         let md_id = state.notebook.cells[1].id().to_string();
-        state.add_cell("code", Some(&md_id));
+        state.add_cell("code", Some(&md_id), None);
         let second_code_id = state.notebook.cells[2].id().to_string();
 
         let code_ids = state.get_code_cell_ids();
@@ -1248,7 +1275,7 @@ mod tests {
         let mut state = NotebookState::new_empty();
         let first_id = state.notebook.cells[0].id().to_string();
         // Replace the only code cell with a markdown cell
-        state.add_cell("markdown", Some(&first_id));
+        state.add_cell("markdown", Some(&first_id), None);
         // Can't delete the last cell, so this test just checks with mixed cells
         let ids = state.get_code_cell_ids();
         assert_eq!(ids.len(), 1); // The original code cell
