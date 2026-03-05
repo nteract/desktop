@@ -2683,19 +2683,19 @@ const SELF_WRITE_SKIP_WINDOW_MS: u64 = 600;
 
 /// Parse cells from a Jupyter notebook JSON object.
 ///
+/// Returns `Some(cells)` if parsing succeeded (including empty `cells: []`),
+/// or `None` if the `cells` key is missing or invalid (parse failure).
+///
 /// The source field can be either a string or an array of strings (lines).
 /// We normalize it to a single string.
 ///
 /// For older notebooks (pre-nbformat 4.5) that don't have cell IDs, we generate
 /// stable fallback IDs based on the cell index. This prevents data loss when
 /// merging changes from externally-generated notebooks.
-fn parse_cells_from_ipynb(json: &serde_json::Value) -> Vec<CellSnapshot> {
-    let cells = match json.get("cells").and_then(|c| c.as_array()) {
-        Some(c) => c,
-        None => return vec![],
-    };
+fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<Vec<CellSnapshot>> {
+    let cells_json = json.get("cells").and_then(|c| c.as_array())?;
 
-    cells
+    let parsed_cells = cells_json
         .iter()
         .enumerate()
         .map(|(index, cell)| {
@@ -2749,7 +2749,9 @@ fn parse_cells_from_ipynb(json: &serde_json::Value) -> Vec<CellSnapshot> {
                 outputs,
             }
         })
-        .collect()
+        .collect();
+
+    Some(parsed_cells)
 }
 
 /// Apply external .ipynb changes to the Automerge doc.
@@ -2769,20 +2771,10 @@ async fn apply_ipynb_changes(
     external_cells: &[CellSnapshot],
     has_running_kernel: bool,
 ) -> bool {
-    // Guard: don't apply changes if external cells are empty but we have cells
-    // This prevents accidental data loss from parse failures or corrupt files
     let current_cells = {
         let doc = room.doc.read().await;
         doc.get_cells()
     };
-
-    if external_cells.is_empty() && !current_cells.is_empty() {
-        warn!(
-            "[notebook-watch] External file has no cells but current doc has {} cells - skipping merge to prevent data loss",
-            current_cells.len()
-        );
-        return false;
-    }
 
     let mut doc = room.doc.write().await;
 
@@ -2829,11 +2821,17 @@ async fn apply_ipynb_changes(
             {
                 let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
 
-                // Preserve outputs/execution_count from current state if kernel running
+                // For existing cells with running kernel: preserve current outputs/execution_count
+                // For new cells: always use external values (they don't have in-progress state)
                 if has_running_kernel {
                     if let Some(current) = current_map.get(ext_cell.id.as_str()) {
+                        // Existing cell - preserve in-progress state
                         let _ = doc.set_outputs(&ext_cell.id, &current.outputs);
                         let _ = doc.set_execution_count(&ext_cell.id, &current.execution_count);
+                    } else {
+                        // New cell - use external values
+                        let _ = doc.set_outputs(&ext_cell.id, &ext_cell.outputs);
+                        let _ = doc.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
                     }
                 } else {
                     let _ = doc.set_outputs(&ext_cell.id, &ext_cell.outputs);
@@ -2906,6 +2904,7 @@ async fn apply_ipynb_changes(
             }
         } else {
             // New cell - add it
+            // New cells don't have any in-progress state, so always use external values
             debug!(
                 "[notebook-watch] Adding new cell at index {}: {}",
                 index, ext_cell.id
@@ -2915,13 +2914,9 @@ async fn apply_ipynb_changes(
                 .is_ok()
             {
                 changed = true;
-                // Set the source
                 let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
-                // Set outputs and execution_count (if no kernel running)
-                if !has_running_kernel {
-                    let _ = doc.set_outputs(&ext_cell.id, &ext_cell.outputs);
-                    let _ = doc.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
-                }
+                let _ = doc.set_outputs(&ext_cell.id, &ext_cell.outputs);
+                let _ = doc.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
             }
         }
     }
@@ -3047,7 +3042,17 @@ pub(crate) fn spawn_notebook_file_watcher(
                             };
 
                             // Parse cells from the .ipynb
-                            let external_cells = parse_cells_from_ipynb(&json);
+                            // None = parse failure (missing cells key), Some([]) = valid empty notebook
+                            let external_cells = match parse_cells_from_ipynb(&json) {
+                                Some(cells) => cells,
+                                None => {
+                                    warn!(
+                                        "[notebook-watch] Cannot parse cells from {:?} - skipping",
+                                        notebook_path
+                                    );
+                                    continue;
+                                }
+                            };
 
                             // Check if kernel is running (to preserve outputs)
                             let has_kernel = room.has_kernel().await;
@@ -3763,7 +3768,7 @@ mod tests {
             ]
         });
 
-        let cells = parse_cells_from_ipynb(&json);
+        let cells = parse_cells_from_ipynb(&json).expect("Should parse valid notebook");
         assert_eq!(cells.len(), 2);
         assert_eq!(cells[0].id, "cell-1");
         assert_eq!(cells[0].cell_type, "code");
@@ -3795,7 +3800,7 @@ mod tests {
             ]
         });
 
-        let cells = parse_cells_from_ipynb(&json);
+        let cells = parse_cells_from_ipynb(&json).expect("Should parse valid notebook");
         assert_eq!(cells.len(), 2);
         // Should generate fallback IDs based on index
         assert_eq!(cells[0].id, "__external_cell_0");
@@ -3806,24 +3811,29 @@ mod tests {
 
     #[test]
     fn test_parse_cells_from_ipynb_empty() {
+        // Valid notebook with empty cells array - should return Some([])
         let json = serde_json::json!({
             "cells": []
         });
-        let cells = parse_cells_from_ipynb(&json);
+        let cells = parse_cells_from_ipynb(&json).expect("Should parse valid empty notebook");
         assert!(cells.is_empty());
     }
 
     #[test]
     fn test_parse_cells_from_ipynb_no_cells_key() {
+        // Invalid notebook (missing cells key) - should return None
         let json = serde_json::json!({
             "metadata": {}
         });
-        let cells = parse_cells_from_ipynb(&json);
-        assert!(cells.is_empty());
+        assert!(
+            parse_cells_from_ipynb(&json).is_none(),
+            "Should return None for invalid notebook"
+        );
     }
 
     #[tokio::test]
-    async fn test_apply_ipynb_changes_guards_against_empty_cells() {
+    async fn test_apply_ipynb_changes_clears_all_cells() {
+        // Valid "delete all cells" case - empty cells array should clear the doc
         let tmp = tempfile::TempDir::new().unwrap();
         let (room, _) = test_room_with_path(&tmp, "test.ipynb");
 
@@ -3834,18 +3844,17 @@ mod tests {
             doc.update_source("cell-1", "x = 1").unwrap();
         }
 
-        // Try to apply empty external cells - should be rejected
+        // Apply empty external cells - should delete all cells
         let external_cells = vec![];
         let changed = apply_ipynb_changes(&room, &external_cells, false).await;
-        assert!(!changed, "Should not apply changes when external is empty");
+        assert!(changed, "Should apply changes to clear all cells");
 
-        // Verify cell is still there
+        // Verify all cells were deleted
         let cells = {
             let doc = room.doc.read().await;
             doc.get_cells()
         };
-        assert_eq!(cells.len(), 1);
-        assert_eq!(cells[0].id, "cell-1");
+        assert!(cells.is_empty(), "All cells should be deleted");
     }
 
     #[tokio::test]
@@ -3914,5 +3923,55 @@ mod tests {
         // But outputs and execution_count should be preserved
         assert_eq!(cells[0].outputs, vec![r#"{"output_type":"stream"}"#]);
         assert_eq!(cells[0].execution_count, "10");
+    }
+
+    #[tokio::test]
+    async fn test_apply_ipynb_changes_new_cell_with_outputs_while_kernel_running() {
+        // New external cells should get their external outputs even when kernel is running
+        // (they don't have any in-progress state to preserve)
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _) = test_room_with_path(&tmp, "test.ipynb");
+
+        // Start with one cell
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "existing-cell", "code").unwrap();
+        }
+
+        // Add a new external cell with outputs while kernel is "running"
+        let external_cells = vec![
+            CellSnapshot {
+                id: "existing-cell".to_string(),
+                cell_type: "code".to_string(),
+                source: String::new(),
+                execution_count: "null".to_string(),
+                outputs: vec![],
+            },
+            CellSnapshot {
+                id: "new-cell".to_string(),
+                cell_type: "code".to_string(),
+                source: "print('new')".to_string(),
+                execution_count: "42".to_string(),
+                outputs: vec![r#"{"output_type":"execute_result"}"#.to_string()],
+            },
+        ];
+
+        let changed = apply_ipynb_changes(&room, &external_cells, true).await;
+        assert!(changed, "Should add new cell");
+
+        let cells = {
+            let doc = room.doc.read().await;
+            doc.get_cells()
+        };
+        assert_eq!(cells.len(), 2);
+
+        // New cell should have external outputs and execution_count
+        let new_cell = cells.iter().find(|c| c.id == "new-cell").unwrap();
+        assert_eq!(new_cell.source, "print('new')");
+        assert_eq!(new_cell.execution_count, "42");
+        assert_eq!(
+            new_cell.outputs,
+            vec![r#"{"output_type":"execute_result"}"#]
+        );
     }
 }
