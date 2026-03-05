@@ -2678,12 +2678,17 @@ pub(crate) fn persist_notebook_bytes(data: &[u8], path: &Path) {
 // When changes are detected, merge them into the Automerge doc and broadcast.
 
 /// Time window (ms) to skip file change events after our own writes.
-const SELF_WRITE_SKIP_WINDOW_MS: u64 = 100;
+/// Must be larger than the debounce window (500ms) to reliably skip self-writes.
+const SELF_WRITE_SKIP_WINDOW_MS: u64 = 600;
 
 /// Parse cells from a Jupyter notebook JSON object.
 ///
 /// The source field can be either a string or an array of strings (lines).
 /// We normalize it to a single string.
+///
+/// For older notebooks (pre-nbformat 4.5) that don't have cell IDs, we generate
+/// stable fallback IDs based on the cell index. This prevents data loss when
+/// merging changes from externally-generated notebooks.
 fn parse_cells_from_ipynb(json: &serde_json::Value) -> Vec<CellSnapshot> {
     let cells = match json.get("cells").and_then(|c| c.as_array()) {
         Some(c) => c,
@@ -2692,8 +2697,16 @@ fn parse_cells_from_ipynb(json: &serde_json::Value) -> Vec<CellSnapshot> {
 
     cells
         .iter()
-        .filter_map(|cell| {
-            let id = cell.get("id").and_then(|v| v.as_str())?.to_string();
+        .enumerate()
+        .map(|(index, cell)| {
+            // Use existing ID or generate a stable fallback based on index
+            // This handles older notebooks (pre-nbformat 4.5) without cell IDs
+            let id = cell
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("__external_cell_{}", index));
+
             let cell_type = cell
                 .get("cell_type")
                 .and_then(|v| v.as_str())
@@ -2728,13 +2741,13 @@ fn parse_cells_from_ipynb(json: &serde_json::Value) -> Vec<CellSnapshot> {
                 })
                 .unwrap_or_default();
 
-            Some(CellSnapshot {
+            CellSnapshot {
                 id,
                 cell_type,
                 source,
                 execution_count,
                 outputs,
-            })
+            }
         })
         .collect()
 }
@@ -2744,7 +2757,11 @@ fn parse_cells_from_ipynb(json: &serde_json::Value) -> Vec<CellSnapshot> {
 /// Compares cells by ID and:
 /// - Adds new cells
 /// - Removes deleted cells
-/// - Updates source for modified cells (preserving outputs if kernel is running)
+/// - Updates source, execution_count, and outputs for modified cells
+/// - Handles cell reordering by rebuilding the cell list
+///
+/// When a kernel is running, outputs and execution counts are preserved
+/// to avoid losing in-progress execution results.
 ///
 /// Returns true if any changes were applied.
 async fn apply_ipynb_changes(
@@ -2752,8 +2769,22 @@ async fn apply_ipynb_changes(
     external_cells: &[CellSnapshot],
     has_running_kernel: bool,
 ) -> bool {
+    // Guard: don't apply changes if external cells are empty but we have cells
+    // This prevents accidental data loss from parse failures or corrupt files
+    let current_cells = {
+        let doc = room.doc.read().await;
+        doc.get_cells()
+    };
+
+    if external_cells.is_empty() && !current_cells.is_empty() {
+        warn!(
+            "[notebook-watch] External file has no cells but current doc has {} cells - skipping merge to prevent data loss",
+            current_cells.len()
+        );
+        return false;
+    }
+
     let mut doc = room.doc.write().await;
-    let current_cells = doc.get_cells();
 
     // Build maps for comparison
     let current_map: HashMap<&str, &CellSnapshot> =
@@ -2761,7 +2792,57 @@ async fn apply_ipynb_changes(
     let external_map: HashMap<&str, &CellSnapshot> =
         external_cells.iter().map(|c| (c.id.as_str(), c)).collect();
 
+    // Check if cell order changed
+    let current_ids: Vec<&str> = current_cells.iter().map(|c| c.id.as_str()).collect();
+    let external_ids: Vec<&str> = external_cells.iter().map(|c| c.id.as_str()).collect();
+    let order_changed = {
+        // Filter to only IDs that exist in both, then compare order
+        let common_current: Vec<&str> = current_ids
+            .iter()
+            .filter(|id| external_map.contains_key(*id))
+            .copied()
+            .collect();
+        let common_external: Vec<&str> = external_ids
+            .iter()
+            .filter(|id| current_map.contains_key(*id))
+            .copied()
+            .collect();
+        common_current != common_external
+    };
+
     let mut changed = false;
+
+    // If order changed, we need to rebuild the cell list
+    // This is expensive but necessary to match external order
+    if order_changed {
+        debug!("[notebook-watch] Cell order changed, rebuilding cell list");
+
+        // Delete all current cells and re-add in external order
+        for cell in &current_cells {
+            let _ = doc.delete_cell(&cell.id);
+        }
+
+        for (index, ext_cell) in external_cells.iter().enumerate() {
+            if doc
+                .add_cell(index, &ext_cell.id, &ext_cell.cell_type)
+                .is_ok()
+            {
+                let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
+
+                // Preserve outputs/execution_count from current state if kernel running
+                if has_running_kernel {
+                    if let Some(current) = current_map.get(ext_cell.id.as_str()) {
+                        let _ = doc.set_outputs(&ext_cell.id, &current.outputs);
+                        let _ = doc.set_execution_count(&ext_cell.id, &current.execution_count);
+                    }
+                } else {
+                    let _ = doc.set_outputs(&ext_cell.id, &ext_cell.outputs);
+                    let _ = doc.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
+                }
+            }
+        }
+        return true;
+    }
 
     // Find cells to delete (in current but not in external)
     let cells_to_delete: Vec<String> = current_cells
@@ -2798,14 +2879,29 @@ async fn apply_ipynb_changes(
                 // For now, just log - full support would need more work
             }
 
-            // Preserve outputs if kernel is running, otherwise sync from file
-            if !has_running_kernel && current_cell.outputs != ext_cell.outputs {
-                debug!(
-                    "[notebook-watch] Updating outputs for cell: {}",
-                    ext_cell.id
-                );
-                if let Ok(true) = doc.set_outputs(&ext_cell.id, &ext_cell.outputs) {
-                    changed = true;
+            // Preserve outputs and execution_count if kernel is running
+            if !has_running_kernel {
+                if current_cell.outputs != ext_cell.outputs {
+                    debug!(
+                        "[notebook-watch] Updating outputs for cell: {}",
+                        ext_cell.id
+                    );
+                    if let Ok(true) = doc.set_outputs(&ext_cell.id, &ext_cell.outputs) {
+                        changed = true;
+                    }
+                }
+
+                if current_cell.execution_count != ext_cell.execution_count {
+                    debug!(
+                        "[notebook-watch] Updating execution_count for cell: {} ({} -> {})",
+                        ext_cell.id, current_cell.execution_count, ext_cell.execution_count
+                    );
+                    if doc
+                        .set_execution_count(&ext_cell.id, &ext_cell.execution_count)
+                        .is_ok()
+                    {
+                        changed = true;
+                    }
                 }
             }
         } else {
@@ -2821,9 +2917,10 @@ async fn apply_ipynb_changes(
                 changed = true;
                 // Set the source
                 let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
-                // Set outputs (if no kernel running)
+                // Set outputs and execution_count (if no kernel running)
                 if !has_running_kernel {
                     let _ = doc.set_outputs(&ext_cell.id, &ext_cell.outputs);
+                    let _ = doc.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
                 }
             }
         }
@@ -3639,5 +3736,183 @@ mod tests {
             content_str.starts_with("update-"),
             "Content should be from an update"
         );
+    }
+
+    // ==========================================================================
+    // File watcher tests
+    // ==========================================================================
+
+    #[test]
+    fn test_parse_cells_from_ipynb_with_ids() {
+        let json = serde_json::json!({
+            "cells": [
+                {
+                    "id": "cell-1",
+                    "cell_type": "code",
+                    "source": "print('hello')",
+                    "execution_count": 5,
+                    "outputs": []
+                },
+                {
+                    "id": "cell-2",
+                    "cell_type": "markdown",
+                    "source": ["# Title\n", "Body"],
+                    "execution_count": null,
+                    "outputs": []
+                }
+            ]
+        });
+
+        let cells = parse_cells_from_ipynb(&json);
+        assert_eq!(cells.len(), 2);
+        assert_eq!(cells[0].id, "cell-1");
+        assert_eq!(cells[0].cell_type, "code");
+        assert_eq!(cells[0].source, "print('hello')");
+        assert_eq!(cells[0].execution_count, "5");
+        assert_eq!(cells[1].id, "cell-2");
+        assert_eq!(cells[1].cell_type, "markdown");
+        assert_eq!(cells[1].source, "# Title\nBody");
+        assert_eq!(cells[1].execution_count, "null");
+    }
+
+    #[test]
+    fn test_parse_cells_from_ipynb_missing_ids() {
+        // Older notebooks (pre-nbformat 4.5) don't have cell IDs
+        let json = serde_json::json!({
+            "cells": [
+                {
+                    "cell_type": "code",
+                    "source": "x = 1",
+                    "execution_count": null,
+                    "outputs": []
+                },
+                {
+                    "cell_type": "code",
+                    "source": "y = 2",
+                    "execution_count": null,
+                    "outputs": []
+                }
+            ]
+        });
+
+        let cells = parse_cells_from_ipynb(&json);
+        assert_eq!(cells.len(), 2);
+        // Should generate fallback IDs based on index
+        assert_eq!(cells[0].id, "__external_cell_0");
+        assert_eq!(cells[1].id, "__external_cell_1");
+        assert_eq!(cells[0].source, "x = 1");
+        assert_eq!(cells[1].source, "y = 2");
+    }
+
+    #[test]
+    fn test_parse_cells_from_ipynb_empty() {
+        let json = serde_json::json!({
+            "cells": []
+        });
+        let cells = parse_cells_from_ipynb(&json);
+        assert!(cells.is_empty());
+    }
+
+    #[test]
+    fn test_parse_cells_from_ipynb_no_cells_key() {
+        let json = serde_json::json!({
+            "metadata": {}
+        });
+        let cells = parse_cells_from_ipynb(&json);
+        assert!(cells.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_apply_ipynb_changes_guards_against_empty_cells() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _) = test_room_with_path(&tmp, "test.ipynb");
+
+        // Add cells to the doc
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "cell-1", "code").unwrap();
+            doc.update_source("cell-1", "x = 1").unwrap();
+        }
+
+        // Try to apply empty external cells - should be rejected
+        let external_cells = vec![];
+        let changed = apply_ipynb_changes(&room, &external_cells, false).await;
+        assert!(!changed, "Should not apply changes when external is empty");
+
+        // Verify cell is still there
+        let cells = {
+            let doc = room.doc.read().await;
+            doc.get_cells()
+        };
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].id, "cell-1");
+    }
+
+    #[tokio::test]
+    async fn test_apply_ipynb_changes_updates_execution_count() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _) = test_room_with_path(&tmp, "test.ipynb");
+
+        // Add cells to the doc
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "cell-1", "code").unwrap();
+            doc.set_execution_count("cell-1", "null").unwrap();
+        }
+
+        // Apply external changes with execution_count
+        let external_cells = vec![CellSnapshot {
+            id: "cell-1".to_string(),
+            cell_type: "code".to_string(),
+            source: String::new(),
+            execution_count: "42".to_string(),
+            outputs: vec![],
+        }];
+
+        let changed = apply_ipynb_changes(&room, &external_cells, false).await;
+        assert!(changed, "Should detect execution_count change");
+
+        let cells = {
+            let doc = room.doc.read().await;
+            doc.get_cells()
+        };
+        assert_eq!(cells[0].execution_count, "42");
+    }
+
+    #[tokio::test]
+    async fn test_apply_ipynb_changes_preserves_outputs_when_kernel_running() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _) = test_room_with_path(&tmp, "test.ipynb");
+
+        // Add cells with outputs
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "cell-1", "code").unwrap();
+            doc.set_outputs("cell-1", &[r#"{"output_type":"stream"}"#.to_string()])
+                .unwrap();
+            doc.set_execution_count("cell-1", "10").unwrap();
+        }
+
+        // Apply external changes (with different outputs) while kernel is "running"
+        let external_cells = vec![CellSnapshot {
+            id: "cell-1".to_string(),
+            cell_type: "code".to_string(),
+            source: "new source".to_string(),
+            execution_count: "5".to_string(),
+            outputs: vec![r#"{"output_type":"error"}"#.to_string()],
+        }];
+
+        let changed = apply_ipynb_changes(&room, &external_cells, true).await;
+        assert!(changed, "Should apply source change");
+
+        let cells = {
+            let doc = room.doc.read().await;
+            doc.get_cells()
+        };
+        // Source should be updated
+        assert_eq!(cells[0].source, "new source");
+        // But outputs and execution_count should be preserved
+        assert_eq!(cells[0].outputs, vec![r#"{"output_type":"stream"}"#]);
+        assert_eq!(cells[0].execution_count, "10");
     }
 }
