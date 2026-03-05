@@ -58,6 +58,10 @@ pub enum Handshake {
         /// for finding pyproject.toml, pixi.toml, or environment.yaml.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         working_dir: Option<String>,
+        /// Serialized NotebookMetadataSnapshot JSON, sent with the initial handshake
+        /// so the daemon can read kernelspec before auto-launching a kernel.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        initial_metadata: Option<String>,
     },
     /// Blob store: write blobs, query port.
     Blob,
@@ -322,6 +326,7 @@ mod tests {
             notebook_id: "abc".into(),
             protocol: None,
             working_dir: None,
+            initial_metadata: None,
         })
         .unwrap();
         assert_eq!(json, r#"{"channel":"notebook_sync","notebook_id":"abc"}"#);
@@ -331,6 +336,7 @@ mod tests {
             notebook_id: "abc".into(),
             protocol: Some("v2".into()),
             working_dir: None,
+            initial_metadata: None,
         })
         .unwrap();
         assert_eq!(
@@ -343,6 +349,7 @@ mod tests {
             notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
             protocol: Some("v2".into()),
             working_dir: Some("/home/user/project".into()),
+            initial_metadata: None,
         })
         .unwrap();
         assert_eq!(

@@ -866,6 +866,7 @@ impl Daemon {
                 notebook_id,
                 protocol,
                 working_dir,
+                initial_metadata,
             } => {
                 let use_typed_frames = protocol.as_deref() == Some(connection::PROTOCOL_V2);
                 info!(
@@ -902,6 +903,7 @@ impl Daemon {
                     default_python_env,
                     self.clone(),
                     working_dir_path,
+                    initial_metadata,
                 )
                 .await
             }

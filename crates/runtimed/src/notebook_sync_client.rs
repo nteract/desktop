@@ -449,7 +449,8 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
         socket_path: PathBuf,
         notebook_id: String,
     ) -> Result<Self, NotebookSyncError> {
-        Self::connect_with_options(socket_path, notebook_id, Duration::from_secs(2), None).await
+        Self::connect_with_options(socket_path, notebook_id, Duration::from_secs(2), None, None)
+            .await
     }
 
     /// Connect with a custom timeout.
@@ -458,7 +459,7 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
         notebook_id: String,
         timeout: Duration,
     ) -> Result<Self, NotebookSyncError> {
-        Self::connect_with_options(socket_path, notebook_id, timeout, None).await
+        Self::connect_with_options(socket_path, notebook_id, timeout, None, None).await
     }
 
     /// Connect with custom timeout and working directory for untitled notebooks.
@@ -467,6 +468,7 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
         notebook_id: String,
         timeout: Duration,
         working_dir: Option<PathBuf>,
+        initial_metadata: Option<String>,
     ) -> Result<Self, NotebookSyncError> {
         let stream = tokio::time::timeout(timeout, tokio::net::UnixStream::connect(&socket_path))
             .await
@@ -478,7 +480,7 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
             socket_path, notebook_id, working_dir
         );
 
-        Self::init(stream, notebook_id, working_dir).await
+        Self::init(stream, notebook_id, working_dir, initial_metadata).await
     }
 
     /// Connect and return split handle/receiver for concurrent send/receive.
@@ -500,7 +502,7 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
         ),
         NotebookSyncError,
     > {
-        Self::connect_split_with_options(socket_path, notebook_id, None).await
+        Self::connect_split_with_options(socket_path, notebook_id, None, None).await
     }
 
     /// Connect and return split handle/receiver with working directory for untitled notebooks.
@@ -508,6 +510,7 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
         socket_path: PathBuf,
         notebook_id: String,
         working_dir: Option<PathBuf>,
+        initial_metadata: Option<String>,
     ) -> Result<
         (
             NotebookSyncHandle,
@@ -523,6 +526,7 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
             notebook_id,
             Duration::from_secs(2),
             working_dir,
+            initial_metadata,
         )
         .await?;
         Ok(client.into_split())
@@ -536,7 +540,7 @@ impl NotebookSyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
         socket_path: PathBuf,
         notebook_id: String,
     ) -> Result<Self, NotebookSyncError> {
-        Self::connect_with_options(socket_path, notebook_id, None).await
+        Self::connect_with_options(socket_path, notebook_id, None, None).await
     }
 
     /// Connect with working directory for untitled notebooks.
@@ -544,12 +548,13 @@ impl NotebookSyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
         socket_path: PathBuf,
         notebook_id: String,
         working_dir: Option<PathBuf>,
+        initial_metadata: Option<String>,
     ) -> Result<Self, NotebookSyncError> {
         let pipe_name = socket_path.to_string_lossy().to_string();
         let client = tokio::net::windows::named_pipe::ClientOptions::new()
             .open(&pipe_name)
             .map_err(NotebookSyncError::ConnectionFailed)?;
-        Self::init(client, notebook_id, working_dir).await
+        Self::init(client, notebook_id, working_dir, initial_metadata).await
     }
 
     /// Connect and return split handle/receiver for concurrent send/receive.
@@ -566,7 +571,7 @@ impl NotebookSyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
         ),
         NotebookSyncError,
     > {
-        Self::connect_split_with_options(socket_path, notebook_id, None).await
+        Self::connect_split_with_options(socket_path, notebook_id, None, None).await
     }
 
     /// Connect and return split handle/receiver with working directory for untitled notebooks.
@@ -574,6 +579,7 @@ impl NotebookSyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
         socket_path: PathBuf,
         notebook_id: String,
         working_dir: Option<PathBuf>,
+        initial_metadata: Option<String>,
     ) -> Result<
         (
             NotebookSyncHandle,
@@ -584,7 +590,9 @@ impl NotebookSyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
         ),
         NotebookSyncError,
     > {
-        let client = Self::connect_with_options(socket_path, notebook_id, working_dir).await?;
+        let client =
+            Self::connect_with_options(socket_path, notebook_id, working_dir, initial_metadata)
+                .await?;
         Ok(client.into_split())
     }
 }
@@ -606,6 +614,7 @@ where
         mut stream: S,
         notebook_id: String,
         working_dir: Option<PathBuf>,
+        initial_metadata: Option<String>,
     ) -> Result<Self, NotebookSyncError> {
         // Send the channel handshake, requesting v2 protocol
         connection::send_json_frame(
@@ -614,6 +623,7 @@ where
                 notebook_id: notebook_id.clone(),
                 protocol: Some(PROTOCOL_V2.to_string()),
                 working_dir: working_dir.map(|p| p.to_string_lossy().to_string()),
+                initial_metadata,
             },
         )
         .await

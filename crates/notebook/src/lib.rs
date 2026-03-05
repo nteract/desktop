@@ -523,13 +523,22 @@ async fn initialize_notebook_sync(
         working_dir
     );
 
+    // Build initial metadata snapshot to send with handshake.
+    // This ensures the daemon has the kernelspec before auto-launching.
+    let initial_metadata = {
+        let state = notebook_state.lock().map_err(|e| e.to_string())?;
+        let snapshot = notebook_state::snapshot_from_nbformat(&state.notebook.metadata);
+        serde_json::to_string(&snapshot).ok()
+    };
+
     // Connect using the split pattern - returns handle, receiver, broadcast receiver, initial cells, and initial metadata
     // Pass working_dir for untitled notebooks so daemon can detect project files
-    let (handle, mut receiver, mut broadcast_receiver, initial_cells, initial_metadata) =
+    let (handle, mut receiver, mut broadcast_receiver, initial_cells, initial_metadata_from_daemon) =
         NotebookSyncClient::connect_split_with_options(
             socket_path,
             notebook_id.clone(),
             working_dir,
+            initial_metadata,
         )
         .await
         .map_err(|e| format!("sync connect: {}", e))?;
@@ -594,7 +603,7 @@ async fn initialize_notebook_sync(
             );
 
             // Also merge metadata from Automerge doc into local state
-            if let Some(ref metadata_json) = initial_metadata {
+            if let Some(ref metadata_json) = initial_metadata_from_daemon {
                 match serde_json::from_str::<runtimed::notebook_metadata::NotebookMetadataSnapshot>(
                     metadata_json,
                 ) {
