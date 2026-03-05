@@ -125,11 +125,11 @@ const TAGLINES: &[&str] = &[
     "The CLI that makes notebooks go brrr",
 ];
 
-fn random_tagline() -> &'static str {
+fn random_tagline() -> String {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
     let index = RandomState::new().build_hasher().finish() as usize % TAGLINES.len();
-    TAGLINES[index]
+    format!("Runt: {}", TAGLINES[index])
 }
 
 #[derive(Parser)]
