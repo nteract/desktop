@@ -6,7 +6,6 @@
       "RUNTIMED_DEV": "1",
       "RUNTIMED_WORKSPACE_PATH": "$ZED_WORKTREE_ROOT",
       "RUNTIMED_WORKSPACE_NAME": "desktop",
-      "RUNTIMED_VITE_PORT": "5174",
     },
     "use_new_terminal": true,
     "allow_concurrent_runs": false,
@@ -15,12 +14,11 @@
   },
   {
     "label": "Dev App",
-    "command": "cargo xtask dev",
+    "command": "export RUNTIMED_VITE_PORT=$((5100 + $(echo -n \"$ZED_WORKTREE_ROOT\" | cksum | cut -d' ' -f1) % 4900)); echo \"Vite port: $RUNTIMED_VITE_PORT\"; cargo xtask dev",
     "env": {
       "RUNTIMED_DEV": "1",
       "RUNTIMED_WORKSPACE_PATH": "$ZED_WORKTREE_ROOT",
       "RUNTIMED_WORKSPACE_NAME": "desktop",
-      "RUNTIMED_VITE_PORT": "5174",
     },
     "use_new_terminal": true,
     "allow_concurrent_runs": false,
