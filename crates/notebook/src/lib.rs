@@ -533,14 +533,19 @@ async fn initialize_notebook_sync(
         serde_json::to_string(&snapshot).ok()
     };
 
+    // Create channel for forwarding raw Automerge sync messages to the frontend.
+    // The frontend can use these to maintain its own Automerge document replica.
+    let (raw_sync_tx, mut raw_sync_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+
     // Connect using the split pattern - returns handle, receiver, broadcast receiver, initial cells, and initial metadata
     // Pass working_dir for untitled notebooks so daemon can detect project files
     let (handle, mut receiver, mut broadcast_receiver, initial_cells, initial_metadata_from_daemon) =
-        NotebookSyncClient::connect_split_with_options(
+        NotebookSyncClient::connect_split_with_raw_sync(
             socket_path,
             notebook_id.clone(),
             working_dir,
             initial_metadata,
+            Some(raw_sync_tx),
         )
         .await
         .map_err(|e| format!("sync connect: {}", e))?;
@@ -703,6 +708,34 @@ async fn initialize_notebook_sync(
         info!(
             "[notebook-sync] Receiver loop ended for {} - changes_tx was dropped",
             notebook_id_for_receiver
+        );
+    });
+
+    // Spawn raw sync relay task — forwards Automerge sync messages to the frontend
+    // so it can maintain its own local Automerge document replica (Phase 2).
+    let window_for_raw_sync = window.clone();
+    let notebook_id_for_raw_sync = notebook_id.clone();
+    tokio::spawn(async move {
+        info!(
+            "[notebook-sync] Starting raw sync relay for {}",
+            notebook_id_for_raw_sync
+        );
+        while let Some(sync_bytes) = raw_sync_rx.recv().await {
+            if let Err(e) = emit_to_label::<_, _, _>(
+                &window_for_raw_sync,
+                window_for_raw_sync.label(),
+                "automerge:from-daemon",
+                &sync_bytes,
+            ) {
+                warn!(
+                    "[notebook-sync] Failed to emit automerge:from-daemon: {}",
+                    e
+                );
+            }
+        }
+        info!(
+            "[notebook-sync] Raw sync relay ended for {}",
+            notebook_id_for_raw_sync
         );
     });
 
@@ -2178,6 +2211,45 @@ async fn refresh_from_automerge(
     // Emit to frontend (which will resolve manifest hashes)
     emit_to_label::<_, _, _>(&window, window.label(), "notebook:updated", &cells)
         .map_err(|e| format!("Failed to emit notebook:updated: {}", e))
+}
+
+/// Export the local Automerge document as raw bytes.
+///
+/// The frontend can load these bytes with `Automerge.load()` to initialize
+/// its own local document replica. Used by the `useAutomergeNotebook` hook.
+#[tauri::command]
+async fn get_automerge_doc_bytes(
+    window: tauri::Window,
+    registry: tauri::State<'_, WindowNotebookRegistry>,
+) -> Result<Vec<u8>, String> {
+    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
+    let guard = notebook_sync.lock().await;
+    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
+
+    handle
+        .get_doc_bytes()
+        .await
+        .map_err(|e| format!("Failed to get doc bytes: {}", e))
+}
+
+/// Receive a raw Automerge sync message from the frontend.
+///
+/// The message is applied to the local Automerge doc and relayed to the daemon.
+/// This enables the frontend to act as a full Automerge peer in Phase 2.
+#[tauri::command]
+async fn send_automerge_sync(
+    window: tauri::Window,
+    sync_message: Vec<u8>,
+    registry: tauri::State<'_, WindowNotebookRegistry>,
+) -> Result<(), String> {
+    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
+    let guard = notebook_sync.lock().await;
+    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
+
+    handle
+        .receive_frontend_sync_message(sync_message)
+        .await
+        .map_err(|e| format!("Failed to relay sync message: {}", e))
 }
 
 /// Debug: Get Automerge document state from the daemon.
@@ -3846,6 +3918,8 @@ pub fn run(
             complete_via_daemon,
             reconnect_to_daemon,
             refresh_from_automerge,
+            get_automerge_doc_bytes,
+            send_automerge_sync,
             debug_get_automerge_state,
             debug_get_local_state,
             // Kernelspec discovery (used by UI)
