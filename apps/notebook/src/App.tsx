@@ -23,6 +23,7 @@ import { GlobalFindBar } from "./components/GlobalFindBar";
 import { NotebookToolbar } from "./components/NotebookToolbar";
 import { NotebookView } from "./components/NotebookView";
 import { TrustDialog } from "./components/TrustDialog";
+import { UntrustedBanner } from "./components/UntrustedBanner";
 import { useCondaDependencies } from "./hooks/useCondaDependencies";
 import { useDaemonKernel } from "./hooks/useDaemonKernel";
 import { useDenoDependencies } from "./hooks/useDenoDependencies";
@@ -133,6 +134,7 @@ function AppContent() {
     trustInfo,
     typosquatWarnings,
     loading: trustLoading,
+    needsApproval,
     checkTrust,
     approveTrust,
   } = useTrust();
@@ -907,6 +909,9 @@ function AppContent() {
             });
         }}
       />
+      {needsApproval && kernelStatus === KERNEL_STATUS.NOT_STARTED && (
+        <UntrustedBanner onReviewClick={() => setTrustDialogOpen(true)} />
+      )}
       <NotebookToolbar
         kernelStatus={kernelStatus}
         envSource={envSource}
