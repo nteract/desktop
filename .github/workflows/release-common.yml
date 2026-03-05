@@ -885,9 +885,10 @@ jobs:
         env:
           VERSION_SUFFIX: ${{ inputs.version_suffix }}
           COMMIT_SHA: ${{ github.sha }}
+          RELEASE_INTRO: ${{ inputs.release_intro }}
         run: |
           {
-            echo '${{ inputs.release_intro }}'
+            echo "$RELEASE_INTRO"
             echo ''
             echo '## What'\''s Changed'
             echo ''
