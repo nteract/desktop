@@ -684,55 +684,6 @@ async fn initialize_notebook_sync(
     Ok(())
 }
 
-/// Push the current notebook metadata to the Automerge doc via the sync handle.
-///
-/// Call this after any mutation to `notebook.metadata` so that the daemon
-/// and other windows receive the updated metadata through Automerge sync.
-async fn push_metadata_to_sync(
-    notebook_state: &Arc<Mutex<NotebookState>>,
-    notebook_sync: &SharedNotebookSync,
-) {
-    let metadata_json = {
-        let state = match notebook_state.lock() {
-            Ok(s) => s,
-            Err(e) => {
-                warn!(
-                    "[notebook-sync] Failed to lock state for metadata push: {}",
-                    e
-                );
-                return;
-            }
-        };
-        let snapshot = notebook_state::snapshot_from_nbformat(&state.notebook.metadata);
-        match serde_json::to_string(&snapshot) {
-            Ok(json) => json,
-            Err(e) => {
-                warn!(
-                    "[notebook-sync] Failed to serialize metadata snapshot: {}",
-                    e
-                );
-                return;
-            }
-        }
-    };
-
-    let handle = notebook_sync.lock().await.clone();
-    if let Some(handle) = handle {
-        if let Err(e) = handle
-            .set_metadata(
-                runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY,
-                &metadata_json,
-            )
-            .await
-        {
-            warn!(
-                "[notebook-sync] Failed to push metadata to Automerge: {}",
-                e
-            );
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::next_available_sample_path;
@@ -1287,13 +1238,10 @@ async fn save_notebook(
         // Formatting errors are silently ignored - save with original code
     }
 
-    // Ensure latest metadata is pushed to daemon before saving
-    push_metadata_to_sync(&state, &notebook_sync).await;
-
     // Try daemon save first (daemon merges metadata + cells from Automerge doc)
     // Clone handle out of the mutex to avoid holding lock across await
     let sync_handle = notebook_sync.lock().await.clone();
-    let daemon_saved = if let Some(handle) = sync_handle {
+    let daemon_saved = if let Some(ref handle) = sync_handle {
         match handle
             .send_request(NotebookRequest::SaveNotebook {
                 format_cells: false, // Already formatted above
@@ -1326,6 +1274,23 @@ async fn save_notebook(
 
     // Fallback: save locally if daemon save didn't work
     if !daemon_saved {
+        // Refresh NotebookState from Automerge before serializing — the receiver
+        // loop sync-back was removed, so NotebookState cells/metadata may be stale.
+        if let Some(ref handle) = sync_handle {
+            if let Ok(cells) = handle.get_cells().await {
+                if let Ok(mut nb) = state.lock() {
+                    nb.notebook.cells = cells.iter().map(cell_snapshot_to_nbformat).collect();
+                }
+            }
+            if let Some(snapshot) = get_metadata_snapshot(handle).await {
+                if let Ok(mut nb) = state.lock() {
+                    notebook_state::merge_snapshot_into_nbformat(
+                        &snapshot,
+                        &mut nb.notebook.metadata,
+                    );
+                }
+            }
+        }
         let nb = state.lock().map_err(|e| e.to_string())?;
         let content = nb.serialize()?;
         std::fs::write(&path, &content).map_err(|e| e.to_string())?;
@@ -1729,7 +1694,7 @@ async fn add_cell(
             warn!("[notebook-sync] add_cell failed: {}", e);
         }
     } else {
-        info!("[notebook-sync] No sync handle available for add_cell");
+        return Err("Not connected to daemon".to_string());
     }
 
     // Build FrontendCell from inputs
