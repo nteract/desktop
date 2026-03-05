@@ -678,6 +678,7 @@ pub async fn handle_notebook_sync_connection<R, W>(
     default_python_env: crate::settings_doc::PythonEnvType,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
     working_dir: Option<PathBuf>,
+    initial_metadata: Option<String>,
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin,
@@ -687,6 +688,25 @@ where
     if let Some(wd) = working_dir {
         let mut room_wd = room.working_dir.write().await;
         *room_wd = Some(wd);
+    }
+
+    // Seed initial metadata into the Automerge doc if provided and doc has no metadata yet.
+    // This ensures the kernelspec is available before auto-launch decides which kernel to use.
+    if let Some(ref metadata_json) = initial_metadata {
+        let mut doc = room.doc.write().await;
+        if doc.get_metadata(NOTEBOOK_METADATA_KEY).is_none() {
+            match doc.set_metadata(NOTEBOOK_METADATA_KEY, metadata_json) {
+                Ok(()) => {
+                    info!(
+                        "[notebook-sync] Seeded initial metadata from handshake for {}",
+                        notebook_id
+                    );
+                }
+                Err(e) => {
+                    warn!("[notebook-sync] Failed to seed initial metadata: {}", e);
+                }
+            }
+        }
     }
 
     room.active_peers.fetch_add(1, Ordering::Relaxed);
