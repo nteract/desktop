@@ -10,6 +10,7 @@ from runtimed.runtimed import (
     AsyncSession,
     Cell,
     DaemonClient,
+    ExecutionEvent,
     ExecutionResult,
     Output,
     RuntimedError,
@@ -28,6 +29,7 @@ __all__ = [
     "AsyncSession",
     # Output types
     "Cell",
+    "ExecutionEvent",
     "ExecutionResult",
     "Output",
     "RuntimedError",

@@ -14,8 +14,10 @@ use runtimed::notebook_sync_client::{
 use runtimed::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 
 use crate::error::to_py_err;
-use crate::output::{Cell, ExecutionResult, Output};
+use crate::event_stream::ExecutionEventIterator;
+use crate::output::{Cell, ExecutionEvent, ExecutionResult, Output};
 use crate::output_resolver;
+use crate::subscription::EventIteratorSubscription;
 
 /// A session for executing code via the runtimed daemon.
 ///
@@ -313,6 +315,29 @@ impl Session {
         })
     }
 
+    /// Append text to a cell's source in the automerge document.
+    ///
+    /// Unlike set_source() which replaces the entire text (using Myers diff
+    /// internally), this directly inserts characters at the end of the source
+    /// Text CRDT. This is ideal for streaming/agentic use cases where an
+    /// external process is appending tokens incrementally — each append is
+    /// a minimal CRDT operation that syncs efficiently to all connected clients.
+    ///
+    /// Args:
+    ///     cell_id: The cell ID.
+    ///     text: The text to append to the cell's source.
+    fn append_source(&self, cell_id: &str, text: &str) -> PyResult<()> {
+        self.runtime.block_on(async {
+            let state = self.state.lock().await;
+            let handle = state
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            handle.append_source(cell_id, text).await.map_err(to_py_err)
+        })
+    }
+
     /// Get a cell from the automerge document.
     ///
     /// Args:
@@ -543,6 +568,144 @@ impl Session {
                 ))),
             }
         })
+    }
+
+    /// Stream execution events for a cell as an iterator.
+    ///
+    /// Unlike execute_cell() which blocks until completion and returns all
+    /// outputs at once, this returns an iterator that yields ExecutionEvent
+    /// objects as they arrive from the kernel, enabling real-time processing.
+    ///
+    /// Example:
+    ///     ```python
+    ///     for event in session.stream_execute(cell_id):
+    ///         if event.event_type == "output":
+    ///             print(event.output.text)  # Process output immediately
+    ///     ```
+    ///
+    /// Args:
+    ///     cell_id: The cell ID to execute.
+    ///     timeout_secs: Maximum time to wait for each event (default: 60).
+    ///     signal_only: If True, output events contain only output_index, not
+    ///         the full output data. Use get_cell() to fetch the data.
+    ///
+    /// Returns:
+    ///     ExecutionEventIterator that yields ExecutionEvent objects.
+    #[pyo3(signature = (cell_id, timeout_secs=60.0, signal_only=false))]
+    fn stream_execute(
+        &self,
+        cell_id: &str,
+        timeout_secs: f64,
+        signal_only: bool,
+    ) -> PyResult<ExecutionEventIterator> {
+        let cell_id = cell_id.to_string();
+
+        // Auto-start kernel if not running
+        {
+            let state = self.runtime.block_on(self.state.lock());
+            if !state.kernel_started {
+                drop(state);
+                self.start_kernel("python", "auto", None)?;
+            }
+        }
+
+        self.runtime.block_on(async {
+            let state = self.state.lock().await;
+
+            let handle = state
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            // Queue the cell for execution
+            let response = handle
+                .send_request(NotebookRequest::ExecuteCell {
+                    cell_id: cell_id.clone(),
+                })
+                .await
+                .map_err(to_py_err)?;
+
+            match response {
+                NotebookResponse::CellQueued { .. } => {}
+                NotebookResponse::Error { error } => return Err(to_py_err(error)),
+                other => return Err(to_py_err(format!("Unexpected response: {:?}", other))),
+            }
+
+            // Get a resubscribed broadcast receiver for this stream
+            let stream_broadcast_rx = state
+                .broadcast_rx
+                .as_ref()
+                .ok_or_else(|| to_py_err("No broadcast receiver"))?
+                .resubscribe();
+
+            let blob_base_url = state.blob_base_url.clone();
+            let blob_store_path = state.blob_store_path.clone();
+
+            drop(state);
+
+            // Return the sync iterator
+            ExecutionEventIterator::new(
+                stream_broadcast_rx,
+                cell_id,
+                timeout_secs,
+                blob_base_url,
+                blob_store_path,
+                signal_only,
+            )
+        })
+    }
+
+    /// Subscribe to notebook broadcast events independently of execution.
+    ///
+    /// Returns an iterator that yields all broadcast events from the
+    /// notebook, optionally filtered by cell IDs and event types. This
+    /// enables reactive patterns for agents that want to respond to any
+    /// document activity (including executions from other clients).
+    ///
+    /// Example:
+    ///     ```python
+    ///     # Subscribe to all events
+    ///     for event in session.subscribe():
+    ///         print(f"Got: {event.event_type}")
+    ///
+    ///     # Subscribe with filters
+    ///     for event in session.subscribe(event_types=["output", "done"]):
+    ///         if event.event_type == "output":
+    ///             print(event.output.text)
+    ///     ```
+    ///
+    /// Args:
+    ///     cell_ids: Optional list of cell IDs to filter events.
+    ///     event_types: Optional list of event types to filter. Valid types:
+    ///         "execution_started", "output", "done", "error", "kernel_status".
+    ///
+    /// Returns an EventIteratorSubscription iterator.
+    #[pyo3(signature = (cell_ids=None, event_types=None))]
+    fn subscribe(
+        &self,
+        cell_ids: Option<Vec<String>>,
+        event_types: Option<Vec<String>>,
+    ) -> PyResult<EventIteratorSubscription> {
+        let state = self.runtime.block_on(self.state.lock());
+
+        let broadcast_rx = state
+            .broadcast_rx
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected - call connect() or start_kernel() first"))?
+            .resubscribe();
+
+        let blob_base_url = state.blob_base_url.clone();
+        let blob_store_path = state.blob_store_path.clone();
+
+        drop(state);
+
+        EventIteratorSubscription::new(
+            broadcast_rx,
+            cell_ids,
+            event_types,
+            blob_base_url,
+            blob_store_path,
+        )
     }
 
     /// Convenience method: create a cell, execute it, and return the result.
@@ -842,5 +1005,91 @@ impl Session {
             success,
             execution_count,
         })
+    }
+
+    /// Collect execution events for a cell, preserving event order.
+    async fn collect_events(
+        &self,
+        cell_id: &str,
+        blob_base_url: Option<String>,
+        blob_store_path: Option<PathBuf>,
+    ) -> PyResult<Vec<ExecutionEvent>> {
+        let mut events = Vec::new();
+        let mut done_received = false;
+
+        loop {
+            let mut state = self.state.lock().await;
+
+            let broadcast_rx = state
+                .broadcast_rx
+                .as_mut()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            let timeout_ms = if done_received { 50 } else { 100 };
+            let broadcast = tokio::time::timeout(
+                std::time::Duration::from_millis(timeout_ms),
+                broadcast_rx.recv(),
+            )
+            .await;
+
+            match broadcast {
+                Ok(Some(msg)) => {
+                    drop(state);
+
+                    match msg {
+                        NotebookBroadcast::ExecutionStarted {
+                            cell_id: msg_cell_id,
+                            execution_count: count,
+                        } => {
+                            if msg_cell_id == cell_id {
+                                events.push(ExecutionEvent::execution_started(cell_id, count));
+                            }
+                        }
+                        NotebookBroadcast::Output {
+                            cell_id: msg_cell_id,
+                            output_type,
+                            output_json,
+                            ..
+                        } => {
+                            if msg_cell_id == cell_id {
+                                if let Some(output) = output_resolver::resolve_output_with_type(
+                                    &output_type,
+                                    &output_json,
+                                    &blob_base_url,
+                                    &blob_store_path,
+                                )
+                                .await
+                                {
+                                    events.push(ExecutionEvent::output(cell_id, output));
+                                }
+                            }
+                        }
+                        NotebookBroadcast::ExecutionDone {
+                            cell_id: msg_cell_id,
+                        } => {
+                            if msg_cell_id == cell_id {
+                                events.push(ExecutionEvent::done(cell_id));
+                                done_received = true;
+                            }
+                        }
+                        NotebookBroadcast::KernelError { error } => {
+                            events.push(ExecutionEvent::error(cell_id, &error));
+                            done_received = true;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(None) => {
+                    return Err(to_py_err("Broadcast channel closed"));
+                }
+                Err(_) => {
+                    if done_received {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(events)
     }
 }

@@ -21,7 +21,7 @@ use futures::FutureExt;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::connection::{self, Handshake, NotebookFrameType, ProtocolCapabilities, PROTOCOL_V2};
 use crate::notebook_doc::{
@@ -70,6 +70,11 @@ enum SyncCommand {
         source: String,
         reply: oneshot::Sender<Result<(), NotebookSyncError>>,
     },
+    AppendSource {
+        cell_id: String,
+        text: String,
+        reply: oneshot::Sender<Result<(), NotebookSyncError>>,
+    },
     ClearOutputs {
         cell_id: String,
         reply: oneshot::Sender<Result<(), NotebookSyncError>>,
@@ -106,7 +111,7 @@ enum SyncCommand {
         /// Optional broadcast sender for delivering broadcasts during long-running requests.
         /// If provided, broadcasts received while waiting for the response are sent immediately
         /// instead of being queued for later delivery.
-        broadcast_tx: Option<mpsc::Sender<NotebookBroadcast>>,
+        broadcast_tx: Option<broadcast::Sender<NotebookBroadcast>>,
     },
 }
 
@@ -184,6 +189,26 @@ impl NotebookSyncHandle {
             .send(SyncCommand::UpdateSource {
                 cell_id: cell_id.to_string(),
                 source: source.to_string(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?;
+        reply_rx
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?
+    }
+
+    /// Append text to a cell's source (no diff, direct CRDT insert at end).
+    ///
+    /// Unlike `update_source` which replaces the entire text, this appends
+    /// characters at the end of the source. Ideal for streaming/agentic use
+    /// cases where tokens are appended incrementally.
+    pub async fn append_source(&self, cell_id: &str, text: &str) -> Result<(), NotebookSyncError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(SyncCommand::AppendSource {
+                cell_id: cell_id.to_string(),
+                text: text.to_string(),
                 reply: reply_tx,
             })
             .await
@@ -307,7 +332,7 @@ impl NotebookSyncHandle {
     pub async fn send_request_with_broadcast(
         &self,
         request: NotebookRequest,
-        broadcast_tx: mpsc::Sender<NotebookBroadcast>,
+        broadcast_tx: broadcast::Sender<NotebookBroadcast>,
     ) -> Result<NotebookResponse, NotebookSyncError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
@@ -357,16 +382,46 @@ impl NotebookSyncReceiver {
 ///
 /// These are events like kernel status changes, execution outputs, etc.
 /// that are broadcast to all clients connected to the same notebook room.
+///
+/// This receiver supports multiple subscribers - use `resubscribe()` to create
+/// additional receivers that will receive all future broadcasts.
 pub struct NotebookBroadcastReceiver {
-    rx: mpsc::Receiver<NotebookBroadcast>,
+    rx: broadcast::Receiver<NotebookBroadcast>,
 }
 
 impl NotebookBroadcastReceiver {
     /// Wait for the next broadcast event.
     ///
-    /// Returns `None` if the sync task has stopped.
+    /// Returns `None` if the sync task has stopped (channel closed).
+    /// If events were missed due to a slow consumer, they are skipped
+    /// and the next available event is returned.
     pub async fn recv(&mut self) -> Option<NotebookBroadcast> {
-        self.rx.recv().await
+        loop {
+            match self.rx.recv().await {
+                Ok(msg) => return Some(msg),
+                Err(broadcast::error::RecvError::Lagged(count)) => {
+                    // Consumer was too slow, some messages were dropped
+                    log::warn!(
+                        "[NotebookBroadcastReceiver] Lagged by {} messages, continuing",
+                        count
+                    );
+                    // Continue to get the next available message
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    }
+
+    /// Create a new receiver that will receive all future broadcasts.
+    ///
+    /// The new receiver starts from the next message sent after this call.
+    /// This allows multiple consumers to independently receive the same
+    /// broadcast events (e.g., for streaming execution + independent subscription).
+    pub fn resubscribe(&self) -> Self {
+        Self {
+            rx: self.rx.resubscribe(),
+        }
     }
 }
 
@@ -864,6 +919,47 @@ where
         self.sync_to_daemon().await
     }
 
+    /// Append text to a cell's source and sync to daemon.
+    ///
+    /// Directly inserts at the end of the Text CRDT without diffing.
+    pub async fn append_source(
+        &mut self,
+        cell_id: &str,
+        text: &str,
+    ) -> Result<(), NotebookSyncError> {
+        let cells_id = match self.cells_list_id() {
+            Some(id) => id,
+            None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
+        };
+        let idx = match self.find_cell_index(&cells_id, cell_id) {
+            Some(i) => i,
+            None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
+        };
+        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+            Some(o) => o,
+            None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
+        };
+        let source_id = match self.text_id(&cell_obj, "source") {
+            Some(id) => id,
+            None => {
+                return Err(NotebookSyncError::SyncError(
+                    "source Text not found".to_string(),
+                ))
+            }
+        };
+
+        let len = self
+            .doc
+            .text(&source_id)
+            .map_err(|e| NotebookSyncError::SyncError(format!("text read: {}", e)))?
+            .len();
+        self.doc
+            .splice_text(&source_id, len, 0, text)
+            .map_err(|e| NotebookSyncError::SyncError(format!("splice_text: {}", e)))?;
+
+        self.sync_to_daemon().await
+    }
+
     /// Set outputs for a cell and sync to daemon.
     pub async fn set_outputs(
         &mut self,
@@ -1251,7 +1347,7 @@ where
     pub async fn send_request_with_broadcast(
         &mut self,
         request: &NotebookRequest,
-        broadcast_tx: Option<&mpsc::Sender<NotebookBroadcast>>,
+        broadcast_tx: Option<&broadcast::Sender<NotebookBroadcast>>,
     ) -> Result<NotebookResponse, NotebookSyncError> {
         if !self.use_typed_frames {
             return Err(NotebookSyncError::SyncError(
@@ -1289,7 +1385,7 @@ where
     /// being queued. This enables real-time progress updates during long-running requests.
     async fn wait_for_response_with_broadcast(
         &mut self,
-        broadcast_tx: Option<&mpsc::Sender<NotebookBroadcast>>,
+        broadcast_tx: Option<&broadcast::Sender<NotebookBroadcast>>,
     ) -> Result<NotebookResponse, NotebookSyncError> {
         loop {
             match connection::recv_typed_frame(&mut self.stream).await? {
@@ -1319,13 +1415,10 @@ where
                             // If we have a broadcast sender, deliver immediately
                             // Otherwise queue for later delivery
                             if let Some(tx) = broadcast_tx {
-                                // Try non-blocking send first for real-time delivery
-                                if let Err(tokio::sync::mpsc::error::TrySendError::Full(b)) =
-                                    tx.try_send(broadcast)
-                                {
-                                    // Channel full - queue for later to avoid dropping
-                                    // Terminal events (ready, error) are especially important
-                                    self.pending_broadcasts.push(b);
+                                // broadcast::Sender::send is synchronous
+                                // Only fails if there are no receivers, in which case queue it
+                                if tx.send(broadcast.clone()).is_err() {
+                                    self.pending_broadcasts.push(broadcast);
                                 }
                             } else {
                                 self.pending_broadcasts.push(broadcast);
@@ -1465,26 +1558,22 @@ where
         // Channel for sync updates to receivers
         let (changes_tx, changes_rx) = mpsc::channel::<SyncUpdate>(32);
 
-        // Channel for kernel broadcasts
-        let (broadcast_tx, broadcast_rx) = mpsc::channel::<NotebookBroadcast>(64);
+        // Channel for kernel broadcasts (broadcast channel supports multiple subscribers)
+        let (broadcast_tx, broadcast_rx) = broadcast::channel::<NotebookBroadcast>(64);
 
         // Send pending broadcasts (received during init) before spawning the task
         // This ensures the broadcast receiver can get them immediately
-        let broadcast_tx_for_pending = broadcast_tx.clone();
         if !pending_broadcasts.is_empty() {
             info!(
                 "[notebook-sync-client] Sending {} pending broadcasts for {}",
                 pending_broadcasts.len(),
                 notebook_id
             );
-            tokio::spawn(async move {
-                for broadcast in pending_broadcasts {
-                    if broadcast_tx_for_pending.send(broadcast).await.is_err() {
-                        warn!("[notebook-sync-client] Failed to send pending broadcast");
-                        break;
-                    }
-                }
-            });
+            for broadcast in pending_broadcasts {
+                // broadcast::Sender::send is synchronous, no await needed
+                // Errors only if there are no receivers, which can't happen here
+                let _ = broadcast_tx.send(broadcast);
+            }
         }
 
         // Spawn background task with panic catching
@@ -1542,7 +1631,7 @@ async fn run_sync_task<S>(
     mut client: NotebookSyncClient<S>,
     mut cmd_rx: mpsc::Receiver<SyncCommand>,
     changes_tx: mpsc::Sender<SyncUpdate>,
-    broadcast_tx: mpsc::Sender<NotebookBroadcast>,
+    broadcast_tx: broadcast::Sender<NotebookBroadcast>,
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -1579,6 +1668,10 @@ async fn run_sync_task<S>(
                             }
                             SyncCommand::UpdateSource { cell_id, source, reply } => {
                                 let result = client.update_source(&cell_id, &source).await;
+                                let _ = reply.send(result);
+                            }
+                            SyncCommand::AppendSource { cell_id, text, reply } => {
+                                let result = client.append_source(&cell_id, &text).await;
                                 let _ = reply.send(result);
                             }
                             SyncCommand::ClearOutputs { cell_id, reply } => {
@@ -1659,10 +1752,11 @@ async fn run_sync_task<S>(
                     }
                     Ok(Some(ReceivedFrame::Broadcast(broadcast))) => {
                         // Got a broadcast from daemon
-                        let send_result = broadcast_tx.send(broadcast).await;
+                        // broadcast::Sender::send is synchronous, returns Err only if no receivers
+                        let send_result = broadcast_tx.send(broadcast);
                         if send_result.is_err() {
                             info!(
-                                "[notebook-sync-task] Broadcast receiver dropped for {}",
+                                "[notebook-sync-task] No broadcast receivers for {}",
                                 notebook_id
                             );
                             // Continue - broadcasts are optional

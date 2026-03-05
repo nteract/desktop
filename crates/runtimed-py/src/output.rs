@@ -199,6 +199,134 @@ impl Cell {
     }
 }
 
+/// An event from a streaming execution.
+///
+/// Events are yielded incrementally as a cell executes:
+/// - "execution_started": execution began (has execution_count)
+/// - "output": an output was produced (has output and optionally output_index)
+/// - "done": execution finished
+/// - "error": kernel error occurred (has error_message)
+///
+/// In signal-only mode, output events have output_index but no output data.
+/// Use session.get_cell(cell_id).outputs[output_index] to fetch the data.
+#[pyclass(skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct ExecutionEvent {
+    /// Event type: "execution_started", "output", "done", "error"
+    #[pyo3(get)]
+    pub event_type: String,
+
+    /// The cell ID this event is for
+    #[pyo3(get)]
+    pub cell_id: String,
+
+    /// The output (only for "output" events, None in signal-only mode)
+    #[pyo3(get)]
+    pub output: Option<Output>,
+
+    /// Index of the output in the cell's outputs list (for "output" events)
+    #[pyo3(get)]
+    pub output_index: Option<usize>,
+
+    /// Execution count (only for "execution_started" events)
+    #[pyo3(get)]
+    pub execution_count: Option<i64>,
+
+    /// Error message (only for "error" events)
+    #[pyo3(get)]
+    pub error_message: Option<String>,
+}
+
+#[pymethods]
+impl ExecutionEvent {
+    fn __repr__(&self) -> String {
+        match self.event_type.as_str() {
+            "output" => format!("ExecutionEvent(output, cell={})", self.cell_id),
+            "execution_started" => format!(
+                "ExecutionEvent(execution_started, cell={}, count={:?})",
+                self.cell_id, self.execution_count
+            ),
+            "done" => format!("ExecutionEvent(done, cell={})", self.cell_id),
+            "error" => format!(
+                "ExecutionEvent(error, cell={}, msg={:?})",
+                self.cell_id, self.error_message
+            ),
+            _ => format!("ExecutionEvent({}, cell={})", self.event_type, self.cell_id),
+        }
+    }
+}
+
+impl ExecutionEvent {
+    pub fn execution_started(cell_id: &str, execution_count: i64) -> Self {
+        Self {
+            event_type: "execution_started".to_string(),
+            cell_id: cell_id.to_string(),
+            output: None,
+            output_index: None,
+            execution_count: Some(execution_count),
+            error_message: None,
+        }
+    }
+
+    pub fn output(cell_id: &str, output: Output) -> Self {
+        Self {
+            event_type: "output".to_string(),
+            cell_id: cell_id.to_string(),
+            output: Some(output),
+            output_index: None,
+            execution_count: None,
+            error_message: None,
+        }
+    }
+
+    /// Create an output event with the output index (for streaming).
+    pub fn output_with_index(cell_id: &str, output: Output, output_index: Option<usize>) -> Self {
+        Self {
+            event_type: "output".to_string(),
+            cell_id: cell_id.to_string(),
+            output: Some(output),
+            output_index,
+            execution_count: None,
+            error_message: None,
+        }
+    }
+
+    /// Create a signal-only output event (output_index but no data).
+    /// Used in signal_only mode where the consumer queries state for output data.
+    pub fn output_signal(cell_id: &str, output_index: Option<usize>) -> Self {
+        Self {
+            event_type: "output".to_string(),
+            cell_id: cell_id.to_string(),
+            output: None,
+            output_index,
+            execution_count: None,
+            error_message: None,
+        }
+    }
+
+    pub fn done(cell_id: &str) -> Self {
+        Self {
+            event_type: "done".to_string(),
+            cell_id: cell_id.to_string(),
+            output: None,
+            output_index: None,
+            execution_count: None,
+            error_message: None,
+        }
+    }
+
+    pub fn error(cell_id: &str, message: &str) -> Self {
+        Self {
+            event_type: "error".to_string(),
+            cell_id: cell_id.to_string(),
+            output: None,
+            output_index: None,
+            execution_count: None,
+            error_message: Some(message.to_string()),
+        }
+    }
+}
+
 /// Result of executing code.
 #[pyclass(skip_from_py_object)]
 #[derive(Clone, Debug)]

@@ -15,8 +15,10 @@ use runtimed::notebook_sync_client::{
 use runtimed::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 
 use crate::error::to_py_err;
-use crate::output::{Cell, ExecutionResult, Output};
+use crate::event_stream::ExecutionEventStream;
+use crate::output::{Cell, ExecutionEvent, ExecutionResult, Output};
 use crate::output_resolver;
+use crate::subscription::EventSubscription;
 
 /// An async session for executing code via the runtimed daemon.
 ///
@@ -407,6 +409,43 @@ impl AsyncSession {
         })
     }
 
+    /// Append text to a cell's source in the automerge document.
+    ///
+    /// Unlike set_source() which replaces the entire text (using Myers diff
+    /// internally), this directly inserts characters at the end of the source
+    /// Text CRDT. This is ideal for streaming/agentic use cases where an
+    /// external process is appending tokens incrementally — each append is
+    /// a minimal CRDT operation that syncs efficiently to all connected clients.
+    ///
+    /// Args:
+    ///     cell_id: The cell ID.
+    ///     text: The text to append to the cell's source.
+    ///
+    /// Returns a coroutine.
+    fn append_source<'py>(
+        &self,
+        py: Python<'py>,
+        cell_id: &str,
+        text: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let cell_id = cell_id.to_string();
+        let text = text.to_string();
+
+        future_into_py(py, async move {
+            let state_guard = state.lock().await;
+            let handle = state_guard
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            handle
+                .append_source(&cell_id, &text)
+                .await
+                .map_err(to_py_err)
+        })
+    }
+
     /// Get a cell from the automerge document.
     ///
     /// Args:
@@ -688,6 +727,240 @@ impl AsyncSession {
                 ))),
             }
         })
+    }
+
+    /// Stream execution events for a cell as an async iterator.
+    ///
+    /// Unlike execute_cell() which blocks until completion and returns all
+    /// outputs at once, this returns an async iterator that yields ExecutionEvent
+    /// objects as they arrive from the kernel, enabling real-time processing.
+    ///
+    /// Example:
+    ///     ```python
+    ///     async for event in await session.stream_execute(cell_id):
+    ///         if event.event_type == "output":
+    ///             print(event.output.text)  # Process output immediately
+    ///     ```
+    ///
+    /// Args:
+    ///     cell_id: The cell ID to execute.
+    ///     timeout_secs: Maximum time to wait for each event (default: 60).
+    ///     signal_only: If True, output events contain only output_index, not
+    ///         the full output data. Use get_cell() to fetch the data.
+    ///
+    /// Returns a coroutine that resolves to ExecutionEventStream (async iterator).
+    #[pyo3(signature = (cell_id, timeout_secs=60.0, signal_only=false))]
+    fn stream_execute<'py>(
+        &self,
+        py: Python<'py>,
+        cell_id: &str,
+        timeout_secs: f64,
+        signal_only: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let notebook_id = self.notebook_id.clone();
+        let cell_id = cell_id.to_string();
+
+        future_into_py(py, async move {
+            // Auto-start kernel if not running
+            {
+                let state_guard = state.lock().await;
+                if !state_guard.kernel_started {
+                    drop(state_guard);
+
+                    let state_guard = state.lock().await;
+                    if state_guard.handle.is_none() {
+                        drop(state_guard);
+
+                        let socket_path = if let Ok(path) = std::env::var("RUNTIMED_SOCKET_PATH") {
+                            std::path::PathBuf::from(path)
+                        } else {
+                            runtimed::default_socket_path()
+                        };
+
+                        let (handle, sync_rx, broadcast_rx, _cells, _notebook_path) =
+                            NotebookSyncClient::connect_split(
+                                socket_path.clone(),
+                                notebook_id.clone(),
+                            )
+                            .await
+                            .map_err(to_py_err)?;
+
+                        let (blob_base_url, blob_store_path) = if let Some(parent) =
+                            socket_path.parent()
+                        {
+                            let daemon_json = parent.join("daemon.json");
+                            let base_url = if daemon_json.exists() {
+                                tokio::fs::read_to_string(&daemon_json)
+                                    .await
+                                    .ok()
+                                    .and_then(|contents| {
+                                        serde_json::from_str::<serde_json::Value>(&contents).ok()
+                                    })
+                                    .and_then(|info| info.get("blob_port").and_then(|p| p.as_u64()))
+                                    .map(|port| format!("http://127.0.0.1:{}", port))
+                            } else {
+                                None
+                            };
+
+                            let store_path = parent.join("blobs");
+                            let store_path = if store_path.exists() {
+                                Some(store_path)
+                            } else {
+                                None
+                            };
+
+                            (base_url, store_path)
+                        } else {
+                            (None, None)
+                        };
+
+                        let mut state_guard = state.lock().await;
+                        state_guard.handle = Some(handle);
+                        state_guard.sync_rx = Some(sync_rx);
+                        state_guard.broadcast_rx = Some(broadcast_rx);
+                        state_guard.blob_base_url = blob_base_url;
+                        state_guard.blob_store_path = blob_store_path;
+                    }
+
+                    // Start kernel
+                    let mut state_guard = state.lock().await;
+                    let handle = state_guard
+                        .handle
+                        .as_ref()
+                        .ok_or_else(|| to_py_err("Not connected"))?;
+
+                    let response = handle
+                        .send_request(NotebookRequest::LaunchKernel {
+                            kernel_type: "python".to_string(),
+                            env_source: "uv:prewarmed".to_string(),
+                            notebook_path: None,
+                        })
+                        .await
+                        .map_err(to_py_err)?;
+
+                    match response {
+                        NotebookResponse::KernelLaunched {
+                            env_source: actual_env,
+                            ..
+                        } => {
+                            state_guard.kernel_started = true;
+                            state_guard.env_source = Some(actual_env);
+                        }
+                        NotebookResponse::KernelAlreadyRunning {
+                            env_source: actual_env,
+                            ..
+                        } => {
+                            state_guard.kernel_started = true;
+                            state_guard.env_source = Some(actual_env);
+                        }
+                        NotebookResponse::Error { error } => return Err(to_py_err(error)),
+                        other => {
+                            return Err(to_py_err(format!("Unexpected response: {:?}", other)))
+                        }
+                    }
+                }
+            }
+
+            // Queue execution and get broadcast receiver for streaming
+            let state_guard = state.lock().await;
+
+            let handle = state_guard
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            // Queue the cell for execution
+            let response = handle
+                .send_request(NotebookRequest::ExecuteCell {
+                    cell_id: cell_id.clone(),
+                })
+                .await
+                .map_err(to_py_err)?;
+
+            match response {
+                NotebookResponse::CellQueued { .. } => {}
+                NotebookResponse::Error { error } => return Err(to_py_err(error)),
+                other => return Err(to_py_err(format!("Unexpected response: {:?}", other))),
+            }
+
+            // Get a resubscribed broadcast receiver for this stream
+            let stream_broadcast_rx = state_guard
+                .broadcast_rx
+                .as_ref()
+                .ok_or_else(|| to_py_err("No broadcast receiver"))?
+                .resubscribe();
+
+            let blob_base_url = state_guard.blob_base_url.clone();
+            let blob_store_path = state_guard.blob_store_path.clone();
+
+            drop(state_guard);
+
+            // Return the async iterator
+            Ok(ExecutionEventStream::new(
+                stream_broadcast_rx,
+                cell_id,
+                timeout_secs,
+                blob_base_url,
+                blob_store_path,
+                signal_only,
+            ))
+        })
+    }
+
+    /// Subscribe to notebook broadcast events independently of execution.
+    ///
+    /// Returns an async iterator that yields all broadcast events from the
+    /// notebook, optionally filtered by cell IDs and event types. This
+    /// enables reactive patterns for agents that want to respond to any
+    /// document activity (including executions from other clients).
+    ///
+    /// Example:
+    ///     ```python
+    ///     # Subscribe to all events
+    ///     async for event in session.subscribe():
+    ///         print(f"Got: {event.event_type}")
+    ///
+    ///     # Subscribe with filters
+    ///     async for event in session.subscribe(event_types=["output", "done"]):
+    ///         if event.event_type == "output":
+    ///             print(event.output.text)
+    ///     ```
+    ///
+    /// Args:
+    ///     cell_ids: Optional list of cell IDs to filter events.
+    ///     event_types: Optional list of event types to filter. Valid types:
+    ///         "execution_started", "output", "done", "error", "kernel_status".
+    ///
+    /// Returns an EventSubscription async iterator.
+    #[pyo3(signature = (cell_ids=None, event_types=None))]
+    fn subscribe(
+        &self,
+        cell_ids: Option<Vec<String>>,
+        event_types: Option<Vec<String>>,
+    ) -> PyResult<EventSubscription> {
+        // Use a temporary runtime to access the state synchronously
+        let runtime = tokio::runtime::Runtime::new().map_err(to_py_err)?;
+        let state = runtime.block_on(self.state.lock());
+
+        let broadcast_rx = state
+            .broadcast_rx
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected - call connect() or start_kernel() first"))?
+            .resubscribe();
+
+        let blob_base_url = state.blob_base_url.clone();
+        let blob_store_path = state.blob_store_path.clone();
+
+        drop(state);
+
+        Ok(EventSubscription::new(
+            broadcast_rx,
+            cell_ids,
+            event_types,
+            blob_base_url,
+            blob_store_path,
+        ))
     }
 
     /// Convenience method: create a cell, execute it, and return the result.
@@ -1071,4 +1344,95 @@ async fn collect_outputs_async(
         success,
         execution_count,
     })
+}
+
+/// Collect execution events for a cell, yielding each event as it arrives.
+///
+/// Returns a Vec of ExecutionEvent objects in arrival order. Unlike
+/// collect_outputs_async which accumulates outputs into a single result,
+/// this preserves the event stream for agents that want to process
+/// outputs incrementally.
+async fn collect_events_async(
+    state: &Arc<Mutex<AsyncSessionState>>,
+    cell_id: &str,
+    blob_base_url: Option<String>,
+    blob_store_path: Option<PathBuf>,
+) -> PyResult<Vec<ExecutionEvent>> {
+    let mut events = Vec::new();
+    let mut done_received = false;
+
+    loop {
+        let mut state_guard = state.lock().await;
+
+        let broadcast_rx = state_guard
+            .broadcast_rx
+            .as_mut()
+            .ok_or_else(|| to_py_err("Not connected"))?;
+
+        let timeout_ms = if done_received { 50 } else { 100 };
+        let broadcast = tokio::time::timeout(
+            std::time::Duration::from_millis(timeout_ms),
+            broadcast_rx.recv(),
+        )
+        .await;
+
+        match broadcast {
+            Ok(Some(msg)) => {
+                drop(state_guard);
+
+                match msg {
+                    NotebookBroadcast::ExecutionStarted {
+                        cell_id: msg_cell_id,
+                        execution_count: count,
+                    } => {
+                        if msg_cell_id == cell_id {
+                            events.push(ExecutionEvent::execution_started(cell_id, count));
+                        }
+                    }
+                    NotebookBroadcast::Output {
+                        cell_id: msg_cell_id,
+                        output_type,
+                        output_json,
+                        ..
+                    } => {
+                        if msg_cell_id == cell_id {
+                            if let Some(output) = output_resolver::resolve_output_with_type(
+                                &output_type,
+                                &output_json,
+                                &blob_base_url,
+                                &blob_store_path,
+                            )
+                            .await
+                            {
+                                events.push(ExecutionEvent::output(cell_id, output));
+                            }
+                        }
+                    }
+                    NotebookBroadcast::ExecutionDone {
+                        cell_id: msg_cell_id,
+                    } => {
+                        if msg_cell_id == cell_id {
+                            events.push(ExecutionEvent::done(cell_id));
+                            done_received = true;
+                        }
+                    }
+                    NotebookBroadcast::KernelError { error } => {
+                        events.push(ExecutionEvent::error(cell_id, &error));
+                        done_received = true;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(None) => {
+                return Err(to_py_err("Broadcast channel closed"));
+            }
+            Err(_) => {
+                if done_received {
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(events)
 }

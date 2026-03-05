@@ -98,15 +98,18 @@ The session uses a document-first model where cells are stored in an automerge d
 # Create a cell in the document
 cell_id = session.create_cell("x = 10")
 
-# Update cell source
+# Update cell source (full replacement, uses Myers diff internally)
 session.set_source(cell_id, "x = 20")
+
+# Append to cell source (direct CRDT insert, no diff — ideal for streaming)
+session.append_source(cell_id, "\ny = 30")
 
 # Execute by cell ID (daemon reads source from document)
 result = session.execute_cell(cell_id)
 
 # Read cell state
 cell = session.get_cell(cell_id)
-print(cell.source)           # "x = 20"
+print(cell.source)           # "x = 20\ny = 30"
 print(cell.execution_count)  # 1
 
 # List all cells
@@ -114,6 +117,23 @@ cells = session.get_cells()
 
 # Delete a cell
 session.delete_cell(cell_id)
+```
+
+### Streaming Execution
+
+Process outputs incrementally as they arrive from the kernel:
+
+```python
+cell_id = session.create_cell("for i in range(5): print(i)")
+events = session.stream_execute(cell_id)
+
+for event in events:
+    if event.event_type == "execution_started":
+        print(f"Started, count={event.execution_count}")
+    elif event.event_type == "output":
+        print(f"Output: {event.output}")
+    elif event.event_type == "done":
+        print("Done!")
 ```
 
 ### Context Manager
@@ -202,21 +222,41 @@ await session.queue_cell(cell_id)
 # Create a cell in the automerge document
 cell_id = await session.create_cell("x = 10")
 
-# Update cell source
+# Update cell source (full replacement, uses Myers diff internally)
 await session.set_source(cell_id, "x = 20")
+
+# Append to cell source (direct CRDT insert, no diff — ideal for streaming)
+await session.append_source(cell_id, "\ny = 30")
 
 # Execute by cell ID (daemon reads source from document)
 result = await session.execute_cell(cell_id)
 
 # Read cell state
 cell = await session.get_cell(cell_id)
-print(cell.source)  # "x = 20"
+print(cell.source)  # "x = 20\ny = 30"
 
 # List all cells
 cells = await session.get_cells()
 
 # Delete a cell
 await session.delete_cell(cell_id)
+```
+
+### Streaming Execution
+
+Process outputs incrementally as they arrive from the kernel:
+
+```python
+cell_id = await session.create_cell("for i in range(5): print(i)")
+events = await session.stream_execute(cell_id)
+
+for event in events:
+    if event.event_type == "execution_started":
+        print(f"Started, count={event.execution_count}")
+    elif event.event_type == "output":
+        print(f"Output: {event.output}")
+    elif event.event_type == "done":
+        print("Done!")
 ```
 
 ### Async Context Manager
@@ -303,6 +343,21 @@ result.display_data     # List of display_data/execute_result outputs
 result.error            # First error output, or None
 ```
 
+### ExecutionEvent
+
+Returned by `stream_execute()`:
+
+```python
+events = session.stream_execute(cell_id)  # or: await session.stream_execute(cell_id)
+
+for event in events:
+    event.event_type      # "execution_started", "output", "done", "error"
+    event.cell_id         # Cell this event is for
+    event.output          # Output object (only for "output" events)
+    event.execution_count # int (only for "execution_started" events)
+    event.error_message   # str (only for "error" events)
+```
+
 ### Output
 
 Individual outputs from execution:
@@ -366,6 +421,36 @@ This enables:
 - Multiple Python processes sharing a notebook
 - Python scripts interacting with notebooks open in the app
 - Agent workflows with parallel execution
+
+### Agentic Streaming
+
+An agent can stream text into a cell while other clients see it in real-time:
+
+```python
+import asyncio
+import runtimed
+
+async def agent_writes_code():
+    async with runtimed.AsyncSession(notebook_id="shared") as session:
+        await session.start_kernel()
+
+        # Create an empty cell
+        cell_id = await session.create_cell("")
+
+        # Stream tokens into the cell — each append is a CRDT op
+        # that syncs to all connected clients in real-time
+        for token in ["import ", "math\n", "print(", "math.pi", ")"]:
+            await session.append_source(cell_id, token)
+            await asyncio.sleep(0.05)  # Simulate LLM token delay
+
+        # Execute the completed cell and stream outputs
+        events = await session.stream_execute(cell_id)
+        for event in events:
+            if event.event_type == "output":
+                print(f"Result: {event.output.text}")
+
+asyncio.run(agent_writes_code())
+```
 
 ## Error Handling
 

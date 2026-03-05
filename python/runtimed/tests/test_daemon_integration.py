@@ -1861,5 +1861,318 @@ class TestAsyncContextManager:
             pass
 
 
+# ============================================================================
+# Streaming Execution Tests (stream_execute async iterator)
+# ============================================================================
+
+
+class TestStreamExecute:
+    """Test stream_execute() returns events as an async iterator."""
+
+    @pytest.mark.asyncio
+    async def test_stream_execute_yields_events(self, async_session):
+        """stream_execute() yields events as they arrive, not all at once."""
+        await async_session.start_kernel()
+
+        cell_id = await async_session.create_cell(
+            "for i in range(3): print(f'line {i}')"
+        )
+
+        events = []
+        async for event in await async_session.stream_execute(cell_id):
+            events.append(event)
+
+        # Should have received multiple events (outputs + done)
+        assert len(events) >= 2, f"Expected multiple events, got {len(events)}"
+
+        # Should have output events
+        output_events = [e for e in events if e.event_type == "output"]
+        assert len(output_events) >= 1, "Expected at least one output event"
+
+        # Should have a done event
+        done_events = [e for e in events if e.event_type == "done"]
+        assert len(done_events) == 1, "Expected exactly one done event"
+
+    @pytest.mark.asyncio
+    async def test_stream_execute_has_output_events(self, async_session):
+        """stream_execute() yields output events with output data."""
+        await async_session.start_kernel()
+
+        cell_id = await async_session.create_cell(
+            "print('first'); print('second')"
+        )
+
+        output_events = []
+        async for event in await async_session.stream_execute(cell_id):
+            if event.event_type == "output":
+                output_events.append(event)
+
+        # Should have output events
+        assert len(output_events) >= 1, "Expected at least one output event"
+
+        # Output events should have output data
+        for event in output_events:
+            assert event.output is not None, "Output event should have output data"
+
+    @pytest.mark.asyncio
+    async def test_stream_execute_error_in_output(self, async_session):
+        """stream_execute() captures execution errors as output events.
+
+        Python errors (ValueError, etc.) are broadcast as Output events
+        with output_type="error" and ename/evalue/traceback fields.
+        KernelError is only for kernel-level failures (crash, launch).
+        """
+        await async_session.start_kernel()
+
+        cell_id = await async_session.create_cell("raise ValueError('test error')")
+
+        events = []
+        async for event in await async_session.stream_execute(cell_id):
+            events.append(event)
+
+        # Should have output events (error comes through as output)
+        output_events = [e for e in events if e.event_type == "output"]
+        assert len(output_events) >= 1, "Expected at least one output event"
+
+        # The output should contain the error information
+        # Error outputs have output_type="error" with ename/evalue fields
+        error_found = False
+        for event in output_events:
+            if event.output and event.output.output_type == "error":
+                error_found = True
+                assert event.output.ename is not None
+                assert "ValueError" in event.output.ename
+                break
+
+        assert error_found, "Expected an error output with ValueError"
+
+
+class TestSyncStreamExecute:
+    """Test sync Session.stream_execute() returns events as an iterator."""
+
+    def test_sync_stream_execute_yields_events(self, session):
+        """Sync stream_execute() yields events via iterator."""
+        session.start_kernel()
+
+        cell_id = session.create_cell("for i in range(3): print(f'line {i}')")
+
+        events = list(session.stream_execute(cell_id))
+
+        # Should have received multiple events
+        assert len(events) >= 2, f"Expected multiple events, got {len(events)}"
+
+        # Should have output and done events
+        output_events = [e for e in events if e.event_type == "output"]
+        done_events = [e for e in events if e.event_type == "done"]
+        assert len(output_events) >= 1
+        assert len(done_events) == 1
+
+
+# ============================================================================
+# Append Source Tests (incremental code writing)
+# ============================================================================
+
+
+class TestAppendSource:
+    """Test append_source() for incremental code writing (agentic streaming)."""
+
+    @pytest.mark.asyncio
+    async def test_append_source_basic(self, async_session):
+        """append_source() adds text to end of cell source."""
+        await async_session.start_kernel()
+
+        cell_id = await async_session.create_cell("x = 1")
+
+        # Append more code
+        await async_session.append_source(cell_id, "\ny = 2")
+        await async_session.append_source(cell_id, "\nprint(x + y)")
+
+        # Verify source was appended
+        cell = await async_session.get_cell(cell_id)
+        assert "x = 1" in cell.source
+        assert "y = 2" in cell.source
+        assert "print(x + y)" in cell.source
+
+        # Execute and verify
+        result = await async_session.execute_cell(cell_id)
+        assert result.success
+        assert "3" in result.stdout
+
+    @pytest.mark.asyncio
+    async def test_append_source_streaming_tokens(self, async_session):
+        """append_source() can append tokens incrementally (LLM streaming)."""
+        await async_session.start_kernel()
+
+        cell_id = await async_session.create_cell("")
+
+        # Simulate LLM streaming tokens
+        tokens = ["print", "(", "'hello", " ", "world", "'", ")"]
+        for token in tokens:
+            await async_session.append_source(cell_id, token)
+
+        cell = await async_session.get_cell(cell_id)
+        assert cell.source == "print('hello world')"
+
+        result = await async_session.execute_cell(cell_id)
+        assert result.success
+        assert "hello world" in result.stdout
+
+    @pytest.mark.asyncio
+    async def test_append_source_syncs_between_peers(self, two_async_sessions):
+        """append_source() changes sync to other sessions."""
+        s1, s2 = two_async_sessions
+
+        # Create cell in session 1
+        cell_id = await s1.create_cell("a = 1")
+        time.sleep(0.3)  # Allow sync
+
+        # Append in session 1
+        await s1.append_source(cell_id, "\nb = 2")
+        time.sleep(0.3)
+
+        # Session 2 should see the appended source
+        cell = await s2.get_cell(cell_id)
+        assert "a = 1" in cell.source
+        assert "b = 2" in cell.source
+
+
+class TestSyncAppendSource:
+    """Test sync Session.append_source()."""
+
+    def test_sync_append_source_basic(self, session):
+        """Sync append_source() adds text to cell source."""
+        session.start_kernel()
+
+        cell_id = session.create_cell("x = 10")
+        session.append_source(cell_id, "\nprint(x * 2)")
+
+        cell = session.get_cell(cell_id)
+        assert "x = 10" in cell.source
+        assert "print(x * 2)" in cell.source
+
+        result = session.execute_cell(cell_id)
+        assert result.success
+        assert "20" in result.stdout
+
+
+# ============================================================================
+# Subscription Tests (independent event listening)
+# ============================================================================
+
+
+class TestSubscription:
+    """Test subscribe() for independent event listening."""
+
+    @pytest.mark.asyncio
+    async def test_subscribe_receives_execution_events(self, async_session):
+        """subscribe() receives events from cell execution."""
+        await async_session.start_kernel()
+
+        cell_id = await async_session.create_cell("print('subscribed')")
+
+        # Start subscription before execution
+        subscription = async_session.subscribe()
+        received_events = []
+
+        import asyncio
+
+        async def collect_events():
+            async for event in subscription:
+                received_events.append(event)
+                if event.event_type == "done":
+                    break
+
+        # Run collection with timeout
+        collect_task = asyncio.create_task(collect_events())
+
+        # Execute cell
+        await async_session.execute_cell(cell_id)
+
+        # Wait for events with timeout
+        try:
+            await asyncio.wait_for(collect_task, timeout=5.0)
+        except asyncio.TimeoutError:
+            pass  # May timeout if no done event, that's ok
+
+        # Should have received some events
+        assert len(received_events) >= 1, "Expected to receive events via subscription"
+
+    @pytest.mark.asyncio
+    async def test_subscribe_filters_by_event_type(self, async_session):
+        """subscribe(event_types=[...]) filters events."""
+        await async_session.start_kernel()
+
+        cell_id = await async_session.create_cell("print('filtered')")
+
+        # Subscribe only to output events
+        subscription = async_session.subscribe(event_types=["output"])
+
+        import asyncio
+
+        received_events = []
+
+        async def collect_outputs():
+            count = 0
+            async for event in subscription:
+                received_events.append(event)
+                count += 1
+                if count >= 1:  # Just get first output
+                    break
+
+        collect_task = asyncio.create_task(collect_outputs())
+
+        await async_session.execute_cell(cell_id)
+
+        try:
+            await asyncio.wait_for(collect_task, timeout=3.0)
+        except asyncio.TimeoutError:
+            pass
+
+        # All received events should be output type
+        for event in received_events:
+            assert event.event_type == "output", f"Expected only output events, got {event.event_type}"
+
+    @pytest.mark.asyncio
+    async def test_multiple_subscribers(self, async_session):
+        """Multiple subscribers can listen to same execution."""
+        await async_session.start_kernel()
+
+        cell_id = await async_session.create_cell("print('multi-sub')")
+
+        # Create two independent subscriptions
+        sub1 = async_session.subscribe()
+        sub2 = async_session.subscribe()
+
+        import asyncio
+
+        events1, events2 = [], []
+
+        async def collect1():
+            async for event in sub1:
+                events1.append(event)
+                if event.event_type == "done":
+                    break
+
+        async def collect2():
+            async for event in sub2:
+                events2.append(event)
+                if event.event_type == "done":
+                    break
+
+        # Start both collectors
+        task1 = asyncio.create_task(collect1())
+        task2 = asyncio.create_task(collect2())
+
+        # Execute
+        await async_session.execute_cell(cell_id)
+
+        # Wait for both
+        await asyncio.wait_for(asyncio.gather(task1, task2), timeout=5.0)
+
+        # Both should have received events
+        assert len(events1) >= 1, "Subscriber 1 should receive events"
+        assert len(events2) >= 1, "Subscriber 2 should receive events"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

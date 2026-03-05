@@ -259,6 +259,35 @@ impl NotebookDoc {
         Ok(true)
     }
 
+    /// Append text to a cell's source without diffing.
+    ///
+    /// Unlike `update_source` which replaces the entire text (using Myers diff
+    /// internally), this directly inserts characters at the end of the source
+    /// Text CRDT. This is ideal for streaming/agentic use cases where an
+    /// external process is appending tokens incrementally.
+    pub fn append_source(&mut self, cell_id: &str, text: &str) -> Result<bool, AutomergeError> {
+        let cells_id = match self.cells_list_id() {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+        let idx = match self.find_cell_index(&cells_id, cell_id) {
+            Some(i) => i,
+            None => return Ok(false),
+        };
+        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+            Some(o) => o,
+            None => return Ok(false),
+        };
+        let source_id = match self.text_id(&cell_obj, "source") {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+
+        let len = self.doc.text(&source_id)?.len();
+        self.doc.splice_text(&source_id, len, 0, text)?;
+        Ok(true)
+    }
+
     // ── Output management ───────────────────────────────────────────
 
     /// Replace all outputs for a cell.
