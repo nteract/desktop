@@ -131,10 +131,15 @@ fn random_tagline() -> String {
     use std::hash::{BuildHasher, Hasher};
     let index = RandomState::new().build_hasher().finish() as usize % TAGLINES.len();
 
-    // ASCII art with colored brackets like notebook cells
-    let cells = format!("{}{}{}", "[*]".magenta(), "[ ]".blue(), "[▶]".green(),);
-
-    format!("{} {} {}", cells, "Runt:".purple().bold(), TAGLINES[index])
+    // 3-line purple bracket with tagline on middle row
+    format!(
+        "{}\n{} {} {}\n{}",
+        "╭─".purple(),
+        "│".purple(),
+        "Runt:".purple().bold(),
+        TAGLINES[index],
+        "╰─".purple()
+    )
 }
 
 #[derive(Parser)]
