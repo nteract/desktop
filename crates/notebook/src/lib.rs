@@ -3433,6 +3433,52 @@ fn create_window_context(state: NotebookState) -> WindowNotebookContext {
     }
 }
 
+fn clear_notebook_sync_handles(handles: Vec<(String, SharedNotebookSync)>, reason: &'static str) {
+    if handles.is_empty() {
+        return;
+    }
+
+    tauri::async_runtime::spawn(async move {
+        for (label, notebook_sync) in handles {
+            let had_handle = {
+                let mut sync_guard = notebook_sync.lock().await;
+                sync_guard.take().is_some()
+            };
+
+            if had_handle {
+                info!(
+                    "[notebook-sync] Cleared sync handle for window {} ({})",
+                    label, reason
+                );
+            } else {
+                debug!(
+                    "[notebook-sync] Sync handle already cleared for window {} ({})",
+                    label, reason
+                );
+            }
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn clear_all_notebook_sync_handles(registry: &WindowNotebookRegistry, reason: &'static str) {
+    let handles = match registry.contexts.lock() {
+        Ok(contexts) => contexts
+            .iter()
+            .map(|(label, context)| (label.clone(), context.notebook_sync.clone()))
+            .collect(),
+        Err(e) => {
+            warn!(
+                "[notebook-sync] Failed to lock window registry for sync cleanup ({}): {}",
+                reason, e
+            );
+            return;
+        }
+    };
+
+    clear_notebook_sync_handles(handles, reason);
+}
+
 /// Run the notebook Tauri app.
 ///
 /// If `notebook_path` is Some, opens that file. If None, creates a new empty notebook.
@@ -4080,6 +4126,10 @@ pub fn run(
         if let RunEvent::ExitRequested { code, api, .. } = &event {
             if code.is_none() && app_handle.webview_windows().is_empty() {
                 log::info!("[app] Preventing exit after closing last window (macOS)");
+                clear_all_notebook_sync_handles(
+                    &registry_for_window_close,
+                    "macos last-window close",
+                );
                 api.prevent_exit();
             }
         }
@@ -4091,15 +4141,28 @@ pub fn run(
             ..
         } = &event
         {
-            // Don't remove main window from registry - it persists for the app lifetime
-            if label != "main" {
-                if let Ok(mut contexts) = registry_for_window_close.contexts.lock() {
-                    if contexts.remove(label).is_some() {
+            if let Ok(mut contexts) = registry_for_window_close.contexts.lock() {
+                // Keep the main context for session restore, but always clear
+                // its sync handle so daemon peer tracking can evict idle rooms.
+                let closed_handle = if label == "main" {
+                    contexts
+                        .get(label)
+                        .map(|context| context.notebook_sync.clone())
+                } else {
+                    contexts.remove(label).map(|context| {
                         log::info!(
                             "[window] Removed registry entry for closed window: {}",
                             label
                         );
-                    }
+                        context.notebook_sync
+                    })
+                };
+
+                if let Some(notebook_sync) = closed_handle {
+                    clear_notebook_sync_handles(
+                        vec![(label.clone(), notebook_sync)],
+                        "window destroyed",
+                    );
                 }
             }
             refresh_native_menu(app_handle, &registry_for_window_close);
