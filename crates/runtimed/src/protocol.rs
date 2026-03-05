@@ -433,6 +433,16 @@ pub enum NotebookBroadcast {
         comms: Vec<CommSnapshot>,
     },
 
+    /// External file changes were detected and merged into the Automerge doc.
+    /// Broadcast to all connected windows so they can update their UI.
+    FileChanged {
+        /// Updated cells from the merged .ipynb file.
+        cells: Vec<crate::notebook_doc::CellSnapshot>,
+        /// Updated notebook metadata JSON, if changed.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<String>,
+    },
+
     /// Environment progress update during kernel launch.
     ///
     /// Carries rich progress phases (repodata, solve, download, link)

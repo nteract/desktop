@@ -208,6 +208,17 @@ export type DaemonBroadcast =
         channels_changed: boolean;
         deno_changed: boolean;
       };
+    }
+  | {
+      event: "file_changed";
+      cells: {
+        id: string;
+        cell_type: string;
+        source: string;
+        execution_count: string;
+        outputs: string[];
+      }[];
+      metadata?: string;
     };
 
 /** Response types from daemon notebook requests */

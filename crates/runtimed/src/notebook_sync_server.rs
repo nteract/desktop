@@ -26,19 +26,21 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use automerge::sync;
 use log::{debug, error, info, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{broadcast, watch, Mutex, RwLock};
+use tokio::sync::{broadcast, oneshot, watch, Mutex, RwLock};
+
+use notify_debouncer_mini::DebounceEventResult;
 
 use crate::blob_store::BlobStore;
 use crate::comm_state::CommState;
 use crate::connection::{self, NotebookFrameType};
 use crate::kernel_manager::{DenoLaunchedConfig, LaunchedEnvConfig, RoomKernel};
-use crate::notebook_doc::{notebook_doc_filename, NotebookDoc};
+use crate::notebook_doc::{notebook_doc_filename, CellSnapshot, NotebookDoc};
 use crate::notebook_metadata::{NotebookMetadataSnapshot, NOTEBOOK_METADATA_KEY};
 use crate::protocol::{EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse};
 
@@ -481,6 +483,13 @@ pub struct NotebookRoom {
     /// Stores active comms so new windows can sync widget models.
     /// Arc-wrapped so it can be shared with the kernel's iopub task.
     pub comm_state: Arc<CommState>,
+    /// Timestamp (ms since epoch) of last self-write to the .ipynb file.
+    /// Used to skip file watcher events triggered by our own saves.
+    pub last_self_write: Arc<AtomicU64>,
+    /// Shutdown signal for the file watcher task.
+    /// Wrapped in Mutex to allow setting after Arc creation.
+    /// Sent when the room is evicted to stop the watcher.
+    watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
 }
 
 impl NotebookRoom {
@@ -539,6 +548,8 @@ impl NotebookRoom {
             working_dir: Arc::new(RwLock::new(None)),
             auto_launch_at: Arc::new(RwLock::new(None)),
             comm_state: Arc::new(CommState::new()),
+            last_self_write: Arc::new(AtomicU64::new(0)),
+            watcher_shutdown_tx: Mutex::new(None),
         }
     }
 
@@ -572,6 +583,8 @@ impl NotebookRoom {
             working_dir: Arc::new(RwLock::new(None)),
             auto_launch_at: Arc::new(RwLock::new(None)),
             comm_state: Arc::new(CommState::new()),
+            last_self_write: Arc::new(AtomicU64::new(0)),
+            watcher_shutdown_tx: Mutex::new(None),
         }
     }
 
@@ -607,6 +620,8 @@ pub type NotebookRooms = Arc<Mutex<HashMap<String, Arc<NotebookRoom>>>>;
 /// fresh room if one doesn't exist. The .ipynb file is the source of truth -
 /// the first client to connect will populate the Automerge doc from their
 /// local file.
+///
+/// For .ipynb files, a file watcher is spawned to detect external changes.
 pub fn get_or_create_room(
     rooms: &mut HashMap<String, Arc<NotebookRoom>>,
     notebook_id: &str,
@@ -617,7 +632,21 @@ pub fn get_or_create_room(
         .entry(notebook_id.to_string())
         .or_insert_with(|| {
             info!("[notebook-sync] Creating room for {}", notebook_id);
-            Arc::new(NotebookRoom::new_fresh(notebook_id, docs_dir, blob_store))
+            let room = Arc::new(NotebookRoom::new_fresh(notebook_id, docs_dir, blob_store));
+
+            // Spawn file watcher for .ipynb files (not for untitled notebooks with UUID IDs)
+            if !is_untitled_notebook(notebook_id) {
+                let notebook_path = PathBuf::from(notebook_id);
+                if notebook_path.extension().is_some_and(|ext| ext == "ipynb") {
+                    let shutdown_tx = spawn_notebook_file_watcher(notebook_path, room.clone());
+                    // Store the shutdown sender (blocking lock is OK here, room is new)
+                    if let Ok(mut guard) = room.watcher_shutdown_tx.try_lock() {
+                        *guard = Some(shutdown_tx);
+                    }
+                }
+            }
+
+            room
         })
         .clone()
 }
@@ -787,6 +816,17 @@ where
                         );
                     }
                 }
+
+                // Stop file watcher if running
+                if let Some(shutdown_tx) = room_for_eviction.watcher_shutdown_tx.lock().await.take()
+                {
+                    let _ = shutdown_tx.send(());
+                    debug!(
+                        "[notebook-sync] Stopped file watcher for {}",
+                        notebook_id_for_eviction
+                    );
+                }
+
                 rooms_guard.remove(&notebook_id_for_eviction);
                 info!(
                     "[notebook-sync] Evicted room {} (idle timeout)",
@@ -2437,6 +2477,13 @@ async fn save_notebook_to_disk(room: &NotebookRoom) -> Result<(), String> {
         .await
         .map_err(|e| format!("Failed to write notebook: {e}"))?;
 
+    // Update last_self_write timestamp so file watcher skips this change
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    room.last_self_write.store(now, Ordering::Relaxed);
+
     info!(
         "[notebook-sync] Saved notebook to disk: {:?} ({} cells)",
         notebook_path, cell_count
@@ -2621,6 +2668,332 @@ pub(crate) fn persist_notebook_bytes(data: &[u8], path: &Path) {
     if let Err(e) = std::fs::write(path, data) {
         warn!("[notebook-sync] Failed to save notebook doc: {}", e);
     }
+}
+
+// =============================================================================
+// Notebook File Watching
+// =============================================================================
+//
+// Watch .ipynb files for external changes (git, VS Code, other editors).
+// When changes are detected, merge them into the Automerge doc and broadcast.
+
+/// Time window (ms) to skip file change events after our own writes.
+const SELF_WRITE_SKIP_WINDOW_MS: u64 = 100;
+
+/// Parse cells from a Jupyter notebook JSON object.
+///
+/// The source field can be either a string or an array of strings (lines).
+/// We normalize it to a single string.
+fn parse_cells_from_ipynb(json: &serde_json::Value) -> Vec<CellSnapshot> {
+    let cells = match json.get("cells").and_then(|c| c.as_array()) {
+        Some(c) => c,
+        None => return vec![],
+    };
+
+    cells
+        .iter()
+        .filter_map(|cell| {
+            let id = cell.get("id").and_then(|v| v.as_str())?.to_string();
+            let cell_type = cell
+                .get("cell_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("code")
+                .to_string();
+
+            // Source can be a string or array of strings
+            let source = match cell.get("source") {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(serde_json::Value::Array(arr)) => arr
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(""),
+                _ => String::new(),
+            };
+
+            // Execution count: number or null
+            let execution_count = match cell.get("execution_count") {
+                Some(serde_json::Value::Number(n)) => n.to_string(),
+                _ => "null".to_string(),
+            };
+
+            // Outputs: keep as JSON strings
+            let outputs = cell
+                .get("outputs")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .map(|o| serde_json::to_string(o).unwrap_or_default())
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            Some(CellSnapshot {
+                id,
+                cell_type,
+                source,
+                execution_count,
+                outputs,
+            })
+        })
+        .collect()
+}
+
+/// Apply external .ipynb changes to the Automerge doc.
+///
+/// Compares cells by ID and:
+/// - Adds new cells
+/// - Removes deleted cells
+/// - Updates source for modified cells (preserving outputs if kernel is running)
+///
+/// Returns true if any changes were applied.
+async fn apply_ipynb_changes(
+    room: &NotebookRoom,
+    external_cells: &[CellSnapshot],
+    has_running_kernel: bool,
+) -> bool {
+    let mut doc = room.doc.write().await;
+    let current_cells = doc.get_cells();
+
+    // Build maps for comparison
+    let current_map: HashMap<&str, &CellSnapshot> =
+        current_cells.iter().map(|c| (c.id.as_str(), c)).collect();
+    let external_map: HashMap<&str, &CellSnapshot> =
+        external_cells.iter().map(|c| (c.id.as_str(), c)).collect();
+
+    let mut changed = false;
+
+    // Find cells to delete (in current but not in external)
+    let cells_to_delete: Vec<String> = current_cells
+        .iter()
+        .filter(|c| !external_map.contains_key(c.id.as_str()))
+        .map(|c| c.id.clone())
+        .collect();
+
+    for cell_id in cells_to_delete {
+        debug!("[notebook-watch] Deleting cell: {}", cell_id);
+        if let Ok(true) = doc.delete_cell(&cell_id) {
+            changed = true;
+        }
+    }
+
+    // Process external cells in order (add new or update existing)
+    for (index, ext_cell) in external_cells.iter().enumerate() {
+        if let Some(current_cell) = current_map.get(ext_cell.id.as_str()) {
+            // Cell exists - check if source changed
+            if current_cell.source != ext_cell.source {
+                debug!("[notebook-watch] Updating source for cell: {}", ext_cell.id);
+                if let Ok(true) = doc.update_source(&ext_cell.id, &ext_cell.source) {
+                    changed = true;
+                }
+            }
+
+            // Update cell type if changed
+            if current_cell.cell_type != ext_cell.cell_type {
+                debug!(
+                    "[notebook-watch] Cell type changed for {}: {} -> {}",
+                    ext_cell.id, current_cell.cell_type, ext_cell.cell_type
+                );
+                // Cell type changes require recreating the cell (rare case)
+                // For now, just log - full support would need more work
+            }
+
+            // Preserve outputs if kernel is running, otherwise sync from file
+            if !has_running_kernel && current_cell.outputs != ext_cell.outputs {
+                debug!(
+                    "[notebook-watch] Updating outputs for cell: {}",
+                    ext_cell.id
+                );
+                if let Ok(true) = doc.set_outputs(&ext_cell.id, &ext_cell.outputs) {
+                    changed = true;
+                }
+            }
+        } else {
+            // New cell - add it
+            debug!(
+                "[notebook-watch] Adding new cell at index {}: {}",
+                index, ext_cell.id
+            );
+            if doc
+                .add_cell(index, &ext_cell.id, &ext_cell.cell_type)
+                .is_ok()
+            {
+                changed = true;
+                // Set the source
+                let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
+                // Set outputs (if no kernel running)
+                if !has_running_kernel {
+                    let _ = doc.set_outputs(&ext_cell.id, &ext_cell.outputs);
+                }
+            }
+        }
+    }
+
+    changed
+}
+
+/// Spawn a file watcher for a notebook's .ipynb file.
+///
+/// Watches for external changes and merges them into the Automerge doc.
+/// Returns a shutdown sender to stop the watcher when the room is evicted.
+pub(crate) fn spawn_notebook_file_watcher(
+    notebook_path: PathBuf,
+    room: Arc<NotebookRoom>,
+) -> oneshot::Sender<()> {
+    let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+
+    tokio::spawn(async move {
+        // Determine what path to watch
+        let watch_path = if notebook_path.exists() {
+            notebook_path.clone()
+        } else if let Some(parent) = notebook_path.parent() {
+            // Watch parent directory if file doesn't exist yet
+            if !parent.exists() {
+                warn!(
+                    "[notebook-watch] Parent dir doesn't exist for {:?}",
+                    notebook_path
+                );
+                return;
+            }
+            parent.to_path_buf()
+        } else {
+            warn!(
+                "[notebook-watch] Cannot determine watch path for {:?}",
+                notebook_path
+            );
+            return;
+        };
+
+        // Create tokio mpsc channel to bridge from notify callback thread
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<DebounceEventResult>(16);
+
+        // Create debouncer with 500ms window (same as settings.json)
+        let debouncer_result = notify_debouncer_mini::new_debouncer(
+            std::time::Duration::from_millis(500),
+            move |res: DebounceEventResult| {
+                let _ = tx.blocking_send(res);
+            },
+        );
+
+        let mut debouncer = match debouncer_result {
+            Ok(d) => d,
+            Err(e) => {
+                error!(
+                    "[notebook-watch] Failed to create file watcher for {:?}: {}",
+                    notebook_path, e
+                );
+                return;
+            }
+        };
+
+        if let Err(e) = debouncer
+            .watcher()
+            .watch(&watch_path, notify::RecursiveMode::NonRecursive)
+        {
+            error!("[notebook-watch] Failed to watch {:?}: {}", watch_path, e);
+            return;
+        }
+
+        info!(
+            "[notebook-watch] Watching {:?} for external changes",
+            notebook_path
+        );
+
+        loop {
+            tokio::select! {
+                Some(result) = rx.recv() => {
+                    match result {
+                        Ok(events) => {
+                            // Check if any event is for our notebook file
+                            let relevant = events.iter().any(|e| e.path == notebook_path);
+                            if !relevant {
+                                continue;
+                            }
+
+                            // Check if this is a self-write (within skip window of our last save)
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0);
+                            let last_write = room.last_self_write.load(Ordering::Relaxed);
+                            if now.saturating_sub(last_write) < SELF_WRITE_SKIP_WINDOW_MS {
+                                debug!(
+                                    "[notebook-watch] Skipping self-write event for {:?}",
+                                    notebook_path
+                                );
+                                continue;
+                            }
+
+                            // Read and parse the file
+                            let contents = match tokio::fs::read_to_string(&notebook_path).await {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    // File may be deleted or being written
+                                    debug!(
+                                        "[notebook-watch] Cannot read {:?}: {}",
+                                        notebook_path, e
+                                    );
+                                    continue;
+                                }
+                            };
+
+                            let json: serde_json::Value = match serde_json::from_str(&contents) {
+                                Ok(j) => j,
+                                Err(e) => {
+                                    // Partial write or invalid JSON - try again next event
+                                    debug!(
+                                        "[notebook-watch] Cannot parse {:?}: {}",
+                                        notebook_path, e
+                                    );
+                                    continue;
+                                }
+                            };
+
+                            // Parse cells from the .ipynb
+                            let external_cells = parse_cells_from_ipynb(&json);
+
+                            // Check if kernel is running (to preserve outputs)
+                            let has_kernel = room.has_kernel().await;
+
+                            // Apply changes to Automerge doc
+                            let changed = apply_ipynb_changes(&room, &external_cells, has_kernel).await;
+
+                            if changed {
+                                info!(
+                                    "[notebook-watch] Applied external changes from {:?}",
+                                    notebook_path
+                                );
+
+                                // Notify peers of the change
+                                let _ = room.changed_tx.send(());
+
+                                // Broadcast FileChanged to all connected clients
+                                let cells = {
+                                    let doc = room.doc.read().await;
+                                    doc.get_cells()
+                                };
+                                let _ = room.kernel_broadcast_tx.send(
+                                    NotebookBroadcast::FileChanged {
+                                        cells,
+                                        metadata: None, // TODO: handle metadata changes
+                                    }
+                                );
+                            }
+                        }
+                        Err(errs) => {
+                            warn!("[notebook-watch] Watch error for {:?}: {:?}", notebook_path, errs);
+                        }
+                    }
+                }
+                _ = &mut shutdown_rx => {
+                    info!("[notebook-watch] Shutting down watcher for {:?}", notebook_path);
+                    break;
+                }
+            }
+        }
+    });
+
+    shutdown_tx
 }
 
 #[cfg(test)]
@@ -3031,6 +3404,8 @@ mod tests {
             working_dir: Arc::new(RwLock::new(None)),
             auto_launch_at: Arc::new(RwLock::new(None)),
             comm_state: Arc::new(crate::comm_state::CommState::new()),
+            last_self_write: Arc::new(AtomicU64::new(0)),
+            watcher_shutdown_tx: Mutex::new(None),
         };
 
         (room, notebook_path)

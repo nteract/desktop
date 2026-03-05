@@ -397,6 +397,20 @@ export function useDaemonKernel({
             break;
           }
 
+          case "file_changed": {
+            // External file changes detected and merged into Automerge doc.
+            // The actual cell data comes through notebook:updated (Automerge sync).
+            // This broadcast is for notification purposes.
+            const fileBroadcast = broadcast as {
+              cells: unknown[];
+              metadata?: string;
+            };
+            logger.info(
+              `[daemon-kernel] External file changes detected (${fileBroadcast.cells.length} cells)`,
+            );
+            break;
+          }
+
           default: {
             // Log unknown events to help debug unexpected broadcast types
             logger.debug(
