@@ -40,7 +40,7 @@ function AddCellButtons({
   onAdd: (type: "code" | "markdown", afterCellId?: string | null) => void;
 }) {
   return (
-    <div className="group/betweener flex h-4 w-full items-center">
+    <div className="group/betweener flex h-4 w-full items-center select-none">
       {/* Gutter spacer - matches cell gutter: action area + ribbon */}
       <div className="flex h-full flex-shrink-0">
         <div className="w-10" />
@@ -51,11 +51,11 @@ function AddCellButtons({
         {/* Thin line appears on hover */}
         <div className="absolute inset-x-0 h-px bg-transparent group-hover/betweener:bg-border transition-colors" />
         {/* Buttons appear on hover */}
-        <div className="flex items-center gap-1 opacity-0 group-hover/betweener:opacity-100 transition-opacity z-10 bg-background px-2">
+        <div className="flex items-center gap-1 opacity-0 group-hover/betweener:opacity-100 transition-opacity z-10 bg-background px-2 select-none">
           <Button
             variant="ghost"
             size="sm"
-            className="h-5 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+            className="h-5 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground select-none"
             onClick={() => onAdd("code", afterCellId)}
           >
             <Plus className="h-3 w-3" />
@@ -64,7 +64,7 @@ function AddCellButtons({
           <Button
             variant="ghost"
             size="sm"
-            className="h-5 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+            className="h-5 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground select-none"
             onClick={() => onAdd("markdown", afterCellId)}
           >
             <Plus className="h-3 w-3" />
@@ -146,6 +146,22 @@ function NotebookViewContent({
 
   // Memoize cell IDs array
   const cellIds = useMemo(() => cells.map((c) => c.id), [cells]);
+
+  // Prevent horizontal scroll drift (can happen during text selection)
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const preventHorizontalScroll = () => {
+      if (container.scrollLeft !== 0) {
+        container.scrollLeft = 0;
+      }
+    };
+
+    container.addEventListener("scroll", preventHorizontalScroll);
+    return () =>
+      container.removeEventListener("scroll", preventHorizontalScroll);
+  }, []);
 
   // Scroll the current search match cell into view
   useEffect(() => {
@@ -273,7 +289,8 @@ function NotebookViewContent({
   return (
     <div
       ref={containerRef}
-      className="flex-1 overflow-y-auto overflow-x-hidden py-4 pl-8 pr-4"
+      className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain py-4 pl-8 pr-4"
+      style={{ contain: "paint" }}
     >
       {cells.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">

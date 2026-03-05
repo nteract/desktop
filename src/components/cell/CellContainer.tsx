@@ -80,7 +80,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         onDrop={onDrop}
       >
         {/* Gutter area - action content only (ribbon moves to content rows for segmented) */}
-        <div className="flex w-10 flex-shrink-0 flex-col items-end justify-start gap-0.5 pr-1 pt-3">
+        <div className="flex w-10 flex-shrink-0 flex-col items-end justify-start gap-0.5 pr-1 pt-3 select-none">
           {gutterContent}
         </div>
         {/* Cell content with ribbon */}
@@ -132,7 +132,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         {rightGutterContent && (
           <div
             className={cn(
-              "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-3",
+              "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-3 select-none",
               "opacity-100 transition-opacity duration-150",
               "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
               isFocused && "sm:opacity-100",
