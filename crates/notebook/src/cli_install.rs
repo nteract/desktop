@@ -1,9 +1,15 @@
-//! CLI installation module for copying the bundled runt binary to PATH
+//! CLI installation module for symlinking the bundled runt binary to PATH
 //! and creating the channel-specific notebook shorthand wrapper script.
+//!
+//! On Unix systems, we create a symlink so the CLI automatically stays in sync
+//! when the app is updated. On Windows, we copy the binary since symlinks
+//! require admin privileges and have compatibility issues.
 
 use runt_workspace::{cli_command_name, cli_notebook_alias_name};
 use std::fs;
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -149,18 +155,22 @@ fn try_install_direct(
     runt_dest: &std::path::Path,
     nb_dest: &std::path::Path,
 ) -> Result<(), String> {
-    // Copy runt binary
-    fs::copy(bundled_runt, runt_dest).map_err(|e| format!("Failed to copy runt: {}", e))?;
+    // Remove existing file/symlink if present
+    if runt_dest.exists() || runt_dest.is_symlink() {
+        fs::remove_file(runt_dest)
+            .map_err(|e| format!("Failed to remove existing {}: {}", cli_command_name(), e))?;
+    }
 
-    // Make it executable
+    // On Unix, create a symlink so the CLI stays in sync when the app updates.
+    // On Windows, copy the binary since symlinks require admin and have issues.
     #[cfg(unix)]
     {
-        let mut perms = fs::metadata(runt_dest)
-            .map_err(|e| format!("Failed to get runt permissions: {}", e))?
-            .permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(runt_dest, perms)
-            .map_err(|e| format!("Failed to set runt permissions: {}", e))?;
+        symlink(bundled_runt, runt_dest).map_err(|e| format!("Failed to create symlink: {}", e))?;
+    }
+
+    #[cfg(windows)]
+    {
+        fs::copy(bundled_runt, runt_dest).map_err(|e| format!("Failed to copy runt: {}", e))?;
     }
 
     // Create nb wrapper script
@@ -214,12 +224,13 @@ fn install_with_admin_privileges(
         std::env::temp_dir().join(format!("{}-install-script", cli_notebook_alias_name()));
     create_nb_wrapper(&temp_nb, cli_command_name())?;
 
-    // Build shell commands -- just copy and chmod, no embedded script content.
+    // Build shell commands -- create symlink for runt, copy nb wrapper script.
+    // Using symlink ensures the CLI stays in sync when the app updates.
     // This avoids escaping issues with AppleScript string parsing.
     let commands = format!(
-        "cp '{}' '{}' && chmod 755 '{}' && cp '{}' '{}' && chmod 755 '{}'",
-        bundled_runt.display(),
+        "rm -f '{}' && ln -sf '{}' '{}' && cp '{}' '{}' && chmod 755 '{}'",
         runt_dest.display(),
+        bundled_runt.display(),
         runt_dest.display(),
         temp_nb.display(),
         nb_dest.display(),
