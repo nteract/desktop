@@ -521,8 +521,18 @@ fn main() -> Result<()> {
 fn desktop_app_launch_candidates() -> &'static [&'static str] {
     match runt_workspace::build_channel() {
         runt_workspace::BuildChannel::Stable => &["nteract"],
-        runt_workspace::BuildChannel::Preview => &["nteract-preview", "nteract Preview", "nteract"],
-        runt_workspace::BuildChannel::Nightly => &["nteract-nightly", "nteract Nightly", "nteract"],
+        runt_workspace::BuildChannel::Preview => &[
+            "nteract (Preview)",
+            "nteract-preview",
+            "nteract Preview",
+            "nteract",
+        ],
+        runt_workspace::BuildChannel::Nightly => &[
+            "nteract (Nightly)",
+            "nteract-nightly",
+            "nteract Nightly",
+            "nteract",
+        ],
     }
 }
 

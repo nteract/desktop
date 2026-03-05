@@ -47,8 +47,8 @@ fn desktop_product_name_for(channel: BuildChannel) -> &'static str {
 fn desktop_display_name_for(channel: BuildChannel) -> &'static str {
     match channel {
         BuildChannel::Stable => "nteract",
-        BuildChannel::Preview => "nteract Preview",
-        BuildChannel::Nightly => "nteract Nightly",
+        BuildChannel::Preview => "nteract (Preview)",
+        BuildChannel::Nightly => "nteract (Nightly)",
     }
 }
 
@@ -349,6 +349,15 @@ mod tests {
         assert_eq!(
             desktop_product_name_for(BuildChannel::Nightly),
             "nteract-nightly"
+        );
+        assert_eq!(desktop_display_name_for(BuildChannel::Stable), "nteract");
+        assert_eq!(
+            desktop_display_name_for(BuildChannel::Preview),
+            "nteract (Preview)"
+        );
+        assert_eq!(
+            desktop_display_name_for(BuildChannel::Nightly),
+            "nteract (Nightly)"
         );
 
         assert_eq!(cache_namespace_for(BuildChannel::Stable), "runt");

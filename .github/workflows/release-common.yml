@@ -292,10 +292,10 @@ jobs:
           echo "Setting version to: ${VERSION}"
           CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
           if [ "$CHANNEL" = "preview" ]; then
-            PRODUCT_NAME="nteract-preview"
+            PRODUCT_NAME="nteract (Preview)"
             BUNDLE_ID="org.nteract.desktop.preview"
           elif [ "$CHANNEL" = "nightly" ]; then
-            PRODUCT_NAME="nteract-nightly"
+            PRODUCT_NAME="nteract (Nightly)"
             BUNDLE_ID="org.nteract.desktop.nightly"
           else
             PRODUCT_NAME="nteract"
@@ -442,11 +442,11 @@ jobs:
           $channel = "${{ env.RUNT_BUILD_CHANNEL }}".ToLowerInvariant()
           switch ($channel) {
             "preview" {
-              $productName = "nteract-preview"
+              $productName = "nteract (Preview)"
               $bundleId = "org.nteract.desktop.preview"
             }
             "nightly" {
-              $productName = "nteract-nightly"
+              $productName = "nteract (Nightly)"
               $bundleId = "org.nteract.desktop.nightly"
             }
             default {
@@ -592,10 +592,10 @@ jobs:
           echo "Setting version to: ${VERSION}"
           CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
           if [ "$CHANNEL" = "preview" ]; then
-            PRODUCT_NAME="nteract-preview"
+            PRODUCT_NAME="nteract (Preview)"
             BUNDLE_ID="org.nteract.desktop.preview"
           elif [ "$CHANNEL" = "nightly" ]; then
-            PRODUCT_NAME="nteract-nightly"
+            PRODUCT_NAME="nteract (Nightly)"
             BUNDLE_ID="org.nteract.desktop.nightly"
           else
             PRODUCT_NAME="nteract"
