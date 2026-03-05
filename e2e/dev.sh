@@ -282,13 +282,15 @@ case "${1:-help}" in
       crates/notebook/fixtures/audit-test/1-vanilla.ipynb \
       e2e/specs/prewarmed-uv.spec.js || FAIL=1
 
-    $0 test-fixture \
-      crates/notebook/fixtures/audit-test/2-uv-inline.ipynb \
-      e2e/specs/uv-inline.spec.js || FAIL=1
-
+    # Run trust-dialog-dismiss BEFORE uv-inline on same notebook
+    # so it runs against untrusted state (trust signature persists on disk)
     $0 test-fixture \
       crates/notebook/fixtures/audit-test/2-uv-inline.ipynb \
       e2e/specs/trust-dialog-dismiss.spec.js || FAIL=1
+
+    $0 test-fixture \
+      crates/notebook/fixtures/audit-test/2-uv-inline.ipynb \
+      e2e/specs/uv-inline.spec.js || FAIL=1
 
     $0 test-fixture \
       crates/notebook/fixtures/audit-test/3-conda-inline.ipynb \
