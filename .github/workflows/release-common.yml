@@ -54,6 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.VERSION }}
+      timestamp: ${{ steps.version.outputs.TIMESTAMP }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,6 +67,7 @@ jobs:
           VERSION="${CURRENT_VERSION}-${{ inputs.version_suffix }}.${TIMESTAMP}"
           echo "Setting version to: ${VERSION}"
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+          echo "TIMESTAMP=${TIMESTAMP}" >> $GITHUB_OUTPUT
 
   build-linux:
     name: Build Linux Executables
@@ -654,6 +656,7 @@ jobs:
   build-python-wheels:
     name: Build Python Wheels (${{ matrix.platform.target }})
     runs-on: ${{ matrix.platform.runner }}
+    needs: compute-version
     strategy:
       matrix:
         platform:
@@ -681,7 +684,8 @@ jobs:
           MAJOR_MINOR=$(echo "$CURRENT_VERSION" | sed 's/\.[0-9]*$//')
           PATCH=$(echo "$CURRENT_VERSION" | grep -o '[0-9]*$')
           NEXT_PATCH=$((PATCH + 1))
-          DEV_VERSION="${MAJOR_MINOR}.${NEXT_PATCH}a$(date -u +%Y%m%d%H%M)"
+          TIMESTAMP="${{ needs.compute-version.outputs.timestamp }}"
+          DEV_VERSION="${MAJOR_MINOR}.${NEXT_PATCH}a${TIMESTAMP}"
           echo "Setting Python version to: ${DEV_VERSION}"
           sed -i.bak "s/^version = .*/version = \"${DEV_VERSION}\"/" python/runtimed/pyproject.toml
 
@@ -697,7 +701,8 @@ jobs:
           $parts = $currentVersion.Split('.')
           $parts[2] = [string]([int]$parts[2] + 1)
           $nextVersion = $parts -join '.'
-          $devVersion = "${nextVersion}a$(Get-Date -Format 'yyyyMMddHHmm' -AsUTC)"
+          $timestamp = "${{ needs.compute-version.outputs.timestamp }}"
+          $devVersion = "${nextVersion}a${timestamp}"
           Write-Host "Setting Python version to: $devVersion"
           $content = $content -replace 'version = "[^"]+"', "version = `"$devVersion`""
           Set-Content python/runtimed/pyproject.toml $content -NoNewline
