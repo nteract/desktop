@@ -16,12 +16,12 @@ describe("ReportIssueDialog", () => {
 
     fireEvent.click(screen.getByTestId("report-issue-submit"));
 
-    expect(
-      await screen.findByTestId("report-issue-title-error"),
-    ).toHaveTextContent("Title is required.");
-    expect(
-      await screen.findByTestId("report-issue-description-error"),
-    ).toHaveTextContent("Description is required.");
+    const titleError = await screen.findByTestId("report-issue-title-error");
+    const descriptionError = await screen.findByTestId(
+      "report-issue-description-error",
+    );
+    expect(titleError.textContent).toContain("Title is required.");
+    expect(descriptionError.textContent).toContain("Description is required.");
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
@@ -51,11 +51,10 @@ describe("ReportIssueDialog", () => {
     fireEvent.click(screen.getByTestId("report-issue-submit"));
 
     await waitFor(() => {
-      expect(
-        screen.getByTestId("report-issue-manual-copy"),
-      ).toBeInTheDocument();
+      expect(screen.queryByTestId("report-issue-manual-copy")).not.toBeNull();
     });
-    expect(screen.getByTestId("report-issue-manual-copy")).toHaveTextContent(
+    const fallback = screen.getByTestId("report-issue-manual-copy");
+    expect(fallback.textContent).toContain(
       "Clipboard write failed. Copy manually.",
     );
     expect(

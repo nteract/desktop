@@ -3,8 +3,8 @@ import { submitIssueReport } from "./reportIssue";
 
 describe("submitIssueReport", () => {
   it("opens a prefilled GitHub issue URL on happy path", async () => {
-    const openIssueUrl = vi.fn();
-    const copyToClipboard = vi.fn();
+    const openIssueUrl = vi.fn((_: string) => {});
+    const copyToClipboard = vi.fn(async (_: string) => {});
 
     const result = await submitIssueReport(
       {
@@ -34,8 +34,8 @@ describe("submitIssueReport", () => {
   });
 
   it("uses clipboard + minimal issue URL when prefill is oversized", async () => {
-    const openIssueUrl = vi.fn();
-    const copyToClipboard = vi.fn(async () => {});
+    const openIssueUrl = vi.fn((_: string) => {});
+    const copyToClipboard = vi.fn(async (_: string) => {});
     const diagnostics = "x".repeat(1000);
 
     const result = await submitIssueReport(
@@ -65,8 +65,8 @@ describe("submitIssueReport", () => {
   });
 
   it("returns manual-copy fallback details when clipboard write fails", async () => {
-    const openIssueUrl = vi.fn();
-    const copyToClipboard = vi.fn(async () => {
+    const openIssueUrl = vi.fn((_: string) => {});
+    const copyToClipboard = vi.fn(async (_: string) => {
       throw new Error("clipboard denied");
     });
 
