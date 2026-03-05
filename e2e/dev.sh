@@ -275,9 +275,40 @@ case "${1:-help}" in
     ;;
 
   test-fixtures)
-    # Placeholder - tests need to be added back
-    echo "No fixture tests defined yet."
-    echo "Run individual tests with: ./e2e/dev.sh test-fixture <notebook> <spec>"
+    # Run all fixture tests (each gets a fresh app instance)
+    FAIL=0
+
+    $0 test-fixture \
+      crates/notebook/fixtures/audit-test/1-vanilla.ipynb \
+      e2e/specs/prewarmed-uv.spec.js || FAIL=1
+
+    $0 test-fixture \
+      crates/notebook/fixtures/audit-test/2-uv-inline.ipynb \
+      e2e/specs/uv-inline.spec.js || FAIL=1
+
+    $0 test-fixture \
+      crates/notebook/fixtures/audit-test/2-uv-inline.ipynb \
+      e2e/specs/trust-dialog-dismiss.spec.js || FAIL=1
+
+    $0 test-fixture \
+      crates/notebook/fixtures/audit-test/3-conda-inline.ipynb \
+      e2e/specs/conda-inline.spec.js || FAIL=1
+
+    $0 test-fixture \
+      crates/notebook/fixtures/audit-test/10-deno.ipynb \
+      e2e/specs/deno.spec.js || FAIL=1
+
+    $0 test-fixture \
+      crates/notebook/fixtures/audit-test/pyproject-project/5-pyproject.ipynb \
+      e2e/specs/uv-pyproject.spec.js || FAIL=1
+
+    if [ $FAIL -eq 1 ]; then
+      echo ""
+      echo "Some fixture tests failed"
+      exit 1
+    fi
+    echo ""
+    echo "All fixture tests passed"
     exit 0
     ;;
 

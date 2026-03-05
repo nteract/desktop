@@ -33,6 +33,7 @@ const FIXTURE_SPECS = [
   "conda-inline.spec.js",
   "deno.spec.js",
   "prewarmed-uv.spec.js",
+  "trust-dialog-dismiss.spec.js",
   "untitled-pyproject.spec.js", // Requires working dir to be pyproject fixture directory
   "uv-inline.spec.js",
   "uv-pyproject.spec.js",
