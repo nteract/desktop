@@ -205,6 +205,42 @@
 
 ---
 
+## 7) ipywidgets do not render after successful cell execution
+- Severity: **High**
+- Confidence: **High**
+
+### Reproduction
+1. Open `notebooks/ipywidgets-demo.ipynb` from a working app instance (kernel can reach Idle).
+2. Execute import cell:
+   - `import ipywidgets as widgets`
+   - `from IPython.display import display`
+3. Execute widget cell:
+   - `widgets.Text(...)`
+4. Wait 15+ seconds.
+
+### Expected
+- Widget output area appears below the executed cell with an interactive control (e.g., text input box).
+
+### Actual
+- Cell executes, but no widget output is rendered.
+- No interactive control appears.
+
+### Evidence
+- `qa/nteract-stable-v1.4.1-stable.202603052018/screenshots/37-ipywidgets-open-working-instance.webp`
+- `qa/nteract-stable-v1.4.1-stable.202603052018/screenshots/38-ipywidgets-import-cell-executed.webp`
+- `qa/nteract-stable-v1.4.1-stable.202603052018/screenshots/39-ipywidgets-text-cell-executed.webp`
+- `qa/nteract-stable-v1.4.1-stable.202603052018/screenshots/40-ipywidgets-no-output-after-wait.webp`
+- `qa/nteract-stable-v1.4.1-stable.202603052018/screenshots/41-ipywidgets-final-no-render.webp`
+
+### Suspected root cause
+- Widget MIME output / comm handshake path is likely broken in the execution pipeline.
+- Candidate areas:
+  - widget output routing/bridge in `src/components/cell/OutputArea.tsx` (`hasWidgetOutputs`, `CommBridgeManager`, iframe message bridge)
+  - widget comm forwarding in `apps/notebook/src/hooks/useDaemonKernel.ts` (comm/comm_sync conversion)
+  - widget renderer registration in `apps/notebook/src/App.tsx` (`application/vnd.jupyter.widget-view+json`).
+
+---
+
 ## Additional observations (working behavior)
 - UV trust dialog and startup worked after daemon was running:
   - `.../09-uv-trust-dialog-working-reference.webp`
@@ -250,7 +286,8 @@
 ## Note on same-notebook multi-window sync testing
 - Explicit same-file two-window sync (source/output propagation between two windows on one notebook path) could not be exercised because this build appears to enforce single-window-per-file behavior.
 
-## Inconclusive investigation (not counted as confirmed bug)
-- `ipywidgets-demo.ipynb` showed unstable behavior across sessions (at times cells appeared stuck in checking/executing states), but strict reproduction from a clean, deterministic sequence was not completed conclusively.
-- Because of this inconsistency, no ipywidgets-specific defect is currently counted as a confirmed issue in this report.
+## Secondary unstable behavior observed (separate from confirmed widget-render bug)
+- Launching additional app instances with alternate isolated state while another instance is running occasionally produced reconnect errors of the form:
+  - `update_source: Cell not found: <cell-id>`
+- This appears tied to multi-instance/session-state interactions and was not fully minimized into a separate confirmed defect.
 
