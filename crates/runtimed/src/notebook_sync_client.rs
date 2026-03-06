@@ -1611,11 +1611,14 @@ where
                     .get(&cell_obj, "id")
                     .ok()
                     .flatten()
-                    .and_then(|(v, _)| match v {
+                    .and_then(|(v, id)| match v {
                         automerge::Value::Scalar(s) => match s.as_ref() {
                             automerge::ScalarValue::Str(s) => Some(s.to_string()),
                             _ => None,
                         },
+                        automerge::Value::Object(automerge::ObjType::Text) => {
+                            self.doc.text(&id).ok()
+                        }
                         _ => None,
                     })
                     .as_deref()

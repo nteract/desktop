@@ -748,7 +748,10 @@ impl NotebookDoc {
 
 // ── Free helpers ─────────────────────────────────────────────────────
 
-/// Read a scalar string from any Automerge object by key.
+/// Read a string from any Automerge object by key.
+///
+/// Handles both scalar `Str` values (created by Rust) and `Text` CRDT objects
+/// (created by the JS frontend when it uses object literals with `insertAt`).
 fn read_str<O: AsRef<automerge::ObjId>, P: Into<automerge::Prop>>(
     doc: &AutoCommit,
     obj: O,
@@ -757,11 +760,12 @@ fn read_str<O: AsRef<automerge::ObjId>, P: Into<automerge::Prop>>(
     doc.get(obj, prop)
         .ok()
         .flatten()
-        .and_then(|(value, _)| match value {
+        .and_then(|(value, id)| match value {
             automerge::Value::Scalar(s) => match s.as_ref() {
                 automerge::ScalarValue::Str(s) => Some(s.to_string()),
                 _ => None,
             },
+            automerge::Value::Object(ObjType::Text) => doc.text(&id).ok(),
             _ => None,
         })
 }
