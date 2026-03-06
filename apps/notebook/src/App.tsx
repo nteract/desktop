@@ -36,6 +36,7 @@ import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
 import { KERNEL_STATUS } from "./lib/kernel-status";
 import { logger } from "./lib/logger";
+import { useDetectRuntime } from "./lib/notebook-metadata";
 import type { JupyterMessage } from "./types";
 
 /** MIME bundle type for page payloads */
@@ -142,15 +143,10 @@ function AppContent() {
   // Track pending kernel start that was blocked by trust dialog
   const pendingKernelStartRef = useRef(false);
 
-  // Notebook runtime type (python or deno)
-  const [runtime, setRuntime] = useState<"python" | "deno">("python");
-
-  // Load runtime from notebook metadata on mount
-  useEffect(() => {
-    invoke<string>("get_notebook_runtime").then((r) => {
-      setRuntime(r as "python" | "deno");
-    });
-  }, []);
+  // Notebook runtime type — reactive read from WASM Automerge doc.
+  // Re-renders automatically when metadata changes (bootstrap, sync, writes).
+  const detectedRuntime = useDetectRuntime();
+  const runtime = detectedRuntime ?? "python";
 
   // Auto-clear justSynced after 3 seconds
   useEffect(() => {

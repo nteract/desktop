@@ -1,7 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useState } from "react";
 import { logger } from "../lib/logger";
+import {
+  addCondaDependency as addCondaDepWasm,
+  clearCondaSection,
+  removeCondaDependency as removeCondaDepWasm,
+  setCondaChannels as setCondaChannelsWasm,
+  setCondaPython as setCondaPythonWasm,
+  useCondaDeps,
+} from "../lib/notebook-metadata";
 import type { PixiInfo } from "../types";
 
 export interface CondaDependencies {
@@ -42,9 +49,6 @@ export type CondaSyncState =
   | { status: "dirty" };
 
 export function useCondaDependencies() {
-  const [dependencies, setDependencies] = useState<CondaDependencies | null>(
-    null,
-  );
   const [loading, setLoading] = useState(false);
   // Track if deps were synced to a running kernel (user may need to restart for some changes)
   const [syncedWhileRunning, setSyncedWhileRunning] = useState(false);
@@ -63,16 +67,16 @@ export function useCondaDependencies() {
   const [environmentYmlDeps, setEnvironmentYmlDeps] =
     useState<EnvironmentYmlDeps | null>(null);
 
-  const loadDependencies = useCallback(async () => {
-    try {
-      const deps = await invoke<CondaDependencies | null>(
-        "get_conda_dependencies",
-      );
-      setDependencies(deps);
-    } catch (e) {
-      logger.error("Failed to load conda dependencies:", e);
-    }
-  }, []);
+  // Reactive read from the WASM Automerge doc via useSyncExternalStore.
+  // Re-renders automatically when the doc changes (bootstrap, sync, writes).
+  const condaDeps = useCondaDeps();
+  const dependencies = condaDeps
+    ? {
+        dependencies: condaDeps.dependencies,
+        channels: condaDeps.channels,
+        python: condaDeps.python,
+      }
+    : null;
 
   // Load full environment.yml dependencies
   const loadEnvironmentYmlDeps = useCallback(async () => {
@@ -86,25 +90,13 @@ export function useCondaDependencies() {
     }
   }, []);
 
-  // Load dependencies and detect environment.yml and pixi.toml on mount
+  // Detect environment.yml and pixi.toml on mount
   useEffect(() => {
-    loadDependencies();
     invoke<EnvironmentYmlInfo | null>("detect_environment_yml").then(
       setEnvironmentYmlInfo,
     );
     invoke<PixiInfo | null>("detect_pixi_toml").then(setPixiInfo);
-  }, [loadDependencies]);
-
-  // Re-load when metadata is synced from another window
-  useEffect(() => {
-    const webview = getCurrentWebview();
-    const unlisten = webview.listen("notebook:metadata_updated", () => {
-      loadDependencies();
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, [loadDependencies]);
+  }, []);
 
   // Load environment.yml deps when we detect one
   useEffect(() => {
@@ -159,11 +151,8 @@ export function useCondaDependencies() {
       if (!pkg.trim()) return;
       setLoading(true);
       try {
-        await invoke("add_conda_dependency", { package: pkg.trim() });
-        await loadDependencies();
-        // Re-sign to keep notebook trusted after user modification
+        await addCondaDepWasm(pkg.trim());
         await resignTrust();
-        // Check sync state — UI will show "Sync Now" if dirty
         await checkSyncState();
       } catch (e) {
         logger.error("Failed to add conda dependency:", e);
@@ -171,18 +160,15 @@ export function useCondaDependencies() {
         setLoading(false);
       }
     },
-    [loadDependencies, resignTrust, checkSyncState],
+    [resignTrust, checkSyncState],
   );
 
   const removeDependency = useCallback(
     async (pkg: string) => {
       setLoading(true);
       try {
-        await invoke("remove_conda_dependency", { package: pkg });
-        await loadDependencies();
-        // Re-sign to keep notebook trusted after user modification
+        await removeCondaDepWasm(pkg);
         await resignTrust();
-        // Check sync state — removing a dep doesn't uninstall from running kernel
         await checkSyncState();
       } catch (e) {
         logger.error("Failed to remove conda dependency:", e);
@@ -190,22 +176,21 @@ export function useCondaDependencies() {
         setLoading(false);
       }
     },
-    [loadDependencies, resignTrust, checkSyncState],
+    [resignTrust, checkSyncState],
   );
 
   // Remove the entire conda dependency section from notebook metadata
   const clearAllDependencies = useCallback(async () => {
     setLoading(true);
     try {
-      await invoke("clear_dependency_section", { section: "conda" });
-      await loadDependencies();
+      await clearCondaSection();
       await resignTrust();
     } catch (e) {
       logger.error("Failed to clear conda dependencies:", e);
     } finally {
       setLoading(false);
     }
-  }, [loadDependencies, resignTrust]);
+  }, [resignTrust]);
 
   // Clear the synced notice (e.g., when kernel restarts)
   const clearSyncNotice = useCallback(() => {
@@ -218,13 +203,7 @@ export function useCondaDependencies() {
     async (channels: string[]) => {
       setLoading(true);
       try {
-        await invoke("set_conda_dependencies", {
-          dependencies: dependencies?.dependencies ?? [],
-          channels,
-          python: dependencies?.python ?? null,
-        });
-        await loadDependencies();
-        // Re-sign to keep notebook trusted after user modification
+        await setCondaChannelsWasm(channels);
         await resignTrust();
       } catch (e) {
         logger.error("Failed to set channels:", e);
@@ -232,20 +211,14 @@ export function useCondaDependencies() {
         setLoading(false);
       }
     },
-    [dependencies, loadDependencies, resignTrust],
+    [resignTrust],
   );
 
   const setPython = useCallback(
     async (version: string | null) => {
       setLoading(true);
       try {
-        await invoke("set_conda_dependencies", {
-          dependencies: dependencies?.dependencies ?? [],
-          channels: dependencies?.channels ?? [],
-          python: version,
-        });
-        await loadDependencies();
-        // Re-sign to keep notebook trusted after user modification
+        await setCondaPythonWasm(version);
         await resignTrust();
       } catch (e) {
         logger.error("Failed to set python version:", e);
@@ -253,7 +226,7 @@ export function useCondaDependencies() {
         setLoading(false);
       }
     },
-    [dependencies, loadDependencies, resignTrust],
+    [resignTrust],
   );
 
   const hasDependencies =
@@ -267,14 +240,13 @@ export function useCondaDependencies() {
     setLoading(true);
     try {
       await invoke("import_pixi_dependencies");
-      await loadDependencies();
       await resignTrust();
     } catch (e) {
       logger.error("Failed to import pixi dependencies:", e);
     } finally {
       setLoading(false);
     }
-  }, [loadDependencies, resignTrust]);
+  }, [resignTrust]);
 
   return {
     dependencies,
@@ -286,7 +258,6 @@ export function useCondaDependencies() {
     syncedWhileRunning,
     needsKernelRestart,
     pixiInfo,
-    loadDependencies,
     addDependency,
     removeDependency,
     clearAllDependencies,

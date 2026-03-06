@@ -1,7 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useState } from "react";
 import { logger } from "../lib/logger";
+import {
+  addUvDependency,
+  clearUvSection,
+  removeUvDependency,
+  setUvRequiresPython,
+  useUvDependencies,
+} from "../lib/notebook-metadata";
 
 export interface NotebookDependencies {
   dependencies: string[];
@@ -39,9 +45,6 @@ export interface PyProjectInfo {
 }
 
 export function useDependencies() {
-  const [dependencies, setDependencies] = useState<NotebookDependencies | null>(
-    null,
-  );
   const [uvAvailable, setUvAvailable] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(false);
   // Track if deps were synced to a running kernel (user may need to restart for some changes)
@@ -73,32 +76,15 @@ export function useDependencies() {
     invoke<PyProjectInfo | null>("detect_pyproject").then(setPyprojectInfo);
   }, []);
 
-  const loadDependencies = useCallback(async () => {
-    try {
-      const deps = await invoke<NotebookDependencies | null>(
-        "get_notebook_dependencies",
-      );
-      setDependencies(deps);
-    } catch (e) {
-      logger.error("Failed to load dependencies:", e);
-    }
-  }, []);
-
-  // Load dependencies on mount
-  useEffect(() => {
-    loadDependencies();
-  }, [loadDependencies]);
-
-  // Re-load when metadata is synced from another window
-  useEffect(() => {
-    const webview = getCurrentWebview();
-    const unlisten = webview.listen("notebook:metadata_updated", () => {
-      loadDependencies();
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, [loadDependencies]);
+  // Reactive read from the WASM Automerge doc via useSyncExternalStore.
+  // Re-renders automatically when the doc changes (bootstrap, sync, writes).
+  const uvDeps = useUvDependencies();
+  const dependencies = uvDeps
+    ? {
+        dependencies: uvDeps.dependencies,
+        requires_python: uvDeps.requiresPython,
+      }
+    : null;
 
   // Re-sign the notebook after user modifications to keep it trusted
   const resignTrust = useCallback(async () => {
@@ -142,11 +128,8 @@ export function useDependencies() {
       if (!pkg.trim()) return;
       setLoading(true);
       try {
-        await invoke("add_dependency", { package: pkg.trim() });
-        await loadDependencies();
-        // Re-sign to keep notebook trusted after user modification
+        await addUvDependency(pkg.trim());
         await resignTrust();
-        // Check sync state - UI will show "Sync Now" if dirty
         await checkSyncState();
       } catch (e) {
         logger.error("Failed to add dependency:", e);
@@ -154,19 +137,15 @@ export function useDependencies() {
         setLoading(false);
       }
     },
-    [loadDependencies, resignTrust, checkSyncState],
+    [resignTrust, checkSyncState],
   );
 
   const removeDependency = useCallback(
     async (pkg: string) => {
       setLoading(true);
       try {
-        await invoke("remove_dependency", { package: pkg });
-        await loadDependencies();
-        // Re-sign to keep notebook trusted after user modification
+        await removeUvDependency(pkg);
         await resignTrust();
-        // Check sync state - UI will show dirty state
-        // Note: removing a dep doesn't uninstall from running kernel
         await checkSyncState();
       } catch (e) {
         logger.error("Failed to remove dependency:", e);
@@ -174,22 +153,21 @@ export function useDependencies() {
         setLoading(false);
       }
     },
-    [loadDependencies, resignTrust, checkSyncState],
+    [resignTrust, checkSyncState],
   );
 
   // Remove the entire uv dependency section from notebook metadata
   const clearAllDependencies = useCallback(async () => {
     setLoading(true);
     try {
-      await invoke("clear_dependency_section", { section: "uv" });
-      await loadDependencies();
+      await clearUvSection();
       await resignTrust();
     } catch (e) {
       logger.error("Failed to clear UV dependencies:", e);
     } finally {
       setLoading(false);
     }
-  }, [loadDependencies, resignTrust]);
+  }, [resignTrust]);
 
   // Clear the synced notice (e.g., when kernel restarts)
   const clearSyncNotice = useCallback(() => {
@@ -201,12 +179,7 @@ export function useDependencies() {
     async (version: string | null) => {
       setLoading(true);
       try {
-        await invoke("set_notebook_dependencies", {
-          dependencies: dependencies?.dependencies ?? [],
-          requiresPython: version,
-        });
-        await loadDependencies();
-        // Re-sign to keep notebook trusted after user modification
+        await setUvRequiresPython(version);
         await resignTrust();
       } catch (e) {
         logger.error("Failed to set requires-python:", e);
@@ -214,7 +187,7 @@ export function useDependencies() {
         setLoading(false);
       }
     },
-    [dependencies, loadDependencies, resignTrust],
+    [resignTrust],
   );
 
   const hasDependencies =
@@ -247,7 +220,6 @@ export function useDependencies() {
     setLoading(true);
     try {
       await invoke("import_pyproject_dependencies");
-      await loadDependencies();
       // Re-sign to keep notebook trusted after user modification
       await resignTrust();
       logger.info("[deps] Imported dependencies from pyproject.toml");
@@ -256,7 +228,7 @@ export function useDependencies() {
     } finally {
       setLoading(false);
     }
-  }, [loadDependencies, resignTrust]);
+  }, [resignTrust]);
 
   // Refresh pyproject detection
   const refreshPyproject = useCallback(async () => {
@@ -277,7 +249,7 @@ export function useDependencies() {
     loading,
     syncedWhileRunning,
     needsKernelRestart,
-    loadDependencies,
+
     addDependency,
     removeDependency,
     clearAllDependencies,

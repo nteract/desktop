@@ -10,6 +10,10 @@ import {
   type CellSnapshot,
   cellSnapshotsToNotebookCells,
 } from "../lib/materialize-cells";
+import {
+  notifyMetadataChanged,
+  setNotebookHandle,
+} from "../lib/notebook-metadata";
 import type { JupyterOutput, NotebookCell } from "../types";
 import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
@@ -121,6 +125,7 @@ export function useAutomergeNotebook() {
       // Dispose previous handle (WASM allocation).
       handleRef.current?.free();
       handleRef.current = handle;
+      setNotebookHandle(handle);
 
       await materializeCells(handle);
       setIsLoading(false);
@@ -182,6 +187,14 @@ export function useAutomergeNotebook() {
           const changed = handle.receive_sync_message(bytes);
           if (changed) {
             await materializeCells(handle);
+            // Notify metadata subscribers (useSyncExternalStore) that the
+            // doc changed. This covers metadata updates from the daemon
+            // (e.g. trust re-signing, dependency sync from other windows).
+            // Note: local cell mutations (add/delete/source) don't call
+            // notifyMetadataChanged() because they only touch cells, not
+            // the metadata key. If a future mutation affects metadata,
+            // add a notify call there.
+            notifyMetadataChanged();
           }
           // The sync protocol may need multiple roundtrips — always
           // check whether we have something to send back.
@@ -215,6 +228,7 @@ export function useAutomergeNotebook() {
       unlistenSync.then((fn) => fn());
       unlistenClearOutputs.then((fn) => fn());
       // Free WASM handle.
+      setNotebookHandle(null);
       handleRef.current?.free();
       handleRef.current = null;
     };
