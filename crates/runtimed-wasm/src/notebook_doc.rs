@@ -79,6 +79,7 @@ impl NotebookDoc {
     // ── Notebook ID ─────────────────────────────────────────────────
 
     /// Read the notebook ID from the document.
+    #[allow(dead_code)]
     pub fn notebook_id(&self) -> Option<String> {
         read_str(&self.doc, automerge::ROOT, "notebook_id")
     }
@@ -109,6 +110,7 @@ impl NotebookDoc {
     }
 
     /// Get a single cell by ID.
+    #[allow(dead_code)]
     pub fn get_cell(&self, cell_id: &str) -> Option<CellSnapshot> {
         let cells_id = self.cells_list_id()?;
         let idx = self.find_cell_index(&cells_id, cell_id)?;
@@ -221,6 +223,7 @@ impl NotebookDoc {
     // ── Output management ───────────────────────────────────────────
 
     /// Replace all outputs for a cell.
+    #[allow(dead_code)]
     pub fn set_outputs(
         &mut self,
         cell_id: &str,
@@ -249,6 +252,7 @@ impl NotebookDoc {
     }
 
     /// Append a single output to a cell's output list.
+    #[allow(dead_code)]
     pub fn append_output(&mut self, cell_id: &str, output: &str) -> Result<bool, AutomergeError> {
         let cells_id = match self.cells_list_id() {
             Some(id) => id,
@@ -273,6 +277,7 @@ impl NotebookDoc {
     }
 
     /// Clear all outputs from a cell.
+    #[allow(dead_code)]
     pub fn clear_outputs(&mut self, cell_id: &str) -> Result<bool, AutomergeError> {
         self.set_outputs(cell_id, &[])
     }
@@ -445,6 +450,7 @@ fn read_str<O: AsRef<automerge::ObjId>, P: Into<automerge::Prop>>(
 /// This is the free-function counterpart of `NotebookDoc::get_metadata`,
 /// for use by the sync client which holds a raw `AutoCommit` instead of
 /// a `NotebookDoc`.
+#[allow(dead_code)]
 pub fn get_metadata_from_doc(doc: &AutoCommit, key: &str) -> Option<String> {
     let meta_id = doc
         .get(automerge::ROOT, "metadata")
@@ -461,6 +467,7 @@ pub fn get_metadata_from_doc(doc: &AutoCommit, key: &str) -> Option<String> {
 ///
 /// Creates the metadata map if it doesn't exist. This is the free-function
 /// counterpart of `NotebookDoc::set_metadata`.
+#[allow(dead_code)]
 pub fn set_metadata_in_doc(
     doc: &mut AutoCommit,
     key: &str,
@@ -485,6 +492,7 @@ pub fn set_metadata_in_doc(
 }
 
 /// Read cells from a raw AutoCommit document (used by the sync client).
+#[allow(dead_code)]
 pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
     let cells_id = match doc.get(automerge::ROOT, "cells").ok().flatten() {
         Some((automerge::Value::Object(ObjType::List), id)) => id,
