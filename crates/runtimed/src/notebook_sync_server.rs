@@ -1915,6 +1915,13 @@ async fn handle_notebook_request(
                 match doc.get_cell(&cell_id) {
                     Some(c) => (c.source, c.cell_type),
                     None => {
+                        let cell_count = doc.cell_count();
+                        let cell_ids: Vec<String> =
+                            doc.get_cells().iter().map(|c| c.id.clone()).collect();
+                        warn!(
+                            "[notebook-sync] Cell {} not found in document (cell_count={}, available={:?})",
+                            cell_id, cell_count, cell_ids
+                        );
                         return NotebookResponse::Error {
                             error: format!("Cell not found in document: {}", cell_id),
                         };

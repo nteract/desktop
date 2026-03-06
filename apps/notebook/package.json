@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@automerge/automerge": "^3.2.4",
+    "@automerge/automerge": "^2.2.9",
     "@codemirror/autocomplete": "^6.20.0",
     "@codemirror/commands": "^6.10.2",
     "@codemirror/lang-html": "^6.4.11",

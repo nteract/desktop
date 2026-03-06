@@ -2,7 +2,7 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 import { visualizer } from "rollup-plugin-visualizer";
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import wasm from "vite-plugin-wasm";
 import topLevelAwait from "vite-plugin-top-level-await";
 import { isolatedRendererPlugin } from "./vite-plugin-isolated-renderer";
@@ -49,4 +49,7 @@ export default defineConfig({
     strictPort: true,
   },
   base: "/",
+  test: {
+    include: ["src/**/__tests__/**/*.test.{ts,tsx}"],
+  },
 });

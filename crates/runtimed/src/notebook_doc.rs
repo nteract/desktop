@@ -1237,4 +1237,31 @@ mod tests {
         let cells = get_cells_from_doc(&doc);
         assert!(cells.is_empty());
     }
+
+    /// Export fixture bytes for the JS Automerge compatibility test.
+    ///
+    /// Run with: cargo test -p runtimed -- notebook_doc::tests::export_fixture_bytes -- --nocapture
+    /// The hex output can be copied into the JS test file.
+    #[test]
+    fn export_fixture_bytes() {
+        let mut doc = NotebookDoc::new("compat-test");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "print('hello')").unwrap();
+        doc.set_execution_count("cell-1", "1").unwrap();
+
+        let bytes = doc.save();
+
+        // Verify the fixture is readable
+        let loaded = NotebookDoc::load(&bytes).unwrap();
+        let cells = loaded.get_cells();
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].id, "cell-1");
+        assert_eq!(cells[0].source, "print('hello')");
+        assert_eq!(cells[0].execution_count, "1");
+
+        // Print hex for JS test fixture
+        let hex: Vec<String> = bytes.iter().map(|b| format!("0x{:02x}", b)).collect();
+        println!("FIXTURE_BYTES_HEX = [{}]", hex.join(", "));
+        println!("FIXTURE_BYTES_LENGTH = {}", bytes.len());
+    }
 }

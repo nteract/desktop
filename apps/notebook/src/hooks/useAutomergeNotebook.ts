@@ -10,7 +10,7 @@
  * sync provides eventual consistency for cross-window state.
  */
 
-import * as Automerge from "@automerge/automerge";
+import { next as Automerge } from "@automerge/automerge";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
@@ -123,8 +123,11 @@ export function useAutomergeNotebook() {
 
         await materializeAndSetCells();
 
-        // After loading, generate initial sync message to align states
-        syncToBackend();
+        // Do NOT call syncToBackend() here. The frontend has the exact doc
+        // bytes from Tauri — sending a sync message from a fresh SyncState
+        // with potentially incompatible JS/Rust Automerge versions can corrupt
+        // the daemon's state. The bidirectional sync will be established
+        // naturally when daemon changes arrive via automerge:from-daemon.
 
         logger.info(
           `[automerge-notebook] Initialized with ${doc.cells?.length ?? 0} cells`,
@@ -304,7 +307,9 @@ export function useAutomergeNotebook() {
 
         docRef.current = Automerge.change(doc, (d) => {
           if (!d.cells) return;
-          Automerge.insertAt(d.cells, insertIdx, {
+          // Use List proxy's insertAt (v2 next API)
+          // biome-ignore lint/suspicious/noExplicitAny: Automerge List proxy has insertAt
+          (d.cells as any).insertAt(insertIdx, {
             id: cellId,
             cell_type: cellType,
             source: "",
@@ -344,7 +349,9 @@ export function useAutomergeNotebook() {
         ) {
           docRef.current = Automerge.change(doc, (d) => {
             if (!d.cells) return;
-            Automerge.deleteAt(d.cells, cellIdx);
+            // Use List proxy's deleteAt (v2 next API)
+            // biome-ignore lint/suspicious/noExplicitAny: Automerge List proxy has deleteAt
+            (d.cells as any).deleteAt(cellIdx);
           });
           syncToBackend();
         }
