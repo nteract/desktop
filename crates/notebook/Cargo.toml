@@ -41,7 +41,7 @@ runt-trust = { path = "../runt-trust" }
 runt-workspace = { path = "../runt-workspace" }
 kernel-launch = { path = "../kernel-launch" }
 kernel-env = { path = "../kernel-env" }
-nbformat = "1.2.0"
+nbformat = "1.2.1"
 petname = "2"
 log = "0.4"
 env_logger = "0.11"
