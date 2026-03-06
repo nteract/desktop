@@ -2163,6 +2163,15 @@ async fn handle_notebook_request(
             }
         }
 
+        NotebookRequest::CloneNotebook { path } => {
+            match clone_notebook_to_disk(room, &path).await {
+                Ok(cloned_path) => NotebookResponse::NotebookCloned { path: cloned_path },
+                Err(e) => NotebookResponse::Error {
+                    error: format!("Failed to clone notebook: {e}"),
+                },
+            }
+        }
+
         NotebookRequest::SyncEnvironment {} => handle_sync_environment(room).await,
     }
 }
@@ -2693,6 +2702,118 @@ async fn save_notebook_to_disk(
     info!(
         "[notebook-sync] Saved notebook to disk: {:?} ({} cells)",
         notebook_path, cell_count
+    );
+
+    Ok(notebook_path.to_string_lossy().to_string())
+}
+
+/// Clone the notebook to a new path with a fresh env_id and cleared outputs.
+///
+/// This is used for "Save As Copy" functionality - creates a new independent notebook
+/// without affecting the current document. The cloned notebook has:
+/// - A fresh env_id (so it gets its own environment)
+/// - All outputs cleared
+/// - All execution_counts reset to null
+async fn clone_notebook_to_disk(room: &NotebookRoom, target_path: &str) -> Result<String, String> {
+    let path = PathBuf::from(target_path);
+
+    // Reject relative paths
+    if path.is_relative() {
+        return Err(format!(
+            "Relative paths are not supported for clone: '{}'. Please provide an absolute path.",
+            target_path
+        ));
+    }
+
+    // Ensure .ipynb extension
+    let notebook_path = if target_path.ends_with(".ipynb") {
+        path
+    } else {
+        PathBuf::from(format!("{}.ipynb", target_path))
+    };
+
+    // Read cells and metadata from the Automerge doc
+    let (cells, metadata_json) = {
+        let doc = room.doc.read().await;
+        (doc.get_cells(), doc.get_metadata(NOTEBOOK_METADATA_KEY))
+    };
+
+    // Generate fresh env_id for the cloned notebook
+    let new_env_id = uuid::Uuid::new_v4().to_string();
+
+    // Build cells with cleared outputs and execution counts
+    let mut nb_cells = Vec::new();
+    for cell in &cells {
+        // Parse source into multiline array format
+        let source_lines: Vec<String> = if cell.source.is_empty() {
+            vec![]
+        } else {
+            let mut lines = Vec::new();
+            let mut remaining = cell.source.as_str();
+            while let Some(pos) = remaining.find('\n') {
+                lines.push(remaining[..=pos].to_string());
+                remaining = &remaining[pos + 1..];
+            }
+            if !remaining.is_empty() {
+                lines.push(remaining.to_string());
+            }
+            lines
+        };
+
+        let mut cell_json = serde_json::json!({
+            "id": cell.id,
+            "cell_type": cell.cell_type,
+            "source": source_lines,
+            "metadata": {},
+        });
+
+        if cell.cell_type == "code" {
+            // Clear outputs and execution_count for cloned notebook
+            cell_json["outputs"] = serde_json::json!([]);
+            cell_json["execution_count"] = serde_json::Value::Null;
+        }
+
+        nb_cells.push(cell_json);
+    }
+
+    // Build metadata with fresh env_id
+    let mut metadata = serde_json::json!({});
+    if let Some(ref meta_json) = metadata_json {
+        if let Ok(mut snapshot) =
+            serde_json::from_str::<crate::notebook_metadata::NotebookMetadataSnapshot>(meta_json)
+        {
+            // Update env_id in the snapshot
+            snapshot.runt.env_id = Some(new_env_id.clone());
+            // Clear trust signature since this is a new notebook
+            snapshot.runt.trust_signature = None;
+            snapshot.runt.trust_timestamp = None;
+
+            snapshot.merge_into_metadata_value(&mut metadata);
+        }
+    }
+
+    // Build the final notebook JSON (nbformat 4.5+ for cell IDs)
+    let cell_count = nb_cells.len();
+    let notebook_json = serde_json::json!({
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": metadata,
+        "cells": nb_cells,
+    });
+
+    // Serialize with trailing newline
+    let content = serde_json::to_string_pretty(&notebook_json)
+        .map_err(|e| format!("Failed to serialize notebook: {e}"))?;
+    let content_with_newline = format!("{content}\n");
+
+    // Write to disk
+    tokio::fs::write(&notebook_path, content_with_newline)
+        .await
+        .map_err(|e| format!("Failed to write notebook: {e}"))?;
+
+    info!(
+        "[notebook-sync] Cloned notebook to disk: {:?} ({} cells, new env_id: {})",
+        notebook_path, cell_count, new_env_id
     );
 
     Ok(notebook_path.to_string_lossy().to_string())

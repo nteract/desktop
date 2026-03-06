@@ -23,12 +23,10 @@ pub mod webdriver;
 pub use runtime::Runtime;
 
 use notebook_state::{FrontendCell, NotebookState};
-use runtimed::notebook_doc::CellSnapshot;
 use runtimed::notebook_sync_client::{NotebookSyncClient, NotebookSyncHandle};
 use runtimed::protocol::{CompletionItem, HistoryEntry, NotebookRequest, NotebookResponse};
 
 use log::{debug, info, warn};
-use nbformat::v4::{Cell, CellId, CellMetadata};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -50,6 +48,11 @@ struct WindowNotebookContext {
     path: Arc<Mutex<Option<PathBuf>>>,
     /// Working directory for untitled notebooks (project file detection).
     working_dir: Option<PathBuf>,
+    /// Dirty flag — tracks unsaved changes (authoritative source).
+    dirty: Arc<AtomicBool>,
+    /// Notebook ID for daemon sync — derived from path (saved) or env_id (untitled).
+    /// Updated on save_notebook_as when path changes.
+    notebook_id: Arc<Mutex<String>>,
 }
 
 #[derive(Clone, Default)]
@@ -189,6 +192,20 @@ fn working_dir_for_window(
     registry: &WindowNotebookRegistry,
 ) -> Result<Option<PathBuf>, String> {
     Ok(registry.get(window.label())?.working_dir.clone())
+}
+
+fn dirty_for_window(
+    window: &tauri::Window,
+    registry: &WindowNotebookRegistry,
+) -> Result<Arc<AtomicBool>, String> {
+    Ok(registry.get(window.label())?.dirty.clone())
+}
+
+fn notebook_id_for_window(
+    window: &tauri::Window,
+    registry: &WindowNotebookRegistry,
+) -> Result<Arc<Mutex<String>>, String> {
+    Ok(registry.get(window.label())?.notebook_id.clone())
 }
 
 fn emit_to_label<R, M, S>(emitter: &M, label: &str, event: &str, payload: S) -> tauri::Result<()>
@@ -401,69 +418,6 @@ fn default_metadata_snapshot() -> runtimed::notebook_metadata::NotebookMetadataS
     }
 }
 
-/// Convert a CellSnapshot from Automerge to an nbformat Cell.
-/// Used when joining an existing room to update local state.
-fn cell_snapshot_to_nbformat(snap: &CellSnapshot) -> Cell {
-    // Preserve the original cell ID string (handles both UUID and "cell-UUID" formats)
-    let id =
-        CellId::try_from(snap.id.as_str()).unwrap_or_else(|_| CellId::from(uuid::Uuid::new_v4()));
-    let source: Vec<String> = if snap.source.is_empty() {
-        Vec::new()
-    } else {
-        snap.source
-            .split_inclusive('\n')
-            .map(|s| s.to_string())
-            .collect()
-    };
-    let metadata = CellMetadata {
-        id: None,
-        collapsed: None,
-        scrolled: None,
-        deletable: None,
-        editable: None,
-        format: None,
-        name: None,
-        tags: None,
-        jupyter: None,
-        execution: None,
-        additional: std::collections::HashMap::new(),
-    };
-
-    match snap.cell_type.as_str() {
-        "code" => {
-            let execution_count = if snap.execution_count == "null" {
-                None
-            } else {
-                snap.execution_count.parse().ok()
-            };
-            // Parse outputs from JSON strings
-            let outputs: Vec<nbformat::v4::Output> = snap
-                .outputs
-                .iter()
-                .filter_map(|json_str| serde_json::from_str(json_str).ok())
-                .collect();
-            Cell::Code {
-                id,
-                metadata,
-                execution_count,
-                source,
-                outputs,
-            }
-        }
-        "markdown" => Cell::Markdown {
-            id,
-            metadata,
-            source,
-            attachments: None,
-        },
-        _ => Cell::Raw {
-            id,
-            metadata,
-            source,
-        },
-    }
-}
-
 /// Initialize notebook sync with the daemon.
 ///
 /// Connects to the daemon's notebook sync service using the split pattern,
@@ -472,20 +426,21 @@ fn cell_snapshot_to_nbformat(snap: &CellSnapshot) -> Cell {
 ///
 /// The split pattern separates the handle (for sending commands) from the
 /// receiver (for incoming changes), avoiding lock contention during network I/O.
+///
+/// For first-time connections (window creation), pass cells and metadata from the notebook.
+/// For reconnects (save_notebook_as, reconnect_to_daemon), pass empty cells - the daemon
+/// already has them and will send them during initial sync.
 async fn initialize_notebook_sync(
     window: tauri::WebviewWindow,
-    notebook_state: Arc<Mutex<NotebookState>>,
+    notebook_id: String,
+    initial_cells: Vec<FrontendCell>,
+    initial_metadata: Option<String>,
     notebook_sync: SharedNotebookSync,
     sync_generation: Arc<AtomicU64>,
     working_dir: Option<PathBuf>,
 ) -> Result<(), String> {
     // Increment generation to invalidate any stale cleanup from previous connections
     let current_generation = sync_generation.fetch_add(1, Ordering::SeqCst) + 1;
-
-    let (notebook_id, cells) = {
-        let state = notebook_state.lock().map_err(|e| e.to_string())?;
-        (derive_notebook_id(&state), state.cells_for_frontend())
-    };
 
     let socket_path = runtimed::default_socket_path();
     info!(
@@ -495,38 +450,30 @@ async fn initialize_notebook_sync(
         working_dir
     );
 
-    // Build initial metadata snapshot to send with handshake.
-    // This ensures the daemon has the kernelspec before auto-launching.
-    let initial_metadata = {
-        let state = notebook_state.lock().map_err(|e| e.to_string())?;
-        let snapshot = notebook_state::snapshot_from_nbformat(&state.notebook.metadata);
-        serde_json::to_string(&snapshot).ok()
-    };
-
     // Create channel for forwarding raw Automerge sync messages to the frontend.
     // The frontend can use these to maintain its own Automerge document replica.
     let (raw_sync_tx, mut raw_sync_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
     // Connect using the split pattern - returns handle, receiver, broadcast receiver, initial cells, and initial metadata
     // Pass working_dir for untitled notebooks so daemon can detect project files
-    let (handle, mut receiver, mut broadcast_receiver, initial_cells, initial_metadata_from_daemon) =
+    let (handle, mut receiver, mut broadcast_receiver, daemon_cells, _initial_metadata_from_daemon) =
         NotebookSyncClient::connect_split_with_raw_sync(
             socket_path,
             notebook_id.clone(),
             working_dir,
-            initial_metadata,
+            initial_metadata.clone(),
             Some(raw_sync_tx),
         )
         .await
         .map_err(|e| format!("sync connect: {}", e))?;
 
     // Populate Automerge doc if empty (new room or first window)
-    if initial_cells.is_empty() {
+    if daemon_cells.is_empty() {
         info!(
             "[notebook-sync] Populating Automerge doc with {} cells",
-            cells.len()
+            initial_cells.len()
         );
-        for (i, cell) in cells.iter().enumerate() {
+        for (i, cell) in initial_cells.iter().enumerate() {
             let (id, cell_type, source) = match cell {
                 FrontendCell::Code { id, source, .. } => (id.as_str(), "code", source.as_str()),
                 FrontendCell::Markdown { id, source } => (id.as_str(), "markdown", source.as_str()),
@@ -544,65 +491,26 @@ async fn initialize_notebook_sync(
             }
         }
 
-        // Also push notebook metadata to Automerge doc
-        let metadata_json = {
-            let state = notebook_state.lock().map_err(|e| e.to_string())?;
-            let snapshot = notebook_state::snapshot_from_nbformat(&state.notebook.metadata);
-            serde_json::to_string(&snapshot).map_err(|e| format!("serialize metadata: {}", e))?
-        };
-        info!(
-            "[notebook-sync] Pushing metadata to Automerge doc for {}",
-            notebook_id
-        );
-        handle
-            .set_metadata(
-                runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY,
-                &metadata_json,
-            )
-            .await
-            .map_err(|e| format!("set_metadata: {}", e))?;
+        // Also push notebook metadata to Automerge doc if provided
+        if let Some(ref metadata_json) = initial_metadata {
+            info!(
+                "[notebook-sync] Pushing metadata to Automerge doc for {}",
+                notebook_id
+            );
+            handle
+                .set_metadata(
+                    runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY,
+                    metadata_json,
+                )
+                .await
+                .map_err(|e| format!("set_metadata: {}", e))?;
+        }
     } else {
         info!(
             "[notebook-sync] Joining existing room with {} cells",
-            initial_cells.len()
+            daemon_cells.len()
         );
-        // Update local NotebookState to match Automerge state
-        // This prevents race conditions where load_notebook returns stale disk content
-        {
-            let mut state = notebook_state.lock().map_err(|e| e.to_string())?;
-            state.notebook.cells = initial_cells
-                .iter()
-                .map(cell_snapshot_to_nbformat)
-                .collect();
-            info!(
-                "[notebook-sync] Updated local state with {} cells from Automerge",
-                state.notebook.cells.len()
-            );
-
-            // Also merge metadata from Automerge doc into local state
-            if let Some(ref metadata_json) = initial_metadata_from_daemon {
-                match serde_json::from_str::<runtimed::notebook_metadata::NotebookMetadataSnapshot>(
-                    metadata_json,
-                ) {
-                    Ok(snapshot) => {
-                        notebook_state::merge_snapshot_into_nbformat(
-                            &snapshot,
-                            &mut state.notebook.metadata,
-                        );
-                        info!(
-                            "[notebook-sync] Merged metadata from Automerge for {}",
-                            notebook_id
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            "[notebook-sync] Failed to deserialize metadata from Automerge: {}",
-                            e
-                        );
-                    }
-                }
-            }
-        }
+        // No need to update local state - the frontend's WASM doc syncs directly with daemon
     }
 
     // Store the handle for commands to use
@@ -1243,13 +1151,14 @@ async fn save_notebook(
     window: tauri::Window,
     registry: tauri::State<'_, WindowNotebookRegistry>,
 ) -> Result<(), String> {
-    let state = notebook_state_for_window(&window, registry.inner())?;
+    let path = path_for_window(&window, registry.inner())?;
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
+    let dirty = dirty_for_window(&window, registry.inner())?;
 
     // Verify we have a path - daemon will use the room's notebook_path
     {
-        let nb = state.lock().map_err(|e| e.to_string())?;
-        if nb.path.is_none() {
+        let p = path.lock().map_err(|e| e.to_string())?;
+        if p.is_none() {
             return Err("No file path set - use save_notebook_as".to_string());
         }
     }
@@ -1281,10 +1190,7 @@ async fn save_notebook(
     }
 
     // Mark as clean
-    {
-        let mut nb = state.lock().map_err(|e| e.to_string())?;
-        nb.dirty = false;
-    }
+    dirty.store(false, Ordering::SeqCst);
     Ok(())
 }
 
@@ -1306,6 +1212,8 @@ async fn save_notebook_as(
     let state = notebook_state_for_window(&window, registry.inner())?;
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
     let sync_generation = sync_generation_for_window(&window, registry.inner())?;
+    let context_path = path_for_window(&window, registry.inner())?;
+    let dirty = dirty_for_window(&window, registry.inner())?;
 
     // Save via daemon to the new path - daemon handles formatting and disk write
     let sync_handle = notebook_sync.lock().await.clone();
@@ -1341,18 +1249,29 @@ async fn save_notebook_as(
         .unwrap_or("Untitled.ipynb");
     let _ = window.set_title(filename);
 
+    // Derive new notebook_id from saved path (canonical path)
+    let new_notebook_id = saved_path
+        .canonicalize()
+        .unwrap_or_else(|_| saved_path.clone())
+        .to_string_lossy()
+        .to_string();
+
+    // Update context.path, notebook_id (authoritative) and mark as clean
+    if let Ok(mut p) = context_path.lock() {
+        *p = Some(saved_path.clone());
+    }
+    let context_notebook_id = notebook_id_for_window(&window, registry.inner())?;
+    if let Ok(mut id) = context_notebook_id.lock() {
+        *id = new_notebook_id.clone();
+    }
+    dirty.store(false, Ordering::SeqCst);
+
+    // Keep notebook_state.path in sync for legacy code paths (TODO: remove after Step 4)
     {
         let mut nb = state.lock().map_err(|e| e.to_string())?;
-        nb.path = Some(saved_path.clone());
-        nb.dirty = false;
+        nb.path = Some(saved_path);
     }
 
-    // Keep context.path in sync for non-save consumers
-    if let Ok(ctx) = registry.get(window.label()) {
-        if let Ok(mut p) = ctx.path.lock() {
-            *p = Some(saved_path);
-        }
-    }
     refresh_native_menu(window.app_handle(), registry.inner());
 
     // Reconnect to the daemon with the new path-based room ID.
@@ -1367,13 +1286,22 @@ async fn save_notebook_as(
 
     // Reconnect with the new path-based room ID.
     // We don't fail the save if reconnect fails - the file was already written successfully.
+    // The daemon already has the cells from the save operation, so pass empty cells.
     let webview_window = window
         .app_handle()
         .get_webview_window(window.label())
         .ok_or_else(|| "Current webview window not found".to_string())?;
     // Saved notebooks have a path, so no working_dir needed for project detection
-    if let Err(e) =
-        initialize_notebook_sync(webview_window, state, notebook_sync, sync_generation, None).await
+    if let Err(e) = initialize_notebook_sync(
+        webview_window,
+        new_notebook_id,
+        vec![], // Daemon already has cells from the save
+        None,   // Daemon already has metadata
+        notebook_sync,
+        sync_generation,
+        None,
+    )
+    .await
     {
         warn!("[save-as] Daemon reconnect failed (save succeeded): {}", e);
     }
@@ -1382,51 +1310,31 @@ async fn save_notebook_as(
 }
 
 /// Clone the current notebook for saving as a new file.
-/// Generates a fresh env_id and clears outputs/execution counts.
+/// The daemon handles generating fresh env_id and clearing outputs/execution counts.
 #[tauri::command]
 async fn clone_notebook_to_path(
     path: String,
     window: tauri::Window,
     registry: tauri::State<'_, WindowNotebookRegistry>,
 ) -> Result<(), String> {
-    let notebook_state = notebook_state_for_window(&window, registry.inner())?;
-    // Generate fresh env_id upfront
-    let new_env_id = uuid::Uuid::new_v4().to_string();
+    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
 
-    // Clone notebook structure while holding the lock
-    let cloned_notebook = {
-        let state = notebook_state.lock().map_err(|e| e.to_string())?;
-        let mut cloned = state.notebook.clone();
+    // Clone via daemon - daemon reads from Automerge, clears outputs, generates fresh env_id
+    let sync_handle = notebook_sync.lock().await.clone();
+    let handle = sync_handle.ok_or("Not connected to daemon")?;
 
-        // Update runt metadata with new env_id (canonical location for env_id)
-        if let Some(runt_value) = cloned.metadata.additional.get_mut("runt") {
-            if let Some(obj) = runt_value.as_object_mut() {
-                obj.insert("env_id".to_string(), serde_json::json!(new_env_id));
-            }
+    match handle
+        .send_request(NotebookRequest::CloneNotebook { path })
+        .await
+    {
+        Ok(NotebookResponse::NotebookCloned { path: cloned_path }) => {
+            info!("[clone] Notebook cloned via daemon to: {}", cloned_path);
+            Ok(())
         }
-
-        // Clear outputs and execution counts from all code cells
-        for cell in &mut cloned.cells {
-            if let nbformat::v4::Cell::Code {
-                outputs,
-                execution_count,
-                ..
-            } = cell
-            {
-                outputs.clear();
-                *execution_count = None;
-            }
-        }
-
-        cloned
-    };
-
-    // Serialize and write to path
-    let nb = nbformat::Notebook::V4(cloned_notebook);
-    let content = nbformat::serialize_notebook(&nb).map_err(|e| e.to_string())?;
-    std::fs::write(&path, &content).map_err(|e| e.to_string())?;
-
-    Ok(())
+        Ok(NotebookResponse::Error { error }) => Err(format!("Daemon clone failed: {}", error)),
+        Ok(other) => Err(format!("Unexpected daemon response: {:?}", other)),
+        Err(e) => Err(format!("Daemon request failed: {}", e)),
+    }
 }
 
 /// Open a notebook file in a new window within the current app process.
@@ -1483,9 +1391,14 @@ fn create_notebook_window_with_label(
             }
         }
     });
-    // Extract working_dir before moving state into context
-    // This is needed for untitled notebooks to detect project files (pyproject.toml, etc.)
+    // Extract data for sync initialization before moving state into context
     let working_dir = state.working_dir.clone();
+    let notebook_id = derive_notebook_id(&state);
+    let initial_cells = state.cells_for_frontend();
+    let initial_metadata = {
+        let snapshot = notebook_state::snapshot_from_nbformat(&state.notebook.metadata);
+        serde_json::to_string(&snapshot).ok()
+    };
 
     let context = create_window_context(state);
     registry.insert(label.clone(), context.clone())?;
@@ -1511,7 +1424,9 @@ fn create_notebook_window_with_label(
         // For notebooks with a path, the daemon uses the path; for untitled, it uses working_dir
         if let Err(e) = initialize_notebook_sync(
             window,
-            context.notebook_state,
+            notebook_id,
+            initial_cells,
+            initial_metadata,
             context.notebook_sync,
             context.sync_generation,
             working_dir,
@@ -1963,10 +1878,14 @@ async fn reconnect_to_daemon(
 ) -> Result<(), String> {
     info!("[daemon-kernel] reconnect_to_daemon");
 
-    let notebook_state = notebook_state_for_window(&window, registry.inner())?;
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
     let sync_generation = sync_generation_for_window(&window, registry.inner())?;
     let working_dir = working_dir_for_window(&window, registry.inner())?;
+    let context_notebook_id = notebook_id_for_window(&window, registry.inner())?;
+    let notebook_id = context_notebook_id
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
 
     // Use atomic compare_exchange to ensure only one reconnect runs at a time
     if reconnect_in_progress
@@ -1991,14 +1910,18 @@ async fn reconnect_to_daemon(
         }
     }
 
-    // Re-initialize notebook sync
+    // Re-initialize notebook sync.
+    // The daemon persists notebook docs, so it should have the cells.
+    // Pass empty cells - daemon sends them during initial sync.
     let webview_window = window
         .app_handle()
         .get_webview_window(window.label())
         .ok_or_else(|| "Current webview window not found".to_string())?;
     let result = initialize_notebook_sync(
         webview_window,
-        notebook_state,
+        notebook_id,
+        vec![], // Daemon persists cells, sends during initial sync
+        None,   // Daemon has metadata
         notebook_sync,
         sync_generation,
         working_dir,
@@ -3315,12 +3238,16 @@ fn load_notebook_state_for_path(path: &Path, runtime: Runtime) -> Result<Noteboo
 fn create_window_context(state: NotebookState) -> WindowNotebookContext {
     let path = state.path.clone();
     let working_dir = state.working_dir.clone();
+    let dirty = state.dirty;
+    let notebook_id = derive_notebook_id(&state);
     WindowNotebookContext {
         notebook_state: Arc::new(Mutex::new(state)),
         notebook_sync: Arc::new(tokio::sync::Mutex::new(None)),
         sync_generation: Arc::new(AtomicU64::new(0)),
         path: Arc::new(Mutex::new(path)),
         working_dir,
+        dirty: Arc::new(AtomicBool::new(dirty)),
+        notebook_id: Arc::new(Mutex::new(notebook_id)),
     }
 }
 
@@ -3758,9 +3685,30 @@ pub fn run(
                         registry_for_notebook_sync.get("main"),
                     ) {
                         (Some(window), Ok(context)) => {
+                            // Extract notebook_id, cells, metadata from context's NotebookState
+                            let sync_data = context.notebook_state.lock().ok().map(|state| {
+                                let id = derive_notebook_id(&state);
+                                let cells = state.cells_for_frontend();
+                                let metadata = {
+                                    let snapshot =
+                                        notebook_state::snapshot_from_nbformat(&state.notebook.metadata);
+                                    serde_json::to_string(&snapshot).ok()
+                                };
+                                (id, cells, metadata)
+                            });
+
+                            let Some((notebook_id, initial_cells, initial_metadata)) = sync_data
+                            else {
+                                log::warn!("[startup] Failed to lock notebook state for sync");
+                                daemon_sync_complete_for_init.store(true, Ordering::SeqCst);
+                                return;
+                            };
+
                             match initialize_notebook_sync(
                                 window,
-                                context.notebook_state,
+                                notebook_id,
+                                initial_cells,
+                                initial_metadata,
                                 context.notebook_sync,
                                 context.sync_generation,
                                 working_dir_for_sync,

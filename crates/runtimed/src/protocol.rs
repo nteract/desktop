@@ -242,6 +242,14 @@ pub enum NotebookRequest {
         path: Option<String>,
     },
 
+    /// Clone the notebook to a new path with fresh env_id and cleared outputs.
+    /// Used for "Save As Copy" functionality - creates a new independent notebook
+    /// without affecting the current document.
+    CloneNotebook {
+        /// Target path for the cloned notebook (absolute, .ipynb appended if needed).
+        path: String,
+    },
+
     /// Sync environment with current metadata (hot-install new packages).
     /// Only supported for UV inline deps. Falls back to restart for removals/conda.
     SyncEnvironment {},
@@ -303,6 +311,12 @@ pub enum NotebookResponse {
     /// Notebook saved successfully to disk.
     NotebookSaved {
         /// The absolute path where the notebook was written.
+        path: String,
+    },
+
+    /// Notebook cloned successfully to a new file.
+    NotebookCloned {
+        /// The absolute path where the cloned notebook was written.
         path: String,
     },
 
