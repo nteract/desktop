@@ -1,7 +1,7 @@
 use crate::runtime::Runtime;
 use crate::settings::{self, PythonEnvType};
 use log::info;
-use nbformat::v4::{Cell, CellId, CellMetadata, Notebook, Output};
+use nbformat::v4::{Cell, CellId, CellMetadata, Notebook};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -135,17 +135,6 @@ pub fn cell_to_frontend(cell: &Cell) -> FrontendCell {
             source: source.join(""),
         },
     }
-}
-
-/// Convert source string back to nbformat's Vec<String> (lines with newlines).
-fn source_to_lines(source: &str) -> Vec<String> {
-    if source.is_empty() {
-        return Vec::new();
-    }
-    source
-        .split_inclusive('\n')
-        .map(|s| s.to_string())
-        .collect()
 }
 
 pub struct NotebookState {
@@ -508,132 +497,6 @@ impl NotebookState {
             .collect()
     }
 
-    pub fn find_cell_index(&self, cell_id: &str) -> Option<usize> {
-        self.notebook
-            .cells
-            .iter()
-            .position(|c| c.id().as_str() == cell_id)
-    }
-
-    pub fn update_cell_source(&mut self, cell_id: &str, source: &str) {
-        if let Some(idx) = self.find_cell_index(cell_id) {
-            let lines = source_to_lines(source);
-            match &mut self.notebook.cells[idx] {
-                Cell::Code {
-                    source: ref mut s, ..
-                } => *s = lines,
-                Cell::Markdown {
-                    source: ref mut s, ..
-                } => *s = lines,
-                Cell::Raw {
-                    source: ref mut s, ..
-                } => *s = lines,
-            }
-            self.dirty = true;
-        }
-    }
-
-    pub fn get_cell_source(&self, cell_id: &str) -> Option<String> {
-        self.find_cell_index(cell_id)
-            .map(|idx| self.notebook.cells[idx].source().join(""))
-    }
-
-    pub fn add_cell(
-        &mut self,
-        cell_type: &str,
-        after_cell_id: Option<&str>,
-        cell_id: Option<&str>,
-    ) -> Option<FrontendCell> {
-        let new_id = match cell_id {
-            Some(id) => CellId::from(Uuid::parse_str(id).unwrap_or_else(|_| Uuid::new_v4())),
-            None => CellId::from(Uuid::new_v4()),
-        };
-        let cell = match cell_type {
-            "code" => Cell::Code {
-                id: new_id,
-                metadata: empty_cell_metadata(),
-                execution_count: None,
-                source: Vec::new(),
-                outputs: Vec::new(),
-            },
-            "markdown" => Cell::Markdown {
-                id: new_id,
-                metadata: empty_cell_metadata(),
-                source: Vec::new(),
-                attachments: None,
-            },
-            "raw" => Cell::Raw {
-                id: new_id,
-                metadata: empty_cell_metadata(),
-                source: Vec::new(),
-            },
-            _ => return None,
-        };
-
-        let frontend_cell = cell_to_frontend(&cell);
-
-        let insert_idx = match after_cell_id {
-            Some(id) => self.find_cell_index(id).map(|i| i + 1),
-            None => Some(0),
-        };
-
-        if let Some(idx) = insert_idx {
-            self.notebook.cells.insert(idx, cell);
-        } else {
-            self.notebook.cells.push(cell);
-        }
-        self.dirty = true;
-
-        Some(frontend_cell)
-    }
-
-    pub fn delete_cell(&mut self, cell_id: &str) -> bool {
-        // Don't delete the last cell
-        if self.notebook.cells.len() <= 1 {
-            return false;
-        }
-        if let Some(idx) = self.find_cell_index(cell_id) {
-            self.notebook.cells.remove(idx);
-            self.dirty = true;
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn clear_cell_outputs(&mut self, cell_id: &str) {
-        if let Some(idx) = self.find_cell_index(cell_id) {
-            if let Cell::Code {
-                outputs,
-                execution_count,
-                ..
-            } = &mut self.notebook.cells[idx]
-            {
-                outputs.clear();
-                *execution_count = None;
-            }
-        }
-    }
-
-    pub fn set_cell_execution_count(&mut self, cell_id: &str, count: i32) {
-        if let Some(idx) = self.find_cell_index(cell_id) {
-            if let Cell::Code {
-                execution_count, ..
-            } = &mut self.notebook.cells[idx]
-            {
-                *execution_count = Some(count);
-            }
-        }
-    }
-
-    pub fn append_cell_output(&mut self, cell_id: &str, output: Output) {
-        if let Some(idx) = self.find_cell_index(cell_id) {
-            if let Cell::Code { outputs, .. } = &mut self.notebook.cells[idx] {
-                outputs.push(output);
-            }
-        }
-    }
-
     pub fn serialize(&self) -> Result<String, String> {
         let nb = nbformat::Notebook::V4(self.notebook.clone());
         nbformat::serialize_notebook(&nb).map_err(|e| e.to_string())
@@ -935,243 +798,15 @@ mod tests {
     }
 
     #[test]
-    fn test_find_cell_index_returns_correct_position() {
-        let state = NotebookState::new_empty();
-        let cell_id = state.notebook.cells[0].id().to_string();
-
-        assert_eq!(state.find_cell_index(&cell_id), Some(0));
-    }
-
-    #[test]
-    fn test_find_cell_index_returns_none_for_missing() {
-        let state = NotebookState::new_empty();
-        assert_eq!(state.find_cell_index("nonexistent"), None);
-    }
-
-    #[test]
-    fn test_update_cell_source_modifies_cell() {
-        let mut state = NotebookState::new_empty();
-        let cell_id = state.notebook.cells[0].id().to_string();
-
-        state.update_cell_source(&cell_id, "print('hello')");
-
-        let source = state.get_cell_source(&cell_id).unwrap();
-        assert_eq!(source, "print('hello')");
-    }
-
-    #[test]
-    fn test_update_cell_source_sets_dirty_flag() {
-        let mut state = NotebookState::new_empty();
-        let cell_id = state.notebook.cells[0].id().to_string();
-
-        assert!(!state.dirty);
-        state.update_cell_source(&cell_id, "x = 1");
-        assert!(state.dirty);
-    }
-
-    #[test]
-    fn test_get_cell_source_returns_joined_lines() {
-        let mut state = NotebookState::new_empty();
-        let cell_id = state.notebook.cells[0].id().to_string();
-
-        state.update_cell_source(&cell_id, "line1\nline2\nline3");
-
-        let source = state.get_cell_source(&cell_id).unwrap();
-        assert_eq!(source, "line1\nline2\nline3");
-    }
-
-    #[test]
-    fn test_get_cell_source_returns_none_for_missing() {
-        let state = NotebookState::new_empty();
-        assert!(state.get_cell_source("nonexistent").is_none());
-    }
-
-    #[test]
-    fn test_add_cell_code() {
-        let mut state = NotebookState::new_empty();
-
-        let result = state.add_cell("code", None, None);
-
-        assert!(result.is_some());
-        assert!(matches!(result.unwrap(), FrontendCell::Code { .. }));
-        assert_eq!(state.notebook.cells.len(), 2);
-    }
-
-    #[test]
-    fn test_add_cell_markdown() {
-        let mut state = NotebookState::new_empty();
-
-        let result = state.add_cell("markdown", None, None);
-
-        assert!(result.is_some());
-        assert!(matches!(result.unwrap(), FrontendCell::Markdown { .. }));
-    }
-
-    #[test]
-    fn test_add_cell_raw() {
-        let mut state = NotebookState::new_empty();
-
-        let result = state.add_cell("raw", None, None);
-
-        assert!(result.is_some());
-        assert!(matches!(result.unwrap(), FrontendCell::Raw { .. }));
-    }
-
-    #[test]
-    fn test_add_cell_invalid_type_returns_none() {
-        let mut state = NotebookState::new_empty();
-
-        let result = state.add_cell("invalid", None, None);
-
-        assert!(result.is_none());
-        assert_eq!(state.notebook.cells.len(), 1);
-    }
-
-    #[test]
-    fn test_add_cell_after_existing_cell() {
-        let mut state = NotebookState::new_empty();
-        let first_cell_id = state.notebook.cells[0].id().to_string();
-
-        state.add_cell("code", Some(&first_cell_id), None);
-
-        assert_eq!(state.notebook.cells.len(), 2);
-        // New cell should be at index 1 (after first cell)
-        assert_ne!(state.notebook.cells[1].id().to_string(), first_cell_id);
-    }
-
-    #[test]
-    fn test_add_cell_with_provided_id() {
-        let mut state = NotebookState::new_empty();
-        let provided_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
-
-        let result = state.add_cell("code", None, Some(provided_id)).unwrap();
-
-        assert_eq!(result.id(), provided_id);
-        assert_eq!(state.notebook.cells[0].id().to_string(), provided_id);
-    }
-
-    #[test]
-    fn test_add_cell_with_provided_id_ignores_invalid_uuid() {
-        let mut state = NotebookState::new_empty();
-
-        // Invalid UUID should fall back to generating a new one
-        let result = state.add_cell("code", None, Some("not-a-uuid")).unwrap();
-
-        // Should still succeed — just with a generated UUID, not "not-a-uuid"
-        assert_ne!(result.id(), "not-a-uuid");
-        assert_eq!(state.notebook.cells.len(), 2);
-    }
-
-    #[test]
-    fn test_add_cell_at_beginning_when_no_after() {
-        let mut state = NotebookState::new_empty();
-        let first_cell_id = state.notebook.cells[0].id().to_string();
-
-        let new_cell = state.add_cell("code", None, None).unwrap();
-
-        // New cell should be at index 0
-        assert_eq!(state.notebook.cells[0].id().to_string(), new_cell.id());
-        // Original cell should now be at index 1
-        assert_eq!(state.notebook.cells[1].id().to_string(), first_cell_id);
-    }
-
-    #[test]
-    fn test_add_cell_sets_dirty_flag() {
-        let mut state = NotebookState::new_empty();
-
-        assert!(!state.dirty);
-        state.add_cell("code", None, None);
-        assert!(state.dirty);
-    }
-
-    #[test]
-    fn test_delete_cell_removes_cell() {
-        let mut state = NotebookState::new_empty();
-        state.add_cell("code", None, None);
-        let cell_to_delete = state.notebook.cells[0].id().to_string();
-
-        let result = state.delete_cell(&cell_to_delete);
-
-        assert!(result);
-        assert_eq!(state.notebook.cells.len(), 1);
-    }
-
-    #[test]
-    fn test_delete_cell_prevents_removing_last() {
-        let mut state = NotebookState::new_empty();
-        let only_cell = state.notebook.cells[0].id().to_string();
-
-        let result = state.delete_cell(&only_cell);
-
-        assert!(!result);
-        assert_eq!(state.notebook.cells.len(), 1);
-    }
-
-    #[test]
-    fn test_delete_cell_returns_false_for_missing() {
-        let mut state = NotebookState::new_empty();
-        state.add_cell("code", None, None);
-
-        let result = state.delete_cell("nonexistent");
-
-        assert!(!result);
-        assert_eq!(state.notebook.cells.len(), 2);
-    }
-
-    #[test]
-    fn test_delete_cell_sets_dirty_flag() {
-        let mut state = NotebookState::new_empty();
-        state.add_cell("code", None, None);
-        state.dirty = false;
-        let cell_to_delete = state.notebook.cells[0].id().to_string();
-
-        state.delete_cell(&cell_to_delete);
-
-        assert!(state.dirty);
-    }
-
-    #[test]
-    fn test_clear_cell_outputs_clears_outputs_and_count() {
-        let mut state = NotebookState::new_empty();
-        let cell_id = state.notebook.cells[0].id().to_string();
-
-        // Set some execution state
-        state.set_cell_execution_count(&cell_id, 5);
-
-        // Clear outputs
-        state.clear_cell_outputs(&cell_id);
-
-        // Check execution count is cleared
-        if let Cell::Code {
-            execution_count, ..
-        } = &state.notebook.cells[0]
-        {
-            assert!(execution_count.is_none());
-        }
-    }
-
-    #[test]
-    fn test_set_cell_execution_count() {
-        let mut state = NotebookState::new_empty();
-        let cell_id = state.notebook.cells[0].id().to_string();
-
-        state.set_cell_execution_count(&cell_id, 42);
-
-        if let Cell::Code {
-            execution_count, ..
-        } = &state.notebook.cells[0]
-        {
-            assert_eq!(*execution_count, Some(42));
-        } else {
-            panic!("Expected code cell");
-        }
-    }
-
-    #[test]
     fn test_cells_for_frontend_converts_correctly() {
         let mut state = NotebookState::new_empty();
-        let cell_id = state.notebook.cells[0].id().to_string();
-        state.update_cell_source(&cell_id, "x = 1");
+        // Set source directly on the nbformat cell
+        if let Cell::Code {
+            source: ref mut s, ..
+        } = state.notebook.cells[0]
+        {
+            *s = vec!["x = 1".to_string()];
+        }
 
         let frontend_cells = state.cells_for_frontend();
 
@@ -1194,44 +829,6 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert_eq!(parsed["nbformat"], 4);
         assert!(parsed["cells"].is_array());
-    }
-
-    #[test]
-    fn test_source_to_lines_handles_empty_string() {
-        let lines = source_to_lines("");
-        assert!(lines.is_empty());
-    }
-
-    #[test]
-    fn test_source_to_lines_multiline() {
-        let lines = source_to_lines("line1\nline2");
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], "line1\n");
-        assert_eq!(lines[1], "line2");
-    }
-
-    #[test]
-    fn test_source_to_lines_single_line() {
-        let lines = source_to_lines("single");
-        assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0], "single");
-    }
-
-    #[test]
-    fn test_source_to_lines_preserves_trailing_newline() {
-        let lines = source_to_lines("line1\nline2\n");
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], "line1\n");
-        assert_eq!(lines[1], "line2\n");
-    }
-
-    #[test]
-    fn test_source_to_lines_roundtrip() {
-        for original in &["line1\nline2", "line1\nline2\n", "single", "single\n", ""] {
-            let lines = source_to_lines(original);
-            let rejoined: String = lines.join("");
-            assert_eq!(&rejoined, original, "roundtrip failed for {:?}", original);
-        }
     }
 
     #[test]
@@ -1262,27 +859,43 @@ mod tests {
         // Start with 1 code cell
         let first_code_id = state.notebook.cells[0].id().to_string();
 
-        // Add markdown, then another code cell
-        state.add_cell("markdown", Some(&first_code_id), None);
-        let md_id = state.notebook.cells[1].id().to_string();
-        state.add_cell("code", Some(&md_id), None);
-        let second_code_id = state.notebook.cells[2].id().to_string();
+        // Add cells directly via nbformat
+        let md_id = CellId::from(Uuid::new_v4());
+        state.notebook.cells.push(Cell::Markdown {
+            id: md_id,
+            metadata: empty_cell_metadata(),
+            source: Vec::new(),
+            attachments: None,
+        });
+        let second_code_id = CellId::from(Uuid::new_v4());
+        let second_code_id_str = second_code_id.to_string();
+        state.notebook.cells.push(Cell::Code {
+            id: second_code_id,
+            metadata: empty_cell_metadata(),
+            execution_count: None,
+            source: Vec::new(),
+            outputs: Vec::new(),
+        });
 
         let code_ids = state.get_code_cell_ids();
         assert_eq!(code_ids.len(), 2);
         assert_eq!(code_ids[0], first_code_id);
-        assert_eq!(code_ids[1], second_code_id);
+        assert_eq!(code_ids[1], second_code_id_str);
     }
 
     #[test]
     fn test_get_code_cell_ids_empty_when_no_code_cells() {
         let mut state = NotebookState::new_empty();
-        let first_id = state.notebook.cells[0].id().to_string();
-        // Replace the only code cell with a markdown cell
-        state.add_cell("markdown", Some(&first_id), None);
-        // Can't delete the last cell, so this test just checks with mixed cells
+        // Add a markdown cell alongside the default code cell
+        state.notebook.cells.push(Cell::Markdown {
+            id: CellId::from(Uuid::new_v4()),
+            metadata: empty_cell_metadata(),
+            source: Vec::new(),
+            attachments: None,
+        });
+        // Original code cell is still present
         let ids = state.get_code_cell_ids();
-        assert_eq!(ids.len(), 1); // The original code cell
+        assert_eq!(ids.len(), 1);
     }
 
     #[test]
