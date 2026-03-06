@@ -26,6 +26,7 @@
   - `environment.yml` (`7-environment-yml.ipynb`)
 - Rich outputs and error outputs
 - Multi-window usage (different notebooks)
+- Same-underlying-file multi-window via symlink alias
 - Keyboard shortcuts (`Ctrl+S`, `Ctrl+O`, `Ctrl+F`, zoom shortcuts)
 - Kernel control validation on fresh notebook:
   - Run All
@@ -244,6 +245,38 @@
 
 ---
 
+## 8) Same underlying notebook can be opened twice via symlink alias, with unsynced in-memory state (data-loss risk)
+- Severity: **High**
+- Confidence: **High**
+
+### Reproduction
+1. Open `/workspace/crates/notebook/fixtures/audit-test/1-vanilla.ipynb`.
+2. Create a symlink to the same file (e.g. `/tmp/qa-1-vanilla-link.ipynb`).
+3. Open the symlink path in another nteract window.
+4. Edit and save in one window, then inspect the other window without reopening.
+
+### Expected
+- The app should either:
+  - resolve canonical paths and prevent duplicate opens for the same inode, or
+  - keep both views synchronized with explicit conflict handling/warnings.
+
+### Actual
+- Both windows remain open simultaneously with independent in-memory state.
+- Edits/saves in one window do not live-sync into the other open window.
+- Reopening a window shows latest on-disk content (last-write-wins), which can silently overwrite prior changes.
+- No warning/conflict dialog was shown.
+
+### Evidence
+- `qa/nteract-stable-v1.4.1-stable.202603052018/screenshots/symlink-sync-step-a.webp`
+- `qa/nteract-stable-v1.4.1-stable.202603052018/screenshots/symlink-sync-step-b.webp`
+- `qa/nteract-stable-v1.4.1-stable.202603052018/screenshots/symlink-sync-final.webp`
+
+### Suspected root cause
+- Window de-duplication appears keyed on the literal path label/hash rather than canonicalized file identity.
+- This allows symlink/alias paths to bypass single-window-per-file-path enforcement and creates divergent document states.
+
+---
+
 ## Additional observations (working behavior)
 - UV trust dialog and startup worked after daemon was running:
   - `.../09-uv-trust-dialog-working-reference.webp`
@@ -279,6 +312,9 @@
 - Error-notebook behavior was consistent and useful:
   - run-all continues after error: `.../44-run-all-continues-after-error.webp`
   - restart+run-all stops at error: `.../45-restart-run-all-stops-at-error.webp`
+- Trust decline behavior was validated on mixed-deps notebook:
+  - prior UV-inline notebook had already been trusted in-session (no prompt): `.../42-trust-decline-inconclusive-already-trusted.webp`
+  - after `Don't Install` on mixed-deps notebook, notebook remained interactive and executable: `.../43-trust-decline-allows-execution.webp`
 - File menu sample notebooks worked:
   - `.../31-sample-menu-open-pass.webp`
   - `.../32-sample-notebook-opened-pass.webp`
@@ -290,14 +326,11 @@
   - rendered mode: `.../36-markdown-render-pass.webp`
 
 ## Note on same-notebook multi-window sync testing
-- Explicit same-file two-window sync (source/output propagation between two windows on one notebook path) could not be exercised because this build appears to enforce single-window-per-file behavior.
+- Exact same-path duplicate open is prevented (single-window-per-file-path behavior).
+- However, same-underlying-file duplicate open is still possible through symlink/alias paths (Issue 8), and this path is not safely synchronized.
 
 ## Secondary unstable behavior observed (separate from confirmed widget-render bug)
 - Launching additional app instances with alternate isolated state while another instance is running occasionally produced reconnect errors of the form:
   - `update_source: Cell not found: <cell-id>`
 - This appears tied to multi-instance/session-state interactions and was not fully minimized into a separate confirmed defect.
-
-## Inconclusive item
-- Trust decline behavior (`Don't Install`) could not be fully exercised in later validation because `2-uv-inline.ipynb` had already been trusted in-session and no longer prompted the trust dialog.
-- Evidence of pre-trusted state: `.../42-trust-decline-inconclusive-already-trusted.webp`
 
