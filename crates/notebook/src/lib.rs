@@ -204,36 +204,6 @@ where
     )
 }
 
-/// Convert a CellSnapshot from Automerge to a FrontendCell.
-fn cell_snapshot_to_frontend(snap: &CellSnapshot) -> FrontendCell {
-    let execution_count = if snap.execution_count == "null" {
-        None
-    } else {
-        snap.execution_count.parse().ok()
-    };
-    let outputs: Vec<serde_json::Value> = snap
-        .outputs
-        .iter()
-        .filter_map(|json_str| serde_json::from_str(json_str).ok())
-        .collect();
-    match snap.cell_type.as_str() {
-        "code" => FrontendCell::Code {
-            id: snap.id.clone(),
-            source: snap.source.clone(),
-            execution_count,
-            outputs,
-        },
-        "markdown" => FrontendCell::Markdown {
-            id: snap.id.clone(),
-            source: snap.source.clone(),
-        },
-        _ => FrontendCell::Raw {
-            id: snap.id.clone(),
-            source: snap.source.clone(),
-        },
-    }
-}
-
 /// Get the runtime type from Automerge metadata.
 ///
 /// Mirrors `NotebookState::get_runtime()` semantics: kernelspec.name first,
@@ -633,12 +603,6 @@ async fn initialize_notebook_sync(
                 }
             }
         }
-        // Emit Automerge state to frontend (for immediate UI update)
-        if let Err(e) =
-            emit_to_label::<_, _, _>(&window, window.label(), "notebook:updated", &initial_cells)
-        {
-            warn!("[notebook-sync] Failed to emit initial cells: {}", e);
-        }
     }
 
     // Store the handle for commands to use
@@ -663,20 +627,8 @@ async fn initialize_notebook_sync(
             notebook_id_for_receiver
         );
         while let Some(update) = receiver.recv().await {
-            info!(
-                "[notebook-sync] Received {} cells from peer for {}",
-                update.cells.len(),
-                notebook_id_for_receiver
-            );
-            // Emit cell changes for frontend to reconcile state
-            if let Err(e) = emit_to_label::<_, _, _>(
-                &window_clone,
-                window_clone.label(),
-                "notebook:updated",
-                &update.cells,
-            ) {
-                warn!("[notebook-sync] Failed to emit notebook:updated: {}", e);
-            }
+            // Cell changes arrive at the frontend via automerge:from-daemon
+            // (raw sync relay). This loop only forwards metadata updates.
 
             // If metadata changed, notify frontend
             if let Some(ref metadata_json) = update.notebook_metadata {
@@ -1257,27 +1209,6 @@ async fn complete_onboarding(
     Ok(())
 }
 
-#[tauri::command]
-async fn load_notebook(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<Vec<FrontendCell>, String> {
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-    let guard = notebook_sync.lock().await;
-    if let Some(handle) = guard.as_ref() {
-        let cells = handle
-            .get_cells()
-            .await
-            .map_err(|e| format!("Failed to get cells: {}", e))?;
-        Ok(cells.iter().map(cell_snapshot_to_frontend).collect())
-    } else {
-        // Fallback to NotebookState when daemon is not connected
-        let state = notebook_state_for_window(&window, registry.inner())?;
-        let state = state.lock().map_err(|e| e.to_string())?;
-        Ok(state.cells_for_frontend())
-    }
-}
-
 /// Check if the notebook has a file path set
 #[tauri::command]
 async fn has_notebook_path(
@@ -1656,112 +1587,6 @@ fn open_bundled_sample_notebook(
 ) -> Result<(), String> {
     let path = materialize_sample_notebook(app, sample)?;
     open_notebook_window(app, registry, &path)
-}
-
-#[tauri::command]
-async fn update_cell_source(
-    cell_id: String,
-    source: String,
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<(), String> {
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-
-    // Sync to Automerge (single source of truth)
-    let guard = notebook_sync.lock().await;
-    if let Some(handle) = guard.as_ref() {
-        debug!("[notebook-sync] Syncing source update for cell {}", cell_id);
-        if let Err(e) = handle.update_source(&cell_id, &source).await {
-            warn!("[notebook-sync] update_source failed: {}", e);
-        }
-    } else {
-        info!("[notebook-sync] No sync handle available for update_source");
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
-async fn add_cell(
-    cell_id: Option<String>,
-    cell_type: String,
-    after_cell_id: Option<String>,
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<FrontendCell, String> {
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-
-    // Generate cell ID
-    let new_id = match cell_id.as_deref() {
-        Some(id) => uuid::Uuid::parse_str(id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
-        None => uuid::Uuid::new_v4(),
-    };
-    let id_str = new_id.to_string();
-
-    // Determine insert index via sync handle
-    let guard = notebook_sync.lock().await;
-    if let Some(handle) = guard.as_ref() {
-        let cells = handle
-            .get_cells()
-            .await
-            .map_err(|e| format!("get_cells: {}", e))?;
-        let insert_index = match &after_cell_id {
-            Some(after_id) => cells
-                .iter()
-                .position(|c| c.id == *after_id)
-                .map(|i| i + 1)
-                .unwrap_or(0),
-            None => 0,
-        };
-        info!(
-            "[notebook-sync] Syncing add_cell {} at index {}",
-            id_str, insert_index
-        );
-        if let Err(e) = handle.add_cell(insert_index, &id_str, &cell_type).await {
-            warn!("[notebook-sync] add_cell failed: {}", e);
-        }
-    } else {
-        return Err("Not connected to daemon".to_string());
-    }
-
-    // Build FrontendCell from inputs
-    let cell = match cell_type.as_str() {
-        "code" => FrontendCell::Code {
-            id: id_str,
-            source: String::new(),
-            execution_count: None,
-            outputs: Vec::new(),
-        },
-        "markdown" => FrontendCell::Markdown {
-            id: id_str,
-            source: String::new(),
-        },
-        "raw" => FrontendCell::Raw {
-            id: id_str,
-            source: String::new(),
-        },
-        _ => return Err(format!("Invalid cell type: {}", cell_type)),
-    };
-
-    Ok(cell)
-}
-
-#[tauri::command]
-async fn delete_cell(
-    cell_id: String,
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<(), String> {
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-
-    // Delete via sync handle (single source of truth)
-    if let Some(handle) = notebook_sync.lock().await.as_ref() {
-        if let Err(e) = handle.delete_cell(&cell_id).await {
-            warn!("[notebook-sync] delete_cell failed: {}", e);
-        }
-    }
-
-    Ok(())
 }
 
 // ============================================================================
@@ -2182,35 +2007,6 @@ async fn reconnect_to_daemon(
 
     reset_flag();
     result
-}
-
-/// Refresh cells from Automerge and emit notebook:updated event.
-///
-/// Used by the frontend to request the current Automerge state after
-/// setting up listeners (handles race condition where initial state
-/// was emitted before listeners were ready).
-#[tauri::command]
-async fn refresh_from_automerge(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<(), String> {
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-    let guard = notebook_sync.lock().await;
-    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
-
-    let cells = handle
-        .get_cells()
-        .await
-        .map_err(|e| format!("Failed to get cells: {}", e))?;
-
-    info!(
-        "[notebook-sync] Refreshing frontend with {} cells from Automerge",
-        cells.len()
-    );
-
-    // Emit to frontend (which will resolve manifest hashes)
-    emit_to_label::<_, _, _>(&window, window.label(), "notebook:updated", &cells)
-        .map_err(|e| format!("Failed to emit notebook:updated: {}", e))
 }
 
 /// Export the local Automerge document as raw bytes.
@@ -3888,7 +3684,6 @@ pub fn run(
         .manage(daemon_status_state)
         .invoke_handler(tauri::generate_handler![
             // Notebook file operations
-            load_notebook,
             has_notebook_path,
             get_notebook_path,
             save_notebook,
@@ -3896,10 +3691,6 @@ pub fn run(
             get_default_save_directory,
             clone_notebook_to_path,
             open_notebook_in_new_window,
-            // Cell operations
-            update_cell_source,
-            add_cell,
-            delete_cell,
             // Daemon kernel operations (all kernel ops go through daemon)
             launch_kernel_via_daemon,
             execute_cell_via_daemon,
@@ -3917,7 +3708,6 @@ pub fn run(
             get_history_via_daemon,
             complete_via_daemon,
             reconnect_to_daemon,
-            refresh_from_automerge,
             get_automerge_doc_bytes,
             send_automerge_sync,
             debug_get_automerge_state,

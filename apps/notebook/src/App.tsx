@@ -269,10 +269,11 @@ function AppContent() {
     runAllCells: daemonRunAllCells,
     sendCommMessage,
   } = useDaemonKernel({
-    // Daemon execution: Automerge is the source of truth for outputs.
-    // The daemon writes outputs to Automerge, then broadcasts for immediate UI.
-    // We skip broadcast handling to avoid race conditions - Automerge sync
-    // arrives shortly after and provides the canonical state.
+    // Outputs arrive via Automerge sync (materializeCells replaces all cells).
+    // Wiring appendOutput here causes duplicates: broadcast appends, then sync
+    // replaces with doc state that already has the output. If React batches both
+    // setCells calls, the functional update in appendOutput runs against the
+    // already-replaced state → double output. Sync latency is imperceptible.
     onOutput: () => {},
     onExecutionCount: handleExecutionCount,
     onExecutionDone: handleExecutionDone,
