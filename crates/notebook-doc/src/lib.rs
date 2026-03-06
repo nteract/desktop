@@ -29,6 +29,21 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, AutomergeError, ObjId, ObjType, ReadDoc};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "persistence")]
+use log::{info, warn};
+#[cfg(feature = "persistence")]
+use std::path::Path;
+
+/// Tracks the last-written state for a stream output in a cell.
+/// Used by `upsert_stream_output` for in-place update validation.
+#[derive(Debug, Clone)]
+pub struct StreamOutputState {
+    /// Index in the cell's outputs list
+    pub index: usize,
+    /// Manifest hash we last wrote at this index
+    pub manifest_hash: String,
+}
+
 /// Snapshot of a single cell's state, suitable for serialization.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CellSnapshot {
@@ -45,6 +60,18 @@ pub struct CellSnapshot {
 /// Wrapper around an Automerge document storing a notebook.
 pub struct NotebookDoc {
     doc: AutoCommit,
+}
+
+impl NotebookDoc {
+    /// Access the underlying Automerge document (read-only).
+    pub fn doc(&self) -> &AutoCommit {
+        &self.doc
+    }
+
+    /// Access the underlying Automerge document (mutable).
+    pub fn doc_mut(&mut self) -> &mut AutoCommit {
+        &mut self.doc
+    }
 }
 
 impl NotebookDoc {
@@ -71,15 +98,82 @@ impl NotebookDoc {
         Ok(Self { doc })
     }
 
+    /// Load from file or create a new document if the file doesn't exist.
+    ///
+    /// If the file exists but is corrupt (read or decode failure), the broken
+    /// file is renamed to `{path}.corrupt` and a fresh document is created.
+    /// This avoids silent data loss while still allowing the daemon to proceed.
+    #[cfg(feature = "persistence")]
+    pub fn load_or_create(path: &Path, notebook_id: &str) -> Self {
+        if path.exists() {
+            match std::fs::read(path) {
+                Ok(data) => match AutoCommit::load(&data) {
+                    Ok(doc) => {
+                        info!("[notebook-doc] Loaded from {:?} for {}", path, notebook_id);
+                        return Self { doc };
+                    }
+                    Err(e) => {
+                        warn!(
+                            "[notebook-doc] Corrupt doc at {:?} for {}: {}. \
+                             Preserving as .corrupt and creating fresh doc.",
+                            path, notebook_id, e
+                        );
+                        Self::preserve_corrupt(path);
+                    }
+                },
+                Err(e) => {
+                    warn!(
+                        "[notebook-doc] Failed to read {:?} for {}: {}. \
+                         Preserving as .corrupt and creating fresh doc.",
+                        path, notebook_id, e
+                    );
+                    Self::preserve_corrupt(path);
+                }
+            }
+        }
+
+        info!(
+            "[notebook-doc] Creating new doc for {} (path: {:?})",
+            notebook_id, path
+        );
+        Self::new(notebook_id)
+    }
+
+    /// Rename a corrupt persisted file to `{path}.corrupt` for diagnostics.
+    #[cfg(feature = "persistence")]
+    fn preserve_corrupt(path: &Path) {
+        let corrupt_path = path.with_extension("automerge.corrupt");
+        if let Err(e) = std::fs::rename(path, &corrupt_path) {
+            warn!(
+                "[notebook-doc] Failed to rename corrupt file {:?} → {:?}: {}",
+                path, corrupt_path, e
+            );
+        } else {
+            warn!(
+                "[notebook-doc] Corrupt file preserved at {:?}",
+                corrupt_path
+            );
+        }
+    }
+
     /// Serialize the document to bytes.
     pub fn save(&mut self) -> Vec<u8> {
         self.doc.save()
     }
 
+    /// Save the document to a file.
+    #[cfg(feature = "persistence")]
+    pub fn save_to_file(&mut self, path: &Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let data = self.save();
+        std::fs::write(path, data)
+    }
+
     // ── Notebook ID ─────────────────────────────────────────────────
 
     /// Read the notebook ID from the document.
-    #[allow(dead_code)]
     pub fn notebook_id(&self) -> Option<String> {
         read_str(&self.doc, automerge::ROOT, "notebook_id")
     }
@@ -110,7 +204,6 @@ impl NotebookDoc {
     }
 
     /// Get a single cell by ID.
-    #[allow(dead_code)]
     pub fn get_cell(&self, cell_id: &str) -> Option<CellSnapshot> {
         let cells_id = self.cells_list_id()?;
         let idx = self.find_cell_index(&cells_id, cell_id)?;
@@ -223,7 +316,6 @@ impl NotebookDoc {
     // ── Output management ───────────────────────────────────────────
 
     /// Replace all outputs for a cell.
-    #[allow(dead_code)]
     pub fn set_outputs(
         &mut self,
         cell_id: &str,
@@ -252,7 +344,6 @@ impl NotebookDoc {
     }
 
     /// Append a single output to a cell's output list.
-    #[allow(dead_code)]
     pub fn append_output(&mut self, cell_id: &str, output: &str) -> Result<bool, AutomergeError> {
         let cells_id = match self.cells_list_id() {
             Some(id) => id,
@@ -276,10 +367,265 @@ impl NotebookDoc {
         Ok(true)
     }
 
+    /// Update or insert a stream output for a cell.
+    ///
+    /// If `known_state` is provided, validates that the output at the cached index
+    /// still has the expected manifest hash. If validation passes, updates in place.
+    /// If validation fails (hash mismatch, index out of bounds, or no state), appends
+    /// a new output.
+    ///
+    /// This validation protects against:
+    /// - External clear operations (another peer, frontend-initiated)
+    /// - Individual output deletion
+    /// - CRDT modifications between stream messages
+    ///
+    /// Returns (updated: bool, output_index: usize) where updated is true if an
+    /// existing output was updated, false if a new output was appended.
+    pub fn upsert_stream_output(
+        &mut self,
+        cell_id: &str,
+        _stream_name: &str,
+        output_ref: &str,
+        known_state: Option<&StreamOutputState>,
+    ) -> Result<(bool, usize), AutomergeError> {
+        let cells_id = match self.cells_list_id() {
+            Some(id) => id,
+            None => return Ok((false, 0)),
+        };
+        let idx = match self.find_cell_index(&cells_id, cell_id) {
+            Some(i) => i,
+            None => return Ok((false, 0)),
+        };
+        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+            Some(o) => o,
+            None => return Ok((false, 0)),
+        };
+        let outputs_id = match self.list_id(&cell_obj, "outputs") {
+            Some(id) => id,
+            None => return Ok((false, 0)),
+        };
+
+        let output_count = self.doc.length(&outputs_id);
+
+        // Validate cached state if provided
+        // Only update in-place if:
+        // 1. Index is valid and points to the last output (nothing appended after it)
+        // 2. Hash matches what we last wrote
+        // This ensures interleaved stdout/stderr don't corrupt ordering.
+        if let Some(state) = known_state {
+            // Must be the last output - if something was appended after (e.g., stderr
+            // between two stdout messages), we should append instead of updating
+            if state.index + 1 == output_count {
+                // Read what's currently at that index
+                if let Ok(Some((value, _))) = self.doc.get(&outputs_id, state.index) {
+                    if let Ok(current_hash) = value.into_string() {
+                        if current_hash == state.manifest_hash {
+                            // ✓ Validated! Safe to update in place
+                            self.doc.put(&outputs_id, state.index, output_ref)?;
+                            return Ok((true, state.index));
+                        }
+                    }
+                }
+            }
+            // Validation failed - fall through to append
+        }
+
+        // No valid state, append new output
+        self.doc.insert(&outputs_id, output_count, output_ref)?;
+        Ok((false, output_count))
+    }
+
+    /// Update an output by display_id across all cells.
+    ///
+    /// This is used for `update_display_data` messages which mutate an existing
+    /// output in place (e.g., progress bars). The display_id may appear in any
+    /// cell's outputs.
+    ///
+    /// Returns true if an output was found and updated.
+    pub fn update_output_by_display_id(
+        &mut self,
+        display_id: &str,
+        new_data: &serde_json::Value,
+        new_metadata: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<bool, AutomergeError> {
+        let cells_id = match self.cells_list_id() {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+
+        let cell_count = self.doc.length(&cells_id);
+        for cell_idx in 0..cell_count {
+            let cell_obj = match self.cell_at_index(&cells_id, cell_idx) {
+                Some(o) => o,
+                None => continue,
+            };
+            let outputs_id = match self.list_id(&cell_obj, "outputs") {
+                Some(id) => id,
+                None => continue,
+            };
+
+            let output_count = self.doc.length(&outputs_id);
+            for output_idx in 0..output_count {
+                // Get output string and parse as JSON
+                let output_str: Option<String> = self
+                    .doc
+                    .get(&outputs_id, output_idx)
+                    .ok()
+                    .flatten()
+                    .and_then(|(v, _)| v.into_string().ok());
+
+                let output_str = match output_str {
+                    Some(s) => s,
+                    None => continue,
+                };
+
+                // Parse and check display_id
+                let mut output_json: serde_json::Value = match serde_json::from_str(&output_str) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+
+                let matches = output_json
+                    .get("transient")
+                    .and_then(|t| t.get("display_id"))
+                    .and_then(|d| d.as_str())
+                    == Some(display_id);
+
+                if matches {
+                    // Update data and metadata in place
+                    output_json["data"] = new_data.clone();
+                    output_json["metadata"] = serde_json::Value::Object(new_metadata.clone());
+
+                    // Write back
+                    let updated_str = output_json.to_string();
+                    self.doc.put(&outputs_id, output_idx, updated_str)?;
+                    return Ok(true);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
     /// Clear all outputs from a cell.
-    #[allow(dead_code)]
     pub fn clear_outputs(&mut self, cell_id: &str) -> Result<bool, AutomergeError> {
         self.set_outputs(cell_id, &[])
+    }
+
+    /// Get all outputs from all cells.
+    ///
+    /// Returns a list of (cell_id, output_index, output_string).
+    /// Used by manifest-aware UpdateDisplayData handling.
+    pub fn get_all_outputs(&self) -> Vec<(String, usize, String)> {
+        let mut results = Vec::new();
+        let cells_id = match self.cells_list_id() {
+            Some(id) => id,
+            None => return results,
+        };
+
+        let cell_count = self.doc.length(&cells_id);
+        for cell_idx in 0..cell_count {
+            let cell_obj = match self.cell_at_index(&cells_id, cell_idx) {
+                Some(o) => o,
+                None => continue,
+            };
+
+            // Get cell_id
+            let cell_id: Option<String> = self
+                .doc
+                .get(&cell_obj, "id")
+                .ok()
+                .flatten()
+                .and_then(|(v, _)| v.into_string().ok());
+            let cell_id = match cell_id {
+                Some(id) => id,
+                None => continue,
+            };
+
+            let outputs_id = match self.list_id(&cell_obj, "outputs") {
+                Some(id) => id,
+                None => continue,
+            };
+
+            let output_count = self.doc.length(&outputs_id);
+            for output_idx in 0..output_count {
+                let output_str: Option<String> = self
+                    .doc
+                    .get(&outputs_id, output_idx)
+                    .ok()
+                    .flatten()
+                    .and_then(|(v, _)| v.into_string().ok());
+
+                if let Some(s) = output_str {
+                    results.push((cell_id.clone(), output_idx, s));
+                }
+            }
+        }
+
+        results
+    }
+
+    /// Replace an output by cell_id and index.
+    ///
+    /// Used by manifest-aware UpdateDisplayData handling.
+    pub fn replace_output(
+        &mut self,
+        cell_id: &str,
+        output_idx: usize,
+        new_output: &str,
+    ) -> Result<bool, AutomergeError> {
+        let cells_id = match self.cells_list_id() {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+
+        let idx = match self.find_cell_index(&cells_id, cell_id) {
+            Some(i) => i,
+            None => return Ok(false),
+        };
+
+        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+            Some(o) => o,
+            None => return Ok(false),
+        };
+
+        let outputs_id = match self.list_id(&cell_obj, "outputs") {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+
+        // Check that output_idx is valid
+        if output_idx >= self.doc.length(&outputs_id) {
+            return Ok(false);
+        }
+
+        self.doc.put(&outputs_id, output_idx, new_output)?;
+        Ok(true)
+    }
+
+    // ── Execution count ─────────────────────────────────────────────
+
+    /// Set the execution count for a cell. Pass "null" or a number string like "5".
+    pub fn set_execution_count(
+        &mut self,
+        cell_id: &str,
+        count: &str,
+    ) -> Result<bool, AutomergeError> {
+        let cells_id = match self.cells_list_id() {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+        let idx = match self.find_cell_index(&cells_id, cell_id) {
+            Some(i) => i,
+            None => return Ok(false),
+        };
+        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+            Some(o) => o,
+            None => return Ok(false),
+        };
+
+        self.doc.put(&cell_obj, "execution_count", count)?;
+        Ok(true)
     }
 
     // ── Metadata ────────────────────────────────────────────────────
@@ -450,7 +796,6 @@ fn read_str<O: AsRef<automerge::ObjId>, P: Into<automerge::Prop>>(
 /// This is the free-function counterpart of `NotebookDoc::get_metadata`,
 /// for use by the sync client which holds a raw `AutoCommit` instead of
 /// a `NotebookDoc`.
-#[allow(dead_code)]
 pub fn get_metadata_from_doc(doc: &AutoCommit, key: &str) -> Option<String> {
     let meta_id = doc
         .get(automerge::ROOT, "metadata")
@@ -467,7 +812,6 @@ pub fn get_metadata_from_doc(doc: &AutoCommit, key: &str) -> Option<String> {
 ///
 /// Creates the metadata map if it doesn't exist. This is the free-function
 /// counterpart of `NotebookDoc::set_metadata`.
-#[allow(dead_code)]
 pub fn set_metadata_in_doc(
     doc: &mut AutoCommit,
     key: &str,
@@ -491,8 +835,18 @@ pub fn set_metadata_in_doc(
     Ok(())
 }
 
+/// Compute a safe filename for persisting a notebook document.
+///
+/// Hashes the notebook_id (which could be a file path with special characters)
+/// using SHA-256 to produce a safe, deterministic filename.
+#[cfg(feature = "persistence")]
+pub fn notebook_doc_filename(notebook_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let hash = hex::encode(Sha256::digest(notebook_id.as_bytes()));
+    format!("{}.automerge", hash)
+}
+
 /// Read cells from a raw AutoCommit document (used by the sync client).
-#[allow(dead_code)]
 pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
     let cells_id = match doc.get(automerge::ROOT, "cells").ok().flatten() {
         Some((automerge::Value::Object(ObjType::List), id)) => id,
@@ -688,6 +1042,20 @@ mod tests {
     }
 
     #[test]
+    fn test_set_execution_count() {
+        let mut doc = NotebookDoc::new("nb1");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+
+        doc.set_execution_count("cell-1", "42").unwrap();
+        let cell = doc.get_cell("cell-1").unwrap();
+        assert_eq!(cell.execution_count, "42");
+
+        doc.set_execution_count("cell-1", "null").unwrap();
+        let cell = doc.get_cell("cell-1").unwrap();
+        assert_eq!(cell.execution_count, "null");
+    }
+
+    #[test]
     fn test_metadata() {
         let mut doc = NotebookDoc::new("nb1");
         assert_eq!(doc.get_metadata("runtime"), Some("python".to_string()));
@@ -707,6 +1075,7 @@ mod tests {
         let mut doc = NotebookDoc::new("nb1");
         doc.add_cell(0, "cell-1", "code").unwrap();
         doc.update_source("cell-1", "x = 42").unwrap();
+        doc.set_execution_count("cell-1", "1").unwrap();
         doc.append_output("cell-1", r#"{"output_type":"execute_result"}"#)
             .unwrap();
         doc.add_cell(1, "cell-2", "markdown").unwrap();
@@ -720,9 +1089,63 @@ mod tests {
         assert_eq!(cells.len(), 2);
         assert_eq!(cells[0].id, "cell-1");
         assert_eq!(cells[0].source, "x = 42");
+        assert_eq!(cells[0].execution_count, "1");
         assert_eq!(cells[0].outputs.len(), 1);
         assert_eq!(cells[1].id, "cell-2");
         assert_eq!(cells[1].source, "# Hello");
+    }
+
+    #[test]
+    #[cfg(feature = "persistence")]
+    fn test_save_to_file_and_load_or_create() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("notebook.automerge");
+
+        let mut doc = NotebookDoc::new("file-test");
+        doc.add_cell(0, "c1", "code").unwrap();
+        doc.update_source("c1", "print(1)").unwrap();
+        doc.save_to_file(&path).unwrap();
+
+        let loaded = NotebookDoc::load_or_create(&path, "file-test");
+        assert_eq!(loaded.notebook_id(), Some("file-test".to_string()));
+        let cells = loaded.get_cells();
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].source, "print(1)");
+    }
+
+    #[test]
+    #[cfg(feature = "persistence")]
+    fn test_load_or_create_missing_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("does-not-exist.automerge");
+
+        let doc = NotebookDoc::load_or_create(&path, "new-nb");
+        assert_eq!(doc.notebook_id(), Some("new-nb".to_string()));
+        assert_eq!(doc.cell_count(), 0);
+    }
+
+    #[test]
+    #[cfg(feature = "persistence")]
+    fn test_load_or_create_corrupt_file_preserved() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("corrupt.automerge");
+
+        // Write garbage data
+        std::fs::write(&path, b"this is not a valid automerge document").unwrap();
+        assert!(path.exists());
+
+        // load_or_create should create a fresh doc
+        let doc = NotebookDoc::load_or_create(&path, "corrupt-nb");
+        assert_eq!(doc.notebook_id(), Some("corrupt-nb".to_string()));
+        assert_eq!(doc.cell_count(), 0);
+
+        // Original file should have been renamed to .corrupt
+        let corrupt_path = path.with_extension("automerge.corrupt");
+        assert!(corrupt_path.exists(), "corrupt file should be preserved");
+        assert_eq!(
+            std::fs::read(&corrupt_path).unwrap(),
+            b"this is not a valid automerge document"
+        );
     }
 
     #[test]
@@ -731,6 +1154,7 @@ mod tests {
         let mut server = NotebookDoc::new("sync-test");
         server.add_cell(0, "cell-1", "code").unwrap();
         server.update_source("cell-1", "import numpy").unwrap();
+        server.set_execution_count("cell-1", "1").unwrap();
         server
             .append_output("cell-1", r#"{"output_type":"stream"}"#)
             .unwrap();
@@ -759,6 +1183,7 @@ mod tests {
         assert_eq!(cells.len(), 1);
         assert_eq!(cells[0].id, "cell-1");
         assert_eq!(cells[0].source, "import numpy");
+        assert_eq!(cells[0].execution_count, "1");
         assert_eq!(cells[0].outputs.len(), 1);
     }
 
@@ -810,6 +1235,18 @@ mod tests {
         assert!(server_ids.contains(&"server-cell"));
         assert!(server_ids.contains(&"client-cell"));
         assert_eq!(server_ids, client_ids); // Same order after merge
+    }
+
+    #[test]
+    #[cfg(feature = "persistence")]
+    fn test_notebook_doc_filename_deterministic() {
+        let f1 = notebook_doc_filename("/path/to/notebook.ipynb");
+        let f2 = notebook_doc_filename("/path/to/notebook.ipynb");
+        assert_eq!(f1, f2);
+        assert!(f1.ends_with(".automerge"));
+        // Different paths produce different filenames
+        let f3 = notebook_doc_filename("/other/path.ipynb");
+        assert_ne!(f1, f3);
     }
 
     #[test]

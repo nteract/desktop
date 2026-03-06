@@ -1,0 +1,23 @@
+[package]
+name = "notebook-doc"
+version = "0.1.0"
+edition = "2021"
+description = "Shared Automerge notebook document types and operations, used by both runtimed (daemon) and runtimed-wasm (frontend)"
+license = "BSD-3-Clause"
+
+[dependencies]
+automerge = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = { version = "0.4", optional = true }
+sha2 = { version = "0.10", optional = true }
+hex = { version = "0.4", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = []
+# Enable file persistence methods (load_or_create, save_to_file, notebook_doc_filename)
+# and logging. Not available for wasm32 targets.
+persistence = ["dep:log", "dep:sha2", "dep:hex"]

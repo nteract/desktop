@@ -65,6 +65,9 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 # Automerge CRDT for settings sync
 automerge = "0.7"
 
+# Shared notebook document types (cell CRUD, metadata, sync)
+notebook-doc = { path = "../notebook-doc", features = ["persistence"] }
+
 # Trust verification (shared with notebook crate)
 runt-trust = { path = "../runt-trust" }
 
