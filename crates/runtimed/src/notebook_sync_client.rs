@@ -18,7 +18,7 @@ use automerge::sync::{self, SyncDoc};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ReadDoc};
 use futures::FutureExt;
-use log::{info, warn};
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -1800,11 +1800,14 @@ async fn run_sync_task<S>(
 
     // Sync state for the frontend peer (used when raw_sync_tx is active).
     // This tracks what the frontend doc has seen, enabling incremental sync messages.
-    let mut frontend_peer_state = if raw_sync_tx.is_some() {
-        Some(sync::State::new())
-    } else {
-        None
-    };
+    //
+    // IMPORTANT: Starts as None even when raw_sync_tx is provided. It gets
+    // initialized in GetDocBytes after the virtual sync handshake. Before that,
+    // the frontend hasn't loaded the doc yet, so any sync messages we generate
+    // would be stale — when the frontend later loads the doc bytes and receives
+    // those stale messages, the CRDT merge produces phantom cells (cells that
+    // exist in the list but have no readable ID).
+    let mut frontend_peer_state: Option<sync::State> = None;
 
     // Use a short poll interval to check for incoming data
     let mut poll_interval = interval(Duration::from_millis(50));
@@ -1870,6 +1873,41 @@ async fn run_sync_task<S>(
                             }
                             SyncCommand::GetDocBytes { reply } => {
                                 let bytes = client.doc.save();
+
+                                // Initialize frontend_peer_state now that the frontend
+                                // will have the doc bytes. Before this point, fe_state
+                                // is None so no sync messages are sent to the frontend
+                                // (preventing stale messages from causing phantom cells).
+                                //
+                                // We simulate a complete sync exchange with a mirror doc
+                                // loaded from the same bytes. After convergence, fe_state
+                                // knows exactly what the frontend has.
+                                if raw_sync_tx.is_some() {
+                                    let mut fe_state = sync::State::new();
+                                    if let Ok(mut mirror) = automerge::AutoCommit::load(&bytes) {
+                                        let mut mirror_state = sync::State::new();
+                                        // Exchange sync messages until both sides agree
+                                        for _ in 0..10 {
+                                            let our_msg = client.doc.sync().generate_sync_message(&mut fe_state);
+                                            let their_msg = mirror.sync().generate_sync_message(&mut mirror_state);
+                                            if our_msg.is_none() && their_msg.is_none() {
+                                                break;
+                                            }
+                                            if let Some(m) = our_msg {
+                                                let _ = mirror.sync().receive_sync_message(&mut mirror_state, m);
+                                            }
+                                            if let Some(m) = their_msg {
+                                                let _ = client.doc.sync().receive_sync_message(&mut fe_state, m);
+                                            }
+                                        }
+                                        debug!(
+                                            "[notebook-sync-task] Initialized frontend_peer_state via virtual sync for {}",
+                                            notebook_id
+                                        );
+                                    }
+                                    frontend_peer_state = Some(fe_state);
+                                }
+
                                 let _ = reply.send(bytes);
                             }
                             SyncCommand::ReceiveFrontendSyncMessage { message, reply } => {
