@@ -123,11 +123,13 @@ export function useAutomergeNotebook() {
 
         await materializeAndSetCells();
 
-        // Do NOT call syncToBackend() here. The frontend has the exact doc
-        // bytes from Tauri — sending a sync message from a fresh SyncState
-        // with potentially incompatible JS/Rust Automerge versions can corrupt
-        // the daemon's state. The bidirectional sync will be established
-        // naturally when daemon changes arrive via automerge:from-daemon.
+        // Send initial sync message to establish bidirectional peer state.
+        // The Tauri side initializes its frontend_peer_state during GetDocBytes
+        // (via virtual sync), so it can now correctly process our sync messages.
+        // This is critical: without it, the frontend's local changes (addCell,
+        // updateCellSource, etc.) never reach the daemon because the relay's
+        // SyncState doesn't know what we have.
+        syncToBackend();
 
         logger.info(
           `[automerge-notebook] Initialized with ${doc.cells?.length ?? 0} cells`,
