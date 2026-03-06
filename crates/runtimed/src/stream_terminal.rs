@@ -25,18 +25,9 @@ const SCROLLBACK_HISTORY: usize = 10000;
 /// Key for terminal buffers: (cell_id, stream_name).
 type StreamKey = (String, String);
 
-/// Tracks position and identity of a stream output.
-///
-/// Used to validate that a cached output index still points to "our" stream
-/// output before updating it in place. If the hash doesn't match what we
-/// last wrote, the output was modified externally and we should append instead.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StreamOutputState {
-    /// Index in the cell's outputs list
-    pub index: usize,
-    /// Manifest hash we last wrote at this index
-    pub manifest_hash: String,
-}
+// Re-export from the shared notebook-doc crate so existing callers
+// (kernel_manager, notebook_sync_server) continue to compile.
+pub use notebook_doc::StreamOutputState;
 
 /// Simple dimensions struct for creating terminals.
 struct TermDimensions {

@@ -5,8 +5,6 @@
 //! this WASM module instead of `@automerge/automerge` to avoid
 //! version mismatch issues that produce phantom cells.
 
-mod notebook_doc;
-
 use automerge::sync;
 use notebook_doc::{CellSnapshot, NotebookDoc};
 use wasm_bindgen::prelude::*;

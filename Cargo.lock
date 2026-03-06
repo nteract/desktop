@@ -3533,6 +3533,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "notebook-doc"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "hex",
+ "log",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
 name = "notify"
 version = "8.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5561,6 +5574,7 @@ dependencies = [
  "log",
  "nbformat",
  "nix",
+ "notebook-doc",
  "notify",
  "notify-debouncer-mini",
  "petname",
@@ -5611,6 +5625,7 @@ dependencies = [
  "getrandom 0.3.4",
  "js-sys",
  "log",
+ "notebook-doc",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
