@@ -3,6 +3,7 @@
     "label": "Dev Daemon",
     "command": "cargo xtask dev-daemon",
     "env": {
+      "RUST_LOG": "debug",
       "RUNTIMED_DEV": "1",
       "RUNTIMED_WORKSPACE_PATH": "$ZED_WORKTREE_ROOT",
       "RUNTIMED_WORKSPACE_NAME": "desktop",
@@ -17,6 +18,7 @@
     "command": "export RUNTIMED_VITE_PORT=$((5100 + $(echo -n \"$ZED_WORKTREE_ROOT\" | cksum | cut -d' ' -f1) % 4900)); echo \"Vite port: $RUNTIMED_VITE_PORT\"; cargo xtask dev",
     "env": {
       "RUNTIMED_DEV": "1",
+      "RUST_LOG": "debug",
       "RUNTIMED_WORKSPACE_PATH": "$ZED_WORKTREE_ROOT",
       "RUNTIMED_WORKSPACE_NAME": "desktop",
     },
