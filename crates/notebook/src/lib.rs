@@ -2048,76 +2048,6 @@ async fn send_automerge_sync(
         .map_err(|e| format!("Failed to relay sync message: {}", e))
 }
 
-/// Debug: Get Automerge document state from the daemon.
-///
-/// Returns the cells as the daemon sees them, useful for debugging sync issues.
-#[tauri::command]
-async fn debug_get_automerge_state(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<Vec<serde_json::Value>, String> {
-    info!("[debug] Getting Automerge state from daemon");
-
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-    let guard = notebook_sync.lock().await;
-    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
-
-    let cells = handle
-        .get_cells()
-        .await
-        .map_err(|e| format!("Failed to get cells: {}", e))?;
-
-    // Convert CellSnapshots to JSON for easy inspection
-    let json_cells: Vec<serde_json::Value> = cells
-        .into_iter()
-        .map(|cell| {
-            serde_json::json!({
-                "id": cell.id,
-                "cell_type": cell.cell_type,
-                "source": cell.source,
-                "execution_count": cell.execution_count,
-                "outputs_count": cell.outputs.len(),
-                "outputs": cell.outputs,
-            })
-        })
-        .collect();
-
-    Ok(json_cells)
-}
-
-/// Debug: Get local notebook state (from Automerge).
-#[tauri::command]
-async fn debug_get_local_state(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<Vec<serde_json::Value>, String> {
-    info!("[debug] Getting local notebook state (from Automerge)");
-
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-    let guard = notebook_sync.lock().await;
-    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
-
-    let cells = handle
-        .get_cells()
-        .await
-        .map_err(|e| format!("Failed to get cells: {}", e))?;
-
-    let json_cells: Vec<serde_json::Value> = cells
-        .into_iter()
-        .map(|cell| {
-            serde_json::json!({
-                "id": cell.id,
-                "cell_type": cell.cell_type,
-                "source": cell.source,
-                "execution_count": cell.execution_count,
-                "outputs_count": cell.outputs.len(),
-            })
-        })
-        .collect();
-
-    Ok(json_cells)
-}
-
 #[tauri::command]
 async fn get_preferred_kernelspec(
     window: tauri::Window,
@@ -3710,8 +3640,7 @@ pub fn run(
             reconnect_to_daemon,
             get_automerge_doc_bytes,
             send_automerge_sync,
-            debug_get_automerge_state,
-            debug_get_local_state,
+
             // Kernelspec discovery (used by UI)
             get_preferred_kernelspec,
             list_kernelspecs,

@@ -109,7 +109,7 @@ impl FrontendCell {
 }
 
 /// Convert nbformat Cell -> FrontendCell
-pub fn cell_to_frontend(cell: &Cell) -> FrontendCell {
+fn cell_to_frontend(cell: &Cell) -> FrontendCell {
     match cell {
         Cell::Code {
             id,
@@ -147,71 +147,6 @@ pub struct NotebookState {
 }
 
 impl NotebookState {
-    pub fn new_empty() -> Self {
-        // Generate unique environment ID for this notebook
-        let env_id = Uuid::new_v4().to_string();
-
-        // Load user's preferred Python environment type from settings
-        let app_settings = settings::load_settings();
-        let mut additional = HashMap::new();
-
-        // Build runt metadata with nested uv/conda based on user's preference
-        let runt_meta = match app_settings.default_python_env {
-            PythonEnvType::Uv | PythonEnvType::Other(_) => {
-                serde_json::json!({
-                    "schema_version": "1",
-                    "env_id": env_id,
-                    "uv": {
-                        "dependencies": Vec::<String>::new(),
-                    }
-                })
-            }
-            PythonEnvType::Conda => {
-                serde_json::json!({
-                    "schema_version": "1",
-                    "env_id": env_id,
-                    "conda": {
-                        "dependencies": Vec::<String>::new(),
-                        "channels": vec!["conda-forge"],
-                    }
-                })
-            }
-        };
-
-        additional.insert("runt".to_string(), runt_meta);
-
-        // Set Python kernelspec (new_empty defaults to Python)
-        let kernelspec = Some(nbformat::v4::KernelSpec {
-            name: "python3".to_string(),
-            display_name: "Python 3".to_string(),
-            language: Some("python".to_string()),
-            additional: std::collections::HashMap::new(),
-        });
-
-        NotebookState {
-            notebook: Notebook {
-                metadata: nbformat::v4::Metadata {
-                    kernelspec,
-                    language_info: None,
-                    authors: None,
-                    additional,
-                },
-                nbformat: 4,
-                nbformat_minor: 5,
-                cells: vec![Cell::Code {
-                    id: CellId::from(Uuid::new_v4()),
-                    metadata: empty_cell_metadata(),
-                    execution_count: None,
-                    source: Vec::new(),
-                    outputs: Vec::new(),
-                }],
-            },
-            path: None,
-            dirty: false,
-            working_dir: None,
-        }
-    }
-
     /// Create a new empty notebook with a specific runtime
     pub fn new_empty_with_runtime(runtime: Runtime) -> Self {
         let env_id = Uuid::new_v4().to_string();
@@ -484,23 +419,6 @@ impl NotebookState {
     pub fn cells_for_frontend(&self) -> Vec<FrontendCell> {
         self.notebook.cells.iter().map(cell_to_frontend).collect()
     }
-
-    /// Get the ordered list of code cell IDs (skipping markdown and raw cells)
-    pub fn get_code_cell_ids(&self) -> Vec<String> {
-        self.notebook
-            .cells
-            .iter()
-            .filter_map(|c| match c {
-                Cell::Code { id, .. } => Some(id.to_string()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    pub fn serialize(&self) -> Result<String, String> {
-        let nb = nbformat::Notebook::V4(self.notebook.clone());
-        nbformat::serialize_notebook(&nb).map_err(|e| e.to_string())
-    }
 }
 
 // ── Conversions between nbformat Metadata and NotebookMetadataSnapshot ──
@@ -684,31 +602,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_new_empty_creates_single_code_cell() {
-        let state = NotebookState::new_empty();
-
-        assert_eq!(state.notebook.cells.len(), 1);
-        assert!(matches!(state.notebook.cells[0], Cell::Code { .. }));
-        assert!(state.path.is_none());
-        assert!(!state.dirty);
-    }
-
-    #[test]
-    fn test_new_empty_sets_env_metadata() {
-        let state = NotebookState::new_empty();
-
-        // Should have runt namespace with either uv or conda nested inside
-        let runt = state
-            .notebook
-            .metadata
-            .additional
-            .get("runt")
-            .expect("runt namespace should exist");
-        let has_env = runt.get("uv").is_some() || runt.get("conda").is_some();
-        assert!(has_env);
-    }
-
-    #[test]
     fn test_new_empty_with_runtime_python() {
         let state = NotebookState::new_empty_with_runtime(Runtime::Python);
 
@@ -740,7 +633,7 @@ mod tests {
 
     #[test]
     fn test_get_runtime_returns_python_by_default() {
-        let state = NotebookState::new_empty();
+        let state = NotebookState::new_empty_with_runtime(Runtime::Python);
         assert_eq!(state.get_runtime(), Runtime::Python);
     }
 
@@ -760,7 +653,7 @@ mod tests {
     #[test]
     fn test_get_runtime_contains_deno() {
         // Should detect deno-variants like "deno-ts" via contains()
-        let mut state = NotebookState::new_empty();
+        let mut state = NotebookState::new_empty_with_runtime(Runtime::Python);
         state.notebook.metadata.kernelspec = Some(nbformat::v4::KernelSpec {
             name: "deno-typescript".to_string(),
             display_name: "Deno TypeScript".to_string(),
@@ -773,7 +666,7 @@ mod tests {
     #[test]
     fn test_get_runtime_language_info_fallback() {
         // Should fall back to language_info.name when kernelspec is missing
-        let mut state = NotebookState::new_empty();
+        let mut state = NotebookState::new_empty_with_runtime(Runtime::Python);
         state.notebook.metadata.kernelspec = None;
         state.notebook.metadata.language_info = Some(nbformat::v4::LanguageInfo {
             name: "typescript".to_string(),
@@ -787,7 +680,7 @@ mod tests {
     #[test]
     fn test_get_runtime_kernelspec_language_fallback() {
         // Should detect via kernelspec.language when name doesn't match
-        let mut state = NotebookState::new_empty();
+        let mut state = NotebookState::new_empty_with_runtime(Runtime::Python);
         state.notebook.metadata.kernelspec = Some(nbformat::v4::KernelSpec {
             name: "custom-kernel".to_string(),
             display_name: "Custom".to_string(),
@@ -799,7 +692,7 @@ mod tests {
 
     #[test]
     fn test_cells_for_frontend_converts_correctly() {
-        let mut state = NotebookState::new_empty();
+        let mut state = NotebookState::new_empty_with_runtime(Runtime::Python);
         // Set source directly on the nbformat cell
         if let Cell::Code {
             source: ref mut s, ..
@@ -816,19 +709,6 @@ mod tests {
         } else {
             panic!("Expected code cell");
         }
-    }
-
-    #[test]
-    fn test_serialize_produces_valid_json() {
-        let state = NotebookState::new_empty();
-
-        let result = state.serialize();
-
-        assert!(result.is_ok());
-        let json_str = result.unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(parsed["nbformat"], 4);
-        assert!(parsed["cells"].is_array());
     }
 
     #[test]
@@ -851,51 +731,6 @@ mod tests {
         assert_eq!(code_cell.id(), "code-123");
         assert_eq!(md_cell.id(), "md-456");
         assert_eq!(raw_cell.id(), "raw-789");
-    }
-
-    #[test]
-    fn test_get_code_cell_ids_returns_only_code_cells() {
-        let mut state = NotebookState::new_empty();
-        // Start with 1 code cell
-        let first_code_id = state.notebook.cells[0].id().to_string();
-
-        // Add cells directly via nbformat
-        let md_id = CellId::from(Uuid::new_v4());
-        state.notebook.cells.push(Cell::Markdown {
-            id: md_id,
-            metadata: empty_cell_metadata(),
-            source: Vec::new(),
-            attachments: None,
-        });
-        let second_code_id = CellId::from(Uuid::new_v4());
-        let second_code_id_str = second_code_id.to_string();
-        state.notebook.cells.push(Cell::Code {
-            id: second_code_id,
-            metadata: empty_cell_metadata(),
-            execution_count: None,
-            source: Vec::new(),
-            outputs: Vec::new(),
-        });
-
-        let code_ids = state.get_code_cell_ids();
-        assert_eq!(code_ids.len(), 2);
-        assert_eq!(code_ids[0], first_code_id);
-        assert_eq!(code_ids[1], second_code_id_str);
-    }
-
-    #[test]
-    fn test_get_code_cell_ids_empty_when_no_code_cells() {
-        let mut state = NotebookState::new_empty();
-        // Add a markdown cell alongside the default code cell
-        state.notebook.cells.push(Cell::Markdown {
-            id: CellId::from(Uuid::new_v4()),
-            metadata: empty_cell_metadata(),
-            source: Vec::new(),
-            attachments: None,
-        });
-        // Original code cell is still present
-        let ids = state.get_code_cell_ids();
-        assert_eq!(ids.len(), 1);
     }
 
     #[test]
