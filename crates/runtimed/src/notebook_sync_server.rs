@@ -2714,6 +2714,7 @@ async fn save_notebook_to_disk(
 /// - A fresh env_id (so it gets its own environment)
 /// - All outputs cleared
 /// - All execution_counts reset to null
+/// - Cell metadata and attachments preserved from the source notebook
 async fn clone_notebook_to_disk(room: &NotebookRoom, target_path: &str) -> Result<String, String> {
     let path = PathBuf::from(target_path);
 
@@ -2738,46 +2739,87 @@ async fn clone_notebook_to_disk(room: &NotebookRoom, target_path: &str) -> Resul
         (doc.get_cells(), doc.get_metadata(NOTEBOOK_METADATA_KEY))
     };
 
+    // Read existing source notebook to preserve cell metadata and attachments
+    // (Automerge doc doesn't store these)
+    let existing: Option<serde_json::Value> =
+        match tokio::fs::read_to_string(&room.notebook_path).await {
+            Ok(content) => serde_json::from_str(&content).ok(),
+            Err(_) => None,
+        };
+
+    // Build cell metadata/attachments index from existing notebook
+    let existing_cell_data: HashMap<String, (serde_json::Value, Option<serde_json::Value>)> =
+        existing
+            .as_ref()
+            .and_then(|nb| nb.get("cells"))
+            .and_then(|c| c.as_array())
+            .map(|cells_arr| {
+                cells_arr
+                    .iter()
+                    .filter_map(|cell| {
+                        let id = cell.get("id").and_then(|v| v.as_str())?;
+                        let meta = cell
+                            .get("metadata")
+                            .cloned()
+                            .unwrap_or(serde_json::json!({}));
+                        let attachments = cell.get("attachments").cloned();
+                        Some((id.to_string(), (meta, attachments)))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
     // Generate fresh env_id for the cloned notebook
     let new_env_id = uuid::Uuid::new_v4().to_string();
 
-    // Build cells with cleared outputs and execution counts
+    // Build cells with cleared outputs and execution counts, but preserved metadata
     let mut nb_cells = Vec::new();
     for cell in &cells {
-        // Parse source into multiline array format
+        // Parse source into multiline array format using split_inclusive
         let source_lines: Vec<String> = if cell.source.is_empty() {
             vec![]
         } else {
-            let mut lines = Vec::new();
-            let mut remaining = cell.source.as_str();
-            while let Some(pos) = remaining.find('\n') {
-                lines.push(remaining[..=pos].to_string());
-                remaining = &remaining[pos + 1..];
-            }
-            if !remaining.is_empty() {
-                lines.push(remaining.to_string());
-            }
-            lines
+            cell.source
+                .split_inclusive('\n')
+                .map(|s| s.to_string())
+                .collect()
         };
+
+        // Preserve cell metadata and attachments from existing notebook
+        let (cell_meta, attachments) = existing_cell_data
+            .get(&cell.id)
+            .cloned()
+            .unwrap_or((serde_json::json!({}), None));
 
         let mut cell_json = serde_json::json!({
             "id": cell.id,
             "cell_type": cell.cell_type,
             "source": source_lines,
-            "metadata": {},
+            "metadata": cell_meta,
         });
 
         if cell.cell_type == "code" {
             // Clear outputs and execution_count for cloned notebook
             cell_json["outputs"] = serde_json::json!([]);
             cell_json["execution_count"] = serde_json::Value::Null;
+        } else if cell.cell_type == "markdown" {
+            // Preserve attachments for markdown cells (embedded images)
+            if let Some(att) = attachments {
+                cell_json["attachments"] = att;
+            }
         }
 
         nb_cells.push(cell_json);
     }
 
-    // Build metadata with fresh env_id
-    let mut metadata = serde_json::json!({});
+    // Build metadata: start with existing notebook metadata to preserve unknown fields,
+    // then apply snapshot with fresh env_id
+    let mut metadata = existing
+        .as_ref()
+        .and_then(|nb| nb.get("metadata"))
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
+
     if let Some(ref meta_json) = metadata_json {
         if let Ok(mut snapshot) =
             serde_json::from_str::<crate::notebook_metadata::NotebookMetadataSnapshot>(meta_json)
@@ -2792,11 +2834,19 @@ async fn clone_notebook_to_disk(room: &NotebookRoom, target_path: &str) -> Resul
         }
     }
 
-    // Build the final notebook JSON (nbformat 4.5+ for cell IDs)
+    // Determine nbformat_minor from existing or default to 5 (for cell IDs)
+    let existing_minor = existing
+        .as_ref()
+        .and_then(|nb| nb.get("nbformat_minor"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5);
+    let nbformat_minor = std::cmp::max(existing_minor, 5);
+
+    // Build the final notebook JSON
     let cell_count = nb_cells.len();
     let notebook_json = serde_json::json!({
         "nbformat": 4,
-        "nbformat_minor": 5,
+        "nbformat_minor": nbformat_minor,
         "metadata": metadata,
         "cells": nb_cells,
     });

@@ -1278,6 +1278,56 @@ async fn save_notebook_as(
     // This ensures realtime sync uses the correct file path as the room identifier.
     info!("[save-as] Reconnecting to room for new path");
 
+    // Read cells and metadata from the old room BEFORE disconnecting.
+    // The new room won't have these yet (it's a different notebook_id), so we need
+    // to carry them across to populate the new room if it's empty.
+    let (cells_for_reconnect, metadata_for_reconnect) = {
+        let sync_guard = notebook_sync.lock().await;
+        if let Some(handle) = sync_guard.as_ref() {
+            let cells = handle
+                .get_cells()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|snap| {
+                    // Convert CellSnapshot to FrontendCell for init_sync
+                    match snap.cell_type.as_str() {
+                        "code" => FrontendCell::Code {
+                            id: snap.id,
+                            source: snap.source,
+                            execution_count: snap
+                                .execution_count
+                                .parse()
+                                .ok()
+                                .filter(|&n: &i32| n > 0),
+                            outputs: snap
+                                .outputs
+                                .into_iter()
+                                .filter_map(|s| serde_json::from_str(&s).ok())
+                                .collect(),
+                        },
+                        "markdown" => FrontendCell::Markdown {
+                            id: snap.id,
+                            source: snap.source,
+                        },
+                        _ => FrontendCell::Raw {
+                            id: snap.id,
+                            source: snap.source,
+                        },
+                    }
+                })
+                .collect::<Vec<_>>();
+            let metadata = handle
+                .get_metadata(runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY)
+                .await
+                .ok()
+                .flatten();
+            (cells, metadata)
+        } else {
+            (vec![], None)
+        }
+    };
+
     // Clear the existing sync handle to disconnect from the old room
     {
         let mut sync_guard = notebook_sync.lock().await;
@@ -1286,7 +1336,8 @@ async fn save_notebook_as(
 
     // Reconnect with the new path-based room ID.
     // We don't fail the save if reconnect fails - the file was already written successfully.
-    // The daemon already has the cells from the save operation, so pass empty cells.
+    // Pass cells/metadata from the old room in case the new room is empty (it will be,
+    // since the notebook_id changed).
     let webview_window = window
         .app_handle()
         .get_webview_window(window.label())
@@ -1295,8 +1346,8 @@ async fn save_notebook_as(
     if let Err(e) = initialize_notebook_sync(
         webview_window,
         new_notebook_id,
-        vec![], // Daemon already has cells from the save
-        None,   // Daemon already has metadata
+        cells_for_reconnect,
+        metadata_for_reconnect,
         notebook_sync,
         sync_generation,
         None,
