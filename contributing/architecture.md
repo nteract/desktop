@@ -108,13 +108,13 @@ We are working toward full conformance with these principles.
 | Principle | Status |
 |-----------|--------|
 | Daemon as source of truth | Conformant |
-| Automerge as canonical state | Mostly Conformant |
+| Automerge as canonical state | Conformant |
 | On-disk as checkpoint | Conformant |
-| Local-first editing, synced execution | Mostly Conformant |
+| Local-first editing, synced execution | Conformant |
 | Binary separation | Conformant |
 | Daemon manages resources | Conformant |
 
-`ExecuteCell` is implemented and reads from the synced document. The deprecated `QueueCell` (which accepts code as a parameter) is retained only for `runtimed-py` backwards compatibility.
+The frontend now owns a local Automerge doc via `runtimed-wasm` WASM bindings, making it fully conformant with the canonical-state principle. Cell mutations (edits, reorders, deletes) are applied instantly in WASM with no RPC round-trip, satisfying local-first editing. `ExecuteCell` reads from the synced document. The deprecated `QueueCell` (which accepts code as a parameter) is retained only for `runtimed-py` backwards compatibility.
 
 ## References
 

@@ -61,6 +61,10 @@ result = session.execute_cell(cell_id)
 print(result.success)
 print(result.stdout)
 print(result.error)
+
+# Save the notebook to disk
+path = session.save()                       # Save to current path
+path = session.save(path="/tmp/copy.ipynb")  # Save-as
 ```
 
 ## AsyncSession API
@@ -73,6 +77,10 @@ async with runtimed.AsyncSession(notebook_id="my-notebook") as session:
     # Or document-first pattern
     cell_id = await session.create_cell("print(x)")
     result = await session.execute_cell(cell_id)
+
+    # Save the notebook to disk
+    path = await session.save()                       # Save to current path
+    path = await session.save(path="/tmp/copy.ipynb")  # Save-as
 ```
 
 ## DaemonClient API

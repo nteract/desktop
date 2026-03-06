@@ -42,7 +42,7 @@ The architecture has two core ideas:
 │  │ - HTTP read server on localhost         │    │
 │  └─────────────────────────────────────────┘    │
 │  ┌─────────────────────────────────────────┐    │
-│  │ Kernel manager (future)                 │    │
+│  │ Kernel manager                          │    │
 │  │ - Owns kernel processes                 │    │
 │  │ - Subscribes to iopub                   │    │
 │  │ - Writes outputs to store               │    │
@@ -404,101 +404,82 @@ pub enum BlobResponse {
 
 ---
 
-## Phase 5: Tauri <-> daemon notebook sync
+## Phase 5: Local-first Automerge notebook sync
 
-> **Implemented** (PR #238 for cell/source sync, PR #241 for output/execution_count sync)
+> **Implemented** — Frontend owns a local Automerge doc via WASM. Cell state syncs bidirectionally with the daemon over binary Automerge messages.
 
-Wire the Tauri app and React frontend to use the daemon's automerge doc as the source of truth for notebook state. This gives us multi-window sync immediately. Outputs still flow as inline JSON strings through the CRDT for now — Phase 6 makes them efficient.
+The frontend runs `runtimed-wasm` (compiled from `crates/runtimed-wasm/`) as a WASM module, giving it a local Automerge `NotebookHandle`. All cell mutations (source edits, add/delete, reorder) happen locally in WASM and propagate to the daemon via binary sync messages relayed through Tauri. The daemon's copy is authoritative for outputs and execution state.
 
-**Known limitations** (tracked in issues):
-- Output clearing on re-execution uses frontend-driven approach; atomic clearing would be cleaner (#244)
-- Stream outputs sync individually without merging consecutive outputs (#243)
-- Widget-captured outputs are correctly excluded from sync (handled in App.tsx after widget routing)
-
-### Current state (what changes)
-
-Today the Tauri process holds notebook state in-memory:
-
-```rust
-pub struct NotebookState {
-    pub notebook: Notebook,      // nbformat v4 — cells, outputs, metadata
-    pub path: Option<PathBuf>,
-    pub dirty: bool,
-}
-```
-
-Cell mutations (`update_cell_source`, `add_cell`, `delete_cell`) modify this struct directly. Outputs flow as events from the kernel iopub listener through Tauri events to React state — they never touch `NotebookState` during execution. On save, the frontend's current state is serialized to `.ipynb`.
+### Architecture
 
 ```
-kernel -> iopub -> Tauri event "kernel:iopub" -> React state -> render
-                                                     | (on save)
-                                                 .ipynb file
+┌─────────────────────────────────────────────────────────┐
+│ Frontend (React)                                        │
+│                                                         │
+│  useAutomergeNotebook.ts                                │
+│    ├── NotebookHandle (runtimed-wasm, local Automerge)  │
+│    ├── materialize-cells.ts (doc → React cell state)    │
+│    └── Tauri event listeners                            │
+│                                                         │
+│  Cell edits ──► WASM mutates local doc                  │
+│                   │                                     │
+│                   ▼                                     │
+│              Binary sync message                        │
+│                   │                                     │
+│                   ▼                                     │
+│  Tauri relay (automerge:to-daemon / automerge:from-daemon) │
+│                   │                                     │
+│                   ▼                                     │
+│  Daemon (NotebookRoom)                                  │
+│    ├── Merges changes into canonical doc                │
+│    ├── Writes kernel outputs to doc                     │
+│    └── Syncs to all connected peers                     │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### Target state
+### How cell mutations work
 
-Replace `NotebookState` with a `NotebookSyncClient` connected to the daemon. The automerge doc becomes the single source of truth.
+The frontend calls methods on the WASM `NotebookHandle` directly — no Tauri commands for cell source, add, or delete. The WASM module mutates its local Automerge doc and produces a binary sync message. Tauri relays that message to the daemon via the notebook sync connection.
 
-```
-kernel -> iopub -> Tauri writes to automerge doc -> daemon syncs to all peers
-                                                        |
-frontend <- Tauri event "notebook:updated" <- Tauri recv_changes()
-    |
-render
-```
+Character-level source edits use Automerge's `update_text` for CRDT-friendly merging across windows.
 
-### Tauri backend changes
+### How outputs arrive
 
-**On notebook open** (`load_notebook`):
-1. Determine notebook_id (derive from file path, or from notebook metadata)
-2. Connect `NotebookSyncClient` to daemon with that notebook_id
-3. If opening an .ipynb from disk: populate the automerge doc from the file contents (cells, source, metadata, outputs as JSON strings)
-4. If reconnecting to existing room (another window already has it open): sync from the daemon's canonical doc
-5. Spawn background task: `sync_client.recv_changes()` loop -> emit Tauri event `notebook:updated` with cell snapshots
+Outputs flow through the Automerge doc, not Tauri events:
 
-**Cell mutations** — existing Tauri commands change to write through automerge:
-- `update_cell_source(cell_id, source)` -> `sync_client.update_source(cell_id, source)` (character-level patch via `update_text`)
-- `add_cell(cell_type, after_cell_id)` -> `sync_client.add_cell(index, cell_id, cell_type)`
-- `delete_cell(cell_id)` -> `sync_client.delete_cell(cell_id)`
+1. Kernel emits iopub message → daemon's `kernel_manager` receives it
+2. Daemon writes output to the notebook's Automerge doc (cell outputs array)
+3. Daemon produces a sync message → Tauri relay forwards it to the frontend
+4. Frontend receives `automerge:from-daemon` → WASM merges into local doc
+5. `materialize-cells.ts` converts the updated doc into React cell state
 
-**Kernel outputs** — the iopub listener writes to automerge instead of just emitting events:
-- `stream` -> `sync_client.append_output(cell_id, json_output_string)`
-- `display_data` / `execute_result` -> same
-- `error` -> same
-- `execute_cell` clears outputs first: `sync_client.clear_outputs(cell_id)`
+The legacy `onOutput` broadcast path is no-opped to avoid duplicate outputs (no dedup IDs yet). See #557 for the output streaming improvement plan.
 
-The Tauri event `kernel:iopub` still fires for low-latency display (the frontend can render immediately from the event, then reconcile when the automerge update arrives). This is the same data, two delivery paths — event for speed, automerge for durability and sync.
+### Save and format-on-save
 
-**On save** (`save_notebook`):
-1. Read cell state from the sync client's local replica
-2. Serialize to nbformat `.ipynb` (same as today, but source of truth is automerge doc, not `NotebookState`)
-
-### Frontend changes
-
-**`useNotebook.ts`** — the hook's public API stays the same. Internally:
-- `cells` state populated from `notebook:updated` Tauri events (instead of only `load_notebook`)
-- `appendOutput` / `clearCellOutputs` / `setExecutionCount` still update local React state for immediate rendering
-- When `notebook:updated` arrives from Tauri (triggered by automerge sync), reconcile local state
-
-The frontend doesn't know about automerge. It still calls Tauri commands and receives Tauri events. The sync layer is invisible.
-
-**`OutputArea.tsx`** — no changes in this phase. Outputs are still `JupyterOutput[]` objects parsed from JSON strings. Phase 6 changes this.
+Save is delegated to the daemon via `NotebookRequest::SaveNotebook`. The daemon:
+1. Reads the canonical Automerge doc
+2. Runs format-on-save if enabled (ruff for Python, deno fmt for TypeScript)
+3. Serializes to nbformat `.ipynb` and writes to disk
+4. Syncs any formatter changes back to all peers
 
 ### What multi-window sync gives us
 
-- Two windows open the same notebook -> both see the same cells, source, and outputs
-- Edit source in window A -> window B sees the change (character-level merge via Automerge Text CRDT)
-- Execute cell in window A -> outputs appear in window B (JSON strings synced through automerge)
-- Both windows save -> same `.ipynb` content (both read from the same automerge doc)
+- Two windows open the same notebook → both have local Automerge docs synced through the daemon
+- Edit source in window A → binary sync message → daemon → window B sees the change
+- Execute cell in window A → daemon writes outputs → both windows materialize them
+- Save from either window → daemon writes the same canonical `.ipynb`
 
 ### Key files
 
 | File | Role |
 |------|------|
-| `crates/notebook/src/lib.rs` | Tauri commands using sync client |
-| `crates/notebook/src/notebook_state.rs` | Notebook metadata and state |
-| `crates/runtimed/src/kernel_manager.rs` | Daemon-side kernel and iopub handling |
-| `apps/notebook/src/hooks/useNotebook.ts` | Listen to `notebook:updated` events |
+| `crates/runtimed-wasm/` | WASM module exposing `NotebookHandle` to the frontend |
+| `apps/notebook/src/hooks/useAutomergeNotebook.ts` | Frontend hook owning the local Automerge doc and sync lifecycle |
+| `apps/notebook/src/lib/materialize-cells.ts` | Converts Automerge doc state into React cell arrays |
+| `crates/runtimed/src/notebook_sync_server.rs` | Daemon-side notebook room management and sync |
+| `crates/runtimed/src/kernel_manager.rs` | Daemon-side kernel process and iopub → Automerge output writing |
+| `crates/notebook/src/lib.rs` | Tauri commands and relay plumbing |
 
 ---
 
@@ -842,21 +823,13 @@ For output manifests, the `output_type` field provides structural versioning. Ne
 
 ## Known Limitations
 
-### Sync Race Condition During Execution
+### Output Flow and Deduplication
 
-When a cell executes, there's a brief window where daemon sync updates may conflict with local output updates. The flow is:
+Outputs arrive at the frontend exclusively through Automerge sync: the daemon writes outputs to the notebook doc, produces a sync message, and the Tauri relay forwards it to the frontend WASM where `materialize-cells.ts` renders them.
 
-1. Frontend clears outputs and marks cell as executing
-2. Kernel outputs arrive via iopub → frontend updates local state
-3. Frontend calls `sync_append_output` (async to daemon)
-4. Daemon may send `notebook:updated` before our append arrives
-5. Frontend must decide: trust daemon state or preserve local outputs?
+The `onOutput` broadcast path is no-opped to avoid showing duplicate outputs — there are no dedup IDs to correlate broadcast outputs with Automerge-synced outputs. This means output latency is bounded by the Automerge sync round-trip rather than direct event delivery.
 
-**Current workaround**: The frontend tracks "executing cells" in `executingCellsRef` and preserves local outputs for those cells during `notebook:updated`. When execution completes (`markExecutionComplete`), the cell trusts daemon state again.
-
-**Limitation**: This is imperfect. There's no correlation between the kernel's `msg_id` and outputs in the CRDT. If the daemon sends stale state, we might briefly show wrong outputs.
-
-**Proper fix (future)**: Store `parent_header.msg_id` in cell metadata to correlate execution requests with outputs. Only accept daemon outputs that match the expected `msg_id`.
+See #557 for the output streaming improvement plan.
 
 ### Multi-Window Widget Sync (#276)
 
@@ -881,13 +854,7 @@ Widgets only render in the window that was active when the widget was created. S
 | **2** | CRDT sync (settings + notebooks) | Implemented (PR #220, #223) |
 | **3** | Blob store (on-disk CAS + HTTP server) | Implemented (PR #220) |
 | **4** | Protocol consolidation (single socket) | Implemented (PR #220, #223) |
-| **5** | Tauri <-> daemon notebook sync (multi-window) | Implemented (PR #238, #241) |
+| **5** | Local-first Automerge notebook sync | Implemented — frontend owns local Automerge doc via `runtimed-wasm` WASM, cell mutations happen in WASM, sync to daemon via binary messages |
 | **6** | Output store (manifests, ContentRef, inlining) | Implemented (PR #237) |
 | **7** | ipynb round-tripping | Future (outputs already persist in nbformat) |
-| **8** | Daemon-owned kernels | Implemented (PRs #258, #259, #267, #271, #275) — behind `daemon_execution` flag, widgets work single-window |
-
-### Remaining for daemon_execution default-on
-
-1. **Widget multi-window sync (#276)** — widgets work in single window, but secondary windows show "Loading widget" due to missing `comm_open` history
-2. ~~**Inline deps detection**~~ ✅ — daemon now reads `metadata.uv.dependencies`/`metadata.conda.dependencies` from .ipynb file
-3. **Testing** — verify project file detection works across fixture notebooks
+| **8** | Daemon-owned kernels | Implemented (PRs #258, #259, #267, #271, #275) — widgets work single-window |

@@ -26,6 +26,7 @@ graph TD
         RC["runt-cli (bin: runt)<br/><i>CLI</i>"]
         NB["notebook (Tauri app)<br/><i>main app</i>"]
         XT["xtask<br/><i>build orchestrator</i>"]
+        RWASM["runtimed-wasm<br/><i>WASM notebook doc ops</i>"]
     end
 
     subgraph "Bundled Artifacts"
@@ -36,6 +37,7 @@ graph TD
     %% Frontend → Rust compile-time dependencies
     SUI -->|"build.rs panics<br/>if dist/ missing"| SC
     NUI -->|"tauri beforeBuildCommand"| NB
+    RWASM -->|"wasm-pack output in<br/>apps/notebook/src/wasm/"| NUI
 
     %% Rust crate dependencies (path deps in Cargo.toml)
     TJ -->|"path dep"| SC
@@ -63,7 +65,7 @@ graph TD
     classDef artifact fill:#e8f5e9,stroke:#2e7d32
 
     class SUI,NUI frontend
-    class TJ,RD,SC,RC,NB,XT rust
+    class TJ,RD,SC,RC,NB,XT,RWASM rust
     class APP,PY artifact
 ```
 
@@ -75,14 +77,15 @@ here is what happens under the hood:
 ```mermaid
 graph LR
     A["1. pnpm install"] --> B["2. pnpm --dir apps/sidecar build"]
-    A --> C["3. pnpm --dir apps/notebook build<br/>(includes isolated-renderer)"]
-    B --> D["4. cargo build --release<br/>-p runtimed -p runt-cli"]
+    A --> W["3. wasm-pack build<br/>crates/runtimed-wasm"]
+    W --> C["4. pnpm --dir apps/notebook build<br/>(includes isolated-renderer)"]
+    B --> D["5. cargo build --release<br/>-p runtimed -p runt-cli"]
     C --> D
-    D --> E["5. Copy binaries to<br/>crates/notebook/binaries/"]
-    E --> F["6. cargo tauri build"]
+    D --> E["6. Copy binaries to<br/>crates/notebook/binaries/"]
+    E --> F["7. cargo tauri build"]
 
     classDef step fill:#f3e5f5,stroke:#7b1fa2
-    class A,B,C,D,E,F step
+    class A,B,W,C,D,E,F step
 ```
 
 ## Rust Crate Dependency Graph
@@ -102,6 +105,7 @@ graph BT
     RT["runt-trust"]
     RW["runt-workspace"]
     RDPY["runtimed-py"]
+    RWASM["runtimed-wasm"]
 
     SC -->|"depends on"| TJ
     NB -->|"depends on"| TJ
@@ -119,7 +123,7 @@ graph BT
     classDef leaf fill:#c8e6c9,stroke:#388e3c
     classDef shared fill:#e3f2fd,stroke:#1976d2
 
-    class TJ,KL,KE,RT,RW standalone
+    class TJ,KL,KE,RT,RW,RWASM standalone
     class XT standalone
     class NB,RC,RDPY leaf
     class RD shared
@@ -134,4 +138,5 @@ graph BT
 | `runtimed` + `runt` binaries must exist in `crates/notebook/binaries/` | `tauri.conf.json` lists them in `bundle.externalBin` — Tauri bundles them into the .app/.dmg/.exe |
 | `isolated-renderer` built inline | The notebook-ui Vite plugin builds the isolated renderer and embeds it as a virtual module — no separate build step needed |
 | `xtask` has no Cargo deps | It shells out to `cargo build`, `pnpm`, and `cargo tauri` to orchestrate the full build |
+| `runtimed-wasm` must build before `notebook-ui` | wasm-pack output lands in `apps/notebook/src/wasm/runtimed-wasm/`; Vite imports it at build time. Artifacts are committed to the repo, so this step is only needed when changing `crates/runtimed-wasm/`. |
 | Python wheel uses maturin | `python/runtimed/pyproject.toml` points `maturin` at `crates/runt/Cargo.toml` with `bindings = "bin"` |
