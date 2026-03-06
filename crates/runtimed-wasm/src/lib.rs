@@ -165,6 +165,22 @@ impl NotebookHandle {
         self.doc.get_metadata(key)
     }
 
+    /// Get the full typed metadata as a JSON string.
+    ///
+    /// Returns the `NotebookMetadataSnapshot` serialized as JSON, or undefined
+    /// if no metadata is set. The frontend can parse this with a shared TS interface.
+    pub fn get_metadata_snapshot_json(&self) -> Option<String> {
+        let snapshot = self.doc.get_metadata_snapshot()?;
+        serde_json::to_string(&snapshot).ok()
+    }
+
+    /// Detect the notebook runtime from kernelspec/language_info metadata.
+    ///
+    /// Returns "python", "deno", or undefined for unknown runtimes.
+    pub fn detect_runtime(&self) -> Option<String> {
+        self.doc.detect_runtime()
+    }
+
     /// Set a metadata value.
     pub fn set_metadata(&mut self, key: &str, value: &str) -> Result<(), JsError> {
         self.doc

@@ -2893,51 +2893,6 @@ async fn detect_deno_config(
     )))
 }
 
-/// Get Deno permissions from notebook metadata
-#[tauri::command]
-async fn get_deno_permissions(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<Vec<String>, String> {
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-    let guard = notebook_sync.lock().await;
-    if let Some(handle) = guard.as_ref() {
-        if let Some(snapshot) = get_metadata_snapshot(handle).await {
-            let metadata = metadata_from_snapshot(&snapshot);
-            let deps = deno_env::extract_deno_metadata(&metadata);
-            return Ok(deps.map(|d| d.permissions).unwrap_or_default());
-        }
-    }
-    // Fallback
-    let state = notebook_state_for_window(&window, registry.inner())?;
-    let state = state.lock().map_err(|e| e.to_string())?;
-    let deps = deno_env::extract_deno_metadata(&state.notebook.metadata);
-    Ok(deps.map(|d| d.permissions).unwrap_or_default())
-}
-
-/// Set Deno permissions in notebook metadata
-#[tauri::command]
-async fn set_deno_permissions(
-    permissions: Vec<String>,
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<(), String> {
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-    let guard = notebook_sync.lock().await;
-    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
-
-    let snapshot = get_metadata_snapshot(handle).await;
-    let mut metadata = snapshot
-        .as_ref()
-        .map(metadata_from_snapshot)
-        .unwrap_or_else(|| metadata_from_snapshot(&default_metadata_snapshot()));
-    let mut deno_deps = deno_env::extract_deno_metadata(&metadata).unwrap_or_default();
-    deno_deps.permissions = permissions;
-    deno_env::set_deno_metadata(&mut metadata, &deno_deps);
-    let new_snapshot = notebook_state::snapshot_from_nbformat(&metadata);
-    set_metadata_snapshot(handle, &new_snapshot).await
-}
-
 /// Get Deno flexible npm imports setting from notebook metadata
 #[tauri::command]
 async fn get_deno_flexible_npm_imports(
@@ -3568,8 +3523,7 @@ pub fn run(
             get_deno_version,
             get_notebook_runtime,
             detect_deno_config,
-            get_deno_permissions,
-            set_deno_permissions,
+
             get_deno_flexible_npm_imports,
             set_deno_flexible_npm_imports,
 

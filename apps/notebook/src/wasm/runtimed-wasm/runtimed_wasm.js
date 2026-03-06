@@ -232,6 +232,28 @@ export class NotebookHandle {
         }
     }
     /**
+     * Detect the notebook runtime from kernelspec/language_info metadata.
+     *
+     * Returns "python", "deno", or undefined for unknown runtimes.
+     * @returns {string | undefined}
+     */
+    detect_runtime() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.notebookhandle_detect_runtime(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            let v1;
+            if (r0 !== 0) {
+                v1 = getStringFromWasm0(r0, r1).slice();
+                wasm.__wbindgen_export2(r0, r1 * 1, 1);
+            }
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Generate a sync message to send to the relay peer.
      *
      * Returns the message as a byte array, or undefined if already in sync.
@@ -321,6 +343,29 @@ export class NotebookHandle {
                 wasm.__wbindgen_export2(r0, r1 * 1, 1);
             }
             return v2;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Get the full typed metadata as a JSON string.
+     *
+     * Returns the `NotebookMetadataSnapshot` serialized as JSON, or undefined
+     * if no metadata is set. The frontend can parse this with a shared TS interface.
+     * @returns {string | undefined}
+     */
+    get_metadata_snapshot_json() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.notebookhandle_get_metadata_snapshot_json(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            let v1;
+            if (r0 !== 0) {
+                v1 = getStringFromWasm0(r0, r1).slice();
+                wasm.__wbindgen_export2(r0, r1 * 1, 1);
+            }
+            return v1;
         } finally {
             wasm.__wbindgen_add_to_stack_pointer(16);
         }
