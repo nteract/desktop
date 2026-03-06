@@ -31,6 +31,9 @@
   - Run All
   - Restart
   - Interrupt (with long-running cell)
+- Error-notebook execution semantics (`10-run-all-error.ipynb`):
+  - Run All continues after error
+  - Restart & Run All stops at error
 - Global Find validation:
   - source matching
   - output matching
@@ -273,6 +276,9 @@
 - Global Find source+output search and navigation worked:
   - `.../29-global-find-source-and-output-pass.webp`
   - `.../30-global-find-navigation-pass.webp`
+- Error-notebook behavior was consistent and useful:
+  - run-all continues after error: `.../44-run-all-continues-after-error.webp`
+  - restart+run-all stops at error: `.../45-restart-run-all-stops-at-error.webp`
 - File menu sample notebooks worked:
   - `.../31-sample-menu-open-pass.webp`
   - `.../32-sample-notebook-opened-pass.webp`
@@ -290,4 +296,8 @@
 - Launching additional app instances with alternate isolated state while another instance is running occasionally produced reconnect errors of the form:
   - `update_source: Cell not found: <cell-id>`
 - This appears tied to multi-instance/session-state interactions and was not fully minimized into a separate confirmed defect.
+
+## Inconclusive item
+- Trust decline behavior (`Don't Install`) could not be fully exercised in later validation because `2-uv-inline.ipynb` had already been trusted in-session and no longer prompted the trust dialog.
+- Evidence of pre-trusted state: `.../42-trust-decline-inconclusive-already-trusted.webp`
 
