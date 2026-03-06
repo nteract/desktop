@@ -119,7 +119,12 @@ export function useAutomergeNotebook() {
     let isMounted = true;
     const webview = getCurrentWebview();
 
+    // Track whether initialize() has started (not just completed) to prevent
+    // the notebook:updated fallback from racing with doc byte loading.
+    let initStarted = false;
+
     const initialize = async () => {
+      initStarted = true;
       try {
         const bytes = await invoke<number[]>("get_automerge_doc_bytes");
         if (!isMounted) return;
@@ -191,8 +196,11 @@ export function useAutomergeNotebook() {
       "notebook:updated",
       async (event) => {
         if (!isMounted) return;
-        // Only use this fallback if automerge doc isn't initialized yet
-        if (initializedRef.current) return;
+        // Only use this fallback if automerge initialization hasn't started.
+        // Without the initStarted check, this races with get_automerge_doc_bytes:
+        // notebook:updated fires with NotebookState cell IDs while the async
+        // initialize() is still awaiting, overwriting React state with wrong IDs.
+        if (initializedRef.current || initStarted) return;
 
         const blobPort = blobPortPromiseRef.current
           ? await blobPortPromiseRef.current
