@@ -20,7 +20,7 @@ pub mod daemon;
 pub mod inline_env;
 pub mod kernel_manager;
 pub use notebook_doc;
-pub mod notebook_metadata;
+pub use notebook_doc::metadata as notebook_metadata;
 pub mod notebook_sync_client;
 pub mod notebook_sync_server;
 pub mod output_store;

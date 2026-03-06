@@ -1,5 +1,9 @@
 //! Automerge-backed notebook document for cross-window sync.
 //!
+//! Also re-exports typed notebook metadata structs (`metadata` module) so all
+//! peers (daemon, Tauri relay, WASM frontend, Python bindings) share one
+//! definition of kernelspec, dependencies, and trust metadata.
+//!
 //! Wraps an Automerge `AutoCommit` document with typed accessors for
 //! notebook cells, outputs, and metadata. The daemon holds the canonical
 //! copy in a "room"; each connected notebook window holds a local replica
@@ -22,6 +26,8 @@
 //!     runtime: Str
 //!     notebook_metadata: Str      ← JSON-encoded NotebookMetadataSnapshot
 //! ```
+
+pub mod metadata;
 
 use automerge::sync;
 use automerge::sync::SyncDoc;
@@ -71,6 +77,67 @@ impl NotebookDoc {
     /// Access the underlying Automerge document (mutable).
     pub fn doc_mut(&mut self) -> &mut AutoCommit {
         &mut self.doc
+    }
+}
+
+// ── Typed metadata helpers ──────────────────────────────────────────
+
+impl NotebookDoc {
+    /// Read the notebook metadata as a typed snapshot.
+    pub fn get_metadata_snapshot(&self) -> Option<metadata::NotebookMetadataSnapshot> {
+        let json = self.get_metadata(metadata::NOTEBOOK_METADATA_KEY)?;
+        serde_json::from_str(&json).ok()
+    }
+
+    /// Write a typed metadata snapshot to the document.
+    pub fn set_metadata_snapshot(
+        &mut self,
+        snapshot: &metadata::NotebookMetadataSnapshot,
+    ) -> Result<(), AutomergeError> {
+        let json = serde_json::to_string(snapshot)
+            .map_err(|e| AutomergeError::InvalidObjId(format!("serialize metadata: {}", e)))?;
+        self.set_metadata(metadata::NOTEBOOK_METADATA_KEY, &json)
+    }
+
+    /// Detect the notebook runtime from metadata (kernelspec + language_info).
+    ///
+    /// Returns `"python"`, `"deno"`, or `None` for unknown runtimes.
+    pub fn detect_runtime(&self) -> Option<String> {
+        let snapshot = self.get_metadata_snapshot()?;
+
+        // Check kernelspec.name first (most reliable)
+        if let Some(ref ks) = snapshot.kernelspec {
+            let name = ks.name.to_lowercase();
+            if name.contains("deno") {
+                return Some("deno".to_string());
+            }
+            if name.contains("python") {
+                return Some("python".to_string());
+            }
+            // Check kernelspec.language
+            if let Some(ref lang) = ks.language {
+                let lang_lower = lang.to_lowercase();
+                if lang_lower == "typescript" || lang_lower == "javascript" {
+                    return Some("deno".to_string());
+                }
+                if lang_lower == "python" {
+                    return Some("python".to_string());
+                }
+            }
+        }
+
+        // Fall back to language_info.name
+        if let Some(ref li) = snapshot.language_info {
+            let name = li.name.to_lowercase();
+            if name == "typescript" || name == "javascript" {
+                return Some("deno".to_string());
+            }
+            if name == "python" {
+                return Some("python".to_string());
+            }
+        }
+
+        None
     }
 }
 
