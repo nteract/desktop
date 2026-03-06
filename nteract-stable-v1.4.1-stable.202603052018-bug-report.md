@@ -18,8 +18,14 @@
 - Python kernel start + execute
 - UV inline trust flow
 - Conda inline trust flow
+- Mixed inline deps flow (`4-both-deps.ipynb`)
+- Deno runtime execution (`10-deno.ipynb`)
+- Project file env detection:
+  - `pyproject.toml` (`5-pyproject.ipynb`)
+  - `pixi.toml` (`6-pixi.ipynb`)
+  - `environment.yml` (`7-environment-yml.ipynb`)
 - Rich outputs and error outputs
-- Multi-window usage
+- Multi-window usage (different notebooks)
 - Keyboard shortcuts (`Ctrl+S`, `Ctrl+O`, `Ctrl+F`, zoom shortcuts)
 - Settings panel and theme switching
 
@@ -89,7 +95,7 @@
 
 ---
 
-## 3) Opening the same notebook again provides no user feedback (no second window)
+## 3) Re-opening a file already open in another window has ambiguous UX (silent focus-only behavior)
 - Severity: **Medium**
 - Confidence: **High**
 
@@ -99,21 +105,22 @@
 3. Confirm no visible success/failure feedback.
 
 ### Expected
-- Either:
-  - open second window for same file, or
-  - focus existing window with explicit notification, or
-  - show clear “already open” dialog/toast.
+- If single-window-per-file is the intended model, show explicit feedback:
+  - toast/dialog (“already open; focusing existing window”), or
+  - clear visual indicator that focus switch occurred.
 
 ### Actual
-- Operation appears to do nothing from user perspective.
-- No obvious UI feedback that the action was handled.
+- The app focuses the existing window for that file and does not create a second window.
+- No explicit message indicates this behavior, so the action can look like a no-op.
 
 ### Evidence
 - Screenshot: `qa/nteract-stable-v1.4.1-stable.202603052018/screenshots/06-open-same-notebook-no-feedback.webp`
+- Screenshot: `qa/nteract-stable-v1.4.1-stable.202603052018/screenshots/20-same-file-open-attempt.webp`
+- Screenshot: `qa/nteract-stable-v1.4.1-stable.202603052018/screenshots/21-single-window-per-file-behavior.webp`
 
 ### Suspected root cause
-- `create_notebook_window_with_label` in `crates/notebook/src/lib.rs` derives a deterministic window label from notebook path hash (`notebook-<hash>`).
-- Re-opening same path likely collides on window label; creation fails and frontend (`useNotebook.ts` `openNotebook`) only logs error, no visible UI error.
+- Backend window creation uses deterministic path-derived labels (`notebook-<hash>`), which effectively enforces one window per file path in normal operation.
+- UX gap: file-open flow does not surface user-facing messaging for “already open; switched focus”.
 
 ---
 
@@ -195,4 +202,16 @@
 - Rich outputs and error rendering worked:
   - `.../12-rich-output-working-reference.webp`
   - `.../13-error-output-working-reference.webp`
+- Deno runtime worked:
+  - `.../14-deno-execution-pass.webp`
+- Mixed UV+Conda dependency flow worked:
+  - `.../15-both-deps-trust-dialog-pass.webp`
+  - `.../16-both-deps-execution-pass.webp`
+- Project-file environment detection worked:
+  - pyproject: `.../17-pyproject-execution-pass.webp`
+  - pixi: `.../18-pixi-execution-pass.webp`
+  - environment.yml: `.../19-environment-yml-execution-pass.webp`
+
+## Note on same-notebook multi-window sync testing
+- Explicit same-file two-window sync (source/output propagation between two windows on one notebook path) could not be exercised because this build appears to enforce single-window-per-file behavior.
 
