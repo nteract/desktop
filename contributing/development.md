@@ -96,6 +96,10 @@ pnpm build          # Build all UIs (sidecar, notebook — isolated-renderer bui
 cargo build         # Build Rust
 ```
 
+> **Note:** If you've changed `crates/runtimed-wasm/`, you need to run
+> `wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm`
+> before `pnpm build`. `cargo xtask build` handles this automatically.
+
 ## Test Notebooks
 
 The `notebooks/` directory has test files:

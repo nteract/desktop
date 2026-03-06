@@ -65,10 +65,9 @@ localStorage.removeItem('runt:debug');
 ### Log Prefixes
 
 Logs are prefixed by component:
-- `[daemon-kernel]` - Kernel communication
-- `[notebook-sync]` - Document sync
-- `[manifest-resolver]` - Output blob resolution
-- `[App]` - Main app lifecycle
+- `[daemon-kernel]` - Kernel communication (`useDaemonKernel.ts`)
+- `[automerge-notebook]` - Document sync and WASM lifecycle (`useAutomergeNotebook.ts`)
+- `[manifest-resolver]` - Output blob resolution (`useManifestResolver.ts`)
 
 ## Troubleshooting
 

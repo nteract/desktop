@@ -129,6 +129,8 @@ crates/runtimed/
 │   ├── sync_server.rs           # Settings sync handler
 │   ├── sync_client.rs           # Settings sync client library
 │   ├── notebook_doc.rs          # Notebook Automerge document, cell CRUD, text editing
+│   │                            # ⚠ Shared: copied to crates/runtimed-wasm/src/notebook_doc.rs
+│   │                            #   (WASM subset, daemon-only methods removed). Keep in sync.
 │   ├── notebook_sync_server.rs  # Room-based notebook sync, peer management, eviction
 │   ├── notebook_sync_client.rs  # Notebook sync client library
 │   ├── blob_store.rs            # Content-addressed blob store with metadata sidecars

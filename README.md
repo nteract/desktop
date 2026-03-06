@@ -72,6 +72,7 @@ nteract/desktop
 │   ├── runt/              # CLI binary
 │   ├── runtimed/          # Background daemon
 │   ├── runtimed-py/       # Python bindings for the daemon
+│   ├── runtimed-wasm/     # WASM Automerge bindings for frontend (same automerge crate as daemon)
 │   ├── notebook/          # Notebook Tauri app
 │   ├── sidecar/           # Sidecar wry/tao app
 │   ├── tauri-jupyter/     # Shared Tauri/Jupyter utilities

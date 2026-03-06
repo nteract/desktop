@@ -399,7 +399,7 @@ export function useDaemonKernel({
 
           case "file_changed": {
             // External file changes detected and merged into Automerge doc.
-            // The actual cell data comes through notebook:updated (Automerge sync).
+            // The actual cell data comes through `automerge:from-daemon` (Automerge sync relay).
             // This broadcast is for notification purposes.
             const fileBroadcast = broadcast as {
               cells: unknown[];

@@ -119,6 +119,22 @@ cells = session.get_cells()
 session.delete_cell(cell_id)
 ```
 
+### Saving Notebooks
+
+Save the notebook document to disk. The daemon handles serialization.
+
+```python
+# Save to the current notebook path (daemon resolves it)
+path = session.save()
+print(path)  # "/Users/you/notebooks/analysis.ipynb"
+
+# Save-as to a specific path
+path = session.save(path="/tmp/copy.ipynb")
+print(path)  # "/tmp/copy.ipynb"
+```
+
+Returns the absolute path where the file was written.
+
 ### Streaming Execution
 
 Process outputs incrementally as they arrive from the kernel:
@@ -240,6 +256,16 @@ cells = await session.get_cells()
 
 # Delete a cell
 await session.delete_cell(cell_id)
+```
+
+### Saving Notebooks
+
+```python
+# Save to the current notebook path
+path = await session.save()
+
+# Save-as to a specific path
+path = await session.save(path="/tmp/copy.ipynb")
 ```
 
 ### Streaming Execution
