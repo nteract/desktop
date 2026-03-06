@@ -9,7 +9,7 @@
 | 0: Optimistic mutations | ✅ Done | [PR #542](https://github.com/nteract/desktop/pull/542) merged |
 | 1.1–1.3: Eliminate `NotebookState` dual-write | ✅ Done | [PR #544](https://github.com/nteract/desktop/pull/544) merged |
 | 1.4: Delegate save-to-disk to daemon | ✅ Done | [PR #545](https://github.com/nteract/desktop/pull/545) merged |
-| 2: Frontend Automerge doc | ⬜ Not started | The real architectural shift — sub-PRs with feature flag |
+| 2: Frontend Automerge doc | 🔄 In progress | [Draft PR #547](https://github.com/nteract/desktop/pull/547) — sub-PRs with feature flag |
 | 3: Authority boundary hardening | ⬜ Not started | Formalize writer roles per field |
 | 4: Optimize Tauri sync relay | ⬜ Not started | Binary IPC, reduce overhead |
 
@@ -276,7 +276,7 @@ Full removal of the `NotebookState` struct is deferred — it still serves as th
 
 ---
 
-## Phase 2: Frontend Automerge doc
+## Phase 2: Frontend Automerge doc — [Draft PR #547](https://github.com/nteract/desktop/pull/547)
 
 **Goal:** The frontend owns a local Automerge document. All document mutations happen instantly on the local doc. React state is derived from it. The Tauri process becomes a sync relay.
 
