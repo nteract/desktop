@@ -99,10 +99,17 @@ export function useAutomergeNotebook() {
     syncStateRef.current = nextSyncState;
 
     if (message) {
+      logger.debug(
+        `[automerge-notebook] syncToBackend: sending ${message.byteLength} bytes`,
+      );
       invoke("send_automerge_sync", {
         syncMessage: Array.from(message),
       }).catch((e) =>
         logger.error("[automerge-notebook] Failed to send sync message:", e),
+      );
+    } else {
+      logger.debug(
+        "[automerge-notebook] syncToBackend: no message to send (already in sync)",
       );
     }
   }, []);
@@ -120,6 +127,11 @@ export function useAutomergeNotebook() {
         const doc = Automerge.load<NotebookSchema>(new Uint8Array(bytes));
         docRef.current = doc;
         initializedRef.current = true;
+
+        const cellIds = doc.cells?.map((c) => c.id) ?? [];
+        logger.info(
+          `[automerge-notebook] Loaded doc: ${bytes.length} bytes, ${cellIds.length} cells, ids=${JSON.stringify(cellIds)}`,
+        );
 
         await materializeAndSetCells();
 
@@ -151,6 +163,9 @@ export function useAutomergeNotebook() {
         if (!isMounted || !docRef.current) return;
 
         const message = new Uint8Array(event.payload);
+        logger.debug(
+          `[automerge-notebook] Received sync from daemon: ${message.byteLength} bytes`,
+        );
         const [newDoc, newSyncState] = Automerge.receiveSyncMessage(
           docRef.current,
           syncStateRef.current,
@@ -158,6 +173,11 @@ export function useAutomergeNotebook() {
         );
         docRef.current = newDoc;
         syncStateRef.current = newSyncState;
+
+        const cellIds = newDoc.cells?.map((c) => c.id) ?? [];
+        logger.debug(
+          `[automerge-notebook] After daemon sync: ${cellIds.length} cells, ids=${JSON.stringify(cellIds)}`,
+        );
 
         materializeAndSetCells();
 

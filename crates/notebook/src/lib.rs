@@ -2242,6 +2242,10 @@ async fn send_automerge_sync(
     sync_message: Vec<u8>,
     registry: tauri::State<'_, WindowNotebookRegistry>,
 ) -> Result<(), String> {
+    info!(
+        "[automerge-relay] Received frontend sync message: {} bytes",
+        sync_message.len()
+    );
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
     let guard = notebook_sync.lock().await;
     let handle = guard.as_ref().ok_or("Not connected to daemon")?;
@@ -2249,7 +2253,10 @@ async fn send_automerge_sync(
     handle
         .receive_frontend_sync_message(sync_message)
         .await
-        .map_err(|e| format!("Failed to relay sync message: {}", e))
+        .map_err(|e| {
+            warn!("[automerge-relay] Failed to relay sync message: {}", e);
+            format!("Failed to relay sync message: {}", e)
+        })
 }
 
 /// Debug: Get Automerge document state from the daemon.

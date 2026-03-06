@@ -1869,6 +1869,12 @@ async fn run_sync_task<S>(
                                 let _ = reply.send(result);
                             }
                             SyncCommand::GetDocBytes { reply } => {
+                                let cells = get_cells_from_doc(&client.doc);
+                                info!(
+                                    "[notebook-sync-task] GetDocBytes: cells count={}, ids={:?}",
+                                    cells.len(),
+                                    cells.iter().map(|c| c.id.as_str()).collect::<Vec<_>>()
+                                );
                                 let bytes = client.doc.save();
 
                                 // After giving the frontend our doc bytes, initialize
@@ -1910,24 +1916,50 @@ async fn run_sync_task<S>(
                                 let _ = reply.send(bytes);
                             }
                             SyncCommand::ReceiveFrontendSyncMessage { message, reply } => {
+                                info!(
+                                    "[notebook-sync-task] ReceiveFrontendSyncMessage: {} bytes, fe_state_active={}",
+                                    message.len(),
+                                    frontend_peer_state.is_some()
+                                );
+                                let cells_before = get_cells_from_doc(&client.doc);
+                                info!(
+                                    "[notebook-sync-task] Cells BEFORE frontend sync: count={}, ids={:?}",
+                                    cells_before.len(),
+                                    cells_before.iter().map(|c| c.id.as_str()).collect::<Vec<_>>()
+                                );
                                 let result = if let Some(ref mut fe_state) = frontend_peer_state {
                                     // Apply the frontend's sync message to our local doc
                                     match sync::Message::decode(&message) {
                                         Ok(msg) => {
+                                            info!("[notebook-sync-task] Decoded frontend sync message OK");
                                             let recv_result = client.doc.sync().receive_sync_message(fe_state, msg);
                                             match recv_result {
                                                 Ok(()) => {
+                                                    let cells_after = get_cells_from_doc(&client.doc);
+                                                    info!(
+                                                        "[notebook-sync-task] Cells AFTER frontend sync: count={}, ids={:?}",
+                                                        cells_after.len(),
+                                                        cells_after.iter().map(|c| c.id.as_str()).collect::<Vec<_>>()
+                                                    );
                                                     // Relay the changes to the daemon
-                                                    client.sync_to_daemon().await
+                                                    let relay_result = client.sync_to_daemon().await;
+                                                    info!("[notebook-sync-task] sync_to_daemon result: ok={}", relay_result.is_ok());
+                                                    relay_result
                                                 }
-                                                Err(e) => Err(NotebookSyncError::SyncError(
-                                                    format!("receive frontend sync: {}", e),
-                                                )),
+                                                Err(e) => {
+                                                    warn!("[notebook-sync-task] receive_sync_message FAILED: {}", e);
+                                                    Err(NotebookSyncError::SyncError(
+                                                        format!("receive frontend sync: {}", e),
+                                                    ))
+                                                }
                                             }
                                         }
-                                        Err(e) => Err(NotebookSyncError::SyncError(
-                                            format!("decode frontend sync: {}", e),
-                                        )),
+                                        Err(e) => {
+                                            warn!("[notebook-sync-task] FAILED to decode frontend sync message: {}", e);
+                                            Err(NotebookSyncError::SyncError(
+                                                format!("decode frontend sync: {}", e),
+                                            ))
+                                        }
                                     }
                                 } else {
                                     Err(NotebookSyncError::SyncError(
@@ -1937,7 +1969,11 @@ async fn run_sync_task<S>(
                                 // Send response sync message back to frontend
                                 if let (Some(ref tx), Some(ref mut fe_state)) = (&raw_sync_tx, &mut frontend_peer_state) {
                                     if let Some(msg) = client.doc.sync().generate_sync_message(fe_state) {
-                                        let _ = tx.send(msg.encode());
+                                        let encoded = msg.encode();
+                                        info!("[notebook-sync-task] Sending sync response to frontend: {} bytes", encoded.len());
+                                        let _ = tx.send(encoded);
+                                    } else {
+                                        info!("[notebook-sync-task] No sync response needed for frontend");
                                     }
                                 }
                                 let _ = reply.send(result);
