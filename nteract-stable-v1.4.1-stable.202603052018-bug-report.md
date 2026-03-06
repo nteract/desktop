@@ -35,6 +35,10 @@
   - source matching
   - output matching
   - next/previous navigation
+- File menu sample notebooks flow
+- Save flow for untitled notebooks (Save dialog behavior)
+- Clone notebook flow (Clone dialog behavior)
+- Markdown edit/view rendering toggle
 - Settings panel and theme switching
 
 > Note: first-run daemon startup failed in this VM environment until I manually started `runtimed run`, after which most core notebook functionality worked well.
@@ -233,6 +237,15 @@
 - Global Find source+output search and navigation worked:
   - `.../29-global-find-source-and-output-pass.webp`
   - `.../30-global-find-navigation-pass.webp`
+- File menu sample notebooks worked:
+  - `.../31-sample-menu-open-pass.webp`
+  - `.../32-sample-notebook-opened-pass.webp`
+- Save and clone dialogs worked:
+  - untitled save dialog: `.../33-save-untitled-dialog-pass.webp`
+  - clone dialog: `.../34-clone-dialog-pass.webp`
+- Markdown edit/view rendering worked:
+  - edit mode: `.../35-markdown-edit-mode-pass.webp`
+  - rendered mode: `.../36-markdown-render-pass.webp`
 
 ## Note on same-notebook multi-window sync testing
 - Explicit same-file two-window sync (source/output propagation between two windows on one notebook path) could not be exercised because this build appears to enforce single-window-per-file behavior.
