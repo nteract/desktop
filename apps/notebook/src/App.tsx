@@ -24,6 +24,7 @@ import { NotebookToolbar } from "./components/NotebookToolbar";
 import { NotebookView } from "./components/NotebookView";
 import { TrustDialog } from "./components/TrustDialog";
 import { UntrustedBanner } from "./components/UntrustedBanner";
+import { useAutomergeNotebook } from "./hooks/useAutomergeNotebook";
 import { useCondaDependencies } from "./hooks/useCondaDependencies";
 import { useDaemonKernel } from "./hooks/useDaemonKernel";
 import { useDenoDependencies } from "./hooks/useDenoDependencies";
@@ -31,7 +32,6 @@ import { type EnvSyncState, useDependencies } from "./hooks/useDependencies";
 import { useEnvProgress } from "./hooks/useEnvProgress";
 import { useDaemonInfo, useGitInfo } from "./hooks/useGitInfo";
 import { useGlobalFind } from "./hooks/useGlobalFind";
-import { useNotebook } from "./hooks/useNotebook";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
 import { KERNEL_STATUS } from "./lib/kernel-status";
@@ -112,7 +112,7 @@ function AppContent() {
     setExecutionCount,
     clearCellOutputs,
     formatCell,
-  } = useNotebook();
+  } = useAutomergeNotebook();
 
   // Global find (Cmd+F)
   const globalFind = useGlobalFind(cells);
