@@ -20,6 +20,8 @@ export const notebookhandle_delete_cell: (a: number, b: number, c: number, d: nu
 export const notebookhandle_update_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const notebookhandle_append_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const notebookhandle_get_metadata: (a: number, b: number, c: number, d: number) => void;
+export const notebookhandle_get_metadata_snapshot_json: (a: number, b: number) => void;
+export const notebookhandle_detect_runtime: (a: number, b: number) => void;
 export const notebookhandle_set_metadata: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const notebookhandle_generate_sync_message: (a: number, b: number) => void;
 export const notebookhandle_receive_sync_message: (a: number, b: number, c: number, d: number) => void;

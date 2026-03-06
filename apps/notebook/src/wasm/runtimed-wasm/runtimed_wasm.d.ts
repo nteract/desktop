@@ -47,6 +47,12 @@ export class NotebookHandle {
      */
     delete_cell(cell_id: string): boolean;
     /**
+     * Detect the notebook runtime from kernelspec/language_info metadata.
+     *
+     * Returns "python", "deno", or undefined for unknown runtimes.
+     */
+    detect_runtime(): string | undefined;
+    /**
      * Generate a sync message to send to the relay peer.
      *
      * Returns the message as a byte array, or undefined if already in sync.
@@ -69,6 +75,13 @@ export class NotebookHandle {
      * Get a metadata value by key.
      */
     get_metadata(key: string): string | undefined;
+    /**
+     * Get the full typed metadata as a JSON string.
+     *
+     * Returns the `NotebookMetadataSnapshot` serialized as JSON, or undefined
+     * if no metadata is set. The frontend can parse this with a shared TS interface.
+     */
+    get_metadata_snapshot_json(): string | undefined;
     /**
      * Load a notebook document from saved bytes (e.g., from get_automerge_doc_bytes).
      */
@@ -124,6 +137,8 @@ export interface InitOutput {
     readonly notebookhandle_update_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_append_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_get_metadata: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_get_metadata_snapshot_json: (a: number, b: number) => void;
+    readonly notebookhandle_detect_runtime: (a: number, b: number) => void;
     readonly notebookhandle_set_metadata: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_generate_sync_message: (a: number, b: number) => void;
     readonly notebookhandle_receive_sync_message: (a: number, b: number, c: number, d: number) => void;
