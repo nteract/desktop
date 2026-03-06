@@ -99,6 +99,7 @@ function AppContent() {
 
   const {
     cells,
+    isLoading,
     focusedCellId,
     setFocusedCellId,
     updateCellSource,
@@ -1086,6 +1087,7 @@ function AppContent() {
       />
       <NotebookView
         cells={cells}
+        isLoading={isLoading}
         focusedCellId={focusedCellId}
         executingCellIds={executingCellIds}
         pagePayloads={pagePayloads}

@@ -10,11 +10,13 @@ import {
 } from "../hooks/useEditorRegistry";
 import type { FindMatch } from "../hooks/useGlobalFind";
 import type { NotebookCell } from "../types";
+import { CellSkeleton } from "./CellSkeleton";
 import { CodeCell } from "./CodeCell";
 import { MarkdownCell } from "./MarkdownCell";
 
 interface NotebookViewProps {
   cells: NotebookCell[];
+  isLoading?: boolean;
   focusedCellId: string | null;
   executingCellIds: Set<string>;
   pagePayloads: Map<string, CellPagePayload>;
@@ -125,6 +127,7 @@ function CellErrorFallback({
 
 function NotebookViewContent({
   cells,
+  isLoading = false,
   focusedCellId,
   executingCellIds,
   pagePayloads,
@@ -293,30 +296,34 @@ function NotebookViewContent({
       style={{ contain: "paint" }}
     >
       {cells.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
-          <p className="text-sm">Empty notebook</p>
-          <p className="text-xs mt-1">Add a cell to get started</p>
-          <div className="mt-4 flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => onAddCell("code")}
-              className="gap-1"
-            >
-              <Plus className="h-3 w-3" />
-              Code Cell
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => onAddCell("markdown")}
-              className="gap-1"
-            >
-              <Plus className="h-3 w-3" />
-              Markdown Cell
-            </Button>
+        isLoading ? (
+          <CellSkeleton />
+        ) : (
+          <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
+            <p className="text-sm">Empty notebook</p>
+            <p className="text-xs mt-1">Add a cell to get started</p>
+            <div className="mt-4 flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onAddCell("code")}
+                className="gap-1"
+              >
+                <Plus className="h-3 w-3" />
+                Code Cell
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onAddCell("markdown")}
+                className="gap-1"
+              >
+                <Plus className="h-3 w-3" />
+                Markdown Cell
+              </Button>
+            </div>
           </div>
-        </div>
+        )
       ) : (
         // biome-ignore lint/complexity/noUselessFragments: ternary else branch requires single expression
         <>

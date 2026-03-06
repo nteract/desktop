@@ -14,18 +14,13 @@ import type { JupyterOutput, NotebookCell } from "../types";
 import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
 // ---------------------------------------------------------------------------
-// Module-level WASM initialization — runs once per page load.
+// Module-level WASM initialization — starts loading immediately when module
+// is imported. This runs before React renders, eliminating WASM init latency
+// from the critical path that causes the "empty notebook" flash.
 // ---------------------------------------------------------------------------
-let wasmReady: Promise<void> | null = null;
-
-function ensureWasmInit(): Promise<void> {
-  if (!wasmReady) {
-    wasmReady = init().then(() => {
-      logger.info("[automerge-notebook] WASM initialized");
-    });
-  }
-  return wasmReady;
-}
+const wasmReady: Promise<void> = init().then(() => {
+  logger.info("[automerge-notebook] WASM initialized");
+});
 
 // ---------------------------------------------------------------------------
 // Hook
@@ -43,6 +38,7 @@ export function useAutomergeNotebook() {
   const [cells, setCells] = useState<NotebookCell[]>([]);
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
   // The WASM handle is mutated in place — must live in a ref.
   const handleRef = useRef<NotebookHandle | null>(null);
@@ -117,7 +113,7 @@ export function useAutomergeNotebook() {
    * trigger the first sync exchange, not the load itself.
    */
   const bootstrap = useCallback(async () => {
-    await ensureWasmInit();
+    await wasmReady;
     try {
       const bytes = await invoke<number[]>("get_automerge_doc_bytes");
       const handle = NotebookHandle.load(new Uint8Array(bytes));
@@ -127,6 +123,7 @@ export function useAutomergeNotebook() {
       handleRef.current = handle;
 
       await materializeCells(handle);
+      setIsLoading(false);
       logger.info(
         `[automerge-notebook] Bootstrap complete — ${handle.cell_count()} cells`,
       );
@@ -483,6 +480,7 @@ export function useAutomergeNotebook() {
 
   return {
     cells,
+    isLoading,
     setCells,
     focusedCellId,
     setFocusedCellId,
