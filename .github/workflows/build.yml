@@ -206,6 +206,20 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build runtimed-wasm
+        run: wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm
+
+      - name: Install Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Run runtimed-wasm Deno tests
+        run: deno test --allow-read --no-check crates/runtimed-wasm/tests/deno_smoke_test.ts
+
   build:
     name: ${{ matrix.platform.name }}
     needs: [changes, build-ui]

@@ -14,7 +14,8 @@
       "!dist",
       "!build",
       "!.source",
-      "!**/*.css"
+      "!**/*.css",
+      "!**/wasm/runtimed-wasm/**"
     ]
   },
   "css": {
