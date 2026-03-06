@@ -111,7 +111,6 @@ function AppContent() {
     updateOutputByDisplayId,
     setExecutionCount,
     clearCellOutputs,
-    formatCell,
   } = useAutomergeNotebook();
 
   // Global find (Cmd+F)
@@ -1099,7 +1098,6 @@ function AppContent() {
         onDeleteCell={deleteCell}
         onAddCell={handleAddCell}
         onClearPagePayload={clearPagePayload}
-        onFormatCell={formatCell}
         onReportOutputMatchCount={globalFind.reportOutputMatchCount}
       />
     </div>

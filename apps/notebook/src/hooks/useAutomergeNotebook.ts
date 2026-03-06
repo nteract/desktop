@@ -195,22 +195,6 @@ export function useAutomergeNotebook() {
       },
     );
 
-    // ── Backend-initiated cell source updates (e.g. formatting) ──────
-    const unlistenSourceUpdated = webview.listen<{
-      cell_id: string;
-      source: string;
-    }>("cell:source_updated", (event) => {
-      if (cancelled) return;
-      setCells((prev) =>
-        prev.map((c) =>
-          c.id === event.payload.cell_id
-            ? { ...c, source: event.payload.source }
-            : c,
-        ),
-      );
-      setDirty(true);
-    });
-
     // ── Bulk output clearing (run-all / restart-and-run-all) ─────────
     const unlistenClearOutputs = webview.listen<string[]>(
       "cells:outputs_cleared",
@@ -232,7 +216,6 @@ export function useAutomergeNotebook() {
       unlistenReady.then((fn) => fn());
       unlistenFileOpened.then((fn) => fn());
       unlistenSync.then((fn) => fn());
-      unlistenSourceUpdated.then((fn) => fn());
       unlistenClearOutputs.then((fn) => fn());
       // Free WASM handle.
       handleRef.current?.free();
@@ -460,25 +443,6 @@ export function useAutomergeNotebook() {
     );
   }, []);
 
-  const formatCell = useCallback(async (cellId: string) => {
-    try {
-      const result = await invoke<{
-        source: string;
-        changed: boolean;
-        error: string | null;
-      }>("format_cell", { cellId });
-
-      if (result.error) {
-        logger.warn("[automerge-notebook] Format cell warning:", result.error);
-      }
-
-      return result;
-    } catch (e) {
-      logger.error("[automerge-notebook] Format cell failed:", e);
-      return null;
-    }
-  }, []);
-
   // ── Public interface ───────────────────────────────────────────────
 
   return {
@@ -497,6 +461,5 @@ export function useAutomergeNotebook() {
     appendOutput,
     updateOutputByDisplayId,
     setExecutionCount,
-    formatCell,
   };
 }

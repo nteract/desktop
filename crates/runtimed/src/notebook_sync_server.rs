@@ -1932,6 +1932,23 @@ async fn handle_notebook_request(
                 };
             }
 
+            // Format before execution (best-effort, non-blocking on failure)
+            let source = if let Some(runtime) = detect_room_runtime(room).await {
+                if let Some(formatted) = format_source(&source, &runtime).await {
+                    // Write formatted source back to the Automerge doc
+                    let mut doc = room.doc.write().await;
+                    if doc.update_source(&cell_id, &formatted).is_ok() {
+                        let _ = room.changed_tx.send(());
+                        debug!("[format] Formatted cell {} before execution", cell_id);
+                    }
+                    formatted
+                } else {
+                    source
+                }
+            } else {
+                source
+            };
+
             // NOW lock kernel for the queue operation
             let mut kernel_guard = room.kernel.lock().await;
             if let Some(ref mut kernel) = *kernel_guard {
@@ -2349,29 +2366,94 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
     }
 }
 
+/// Format a single source string using ruff (Python) or deno fmt (Deno).
+///
+/// Returns the formatted source with trailing newline stripped (cells shouldn't
+/// end with \n), or None if formatting failed or wasn't applicable.
+async fn format_source(source: &str, runtime: &str) -> Option<String> {
+    use kernel_launch::tools;
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+
+    if source.trim().is_empty() {
+        return None;
+    }
+
+    let raw = match runtime {
+        "python" => {
+            let ruff_path = tools::get_ruff_path().await.ok()?;
+            let mut child = tokio::process::Command::new(&ruff_path)
+                .args(["format", "--stdin-filename", "cell.py", "-"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .ok()?;
+
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(source.as_bytes()).await.ok()?;
+            }
+
+            let output = child.wait_with_output().await.ok()?;
+            if output.status.success() {
+                String::from_utf8(output.stdout).ok()
+            } else {
+                None
+            }
+        }
+        "deno" => {
+            let deno_path = tools::get_deno_path().await.ok()?;
+            let mut child = tokio::process::Command::new(&deno_path)
+                .args(["fmt", "--ext=ts", "-"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .ok()?;
+
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(source.as_bytes()).await.ok()?;
+            }
+
+            let output = child.wait_with_output().await.ok()?;
+            if output.status.success() {
+                String::from_utf8(output.stdout).ok()
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }?;
+
+    // Strip trailing newline (formatters always add one, but cells shouldn't have it)
+    let formatted = raw.strip_suffix('\n').unwrap_or(&raw).to_string();
+
+    if formatted != source {
+        Some(formatted)
+    } else {
+        None
+    }
+}
+
+/// Detect the runtime from room metadata, returning "python", "deno", or None.
+async fn detect_room_runtime(room: &NotebookRoom) -> Option<String> {
+    let metadata_json = {
+        let doc = room.doc.read().await;
+        doc.get_metadata(NOTEBOOK_METADATA_KEY)
+    };
+    metadata_json
+        .as_ref()
+        .and_then(|json| serde_json::from_str::<NotebookMetadataSnapshot>(json).ok())
+        .and_then(|snapshot| detect_notebook_kernel_type(&snapshot))
+}
+
 /// Format all code cells in a notebook using ruff (Python) or deno fmt (Deno).
 ///
 /// Reads the runtime type from the notebook metadata and formats accordingly.
 /// Updates the Automerge doc with formatted sources and broadcasts changes.
 /// Formatting errors are logged but don't fail the operation (best-effort).
 async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
-    use kernel_launch::tools;
-    use std::process::Stdio;
-    use tokio::io::AsyncWriteExt;
-
-    // Get runtime type from metadata - only format for known runtimes (Python/Deno)
-    let metadata_json = {
-        let doc = room.doc.read().await;
-        doc.get_metadata(NOTEBOOK_METADATA_KEY)
-    };
-
-    let runtime = metadata_json
-        .as_ref()
-        .and_then(|json| serde_json::from_str::<NotebookMetadataSnapshot>(json).ok())
-        .and_then(|snapshot| detect_notebook_kernel_type(&snapshot));
-
-    // Skip formatting for unknown kernelspec to avoid incorrectly reformatting non-Python/Deno notebooks
-    let runtime = match runtime {
+    let runtime = match detect_room_runtime(room).await {
         Some(rt) => rt,
         None => {
             info!("[format] Skipping format: unknown kernelspec (no formatter available)");
@@ -2396,88 +2478,10 @@ async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
     let mut formatted_count = 0;
 
     for (cell_id, source) in cells {
-        let format_result = match runtime.as_str() {
-            "python" => {
-                // Format with ruff
-                match tools::get_ruff_path().await {
-                    Ok(ruff_path) => {
-                        let mut child = match tokio::process::Command::new(&ruff_path)
-                            .args(["format", "--stdin-filename", "cell.py", "-"])
-                            .stdin(Stdio::piped())
-                            .stdout(Stdio::piped())
-                            .stderr(Stdio::piped())
-                            .spawn()
-                        {
-                            Ok(c) => c,
-                            Err(e) => {
-                                warn!("[format] Failed to spawn ruff: {}", e);
-                                continue;
-                            }
-                        };
-
-                        if let Some(mut stdin) = child.stdin.take() {
-                            if stdin.write_all(source.as_bytes()).await.is_err() {
-                                continue;
-                            }
-                        }
-
-                        match child.wait_with_output().await {
-                            Ok(output) if output.status.success() => {
-                                String::from_utf8(output.stdout).ok()
-                            }
-                            _ => None,
-                        }
-                    }
-                    Err(_) => None,
-                }
-            }
-            "deno" => {
-                // Format with deno fmt
-                match tools::get_deno_path().await {
-                    Ok(deno_path) => {
-                        let mut child = match tokio::process::Command::new(&deno_path)
-                            .args(["fmt", "--ext=ts", "-"])
-                            .stdin(Stdio::piped())
-                            .stdout(Stdio::piped())
-                            .stderr(Stdio::piped())
-                            .spawn()
-                        {
-                            Ok(c) => c,
-                            Err(e) => {
-                                warn!("[format] Failed to spawn deno fmt: {}", e);
-                                continue;
-                            }
-                        };
-
-                        if let Some(mut stdin) = child.stdin.take() {
-                            if stdin.write_all(source.as_bytes()).await.is_err() {
-                                continue;
-                            }
-                        }
-
-                        match child.wait_with_output().await {
-                            Ok(output) if output.status.success() => {
-                                String::from_utf8(output.stdout).ok()
-                            }
-                            _ => None,
-                        }
-                    }
-                    Err(_) => None,
-                }
-            }
-            _ => None,
-        };
-
-        if let Some(formatted) = format_result {
-            // Strip trailing newline (formatters always add one, but cells shouldn't have it)
-            let formatted = formatted.strip_suffix('\n').unwrap_or(&formatted);
-
-            if formatted != source {
-                // Update Automerge doc
-                let mut doc = room.doc.write().await;
-                if doc.update_source(&cell_id, formatted).is_ok() {
-                    formatted_count += 1;
-                }
+        if let Some(formatted) = format_source(&source, &runtime).await {
+            let mut doc = room.doc.write().await;
+            if doc.update_source(&cell_id, &formatted).is_ok() {
+                formatted_count += 1;
             }
         }
     }

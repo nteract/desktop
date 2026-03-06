@@ -28,7 +28,6 @@ interface NotebookViewProps {
   onDeleteCell: (cellId: string) => void;
   onAddCell: (type: "code" | "markdown", afterCellId?: string | null) => void;
   onClearPagePayload: (cellId: string) => void;
-  onFormatCell?: (cellId: string) => void;
   onReportOutputMatchCount?: (cellId: string, count: number) => void;
 }
 
@@ -138,7 +137,6 @@ function NotebookViewContent({
   onDeleteCell,
   onAddCell,
   onClearPagePayload,
-  onFormatCell,
   onReportOutputMatchCount,
 }: NotebookViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -231,7 +229,6 @@ function NotebookViewContent({
             onFocusNext={onFocusNext}
             onInsertCellAfter={() => onAddCell("code", cell.id)}
             onClearPagePayload={() => onClearPagePayload(cell.id)}
-            onFormat={onFormatCell ? () => onFormatCell(cell.id) : undefined}
             isLastCell={index === cells.length - 1}
           />
         );
@@ -280,7 +277,6 @@ function NotebookViewContent({
       onDeleteCell,
       onAddCell,
       onClearPagePayload,
-      onFormatCell,
       onReportOutputMatchCount,
       focusCell,
     ],

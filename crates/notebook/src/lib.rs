@@ -2983,113 +2983,6 @@ async fn set_deno_flexible_npm_imports(
     set_metadata_snapshot(handle, &new_snapshot).await
 }
 
-/// Format a cell's source code using the appropriate formatter (ruff for Python, deno fmt for TypeScript/JavaScript).
-/// Returns the formatted source and whether it changed. If formatting fails (e.g., syntax error),
-/// returns the original source with an error message.
-#[tauri::command]
-async fn format_cell(
-    cell_id: String,
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<format::FormatResult, String> {
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-
-    // Get current source from sync handle and runtime from metadata
-    let (source, runtime) = {
-        let guard = notebook_sync.lock().await;
-        let handle = guard.as_ref().ok_or("Not connected to daemon")?;
-        let cells = handle
-            .get_cells()
-            .await
-            .map_err(|e| format!("get_cells: {}", e))?;
-        let cell = cells
-            .iter()
-            .find(|c| c.id == cell_id)
-            .ok_or_else(|| "Cell not found".to_string())?;
-        let source = cell.source.clone();
-
-        // Get runtime from metadata
-        let runtime = get_runtime_from_sync(handle).await;
-        (source, runtime)
-    };
-
-    // Skip formatting for empty cells
-    if source.trim().is_empty() {
-        return Ok(format::FormatResult {
-            source,
-            changed: false,
-            error: None,
-        });
-    }
-
-    // Format based on runtime
-    let mut result = match runtime {
-        Runtime::Python => format::format_python(&source)
-            .await
-            .map_err(|e| e.to_string())?,
-        Runtime::Deno => format::format_deno(&source, "typescript")
-            .await
-            .map_err(|e| e.to_string())?,
-        Runtime::Other(ref s) => {
-            return Err(format!("No formatter available for runtime: {s}"));
-        }
-    };
-
-    // Strip trailing newline that formatters always add (cells shouldn't end with \n)
-    result.source = result.source_for_cell().to_string();
-    result.changed = result.source != source;
-
-    // If formatting changed, update via sync handle
-    if result.changed {
-        let guard = notebook_sync.lock().await;
-        if let Some(handle) = guard.as_ref() {
-            if let Err(e) = handle.update_source(&cell_id, &result.source).await {
-                warn!("[notebook-sync] update_source for format failed: {}", e);
-            }
-        }
-        // Emit event to notify frontend
-        let _ = emit_to_label::<_, _, _>(
-            &window,
-            window.label(),
-            "cell:source_updated",
-            serde_json::json!({
-                "cell_id": cell_id,
-                "source": result.source.clone(),
-            }),
-        );
-    }
-
-    Ok(result)
-}
-
-/// Check if a formatter is available for the current notebook runtime.
-/// Returns true if ruff is available for Python notebooks or deno for TypeScript notebooks.
-#[tauri::command]
-async fn check_formatter_available(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<bool, String> {
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-    let runtime = {
-        let guard = notebook_sync.lock().await;
-        match guard.as_ref() {
-            Some(handle) => get_runtime_from_sync(handle).await,
-            None => {
-                // Fallback to NotebookState
-                let state = notebook_state_for_window(&window, registry.inner())?;
-                let nb = state.lock().map_err(|e| e.to_string())?;
-                nb.get_runtime()
-            }
-        }
-    };
-
-    match runtime {
-        Runtime::Python => Ok(format::check_ruff_available().await),
-        Runtime::Deno => Ok(deno_env::check_deno_available().await),
-        Runtime::Other(_) => Ok(false),
-    }
-}
-
 /// Get app settings (default runtime, etc.)
 #[tauri::command]
 async fn get_settings() -> runtimed::settings_doc::SyncedSettings {
@@ -3679,9 +3572,7 @@ pub fn run(
             set_deno_permissions,
             get_deno_flexible_npm_imports,
             set_deno_flexible_npm_imports,
-            // Code formatting
-            format_cell,
-            check_formatter_available,
+
             // Settings
             get_settings,
             // Synced settings (via runtimed Automerge)
