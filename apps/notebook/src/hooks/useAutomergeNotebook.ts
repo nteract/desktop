@@ -38,9 +38,6 @@ function ensureWasmInit(): Promise<void> {
  * inside the WASM Automerge document.  React state is derived from the doc.
  * Sync messages flow through the Tauri relay to the daemon — the frontend
  * NEVER creates Automerge objects via the JS library.
- *
- * Feature-flag controlled: enabled via `localStorage.USE_AUTOMERGE_FRONTEND`
- * or the `?automerge=true` URL param. See `useNotebookDispatch.ts`.
  */
 export function useAutomergeNotebook() {
   const [cells, setCells] = useState<NotebookCell[]>([]);
@@ -483,7 +480,6 @@ export function useAutomergeNotebook() {
   }, []);
 
   // ── Public interface ───────────────────────────────────────────────
-  // Matches the return shape of useNotebook() so App.tsx can swap freely.
 
   return {
     cells,
