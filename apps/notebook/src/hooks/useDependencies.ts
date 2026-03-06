@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useState } from "react";
+import { logger } from "../lib/logger";
 
 export interface NotebookDependencies {
   dependencies: string[];
@@ -79,7 +80,7 @@ export function useDependencies() {
       );
       setDependencies(deps);
     } catch (e) {
-      console.error("Failed to load dependencies:", e);
+      logger.error("Failed to load dependencies:", e);
     }
   }, []);
 
@@ -105,7 +106,7 @@ export function useDependencies() {
       await invoke("approve_notebook_trust");
     } catch (e) {
       // Signing may fail if no trust key yet - that's okay
-      console.debug("[deps] Could not resign trust:", e);
+      logger.debug("[deps] Could not resign trust:", e);
     }
   }, []);
 
@@ -114,7 +115,7 @@ export function useDependencies() {
   // In daemon mode, users need to restart the kernel to pick up new deps.
   const syncToKernel = useCallback(async (): Promise<boolean> => {
     // Hot-sync not available in daemon mode - kernel restart required
-    console.log(
+    logger.info(
       "[deps] Hot-sync not available in daemon mode, restart kernel to apply changes",
     );
     setNeedsKernelRestart(true);
@@ -148,7 +149,7 @@ export function useDependencies() {
         // Check sync state - UI will show "Sync Now" if dirty
         await checkSyncState();
       } catch (e) {
-        console.error("Failed to add dependency:", e);
+        logger.error("Failed to add dependency:", e);
       } finally {
         setLoading(false);
       }
@@ -168,7 +169,7 @@ export function useDependencies() {
         // Note: removing a dep doesn't uninstall from running kernel
         await checkSyncState();
       } catch (e) {
-        console.error("Failed to remove dependency:", e);
+        logger.error("Failed to remove dependency:", e);
       } finally {
         setLoading(false);
       }
@@ -184,7 +185,7 @@ export function useDependencies() {
       await loadDependencies();
       await resignTrust();
     } catch (e) {
-      console.error("Failed to clear UV dependencies:", e);
+      logger.error("Failed to clear UV dependencies:", e);
     } finally {
       setLoading(false);
     }
@@ -208,7 +209,7 @@ export function useDependencies() {
         // Re-sign to keep notebook trusted after user modification
         await resignTrust();
       } catch (e) {
-        console.error("Failed to set requires-python:", e);
+        logger.error("Failed to set requires-python:", e);
       } finally {
         setLoading(false);
       }
@@ -230,7 +231,7 @@ export function useDependencies() {
       );
       setPyprojectDeps(deps);
     } catch (e) {
-      console.error("Failed to load pyproject dependencies:", e);
+      logger.error("Failed to load pyproject dependencies:", e);
     }
   }, []);
 
@@ -249,9 +250,9 @@ export function useDependencies() {
       await loadDependencies();
       // Re-sign to keep notebook trusted after user modification
       await resignTrust();
-      console.log("[deps] Imported dependencies from pyproject.toml");
+      logger.info("[deps] Imported dependencies from pyproject.toml");
     } catch (e) {
-      console.error("Failed to import from pyproject.toml:", e);
+      logger.error("Failed to import from pyproject.toml:", e);
     } finally {
       setLoading(false);
     }

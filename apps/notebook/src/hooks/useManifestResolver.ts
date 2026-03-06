@@ -1,161 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { logger } from "../lib/logger";
+import type { OutputManifest } from "../lib/manifest-resolution";
+import { isManifestHash, resolveManifest } from "../lib/manifest-resolution";
 import type { JupyterOutput } from "../types";
-
-/**
- * ContentRef represents a reference to content that may be inlined or stored in the blob store.
- * Matches the Rust ContentRef type in output_store.rs.
- */
-type ContentRef = { inline: string } | { blob: string; size: number };
-
-/**
- * Output manifest types matching the Rust OutputManifest enum.
- */
-interface DisplayDataManifest {
-  output_type: "display_data";
-  data: Record<string, ContentRef>;
-  metadata?: Record<string, unknown>;
-  transient?: { display_id?: string };
-}
-
-interface ExecuteResultManifest {
-  output_type: "execute_result";
-  data: Record<string, ContentRef>;
-  metadata?: Record<string, unknown>;
-  execution_count?: number | null;
-  transient?: { display_id?: string };
-}
-
-interface StreamManifest {
-  output_type: "stream";
-  name: string;
-  text: ContentRef;
-}
-
-interface ErrorManifest {
-  output_type: "error";
-  ename: string;
-  evalue: string;
-  traceback: ContentRef;
-}
-
-type OutputManifest =
-  | DisplayDataManifest
-  | ExecuteResultManifest
-  | StreamManifest
-  | ErrorManifest;
-
-/**
- * Check if a string looks like a blob hash (hex string).
- */
-export function looksLikeBlobHash(s: string): boolean {
-  // Blob hashes are 64-char hex strings (SHA-256)
-  return /^[a-f0-9]{64}$/.test(s);
-}
-
-/**
- * Resolve a ContentRef to its string value.
- */
-async function resolveContentRef(
-  ref: ContentRef,
-  blobPort: number,
-): Promise<string> {
-  if ("inline" in ref) {
-    return ref.inline;
-  }
-  // Fetch from blob store
-  const response = await fetch(`http://127.0.0.1:${blobPort}/blob/${ref.blob}`);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch blob ${ref.blob}: ${response.status}`);
-  }
-  return response.text();
-}
-
-/**
- * Resolve a data bundle (MIME type -> ContentRef) to resolved strings.
- */
-async function resolveDataBundle(
-  data: Record<string, ContentRef>,
-  blobPort: number,
-): Promise<Record<string, unknown>> {
-  const resolved: Record<string, unknown> = {};
-  for (const [mimeType, ref] of Object.entries(data)) {
-    const content = await resolveContentRef(ref, blobPort);
-    // For JSON MIME types, parse the content
-    if (mimeType.includes("json")) {
-      try {
-        resolved[mimeType] = JSON.parse(content);
-      } catch {
-        resolved[mimeType] = content;
-      }
-    } else {
-      resolved[mimeType] = content;
-    }
-  }
-  return resolved;
-}
-
-/**
- * Resolve an output manifest to a full Jupyter output.
- */
-export async function resolveManifest(
-  manifest: OutputManifest,
-  blobPort: number,
-): Promise<JupyterOutput> {
-  switch (manifest.output_type) {
-    case "display_data": {
-      const data = await resolveDataBundle(manifest.data, blobPort);
-      const output: JupyterOutput = {
-        output_type: "display_data",
-        data,
-        metadata: manifest.metadata ?? {},
-      };
-      // Preserve display_id for update_display_data targeting
-      if (manifest.transient?.display_id) {
-        (output as Record<string, unknown>).display_id =
-          manifest.transient.display_id;
-      }
-      return output;
-    }
-    case "execute_result": {
-      const data = await resolveDataBundle(manifest.data, blobPort);
-      const output: JupyterOutput = {
-        output_type: "execute_result",
-        data,
-        metadata: manifest.metadata ?? {},
-        execution_count: manifest.execution_count ?? null,
-      };
-      // Preserve display_id for update_display_data targeting
-      if (manifest.transient?.display_id) {
-        (output as Record<string, unknown>).display_id =
-          manifest.transient.display_id;
-      }
-      return output;
-    }
-    case "stream": {
-      const text = await resolveContentRef(manifest.text, blobPort);
-      return {
-        output_type: "stream",
-        name: manifest.name as "stdout" | "stderr",
-        text,
-      };
-    }
-    case "error": {
-      const tracebackJson = await resolveContentRef(
-        manifest.traceback,
-        blobPort,
-      );
-      const traceback = JSON.parse(tracebackJson) as string[];
-      return {
-        output_type: "error",
-        ename: manifest.ename,
-        evalue: manifest.evalue,
-        traceback,
-      };
-    }
-  }
-}
 
 /**
  * Fetch blob port with retry logic.
@@ -196,7 +44,7 @@ export async function resolveOutputString(
   blobPort: number,
 ): Promise<JupyterOutput | null> {
   // If it doesn't look like a blob hash, try parsing as raw JSON
-  if (!looksLikeBlobHash(outputStr)) {
+  if (!isManifestHash(outputStr)) {
     try {
       return JSON.parse(outputStr) as JupyterOutput;
     } catch {
@@ -271,7 +119,7 @@ export function useManifestResolver() {
       }
 
       // If it doesn't look like a blob hash, try parsing as raw JSON
-      if (!looksLikeBlobHash(outputStr)) {
+      if (!isManifestHash(outputStr)) {
         try {
           const output = JSON.parse(outputStr) as JupyterOutput;
           cacheRef.current.set(outputStr, output);

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useState } from "react";
+import { logger } from "../lib/logger";
 
 export interface DenoConfigInfo {
   path: string;
@@ -24,7 +25,7 @@ export function useDenoDependencies() {
       const flexible = await invoke<boolean>("get_deno_flexible_npm_imports");
       setFlexibleNpmImportsState(flexible);
     } catch (e) {
-      console.error("Failed to load flexible npm imports:", e);
+      logger.error("Failed to load flexible npm imports:", e);
     }
   }, []);
 
@@ -42,7 +43,7 @@ export function useDenoDependencies() {
 
         await loadFlexibleNpmImports();
       } catch (e) {
-        console.error("Failed to initialize Deno dependencies:", e);
+        logger.error("Failed to initialize Deno dependencies:", e);
       }
     };
     init();
@@ -64,7 +65,7 @@ export function useDenoDependencies() {
       await invoke("set_deno_flexible_npm_imports", { enabled });
       setFlexibleNpmImportsState(enabled);
     } catch (e) {
-      console.error("Failed to set flexible npm imports:", e);
+      logger.error("Failed to set flexible npm imports:", e);
     }
   }, []);
 

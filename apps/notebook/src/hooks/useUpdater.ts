@@ -1,6 +1,7 @@
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { logger } from "../lib/logger";
 
 export type UpdateStatus =
   | "idle"
@@ -41,7 +42,7 @@ export function useUpdater() {
         setState({ status: "idle", version: null, error: null });
       }
     } catch (e) {
-      console.warn("[updater] check failed:", e);
+      logger.warn("[updater] check failed:", e);
       setState((prev) => ({
         ...prev,
         status: "error",
@@ -59,7 +60,7 @@ export function useUpdater() {
       await update.downloadAndInstall();
       setState((prev) => ({ ...prev, status: "ready" }));
     } catch (e) {
-      console.error("[updater] download/install failed:", e);
+      logger.error("[updater] download/install failed:", e);
       setState((prev) => ({
         ...prev,
         status: "error",
@@ -72,7 +73,7 @@ export function useUpdater() {
     try {
       await relaunch();
     } catch (e) {
-      console.error("[updater] relaunch failed:", e);
+      logger.error("[updater] relaunch failed:", e);
     }
   }, []);
 

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
+import { logger } from "../lib/logger";
 
 /** Trust status from the backend */
 export type TrustStatusType =
@@ -52,7 +53,7 @@ export function useTrust() {
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       setError(message);
-      console.error("Failed to check trust:", e);
+      logger.error("Failed to check trust:", e);
       return null;
     } finally {
       setLoading(false);
@@ -71,7 +72,7 @@ export function useTrust() {
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       setError(message);
-      console.error("Failed to approve trust:", e);
+      logger.error("Failed to approve trust:", e);
       return false;
     } finally {
       setLoading(false);

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
+import { logger } from "../lib/logger";
 
 interface GitInfo {
   branch: string;
@@ -20,7 +21,7 @@ export function useGitInfo() {
     invoke<GitInfo | null>("get_git_info")
       .then(setGitInfo)
       .catch((e) => {
-        console.error("Failed to get git info:", e);
+        logger.error("Failed to get git info:", e);
       });
   }, []);
 
@@ -34,7 +35,7 @@ export function useDaemonInfo() {
     invoke<DaemonInfo | null>("get_daemon_info")
       .then(setDaemonInfo)
       .catch((e) => {
-        console.error("Failed to get daemon info:", e);
+        logger.error("Failed to get daemon info:", e);
       });
   }, []);
 

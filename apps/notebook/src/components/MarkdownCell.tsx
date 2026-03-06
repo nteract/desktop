@@ -9,6 +9,7 @@ import {
 import { searchHighlight } from "@/components/editor/search-highlight";
 import { IsolatedFrame, type IsolatedFrameHandle } from "@/components/isolated";
 import { isDarkMode as detectDarkMode } from "@/lib/dark-mode";
+import { logger } from "@/lib/logger";
 import { cn } from "@/lib/utils";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { useEditorRegistry } from "../hooks/useEditorRegistry";
@@ -378,9 +379,7 @@ export function MarkdownCell({
             onReady={handleFrameReady}
             onLinkClick={handleLinkClick}
             onDoubleClick={handleDoubleClick}
-            onError={(err) =>
-              console.error("[MarkdownCell] iframe error:", err)
-            }
+            onError={(err) => logger.error("[MarkdownCell] iframe error:", err)}
             className="w-full"
           />
         ) : (

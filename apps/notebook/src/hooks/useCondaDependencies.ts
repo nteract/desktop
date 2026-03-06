@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useState } from "react";
+import { logger } from "../lib/logger";
 import type { PixiInfo } from "../types";
 
 export interface CondaDependencies {
@@ -69,7 +70,7 @@ export function useCondaDependencies() {
       );
       setDependencies(deps);
     } catch (e) {
-      console.error("Failed to load conda dependencies:", e);
+      logger.error("Failed to load conda dependencies:", e);
     }
   }, []);
 
@@ -81,7 +82,7 @@ export function useCondaDependencies() {
       );
       setEnvironmentYmlDeps(deps);
     } catch (e) {
-      console.error("Failed to load environment.yml dependencies:", e);
+      logger.error("Failed to load environment.yml dependencies:", e);
     }
   }, []);
 
@@ -118,7 +119,7 @@ export function useCondaDependencies() {
       await invoke("approve_notebook_trust");
     } catch (e) {
       // Signing may fail if no trust key yet - that's okay
-      console.debug("[conda] Could not resign trust:", e);
+      logger.debug("[conda] Could not resign trust:", e);
     }
   }, []);
 
@@ -135,7 +136,7 @@ export function useCondaDependencies() {
   // In daemon mode, users need to restart the kernel to pick up new deps.
   const syncToKernel = useCallback(async (): Promise<boolean> => {
     // Hot-sync not available in daemon mode - kernel restart required
-    console.log(
+    logger.info(
       "[conda] Hot-sync not available in daemon mode, restart kernel to apply changes",
     );
     setNeedsKernelRestart(true);
@@ -165,7 +166,7 @@ export function useCondaDependencies() {
         // Check sync state — UI will show "Sync Now" if dirty
         await checkSyncState();
       } catch (e) {
-        console.error("Failed to add conda dependency:", e);
+        logger.error("Failed to add conda dependency:", e);
       } finally {
         setLoading(false);
       }
@@ -184,7 +185,7 @@ export function useCondaDependencies() {
         // Check sync state — removing a dep doesn't uninstall from running kernel
         await checkSyncState();
       } catch (e) {
-        console.error("Failed to remove conda dependency:", e);
+        logger.error("Failed to remove conda dependency:", e);
       } finally {
         setLoading(false);
       }
@@ -200,7 +201,7 @@ export function useCondaDependencies() {
       await loadDependencies();
       await resignTrust();
     } catch (e) {
-      console.error("Failed to clear conda dependencies:", e);
+      logger.error("Failed to clear conda dependencies:", e);
     } finally {
       setLoading(false);
     }
@@ -226,7 +227,7 @@ export function useCondaDependencies() {
         // Re-sign to keep notebook trusted after user modification
         await resignTrust();
       } catch (e) {
-        console.error("Failed to set channels:", e);
+        logger.error("Failed to set channels:", e);
       } finally {
         setLoading(false);
       }
@@ -247,7 +248,7 @@ export function useCondaDependencies() {
         // Re-sign to keep notebook trusted after user modification
         await resignTrust();
       } catch (e) {
-        console.error("Failed to set python version:", e);
+        logger.error("Failed to set python version:", e);
       } finally {
         setLoading(false);
       }
@@ -269,7 +270,7 @@ export function useCondaDependencies() {
       await loadDependencies();
       await resignTrust();
     } catch (e) {
-      console.error("Failed to import pixi dependencies:", e);
+      logger.error("Failed to import pixi dependencies:", e);
     } finally {
       setLoading(false);
     }
