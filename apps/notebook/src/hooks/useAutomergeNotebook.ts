@@ -119,12 +119,7 @@ export function useAutomergeNotebook() {
     let isMounted = true;
     const webview = getCurrentWebview();
 
-    // Track whether initialize() has started (not just completed) to prevent
-    // the notebook:updated fallback from racing with doc byte loading.
-    let initStarted = false;
-
     const initialize = async () => {
-      initStarted = true;
       try {
         const bytes = await invoke<number[]>("get_automerge_doc_bytes");
         if (!isMounted) return;
@@ -152,12 +147,7 @@ export function useAutomergeNotebook() {
           `[automerge-notebook] Initialized with ${doc.cells?.length ?? 0} cells`,
         );
       } catch (e) {
-        logger.warn(
-          "[automerge-notebook] Failed to initialize, falling back to refresh:",
-          e,
-        );
-        // Fall back to traditional load if automerge doc bytes not available
-        invoke("refresh_from_automerge").catch(() => {});
+        logger.warn("[automerge-notebook] Failed to initialize:", e);
       }
     };
 
@@ -188,30 +178,6 @@ export function useAutomergeNotebook() {
 
         // May need to send a response message
         syncToBackend();
-      },
-    );
-
-    // Also listen for notebook:updated as fallback (transitional compatibility)
-    const unlistenUpdated = webview.listen<CellSnapshot[]>(
-      "notebook:updated",
-      async (event) => {
-        if (!isMounted) return;
-        // Only use this fallback if automerge initialization hasn't started.
-        // Without the initStarted check, this races with get_automerge_doc_bytes:
-        // notebook:updated fires with NotebookState cell IDs while the async
-        // initialize() is still awaiting, overwriting React state with wrong IDs.
-        if (initializedRef.current || initStarted) return;
-
-        const blobPort = blobPortPromiseRef.current
-          ? await blobPortPromiseRef.current
-          : null;
-
-        const newCells = await cellSnapshotsToNotebookCells(
-          event.payload,
-          blobPort,
-          outputCacheRef.current,
-        );
-        setCells(newCells);
       },
     );
 
@@ -272,7 +238,6 @@ export function useAutomergeNotebook() {
     return () => {
       isMounted = false;
       unlistenSync.then((fn) => fn());
-      unlistenUpdated.then((fn) => fn());
       unlistenReady.then((fn) => fn());
       unlistenFileOpened.then((fn) => fn());
       unlistenFormat.then((fn) => fn());
