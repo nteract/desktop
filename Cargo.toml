@@ -11,6 +11,7 @@ members = [
     "crates/xtask",
     "crates/runtimed",
     "crates/runtimed-py",
+    "crates/runtimed-wasm",
 ]
 default-members = ["crates/notebook"]
 resolver = "2"
