@@ -9,7 +9,7 @@
 | 0: Optimistic mutations | ✅ Done | [PR #542](https://github.com/nteract/desktop/pull/542) merged |
 | 1.1–1.3: Eliminate `NotebookState` dual-write | ✅ Done | [PR #544](https://github.com/nteract/desktop/pull/544) merged |
 | 1.4: Delegate save-to-disk to daemon | ✅ Done | [PR #545](https://github.com/nteract/desktop/pull/545) merged |
-| 2: Frontend Automerge doc | 🔄 In progress | [Draft PR #547](https://github.com/nteract/desktop/pull/547) — sub-PRs with feature flag |
+| 2: Frontend Automerge doc | 🚧 Blocked | [Draft PR #547](https://github.com/nteract/desktop/pull/547) — phantom cell bug in sync relay, exploratory spikes planned |
 | 3: Authority boundary hardening | ⬜ Not started | Formalize writer roles per field |
 | 4: Optimize Tauri sync relay | ⬜ Not started | Binary IPC, reduce overhead |
 
@@ -293,9 +293,12 @@ Full removal of the `NotebookState` struct is deferred — it still serves as th
 | **List ops use proxy methods** | In v2 `next`, list mutations inside `Automerge.change()` use `(d.cells as any).insertAt(idx, item)` and `(d.cells as any).deleteAt(idx)` — NOT top-level `Automerge.insertAt()` / `Automerge.deleteAt()` which don't exist in v2. |
 | **Scalar strings return as `RawString`** | v2 `next` wraps scalar strings (non-Text) in `RawString` objects. Use `String(value)` for comparison, not `===`. Text CRDT fields (like `source`) return as plain strings. |
 | **Do NOT `syncToBackend()` after `Automerge.load()`** | Sending a sync message from a freshly-loaded doc with a fresh `initSyncState()` triggers a full re-sync that can corrupt the daemon's state. Let the daemon initiate sync — the bidirectional exchange starts naturally when daemon changes arrive via `automerge:from-daemon`. |
-| **Doc bytes bootstrap ≠ sync handshake** | Loading doc bytes via `get_automerge_doc_bytes` + `Automerge.load()` gives the frontend the right data but does NOT establish a sync relationship. The Tauri relay's `frontend_peer_state` has never exchanged messages with the frontend peer, so when the frontend generates sync messages after local mutations (e.g., `addCell`), the relay can't apply them correctly. The frontend's cells never reach the daemon. **Open bug:** need to either (a) initialize `frontend_peer_state` as fully-synced after doc bytes transfer, or (b) replace doc bytes bootstrap with a proper sync handshake (multiple roundtrips). |
+| **Doc bytes bootstrap ≠ sync handshake** | Loading doc bytes via `get_automerge_doc_bytes` + `Automerge.load()` gives the frontend the right data but does NOT establish a sync relationship. The Tauri relay's `frontend_peer_state` has never exchanged messages with the frontend peer, so when the frontend generates sync messages after local mutations (e.g., `addCell`), the relay can't apply them correctly. The frontend's cells never reach the daemon. |
+| **Frontend peer state must not exist before GetDocBytes** | If `frontend_peer_state` is initialized at task startup (`sync::State::new()`), daemon sync acks during cell population cause the relay to generate sync messages for a peer that doesn't exist yet. Those stale messages buffer in `raw_sync_tx`. When the frontend later loads doc bytes and receives them, the CRDT merge produces phantom cells. Fix: start `frontend_peer_state` as `None`, only init inside `GetDocBytes`. |
+| **Phantom cell bug (UNRESOLVED)** | Even with all the above fixes, the frontend still produces phantom cells from daemon sync responses. The Tauri relay receives frontend sync messages, decodes them OK, but the relay's doc NEVER gains the frontend's cells (BEFORE/AFTER always identical). Meanwhile, daemon sync responses to the frontend produce cells with IDs that don't exist in any Rust-side doc. The relay architecture (Tauri as intermediary with its own Automerge doc + separate peer states for daemon and frontend) may be fundamentally flawed — the three-way sync (frontend ↔ Tauri ↔ daemon) with `doc.save()` bootstrap may not be achievable with the Automerge sync protocol. |
 | **Sync needs multiple roundtrips** | The Automerge sync protocol is not one-shot. `generateSyncMessage` / `receiveSyncMessage` must be called in a loop until both sides return `null` messages. The compat test validates this. |
 | **Compat test is essential** | `apps/notebook/src/__tests__/automerge-compat.test.ts` validates Rust 0.7 ↔ JS v2 interop: load fixture bytes, sync roundtrip, change+sync. Run this after any Automerge version change on either side. Fixture bytes exported from `crates/runtimed/src/notebook_doc.rs` test. |
+| **Unit tests pass but runtime fails** | The JS compat test (load, sync roundtrip, change+sync) passes. But the actual runtime sync through the Tauri relay produces phantom cells. The relay's intermediary role — receiving from both daemon and frontend, maintaining two sync states, forwarding changes — introduces complexity that unit tests don't cover. |
 
 ### Sub-PR 2A — WASM + schema setup ✅
 
@@ -347,10 +350,10 @@ The core architectural change. `useAutomergeNotebook` replaces `useNotebook` whe
 - [x] Frontend applies incoming sync messages via `Automerge.receiveSyncMessage()`
 - [x] Wired into `App.tsx` behind feature flag toggle
 - [x] No `invoke()` calls for cell mutations — Automerge sync is the sole transport
-- [x] `notebook:updated` kept as transitional fallback (only active before Automerge doc initializes)
+- [x] `notebook:updated` fallback removed — single source of truth from Automerge doc
 - [x] Diagnostic logging added to daemon's `ExecuteCell` handler (cell count + available IDs on "Cell not found")
-- [ ] QA: cell editing, execution (Shift+Enter), add/delete, cross-window sync, save/load
-- [ ] QA: verify no regressions with feature flag OFF (existing `useNotebook` path)
+- [x] Diagnostic logging in sync relay (BEFORE/AFTER cell counts, message sizes, decode status)
+- [ ] 🚧 **BLOCKED: Phantom cell bug** — execution fails because daemon doesn't have the cell IDs the frontend sees
 
 Key implementation details:
 - `import { next as Automerge } from "@automerge/automerge"` — required for v2 `updateText`/`splice` access
@@ -359,7 +362,69 @@ Key implementation details:
 - Do NOT call `syncToBackend()` after `Automerge.load()` — let daemon initiate the sync exchange
 - Scalar strings from Automerge are `RawString` objects — use `String(value)` for comparison
 
-### Sub-PR 2D — Cleanup (after feature flag is flipped)
+### 🚧 Blocker: Phantom cell bug
+
+**Symptom:** Frontend loads 1 cell from doc bytes (e.g., `ee7e32a6`). After the first daemon sync response (106 bytes), a second cell appears (e.g., `ce2efbdf`) that doesn't exist in the daemon's doc or the Tauri relay's doc. The user types in this phantom cell and tries to execute — daemon returns "Cell not found."
+
+**What we've ruled out:**
+- ~~Race condition with `notebook:updated` fallback~~ — fallback removed entirely, still happens
+- ~~Stale `frontend_peer_state` buffering messages~~ — deferred to `None` until `GetDocBytes`, still happens
+- ~~JS v3 wire format incompatibility~~ — reverted to v2.2.x, still happens
+- ~~Initial `syncToBackend()` corrupting state~~ — both with and without it, same behavior
+- ~~Sync message decode failures~~ — every message decodes OK, no errors anywhere in the relay
+
+**What the logs consistently show:**
+- Tauri relay receives frontend sync messages, decodes OK, applies OK — but cell list NEVER changes (BEFORE = AFTER)
+- Daemon sync responses to the frontend produce phantom cells that no Rust-side doc has
+- The frontend's `Automerge.change()` calls (source edits, cell adds) produce sync messages that the relay accepts but that have no effect on the relay's doc
+
+**Root cause hypothesis:** The three-way Automerge sync architecture (Frontend JS doc ↔ Tauri Rust doc ↔ Daemon Rust doc) with `doc.save()` bootstrap is not working. The virtual sync handshake establishes peer state for identical docs, but subsequent `Automerge.change()` calls in JS produce sync messages that the Rust `receive_sync_message` accepts silently without incorporating the changes. This may be a fundamental JS v2 ↔ Rust 0.7 sync interop issue that the unit test doesn't cover because the unit test only tests JS↔JS sync, not JS→Rust relay→Rust.
+
+### Exploratory spikes (Phase 2 unblock)
+
+The current approach of JS Automerge in the webview syncing through a Rust Automerge relay to the Rust daemon is stuck. Before continuing, we need to isolate whether the problem is the JS↔Rust sync interop, the relay architecture, or something else.
+
+**Spike A: Reproduce with Python bindings**
+
+The Python `runtimed` package uses `NotebookSyncClient` (Rust) directly — byte-for-byte identical to the daemon's Automerge. If we can create cells from Python and execute them, the Rust↔Rust sync path is confirmed working. Then we know the problem is specifically JS↔Rust.
+
+- [ ] Connect Python `Session` to a notebook room
+- [ ] `session.create_cell("print('hello')")` → verify cell appears in daemon doc
+- [ ] `session.execute_cell(cell_id)` → verify execution succeeds
+- [ ] If this works: JS↔Rust sync is the blocker, not the relay architecture
+
+**Spike B: Deno FFI bindings**
+
+Create Deno bindings that link to the same `runtimed` Rust library via FFI (similar to how `runtimed-py` links via PyO3). This gives us another directly-working Automerge peer without the JS WASM layer.
+
+- [ ] Prototype `runtimed-deno` FFI bindings for `NotebookSyncClient`
+- [ ] Connect from Deno, create cell, execute — does it work?
+- [ ] If yes: confirms the problem is JS WASM Automerge, not the relay
+
+**Spike C: Custom WASM bindings for notebook protocol**
+
+Instead of using `@automerge/automerge` (JS WASM from a separate automerge-rs build), compile our own WASM module from the same `automerge = "0.7"` crate the daemon uses. This eliminates any version mismatch between the JS WASM and Rust automerge.
+
+- [ ] Create a thin Rust crate that wraps `NotebookDoc` operations and compiles to WASM
+- [ ] Expose: `load(bytes)`, `add_cell(...)`, `update_source(...)`, `delete_cell(...)`, `generate_sync_message(...)`, `receive_sync_message(...)`
+- [ ] Test from Deno first (faster iteration than Tauri webview)
+- [ ] If sync works: the problem was `@automerge/automerge` JS package using a different automerge-rs version
+
+**Spike D: Separate Tauri window with direct Automerge**
+
+Feature-flag a separate Tauri window that does Automerge work directly in the Rust process (not in the webview). The webview sends cell mutations as Tauri commands, the Rust side applies them to its Automerge doc and syncs to daemon. This tests whether the relay architecture works when there's no JS↔Rust sync boundary.
+
+- [ ] Environment variable flag on the Tauri side
+- [ ] Webview sends structured commands (`AddCell`, `UpdateSource`, `DeleteCell`)
+- [ ] Tauri applies to its Automerge doc directly (no JS Automerge involved)
+- [ ] If execution works: confirms the problem is JS→Rust sync, not the relay architecture
+
+**Decision point:** After spikes, choose one of:
+1. **Spike C worked** → Ship custom WASM bindings (guaranteed version match)
+2. **Spike D worked** → Keep mutations as Tauri commands, frontend is a thin view (hybrid approach)
+3. **Spike A/B showed Rust↔Rust works** → Focus debugging on JS WASM sync messages specifically
+
+### Sub-PR 2D — Cleanup (after phantom cell bug is resolved and feature flag is flipped)
 
 - [ ] Remove `useNotebook.ts`
 - [ ] Remove feature flag infrastructure
