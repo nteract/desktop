@@ -262,6 +262,8 @@ pub enum KernelStatus {
     Error,
     /// Kernel is shutting down
     ShuttingDown,
+    /// Kernel process died unexpectedly
+    Dead,
 }
 
 impl std::fmt::Display for KernelStatus {
@@ -272,6 +274,7 @@ impl std::fmt::Display for KernelStatus {
             KernelStatus::Busy => write!(f, "busy"),
             KernelStatus::Error => write!(f, "error"),
             KernelStatus::ShuttingDown => write!(f, "shutdown"),
+            KernelStatus::Dead => write!(f, "dead"),
         }
     }
 }
@@ -350,6 +353,9 @@ pub enum QueueCommand {
     ExecutionDone { cell_id: String },
     /// A cell produced an error (for stop-on-error behavior)
     CellError { cell_id: String },
+    /// The kernel process died (iopub connection lost).
+    /// Unblocks the execution queue and notifies the frontend.
+    KernelDied,
 }
 
 /// Prepend a directory to the PATH environment variable.
@@ -1363,6 +1369,10 @@ impl RoomKernel {
                     }
                 }
             }
+            // Iopub loop exited — kernel is dead. Signal the queue processor
+            // so it can unblock the execution queue and notify the frontend.
+            warn!("[kernel-manager] iopub loop exited, signaling KernelDied");
+            let _ = iopub_cmd_tx.try_send(QueueCommand::KernelDied);
         });
 
         // Create shell connection
@@ -1751,6 +1761,43 @@ impl RoomKernel {
             self.process_next().await?;
         }
         Ok(())
+    }
+
+    /// Handle kernel death (iopub connection lost).
+    ///
+    /// Unblocks the execution queue by clearing the executing cell and queue,
+    /// and broadcasts an error status to all connected peers.
+    pub fn kernel_died(&mut self) {
+        warn!(
+            "[kernel-manager] Kernel died, executing={:?}, queued={}",
+            self.executing,
+            self.queue.len()
+        );
+
+        // Clear executing state so the queue doesn't stay permanently stuck
+        self.executing = None;
+        self.status = KernelStatus::Dead;
+
+        // Clear any queued cells — they can't execute without a kernel
+        let cleared = self.clear_queue();
+        if !cleared.is_empty() {
+            info!(
+                "[kernel-manager] Cleared {} queued cells due to kernel death",
+                cleared.len()
+            );
+        }
+
+        // Broadcast error status to all peers
+        let _ = self.broadcast_tx.send(NotebookBroadcast::KernelStatus {
+            status: "error: Kernel process died unexpectedly".to_string(),
+            cell_id: None,
+        });
+
+        // Broadcast empty queue state
+        let _ = self.broadcast_tx.send(NotebookBroadcast::QueueChanged {
+            executing: None,
+            queued: vec![],
+        });
     }
 
     /// Interrupt the currently executing cell and clear the execution queue.

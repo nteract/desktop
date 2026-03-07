@@ -168,7 +168,21 @@ pub async fn recv_typed_frame<R: AsyncRead + Unpin>(
 }
 
 /// Send a length-prefixed frame.
+///
+/// Returns an error if the payload exceeds `MAX_FRAME_SIZE` (100 MiB).
+/// This prevents silent truncation of the 4-byte length field at the u32
+/// boundary and keeps send/receive limits symmetric.
 pub async fn send_frame<W: AsyncWrite + Unpin>(writer: &mut W, data: &[u8]) -> std::io::Result<()> {
+    if data.len() > MAX_FRAME_SIZE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "frame too large to send: {} bytes (max {})",
+                data.len(),
+                MAX_FRAME_SIZE
+            ),
+        ));
+    }
     let len = (data.len() as u32).to_be_bytes();
     writer.write_all(&len).await?;
     writer.write_all(data).await?;
@@ -268,11 +282,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_frame_too_large() {
+    async fn test_frame_too_large_recv() {
         let len_bytes = (MAX_FRAME_SIZE as u32 + 1).to_be_bytes();
         let mut cursor = std::io::Cursor::new(len_bytes.to_vec());
         let result = recv_frame(&mut cursor).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_frame_too_large_send() {
+        let data = vec![0u8; MAX_FRAME_SIZE + 1];
+        let mut buf = Vec::new();
+        let result = send_frame(&mut buf, &data).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[tokio::test]
