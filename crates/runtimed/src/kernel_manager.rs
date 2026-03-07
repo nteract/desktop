@@ -1850,8 +1850,9 @@ impl RoomKernel {
         }
 
         // Broadcast error status to all peers
+        // Note: status must be exactly "error" to match frontend's known statuses
         let _ = self.broadcast_tx.send(NotebookBroadcast::KernelStatus {
-            status: "error: Kernel process died unexpectedly".to_string(),
+            status: "error".to_string(),
             cell_id: None,
         });
 
