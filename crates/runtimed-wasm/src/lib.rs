@@ -205,13 +205,16 @@ impl NotebookHandle {
         let msg = sync::Message::decode(message)
             .map_err(|e| JsError::new(&format!("decode sync message: {}", e)))?;
 
-        let heads_before = self.doc.save().len(); // cheap proxy for "did anything change"
+        // Compare document heads before and after to detect changes.
+        // This is O(number of heads) — far cheaper than the previous approach
+        // which called doc.save() twice (serializing the entire document).
+        let heads_before = self.doc.doc_mut().get_heads();
 
         self.doc
             .receive_sync_message(&mut self.sync_state, msg)
             .map_err(|e| JsError::new(&format!("receive sync message: {}", e)))?;
 
-        let heads_after = self.doc.save().len();
+        let heads_after = self.doc.doc_mut().get_heads();
         Ok(heads_before != heads_after)
     }
 
