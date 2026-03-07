@@ -359,7 +359,11 @@ async fn run_daemon(
         let shutdown_daemon = daemon.clone();
 
         tokio::spawn(async move {
+            #[allow(clippy::expect_used)]
+            // Signal registration failure is a fundamental OS issue with no recovery
             let mut sigterm = signal(SignalKind::terminate()).expect("failed to register SIGTERM");
+            #[allow(clippy::expect_used)]
+            // Signal registration failure is a fundamental OS issue with no recovery
             let mut sigint = signal(SignalKind::interrupt()).expect("failed to register SIGINT");
 
             tokio::select! {
@@ -378,8 +382,10 @@ async fn run_daemon(
 }
 
 fn install_service(binary: Option<PathBuf>) -> anyhow::Result<()> {
-    let source_binary = binary
-        .unwrap_or_else(|| std::env::current_exe().expect("Failed to get current executable path"));
+    let source_binary = match binary {
+        Some(path) => path,
+        None => std::env::current_exe()?,
+    };
 
     println!("Installing {} service...", daemon_service_name());
     println!("Source binary: {}", source_binary.display());
