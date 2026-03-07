@@ -155,6 +155,7 @@ pub async fn format_deno(source: &str, language: &str) -> Result<FormatResult> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

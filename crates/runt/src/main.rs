@@ -3303,6 +3303,7 @@ async fn debug_session(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     /// Test that the shutdown command correctly identifies UUIDs vs file paths.
     /// This is critical for handling both saved notebooks (paths) and untitled

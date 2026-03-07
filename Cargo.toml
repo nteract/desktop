@@ -47,6 +47,12 @@ unused_variables = "warn"
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 
+# Prevent panics in user-facing code - crashes are terrible UX.
+# CI runs `clippy -- -D warnings` so these become errors in CI.
+# Use #[allow(clippy::unwrap_used)] with a comment explaining why it's safe.
+unwrap_used = "warn"
+expect_used = "warn"
+
 [profile.release]
 opt-level = 'z'
 strip = true

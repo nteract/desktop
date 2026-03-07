@@ -1,3 +1,7 @@
+// RwLock::read/write only fail if another thread panicked while holding the lock.
+// In that case the program is already crashing, so unwrap is acceptable here.
+#![allow(clippy::unwrap_used)]
+
 //! Progress reporting for environment operations.
 //!
 //! Provides [`EnvProgressPhase`] events covering the full lifecycle of

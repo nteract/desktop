@@ -249,7 +249,7 @@ pub fn check_typosquat(package: &str) -> Option<TyposquatWarning> {
         }
 
         // Check if within threshold and better than current best
-        if distance <= threshold && (best_match.is_none() || distance < best_match.unwrap().1) {
+        if distance <= threshold && best_match.as_ref().is_none_or(|(_, d)| distance < *d) {
             best_match = Some((popular, distance));
         }
     }
@@ -272,6 +272,7 @@ pub fn check_packages(packages: &[String]) -> Vec<TyposquatWarning> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

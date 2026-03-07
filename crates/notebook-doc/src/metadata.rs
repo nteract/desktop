@@ -326,6 +326,7 @@ impl RuntMetadata {
 pub const NOTEBOOK_METADATA_KEY: &str = "notebook_metadata";
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

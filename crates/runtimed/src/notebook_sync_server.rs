@@ -559,6 +559,7 @@ impl NotebookRoom {
     /// For normal operation, `new_fresh` is used to ensure the .ipynb file
     /// is the source of truth.
     #[cfg(test)]
+    #[allow(clippy::unwrap_used, clippy::expect_used)]
     pub fn load_or_create(notebook_id: &str, docs_dir: &Path, blob_store: Arc<BlobStore>) -> Self {
         let filename = notebook_doc_filename(notebook_id);
         let persist_path = docs_dir.join(filename);
@@ -3476,6 +3477,7 @@ pub(crate) fn spawn_notebook_file_watcher(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

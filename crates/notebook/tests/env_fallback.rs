@@ -1,3 +1,6 @@
+// Tests can use unwrap/expect freely - panics are acceptable in test code
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 //! Integration tests for UV support and Rattler conda fallback.
 //!
 //! These tests verify the happy paths for environment detection and creation:
