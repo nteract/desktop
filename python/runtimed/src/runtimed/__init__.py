@@ -9,10 +9,14 @@ from runtimed._sidecar import BridgedSidecar, Sidecar, sidecar
 from runtimed.runtimed import (
     AsyncSession,
     Cell,
+    CompletionItem,
+    CompletionResult,
     DaemonClient,
     ExecutionEvent,
     ExecutionResult,
+    HistoryEntry,
     Output,
+    QueueState,
     RuntimedError,
     Session,
 )
@@ -33,6 +37,11 @@ __all__ = [
     "ExecutionResult",
     "Output",
     "RuntimedError",
+    # Completion and queue types
+    "CompletionItem",
+    "CompletionResult",
+    "QueueState",
+    "HistoryEntry",
 ]
 
 try:
