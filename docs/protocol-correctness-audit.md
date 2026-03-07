@@ -23,6 +23,7 @@ Every IPC connection uses `[4-byte big-endian length][payload]` framing. The fir
 | **Medium** | **No request/response correlation IDs.** The notebook protocol multiplexes requests, responses, and broadcasts over a single connection. Responses are correlated to requests purely by ordering: the client sends a request and waits for the next Response frame. If the server ever sends two responses (bug) or a response is lost (connection error mid-frame), the client will misattribute the next response to the wrong request. Currently the protocol is single-request-at-a-time per connection, which avoids this in practice, but it's fragile if pipelining is ever added. | `connection.rs:82-96`, `notebook_sync_client.rs:1359-1413` |
 | **Low** | **No keepalive or heartbeat.** The daemon and client have no way to detect a half-open connection (e.g., the peer's process was SIGKILL'd). The connection will appear alive until the next write fails. For the daemon, this means `active_peers` can be wrong: a crashed client still counts as a peer until the daemon tries to write to it. The eviction timer (30s default) provides eventual cleanup, but during that window the room state is inaccurate. | `notebook_sync_server.rs:710,784` |
 | **Low** | **Partial frame writes are not atomic.** `send_frame` writes the 4-byte length then the payload in two `write_all` calls with a `flush` at the end. If the process crashes between the length write and payload write, the peer reads a valid length prefix followed by truncated data, which `read_exact` will block on (or error on EOF). This is acceptable for Unix sockets (local, reliable), but would be problematic over TCP. | `connection.rs:171-177` |
+| **Low** | **~~No handshake timeout.~~** ~~The daemon's `route_connection` called `recv_control_frame` without a timeout, allowing stalled connections to hold resources indefinitely.~~ **Fixed**: Added a 10-second timeout on the handshake read. | `daemon.rs:853-858` |
 
 ### Recommendation
 
@@ -201,6 +202,8 @@ result = kernel_broadcast_rx.recv() => {
 3. **Add send-side frame size check in `send_frame`.** Prevents silent truncation at the u32 boundary. Returns `InvalidInput` error for oversized payloads.
 
 4. **Fix auto-launch `CellError` handler not clearing queue.** The auto-launch command processor only logged cell errors but didn't clear the execution queue, breaking stop-on-error for auto-launched kernels. Now matches the manual-launch handler behavior.
+
+5. **Add handshake timeout.** `route_connection` called `recv_control_frame` without a timeout, allowing stalled/idle connections to hold daemon resources indefinitely. Added a 10-second timeout.
 
 ### Important (protocol robustness)
 
