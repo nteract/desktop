@@ -24,7 +24,10 @@ use async_session::AsyncSession;
 use client::DaemonClient;
 use error::RuntimedError;
 use event_stream::{ExecutionEventIterator, ExecutionEventStream};
-use output::{Cell, ExecutionEvent, ExecutionResult, Output};
+use output::{
+    Cell, CompletionItem, CompletionResult, ExecutionEvent, ExecutionResult, HistoryEntry, Output,
+    QueueState,
+};
 use session::Session;
 use subscription::{EventIteratorSubscription, EventSubscription};
 
@@ -51,6 +54,12 @@ fn runtimed(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ExecutionResult>()?;
     m.add_class::<ExecutionEvent>()?;
     m.add_class::<Output>()?;
+
+    // Completion and queue types
+    m.add_class::<CompletionItem>()?;
+    m.add_class::<CompletionResult>()?;
+    m.add_class::<QueueState>()?;
+    m.add_class::<HistoryEntry>()?;
 
     // Error type
     m.add("RuntimedError", m.py().get_type::<RuntimedError>())?;

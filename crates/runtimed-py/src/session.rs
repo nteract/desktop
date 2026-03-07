@@ -867,6 +867,209 @@ impl Session {
         })
     }
 
+    // =========================================================================
+    // Kernel Introspection (completion, history, queue state)
+    // =========================================================================
+
+    /// Get code completions at a cursor position.
+    ///
+    /// The kernel provides completions based on the current code context,
+    /// including DataFrame columns, object methods, variable names, etc.
+    ///
+    /// Args:
+    ///     code: The code to complete.
+    ///     cursor_pos: Cursor position in the code (byte offset).
+    ///
+    /// Returns:
+    ///     CompletionResult with items, cursor_start, and cursor_end.
+    ///
+    /// Raises:
+    ///     RuntimedError: If no kernel is running or request times out.
+    #[pyo3(signature = (code, cursor_pos))]
+    fn complete(
+        &self,
+        code: String,
+        cursor_pos: usize,
+    ) -> PyResult<crate::output::CompletionResult> {
+        self.runtime.block_on(async {
+            let state = self.state.lock().await;
+
+            let handle = state
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            let response = handle
+                .send_request(NotebookRequest::Complete { code, cursor_pos })
+                .await
+                .map_err(to_py_err)?;
+
+            match response {
+                NotebookResponse::CompletionResult {
+                    items,
+                    cursor_start,
+                    cursor_end,
+                } => Ok(crate::output::CompletionResult {
+                    items: items
+                        .into_iter()
+                        .map(crate::output::CompletionItem::from_protocol)
+                        .collect(),
+                    cursor_start,
+                    cursor_end,
+                }),
+                NotebookResponse::NoKernel {} => Err(to_py_err("No kernel running")),
+                NotebookResponse::Error { error } => Err(to_py_err(error)),
+                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
+            }
+        })
+    }
+
+    /// Get the current execution queue state.
+    ///
+    /// Returns which cell is currently executing (if any) and which cells
+    /// are queued for execution.
+    ///
+    /// Returns:
+    ///     QueueState with executing (cell_id or None) and queued (list of cell_ids).
+    fn get_queue_state(&self) -> PyResult<crate::output::QueueState> {
+        self.runtime.block_on(async {
+            let state = self.state.lock().await;
+
+            let handle = state
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            let response = handle
+                .send_request(NotebookRequest::GetQueueState {})
+                .await
+                .map_err(to_py_err)?;
+
+            match response {
+                NotebookResponse::QueueState { executing, queued } => {
+                    Ok(crate::output::QueueState { executing, queued })
+                }
+                NotebookResponse::Error { error } => Err(to_py_err(error)),
+                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
+            }
+        })
+    }
+
+    /// Clear outputs for a cell.
+    ///
+    /// Removes all outputs and resets the execution count. Useful before
+    /// re-executing a cell for a fresh run.
+    ///
+    /// Args:
+    ///     cell_id: The cell ID to clear outputs for.
+    fn clear_outputs(&self, cell_id: String) -> PyResult<()> {
+        self.runtime.block_on(async {
+            let state = self.state.lock().await;
+
+            let handle = state
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            let response = handle
+                .send_request(NotebookRequest::ClearOutputs { cell_id })
+                .await
+                .map_err(to_py_err)?;
+
+            match response {
+                NotebookResponse::OutputsCleared { .. } => Ok(()),
+                NotebookResponse::Error { error } => Err(to_py_err(error)),
+                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
+            }
+        })
+    }
+
+    /// Run all code cells in the notebook.
+    ///
+    /// Queues all code cells (in document order) for execution. The daemon
+    /// reads cell sources from the automerge document and executes them
+    /// sequentially.
+    ///
+    /// Returns:
+    ///     The number of cells queued for execution.
+    fn run_all_cells(&self) -> PyResult<usize> {
+        // Auto-start kernel if not running
+        {
+            let state = self.runtime.block_on(self.state.lock());
+            if !state.kernel_started {
+                drop(state);
+                self.start_kernel("python", "auto", None)?;
+            }
+        }
+
+        self.runtime.block_on(async {
+            let state = self.state.lock().await;
+
+            let handle = state
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            let response = handle
+                .send_request(NotebookRequest::RunAllCells {})
+                .await
+                .map_err(to_py_err)?;
+
+            match response {
+                NotebookResponse::AllCellsQueued { count } => Ok(count),
+                NotebookResponse::Error { error } => Err(to_py_err(error)),
+                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
+            }
+        })
+    }
+
+    /// Search the kernel's input history.
+    ///
+    /// Returns executed code from the kernel's history, optionally filtered
+    /// by a glob pattern.
+    ///
+    /// Args:
+    ///     pattern: Optional glob pattern to filter history (e.g., "*pandas*").
+    ///     n: Maximum number of entries to return (default: 100).
+    ///     unique: If True, deduplicate entries (default: True).
+    ///
+    /// Returns:
+    ///     List of HistoryEntry objects with session, line, and source.
+    ///
+    /// Raises:
+    ///     RuntimedError: If no kernel is running or request times out.
+    #[pyo3(signature = (pattern=None, n=100, unique=true))]
+    fn get_history(
+        &self,
+        pattern: Option<String>,
+        n: i32,
+        unique: bool,
+    ) -> PyResult<Vec<crate::output::HistoryEntry>> {
+        self.runtime.block_on(async {
+            let state = self.state.lock().await;
+
+            let handle = state
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            let response = handle
+                .send_request(NotebookRequest::GetHistory { pattern, n, unique })
+                .await
+                .map_err(to_py_err)?;
+
+            match response {
+                NotebookResponse::HistoryResult { entries } => Ok(entries
+                    .into_iter()
+                    .map(crate::output::HistoryEntry::from_protocol)
+                    .collect()),
+                NotebookResponse::NoKernel {} => Err(to_py_err("No kernel running")),
+                NotebookResponse::Error { error } => Err(to_py_err(error)),
+                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
+            }
+        })
+    }
+
     fn __repr__(&self) -> String {
         let state = self.runtime.block_on(self.state.lock());
         let status = if state.kernel_started {

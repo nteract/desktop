@@ -327,6 +327,123 @@ impl ExecutionEvent {
     }
 }
 
+/// A single completion item from the kernel.
+#[pyclass(get_all, skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct CompletionItem {
+    /// The completion text
+    pub label: String,
+    /// Kind: "function", "variable", "class", "module", etc.
+    pub kind: Option<String>,
+    /// Short type annotation (e.g., "def read_csv(...)")
+    pub detail: Option<String>,
+    /// Source: "kernel"
+    pub source: Option<String>,
+}
+
+#[pymethods]
+impl CompletionItem {
+    fn __repr__(&self) -> String {
+        match &self.kind {
+            Some(k) => format!("CompletionItem({}, kind={})", self.label, k),
+            None => format!("CompletionItem({})", self.label),
+        }
+    }
+}
+
+impl CompletionItem {
+    pub fn from_protocol(item: runtimed::protocol::CompletionItem) -> Self {
+        Self {
+            label: item.label,
+            kind: item.kind,
+            detail: item.detail,
+            source: item.source,
+        }
+    }
+}
+
+/// Result of a code completion request.
+#[pyclass(get_all, skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct CompletionResult {
+    /// The completion items
+    pub items: Vec<CompletionItem>,
+    /// Cursor position where completions start
+    pub cursor_start: usize,
+    /// Cursor position where completions end
+    pub cursor_end: usize,
+}
+
+#[pymethods]
+impl CompletionResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "CompletionResult({} items, cursor={}..{})",
+            self.items.len(),
+            self.cursor_start,
+            self.cursor_end
+        )
+    }
+}
+
+/// Current state of the execution queue.
+#[pyclass(get_all, skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct QueueState {
+    /// Cell ID currently executing (None if idle)
+    pub executing: Option<String>,
+    /// Cell IDs waiting in queue
+    pub queued: Vec<String>,
+}
+
+#[pymethods]
+impl QueueState {
+    fn __repr__(&self) -> String {
+        match &self.executing {
+            Some(cell_id) => format!(
+                "QueueState(executing={}, queued={})",
+                cell_id,
+                self.queued.len()
+            ),
+            None => format!("QueueState(idle, queued={})", self.queued.len()),
+        }
+    }
+}
+
+/// A single entry from kernel input history.
+#[pyclass(get_all, skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct HistoryEntry {
+    /// Session number (0 for current session)
+    pub session: i32,
+    /// Line number within the session
+    pub line: i32,
+    /// The source code that was executed
+    pub source: String,
+}
+
+#[pymethods]
+impl HistoryEntry {
+    fn __repr__(&self) -> String {
+        let preview: String = self.source.chars().take(30).collect();
+        let ellipsis = if self.source.len() > 30 { "..." } else { "" };
+        format!(
+            "HistoryEntry(session={}, line={}, source={:?}{})",
+            self.session, self.line, preview, ellipsis
+        )
+    }
+}
+
+impl HistoryEntry {
+    pub fn from_protocol(entry: runtimed::protocol::HistoryEntry) -> Self {
+        Self {
+            session: entry.session,
+            line: entry.line,
+            source: entry.source,
+        }
+    }
+}
+
 /// Result of executing code.
 #[pyclass(skip_from_py_object)]
 #[derive(Clone, Debug)]
