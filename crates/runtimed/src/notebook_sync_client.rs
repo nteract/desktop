@@ -104,7 +104,6 @@ enum SyncCommand {
         reply: oneshot::Sender<Option<String>>,
     },
     /// Send a request to the daemon and wait for a response.
-    /// Only works with v2 protocol; returns error on v1.
     SendRequest {
         request: NotebookRequest,
         reply: oneshot::Sender<Result<NotebookResponse, NotebookSyncError>>,
@@ -310,9 +309,6 @@ impl NotebookSyncHandle {
     }
 
     /// Send a request to the daemon and wait for a response.
-    ///
-    /// This only works with v2 protocol. If the daemon is running v1,
-    /// this will return an error.
     pub async fn send_request(
         &self,
         request: NotebookRequest,
@@ -471,7 +467,7 @@ impl NotebookBroadcastReceiver {
 /// Holds a local Automerge document replica that stays in sync with the
 /// daemon's canonical copy for a specific notebook.
 ///
-/// Uses the v2 typed frames protocol. Older v1 servers are not supported.
+/// Uses typed frames protocol for daemon communication.
 pub struct NotebookSyncClient<S> {
     doc: AutoCommit,
     peer_state: sync::State,
