@@ -92,6 +92,15 @@ pub fn get_or_create_trust_key() -> Result<[u8; 32], String> {
 
         std::fs::write(&key_path, key).map_err(|e| format!("Failed to write trust key: {}", e))?;
 
+        // Restrict key file permissions to owner-only (0600) so other users cannot
+        // read the HMAC key and forge trust signatures.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| format!("Failed to set trust key permissions: {}", e))?;
+        }
+
         Ok(key)
     }
 }

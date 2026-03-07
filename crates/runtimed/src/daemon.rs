@@ -499,6 +499,17 @@ impl Daemon {
     #[cfg(unix)]
     async fn run_unix_server(self: &Arc<Self>) -> anyhow::Result<()> {
         let listener = UnixListener::bind(&self.config.socket_path)?;
+
+        // Restrict socket permissions to owner-only (0600) so other users cannot
+        // connect to the daemon.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                &self.config.socket_path,
+                std::fs::Permissions::from_mode(0o600),
+            )?;
+        }
+
         info!("[runtimed] Listening on {:?}", self.config.socket_path);
 
         loop {
