@@ -1287,7 +1287,7 @@ where
         } else {
             // v2 protocol: handle all frame types with timeout to avoid blocking
             let frame_result = tokio::time::timeout(
-                Duration::from_millis(100),
+                Duration::from_millis(1),
                 connection::recv_typed_frame(&mut self.stream),
             )
             .await;
