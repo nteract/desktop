@@ -1429,6 +1429,18 @@ async fn auto_launch_kernel(
                             }
                             QueueCommand::CellError { cell_id } => {
                                 warn!("[notebook-sync] Cell error (stop-on-error): {}", cell_id);
+                                // Clear the queue to stop execution on error, which matches
+                                // the behavior of manually-launched kernel handler.
+                                let mut guard = room_kernel.lock().await;
+                                if let Some(ref mut k) = *guard {
+                                    let cleared = k.clear_queue();
+                                    if !cleared.is_empty() {
+                                        info!(
+                                            "[notebook-sync] Cleared {} queued cells due to error",
+                                            cleared.len()
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
