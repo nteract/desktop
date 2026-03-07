@@ -295,6 +295,7 @@ pub fn create_menu(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{
         about_menu_label, app_name, build_about_metadata, sample_for_menu_item_id,

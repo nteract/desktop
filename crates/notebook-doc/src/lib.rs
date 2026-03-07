@@ -965,6 +965,7 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

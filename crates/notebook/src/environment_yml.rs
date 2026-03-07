@@ -258,6 +258,7 @@ pub fn get_all_dependencies(config: &EnvironmentYmlConfig) -> (Vec<String>, Vec<
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::io::Write;

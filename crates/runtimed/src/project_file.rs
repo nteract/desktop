@@ -112,6 +112,7 @@ pub fn detect_project_file(notebook_path: &Path) -> Option<DetectedProjectFile> 
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

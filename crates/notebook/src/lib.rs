@@ -624,6 +624,7 @@ async fn initialize_notebook_sync(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::next_available_sample_path;
     use tempfile::TempDir;

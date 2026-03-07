@@ -638,6 +638,12 @@ impl SettingsDoc {
     }
 
     /// Get or create a nested Map at ROOT.
+    ///
+    /// # Panics
+    /// Panics if `put_object` fails, which only happens if the Automerge document
+    /// is in an invalid state. This would indicate a fundamental corruption that
+    /// would break all document operations - crashing is the correct response.
+    #[allow(clippy::expect_used)]
     fn ensure_map(&mut self, map_key: &str) -> ObjId {
         if let Some(id) = self.get_map_id(map_key) {
             return id;
@@ -856,6 +862,7 @@ pub fn read_nested_list(doc: &AutoCommit, map_key: &str, sub_key: &str) -> Vec<S
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

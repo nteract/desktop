@@ -1,3 +1,6 @@
+// Tests can use unwrap/expect freely - panics are acceptable in test code
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 //! Integration tests for runtimed daemon and client.
 //!
 //! These tests spawn a real daemon and test client interactions.

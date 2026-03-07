@@ -1,3 +1,8 @@
+// Mutex::lock only fails if another thread panicked while holding the lock.
+// In that case the program is already crashing, so unwrap is acceptable here.
+// The shell_writer unwrap at line 1713 is guarded by an early-return check at line 1681.
+#![allow(clippy::unwrap_used)]
+
 //! Daemon-owned kernel management for notebook rooms.
 //!
 //! Each notebook room can have one kernel. The daemon owns the kernel lifecycle

@@ -112,6 +112,7 @@ async fn serve_blob(store: &BlobStore, hash: &str) -> Response<Full<Bytes>> {
 }
 
 /// Build a simple text response.
+#[allow(clippy::expect_used)] // Response::builder only fails with invalid StatusCode, we use valid enum values
 fn text_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
@@ -121,6 +122,7 @@ fn text_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

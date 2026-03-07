@@ -681,6 +681,7 @@ fn get_response(request: Request<Vec<u8>>) -> Result<Response<Vec<u8>>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

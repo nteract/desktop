@@ -170,6 +170,7 @@ pub async fn sync_dependencies(env: &UvEnvironment, deps: &[String]) -> Result<(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
