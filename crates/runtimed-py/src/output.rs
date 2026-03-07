@@ -444,6 +444,37 @@ impl HistoryEntry {
     }
 }
 
+/// Result of syncing environment with metadata.
+#[pyclass(get_all, skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct SyncEnvironmentResult {
+    /// Whether the sync completed successfully
+    pub success: bool,
+    /// Packages that were installed (only if success=true)
+    pub synced_packages: Vec<String>,
+    /// Error message (only if success=false)
+    pub error: Option<String>,
+    /// Whether user should restart kernel instead (only if success=false)
+    pub needs_restart: bool,
+}
+
+#[pymethods]
+impl SyncEnvironmentResult {
+    fn __repr__(&self) -> String {
+        if self.success {
+            format!(
+                "SyncEnvironmentResult(success, packages={:?})",
+                self.synced_packages
+            )
+        } else {
+            format!(
+                "SyncEnvironmentResult(failed, error={:?}, needs_restart={})",
+                self.error, self.needs_restart
+            )
+        }
+    }
+}
+
 /// Result of executing code.
 #[pyclass(skip_from_py_object)]
 #[derive(Clone, Debug)]

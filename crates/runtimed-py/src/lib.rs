@@ -26,7 +26,7 @@ use error::RuntimedError;
 use event_stream::{ExecutionEventIterator, ExecutionEventStream};
 use output::{
     Cell, CompletionItem, CompletionResult, ExecutionEvent, ExecutionResult, HistoryEntry, Output,
-    QueueState,
+    QueueState, SyncEnvironmentResult,
 };
 use session::Session;
 use subscription::{EventIteratorSubscription, EventSubscription};
@@ -54,6 +54,7 @@ fn runtimed(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ExecutionResult>()?;
     m.add_class::<ExecutionEvent>()?;
     m.add_class::<Output>()?;
+    m.add_class::<SyncEnvironmentResult>()?;
 
     // Completion and queue types
     m.add_class::<CompletionItem>()?;

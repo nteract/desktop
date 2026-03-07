@@ -15,9 +15,13 @@ use runtimed::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 
 use crate::error::to_py_err;
 use crate::event_stream::ExecutionEventIterator;
-use crate::output::{Cell, ExecutionEvent, ExecutionResult, Output};
+use crate::output::{Cell, ExecutionEvent, ExecutionResult, Output, SyncEnvironmentResult};
 use crate::output_resolver;
 use crate::subscription::EventIteratorSubscription;
+
+use notebook_doc::metadata::{
+    CondaInlineMetadata, NotebookMetadataSnapshot, RuntMetadata, UvInlineMetadata,
+};
 
 /// A session for executing code via the runtimed daemon.
 ///
@@ -534,6 +538,147 @@ impl Session {
     }
 
     // =========================================================================
+    // Dependency Management (convenience methods for notebook_metadata)
+    // =========================================================================
+
+    /// Get current UV dependencies.
+    ///
+    /// Returns:
+    ///     List of UV dependency specifiers (e.g., ["pandas>=2.0", "numpy"]).
+    fn get_uv_dependencies(&self) -> PyResult<Vec<String>> {
+        let snapshot = self.get_notebook_metadata()?;
+        Ok(snapshot
+            .runt
+            .uv
+            .map(|uv| uv.dependencies)
+            .unwrap_or_default())
+    }
+
+    /// Add a UV dependency to the notebook.
+    ///
+    /// Args:
+    ///     package: PEP 508 dependency specifier (e.g., "pandas>=2.0", "requests").
+    ///
+    /// Returns:
+    ///     Updated list of dependencies.
+    fn add_uv_dependency(&self, package: &str) -> PyResult<Vec<String>> {
+        let mut snapshot = self.get_notebook_metadata()?;
+
+        let mut deps = snapshot
+            .runt
+            .uv
+            .map(|uv| uv.dependencies)
+            .unwrap_or_default();
+
+        deps.push(package.to_string());
+
+        snapshot.runt.uv = Some(UvInlineMetadata {
+            dependencies: deps.clone(),
+            requires_python: None,
+        });
+
+        self.set_notebook_metadata(&snapshot)?;
+        Ok(deps)
+    }
+
+    /// Remove a UV dependency by exact match.
+    ///
+    /// Args:
+    ///     package: Exact dependency string to remove.
+    ///
+    /// Returns:
+    ///     Updated list of dependencies.
+    fn remove_uv_dependency(&self, package: &str) -> PyResult<Vec<String>> {
+        let mut snapshot = self.get_notebook_metadata()?;
+
+        let mut deps = snapshot
+            .runt
+            .uv
+            .map(|uv| uv.dependencies)
+            .unwrap_or_default();
+        deps.retain(|dep| dep != package);
+
+        snapshot.runt.uv = Some(UvInlineMetadata {
+            dependencies: deps.clone(),
+            requires_python: None,
+        });
+
+        self.set_notebook_metadata(&snapshot)?;
+        Ok(deps)
+    }
+
+    /// Get current Conda dependencies.
+    ///
+    /// Returns:
+    ///     List of Conda package names.
+    fn get_conda_dependencies(&self) -> PyResult<Vec<String>> {
+        let snapshot = self.get_notebook_metadata()?;
+        Ok(snapshot
+            .runt
+            .conda
+            .map(|c| c.dependencies)
+            .unwrap_or_default())
+    }
+
+    /// Add a Conda dependency to the notebook.
+    ///
+    /// Args:
+    ///     package: Conda package specifier (e.g., "numpy", "scipy>=1.0").
+    ///
+    /// Returns:
+    ///     Updated list of dependencies.
+    fn add_conda_dependency(&self, package: &str) -> PyResult<Vec<String>> {
+        let mut snapshot = self.get_notebook_metadata()?;
+
+        let existing = snapshot.runt.conda.unwrap_or(CondaInlineMetadata {
+            dependencies: vec![],
+            channels: vec!["conda-forge".to_string()],
+            python: None,
+        });
+
+        let mut deps = existing.dependencies;
+        deps.push(package.to_string());
+
+        snapshot.runt.conda = Some(CondaInlineMetadata {
+            dependencies: deps.clone(),
+            channels: existing.channels,
+            python: existing.python,
+        });
+
+        self.set_notebook_metadata(&snapshot)?;
+        Ok(deps)
+    }
+
+    /// Remove a Conda dependency by exact match.
+    ///
+    /// Args:
+    ///     package: Exact dependency string to remove.
+    ///
+    /// Returns:
+    ///     Updated list of dependencies.
+    fn remove_conda_dependency(&self, package: &str) -> PyResult<Vec<String>> {
+        let mut snapshot = self.get_notebook_metadata()?;
+
+        let existing = snapshot.runt.conda.unwrap_or(CondaInlineMetadata {
+            dependencies: vec![],
+            channels: vec!["conda-forge".to_string()],
+            python: None,
+        });
+
+        let mut deps = existing.dependencies;
+        deps.retain(|dep| dep != package);
+
+        snapshot.runt.conda = Some(CondaInlineMetadata {
+            dependencies: deps.clone(),
+            channels: existing.channels,
+            python: existing.python,
+        });
+
+        self.set_notebook_metadata(&snapshot)?;
+        Ok(deps)
+    }
+
+    // =========================================================================
     // Execution (document-first: reads source from automerge doc)
     // =========================================================================
 
@@ -862,6 +1007,155 @@ impl Session {
                     Ok(())
                 }
                 NotebookResponse::Error { error } => Err(to_py_err(error)),
+                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
+            }
+        })
+    }
+
+    /// Restart the kernel.
+    ///
+    /// Shuts down the current kernel and starts a new one. This is useful after
+    /// modifying dependencies to apply the changes.
+    ///
+    /// The new kernel will use env_source="auto" to pick up any inline
+    /// dependencies from the notebook metadata.
+    ///
+    /// Args:
+    ///     wait_for_ready: If True (default), wait for kernel to be idle.
+    ///
+    /// Note: This currently does shutdown + start. A daemon-side RestartKernel
+    /// command would be cleaner but doesn't exist yet.
+    #[pyo3(signature = (wait_for_ready=true))]
+    fn restart_kernel(&self, wait_for_ready: bool) -> PyResult<()> {
+        // TODO: Consider adding NotebookRequest::RestartKernel to the daemon
+        // Shutdown existing kernel
+        self.shutdown_kernel()?;
+
+        // Start new kernel with auto env detection
+        self.start_kernel("python", "auto", None)?;
+
+        if wait_for_ready {
+            // Wait briefly for kernel to become ready
+            // The kernel reports idle status via broadcasts after startup
+            self.runtime.block_on(async {
+                let mut state = self.state.lock().await;
+                let broadcast_rx = state.broadcast_rx.as_mut();
+                if let Some(rx) = broadcast_rx {
+                    // Wait up to 30 seconds for kernel ready
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                    while std::time::Instant::now() < deadline {
+                        match tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+                            .await
+                        {
+                            Ok(Some(NotebookBroadcast::KernelStatus { status, .. }))
+                                if status == "idle" =>
+                            {
+                                return Ok(());
+                            }
+                            Ok(Some(_)) => continue, // Other broadcasts, keep waiting
+                            Ok(None) => return Err(to_py_err("Broadcast channel closed")),
+                            Err(_) => continue, // Timeout, keep waiting
+                        }
+                    }
+                }
+                Ok(()) // Timeout waiting for ready, but kernel was launched
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Sync environment with current metadata (hot-install new packages).
+    ///
+    /// This attempts to install new packages without restarting the kernel.
+    /// Only supported for UV inline dependencies with additions only.
+    ///
+    /// For removals, conda dependencies, or other cases, this will return
+    /// an error with needs_restart=True indicating a kernel restart is required.
+    ///
+    /// Returns:
+    ///     SyncEnvironmentResult with success status and installed packages.
+    fn sync_environment(&self) -> PyResult<SyncEnvironmentResult> {
+        self.runtime.block_on(async {
+            let state = self.state.lock().await;
+
+            let handle = state
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            let response = handle
+                .send_request(NotebookRequest::SyncEnvironment {})
+                .await
+                .map_err(to_py_err)?;
+
+            drop(state); // Release lock before waiting for follow-up responses
+
+            match response {
+                NotebookResponse::SyncEnvironmentStarted { packages } => {
+                    // Wait for completion
+                    let mut state = self.state.lock().await;
+                    let broadcast_rx = state.broadcast_rx.as_mut();
+                    if let Some(rx) = broadcast_rx {
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(300);
+                        while std::time::Instant::now() < deadline {
+                            match tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+                                .await
+                            {
+                                Ok(Some(NotebookBroadcast::EnvSyncState {
+                                    in_sync: true, ..
+                                })) => {
+                                    return Ok(SyncEnvironmentResult {
+                                        success: true,
+                                        synced_packages: packages,
+                                        error: None,
+                                        needs_restart: false,
+                                    });
+                                }
+                                Ok(Some(_)) => continue,
+                                Ok(None) => break,
+                                Err(_) => continue,
+                            }
+                        }
+                    }
+                    // Assume success if we got SyncEnvironmentStarted
+                    Ok(SyncEnvironmentResult {
+                        success: true,
+                        synced_packages: packages,
+                        error: None,
+                        needs_restart: false,
+                    })
+                }
+                NotebookResponse::SyncEnvironmentComplete { synced_packages } => {
+                    Ok(SyncEnvironmentResult {
+                        success: true,
+                        synced_packages,
+                        error: None,
+                        needs_restart: false,
+                    })
+                }
+                NotebookResponse::SyncEnvironmentFailed {
+                    error,
+                    needs_restart,
+                } => Ok(SyncEnvironmentResult {
+                    success: false,
+                    synced_packages: vec![],
+                    error: Some(error),
+                    needs_restart,
+                }),
+                NotebookResponse::NoKernel {} => Ok(SyncEnvironmentResult {
+                    success: false,
+                    synced_packages: vec![],
+                    error: Some("No kernel running".to_string()),
+                    needs_restart: true,
+                }),
+                NotebookResponse::Error { error } => Ok(SyncEnvironmentResult {
+                    success: false,
+                    synced_packages: vec![],
+                    error: Some(error),
+                    needs_restart: true,
+                }),
                 other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
             }
         })
@@ -1338,5 +1632,40 @@ impl Session {
         }
 
         Ok(events)
+    }
+}
+
+// =========================================================================
+// Internal helper methods (not exposed to Python)
+// =========================================================================
+
+impl Session {
+    /// Get the current notebook metadata snapshot.
+    fn get_notebook_metadata(&self) -> PyResult<NotebookMetadataSnapshot> {
+        let json_str = self.get_metadata("notebook_metadata")?;
+        match json_str {
+            Some(s) => serde_json::from_str(&s)
+                .map_err(|e| to_py_err(format!("Invalid metadata JSON: {}", e))),
+            None => Ok(NotebookMetadataSnapshot {
+                kernelspec: None,
+                language_info: None,
+                runt: RuntMetadata {
+                    schema_version: "1".to_string(),
+                    env_id: None,
+                    uv: None,
+                    conda: None,
+                    deno: None,
+                    trust_signature: None,
+                    trust_timestamp: None,
+                },
+            }),
+        }
+    }
+
+    /// Set the notebook metadata snapshot.
+    fn set_notebook_metadata(&self, snapshot: &NotebookMetadataSnapshot) -> PyResult<()> {
+        let json_str = serde_json::to_string(snapshot)
+            .map_err(|e| to_py_err(format!("Failed to serialize metadata: {}", e)))?;
+        self.set_metadata("notebook_metadata", &json_str)
     }
 }

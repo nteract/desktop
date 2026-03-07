@@ -5665,6 +5665,7 @@ name = "runtimed-py"
 version = "0.1.0"
 dependencies = [
  "log",
+ "notebook-doc",
  "pyo3",
  "pyo3-async-runtimes",
  "reqwest 0.12.28",

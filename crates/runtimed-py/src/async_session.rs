@@ -16,9 +16,13 @@ use runtimed::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 
 use crate::error::to_py_err;
 use crate::event_stream::ExecutionEventStream;
-use crate::output::{Cell, ExecutionEvent, ExecutionResult, Output};
+use crate::output::{Cell, ExecutionEvent, ExecutionResult, Output, SyncEnvironmentResult};
 use crate::output_resolver;
 use crate::subscription::EventSubscription;
+
+use notebook_doc::metadata::{
+    CondaInlineMetadata, NotebookMetadataSnapshot, RuntMetadata, UvInlineMetadata,
+};
 
 /// An async session for executing code via the runtimed daemon.
 ///
@@ -590,6 +594,243 @@ impl AsyncSession {
                 NotebookResponse::Error { error } => Err(to_py_err(error)),
                 other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
             }
+        })
+    }
+
+    // =========================================================================
+    // Metadata Operations (synced via automerge doc)
+    // =========================================================================
+
+    /// Set a metadata value in the automerge document.
+    ///
+    /// The value is synced to the daemon and all connected clients.
+    /// Use the key "notebook_metadata" to set the NotebookMetadataSnapshot
+    /// (JSON-encoded kernelspec, language_info, and runt config).
+    ///
+    /// Args:
+    ///     key: The metadata key.
+    ///     value: The metadata value (typically JSON).
+    ///
+    /// Returns a coroutine.
+    fn set_metadata<'py>(
+        &self,
+        py: Python<'py>,
+        key: &str,
+        value: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let key = key.to_string();
+        let value = value.to_string();
+
+        future_into_py(py, async move {
+            let state_guard = state.lock().await;
+            let handle = state_guard
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            handle.set_metadata(&key, &value).await.map_err(to_py_err)
+        })
+    }
+
+    /// Get a metadata value from the automerge document.
+    ///
+    /// Reads from the local replica of the automerge doc.
+    ///
+    /// Args:
+    ///     key: The metadata key.
+    ///
+    /// Returns a coroutine that resolves to the metadata value (str) or None.
+    fn get_metadata<'py>(&self, py: Python<'py>, key: &str) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let key = key.to_string();
+
+        future_into_py(py, async move {
+            let state_guard = state.lock().await;
+            let handle = state_guard
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            handle.get_metadata(&key).await.map_err(to_py_err)
+        })
+    }
+
+    // =========================================================================
+    // Dependency Management (convenience methods for notebook_metadata)
+    // =========================================================================
+
+    /// Get current UV dependencies.
+    ///
+    /// Returns a coroutine that resolves to list of UV dependency specifiers.
+    fn get_uv_dependencies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+
+        future_into_py(py, async move {
+            let snapshot = get_notebook_metadata_async(&state).await?;
+            Ok(snapshot
+                .runt
+                .uv
+                .map(|uv| uv.dependencies)
+                .unwrap_or_default())
+        })
+    }
+
+    /// Add a UV dependency to the notebook.
+    ///
+    /// Args:
+    ///     package: PEP 508 dependency specifier (e.g., "pandas>=2.0", "requests").
+    ///
+    /// Returns a coroutine that resolves to the updated list of dependencies.
+    fn add_uv_dependency<'py>(
+        &self,
+        py: Python<'py>,
+        package: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let package = package.to_string();
+
+        future_into_py(py, async move {
+            let mut snapshot = get_notebook_metadata_async(&state).await?;
+
+            let mut deps = snapshot
+                .runt
+                .uv
+                .map(|uv| uv.dependencies)
+                .unwrap_or_default();
+            deps.push(package);
+
+            snapshot.runt.uv = Some(UvInlineMetadata {
+                dependencies: deps.clone(),
+                requires_python: None,
+            });
+
+            set_notebook_metadata_async(&state, &snapshot).await?;
+            Ok(deps)
+        })
+    }
+
+    /// Remove a UV dependency by exact match.
+    ///
+    /// Args:
+    ///     package: Exact dependency string to remove.
+    ///
+    /// Returns a coroutine that resolves to the updated list of dependencies.
+    fn remove_uv_dependency<'py>(
+        &self,
+        py: Python<'py>,
+        package: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let package = package.to_string();
+
+        future_into_py(py, async move {
+            let mut snapshot = get_notebook_metadata_async(&state).await?;
+
+            let mut deps = snapshot
+                .runt
+                .uv
+                .map(|uv| uv.dependencies)
+                .unwrap_or_default();
+            deps.retain(|dep| dep != &package);
+
+            snapshot.runt.uv = Some(UvInlineMetadata {
+                dependencies: deps.clone(),
+                requires_python: None,
+            });
+
+            set_notebook_metadata_async(&state, &snapshot).await?;
+            Ok(deps)
+        })
+    }
+
+    /// Get current Conda dependencies.
+    ///
+    /// Returns a coroutine that resolves to list of Conda package names.
+    fn get_conda_dependencies<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+
+        future_into_py(py, async move {
+            let snapshot = get_notebook_metadata_async(&state).await?;
+            Ok(snapshot
+                .runt
+                .conda
+                .map(|c| c.dependencies)
+                .unwrap_or_default())
+        })
+    }
+
+    /// Add a Conda dependency to the notebook.
+    ///
+    /// Args:
+    ///     package: Conda package specifier (e.g., "numpy", "scipy>=1.0").
+    ///
+    /// Returns a coroutine that resolves to the updated list of dependencies.
+    fn add_conda_dependency<'py>(
+        &self,
+        py: Python<'py>,
+        package: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let package = package.to_string();
+
+        future_into_py(py, async move {
+            let mut snapshot = get_notebook_metadata_async(&state).await?;
+
+            let existing = snapshot.runt.conda.unwrap_or(CondaInlineMetadata {
+                dependencies: vec![],
+                channels: vec!["conda-forge".to_string()],
+                python: None,
+            });
+
+            let mut deps = existing.dependencies;
+            deps.push(package);
+
+            snapshot.runt.conda = Some(CondaInlineMetadata {
+                dependencies: deps.clone(),
+                channels: existing.channels,
+                python: existing.python,
+            });
+
+            set_notebook_metadata_async(&state, &snapshot).await?;
+            Ok(deps)
+        })
+    }
+
+    /// Remove a Conda dependency by exact match.
+    ///
+    /// Args:
+    ///     package: Exact dependency string to remove.
+    ///
+    /// Returns a coroutine that resolves to the updated list of dependencies.
+    fn remove_conda_dependency<'py>(
+        &self,
+        py: Python<'py>,
+        package: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let package = package.to_string();
+
+        future_into_py(py, async move {
+            let mut snapshot = get_notebook_metadata_async(&state).await?;
+
+            let existing = snapshot.runt.conda.unwrap_or(CondaInlineMetadata {
+                dependencies: vec![],
+                channels: vec!["conda-forge".to_string()],
+                python: None,
+            });
+
+            let mut deps = existing.dependencies;
+            deps.retain(|dep| dep != &package);
+
+            snapshot.runt.conda = Some(CondaInlineMetadata {
+                dependencies: deps.clone(),
+                channels: existing.channels,
+                python: existing.python,
+            });
+
+            set_notebook_metadata_async(&state, &snapshot).await?;
+            Ok(deps)
         })
     }
 
@@ -1218,6 +1459,204 @@ impl AsyncSession {
         })
     }
 
+    /// Restart the kernel.
+    ///
+    /// Shuts down the current kernel and starts a new one. This is useful after
+    /// modifying dependencies to apply the changes.
+    ///
+    /// The new kernel will use env_source="auto" to pick up any inline
+    /// dependencies from the notebook metadata.
+    ///
+    /// Args:
+    ///     wait_for_ready: If True (default), wait for kernel to be idle.
+    ///
+    /// Note: This currently does shutdown + start. A daemon-side RestartKernel
+    /// command would be cleaner but doesn't exist yet.
+    ///
+    /// Returns a coroutine.
+    #[pyo3(signature = (wait_for_ready=true))]
+    fn restart_kernel<'py>(
+        &self,
+        py: Python<'py>,
+        wait_for_ready: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let notebook_id = self.notebook_id.clone();
+
+        future_into_py(py, async move {
+            // TODO: Consider adding NotebookRequest::RestartKernel to the daemon
+            // Shutdown existing kernel
+            {
+                let mut state_guard = state.lock().await;
+                let handle = state_guard
+                    .handle
+                    .as_ref()
+                    .ok_or_else(|| to_py_err("Not connected"))?;
+
+                let response = handle
+                    .send_request(NotebookRequest::ShutdownKernel {})
+                    .await
+                    .map_err(to_py_err)?;
+
+                match response {
+                    NotebookResponse::KernelShuttingDown {} | NotebookResponse::NoKernel {} => {
+                        state_guard.kernel_started = false;
+                        state_guard.env_source = None;
+                    }
+                    NotebookResponse::Error { error } => return Err(to_py_err(error)),
+                    _ => {}
+                }
+            }
+
+            // Start new kernel with auto env detection
+            {
+                let mut state_guard = state.lock().await;
+                let handle = state_guard
+                    .handle
+                    .as_ref()
+                    .ok_or_else(|| to_py_err("Not connected"))?;
+
+                let response = handle
+                    .send_request(NotebookRequest::LaunchKernel {
+                        kernel_type: "python".to_string(),
+                        env_source: "auto".to_string(),
+                        notebook_path: Some(notebook_id.clone()),
+                    })
+                    .await
+                    .map_err(to_py_err)?;
+
+                match response {
+                    NotebookResponse::KernelLaunched { env_source, .. }
+                    | NotebookResponse::KernelAlreadyRunning { env_source, .. } => {
+                        state_guard.kernel_started = true;
+                        state_guard.env_source = Some(env_source);
+                    }
+                    NotebookResponse::Error { error } => return Err(to_py_err(error)),
+                    other => return Err(to_py_err(format!("Unexpected response: {:?}", other))),
+                }
+            }
+
+            // Wait for kernel ready if requested
+            if wait_for_ready {
+                let mut state_guard = state.lock().await;
+                if let Some(rx) = state_guard.broadcast_rx.as_mut() {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                    while std::time::Instant::now() < deadline {
+                        match tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+                            .await
+                        {
+                            Ok(Some(NotebookBroadcast::KernelStatus { status, .. }))
+                                if status == "idle" =>
+                            {
+                                return Ok(());
+                            }
+                            Ok(Some(_)) => continue,
+                            Ok(None) => return Err(to_py_err("Broadcast channel closed")),
+                            Err(_) => continue,
+                        }
+                    }
+                }
+            }
+
+            Ok(())
+        })
+    }
+
+    /// Sync environment with current metadata (hot-install new packages).
+    ///
+    /// This attempts to install new packages without restarting the kernel.
+    /// Only supported for UV inline dependencies with additions only.
+    ///
+    /// For removals, conda dependencies, or other cases, this will return
+    /// an error with needs_restart=True indicating a kernel restart is required.
+    ///
+    /// Returns a coroutine that resolves to SyncEnvironmentResult.
+    fn sync_environment<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+
+        future_into_py(py, async move {
+            let response = {
+                let state_guard = state.lock().await;
+                let handle = state_guard
+                    .handle
+                    .as_ref()
+                    .ok_or_else(|| to_py_err("Not connected"))?;
+
+                handle
+                    .send_request(NotebookRequest::SyncEnvironment {})
+                    .await
+                    .map_err(to_py_err)?
+            };
+
+            match response {
+                NotebookResponse::SyncEnvironmentStarted { packages } => {
+                    // Wait for completion
+                    let mut state_guard = state.lock().await;
+                    if let Some(rx) = state_guard.broadcast_rx.as_mut() {
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(300);
+                        while std::time::Instant::now() < deadline {
+                            match tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+                                .await
+                            {
+                                Ok(Some(NotebookBroadcast::EnvSyncState {
+                                    in_sync: true, ..
+                                })) => {
+                                    return Ok(SyncEnvironmentResult {
+                                        success: true,
+                                        synced_packages: packages,
+                                        error: None,
+                                        needs_restart: false,
+                                    });
+                                }
+                                Ok(Some(_)) => continue,
+                                Ok(None) => break,
+                                Err(_) => continue,
+                            }
+                        }
+                    }
+                    // Assume success if we got SyncEnvironmentStarted
+                    Ok(SyncEnvironmentResult {
+                        success: true,
+                        synced_packages: packages,
+                        error: None,
+                        needs_restart: false,
+                    })
+                }
+                NotebookResponse::SyncEnvironmentComplete { synced_packages } => {
+                    Ok(SyncEnvironmentResult {
+                        success: true,
+                        synced_packages,
+                        error: None,
+                        needs_restart: false,
+                    })
+                }
+                NotebookResponse::SyncEnvironmentFailed {
+                    error,
+                    needs_restart,
+                } => Ok(SyncEnvironmentResult {
+                    success: false,
+                    synced_packages: vec![],
+                    error: Some(error),
+                    needs_restart,
+                }),
+                NotebookResponse::NoKernel {} => Ok(SyncEnvironmentResult {
+                    success: false,
+                    synced_packages: vec![],
+                    error: Some("No kernel running".to_string()),
+                    needs_restart: true,
+                }),
+                NotebookResponse::Error { error } => Ok(SyncEnvironmentResult {
+                    success: false,
+                    synced_packages: vec![],
+                    error: Some(error),
+                    needs_restart: true,
+                }),
+                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
+            }
+        })
+    }
+
     // =========================================================================
     // Kernel Introspection (completion, history, queue state)
     // =========================================================================
@@ -1711,4 +2150,59 @@ async fn collect_events_async(
     }
 
     Ok(events)
+}
+
+/// Get the notebook metadata snapshot asynchronously.
+async fn get_notebook_metadata_async(
+    state: &Arc<Mutex<AsyncSessionState>>,
+) -> PyResult<NotebookMetadataSnapshot> {
+    let state_guard = state.lock().await;
+    let handle = state_guard
+        .handle
+        .as_ref()
+        .ok_or_else(|| to_py_err("Not connected"))?;
+
+    let json_str = handle
+        .get_metadata("notebook_metadata")
+        .await
+        .map_err(to_py_err)?;
+
+    match json_str {
+        Some(s) => {
+            serde_json::from_str(&s).map_err(|e| to_py_err(format!("Invalid metadata JSON: {}", e)))
+        }
+        None => Ok(NotebookMetadataSnapshot {
+            kernelspec: None,
+            language_info: None,
+            runt: RuntMetadata {
+                schema_version: "1".to_string(),
+                env_id: None,
+                uv: None,
+                conda: None,
+                deno: None,
+                trust_signature: None,
+                trust_timestamp: None,
+            },
+        }),
+    }
+}
+
+/// Set the notebook metadata snapshot asynchronously.
+async fn set_notebook_metadata_async(
+    state: &Arc<Mutex<AsyncSessionState>>,
+    snapshot: &NotebookMetadataSnapshot,
+) -> PyResult<()> {
+    let json_str = serde_json::to_string(snapshot)
+        .map_err(|e| to_py_err(format!("Failed to serialize metadata: {}", e)))?;
+
+    let state_guard = state.lock().await;
+    let handle = state_guard
+        .handle
+        .as_ref()
+        .ok_or_else(|| to_py_err("Not connected"))?;
+
+    handle
+        .set_metadata("notebook_metadata", &json_str)
+        .await
+        .map_err(to_py_err)
 }
