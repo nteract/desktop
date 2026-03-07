@@ -42,15 +42,14 @@ pub enum Handshake {
     SettingsSync,
     /// Automerge notebook sync (per-notebook room).
     ///
-    /// The optional `protocol` field enables version negotiation:
-    /// - Absent or "v1": Raw Automerge frames (legacy protocol)
-    /// - "v2": Typed frames with first-byte type indicator
+    /// The `protocol` field enables version negotiation for future evolution.
+    /// Currently the only supported version is "v2" (typed frames).
     ///
-    /// After handshake, new servers send a `ProtocolCapabilities` response
-    /// before starting sync. Old servers skip this and send raw Automerge frames.
+    /// After handshake, the server sends a `ProtocolCapabilities` response
+    /// confirming the negotiated protocol before starting sync.
     NotebookSync {
         notebook_id: String,
-        /// Protocol version requested by client. Default is "v1" (raw frames).
+        /// Protocol version requested by client (e.g. "v2").
         #[serde(default, skip_serializing_if = "Option::is_none")]
         protocol: Option<String>,
         /// Working directory for untitled notebooks (used for project file detection).
@@ -70,17 +69,15 @@ pub enum Handshake {
     PoolStateSubscribe,
 }
 
-/// Protocol version constants.
-pub const PROTOCOL_V1: &str = "v1";
+/// Protocol version constant.
 pub const PROTOCOL_V2: &str = "v2";
 
 /// Server response indicating negotiated protocol capabilities.
 ///
-/// Sent by new servers immediately after handshake, before starting sync.
-/// Old servers don't send this (they start sync immediately).
+/// Sent immediately after handshake, before starting sync.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolCapabilities {
-    /// Negotiated protocol version: "v1" or "v2"
+    /// Negotiated protocol version (e.g. "v2").
     pub protocol: String,
 }
 
