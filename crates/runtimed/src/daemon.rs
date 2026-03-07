@@ -868,11 +868,10 @@ impl Daemon {
                 working_dir,
                 initial_metadata,
             } => {
-                let use_typed_frames = protocol.as_deref() == Some(connection::PROTOCOL_V2);
                 info!(
                     "[runtimed] NotebookSync requested for {} (protocol: {}, working_dir: {:?})",
                     notebook_id,
-                    protocol.as_deref().unwrap_or("v1"),
+                    protocol.as_deref().unwrap_or("v2"),
                     working_dir
                 );
                 let docs_dir = self.config.notebook_docs_dir.clone();
@@ -898,7 +897,6 @@ impl Daemon {
                     room,
                     self.notebook_rooms.clone(),
                     notebook_id,
-                    use_typed_frames,
                     default_runtime,
                     default_python_env,
                     self.clone(),

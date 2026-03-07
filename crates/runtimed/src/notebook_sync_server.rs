@@ -664,9 +664,7 @@ pub fn get_or_create_room(
 /// is decremented. If it reaches zero, the room is evicted and any pending
 /// doc bytes are flushed via debounced persistence.
 ///
-/// The `use_typed_frames` parameter determines the protocol version:
-/// - `false` (v1): Raw Automerge frames (legacy, for old clients)
-/// - `true` (v2): Typed frames with first-byte type indicator
+/// Uses v2 typed frames protocol (with first-byte type indicator).
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_notebook_sync_connection<R, W>(
     mut reader: R,
@@ -674,7 +672,6 @@ pub async fn handle_notebook_sync_connection<R, W>(
     room: Arc<NotebookRoom>,
     rooms: NotebookRooms,
     notebook_id: String,
-    use_typed_frames: bool,
     default_runtime: crate::runtime::Runtime,
     default_python_env: crate::settings_doc::PythonEnvType,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
@@ -713,11 +710,10 @@ where
     room.active_peers.fetch_add(1, Ordering::Relaxed);
     let peers = room.active_peers.load(Ordering::Relaxed);
     info!(
-        "[notebook-sync] Client connected to room {} ({} peer{}, protocol {})",
+        "[notebook-sync] Client connected to room {} ({} peer{})",
         notebook_id,
         peers,
-        if peers == 1 { "" } else { "s" },
-        if use_typed_frames { "v2" } else { "v1" }
+        if peers == 1 { "" } else { "s" }
     );
 
     // Auto-launch kernel if this is the first peer and notebook is trusted
@@ -776,19 +772,13 @@ where
         }
     }
 
-    // For v2 protocol, send capabilities response first
-    if use_typed_frames {
-        let caps = connection::ProtocolCapabilities {
-            protocol: connection::PROTOCOL_V2.to_string(),
-        };
-        connection::send_json_frame(&mut writer, &caps).await?;
-    }
-
-    let result = if use_typed_frames {
-        run_sync_loop_v2(&mut reader, &mut writer, &room, daemon.clone()).await
-    } else {
-        run_sync_loop_v1(&mut reader, &mut writer, &room).await
+    // Send capabilities response (v2 protocol)
+    let caps = connection::ProtocolCapabilities {
+        protocol: connection::PROTOCOL_V2.to_string(),
     };
+    connection::send_json_frame(&mut writer, &caps).await?;
+
+    let result = run_sync_loop_v2(&mut reader, &mut writer, &room, daemon.clone()).await;
 
     // Peer disconnected — decrement and possibly evict the room
     let remaining = room.active_peers.fetch_sub(1, Ordering::Relaxed) - 1;
@@ -867,80 +857,7 @@ where
     result
 }
 
-/// Protocol v1: Raw Automerge frames (legacy, for backwards compatibility).
-///
-/// This is the original sync protocol used by older clients. It only supports
-/// Automerge document sync, not kernel execution through the daemon.
-async fn run_sync_loop_v1<R, W>(
-    reader: &mut R,
-    writer: &mut W,
-    room: &NotebookRoom,
-) -> anyhow::Result<()>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
-    let mut peer_state = sync::State::new();
-    let mut changed_rx = room.changed_tx.subscribe();
-
-    // Phase 1: Initial sync — server sends first (raw frame)
-    {
-        let mut doc = room.doc.write().await;
-        if let Some(msg) = doc.generate_sync_message(&mut peer_state) {
-            connection::send_frame(writer, &msg.encode()).await?;
-        }
-    }
-
-    // Phase 2: Exchange messages until sync is complete, then watch for changes
-    loop {
-        tokio::select! {
-            // Incoming message from this client (raw frame)
-            result = connection::recv_frame(reader) => {
-                match result? {
-                    Some(data) => {
-                        let message = sync::Message::decode(&data)
-                            .map_err(|e| anyhow::anyhow!("decode error: {}", e))?;
-
-                        // Serialize bytes inside the lock, then persist outside it
-                        let persist_bytes = {
-                            let mut doc = room.doc.write().await;
-                            doc.receive_sync_message(&mut peer_state, message)?;
-
-                            let bytes = doc.save();
-
-                            // Notify other peers in this room
-                            let _ = room.changed_tx.send(());
-
-                            // Send our response while still holding the lock (raw frame)
-                            if let Some(reply) = doc.generate_sync_message(&mut peer_state) {
-                                connection::send_frame(writer, &reply.encode()).await?;
-                            }
-
-                            bytes
-                        };
-
-                        // Send to debounced persistence task
-                        let _ = room.persist_tx.send(Some(persist_bytes));
-                    }
-                    None => {
-                        // Client disconnected
-                        return Ok(());
-                    }
-                }
-            }
-
-            // Another peer changed the document — push update to this client
-            _ = changed_rx.recv() => {
-                let mut doc = room.doc.write().await;
-                if let Some(msg) = doc.generate_sync_message(&mut peer_state) {
-                    connection::send_frame(writer, &msg.encode()).await?;
-                }
-            }
-        }
-    }
-}
-
-/// Protocol v2: Typed frames with first-byte type indicator.
+/// Typed frames sync loop with first-byte type indicator.
 ///
 /// Handles both Automerge sync messages and NotebookRequest messages.
 /// This protocol supports daemon-owned kernel execution (Phase 8).
