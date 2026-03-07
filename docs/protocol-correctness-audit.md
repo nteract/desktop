@@ -67,6 +67,14 @@ Three Automerge peers participate in sync:
 | **Medium** | **Frontend sync is fire-and-forget.** `syncToRelay` calls `invoke("send_automerge_sync")` with `.catch()` that only logs. If the Tauri command fails (e.g., relay disconnected), the frontend has made a local mutation that never reaches the daemon. The Automerge doc diverges. On reconnect, `reset_sync_state()` is called and bootstrap re-syncs, but any mutations during the disconnected window need the next sync exchange to propagate. If the frontend is closed before reconnecting, those mutations are lost. | `useAutomergeNotebook.ts:98-107` |
 | **Low** | **Document save serializes under write lock.** When receiving a sync message, the server holds `room.doc.write()` while calling `doc.save()` (line 923). For large documents, serialization can be slow, blocking all other peers and requests for this room. | `notebook_sync_server.rs:920-939` |
 
+### Additional Sync Findings
+
+| Severity | Finding | Location |
+|----------|---------|----------|
+| **Medium** | **~~WASM `receive_sync_message` serialized the entire document twice per sync message.~~** Used `doc.save().len()` before and after to detect changes — extremely expensive for large notebooks. **Fixed**: Replaced with `doc.get_heads()` comparison which is O(number of heads). | `runtimed-wasm/src/lib.rs:208-215` |
+| **Medium** | **Broadcasts silently dropped during `sync_to_daemon` ack wait.** When the relay calls `sync_to_daemon()`, it waits up to 500ms for an AutomergeSync ack. If a Broadcast frame arrives instead, it's silently ignored — kernel outputs or status changes can be lost. | `notebook_sync_client.rs:1289-1303` |
+| **Low** | **`doc.save()` called on every sync message in the daemon.** After applying each incoming sync message, the daemon serializes the full doc for the persist debouncer. Mitigated by `watch` channel's "latest value" semantics, but serialization is expensive. | `notebook_sync_server.rs:923` |
+
 ### Recommendation
 
 The most impactful improvement is simplifying the relay to a passthrough (as already planned). The relay doc should only hold bytes in transit, not a full Automerge replica. This eliminates the triple-merge path and reduces the divergence surface.
@@ -204,6 +212,8 @@ result = kernel_broadcast_rx.recv() => {
 4. **Fix auto-launch `CellError` handler not clearing queue.** The auto-launch command processor only logged cell errors but didn't clear the execution queue, breaking stop-on-error for auto-launched kernels. Now matches the manual-launch handler behavior.
 
 5. **Add handshake timeout.** `route_connection` called `recv_control_frame` without a timeout, allowing stalled/idle connections to hold daemon resources indefinitely. Added a 10-second timeout.
+
+6. **Replace WASM double-`save()` with `get_heads()` for sync change detection.** `receive_sync_message` was serializing the entire Automerge document twice per incoming sync message just to compare byte lengths. Replaced with `get_heads()` comparison which is O(number of heads) instead of O(document size). Requires `wasm-pack build` to take effect.
 
 ### Important (protocol robustness)
 

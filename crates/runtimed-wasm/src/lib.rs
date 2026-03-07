@@ -6,6 +6,7 @@
 //! version mismatch issues that produce phantom cells.
 
 use automerge::sync;
+use automerge::ReadDoc;
 use notebook_doc::{CellSnapshot, NotebookDoc};
 use wasm_bindgen::prelude::*;
 
