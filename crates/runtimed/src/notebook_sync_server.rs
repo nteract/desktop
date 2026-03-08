@@ -4682,7 +4682,13 @@ mod tests {
         assert_eq!(metadata.runt.env_id, Some("test-env-id".to_string()));
         assert!(metadata.runt.uv.is_none());
         assert!(metadata.runt.conda.is_some());
-        assert!(metadata.runt.conda.as_ref().unwrap().dependencies.is_empty());
+        assert!(metadata
+            .runt
+            .conda
+            .as_ref()
+            .unwrap()
+            .dependencies
+            .is_empty());
         // Verify default channels to avoid false channel-drift detection
         assert_eq!(
             metadata.runt.conda.as_ref().unwrap().channels,

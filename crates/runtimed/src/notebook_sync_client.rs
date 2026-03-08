@@ -983,10 +983,7 @@ where
         path: PathBuf,
     ) -> Result<(Self, NotebookConnectionInfo), NotebookSyncError> {
         let path_str = path.to_string_lossy().to_string();
-        info!(
-            "[notebook-sync-client] Opening notebook: {}",
-            path_str
-        );
+        info!("[notebook-sync-client] Opening notebook: {}", path_str);
 
         // Send OpenNotebook handshake
         connection::send_json_frame(&mut stream, &Handshake::OpenNotebook { path: path_str })

@@ -989,10 +989,7 @@ impl Daemon {
                         {
                             let mut rooms = self.notebook_rooms.lock().await;
                             rooms.remove(&notebook_id);
-                            info!(
-                                "[runtimed] Removed room {} after load failure",
-                                notebook_id
-                            );
+                            info!("[runtimed] Removed room {} after load failure", notebook_id);
                         }
                         // Send error response and return
                         let (mut reader, mut writer) = tokio::io::split(stream);
