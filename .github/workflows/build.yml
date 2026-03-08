@@ -218,7 +218,7 @@ jobs:
           deno-version: v2.x
 
       - name: Run runtimed-wasm Deno tests
-        run: deno test --allow-read --no-check crates/runtimed-wasm/tests/deno_smoke_test.ts
+        run: deno test --allow-read --allow-env --no-check crates/runtimed-wasm/tests/
 
   build:
     name: ${{ matrix.platform.name }}

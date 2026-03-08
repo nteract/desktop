@@ -386,3 +386,181 @@ Deno.test("Sync: source edit character-level merge", () => {
   server.free();
   client.free();
 });
+
+// ── Sync protocol integration tests (WASM-specific) ─────────────────
+
+Deno.test("Sync: bootstrap from saved bytes preserves all content", () => {
+  // Daemon has existing content with cells, outputs pattern (like bootstrap)
+  const daemon = new NotebookHandle("bootstrap-test");
+  daemon.add_cell(0, "cell-1", "code");
+  daemon.update_source("cell-1", "import numpy as np");
+  daemon.add_cell(1, "cell-2", "markdown");
+  daemon.update_source("cell-2", "# Analysis");
+  daemon.set_metadata("custom_key", "custom_value");
+
+  // WASM loads from daemon's bytes (the GetDocBytes bootstrap path)
+  const wasm = NotebookHandle.load(daemon.save());
+
+  // WASM should have all content immediately
+  assertEquals(wasm.cell_count(), 2);
+  const cells = wasm.get_cells();
+  assertEquals(cells[0].id, "cell-1");
+  assertEquals(cells[0].source, "import numpy as np");
+  assertEquals(cells[1].id, "cell-2");
+  assertEquals(cells[1].source, "# Analysis");
+  assertEquals(wasm.get_metadata("custom_key"), "custom_value");
+
+  // Sync should converge immediately (no changes needed)
+  syncHandles(daemon, wasm);
+  assertEquals(daemon.generate_sync_message(), undefined);
+  assertEquals(wasm.generate_sync_message(), undefined);
+
+  for (const c of cells) c.free();
+  daemon.free();
+  wasm.free();
+});
+
+Deno.test("Sync: load from bytes + incremental sync with changed flag", () => {
+  const daemon = new NotebookHandle("incremental-test");
+  daemon.add_cell(0, "existing", "code");
+  daemon.update_source("existing", "x = 42");
+
+  // WASM loads existing content via GetDocBytes equivalent
+  const wasm = NotebookHandle.load(daemon.save());
+  assertEquals(wasm.cell_count(), 1);
+
+  // Initial sync — should already be converged (no changes expected)
+  syncHandles(daemon, wasm);
+
+  // Verify sync state is converged
+  assertEquals(daemon.generate_sync_message(), undefined);
+  assertEquals(wasm.generate_sync_message(), undefined);
+
+  // Daemon adds new content
+  daemon.add_cell(1, "new-cell", "markdown");
+  daemon.update_source("new-cell", "# New section");
+
+  // Generate sync message from daemon
+  const msg = daemon.generate_sync_message();
+  assertExists(msg, "Daemon should have sync message after mutation");
+
+  // WASM receives and should report changed=true
+  const changed = wasm.receive_sync_message(msg);
+  assertEquals(changed, true, "receive_sync_message should return true when doc changes");
+
+  // WASM should now have the new cell
+  assertEquals(wasm.cell_count(), 2);
+  const newCell = wasm.get_cell("new-cell");
+  assertExists(newCell);
+  assertEquals(newCell.source, "# New section");
+  newCell.free();
+
+  daemon.free();
+  wasm.free();
+});
+
+Deno.test("Sync: converged peers have no sync messages", () => {
+  const daemon = new NotebookHandle("converged-test");
+  daemon.add_cell(0, "cell-1", "code");
+  daemon.update_source("cell-1", "x = 42");
+
+  const wasm = NotebookHandle.load(daemon.save());
+
+  // Sync to convergence
+  syncHandles(daemon, wasm);
+
+  // After convergence, neither should have messages
+  assertEquals(daemon.generate_sync_message(), undefined, "Daemon has no message when converged");
+  assertEquals(wasm.generate_sync_message(), undefined, "WASM has no message when converged");
+
+  // Verify both have identical content
+  assertEquals(daemon.cell_count(), wasm.cell_count());
+  assertEquals(daemon.get_cell("cell-1")?.source, wasm.get_cell("cell-1")?.source);
+
+  daemon.free();
+  wasm.free();
+});
+
+Deno.test("Sync: reset_sync_state allows re-sync from scratch", () => {
+  const daemon = new NotebookHandle("reset-test");
+  daemon.add_cell(0, "cell-1", "code");
+  daemon.update_source("cell-1", "original");
+
+  const wasm = NotebookHandle.load(daemon.save());
+  syncHandles(daemon, wasm);
+
+  // Both converged
+  assertEquals(daemon.generate_sync_message(), undefined);
+  assertEquals(wasm.generate_sync_message(), undefined);
+
+  // Daemon updates the cell
+  daemon.update_source("cell-1", "updated");
+
+  // WASM resets sync state (simulating HMR reload or reconnect)
+  wasm.reset_sync_state();
+
+  // After reset, WASM should need to sync again
+  const wasmMsg = wasm.generate_sync_message();
+  assertExists(wasmMsg, "After reset_sync_state, WASM should generate sync message");
+
+  // Sync should converge with daemon's update
+  syncHandles(daemon, wasm);
+
+  const cell = wasm.get_cell("cell-1");
+  assertExists(cell);
+  assertEquals(cell.source, "updated");
+  cell.free();
+
+  daemon.free();
+  wasm.free();
+});
+
+Deno.test("Sync: bidirectional mutations converge", () => {
+  const daemon = new NotebookHandle("bidirectional-test");
+  const wasm = NotebookHandle.load(daemon.save());
+  syncHandles(daemon, wasm);
+
+  // WASM adds a cell
+  wasm.add_cell(0, "wasm-cell", "code");
+  wasm.update_source("wasm-cell", "# From WASM");
+
+  // Sync to daemon
+  syncHandles(wasm, daemon);
+  assertEquals(daemon.cell_count(), 1);
+  assertEquals(daemon.get_cell("wasm-cell")?.source, "# From WASM");
+
+  // Daemon adds another cell (simulating output or execution)
+  daemon.add_cell(1, "daemon-cell", "code");
+  daemon.update_source("daemon-cell", "# From daemon");
+
+  // Sync back to WASM
+  syncHandles(daemon, wasm);
+
+  // Both should have both cells
+  assertEquals(wasm.cell_count(), 2);
+  assertEquals(daemon.cell_count(), 2);
+
+  const wasmCells = wasm.get_cells();
+  const daemonCells = daemon.get_cells();
+
+  // deno-lint-ignore no-explicit-any
+  const wasmIds = wasmCells.map((c: any) => {
+    const id = c.id;
+    c.free();
+    return id;
+  });
+  // deno-lint-ignore no-explicit-any
+  const daemonIds = daemonCells.map((c: any) => {
+    const id = c.id;
+    c.free();
+    return id;
+  });
+
+  // Same cells in same order
+  assertEquals(wasmIds.sort(), daemonIds.sort());
+  assert(wasmIds.includes("wasm-cell"));
+  assert(wasmIds.includes("daemon-cell"));
+
+  daemon.free();
+  wasm.free();
+});

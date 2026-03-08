@@ -1412,4 +1412,343 @@ mod tests {
         let cells = get_cells_from_doc(&doc);
         assert!(cells.is_empty());
     }
+
+    // ── Sync integration tests (WASM sync protocol coverage) ──────────
+
+    /// Helper to sync two docs to convergence.
+    fn sync_docs(
+        doc_a: &mut NotebookDoc,
+        state_a: &mut sync::State,
+        doc_b: &mut NotebookDoc,
+        state_b: &mut sync::State,
+        max_rounds: usize,
+    ) {
+        for _ in 0..max_rounds {
+            let msg_a = doc_a.generate_sync_message(state_a);
+            let msg_b = doc_b.generate_sync_message(state_b);
+            if msg_a.is_none() && msg_b.is_none() {
+                break;
+            }
+            if let Some(msg) = msg_a {
+                doc_b.receive_sync_message(state_b, msg).unwrap();
+            }
+            if let Some(msg) = msg_b {
+                doc_a.receive_sync_message(state_a, msg).unwrap();
+            }
+        }
+    }
+
+    /// Tests output sync from daemon to client AFTER initial sync.
+    /// This is the exact flow that broke in #617.
+    #[test]
+    fn test_output_sync_from_daemon_to_client() {
+        // Daemon creates notebook with a cell
+        let mut daemon = NotebookDoc::new("output-sync-test");
+        daemon.add_cell(0, "cell-1", "code").unwrap();
+        daemon.update_source("cell-1", "print('hello')").unwrap();
+
+        // Client starts empty and syncs
+        let mut client = NotebookDoc {
+            doc: AutoCommit::new(),
+        };
+        let mut daemon_state = sync::State::new();
+        let mut client_state = sync::State::new();
+
+        sync_docs(
+            &mut daemon,
+            &mut daemon_state,
+            &mut client,
+            &mut client_state,
+            10,
+        );
+
+        // Verify initial sync worked
+        assert_eq!(client.cell_count(), 1);
+        let cell = client.get_cell("cell-1").unwrap();
+        assert!(cell.outputs.is_empty());
+
+        // Daemon appends output (simulating kernel execution)
+        daemon
+            .append_output(
+                "cell-1",
+                r#"{"output_type":"stream","name":"stdout","text":"hello\n"}"#,
+            )
+            .unwrap();
+        daemon.set_execution_count("cell-1", "1").unwrap();
+
+        // Sync again - this is where #617 failed
+        sync_docs(
+            &mut daemon,
+            &mut daemon_state,
+            &mut client,
+            &mut client_state,
+            10,
+        );
+
+        // Client should see the output
+        let cell = client.get_cell("cell-1").unwrap();
+        assert_eq!(cell.outputs.len(), 1);
+        assert!(cell.outputs[0].contains("stdout"));
+        assert_eq!(cell.execution_count, "1");
+    }
+
+    /// Tests execution count sync propagates correctly.
+    #[test]
+    fn test_execution_count_sync() {
+        let mut daemon = NotebookDoc::new("exec-count-test");
+        daemon.add_cell(0, "cell-1", "code").unwrap();
+
+        let mut client = NotebookDoc {
+            doc: AutoCommit::new(),
+        };
+        let mut daemon_state = sync::State::new();
+        let mut client_state = sync::State::new();
+
+        sync_docs(
+            &mut daemon,
+            &mut daemon_state,
+            &mut client,
+            &mut client_state,
+            10,
+        );
+
+        // Daemon sets execution count
+        daemon.set_execution_count("cell-1", "42").unwrap();
+        sync_docs(
+            &mut daemon,
+            &mut daemon_state,
+            &mut client,
+            &mut client_state,
+            10,
+        );
+
+        assert_eq!(client.get_cell("cell-1").unwrap().execution_count, "42");
+
+        // Daemon updates execution count again
+        daemon.set_execution_count("cell-1", "43").unwrap();
+        sync_docs(
+            &mut daemon,
+            &mut daemon_state,
+            &mut client,
+            &mut client_state,
+            10,
+        );
+
+        assert_eq!(client.get_cell("cell-1").unwrap().execution_count, "43");
+    }
+
+    /// Tests clear_outputs syncs correctly.
+    #[test]
+    fn test_clear_outputs_sync() {
+        let mut daemon = NotebookDoc::new("clear-outputs-test");
+        daemon.add_cell(0, "cell-1", "code").unwrap();
+        daemon.append_output("cell-1", "output1").unwrap();
+        daemon.append_output("cell-1", "output2").unwrap();
+
+        let mut client = NotebookDoc {
+            doc: AutoCommit::new(),
+        };
+        let mut daemon_state = sync::State::new();
+        let mut client_state = sync::State::new();
+
+        sync_docs(
+            &mut daemon,
+            &mut daemon_state,
+            &mut client,
+            &mut client_state,
+            10,
+        );
+        assert_eq!(client.get_cell("cell-1").unwrap().outputs.len(), 2);
+
+        // Daemon clears outputs
+        daemon.clear_outputs("cell-1").unwrap();
+        sync_docs(
+            &mut daemon,
+            &mut daemon_state,
+            &mut client,
+            &mut client_state,
+            10,
+        );
+
+        assert!(client.get_cell("cell-1").unwrap().outputs.is_empty());
+    }
+
+    /// Tests bidirectional sync: client adds cell, daemon writes output.
+    #[test]
+    fn test_bidirectional_sync_client_adds_daemon_outputs() {
+        let mut daemon = NotebookDoc::new("bidirectional-test");
+        let mut client = NotebookDoc {
+            doc: AutoCommit::new(),
+        };
+        let mut daemon_state = sync::State::new();
+        let mut client_state = sync::State::new();
+
+        // Initial sync
+        sync_docs(
+            &mut daemon,
+            &mut daemon_state,
+            &mut client,
+            &mut client_state,
+            10,
+        );
+
+        // Client adds a cell with source code
+        client.add_cell(0, "user-cell", "code").unwrap();
+        client.update_source("user-cell", "x = 1 + 1").unwrap();
+
+        // Sync - daemon should see the cell
+        sync_docs(
+            &mut daemon,
+            &mut daemon_state,
+            &mut client,
+            &mut client_state,
+            10,
+        );
+        assert_eq!(daemon.cell_count(), 1);
+        assert_eq!(daemon.get_cell("user-cell").unwrap().source, "x = 1 + 1");
+
+        // Daemon executes and writes output
+        daemon
+            .append_output(
+                "user-cell",
+                r#"{"output_type":"execute_result","data":{"text/plain":"2"}}"#,
+            )
+            .unwrap();
+        daemon.set_execution_count("user-cell", "1").unwrap();
+
+        // Sync back - client should see the output
+        sync_docs(
+            &mut daemon,
+            &mut daemon_state,
+            &mut client,
+            &mut client_state,
+            10,
+        );
+
+        let cell = client.get_cell("user-cell").unwrap();
+        assert_eq!(cell.source, "x = 1 + 1"); // Still has its source
+        assert_eq!(cell.outputs.len(), 1);
+        assert!(cell.outputs[0].contains("execute_result"));
+        assert_eq!(cell.execution_count, "1");
+    }
+
+    /// Tests three-peer sync: daemon + two clients.
+    #[test]
+    fn test_three_peer_sync() {
+        let mut daemon = NotebookDoc::new("three-peer-test");
+        let mut client1 = NotebookDoc {
+            doc: AutoCommit::new(),
+        };
+        let mut client2 = NotebookDoc {
+            doc: AutoCommit::new(),
+        };
+        let mut daemon_state1 = sync::State::new();
+        let mut daemon_state2 = sync::State::new();
+        let mut client1_state = sync::State::new();
+        let mut client2_state = sync::State::new();
+
+        // Initial sync all three
+        sync_docs(
+            &mut daemon,
+            &mut daemon_state1,
+            &mut client1,
+            &mut client1_state,
+            10,
+        );
+        sync_docs(
+            &mut daemon,
+            &mut daemon_state2,
+            &mut client2,
+            &mut client2_state,
+            10,
+        );
+
+        // Daemon adds a cell with output
+        daemon.add_cell(0, "daemon-cell", "code").unwrap();
+        daemon.update_source("daemon-cell", "print(42)").unwrap();
+        daemon
+            .append_output("daemon-cell", r#"{"text":"42"}"#)
+            .unwrap();
+
+        // Sync both clients
+        sync_docs(
+            &mut daemon,
+            &mut daemon_state1,
+            &mut client1,
+            &mut client1_state,
+            10,
+        );
+        sync_docs(
+            &mut daemon,
+            &mut daemon_state2,
+            &mut client2,
+            &mut client2_state,
+            10,
+        );
+
+        // Both clients should have identical state
+        let cells1 = client1.get_cells();
+        let cells2 = client2.get_cells();
+        assert_eq!(cells1.len(), 1);
+        assert_eq!(cells2.len(), 1);
+        assert_eq!(cells1[0].id, cells2[0].id);
+        assert_eq!(cells1[0].source, cells2[0].source);
+        assert_eq!(cells1[0].outputs, cells2[0].outputs);
+    }
+
+    /// Tests empty-to-full bootstrap: fresh client receives daemon's first sync.
+    /// This tests the pipe-mode path from #619/#622.
+    #[test]
+    fn test_empty_to_full_bootstrap() {
+        // Daemon has existing content
+        let mut daemon = NotebookDoc::new("bootstrap-test");
+        daemon.add_cell(0, "cell-1", "code").unwrap();
+        daemon
+            .update_source("cell-1", "import numpy as np")
+            .unwrap();
+        daemon.set_execution_count("cell-1", "1").unwrap();
+        daemon
+            .append_output("cell-1", r#"{"output_type":"stream"}"#)
+            .unwrap();
+        daemon.add_cell(1, "cell-2", "markdown").unwrap();
+        daemon.update_source("cell-2", "# Analysis").unwrap();
+        daemon.set_metadata("custom_key", "custom_value").unwrap();
+
+        // Client starts completely empty (zero operations)
+        let mut client = NotebookDoc {
+            doc: AutoCommit::new(),
+        };
+        assert_eq!(client.cell_count(), 0);
+        assert!(client.notebook_id().is_none());
+
+        let mut daemon_state = sync::State::new();
+        let mut client_state = sync::State::new();
+
+        // Single sync pass should transfer everything
+        sync_docs(
+            &mut daemon,
+            &mut daemon_state,
+            &mut client,
+            &mut client_state,
+            10,
+        );
+
+        // Client should have all content
+        assert_eq!(client.notebook_id(), Some("bootstrap-test".to_string()));
+        assert_eq!(client.cell_count(), 2);
+
+        let cells = client.get_cells();
+        assert_eq!(cells[0].id, "cell-1");
+        assert_eq!(cells[0].source, "import numpy as np");
+        assert_eq!(cells[0].execution_count, "1");
+        assert_eq!(cells[0].outputs.len(), 1);
+
+        assert_eq!(cells[1].id, "cell-2");
+        assert_eq!(cells[1].source, "# Analysis");
+
+        assert_eq!(
+            client.get_metadata("custom_key"),
+            Some("custom_value".to_string())
+        );
+    }
 }
