@@ -215,44 +215,56 @@ where
     )
 }
 
-/// Read the notebook metadata from Automerge via the sync handle.
+/// Read the notebook metadata from the daemon's canonical Automerge doc.
 /// Returns the deserialized NotebookMetadataSnapshot, or None if not available.
 async fn get_metadata_snapshot(
     handle: &NotebookSyncHandle,
 ) -> Option<runtimed::notebook_metadata::NotebookMetadataSnapshot> {
-    handle
-        .get_metadata(runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY)
+    let key = runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY.to_string();
+    match handle
+        .send_request(NotebookRequest::GetRawMetadata { key })
         .await
-        .ok()
-        .flatten()
-        .and_then(|json| serde_json::from_str(&json).ok())
+    {
+        Ok(NotebookResponse::RawMetadata { value: Some(json) }) => serde_json::from_str(&json).ok(),
+        _ => None,
+    }
 }
 
-/// Write a NotebookMetadataSnapshot to Automerge via the sync handle.
+/// Write a NotebookMetadataSnapshot to the daemon's canonical Automerge doc.
 async fn set_metadata_snapshot(
     handle: &NotebookSyncHandle,
     snapshot: &runtimed::notebook_metadata::NotebookMetadataSnapshot,
 ) -> Result<(), String> {
-    let json = serde_json::to_string(snapshot).map_err(|e| format!("serialize metadata: {}", e))?;
-    handle
-        .set_metadata(runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY, &json)
+    let value =
+        serde_json::to_string(snapshot).map_err(|e| format!("serialize metadata: {}", e))?;
+    let key = runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY.to_string();
+    match handle
+        .send_request(NotebookRequest::SetRawMetadata { key, value })
         .await
-        .map_err(|e| format!("set_metadata: {}", e))
+    {
+        Ok(NotebookResponse::MetadataSet {}) => Ok(()),
+        Ok(NotebookResponse::Error { error }) => Err(error),
+        Ok(other) => Err(format!("Unexpected response: {:?}", other)),
+        Err(e) => Err(format!("set_metadata request failed: {}", e)),
+    }
 }
 
-/// Read the raw metadata `additional` fields from Automerge, preserving all
-/// unknown fields in `runt` (e.g. `trust_signature`, `trust_timestamp`).
+/// Read the raw metadata `additional` fields from the daemon's Automerge doc,
+/// preserving all unknown fields in `runt` (e.g. `trust_signature`, `trust_timestamp`).
 ///
 /// Unlike `get_metadata_snapshot` → `metadata_from_snapshot`, this does not
 /// go through the typed `RuntMetadata` struct which would strip unknown keys.
 async fn get_raw_metadata_additional(
     handle: &NotebookSyncHandle,
 ) -> Option<HashMap<String, serde_json::Value>> {
-    let json_str = handle
-        .get_metadata(runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY)
+    let key = runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY.to_string();
+    let json_str = match handle
+        .send_request(NotebookRequest::GetRawMetadata { key })
         .await
-        .ok()
-        .flatten()?;
+    {
+        Ok(NotebookResponse::RawMetadata { value: Some(json) }) => json,
+        _ => return None,
+    };
     let value: serde_json::Value = serde_json::from_str(&json_str).ok()?;
     let obj = value.as_object()?;
     let mut additional = HashMap::new();
@@ -262,19 +274,27 @@ async fn get_raw_metadata_additional(
     Some(additional)
 }
 
-/// Write trust fields into the Automerge metadata JSON without going through
-/// the typed `NotebookMetadataSnapshot` round-trip (which strips unknown `runt` keys
-/// like `trust_signature` that aren't modeled in `RuntMetadata`).
+/// Write trust fields into the daemon's Automerge metadata JSON without going
+/// through the typed `NotebookMetadataSnapshot` round-trip (which strips unknown
+/// `runt` keys like `trust_signature` that aren't modeled in `RuntMetadata`).
 async fn set_raw_trust_in_metadata(
     handle: &NotebookSyncHandle,
     signature: &str,
     timestamp: &str,
 ) -> Result<(), String> {
-    let json_str = handle
-        .get_metadata(runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY)
+    let key = runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY.to_string();
+    let json_str = match handle
+        .send_request(NotebookRequest::GetRawMetadata { key: key.clone() })
         .await
-        .map_err(|e| format!("get_metadata: {}", e))?
-        .ok_or("No metadata in Automerge doc")?;
+    {
+        Ok(NotebookResponse::RawMetadata { value: Some(json) }) => json,
+        Ok(NotebookResponse::RawMetadata { value: None }) => {
+            return Err("No metadata in Automerge doc".to_string())
+        }
+        Ok(NotebookResponse::Error { error }) => return Err(error),
+        Ok(other) => return Err(format!("Unexpected response: {:?}", other)),
+        Err(e) => return Err(format!("get_metadata request failed: {}", e)),
+    };
 
     let mut value: serde_json::Value =
         serde_json::from_str(&json_str).map_err(|e| format!("parse metadata: {}", e))?;
@@ -298,13 +318,18 @@ async fn set_raw_trust_in_metadata(
 
     let new_json =
         serde_json::to_string(&value).map_err(|e| format!("serialize metadata: {}", e))?;
-    handle
-        .set_metadata(
-            runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY,
-            &new_json,
-        )
+    match handle
+        .send_request(NotebookRequest::SetRawMetadata {
+            key,
+            value: new_json,
+        })
         .await
-        .map_err(|e| format!("set_metadata: {}", e))
+    {
+        Ok(NotebookResponse::MetadataSet {}) => Ok(()),
+        Ok(NotebookResponse::Error { error }) => Err(error),
+        Ok(other) => Err(format!("Unexpected response: {:?}", other)),
+        Err(e) => Err(format!("set_metadata request failed: {}", e)),
+    }
 }
 
 /// Reconstruct an nbformat Metadata from a NotebookMetadataSnapshot.
@@ -2174,16 +2199,18 @@ async fn get_automerge_doc_bytes(
     let guard = notebook_sync.lock().await;
     let handle = guard.as_ref().ok_or("Not connected to daemon")?;
 
-    handle
-        .get_doc_bytes()
-        .await
-        .map_err(|e| format!("Failed to get doc bytes: {}", e))
+    // Fetch doc bytes from the daemon's canonical Automerge doc (not the relay's local replica).
+    match handle.send_request(NotebookRequest::GetDocBytes {}).await {
+        Ok(NotebookResponse::DocBytes { bytes }) => Ok(bytes),
+        Ok(NotebookResponse::Error { error }) => Err(error),
+        Ok(other) => Err(format!("Unexpected response: {:?}", other)),
+        Err(e) => Err(format!("Failed to get doc bytes: {}", e)),
+    }
 }
 
 /// Receive a raw Automerge sync message from the frontend.
 ///
-/// The message is applied to the local Automerge doc and relayed to the daemon.
-/// This enables the frontend to act as a full Automerge peer in Phase 2.
+/// The message is forwarded to the daemon via the relay.
 #[tauri::command]
 async fn send_automerge_sync(
     window: tauri::Window,
