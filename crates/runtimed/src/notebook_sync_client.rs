@@ -2155,6 +2155,11 @@ async fn run_sync_task<S>(
                         let result = client
                             .send_request_with_broadcast(&request, Some(tx_to_use))
                             .await;
+                        // AutomergeSync frames may have been applied to client.doc
+                        // during wait_for_response_with_broadcast — refresh snapshot
+                        // so readers see daemon-driven mutations (outputs, execution
+                        // counts, etc.) immediately.
+                        publish_snapshot(&client, &snapshot_tx);
                         let _ = reply.send(result);
                     }
                     SyncCommand::GetDocBytes { reply } => {
