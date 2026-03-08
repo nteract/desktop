@@ -274,7 +274,9 @@ impl std::fmt::Display for KernelStatus {
             KernelStatus::Busy => write!(f, "busy"),
             KernelStatus::Error => write!(f, "error"),
             KernelStatus::ShuttingDown => write!(f, "shutdown"),
-            KernelStatus::Dead => write!(f, "dead"),
+            // Dead maps to "error" for frontend compatibility (frontend only recognizes
+            // not_started, starting, idle, busy, error, shutdown)
+            KernelStatus::Dead => write!(f, "error"),
         }
     }
 }
@@ -751,6 +753,8 @@ impl RoomKernel {
             }
             let _ = process_cmd_tx.try_send(QueueCommand::KernelDied);
         });
+        // Store immediately so early-return error paths can clean it up
+        self.process_watcher_task = Some(process_watcher_task);
 
         let broadcast_tx = self.broadcast_tx.clone();
         let cell_id_map = self.cell_id_map.clone();
@@ -1416,10 +1420,18 @@ impl RoomKernel {
             }
             Ok(Err(e)) => {
                 error!("[kernel-manager] Error reading kernel_info_reply: {}", e);
+                // Abort process watcher to kill orphaned kernel
+                if let Some(task) = self.process_watcher_task.take() {
+                    task.abort();
+                }
                 return Err(anyhow::anyhow!("Kernel did not respond: {}", e));
             }
             Err(_) => {
                 error!("[kernel-manager] Timeout waiting for kernel_info_reply");
+                // Abort process watcher to kill orphaned kernel
+                if let Some(task) = self.process_watcher_task.take() {
+                    task.abort();
+                }
                 return Err(anyhow::anyhow!("Kernel did not respond within 30s"));
             }
         }
@@ -1669,12 +1681,11 @@ impl RoomKernel {
             }
         });
 
-        // Store state
+        // Store state (process_watcher_task already stored immediately after spawn)
         self.connection_info = Some(connection_info);
         self.connection_file = Some(connection_file_path);
         self.iopub_task = Some(iopub_task);
         self.shell_reader_task = Some(shell_reader_task);
-        self.process_watcher_task = Some(process_watcher_task);
         self.heartbeat_task = Some(heartbeat_task);
         self.shell_writer = Some(shell_writer);
         self.status = KernelStatus::Idle;
