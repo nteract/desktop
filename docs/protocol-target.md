@@ -1,6 +1,6 @@
 # Protocol Target Design
 
-**Date**: 2026-03-07
+**Date**: 2026-03-07 (updated 2026-03-08)
 **Status**: Design document — describes where the protocol should go, not where it is today.
 **Companion**: See `protocol-correctness-audit.md` for the current-state assessment.
 
