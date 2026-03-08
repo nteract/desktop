@@ -161,6 +161,30 @@ if let Ok(mut id) = notebook_id.lock() {
 
 A poisoned mutex silently leaves a stale placeholder ID. This should at least log a warning on the `Err` branch.
 
+### 14. Iopub task leaks on launch failure (Low-Medium)
+
+**File:** `crates/runtimed/src/kernel_manager.rs`
+
+If `kernel_info_reply` times out during kernel launch, the error path aborts `process_watcher_task` but does **not** abort the `iopub_task` (which was spawned earlier). The iopub task continues running, reading from a dead/unresponsive kernel, and will eventually send `KernelDied` into a channel nobody is polling (since the launch failed and `cmd_rx` is stored but the sync server won't use it). This is a resource leak.
+
+### 15. Doc write lock held during async disk I/O (Low-Medium)
+
+**File:** `crates/runtimed/src/daemon.rs`, `handle_open_notebook()`
+
+The doc write lock is held while `load_notebook_from_disk` does `tokio::fs::read_to_string`. For large notebooks, this blocks all other operations on that room's doc. The file I/O could be done outside the lock (read and parse first, then acquire write lock and populate if still empty).
+
+### 16. `runtime` field in `CreateNotebook` not validated (Low)
+
+**File:** `crates/runtimed/src/daemon.rs` / `notebook_sync_server.rs`
+
+The `runtime` string from `CreateNotebook` is matched with `_ =>` defaulting to Python. A typo like `"pyhton"` silently creates a Python notebook. Consider validating the value is exactly `"python"` or `"deno"` and returning an error otherwise.
+
+### 17. Broadcast lag recovery doesn't include kernel status (Low)
+
+**File:** `crates/runtimed/src/notebook_sync_server.rs`
+
+When a peer lags and misses broadcasts, the recovery sends an Automerge doc sync (which contains cell outputs) but does **not** re-send `KernelStatus` or `QueueChanged` broadcasts. The peer's UI could show stale kernel status. Consider also re-sending the current kernel status and queue state after a lag event.
+
 ---
 
 ## Positive Observations
