@@ -114,6 +114,17 @@ struct DaemonReadyPayload {
     needs_trust_approval: bool,
 }
 
+/// How to connect a new window to the daemon.
+enum OpenMode {
+    /// Open an existing notebook file. Daemon loads from disk.
+    Open { path: PathBuf },
+    /// Create a new empty notebook. Daemon generates notebook_id.
+    Create {
+        runtime: String,
+        working_dir: Option<PathBuf>,
+    },
+}
+
 /// Git information for debug banner display.
 #[derive(Serialize)]
 struct GitInfo {
@@ -1326,13 +1337,16 @@ async fn complete_onboarding(
     // Use notebooks directory as working directory for the new notebook
     let working_dir = ensure_notebooks_directory().ok();
 
-    // Create new notebook state with proper working directory
-    let mut state = NotebookState::new_empty_with_runtime(runtime);
-    state.working_dir = working_dir.clone();
-
-    // Create the notebook window (this also initializes notebook sync via create_notebook_window)
-    // Note: state.working_dir is passed through to the daemon for project file detection
-    let label = create_notebook_window(&app, registry.inner(), state)?;
+    // Create the notebook window using daemon-owned creation
+    let label = create_notebook_window_for_daemon(
+        &app,
+        registry.inner(),
+        OpenMode::Create {
+            runtime: runtime.to_string(),
+            working_dir,
+        },
+        None,
+    )?;
     info!("[onboarding] Created notebook window with label: {}", label);
 
     // Close the onboarding window (the one that called this command)
@@ -1717,14 +1731,135 @@ fn create_notebook_window_with_label(
     Ok(label)
 }
 
+/// Create a notebook window using daemon-owned loading.
+///
+/// The window is created immediately (with a loading state). The daemon connection
+/// happens asynchronously — `notebook_id` is updated when the daemon responds.
+fn create_notebook_window_for_daemon(
+    app: &tauri::AppHandle,
+    registry: &WindowNotebookRegistry,
+    mode: OpenMode,
+    custom_label: Option<String>,
+) -> Result<String, String> {
+    // Extract window metadata from the mode
+    let (title, path, working_dir, runtime) = match &mode {
+        OpenMode::Open { path } => {
+            let title = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("Untitled.ipynb")
+                .to_string();
+            let runtime = settings::load_settings().default_runtime;
+            (title, Some(path.clone()), None, runtime)
+        }
+        OpenMode::Create {
+            runtime,
+            working_dir,
+        } => {
+            let runtime_enum: Runtime = runtime.parse().unwrap_or(Runtime::Python);
+            (
+                "Untitled.ipynb".to_string(),
+                None,
+                working_dir.clone(),
+                runtime_enum,
+            )
+        }
+    };
+
+    // Generate a stable window label for the window-state plugin
+    let label = custom_label.unwrap_or_else(|| {
+        if let Some(ref p) = path {
+            let hash = runtimed::worktree_hash(p);
+            format!("notebook-{}", &hash[..8])
+        } else {
+            format!("notebook-{}", uuid::Uuid::new_v4())
+        }
+    });
+
+    // Placeholder notebook_id — daemon will provide the canonical one
+    let placeholder_id = path
+        .as_ref()
+        .map(|p| {
+            p.canonicalize()
+                .unwrap_or_else(|_| p.clone())
+                .to_string_lossy()
+                .to_string()
+        })
+        .unwrap_or_default();
+
+    let context =
+        create_window_context_for_daemon(path, working_dir.clone(), placeholder_id, runtime);
+    registry.insert(label.clone(), context.clone())?;
+
+    let window =
+        match tauri::WebviewWindowBuilder::new(app, label.clone(), tauri::WebviewUrl::default())
+            .title(&title)
+            .inner_size(1100.0, 750.0)
+            .resizable(true)
+            .build()
+        {
+            Ok(window) => window,
+            Err(error) => {
+                let mut contexts = registry.contexts.lock().map_err(|e| e.to_string())?;
+                contexts.remove(&label);
+                return Err(error.to_string());
+            }
+        };
+
+    // Spawn async daemon connection — window shows loading state until daemon:ready
+    let notebook_sync = context.notebook_sync;
+    let sync_generation = context.sync_generation;
+    let notebook_id = context.notebook_id;
+    tauri::async_runtime::spawn(async move {
+        let result = match mode {
+            OpenMode::Open { path } => {
+                initialize_notebook_sync_open(
+                    window,
+                    path,
+                    notebook_sync,
+                    sync_generation,
+                    notebook_id,
+                )
+                .await
+            }
+            OpenMode::Create {
+                runtime,
+                working_dir,
+            } => {
+                initialize_notebook_sync_create(
+                    window,
+                    runtime,
+                    working_dir,
+                    notebook_sync,
+                    sync_generation,
+                    notebook_id,
+                )
+                .await
+            }
+        };
+        if let Err(e) = result {
+            warn!("[startup] Daemon notebook sync failed: {}", e);
+        }
+    });
+
+    refresh_native_menu(app, registry);
+    Ok(label)
+}
+
 fn open_notebook_window(
     app: &tauri::AppHandle,
     registry: &WindowNotebookRegistry,
     path: &Path,
 ) -> Result<(), String> {
-    let runtime = settings::load_settings().default_runtime;
-    let state = load_notebook_state_for_path(path, runtime)?;
-    create_notebook_window(app, registry, state).map(|_| ())
+    create_notebook_window_for_daemon(
+        app,
+        registry,
+        OpenMode::Open {
+            path: path.to_path_buf(),
+        },
+        None,
+    )
+    .map(|_| ())
 }
 
 fn next_available_sample_path(base_dir: &Path, file_name: &str) -> PathBuf {
@@ -2839,8 +2974,16 @@ fn spawn_new_notebook(
     registry: &WindowNotebookRegistry,
     runtime: Runtime,
 ) -> Result<(), String> {
-    let state = NotebookState::new_empty_with_runtime(runtime);
-    create_notebook_window(app, registry, state).map(|_| ())
+    create_notebook_window_for_daemon(
+        app,
+        registry,
+        OpenMode::Create {
+            runtime: runtime.to_string(),
+            working_dir: None,
+        },
+        None,
+    )
+    .map(|_| ())
 }
 
 /// Ensure notebooks directory exists and return its path.
