@@ -1558,16 +1558,17 @@ fn create_notebook_window_for_daemon(
         }
     });
 
-    // Placeholder notebook_id — daemon will provide the canonical one
-    let placeholder_id = path
-        .as_ref()
-        .map(|p| {
-            p.canonicalize()
-                .unwrap_or_else(|_| p.clone())
-                .to_string_lossy()
-                .to_string()
-        })
-        .unwrap_or_default();
+    // Placeholder notebook_id — daemon will provide the canonical one.
+    // Must derive from mode, not just path, because Restore carries its own notebook_id.
+    let placeholder_id = match &mode {
+        OpenMode::Open { path } => path
+            .canonicalize()
+            .unwrap_or_else(|_| path.clone())
+            .to_string_lossy()
+            .to_string(),
+        OpenMode::Restore { notebook_id, .. } => notebook_id.clone(),
+        OpenMode::Create { .. } => String::new(),
+    };
 
     let context =
         create_window_context_for_daemon(path, working_dir.clone(), placeholder_id, runtime);
