@@ -3,7 +3,6 @@
 //! Saves the list of open windows (with their notebook paths or env_ids) on shutdown,
 //! and restores them on startup. Works with the tauri-plugin-window-state for geometry.
 
-use crate::notebook_state::NotebookState;
 use crate::runtime::Runtime;
 use crate::WindowNotebookRegistry;
 use log::{info, warn};
@@ -50,27 +49,22 @@ pub(crate) fn save_session(registry: &WindowNotebookRegistry) -> Result<(), Stri
     let windows: Vec<WindowSession> = contexts
         .iter()
         .filter_map(|(label, context)| {
-            let state = context.notebook_state.lock().ok()?;
+            let path = context.path.lock().ok()?.clone();
+            let notebook_id = context.notebook_id.lock().ok()?.clone();
 
-            // Extract env_id for untitled notebooks
-            let env_id = if state.path.is_none() {
-                state
-                    .notebook
-                    .metadata
-                    .additional
-                    .get("runt")
-                    .and_then(|v| v.get("env_id"))
-                    .and_then(|v| v.as_str())
-                    .map(String::from)
+            // For untitled notebooks (no path), the notebook_id is the env_id (UUID).
+            // The daemon uses this to find the persisted Automerge doc on restore.
+            let env_id = if path.is_none() && !notebook_id.is_empty() {
+                Some(notebook_id)
             } else {
                 None
             };
 
             Some(WindowSession {
                 label: label.clone(),
-                path: state.path.clone(),
+                path,
                 env_id,
-                runtime: state.get_runtime().to_string(),
+                runtime: context.runtime.to_string(),
             })
         })
         .collect();
@@ -157,47 +151,6 @@ pub fn clear_session() {
             warn!("[session] Failed to remove session file: {}", e);
         } else {
             info!("[session] Cleared session file");
-        }
-    }
-}
-
-/// Load notebook state for a window session.
-///
-/// For saved notebooks: loads from disk
-/// For untitled notebooks: creates new state with preserved env_id
-pub fn load_window_session_state(session: &WindowSession) -> Result<NotebookState, String> {
-    let runtime: Runtime = session.runtime.parse().unwrap_or(Runtime::Python);
-
-    match &session.path {
-        Some(path) if path.exists() => {
-            // Load saved notebook
-            info!("[session] Loading notebook from {}", path.display());
-            crate::load_notebook_state_for_path(path, runtime)
-        }
-        Some(path) => {
-            // File doesn't exist anymore - create new notebook
-            warn!(
-                "[session] File not found: {}, creating new notebook",
-                path.display()
-            );
-            Ok(NotebookState::new_empty_with_runtime(runtime))
-        }
-        None => {
-            // Untitled notebook - create new with same env_id if possible
-            info!("[session] Restoring untitled notebook");
-            let mut state = NotebookState::new_empty_with_runtime(runtime);
-
-            // Preserve env_id so daemon can find existing Automerge state
-            if let Some(env_id) = &session.env_id {
-                if let Some(runt) = state.notebook.metadata.additional.get_mut("runt") {
-                    if let Some(obj) = runt.as_object_mut() {
-                        obj.insert("env_id".to_string(), serde_json::json!(env_id));
-                        info!("[session] Preserved env_id: {}", env_id);
-                    }
-                }
-            }
-
-            Ok(state)
         }
     }
 }
