@@ -26,6 +26,8 @@ interface MarkdownCellProps {
   onFocusNext?: (cursorPosition: "start" | "end") => void;
   onInsertCellAfter?: () => void;
   isLastCell?: boolean;
+  /** Whether this cell is immediately before the focused cell */
+  isPreviousCellFromFocused?: boolean;
 }
 
 export function MarkdownCell({
@@ -39,6 +41,7 @@ export function MarkdownCell({
   onFocusNext,
   onInsertCellAfter,
   isLastCell = false,
+  isPreviousCellFromFocused,
 }: MarkdownCellProps) {
   const applyInlineFormatting = useCallback(
     (prefix: string, suffix = prefix) =>
@@ -320,6 +323,7 @@ export function MarkdownCell({
       id={cell.id}
       cellType="markdown"
       isFocused={isFocused}
+      isPreviousCellFromFocused={isPreviousCellFromFocused}
       onFocus={onFocus}
     >
       {/* Editor section - hidden when not editing */}

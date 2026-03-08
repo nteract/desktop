@@ -94,6 +94,8 @@ interface CodeCellProps {
   onInsertCellAfter?: () => void;
   onClearPagePayload?: () => void;
   isLastCell?: boolean;
+  /** Whether this cell is immediately before the focused cell */
+  isPreviousCellFromFocused?: boolean;
 }
 
 export function CodeCell({
@@ -115,6 +117,7 @@ export function CodeCell({
   onInsertCellAfter,
   onClearPagePayload,
   isLastCell = false,
+  isPreviousCellFromFocused,
 }: CodeCellProps) {
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const { registerEditor, unregisterEditor } = useEditorRegistry();
@@ -246,6 +249,7 @@ export function CodeCell({
         id={cell.id}
         cellType="code"
         isFocused={isFocused}
+        isPreviousCellFromFocused={isPreviousCellFromFocused}
         onFocus={onFocus}
         gutterContent={gutterContent}
         rightGutterContent={rightGutterContent}

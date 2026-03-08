@@ -148,6 +148,13 @@ function NotebookViewContent({
   // Memoize cell IDs array
   const cellIds = useMemo(() => cells.map((c) => c.id), [cells]);
 
+  // Compute the cell ID that precedes the focused cell (keeps its output bright)
+  const previousCellId = useMemo(() => {
+    if (!focusedCellId) return null;
+    const focusedIndex = cells.findIndex((c) => c.id === focusedCellId);
+    return focusedIndex > 0 ? cells[focusedIndex - 1].id : null;
+  }, [focusedCellId, cells]);
+
   // Prevent horizontal scroll drift (can happen during text selection)
   useEffect(() => {
     const container = containerRef.current;
@@ -214,6 +221,7 @@ function NotebookViewContent({
             cell={cell}
             language={language}
             isFocused={isFocused}
+            isPreviousCellFromFocused={cell.id === previousCellId}
             isExecuting={isExecuting}
             pagePayload={pagePayload}
             searchQuery={searchQuery}
@@ -243,6 +251,7 @@ function NotebookViewContent({
             key={cell.id}
             cell={cell}
             isFocused={isFocused}
+            isPreviousCellFromFocused={cell.id === previousCellId}
             searchQuery={searchQuery}
             onFocus={() => onFocusCell(cell.id)}
             onUpdateSource={(source) => onUpdateCellSource(cell.id, source)}
@@ -266,6 +275,7 @@ function NotebookViewContent({
     },
     [
       focusedCellId,
+      previousCellId,
       executingCellIds,
       pagePayloads,
       runtime,
