@@ -473,7 +473,7 @@ impl AsyncSession {
                 .as_ref()
                 .ok_or_else(|| to_py_err("Not connected"))?;
 
-            let cells = handle.get_cells().await.map_err(to_py_err)?;
+            let cells = handle.get_cells();
             let insert_index = index.unwrap_or(cells.len());
 
             handle
@@ -587,7 +587,7 @@ impl AsyncSession {
                 let blob_base_url = state_guard.blob_base_url.clone();
                 let blob_store_path = state_guard.blob_store_path.clone();
 
-                let cells = handle.get_cells().await.map_err(to_py_err)?;
+                let cells = handle.get_cells();
                 let snapshot = cells
                     .into_iter()
                     .find(|c| c.id == cell_id)
@@ -626,7 +626,7 @@ impl AsyncSession {
                 let blob_base_url = state_guard.blob_base_url.clone();
                 let blob_store_path = state_guard.blob_store_path.clone();
 
-                let snapshots = handle.get_cells().await.map_err(to_py_err)?;
+                let snapshots = handle.get_cells();
                 (snapshots, blob_base_url, blob_store_path)
             }; // Lock released here
 
@@ -764,7 +764,7 @@ impl AsyncSession {
                 .as_ref()
                 .ok_or_else(|| to_py_err("Not connected"))?;
 
-            handle.get_metadata(&key).await.map_err(to_py_err)
+            Ok(handle.get_metadata(&key))
         })
     }
 
@@ -1401,7 +1401,7 @@ impl AsyncSession {
                 let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
 
                 // Get current cell count for append position
-                let cells = handle.get_cells().await.map_err(to_py_err)?;
+                let cells = handle.get_cells();
                 let insert_index = cells.len();
 
                 // Add cell to document
@@ -2167,10 +2167,7 @@ async fn get_notebook_metadata_async(
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
-    let json_str = handle
-        .get_metadata("notebook_metadata")
-        .await
-        .map_err(to_py_err)?;
+    let json_str = handle.get_metadata("notebook_metadata");
 
     match json_str {
         Some(s) => {

@@ -875,6 +875,26 @@ pub fn get_metadata_from_doc(doc: &AutoCommit, key: &str) -> Option<String> {
     read_str(doc, meta_id, key)
 }
 
+/// Read all metadata key-value pairs from a raw `AutoCommit` document.
+///
+/// Returns an empty map if the metadata object doesn't exist.
+pub fn get_all_metadata_from_doc(doc: &AutoCommit) -> std::collections::HashMap<String, String> {
+    let meta_id = match doc.get(automerge::ROOT, "metadata").ok().flatten() {
+        Some((automerge::Value::Object(ObjType::Map), id)) => id,
+        _ => return std::collections::HashMap::new(),
+    };
+    doc.map_range(&meta_id, ..)
+        .filter_map(|item| {
+            if let automerge::ValueRef::Scalar(s) = &item.value {
+                if let automerge::ScalarValueRef::Str(v) = s {
+                    return Some((item.key.to_string(), v.to_string()));
+                }
+            }
+            None
+        })
+        .collect()
+}
+
 /// Set a metadata value in a raw `AutoCommit` document.
 ///
 /// Creates the metadata map if it doesn't exist. This is the free-function

@@ -387,7 +387,7 @@ impl Session {
                 .ok_or_else(|| to_py_err("Not connected"))?;
 
             // Get current cell count to determine index
-            let cells = handle.get_cells().await.map_err(to_py_err)?;
+            let cells = handle.get_cells();
             let insert_index = index.unwrap_or(cells.len());
 
             // Add cell to document
@@ -476,7 +476,7 @@ impl Session {
                 let blob_base_url = state.blob_base_url.clone();
                 let blob_store_path = state.blob_store_path.clone();
 
-                let cells = handle.get_cells().await.map_err(to_py_err)?;
+                let cells = handle.get_cells();
                 let snapshot = cells
                     .into_iter()
                     .find(|c| c.id == cell_id)
@@ -514,7 +514,7 @@ impl Session {
                 let blob_base_url = state.blob_base_url.clone();
                 let blob_store_path = state.blob_store_path.clone();
 
-                let snapshots = handle.get_cells().await.map_err(to_py_err)?;
+                let snapshots = handle.get_cells();
                 (snapshots, blob_base_url, blob_store_path)
             }; // Lock released here
 
@@ -644,7 +644,7 @@ impl Session {
                 .as_ref()
                 .ok_or_else(|| to_py_err("Not connected"))?;
 
-            handle.get_metadata(&key).await.map_err(to_py_err)
+            Ok(handle.get_metadata(&key))
         })
     }
 
