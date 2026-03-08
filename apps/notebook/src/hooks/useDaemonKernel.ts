@@ -36,8 +36,11 @@ export interface DaemonQueueState {
 }
 
 interface UseDaemonKernelOptions {
-  /** Called when an output is produced for a cell */
-  onOutput: (cellId: string, output: JupyterOutput) => void;
+  /** Called when an output is produced for a cell.
+   * Optional — when omitted, Output broadcast processing (including blob
+   * resolution) is skipped entirely. Sync delivers outputs via materializeCells.
+   * Provide a callback for OutputWidget capture or low-latency streaming. */
+  onOutput?: (cellId: string, output: JupyterOutput) => void;
   /** Called when execution count is set for a cell */
   onExecutionCount: (cellId: string, count: number) => void;
   /** Called when execution completes for a cell */
@@ -214,6 +217,11 @@ export function useDaemonKernel({
           }
 
           case "output": {
+            // Skip blob resolution entirely when no onOutput callback is
+            // registered. Sync delivers outputs via materializeCells; the
+            // broadcast path is only needed for OutputWidget capture.
+            if (!callbacksRef.current.onOutput) break;
+
             // Resolve output (may be blob hash or raw JSON)
             const cellId = broadcast.cell_id;
             const outputJson = broadcast.output_json;
@@ -238,7 +246,7 @@ export function useDaemonKernel({
               const output = await resolveOutputString(outputJson, port);
               if (cancelled) return;
               if (output) {
-                callbacksRef.current.onOutput(cellId, output);
+                callbacksRef.current.onOutput?.(cellId, output);
               } else if (!retried) {
                 // Resolution failed - port may be stale, refresh and retry once
                 logger.debug(

@@ -266,9 +266,6 @@ function AppContent() {
     runAllCells: daemonRunAllCells,
     sendCommMessage,
   } = useDaemonKernel({
-    // Sync now delivers outputs correctly (#617 fix: skip do_initial_sync in pipe
-    // mode). The broadcast callback is disabled to prevent duplicates.
-    onOutput: () => {},
     onExecutionCount: handleExecutionCount,
     onExecutionDone: handleExecutionDone,
     onUpdateDisplayData: updateOutputByDisplayId,
