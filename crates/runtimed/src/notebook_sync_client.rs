@@ -2101,19 +2101,17 @@ async fn run_sync_task<S>(
                     SyncCommand::GetDocBytes { reply } => {
                         let bytes = client.doc.save();
 
-                        // Initialize frontend_peer_state now that the frontend
-                        // will have the doc bytes. Before this point, fe_state
-                        // is None so no sync messages are sent to the frontend
-                        // (preventing stale messages from causing phantom cells).
-                        //
-                        // We simulate a complete sync exchange with a mirror doc
-                        // loaded from the same bytes. After convergence, fe_state
-                        // knows exactly what the frontend has.
-                        if raw_sync_tx.is_some() {
+                        // In pipe mode (Tauri), the frontend gets doc bytes from the
+                        // daemon via send_request(GetDocBytes), not from this command.
+                        // But runtimed-py tests may still call this. Skip the virtual
+                        // sync handshake in pipe mode — the frontend and daemon sync
+                        // directly through the byte pipe, so no relay peer state needed.
+                        if raw_sync_tx.is_none() {
+                            // Full peer mode (runtimed-py): initialize frontend_peer_state
+                            // via virtual sync handshake so we know what the peer has seen.
                             let mut fe_state = sync::State::new();
                             if let Ok(mut mirror) = automerge::AutoCommit::load(&bytes) {
                                 let mut mirror_state = sync::State::new();
-                                // Exchange sync messages until both sides agree
                                 for _ in 0..10 {
                                     let our_msg =
                                         client.doc.sync().generate_sync_message(&mut fe_state);
@@ -2145,8 +2143,26 @@ async fn run_sync_task<S>(
                         let _ = reply.send(bytes);
                     }
                     SyncCommand::ReceiveFrontendSyncMessage { message, reply } => {
-                        let result = if let Some(ref mut fe_state) = frontend_peer_state {
-                            // Apply the frontend's sync message to our local doc
+                        let result = if raw_sync_tx.is_some() {
+                            // Pipe mode (Tauri): forward raw sync bytes to daemon
+                            // without merging into the relay's doc. The daemon processes
+                            // the sync message and sends back a response frame, which
+                            // arrives in the socket read branch and is forwarded raw
+                            // to the frontend via raw_sync_tx.
+                            connection::send_typed_frame(
+                                &mut client.stream,
+                                NotebookFrameType::AutomergeSync,
+                                &message,
+                            )
+                            .await
+                            .map_err(|e| {
+                                NotebookSyncError::SyncError(format!(
+                                    "forward frontend sync to daemon: {}",
+                                    e
+                                ))
+                            })
+                        } else if let Some(ref mut fe_state) = frontend_peer_state {
+                            // Full peer mode (runtimed-py): merge into local doc
                             match sync::Message::decode(&message) {
                                 Ok(msg) => {
                                     let recv_result =
@@ -2172,12 +2188,15 @@ async fn run_sync_task<S>(
                                 "frontend sync relay not active".to_string(),
                             ))
                         };
-                        // Send response sync message back to frontend
-                        if let (Some(ref tx), Some(ref mut fe_state)) =
-                            (&raw_sync_tx, &mut frontend_peer_state)
-                        {
-                            if let Some(msg) = client.doc.sync().generate_sync_message(fe_state) {
-                                let _ = tx.send(msg.encode());
+                        // In full peer mode, send response sync message back to frontend
+                        if raw_sync_tx.is_none() {
+                            if let (Some(ref tx), Some(ref mut fe_state)) =
+                                (&raw_sync_tx, &mut frontend_peer_state)
+                            {
+                                if let Some(msg) = client.doc.sync().generate_sync_message(fe_state)
+                                {
+                                    let _ = tx.send(msg.encode());
+                                }
                             }
                         }
                         let _ = reply.send(result);
@@ -2197,73 +2216,84 @@ async fn run_sync_task<S>(
                 // v2 protocol: direct socket read completed
                 match frame_result {
                     Ok(Some(frame)) => {
-                        match client.process_incoming_frame(frame).await {
-                            Ok(Some(ReceivedFrame::Changes(cells))) => {
-                                // Got changes from another peer — only include metadata if it changed
-                                let current_metadata = client.get_metadata(NOTEBOOK_METADATA_KEY);
-                                let metadata_changed = current_metadata != last_metadata;
-                                if metadata_changed {
-                                    last_metadata = current_metadata.clone();
-                                }
-                                let update = SyncUpdate {
-                                    cells,
-                                    notebook_metadata: if metadata_changed {
-                                        current_metadata
-                                    } else {
-                                        None
-                                    },
-                                };
-                                // Use try_send to avoid blocking if receiver isn't draining
-                                match changes_tx.try_send(update) {
-                                    Ok(()) => {}
-                                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                        // Channel full - receiver not keeping up, skip this update
+                        // Pipe mode (Tauri): forward AutomergeSync frames raw to the
+                        // frontend without merging into the relay's doc. This makes
+                        // the relay a transparent byte pipe between frontend and daemon
+                        // — two Automerge peers instead of three.
+                        // Broadcast and Response frames still need normal processing.
+                        if raw_sync_tx.is_some()
+                            && frame.frame_type == NotebookFrameType::AutomergeSync
+                        {
+                            if let Some(ref tx) = raw_sync_tx {
+                                let _ = tx.send(frame.payload);
+                            }
+                        } else {
+                            match client.process_incoming_frame(frame).await {
+                                Ok(Some(ReceivedFrame::Changes(cells))) => {
+                                    // Full peer mode: metadata diffing and SyncUpdate
+                                    let current_metadata =
+                                        client.get_metadata(NOTEBOOK_METADATA_KEY);
+                                    let metadata_changed = current_metadata != last_metadata;
+                                    if metadata_changed {
+                                        last_metadata = current_metadata.clone();
                                     }
-                                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                                        info!(
+                                    let update = SyncUpdate {
+                                        cells,
+                                        notebook_metadata: if metadata_changed {
+                                            current_metadata
+                                        } else {
+                                            None
+                                        },
+                                    };
+                                    match changes_tx.try_send(update) {
+                                        Ok(()) => {}
+                                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                            info!(
                                             "[notebook-sync-task] Changes receiver dropped for {}, loop_count={}",
                                             notebook_id, loop_count
                                         );
-                                        break;
+                                            break;
+                                        }
                                     }
-                                }
-                                // Forward sync message to frontend if relay is active
-                                if let (Some(ref tx), Some(ref mut fe_state)) =
-                                    (&raw_sync_tx, &mut frontend_peer_state)
-                                {
-                                    if let Some(msg) =
-                                        client.doc.sync().generate_sync_message(fe_state)
+                                    // Forward sync message to frontend (full peer mode only)
+                                    if let (Some(ref tx), Some(ref mut fe_state)) =
+                                        (&raw_sync_tx, &mut frontend_peer_state)
                                     {
-                                        let _ = tx.send(msg.encode());
+                                        if let Some(msg) =
+                                            client.doc.sync().generate_sync_message(fe_state)
+                                        {
+                                            let _ = tx.send(msg.encode());
+                                        }
                                     }
                                 }
-                            }
-                            Ok(Some(ReceivedFrame::Broadcast(broadcast))) => {
-                                let send_result = broadcast_tx.send(broadcast);
-                                if send_result.is_err() {
-                                    info!(
-                                        "[notebook-sync-task] No broadcast receivers for {}",
+                                Ok(Some(ReceivedFrame::Broadcast(broadcast))) => {
+                                    let send_result = broadcast_tx.send(broadcast);
+                                    if send_result.is_err() {
+                                        info!(
+                                            "[notebook-sync-task] No broadcast receivers for {}",
+                                            notebook_id
+                                        );
+                                    }
+                                }
+                                Ok(Some(ReceivedFrame::Response(_))) => {
+                                    warn!(
+                                        "[notebook-sync-task] Unexpected response frame for {}",
                                         notebook_id
                                     );
                                 }
-                            }
-                            Ok(Some(ReceivedFrame::Response(_))) => {
-                                warn!(
-                                    "[notebook-sync-task] Unexpected response frame for {}",
-                                    notebook_id
-                                );
-                            }
-                            Ok(None) => {
-                                // Frame was handled internally (e.g., unexpected Request)
-                            }
-                            Err(e) => {
-                                warn!(
+                                Ok(None) => {
+                                    // Frame was handled internally (e.g., unexpected Request)
+                                }
+                                Err(e) => {
+                                    warn!(
                                     "[notebook-sync-task] Error processing frame for {}: {}, loop_count={}",
                                     notebook_id, e, loop_count
                                 );
-                                break;
+                                    break;
+                                }
                             }
-                        }
+                        } // end else (non-pipe mode)
                     }
                     Ok(None) => {
                         // Connection closed
