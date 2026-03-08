@@ -918,6 +918,7 @@ impl Daemon {
                     self.clone(),
                     working_dir_path,
                     initial_metadata,
+                    false, // Send ProtocolCapabilities for legacy NotebookSync handshake
                 )
                 .await
             }
@@ -1059,6 +1060,7 @@ impl Daemon {
             self.clone(),
             working_dir_path,
             None, // No initial_metadata - doc is already populated
+            true, // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
         )
         .await
     }
@@ -1156,6 +1158,7 @@ impl Daemon {
             self.clone(),
             working_dir_path,
             None, // No initial_metadata - doc is already populated
+            true, // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
         )
         .await
     }

@@ -665,6 +665,10 @@ pub fn get_or_create_room(
 /// doc bytes are flushed via debounced persistence.
 ///
 /// Uses v2 typed frames protocol (with first-byte type indicator).
+///
+/// If `skip_capabilities` is true, the ProtocolCapabilities frame is not sent.
+/// This is used for OpenNotebook/CreateNotebook handshakes where the protocol
+/// is already communicated in the NotebookConnectionInfo response.
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_notebook_sync_connection<R, W>(
     mut reader: R,
@@ -677,6 +681,7 @@ pub async fn handle_notebook_sync_connection<R, W>(
     daemon: std::sync::Arc<crate::daemon::Daemon>,
     working_dir: Option<PathBuf>,
     initial_metadata: Option<String>,
+    skip_capabilities: bool,
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin,
@@ -772,11 +777,13 @@ where
         }
     }
 
-    // Send capabilities response (v2 protocol)
-    let caps = connection::ProtocolCapabilities {
-        protocol: connection::PROTOCOL_V2.to_string(),
-    };
-    connection::send_json_frame(&mut writer, &caps).await?;
+    // Send capabilities response (v2 protocol) unless already sent via NotebookConnectionInfo
+    if !skip_capabilities {
+        let caps = connection::ProtocolCapabilities {
+            protocol: connection::PROTOCOL_V2.to_string(),
+        };
+        connection::send_json_frame(&mut writer, &caps).await?;
+    }
 
     let result = run_sync_loop_v2(&mut reader, &mut writer, &room, daemon.clone()).await;
 
