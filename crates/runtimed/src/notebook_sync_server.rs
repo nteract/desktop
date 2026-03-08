@@ -894,12 +894,15 @@ where
     let mut kernel_broadcast_rx = room.kernel_broadcast_tx.subscribe();
 
     // Phase 1: Initial sync — server sends first (typed frame)
-    {
+    // Encode the sync message inside the lock, then send outside it
+    // to avoid holding the write lock across async I/O.
+    let initial_msg = {
         let mut doc = room.doc.write().await;
-        if let Some(msg) = doc.generate_sync_message(&mut peer_state) {
-            connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &msg.encode())
-                .await?;
-        }
+        doc.generate_sync_message(&mut peer_state)
+            .map(|msg| msg.encode())
+    };
+    if let Some(encoded) = initial_msg {
+        connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &encoded).await?;
     }
 
     // Phase 1.5: Send comm state sync for widget reconstruction
@@ -933,8 +936,9 @@ where
                                 let message = sync::Message::decode(&frame.payload)
                                     .map_err(|e| anyhow::anyhow!("decode error: {}", e))?;
 
-                                // Serialize bytes inside the lock, then persist outside it
-                                let persist_bytes = {
+                                // Complete all document mutations inside the lock, encode the
+                                // reply, then release the lock before performing async I/O.
+                                let (persist_bytes, reply_encoded) = {
                                     let mut doc = room.doc.write().await;
                                     doc.receive_sync_message(&mut peer_state, message)?;
 
@@ -943,18 +947,23 @@ where
                                     // Notify other peers in this room
                                     let _ = room.changed_tx.send(());
 
-                                    // Send our response while still holding the lock
-                                    if let Some(reply) = doc.generate_sync_message(&mut peer_state) {
-                                        connection::send_typed_frame(
-                                            writer,
-                                            NotebookFrameType::AutomergeSync,
-                                            &reply.encode(),
-                                        )
-                                        .await?;
-                                    }
+                                    let encoded = doc
+                                        .generate_sync_message(&mut peer_state)
+                                        .map(|reply| reply.encode());
 
-                                    bytes
+                                    (bytes, encoded)
                                 };
+
+                                // Send reply outside the lock so other peers can
+                                // acquire it while we wait on the socket.
+                                if let Some(encoded) = reply_encoded {
+                                    connection::send_typed_frame(
+                                        writer,
+                                        NotebookFrameType::AutomergeSync,
+                                        &encoded,
+                                    )
+                                    .await?;
+                                }
 
                                 // Send to debounced persistence task
                                 let _ = room.persist_tx.send(Some(persist_bytes));
@@ -994,12 +1003,18 @@ where
 
             // Another peer changed the document — push update to this client
             _ = changed_rx.recv() => {
-                let mut doc = room.doc.write().await;
-                if let Some(msg) = doc.generate_sync_message(&mut peer_state) {
+                // Encode inside the lock, send outside it to avoid holding the
+                // write lock across async I/O.
+                let encoded = {
+                    let mut doc = room.doc.write().await;
+                    doc.generate_sync_message(&mut peer_state)
+                        .map(|msg| msg.encode())
+                };
+                if let Some(encoded) = encoded {
                     connection::send_typed_frame(
                         writer,
                         NotebookFrameType::AutomergeSync,
-                        &msg.encode(),
+                        &encoded,
                     )
                     .await?;
                 }
@@ -1024,12 +1039,17 @@ where
                         // The peer missed some broadcasts (outputs, status changes).
                         // The Automerge doc contains the persisted state, so send a
                         // sync message to catch the peer up on any missed output data.
-                        let mut doc = room.doc.write().await;
-                        if let Some(msg) = doc.generate_sync_message(&mut peer_state) {
+                        // Encode inside the lock, send outside it.
+                        let encoded = {
+                            let mut doc = room.doc.write().await;
+                            doc.generate_sync_message(&mut peer_state)
+                                .map(|msg| msg.encode())
+                        };
+                        if let Some(encoded) = encoded {
                             connection::send_typed_frame(
                                 writer,
                                 NotebookFrameType::AutomergeSync,
-                                &msg.encode(),
+                                &encoded,
                             )
                             .await?;
                         }
