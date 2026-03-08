@@ -13,6 +13,7 @@ use pyo3::prelude::*;
 
 mod async_session;
 mod client;
+mod daemon_paths;
 mod error;
 mod event_stream;
 mod output;
@@ -25,8 +26,8 @@ use client::DaemonClient;
 use error::RuntimedError;
 use event_stream::{ExecutionEventIterator, ExecutionEventStream};
 use output::{
-    Cell, CompletionItem, CompletionResult, ExecutionEvent, ExecutionResult, HistoryEntry, Output,
-    QueueState, SyncEnvironmentResult,
+    Cell, CompletionItem, CompletionResult, ExecutionEvent, ExecutionResult, HistoryEntry,
+    NotebookConnectionInfo, Output, QueueState, SyncEnvironmentResult,
 };
 use session::Session;
 use subscription::{EventIteratorSubscription, EventSubscription};
@@ -55,6 +56,7 @@ fn runtimed(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ExecutionEvent>()?;
     m.add_class::<Output>()?;
     m.add_class::<SyncEnvironmentResult>()?;
+    m.add_class::<NotebookConnectionInfo>()?;
 
     // Completion and queue types
     m.add_class::<CompletionItem>()?;

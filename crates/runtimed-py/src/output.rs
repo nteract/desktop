@@ -475,6 +475,47 @@ impl SyncEnvironmentResult {
     }
 }
 
+/// Connection info returned when opening or creating a notebook via daemon.
+///
+/// This is returned by `Session.open_notebook()` and `Session.create_notebook()`
+/// and provides information about the notebook that was opened or created.
+#[pyclass(get_all, skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct NotebookConnectionInfo {
+    /// Protocol version (currently "v2").
+    pub protocol: String,
+    /// Notebook identifier derived by the daemon.
+    /// For existing files: canonical path.
+    /// For new notebooks: generated UUID.
+    pub notebook_id: String,
+    /// Number of cells in the notebook.
+    pub cell_count: usize,
+    /// True if the notebook has untrusted dependencies requiring user approval.
+    pub needs_trust_approval: bool,
+}
+
+#[pymethods]
+impl NotebookConnectionInfo {
+    fn __repr__(&self) -> String {
+        format!(
+            "NotebookConnectionInfo(notebook_id={}, cells={}, needs_trust={})",
+            self.notebook_id, self.cell_count, self.needs_trust_approval
+        )
+    }
+}
+
+impl NotebookConnectionInfo {
+    /// Create from the Rust NotebookConnectionInfo type.
+    pub fn from_protocol(info: runtimed::connection::NotebookConnectionInfo) -> Self {
+        Self {
+            protocol: info.protocol,
+            notebook_id: info.notebook_id,
+            cell_count: info.cell_count,
+            needs_trust_approval: info.needs_trust_approval,
+        }
+    }
+}
+
 /// Result of executing code.
 #[pyclass(skip_from_py_object)]
 #[derive(Clone, Debug)]

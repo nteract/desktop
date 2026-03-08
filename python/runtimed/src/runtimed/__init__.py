@@ -15,6 +15,7 @@ from runtimed.runtimed import (
     ExecutionEvent,
     ExecutionResult,
     HistoryEntry,
+    NotebookConnectionInfo,
     Output,
     QueueState,
     RuntimedError,
@@ -35,6 +36,7 @@ __all__ = [
     "Cell",
     "ExecutionEvent",
     "ExecutionResult",
+    "NotebookConnectionInfo",
     "Output",
     "RuntimedError",
     # Completion and queue types

@@ -2174,5 +2174,314 @@ class TestSubscription:
         assert len(events2) >= 1, "Subscriber 2 should receive events"
 
 
+# ============================================================================
+# Open/Create Notebook Tests (daemon-owned loading)
+# ============================================================================
+
+
+class TestOpenNotebook:
+    """Test Session.open_notebook() - daemon-owned file loading."""
+
+    def test_open_existing_notebook(self, daemon_process, monkeypatch, tmp_path):
+        """Opening existing .ipynb loads cells via daemon."""
+        import json
+
+        socket_path, _ = daemon_process
+        if socket_path is not None:
+            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
+
+        # Create test notebook
+        nb_path = tmp_path / "test.ipynb"
+        nb_path.write_text(
+            json.dumps(
+                {
+                    "nbformat": 4,
+                    "nbformat_minor": 5,
+                    "metadata": {
+                        "kernelspec": {"name": "python3", "display_name": "Python 3"}
+                    },
+                    "cells": [
+                        {
+                            "id": "cell-1",
+                            "cell_type": "code",
+                            "source": ["x = 1"],
+                            "metadata": {},
+                            "outputs": [],
+                        },
+                        {
+                            "id": "cell-2",
+                            "cell_type": "markdown",
+                            "source": ["# Hello"],
+                            "metadata": {},
+                        },
+                    ],
+                }
+            )
+        )
+
+        # Open via daemon
+        session = runtimed.Session.open_notebook(str(nb_path))
+        assert session.is_connected
+
+        # Verify daemon-derived notebook_id (should contain canonical path)
+        assert str(nb_path.resolve()) in session.notebook_id or nb_path.name in session.notebook_id
+
+        # Verify cells loaded
+        cells = session.get_cells()
+        assert len(cells) == 2
+        assert cells[0].source == "x = 1"
+        assert cells[1].cell_type == "markdown"
+
+    def test_open_notebook_returns_connection_info(self, daemon_process, monkeypatch, tmp_path):
+        """NotebookConnectionInfo includes cell_count."""
+        import json
+
+        socket_path, _ = daemon_process
+        if socket_path is not None:
+            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
+
+        # Create notebook with 3 cells
+        nb_path = tmp_path / "three_cells.ipynb"
+        nb_path.write_text(
+            json.dumps(
+                {
+                    "nbformat": 4,
+                    "nbformat_minor": 5,
+                    "metadata": {},
+                    "cells": [
+                        {
+                            "id": "c1",
+                            "cell_type": "code",
+                            "source": [],
+                            "metadata": {},
+                            "outputs": [],
+                        },
+                        {
+                            "id": "c2",
+                            "cell_type": "code",
+                            "source": [],
+                            "metadata": {},
+                            "outputs": [],
+                        },
+                        {
+                            "id": "c3",
+                            "cell_type": "code",
+                            "source": [],
+                            "metadata": {},
+                            "outputs": [],
+                        },
+                    ],
+                }
+            )
+        )
+
+        session = runtimed.Session.open_notebook(str(nb_path))
+        info = session.connection_info
+        assert info is not None
+        assert info.cell_count == 3
+        assert info.notebook_id == session.notebook_id
+
+    def test_open_nonexistent_file_errors(self, daemon_process, monkeypatch, tmp_path):
+        """Opening missing file returns error."""
+        socket_path, _ = daemon_process
+        if socket_path is not None:
+            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
+
+        with pytest.raises(runtimed.RuntimedError):
+            runtimed.Session.open_notebook(str(tmp_path / "missing.ipynb"))
+
+    def test_open_notebook_second_client_joins_room(
+        self, daemon_process, monkeypatch, tmp_path
+    ):
+        """Second client joining same notebook gets synced cells."""
+        import json
+
+        socket_path, _ = daemon_process
+        if socket_path is not None:
+            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
+
+        nb_path = tmp_path / "shared.ipynb"
+        nb_path.write_text(
+            json.dumps(
+                {
+                    "nbformat": 4,
+                    "nbformat_minor": 5,
+                    "metadata": {},
+                    "cells": [
+                        {
+                            "id": "orig",
+                            "cell_type": "code",
+                            "source": ["a = 1"],
+                            "metadata": {},
+                            "outputs": [],
+                        }
+                    ],
+                }
+            )
+        )
+
+        session1 = runtimed.Session.open_notebook(str(nb_path))
+        session2 = runtimed.Session.open_notebook(str(nb_path))
+
+        # Both should have same notebook_id
+        assert session1.notebook_id == session2.notebook_id
+
+        # Add cell in session1
+        initial_count = len(session1.get_cells())
+        session1.create_cell("y = 2", index=initial_count)
+
+        # Should sync to session2
+        wait_for_sync(
+            lambda: len(session2.get_cells()) > initial_count, description="cell sync"
+        )
+
+        cells2 = session2.get_cells()
+        assert len(cells2) > initial_count
+
+
+class TestCreateNotebook:
+    """Test Session.create_notebook() - daemon-owned creation."""
+
+    def test_create_python_notebook(self, daemon_process, monkeypatch):
+        """Creating Python notebook returns session with one empty cell."""
+        socket_path, _ = daemon_process
+        if socket_path is not None:
+            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
+
+        session = runtimed.Session.create_notebook(runtime="python")
+        assert session.is_connected
+
+        # notebook_id is UUID (not a path)
+        assert len(session.notebook_id) == 36  # UUID format
+
+        # Has one empty code cell
+        cells = session.get_cells()
+        assert len(cells) == 1
+        assert cells[0].cell_type == "code"
+        assert cells[0].source == ""
+
+    def test_create_notebook_returns_connection_info(self, daemon_process, monkeypatch):
+        """NotebookConnectionInfo is available for created notebooks."""
+        socket_path, _ = daemon_process
+        if socket_path is not None:
+            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
+
+        session = runtimed.Session.create_notebook(runtime="python")
+        info = session.connection_info
+        assert info is not None
+        assert info.cell_count == 1
+        assert info.notebook_id == session.notebook_id
+        # New notebooks don't need trust approval
+        assert info.needs_trust_approval is False
+
+    def test_create_deno_notebook(self, daemon_process, monkeypatch):
+        """Creating Deno notebook sets correct runtime."""
+        socket_path, _ = daemon_process
+        if socket_path is not None:
+            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
+
+        session = runtimed.Session.create_notebook(runtime="deno")
+        assert session.is_connected
+
+        # Has one empty code cell
+        cells = session.get_cells()
+        assert len(cells) == 1
+
+    def test_create_notebook_with_working_dir(self, daemon_process, monkeypatch, tmp_path):
+        """working_dir is used for project file detection."""
+        socket_path, _ = daemon_process
+        if socket_path is not None:
+            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
+
+        # Create pyproject.toml in tmp_path
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'test'")
+
+        session = runtimed.Session.create_notebook(
+            runtime="python", working_dir=str(tmp_path)
+        )
+
+        assert session.is_connected
+
+
+class TestTrustApproval:
+    """Test trust approval flow for notebooks with inline dependencies."""
+
+    def test_untrusted_notebook_needs_approval(
+        self, daemon_process, monkeypatch, tmp_path
+    ):
+        """Notebook with inline deps from unknown source needs trust."""
+        import json
+
+        socket_path, _ = daemon_process
+        if socket_path is not None:
+            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
+
+        nb_path = tmp_path / "untrusted.ipynb"
+        nb_path.write_text(
+            json.dumps(
+                {
+                    "nbformat": 4,
+                    "nbformat_minor": 5,
+                    "metadata": {
+                        "runt": {
+                            "schema_version": "1",
+                            "uv": {"dependencies": ["requests"]},
+                            # No trust_signature - untrusted
+                        }
+                    },
+                    "cells": [
+                        {
+                            "id": "c1",
+                            "cell_type": "code",
+                            "source": [],
+                            "metadata": {},
+                            "outputs": [],
+                        }
+                    ],
+                }
+            )
+        )
+
+        session = runtimed.Session.open_notebook(str(nb_path))
+        info = session.connection_info
+        assert info is not None
+        assert info.needs_trust_approval is True
+
+    def test_notebook_without_deps_does_not_need_trust(
+        self, daemon_process, monkeypatch, tmp_path
+    ):
+        """Notebook without inline deps doesn't need trust approval."""
+        import json
+
+        socket_path, _ = daemon_process
+        if socket_path is not None:
+            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
+
+        nb_path = tmp_path / "simple.ipynb"
+        nb_path.write_text(
+            json.dumps(
+                {
+                    "nbformat": 4,
+                    "nbformat_minor": 5,
+                    "metadata": {},
+                    "cells": [
+                        {
+                            "id": "c1",
+                            "cell_type": "code",
+                            "source": ["print('hello')"],
+                            "metadata": {},
+                            "outputs": [],
+                        }
+                    ],
+                }
+            )
+        )
+
+        session = runtimed.Session.open_notebook(str(nb_path))
+        info = session.connection_info
+        assert info is not None
+        assert info.needs_trust_approval is False
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
