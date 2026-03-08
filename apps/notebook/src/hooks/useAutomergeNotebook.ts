@@ -165,19 +165,16 @@ export function useAutomergeNotebook() {
 
     const webview = getCurrentWebview();
 
-    // On reconnect, reset sync state and re-initiate. The existing handle's
-    // doc content is valid — only the sync state is stale from the old
-    // connection. The daemon's Phase 1 message delivers any changes we missed.
-    const unlistenReady = webview.listen("daemon:ready", () => {
+    // On (re)connect, create a fresh empty handle and let sync deliver
+    // everything. We must NOT reset_sync_state() on an existing handle —
+    // that creates an infinite loop of 85-byte sync messages that never
+    // converge (the WASM keeps re-requesting content it already has).
+    const unlistenReady = webview.listen("daemon:ready", async () => {
       if (cancelled) return;
       refreshBlobPort();
-      const handle = handleRef.current;
-      if (handle) {
-        awaitingInitialSyncRef.current = true;
-        setIsLoading(true);
-        handle.reset_sync_state();
-        syncToRelay(handle);
-      }
+      awaitingInitialSyncRef.current = true;
+      setIsLoading(true);
+      await bootstrap();
     });
 
     // Different file opened in this window — need a fresh handle since the
