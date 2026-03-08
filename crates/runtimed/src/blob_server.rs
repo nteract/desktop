@@ -101,6 +101,7 @@ async fn serve_blob(store: &BlobStore, hash: &str) -> Response<Full<Bytes>> {
                 .header("Content-Length", data.len().to_string())
                 .header("Cache-Control", "public, max-age=31536000, immutable")
                 .header("Access-Control-Allow-Origin", "*")
+                .header("X-Content-Type-Options", "nosniff")
                 .body(Full::new(Bytes::from(data)))
                 .unwrap_or_else(|_| {
                     text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
