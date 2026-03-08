@@ -159,6 +159,18 @@ impl NotebookDoc {
         Self { doc }
     }
 
+    /// Create a document with zero operations for sync-only bootstrap.
+    ///
+    /// Unlike `new()`, this does not create a cells list, metadata map, or
+    /// notebook_id. The sync protocol populates everything from the peer.
+    /// All read methods (`cell_count`, `get_cells`, etc.) handle the missing
+    /// keys gracefully (return 0 / empty).
+    pub fn empty() -> Self {
+        Self {
+            doc: AutoCommit::new(),
+        }
+    }
+
     /// Load a notebook document from saved bytes.
     pub fn load(data: &[u8]) -> Result<Self, AutomergeError> {
         let doc = AutoCommit::load(data)?;
