@@ -444,6 +444,7 @@ mod tests {
         let json = serde_json::to_string(&Handshake::CreateNotebook {
             runtime: "python".into(),
             working_dir: None,
+            notebook_id: None,
         })
         .unwrap();
         assert_eq!(json, r#"{"channel":"create_notebook","runtime":"python"}"#);
@@ -452,11 +453,24 @@ mod tests {
         let json = serde_json::to_string(&Handshake::CreateNotebook {
             runtime: "deno".into(),
             working_dir: Some("/home/user/project".into()),
+            notebook_id: None,
         })
         .unwrap();
         assert_eq!(
             json,
             r#"{"channel":"create_notebook","runtime":"deno","working_dir":"/home/user/project"}"#
+        );
+
+        // CreateNotebook with notebook_id hint (session restore)
+        let json = serde_json::to_string(&Handshake::CreateNotebook {
+            runtime: "python".into(),
+            working_dir: None,
+            notebook_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"channel":"create_notebook","runtime":"python","notebook_id":"550e8400-e29b-41d4-a716-446655440000"}"#
         );
     }
 

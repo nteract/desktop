@@ -40,7 +40,7 @@ type SharedNotebookSync = Arc<tokio::sync::Mutex<Option<NotebookSyncHandle>>>;
 struct WindowNotebookContext {
     notebook_sync: SharedNotebookSync,
     /// Generation counter to prevent stale broadcast tasks from clobbering new connections.
-    /// Incremented each time initialize_notebook_sync is called.
+    /// Incremented each time a sync init function is called (open, create, or reconnect).
     sync_generation: Arc<AtomicU64>,
     /// Notebook file path — authoritative for path reads (has_notebook_path, get_notebook_path, etc.)
     path: Arc<Mutex<Option<PathBuf>>>,
@@ -115,17 +115,15 @@ struct DaemonReadyPayload {
 enum OpenMode {
     /// Open an existing notebook file. Daemon loads from disk.
     Open { path: PathBuf },
-    /// Create a new empty notebook. Daemon generates notebook_id.
+    /// Create a new empty notebook, or restore an untitled notebook from a previous session.
+    ///
+    /// If `notebook_id` is provided, the daemon reuses the existing room (and its persisted
+    /// Automerge doc) instead of generating a new UUID. This handles session restore for
+    /// untitled notebooks that were never saved to disk.
     Create {
         runtime: String,
         working_dir: Option<PathBuf>,
-    },
-    /// Restore an untitled notebook by reconnecting to its existing daemon room.
-    /// Used for session restore when the notebook was never saved to disk.
-    /// The daemon may have the Automerge doc persisted from the previous session.
-    Restore {
-        notebook_id: String,
-        working_dir: Option<PathBuf>,
+        notebook_id: Option<String>,
     },
 }
 
@@ -475,186 +473,6 @@ fn snapshot_from_nbformat(
     }
 }
 
-/// Initialize notebook sync with the daemon.
-///
-/// Connects to the daemon's notebook sync service using the split pattern,
-/// populates the Automerge doc if this is a new room, and spawns a background
-/// task to receive changes from other peers (cross-window sync).
-///
-/// The split pattern separates the handle (for sending commands) from the
-/// receiver (for incoming changes), avoiding lock contention during network I/O.
-///
-/// For first-time connections (window creation), pass cells and metadata from the notebook.
-/// For reconnects (save_notebook_as, reconnect_to_daemon), pass empty cells - the daemon
-/// already has them and will send them during initial sync.
-/// Connect to the daemon using the legacy NotebookSync handshake.
-///
-/// Used only for restoring untitled notebooks by reconnecting to an existing
-/// daemon room via notebook_id (env_id). The daemon may have the Automerge doc
-/// persisted from a previous session. For saved notebooks, use
-/// `initialize_notebook_sync_open` instead.
-async fn initialize_notebook_sync(
-    window: tauri::WebviewWindow,
-    notebook_id: String,
-    notebook_sync: SharedNotebookSync,
-    sync_generation: Arc<AtomicU64>,
-    working_dir: Option<PathBuf>,
-) -> Result<(), String> {
-    // Increment generation to invalidate any stale cleanup from previous connections
-    let current_generation = sync_generation.fetch_add(1, Ordering::SeqCst) + 1;
-
-    let socket_path = runtimed::default_socket_path();
-    info!(
-        "[notebook-sync] Connecting to daemon for notebook: {} ({}) (working_dir: {:?})",
-        notebook_id,
-        socket_path.display(),
-        working_dir
-    );
-
-    // Create channel for forwarding raw Automerge sync messages to the frontend.
-    // The frontend can use these to maintain its own Automerge document replica.
-    let (raw_sync_tx, mut raw_sync_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-
-    // Connect using the split pattern - returns handle, receiver, broadcast receiver, initial cells, and initial metadata
-    // Pass working_dir for untitled notebooks so daemon can detect project files
-    let (handle, receiver, mut broadcast_receiver, daemon_cells, _initial_metadata_from_daemon) =
-        NotebookSyncClient::connect_split_with_raw_sync(
-            socket_path,
-            notebook_id.clone(),
-            working_dir,
-            None, // No initial metadata — daemon has the persisted doc
-            Some(raw_sync_tx),
-        )
-        .await
-        .map_err(|e| format!("sync connect: {}", e))?;
-
-    info!(
-        "[notebook-sync] Connected to room with {} cells",
-        daemon_cells.len()
-    );
-
-    // Store the handle for commands to use
-    info!(
-        "[notebook-sync] Storing handle for {} (prior state: {:?})",
-        notebook_id,
-        notebook_sync.lock().await.is_some()
-    );
-    *notebook_sync.lock().await = Some(handle);
-    info!(
-        "[notebook-sync] Handle stored successfully for {}",
-        notebook_id
-    );
-
-    // Drop the SyncUpdate receiver — in pipe mode the relay never sends metadata
-    // diffs through changes_tx, and no frontend code listens for notebook:metadata_updated.
-    drop(receiver);
-
-    // Spawn raw sync relay task — forwards Automerge sync messages to the frontend
-    // so it can maintain its own local Automerge document replica (Phase 2).
-    let window_for_raw_sync = window.clone();
-    let notebook_id_for_raw_sync = notebook_id.clone();
-    tokio::spawn(async move {
-        info!(
-            "[notebook-sync] Starting raw sync relay for {}",
-            notebook_id_for_raw_sync
-        );
-        while let Some(sync_bytes) = raw_sync_rx.recv().await {
-            if let Err(e) = emit_to_label::<_, _, _>(
-                &window_for_raw_sync,
-                window_for_raw_sync.label(),
-                "automerge:from-daemon",
-                &sync_bytes,
-            ) {
-                warn!(
-                    "[notebook-sync] Failed to emit automerge:from-daemon: {}",
-                    e
-                );
-            }
-        }
-        info!(
-            "[notebook-sync] Raw sync relay ended for {}",
-            notebook_id_for_raw_sync
-        );
-    });
-
-    // Clone app for later use (before spawning moves it)
-    let window_for_ready = window.clone();
-
-    // Spawn broadcast receiver task for daemon kernel events
-    let notebook_sync_for_disconnect = notebook_sync.clone();
-    let notebook_id_for_broadcast = notebook_id.clone();
-    let sync_generation_for_cleanup = sync_generation.clone();
-    let cleanup_generation = current_generation;
-    tokio::spawn(async move {
-        info!(
-            "[notebook-sync] Starting broadcast receiver loop for {} (gen {})",
-            notebook_id_for_broadcast, cleanup_generation
-        );
-        while let Some(broadcast) = broadcast_receiver.recv().await {
-            debug!(
-                "[notebook-sync] Received broadcast for {}: {:?}",
-                notebook_id_for_broadcast, broadcast
-            );
-            // Emit broadcast events to frontend
-            if let Err(e) =
-                emit_to_label::<_, _, _>(&window, window.label(), "daemon:broadcast", &broadcast)
-            {
-                warn!("[notebook-sync] Failed to emit daemon:broadcast: {}", e);
-            }
-        }
-        warn!(
-            "[notebook-sync] Broadcast receiver loop ended for {} (gen {}) - daemon disconnected (broadcast_tx dropped)",
-            notebook_id_for_broadcast, cleanup_generation
-        );
-
-        // Only clear the handle if this is still the current generation.
-        // A newer connection may have already replaced the handle, and we
-        // don't want to clobber it.
-        let current_gen = sync_generation_for_cleanup.load(Ordering::SeqCst);
-        if current_gen == cleanup_generation {
-            info!(
-                "[notebook-sync] Clearing notebook_sync handle for {} (gen {})",
-                notebook_id_for_broadcast, cleanup_generation
-            );
-            *notebook_sync_for_disconnect.lock().await = None;
-            info!(
-                "[notebook-sync] Handle cleared for {}",
-                notebook_id_for_broadcast
-            );
-
-            // Emit disconnection event so frontend can reset kernel state
-            if let Err(e) =
-                emit_to_label::<_, _, _>(&window, window.label(), "daemon:disconnected", ())
-            {
-                warn!("[notebook-sync] Failed to emit daemon:disconnected: {}", e);
-            }
-        } else {
-            info!(
-                "[notebook-sync] Skipping cleanup for {} (gen {}) - newer connection exists (gen {})",
-                notebook_id_for_broadcast, cleanup_generation, current_gen
-            );
-        }
-    });
-
-    info!(
-        "[notebook-sync] Initialization complete for {}",
-        notebook_id
-    );
-
-    // Emit event so frontend knows daemon sync is ready
-    // Frontend should wait for this before calling daemon commands
-    if let Err(e) = emit_to_label::<_, _, _>(
-        &window_for_ready,
-        window_for_ready.label(),
-        "daemon:ready",
-        (),
-    ) {
-        warn!("[notebook-sync] Failed to emit daemon:ready: {}", e);
-    }
-
-    Ok(())
-}
-
 /// Connect to the daemon by opening an existing notebook file.
 ///
 /// The daemon loads the file, derives notebook_id, creates the room, and populates
@@ -724,6 +542,7 @@ async fn initialize_notebook_sync_create(
     window: tauri::WebviewWindow,
     runtime: String,
     working_dir: Option<PathBuf>,
+    notebook_id_hint: Option<String>,
     notebook_sync: SharedNotebookSync,
     sync_generation: Arc<AtomicU64>,
     notebook_id: Arc<Mutex<String>>,
@@ -732,9 +551,10 @@ async fn initialize_notebook_sync_create(
 
     let socket_path = runtimed::default_socket_path();
     info!(
-        "[notebook-sync] Creating notebook via daemon: runtime={}, working_dir={:?} ({})",
+        "[notebook-sync] Creating notebook via daemon: runtime={}, working_dir={:?}, notebook_id_hint={:?} ({})",
         runtime,
         working_dir,
+        notebook_id_hint,
         socket_path.display(),
     );
 
@@ -745,6 +565,7 @@ async fn initialize_notebook_sync_create(
             socket_path,
             runtime,
             working_dir,
+            notebook_id_hint,
             Some(raw_sync_tx),
         )
         .await
@@ -1328,6 +1149,7 @@ async fn complete_onboarding(
         OpenMode::Create {
             runtime: runtime.to_string(),
             working_dir,
+            notebook_id: None,
         },
         None,
     )?;
@@ -1574,6 +1396,7 @@ fn create_notebook_window_for_daemon(
         OpenMode::Create {
             runtime,
             working_dir,
+            ..
         } => {
             let runtime_enum: Runtime = runtime.parse().unwrap_or(Runtime::Python);
             (
@@ -1583,24 +1406,16 @@ fn create_notebook_window_for_daemon(
                 runtime_enum,
             )
         }
-        OpenMode::Restore {
-            notebook_id: _,
-            working_dir,
-        } => {
-            let runtime = settings::load_settings().default_runtime;
-            (
-                "Untitled.ipynb".to_string(),
-                None,
-                working_dir.clone(),
-                runtime,
-            )
-        }
     };
 
     // Generate a stable window label for the window-state plugin
     let label = custom_label.unwrap_or_else(|| {
-        if let OpenMode::Restore { notebook_id, .. } = &mode {
-            format!("notebook-{}", &notebook_id[..8.min(notebook_id.len())])
+        if let OpenMode::Create {
+            notebook_id: Some(ref id),
+            ..
+        } = &mode
+        {
+            format!("notebook-{}", &id[..8.min(id.len())])
         } else if let Some(ref p) = path {
             let hash = runtimed::worktree_hash(p);
             format!("notebook-{}", &hash[..8])
@@ -1610,15 +1425,19 @@ fn create_notebook_window_for_daemon(
     });
 
     // Placeholder notebook_id — daemon will provide the canonical one.
-    // Must derive from mode, not just path, because Restore carries its own notebook_id.
     let placeholder_id = match &mode {
         OpenMode::Open { path } => path
             .canonicalize()
             .unwrap_or_else(|_| path.clone())
             .to_string_lossy()
             .to_string(),
-        OpenMode::Restore { notebook_id, .. } => notebook_id.clone(),
-        OpenMode::Create { .. } => String::new(),
+        OpenMode::Create {
+            notebook_id: Some(ref id),
+            ..
+        } => id.clone(),
+        OpenMode::Create {
+            notebook_id: None, ..
+        } => String::new(),
     };
 
     let context =
@@ -1659,29 +1478,16 @@ fn create_notebook_window_for_daemon(
             OpenMode::Create {
                 runtime,
                 working_dir,
+                notebook_id,
             } => {
                 initialize_notebook_sync_create(
                     window,
                     runtime,
                     working_dir,
-                    notebook_sync,
-                    sync_generation,
-                    notebook_id_arc,
-                )
-                .await
-            }
-            OpenMode::Restore {
-                notebook_id,
-                working_dir,
-            } => {
-                // Reconnect to existing daemon room using the old handshake.
-                // The daemon may have the Automerge doc persisted from a previous session.
-                initialize_notebook_sync(
-                    window,
                     notebook_id,
                     notebook_sync,
                     sync_generation,
-                    working_dir,
+                    notebook_id_arc,
                 )
                 .await
             }
@@ -2178,8 +1984,9 @@ async fn reconnect_to_daemon(
         .ok_or_else(|| "Current webview window not found".to_string())?;
 
     // For saved notebooks, use daemon-owned open (daemon reloads from disk).
-    // For untitled notebooks, use the old handshake with the notebook_id (env_id)
+    // For untitled notebooks, use CreateNotebook with the notebook_id hint
     // so the daemon can find the persisted Automerge doc from the previous session.
+    let context = registry.get(window.label())?;
     let result = if let Some(p) = path {
         info!(
             "[daemon-kernel] Reconnecting via OpenNotebook: {}",
@@ -2198,12 +2005,14 @@ async fn reconnect_to_daemon(
             "[daemon-kernel] Reconnecting untitled notebook: {}",
             notebook_id
         );
-        initialize_notebook_sync(
+        initialize_notebook_sync_create(
             webview_window,
-            notebook_id,
+            context.runtime.to_string(),
+            working_dir,
+            Some(notebook_id),
             notebook_sync,
             sync_generation,
-            working_dir,
+            context_notebook_id,
         )
         .await
     };
@@ -2852,6 +2661,7 @@ fn spawn_new_notebook(
         OpenMode::Create {
             runtime: runtime.to_string(),
             working_dir: None,
+            notebook_id: None,
         },
         None,
     )
@@ -3113,9 +2923,10 @@ pub fn run(
                             (_, Some(env_id)) => {
                                 info!("[session] Restoring untitled main window: {}", env_id);
                                 (
-                                    OpenMode::Restore {
-                                        notebook_id: env_id.clone(),
+                                    OpenMode::Create {
+                                        runtime: runtime.to_string(),
                                         working_dir: working_dir.clone(),
+                                        notebook_id: Some(env_id.clone()),
                                     },
                                     "Untitled.ipynb".to_string(),
                                 )
@@ -3126,6 +2937,7 @@ pub fn run(
                                     OpenMode::Create {
                                         runtime: runtime.to_string(),
                                         working_dir: working_dir.clone(),
+                                        notebook_id: None,
                                     },
                                     "Untitled.ipynb".to_string(),
                                 )
@@ -3136,6 +2948,7 @@ pub fn run(
                             OpenMode::Create {
                                 runtime: runtime.to_string(),
                                 working_dir: working_dir.clone(),
+                                notebook_id: None,
                             },
                             "Untitled.ipynb".to_string(),
                         )
@@ -3145,6 +2958,7 @@ pub fn run(
                         OpenMode::Create {
                             runtime: runtime.to_string(),
                             working_dir: working_dir.clone(),
+                            notebook_id: None,
                         },
                         "Untitled.ipynb".to_string(),
                     )
@@ -3158,8 +2972,13 @@ pub fn run(
                 .unwrap_or_else(|_| path.clone())
                 .to_string_lossy()
                 .to_string(),
-            OpenMode::Restore { notebook_id, .. } => notebook_id.clone(),
-            OpenMode::Create { .. } => String::new(),
+            OpenMode::Create {
+                notebook_id: Some(ref id),
+                ..
+            } => id.clone(),
+            OpenMode::Create {
+                notebook_id: None, ..
+            } => String::new(),
         };
         let context = create_window_context_for_daemon(
             match &mode {
@@ -3365,9 +3184,10 @@ pub fn run(
                                 "[session] Restoring untitled window: {}",
                                 env_id
                             );
-                            OpenMode::Restore {
-                                notebook_id: env_id.clone(),
+                            OpenMode::Create {
+                                runtime: window_session.runtime.clone(),
                                 working_dir: None,
+                                notebook_id: Some(env_id.clone()),
                             }
                         }
                         _ => {
@@ -3376,6 +3196,7 @@ pub fn run(
                             OpenMode::Create {
                                 runtime: rt.to_string(),
                                 working_dir: None,
+                                notebook_id: None,
                             }
                         }
                     };
@@ -3476,27 +3297,16 @@ pub fn run(
                                     OpenMode::Create {
                                         runtime: rt,
                                         working_dir: wd,
+                                        notebook_id: id_hint,
                                     } => {
                                         initialize_notebook_sync_create(
                                             window,
                                             rt,
                                             wd,
+                                            id_hint,
                                             context.notebook_sync,
                                             context.sync_generation,
                                             context.notebook_id,
-                                        )
-                                        .await
-                                    }
-                                    OpenMode::Restore {
-                                        notebook_id,
-                                        working_dir: wd,
-                                    } => {
-                                        initialize_notebook_sync(
-                                            window,
-                                            notebook_id,
-                                            context.notebook_sync,
-                                            context.sync_generation,
-                                            wd,
                                         )
                                         .await
                                     }
