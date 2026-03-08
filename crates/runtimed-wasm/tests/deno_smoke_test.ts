@@ -389,28 +389,31 @@ Deno.test("Sync: source edit character-level merge", () => {
 
 // ── Sync protocol integration tests (WASM-specific) ─────────────────
 
-Deno.test("Sync: fresh handle receives first sync message (pipe mode)", () => {
-  // Daemon has existing content
-  const daemon = new NotebookHandle("pipe-mode-test");
+Deno.test("Sync: bootstrap from saved bytes preserves all content", () => {
+  // Daemon has existing content with cells, outputs pattern (like bootstrap)
+  const daemon = new NotebookHandle("bootstrap-test");
   daemon.add_cell(0, "cell-1", "code");
   daemon.update_source("cell-1", "import numpy as np");
   daemon.add_cell(1, "cell-2", "markdown");
   daemon.update_source("cell-2", "# Analysis");
+  daemon.set_metadata("custom_key", "custom_value");
 
-  // WASM starts fresh (not from bytes) — this is the pipe-mode bootstrap
-  // Note: After PR #622, use NotebookHandle.create_empty() for true zero-op doc
-  const wasm = new NotebookHandle("pipe-mode-test");
-  assertEquals(wasm.cell_count(), 0);
+  // WASM loads from daemon's bytes (the GetDocBytes bootstrap path)
+  const wasm = NotebookHandle.load(daemon.save());
 
-  // Sync — WASM should receive daemon's content
-  syncHandles(daemon, wasm);
-
+  // WASM should have all content immediately
   assertEquals(wasm.cell_count(), 2);
   const cells = wasm.get_cells();
   assertEquals(cells[0].id, "cell-1");
   assertEquals(cells[0].source, "import numpy as np");
   assertEquals(cells[1].id, "cell-2");
   assertEquals(cells[1].source, "# Analysis");
+  assertEquals(wasm.get_metadata("custom_key"), "custom_value");
+
+  // Sync should converge immediately (no changes needed)
+  syncHandles(daemon, wasm);
+  assertEquals(daemon.generate_sync_message(), undefined);
+  assertEquals(wasm.generate_sync_message(), undefined);
 
   for (const c of cells) c.free();
   daemon.free();
@@ -456,35 +459,23 @@ Deno.test("Sync: load from bytes + incremental sync with changed flag", () => {
   wasm.free();
 });
 
-Deno.test("Sync: receive_sync_message returns false when no change", () => {
-  const daemon = new NotebookHandle("no-change-test");
+Deno.test("Sync: converged peers have no sync messages", () => {
+  const daemon = new NotebookHandle("converged-test");
   daemon.add_cell(0, "cell-1", "code");
+  daemon.update_source("cell-1", "x = 42");
 
   const wasm = NotebookHandle.load(daemon.save());
 
   // Sync to convergence
   syncHandles(daemon, wasm);
 
-  // Generate a sync message from daemon (should be undefined since converged)
-  const daemonMsg = daemon.generate_sync_message();
-  assertEquals(daemonMsg, undefined, "No message when converged");
+  // After convergence, neither should have messages
+  assertEquals(daemon.generate_sync_message(), undefined, "Daemon has no message when converged");
+  assertEquals(wasm.generate_sync_message(), undefined, "WASM has no message when converged");
 
-  // If we manually feed the same state, changed should be false
-  // First, get daemon to have a message by making wasm stale
-  wasm.add_cell(1, "wasm-cell", "code");
-  const wasmMsg = wasm.generate_sync_message();
-  assertExists(wasmMsg);
-
-  // Daemon receives WASM's message
-  const daemonChanged = daemon.receive_sync_message(wasmMsg);
-  assertEquals(daemonChanged, true, "Daemon should see WASM's new cell");
-
-  // Now sync to convergence again
-  syncHandles(daemon, wasm);
-
-  // After convergence, additional syncs should report no change
-  const finalDaemonMsg = daemon.generate_sync_message();
-  assertEquals(finalDaemonMsg, undefined);
+  // Verify both have identical content
+  assertEquals(daemon.cell_count(), wasm.cell_count());
+  assertEquals(daemon.get_cell("cell-1")?.source, wasm.get_cell("cell-1")?.source);
 
   daemon.free();
   wasm.free();
