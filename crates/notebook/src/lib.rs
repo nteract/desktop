@@ -123,6 +123,13 @@ enum OpenMode {
         runtime: String,
         working_dir: Option<PathBuf>,
     },
+    /// Restore an untitled notebook by reconnecting to its existing daemon room.
+    /// Used for session restore when the notebook was never saved to disk.
+    /// The daemon may have the Automerge doc persisted from the previous session.
+    Restore {
+        notebook_id: String,
+        working_dir: Option<PathBuf>,
+    },
 }
 
 /// Git information for debug banner display.
@@ -1764,11 +1771,25 @@ fn create_notebook_window_for_daemon(
                 runtime_enum,
             )
         }
+        OpenMode::Restore {
+            notebook_id: _,
+            working_dir,
+        } => {
+            let runtime = settings::load_settings().default_runtime;
+            (
+                "Untitled.ipynb".to_string(),
+                None,
+                working_dir.clone(),
+                runtime,
+            )
+        }
     };
 
     // Generate a stable window label for the window-state plugin
     let label = custom_label.unwrap_or_else(|| {
-        if let Some(ref p) = path {
+        if let OpenMode::Restore { notebook_id, .. } = &mode {
+            format!("notebook-{}", &notebook_id[..8.min(notebook_id.len())])
+        } else if let Some(ref p) = path {
             let hash = runtimed::worktree_hash(p);
             format!("notebook-{}", &hash[..8])
         } else {
@@ -1809,7 +1830,7 @@ fn create_notebook_window_for_daemon(
     // Spawn async daemon connection — window shows loading state until daemon:ready
     let notebook_sync = context.notebook_sync;
     let sync_generation = context.sync_generation;
-    let notebook_id = context.notebook_id;
+    let notebook_id_arc = context.notebook_id;
     tauri::async_runtime::spawn(async move {
         let result = match mode {
             OpenMode::Open { path } => {
@@ -1818,7 +1839,7 @@ fn create_notebook_window_for_daemon(
                     path,
                     notebook_sync,
                     sync_generation,
-                    notebook_id,
+                    notebook_id_arc,
                 )
                 .await
             }
@@ -1832,7 +1853,25 @@ fn create_notebook_window_for_daemon(
                     working_dir,
                     notebook_sync,
                     sync_generation,
+                    notebook_id_arc,
+                )
+                .await
+            }
+            OpenMode::Restore {
+                notebook_id,
+                working_dir,
+            } => {
+                // Reconnect to existing daemon room using the old handshake.
+                // The daemon may have the Automerge doc persisted from a previous session.
+                // Pass empty cells — daemon sends them during initial sync.
+                initialize_notebook_sync(
+                    window,
                     notebook_id,
+                    vec![],
+                    None,
+                    notebook_sync,
+                    sync_generation,
+                    working_dir,
                 )
                 .await
             }
@@ -3285,61 +3324,107 @@ pub fn run(
     let window_registry = WindowNotebookRegistry::default();
 
     // Only set up initial notebook state if not showing onboarding
-    let (window_title, _main_context) = if needs_onboarding {
+    let (window_title, _main_context, main_open_mode) = if needs_onboarding {
         info!("[startup] Onboarding needed, skipping notebook state setup");
         // No main context - onboarding window doesn't need notebook state
         (
             format!("Welcome to {}", runt_workspace::desktop_display_name()),
             None,
+            None,
         )
     } else {
-        // Determine initial state for main window
-        let mut initial_state = match notebook_path.as_ref() {
+        // Determine how to open the main window — no local file parsing needed.
+        // The daemon loads/creates the notebook.
+        let (mode, title) = match notebook_path.as_ref() {
             Some(path) => {
-                load_notebook_state_for_path(path, runtime).map_err(anyhow::Error::msg)?
+                let title = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("Untitled.ipynb")
+                    .to_string();
+                (OpenMode::Open { path: path.clone() }, title)
             }
             None => {
-                // Try to restore from session
                 if let Some(ref session) = restored_session {
                     if let Some(main_session) = session.windows.iter().find(|w| w.label == "main") {
-                        match session::load_window_session_state(main_session) {
-                            Ok(state) => {
-                                info!("[session] Restored main window from session");
-                                state
+                        match (&main_session.path, &main_session.env_id) {
+                            (Some(path), _) if path.exists() => {
+                                let title = path
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("Untitled.ipynb")
+                                    .to_string();
+                                info!(
+                                    "[session] Restoring main window from path: {}",
+                                    path.display()
+                                );
+                                (OpenMode::Open { path: path.clone() }, title)
                             }
-                            Err(e) => {
-                                warn!("[session] Failed to restore main window: {}", e);
-                                NotebookState::new_empty_with_runtime(runtime)
+                            (_, Some(env_id)) => {
+                                info!("[session] Restoring untitled main window: {}", env_id);
+                                (
+                                    OpenMode::Restore {
+                                        notebook_id: env_id.clone(),
+                                        working_dir: working_dir.clone(),
+                                    },
+                                    "Untitled.ipynb".to_string(),
+                                )
+                            }
+                            _ => {
+                                warn!("[session] Main session has no path or env_id");
+                                (
+                                    OpenMode::Create {
+                                        runtime: runtime.to_string(),
+                                        working_dir: working_dir.clone(),
+                                    },
+                                    "Untitled.ipynb".to_string(),
+                                )
                             }
                         }
                     } else {
-                        NotebookState::new_empty_with_runtime(runtime)
+                        (
+                            OpenMode::Create {
+                                runtime: runtime.to_string(),
+                                working_dir: working_dir.clone(),
+                            },
+                            "Untitled.ipynb".to_string(),
+                        )
                     }
                 } else {
-                    NotebookState::new_empty_with_runtime(runtime)
+                    (
+                        OpenMode::Create {
+                            runtime: runtime.to_string(),
+                            working_dir: working_dir.clone(),
+                        },
+                        "Untitled.ipynb".to_string(),
+                    )
                 }
             }
         };
-        // Store working_dir in notebook state for untitled notebooks (used on daemon reconnect)
-        if initial_state.path.is_none() {
-            initial_state.working_dir = working_dir.clone();
-        }
 
-        let title = match &initial_state.path {
-            Some(path) => path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("Untitled.ipynb")
+        let placeholder_id = match &mode {
+            OpenMode::Open { path } => path
+                .canonicalize()
+                .unwrap_or_else(|_| path.clone())
+                .to_string_lossy()
                 .to_string(),
-            None => "Untitled.ipynb".to_string(),
+            OpenMode::Restore { notebook_id, .. } => notebook_id.clone(),
+            OpenMode::Create { .. } => String::new(),
         };
-
-        let context = create_window_context(initial_state);
+        let context = create_window_context_for_daemon(
+            match &mode {
+                OpenMode::Open { path } => Some(path.clone()),
+                _ => None,
+            },
+            working_dir.clone(),
+            placeholder_id,
+            runtime,
+        );
         window_registry
             .insert("main", context.clone())
             .map_err(anyhow::Error::msg)?;
 
-        (title, Some(context))
+        (title, Some(context), Some(mode))
     };
 
     // Guard against concurrent reconnect attempts
@@ -3516,35 +3601,50 @@ pub fn run(
                     if window_session.label == "main" {
                         continue; // Already restored
                     }
-                    match session::load_window_session_state(window_session) {
-                        Ok(state) => {
-                            // Use deterministic label so window-state plugin can restore geometry
-                            let label = session::window_label_for_session(window_session);
-                            match create_notebook_window_with_label(
-                                app.handle(),
-                                &registry,
-                                state,
-                                Some(label.clone()),
-                            ) {
-                                Ok(created_label) => {
-                                    info!(
-                                        "[session] Restored additional window: {}",
-                                        created_label
-                                    );
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        "[session] Failed to create window for {}: {}",
-                                        label, e
-                                    );
-                                    restore_failed = true;
-                                }
+                    let label = session::window_label_for_session(window_session);
+                    let mode = match (&window_session.path, &window_session.env_id) {
+                        (Some(path), _) if path.exists() => {
+                            info!(
+                                "[session] Restoring window from path: {}",
+                                path.display()
+                            );
+                            OpenMode::Open { path: path.clone() }
+                        }
+                        (_, Some(env_id)) => {
+                            info!(
+                                "[session] Restoring untitled window: {}",
+                                env_id
+                            );
+                            OpenMode::Restore {
+                                notebook_id: env_id.clone(),
+                                working_dir: None,
                             }
+                        }
+                        _ => {
+                            let rt: Runtime =
+                                window_session.runtime.parse().unwrap_or(Runtime::Python);
+                            OpenMode::Create {
+                                runtime: rt.to_string(),
+                                working_dir: None,
+                            }
+                        }
+                    };
+                    match create_notebook_window_for_daemon(
+                        app.handle(),
+                        &registry,
+                        mode,
+                        Some(label.clone()),
+                    ) {
+                        Ok(created_label) => {
+                            info!(
+                                "[session] Restored additional window: {}",
+                                created_label
+                            );
                         }
                         Err(e) => {
                             warn!(
-                                "[session] Failed to load state for {}: {}",
-                                window_session.label, e
+                                "[session] Failed to create window for {}: {}",
+                                label, e
                             );
                             restore_failed = true;
                         }
@@ -3563,8 +3663,6 @@ pub fn run(
             let app_for_sync = app.handle().clone();
             let app_for_notebook_sync = app.handle().clone();
             let registry_for_notebook_sync = registry_for_sync.clone();
-            // Capture working_dir for untitled notebook project file detection
-            let working_dir_for_sync = working_dir.clone();
             let daemon_status_for_callback = daemon_status_for_startup.clone();
             // Capture for async block - onboarding doesn't need notebook sync
             let skip_notebook_sync = needs_onboarding;
@@ -3608,61 +3706,75 @@ pub fn run(
                 // Skip during onboarding - the onboarding window doesn't need notebook sync,
                 // it just needs daemon progress events
                 if daemon_available && !skip_notebook_sync {
-                    match (
-                        app_for_notebook_sync.get_webview_window("main"),
-                        registry_for_notebook_sync.get("main"),
-                    ) {
-                        (Some(window), Ok(context)) => {
-                            // Extract notebook_id, cells, metadata from context's NotebookState
-                            let sync_data = context.notebook_state.lock().ok().map(|state| {
-                                let id = derive_notebook_id(&state);
-                                let cells = state.cells_for_frontend();
-                                let metadata = {
-                                    let snapshot =
-                                        notebook_state::snapshot_from_nbformat(&state.notebook.metadata);
-                                    serde_json::to_string(&snapshot).ok()
+                    if let Some(mode) = main_open_mode {
+                        match (
+                            app_for_notebook_sync.get_webview_window("main"),
+                            registry_for_notebook_sync.get("main"),
+                        ) {
+                            (Some(window), Ok(context)) => {
+                                let result = match mode {
+                                    OpenMode::Open { path } => {
+                                        initialize_notebook_sync_open(
+                                            window,
+                                            path,
+                                            context.notebook_sync,
+                                            context.sync_generation,
+                                            context.notebook_id,
+                                        )
+                                        .await
+                                    }
+                                    OpenMode::Create {
+                                        runtime: rt,
+                                        working_dir: wd,
+                                    } => {
+                                        initialize_notebook_sync_create(
+                                            window,
+                                            rt,
+                                            wd,
+                                            context.notebook_sync,
+                                            context.sync_generation,
+                                            context.notebook_id,
+                                        )
+                                        .await
+                                    }
+                                    OpenMode::Restore {
+                                        notebook_id,
+                                        working_dir: wd,
+                                    } => {
+                                        initialize_notebook_sync(
+                                            window,
+                                            notebook_id,
+                                            vec![],
+                                            None,
+                                            context.notebook_sync,
+                                            context.sync_generation,
+                                            wd,
+                                        )
+                                        .await
+                                    }
                                 };
-                                (id, cells, metadata)
-                            });
-
-                            let Some((notebook_id, initial_cells, initial_metadata)) = sync_data
-                            else {
-                                log::warn!("[startup] Failed to lock notebook state for sync");
-                                daemon_sync_complete_for_init.store(true, Ordering::SeqCst);
-                                return;
-                            };
-
-                            match initialize_notebook_sync(
-                                window,
-                                notebook_id,
-                                initial_cells,
-                                initial_metadata,
-                                context.notebook_sync,
-                                context.sync_generation,
-                                working_dir_for_sync,
-                            )
-                            .await
-                            {
-                                Ok(()) => {
-                                    log::info!(
-                                        "[startup] Notebook sync initialized successfully"
-                                    );
-                                    daemon_sync_success_for_init
-                                        .store(true, Ordering::SeqCst);
-                                }
-                                Err(e) => {
-                                    log::warn!(
-                                        "[startup] Notebook sync initialization failed: {}",
-                                        e
-                                    );
+                                match result {
+                                    Ok(()) => {
+                                        log::info!(
+                                            "[startup] Notebook sync initialized successfully"
+                                        );
+                                        daemon_sync_success_for_init
+                                            .store(true, Ordering::SeqCst);
+                                    }
+                                    Err(e) => {
+                                        log::warn!(
+                                            "[startup] Notebook sync initialization failed: {}",
+                                            e
+                                        );
+                                    }
                                 }
                             }
-                        }
-                        (None, _) => {
-                            log::warn!("[startup] Main window missing during sync init");
-                        }
-                        (_, Err(e)) => {
-                            log::warn!("[startup] Main notebook context missing: {}", e);
+                            (None, _) => {
+                                log::warn!("[startup] Main window missing during sync init");
+                            }
+                            (_, Err(e)) => {
+                                log::warn!("[startup] Main notebook context missing: {}", e);
+                            }
                         }
                     }
                 } else if daemon_available && skip_notebook_sync {
