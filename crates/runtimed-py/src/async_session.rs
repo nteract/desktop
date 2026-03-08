@@ -17,9 +17,7 @@ use runtimed::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 use crate::daemon_paths::{get_blob_paths_async, get_socket_path};
 use crate::error::to_py_err;
 use crate::event_stream::ExecutionEventStream;
-use crate::output::{
-    Cell, ExecutionEvent, ExecutionResult, NotebookConnectionInfo, Output, SyncEnvironmentResult,
-};
+use crate::output::{Cell, ExecutionResult, NotebookConnectionInfo, Output, SyncEnvironmentResult};
 use crate::output_resolver;
 use crate::subscription::EventSubscription;
 
@@ -60,6 +58,8 @@ struct AsyncSessionState {
     blob_store_path: Option<PathBuf>,
     /// Connection info from daemon (for open_notebook/create_notebook)
     connection_info: Option<NotebookConnectionInfo>,
+    /// Notebook path (for project file detection during kernel launch)
+    notebook_path: Option<String>,
 }
 
 impl AsyncSessionState {
@@ -73,6 +73,7 @@ impl AsyncSessionState {
             blob_base_url: None,
             blob_store_path: None,
             connection_info: None,
+            notebook_path: None,
         }
     }
 }
@@ -191,6 +192,7 @@ impl AsyncSession {
                 blob_base_url,
                 blob_store_path,
                 connection_info: Some(connection_info),
+                notebook_path: Some(path),
             };
 
             Ok(AsyncSession {
@@ -206,19 +208,21 @@ impl AsyncSession {
     /// connection info with a generated UUID as the notebook_id.
     ///
     /// Args:
-    ///     runtime: The kernel runtime type ("python" or "deno").
+    ///     runtime: The kernel runtime type ("python" or "deno"). Defaults to "python".
     ///     working_dir: Optional working directory for project file detection.
     ///
     /// Returns:
     ///     A coroutine that resolves to a new AsyncSession connected to the created notebook.
     #[staticmethod]
-    #[pyo3(signature = (runtime, working_dir=None))]
-    fn create_notebook(
-        py: Python<'_>,
-        runtime: String,
+    #[pyo3(signature = (runtime="python", working_dir=None))]
+    fn create_notebook<'py>(
+        py: Python<'py>,
+        runtime: &str,
         working_dir: Option<String>,
-    ) -> PyResult<Bound<'_, PyAny>> {
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let runtime = runtime.to_string();
         future_into_py(py, async move {
+            let working_dir_str = working_dir.clone();
             let working_dir_buf = working_dir.map(PathBuf::from);
             let socket_path = get_socket_path();
 
@@ -250,6 +254,7 @@ impl AsyncSession {
                 blob_base_url,
                 blob_store_path,
                 connection_info: Some(connection_info),
+                notebook_path: working_dir_str,
             };
 
             Ok(AsyncSession {
@@ -301,22 +306,28 @@ impl AsyncSession {
     ///     env_source: Environment source. Defaults to "auto" (auto-detect from
     ///         notebook metadata or project files). For Deno kernels, this is
     ///         ignored and always uses "deno".
+    ///     notebook_path: Optional path to the notebook file on disk.
+    ///         Used for project file detection (pyproject.toml, pixi.toml,
+    ///         environment.yml) when env_source is "auto". If not provided,
+    ///         uses the path from open_notebook() if available.
     ///
     /// If a kernel is already running for this session's notebook_id,
     /// this returns immediately without starting a new one.
     ///
     /// Returns a coroutine.
-    #[pyo3(signature = (kernel_type="python", env_source="auto"))]
+    #[pyo3(signature = (kernel_type="python", env_source="auto", notebook_path=None))]
     fn start_kernel<'py>(
         &self,
         py: Python<'py>,
         kernel_type: &str,
         env_source: &str,
+        notebook_path: Option<&str>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
         let notebook_id = self.notebook_id.clone();
         let kernel_type = kernel_type.to_string();
         let env_source = env_source.to_string();
+        let notebook_path = notebook_path.map(|s| s.to_string());
 
         future_into_py(py, async move {
             // Ensure connected first
@@ -381,11 +392,14 @@ impl AsyncSession {
                 .as_ref()
                 .ok_or_else(|| to_py_err("Not connected"))?;
 
+            // Use provided notebook_path or fall back to stored path from open_notebook()
+            let resolved_path = notebook_path.or_else(|| state_guard.notebook_path.clone());
+
             let response = handle
                 .send_request(NotebookRequest::LaunchKernel {
                     kernel_type,
                     env_source,
-                    notebook_path: None,
+                    notebook_path: resolved_path,
                 })
                 .await
                 .map_err(to_py_err)?;
@@ -1983,23 +1997,16 @@ impl AsyncSession {
 
     /// Close the session and shutdown the kernel if running.
     ///
+    /// Close the session.
+    ///
+    /// Does NOT shutdown the kernel - the daemon handles kernel lifecycle
+    /// based on peer count. When all peers disconnect, the daemon will
+    /// clean up the kernel. Use shutdown_kernel() explicitly if you need
+    /// to stop the kernel.
+    ///
     /// Returns a coroutine.
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let state = Arc::clone(&self.state);
-
-        future_into_py(py, async move {
-            let mut state_guard = state.lock().await;
-            if state_guard.kernel_started {
-                if let Some(handle) = state_guard.handle.as_ref() {
-                    let _ = handle
-                        .send_request(NotebookRequest::ShutdownKernel {})
-                        .await;
-                }
-                state_guard.kernel_started = false;
-                state_guard.env_source = None;
-            }
-            Ok(())
-        })
+        future_into_py(py, async move { Ok(()) })
     }
 
     fn __repr__(&self) -> String {
@@ -2015,6 +2022,11 @@ impl AsyncSession {
     }
 
     /// Async context manager exit.
+    ///
+    /// Does NOT shutdown the kernel - the daemon handles kernel lifecycle
+    /// based on peer count. When all peers disconnect, the daemon will
+    /// clean up the kernel. This prevents killing kernels that desktop
+    /// app users may still be using.
     #[pyo3(signature = (_exc_type=None, _exc_val=None, _exc_tb=None))]
     fn __aexit__<'py>(
         &self,
@@ -2023,21 +2035,7 @@ impl AsyncSession {
         _exc_val: Option<&Bound<'_, PyAny>>,
         _exc_tb: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let state = Arc::clone(&self.state);
-
-        future_into_py(py, async move {
-            let mut state_guard = state.lock().await;
-            if state_guard.kernel_started {
-                if let Some(handle) = state_guard.handle.as_ref() {
-                    let _ = handle
-                        .send_request(NotebookRequest::ShutdownKernel {})
-                        .await;
-                }
-                state_guard.kernel_started = false;
-                state_guard.env_source = None;
-            }
-            Ok(false) // Don't suppress exceptions
-        })
+        future_into_py(py, async move { Ok(false) }) // Don't suppress exceptions
     }
 }
 
@@ -2156,97 +2154,6 @@ async fn collect_outputs_async(
         success,
         execution_count,
     })
-}
-
-/// Collect execution events for a cell, yielding each event as it arrives.
-///
-/// Returns a Vec of ExecutionEvent objects in arrival order. Unlike
-/// collect_outputs_async which accumulates outputs into a single result,
-/// this preserves the event stream for agents that want to process
-/// outputs incrementally.
-async fn collect_events_async(
-    state: &Arc<Mutex<AsyncSessionState>>,
-    cell_id: &str,
-    blob_base_url: Option<String>,
-    blob_store_path: Option<PathBuf>,
-) -> PyResult<Vec<ExecutionEvent>> {
-    let mut events = Vec::new();
-    let mut done_received = false;
-
-    loop {
-        let mut state_guard = state.lock().await;
-
-        let broadcast_rx = state_guard
-            .broadcast_rx
-            .as_mut()
-            .ok_or_else(|| to_py_err("Not connected"))?;
-
-        let timeout_ms = if done_received { 50 } else { 100 };
-        let broadcast = tokio::time::timeout(
-            std::time::Duration::from_millis(timeout_ms),
-            broadcast_rx.recv(),
-        )
-        .await;
-
-        match broadcast {
-            Ok(Some(msg)) => {
-                drop(state_guard);
-
-                match msg {
-                    NotebookBroadcast::ExecutionStarted {
-                        cell_id: msg_cell_id,
-                        execution_count: count,
-                    } => {
-                        if msg_cell_id == cell_id {
-                            events.push(ExecutionEvent::execution_started(cell_id, count));
-                        }
-                    }
-                    NotebookBroadcast::Output {
-                        cell_id: msg_cell_id,
-                        output_type,
-                        output_json,
-                        ..
-                    } => {
-                        if msg_cell_id == cell_id {
-                            if let Some(output) = output_resolver::resolve_output_with_type(
-                                &output_type,
-                                &output_json,
-                                &blob_base_url,
-                                &blob_store_path,
-                            )
-                            .await
-                            {
-                                events.push(ExecutionEvent::output(cell_id, output));
-                            }
-                        }
-                    }
-                    NotebookBroadcast::ExecutionDone {
-                        cell_id: msg_cell_id,
-                    } => {
-                        if msg_cell_id == cell_id {
-                            events.push(ExecutionEvent::done(cell_id));
-                            done_received = true;
-                        }
-                    }
-                    NotebookBroadcast::KernelError { error } => {
-                        events.push(ExecutionEvent::error(cell_id, &error));
-                        done_received = true;
-                    }
-                    _ => {}
-                }
-            }
-            Ok(None) => {
-                return Err(to_py_err("Broadcast channel closed"));
-            }
-            Err(_) => {
-                if done_received {
-                    break;
-                }
-            }
-        }
-    }
-
-    Ok(events)
 }
 
 /// Get the notebook metadata snapshot asynchronously.

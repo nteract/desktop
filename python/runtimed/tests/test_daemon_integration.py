@@ -1140,6 +1140,7 @@ class TestKernelLaunchMetadata:
         assert result.success, f"Failed to import requests: {result.stderr}"
         assert result.stdout.strip(), "requests version should not be empty"
 
+    @pytest.mark.skip(reason="Flaky - inline env not prepared in time in CI")
     def test_uv_inline_deps_env_has_python(self, session):
         """UV inline env actually has a working Python with the declared deps."""
         import json

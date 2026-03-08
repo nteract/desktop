@@ -16,9 +16,7 @@ use runtimed::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 use crate::daemon_paths::{get_blob_paths_sync, get_socket_path};
 use crate::error::to_py_err;
 use crate::event_stream::ExecutionEventIterator;
-use crate::output::{
-    Cell, ExecutionEvent, ExecutionResult, NotebookConnectionInfo, Output, SyncEnvironmentResult,
-};
+use crate::output::{Cell, ExecutionResult, NotebookConnectionInfo, Output, SyncEnvironmentResult};
 use crate::output_resolver;
 use crate::subscription::EventIteratorSubscription;
 
@@ -59,6 +57,8 @@ struct SessionState {
     blob_store_path: Option<PathBuf>,
     /// Connection info from daemon (for open_notebook/create_notebook)
     connection_info: Option<NotebookConnectionInfo>,
+    /// Notebook path (for project file detection during kernel launch)
+    notebook_path: Option<String>,
 }
 
 impl SessionState {
@@ -72,6 +72,7 @@ impl SessionState {
             blob_base_url: None,
             blob_store_path: None,
             connection_info: None,
+            notebook_path: None,
         }
     }
 }
@@ -152,6 +153,7 @@ impl Session {
     fn open_notebook(path: &str) -> PyResult<Self> {
         let runtime = Runtime::new().map_err(to_py_err)?;
         let path_buf = PathBuf::from(path);
+        let path_str = path.to_string();
 
         let (notebook_id, state) = runtime.block_on(async {
             let socket_path = get_socket_path();
@@ -179,6 +181,7 @@ impl Session {
                 blob_base_url,
                 blob_store_path,
                 connection_info: Some(connection_info),
+                notebook_path: Some(path_str),
             };
 
             Ok((notebook_id, state))
@@ -207,6 +210,7 @@ impl Session {
     fn create_notebook(runtime: &str, working_dir: Option<&str>) -> PyResult<Self> {
         let rt = Runtime::new().map_err(to_py_err)?;
         let runtime_str = runtime.to_string();
+        let working_dir_str = working_dir.map(|s| s.to_string());
         let working_dir_buf = working_dir.map(PathBuf::from);
 
         let (notebook_id, state) = rt.block_on(async {
@@ -240,6 +244,7 @@ impl Session {
                 blob_base_url,
                 blob_store_path,
                 connection_info: Some(connection_info),
+                notebook_path: working_dir_str,
             };
 
             Ok((notebook_id, state))
@@ -291,7 +296,8 @@ impl Session {
     ///         and always uses "deno".
     ///     notebook_path: Optional path to the notebook file on disk.
     ///         Used for project file detection (pyproject.toml, pixi.toml,
-    ///         environment.yml) when env_source is "auto".
+    ///         environment.yml) when env_source is "auto". If not provided,
+    ///         uses the path from open_notebook() if available.
     ///
     /// If a kernel is already running for this session's notebook_id,
     /// this returns immediately without starting a new one.
@@ -313,11 +319,16 @@ impl Session {
                 .as_ref()
                 .ok_or_else(|| to_py_err("Not connected"))?;
 
+            // Use provided notebook_path or fall back to stored path from open_notebook()
+            let resolved_path = notebook_path
+                .map(|p| p.to_string())
+                .or_else(|| state.notebook_path.clone());
+
             let response = handle
                 .send_request(NotebookRequest::LaunchKernel {
                     kernel_type: kernel_type.to_string(),
                     env_source: env_source.to_string(),
-                    notebook_path: notebook_path.map(|p| p.to_string()),
+                    notebook_path: resolved_path,
                 })
                 .await
                 .map_err(to_py_err)?;
@@ -1479,6 +1490,12 @@ impl Session {
         slf
     }
 
+    /// Context manager exit.
+    ///
+    /// Does NOT shutdown the kernel - the daemon handles kernel lifecycle
+    /// based on peer count. When all peers disconnect, the daemon will
+    /// clean up the kernel. This prevents killing kernels that desktop
+    /// app users may still be using.
     #[pyo3(signature = (_exc_type=None, _exc_val=None, _exc_tb=None))]
     fn __exit__(
         &self,
@@ -1486,25 +1503,16 @@ impl Session {
         _exc_val: Option<&Bound<'_, PyAny>>,
         _exc_tb: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<bool> {
-        // Shutdown kernel on exit if running
-        let state = self.runtime.block_on(self.state.lock());
-        if state.kernel_started {
-            drop(state);
-            let _ = self.shutdown_kernel();
-        }
         Ok(false) // Don't suppress exceptions
     }
 
-    /// Close the session and shutdown the kernel if running.
+    /// Close the session.
     ///
-    /// This is equivalent to using the session as a context manager
-    /// and exiting the context.
+    /// Does NOT shutdown the kernel - the daemon handles kernel lifecycle
+    /// based on peer count. When all peers disconnect, the daemon will
+    /// clean up the kernel. Use shutdown_kernel() explicitly if you need
+    /// to stop the kernel.
     fn close(&self) -> PyResult<()> {
-        let state = self.runtime.block_on(self.state.lock());
-        if state.kernel_started {
-            drop(state);
-            let _ = self.shutdown_kernel();
-        }
         Ok(())
     }
 }
@@ -1645,92 +1653,6 @@ impl Session {
             success,
             execution_count,
         })
-    }
-
-    /// Collect execution events for a cell, preserving event order.
-    async fn collect_events(
-        &self,
-        cell_id: &str,
-        blob_base_url: Option<String>,
-        blob_store_path: Option<PathBuf>,
-    ) -> PyResult<Vec<ExecutionEvent>> {
-        let mut events = Vec::new();
-        let mut done_received = false;
-
-        loop {
-            let mut state = self.state.lock().await;
-
-            let broadcast_rx = state
-                .broadcast_rx
-                .as_mut()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            let timeout_ms = if done_received { 50 } else { 100 };
-            let broadcast = tokio::time::timeout(
-                std::time::Duration::from_millis(timeout_ms),
-                broadcast_rx.recv(),
-            )
-            .await;
-
-            match broadcast {
-                Ok(Some(msg)) => {
-                    drop(state);
-
-                    match msg {
-                        NotebookBroadcast::ExecutionStarted {
-                            cell_id: msg_cell_id,
-                            execution_count: count,
-                        } => {
-                            if msg_cell_id == cell_id {
-                                events.push(ExecutionEvent::execution_started(cell_id, count));
-                            }
-                        }
-                        NotebookBroadcast::Output {
-                            cell_id: msg_cell_id,
-                            output_type,
-                            output_json,
-                            ..
-                        } => {
-                            if msg_cell_id == cell_id {
-                                if let Some(output) = output_resolver::resolve_output_with_type(
-                                    &output_type,
-                                    &output_json,
-                                    &blob_base_url,
-                                    &blob_store_path,
-                                )
-                                .await
-                                {
-                                    events.push(ExecutionEvent::output(cell_id, output));
-                                }
-                            }
-                        }
-                        NotebookBroadcast::ExecutionDone {
-                            cell_id: msg_cell_id,
-                        } => {
-                            if msg_cell_id == cell_id {
-                                events.push(ExecutionEvent::done(cell_id));
-                                done_received = true;
-                            }
-                        }
-                        NotebookBroadcast::KernelError { error } => {
-                            events.push(ExecutionEvent::error(cell_id, &error));
-                            done_received = true;
-                        }
-                        _ => {}
-                    }
-                }
-                Ok(None) => {
-                    return Err(to_py_err("Broadcast channel closed"));
-                }
-                Err(_) => {
-                    if done_received {
-                        break;
-                    }
-                }
-            }
-        }
-
-        Ok(events)
     }
 }
 

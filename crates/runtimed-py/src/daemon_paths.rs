@@ -1,6 +1,6 @@
 //! Shared helpers for daemon socket and blob store paths.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Get the daemon socket path, respecting RUNTIMED_SOCKET_PATH env var.
 pub fn get_socket_path() -> PathBuf {
@@ -14,7 +14,7 @@ pub fn get_socket_path() -> PathBuf {
 /// Resolve blob server URL and blob store path from the daemon directory (sync).
 ///
 /// Returns (blob_base_url, blob_store_path).
-pub fn get_blob_paths_sync(socket_path: &PathBuf) -> (Option<String>, Option<PathBuf>) {
+pub fn get_blob_paths_sync(socket_path: &Path) -> (Option<String>, Option<PathBuf>) {
     let Some(parent) = socket_path.parent() else {
         return (None, None);
     };
@@ -43,7 +43,7 @@ pub fn get_blob_paths_sync(socket_path: &PathBuf) -> (Option<String>, Option<Pat
 /// Resolve blob server URL and blob store path from the daemon directory (async).
 ///
 /// Returns (blob_base_url, blob_store_path).
-pub async fn get_blob_paths_async(socket_path: &PathBuf) -> (Option<String>, Option<PathBuf>) {
+pub async fn get_blob_paths_async(socket_path: &Path) -> (Option<String>, Option<PathBuf>) {
     let Some(parent) = socket_path.parent() else {
         return (None, None);
     };

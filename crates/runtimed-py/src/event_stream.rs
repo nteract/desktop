@@ -284,21 +284,20 @@ impl ExecutionEventIterator {
                                         &cell_id,
                                         output_index,
                                     )));
-                                } else {
-                                    if let Some(output) = output_resolver::resolve_output_with_type(
+                                } else if let Some(output) =
+                                    output_resolver::resolve_output_with_type(
                                         &output_type,
                                         &output_json,
                                         &blob_base_url,
                                         &blob_store_path,
                                     )
                                     .await
-                                    {
-                                        return Ok(Some(ExecutionEvent::output_with_index(
-                                            &cell_id,
-                                            output,
-                                            output_index,
-                                        )));
-                                    }
+                                {
+                                    return Ok(Some(ExecutionEvent::output_with_index(
+                                        &cell_id,
+                                        output,
+                                        output_index,
+                                    )));
                                 }
                             }
                         }
