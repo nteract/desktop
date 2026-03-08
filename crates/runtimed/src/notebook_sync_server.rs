@@ -896,12 +896,12 @@ where
     // Phase 1: Initial sync — server sends first (typed frame)
     // Encode the sync message inside the lock, then send outside it
     // to avoid holding the write lock across async I/O.
-    let initial_msg = {
+    let initial_encoded = {
         let mut doc = room.doc.write().await;
         doc.generate_sync_message(&mut peer_state)
             .map(|msg| msg.encode())
     };
-    if let Some(encoded) = initial_msg {
+    if let Some(encoded) = initial_encoded {
         connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &encoded).await?;
     }
 
