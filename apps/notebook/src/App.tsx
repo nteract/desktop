@@ -110,7 +110,7 @@ function AppContent() {
     openNotebook,
     cloneNotebook,
     dirty,
-    appendOutput,
+
     updateOutputByDisplayId,
     setExecutionCount,
     clearCellOutputs,
@@ -266,11 +266,9 @@ function AppContent() {
     runAllCells: daemonRunAllCells,
     sendCommMessage,
   } = useDaemonKernel({
-    // In pipe mode (#608), the Automerge sync path doesn't deliver output changes
-    // (daemon's sync state tracks the relay, not the WASM — all frames arrive with
-    // changed=false). Outputs must come from broadcasts until the sync state
-    // mismatch is fixed (see .context/plans/fix-pipe-mode-sync-state.md).
-    onOutput: appendOutput,
+    // Sync now delivers outputs correctly (#617 fix: skip do_initial_sync in pipe
+    // mode). The broadcast callback is disabled to prevent duplicates.
+    onOutput: () => {},
     onExecutionCount: handleExecutionCount,
     onExecutionDone: handleExecutionDone,
     onUpdateDisplayData: updateOutputByDisplayId,
