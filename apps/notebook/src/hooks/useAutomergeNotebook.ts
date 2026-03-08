@@ -116,8 +116,14 @@ export function useAutomergeNotebook() {
    * protocol delivers everything — cells, outputs, metadata — from the
    * daemon through the pipe. No `GetDocBytes` call needed.
    *
-   * Always succeeds (no IPC). Loading state clears when the first
-   * `automerge:from-daemon` message arrives with `changed=true`.
+   * Bootstrap itself is a local operation that always completes once the
+   * WASM runtime is ready, but it immediately kicks off the sync protocol
+   * via `syncToRelay()`, which performs an IPC `invoke` under the hood.
+   * Any IPC failures are logged and do not cause `bootstrap()` to reject.
+   *
+   * Loading state is set to `true` here and is cleared when the first
+   * `automerge:from-daemon` message is received, regardless of its
+   * `changed` flag.
    */
   const bootstrap = useCallback(async () => {
     await wasmReady;
@@ -149,7 +155,13 @@ export function useAutomergeNotebook() {
     // Create empty handle immediately — sync will populate it.
     awaitingInitialSyncRef.current = true;
     setIsLoading(true);
-    bootstrap();
+    void bootstrap().catch((error) => {
+      logger.error("[automerge-notebook] Bootstrap failed", error);
+      if (!cancelled) {
+        awaitingInitialSyncRef.current = false;
+        setIsLoading(false);
+      }
+    });
 
     const webview = getCurrentWebview();
 
