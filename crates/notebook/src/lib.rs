@@ -1454,7 +1454,6 @@ async fn save_notebook_as(
     window: tauri::Window,
     registry: tauri::State<'_, WindowNotebookRegistry>,
 ) -> Result<(), String> {
-    let state = notebook_state_for_window(&window, registry.inner())?;
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
     let sync_generation = sync_generation_for_window(&window, registry.inner())?;
     let context_path = path_for_window(&window, registry.inner())?;
@@ -1501,77 +1500,18 @@ async fn save_notebook_as(
         .to_string_lossy()
         .to_string();
 
-    // Update context.path, notebook_id (authoritative) and mark as clean
+    // Update context.path and mark as clean
     if let Ok(mut p) = context_path.lock() {
         *p = Some(saved_path.clone());
     }
-    let context_notebook_id = notebook_id_for_window(&window, registry.inner())?;
-    if let Ok(mut id) = context_notebook_id.lock() {
-        *id = new_notebook_id.clone();
-    }
     dirty.store(false, Ordering::SeqCst);
-
-    // Keep notebook_state.path in sync for session restore
-    {
-        let mut nb = state.lock().map_err(|e| e.to_string())?;
-        nb.path = Some(saved_path.clone());
-    }
 
     refresh_native_menu(window.app_handle(), registry.inner());
 
     // Reconnect to the daemon with the new path-based room ID.
-    // This ensures realtime sync uses the correct file path as the room identifier.
+    // The daemon just saved the file, so OpenNotebook will load it right back.
+    // No need to carry cells across — the daemon has them on disk.
     info!("[save-as] Reconnecting to room for new path");
-
-    // Read cells and metadata from the old room BEFORE disconnecting.
-    // The new room won't have these yet (it's a different notebook_id), so we need
-    // to carry them across to populate the new room if it's empty.
-    let (cells_for_reconnect, metadata_for_reconnect) = {
-        let sync_guard = notebook_sync.lock().await;
-        if let Some(handle) = sync_guard.as_ref() {
-            let cells = handle
-                .get_cells()
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|snap| {
-                    // Convert CellSnapshot to FrontendCell for init_sync
-                    match snap.cell_type.as_str() {
-                        "code" => FrontendCell::Code {
-                            id: snap.id,
-                            source: snap.source,
-                            execution_count: snap
-                                .execution_count
-                                .parse()
-                                .ok()
-                                .filter(|&n: &i32| n > 0),
-                            outputs: snap
-                                .outputs
-                                .into_iter()
-                                .filter_map(|s| serde_json::from_str(&s).ok())
-                                .collect(),
-                        },
-                        "markdown" => FrontendCell::Markdown {
-                            id: snap.id,
-                            source: snap.source,
-                        },
-                        _ => FrontendCell::Raw {
-                            id: snap.id,
-                            source: snap.source,
-                        },
-                    }
-                })
-                .collect::<Vec<_>>();
-            let metadata = handle
-                .get_metadata(runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY)
-                .await
-                .ok()
-                .flatten();
-            (cells, metadata)
-        } else {
-            (vec![], None)
-        }
-    };
 
     // Clear the existing sync handle to disconnect from the old room
     {
@@ -1579,23 +1519,20 @@ async fn save_notebook_as(
         *sync_guard = None;
     }
 
-    // Reconnect with the new path-based room ID.
-    // We don't fail the save if reconnect fails - the file was already written successfully.
-    // Pass cells/metadata from the old room in case the new room is empty (it will be,
-    // since the notebook_id changed).
+    // Reconnect via daemon-owned open. The daemon loads the file it just saved,
+    // creating a new room keyed by the canonical path.
+    // We don't fail the save if reconnect fails — the file was already written.
+    let notebook_id = notebook_id_for_window(&window, registry.inner())?;
     let webview_window = window
         .app_handle()
         .get_webview_window(window.label())
         .ok_or_else(|| "Current webview window not found".to_string())?;
-    // Saved notebooks have a path, so no working_dir needed for project detection
-    if let Err(e) = initialize_notebook_sync(
+    if let Err(e) = initialize_notebook_sync_open(
         webview_window,
-        new_notebook_id,
-        cells_for_reconnect,
-        metadata_for_reconnect,
+        saved_path,
         notebook_sync,
         sync_generation,
-        None,
+        notebook_id,
     )
     .await
     {
