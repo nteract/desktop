@@ -509,16 +509,27 @@ impl NotebookRoom {
         let filename = notebook_doc_filename(notebook_id);
         let persist_path = docs_dir.join(&filename);
 
-        // Delete any stale persisted doc - .ipynb is the source of truth
-        if persist_path.exists() {
+        // For untitled notebooks (UUID IDs), the persisted Automerge doc is their
+        // only content record — there's no .ipynb on disk. Load it if it exists
+        // so content survives daemon restarts.
+        // For saved notebooks (file paths), .ipynb is the source of truth, so
+        // delete stale persisted docs and start fresh (daemon loads from disk).
+        let doc = if is_untitled_notebook(notebook_id) && persist_path.exists() {
             info!(
-                "[notebook-sync] Deleting stale persisted doc: {:?}",
+                "[notebook-sync] Loading persisted doc for untitled notebook: {:?}",
                 persist_path
             );
-            let _ = std::fs::remove_file(&persist_path);
-        }
-
-        let doc = NotebookDoc::new(notebook_id);
+            NotebookDoc::load_or_create(&persist_path, notebook_id)
+        } else {
+            if persist_path.exists() {
+                info!(
+                    "[notebook-sync] Deleting stale persisted doc: {:?}",
+                    persist_path
+                );
+                let _ = std::fs::remove_file(&persist_path);
+            }
+            NotebookDoc::new(notebook_id)
+        };
         let (changed_tx, _) = broadcast::channel(16);
         let (kernel_broadcast_tx, _) = broadcast::channel(64);
 
@@ -3728,7 +3739,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_new_fresh_deletes_stale_persisted_doc() {
+    async fn test_new_fresh_deletes_stale_persisted_doc_for_file_path() {
         let tmp = tempfile::TempDir::new().unwrap();
         let blob_store = test_blob_store(&tmp);
 
@@ -3759,6 +3770,49 @@ mod tests {
         // Room should be empty (no cells from persisted doc)
         let doc = room.doc.try_read().unwrap();
         assert_eq!(doc.cell_count(), 0, "new_fresh should start with empty doc");
+    }
+
+    #[tokio::test]
+    async fn test_new_fresh_loads_persisted_doc_for_untitled_notebook() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = test_blob_store(&tmp);
+
+        // Use a UUID as notebook_id (untitled notebook)
+        let notebook_id = "550e8400-e29b-41d4-a716-446655440000";
+
+        // Create and persist a room with content
+        {
+            let room = NotebookRoom::load_or_create(notebook_id, tmp.path(), blob_store.clone());
+            let mut doc = room.doc.try_write().unwrap();
+            doc.add_cell(0, "c1", "code").unwrap();
+            doc.update_source("c1", "restored content").unwrap();
+            let bytes = doc.save();
+            persist_notebook_bytes(&bytes, &room.persist_path);
+        }
+
+        // Verify persisted file exists
+        let filename = notebook_doc_filename(notebook_id);
+        let persist_path = tmp.path().join(&filename);
+        assert!(persist_path.exists(), "Persisted file should exist");
+
+        // Create fresh room for untitled notebook — should load persisted doc
+        let room = NotebookRoom::new_fresh(notebook_id, tmp.path(), blob_store);
+
+        // Persisted file should still exist (not deleted)
+        assert!(
+            persist_path.exists(),
+            "Persisted file should NOT be deleted for untitled notebooks"
+        );
+
+        // Room should have the persisted content
+        let doc = room.doc.try_read().unwrap();
+        assert_eq!(
+            doc.cell_count(),
+            1,
+            "new_fresh should load persisted doc for untitled notebooks"
+        );
+        let cells = doc.get_cells();
+        assert_eq!(cells[0].source, "restored content");
     }
 
     /// Helper to build a snapshot with UV inline deps.
