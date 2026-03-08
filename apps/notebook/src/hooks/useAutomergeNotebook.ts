@@ -202,7 +202,13 @@ export function useAutomergeNotebook() {
         if (!handle) return;
         try {
           const bytes = new Uint8Array(event.payload);
+          logger.debug(
+            `[automerge-notebook] automerge:from-daemon received (${bytes.length} bytes)`,
+          );
           const changed = handle.receive_sync_message(bytes);
+          logger.debug(
+            `[automerge-notebook] receive_sync_message → changed=${changed}, cells=${handle.cell_count()}`,
+          );
           if (awaitingInitialSyncRef.current) {
             awaitingInitialSyncRef.current = false;
             setIsLoading(false);

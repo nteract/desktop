@@ -1792,7 +1792,13 @@ where
                         return Ok(response);
                     }
                     NotebookFrameType::AutomergeSync => {
-                        // Handle sync message while waiting
+                        // BUG: In pipe mode this consumes sync frames that should
+                        // be forwarded to the WASM via raw_sync_tx. Log to confirm.
+                        warn!(
+                            "[notebook-sync-client] AutomergeSync frame consumed during request/response \
+                             wait ({} bytes) — should be forwarded in pipe mode",
+                            frame.payload.len()
+                        );
                         let message = sync::Message::decode(&frame.payload)
                             .map_err(|e| NotebookSyncError::SyncError(format!("decode: {}", e)))?;
                         self.doc
