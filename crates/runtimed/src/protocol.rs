@@ -253,6 +253,26 @@ pub enum NotebookRequest {
     /// Sync environment with current metadata (hot-install new packages).
     /// Only supported for UV inline deps. Falls back to restart for removals/conda.
     SyncEnvironment {},
+
+    /// Get the full Automerge document bytes from the daemon's canonical doc.
+    /// Used by the frontend to bootstrap its WASM Automerge peer.
+    GetDocBytes {},
+
+    /// Get raw metadata JSON from the daemon's Automerge doc.
+    /// Returns the value stored at the given key (e.g., "notebook_metadata").
+    GetRawMetadata {
+        /// Metadata key to read (e.g., "notebook_metadata").
+        key: String,
+    },
+
+    /// Set raw metadata JSON in the daemon's Automerge doc.
+    /// Writes the JSON string at the given key, then syncs to all peers.
+    SetRawMetadata {
+        /// Metadata key to write (e.g., "notebook_metadata").
+        key: String,
+        /// JSON string value to store.
+        value: String,
+    },
 }
 
 /// Responses from daemon to notebook app.
@@ -355,6 +375,21 @@ pub enum NotebookResponse {
         /// Whether the user should restart instead
         needs_restart: bool,
     },
+
+    /// Full Automerge document bytes from the daemon's canonical doc.
+    DocBytes {
+        /// Raw Automerge document bytes, encoded as a Vec for JSON transport.
+        bytes: Vec<u8>,
+    },
+
+    /// Raw metadata JSON value from the daemon's Automerge doc.
+    RawMetadata {
+        /// The metadata JSON string, or None if the key doesn't exist.
+        value: Option<String>,
+    },
+
+    /// Metadata was set successfully.
+    MetadataSet {},
 }
 
 /// A single entry from kernel input history.

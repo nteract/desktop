@@ -2161,6 +2161,35 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::SyncEnvironment {} => handle_sync_environment(room).await,
+
+        NotebookRequest::GetDocBytes {} => {
+            let mut doc = room.doc.write().await;
+            let bytes = doc.save();
+            NotebookResponse::DocBytes { bytes }
+        }
+
+        NotebookRequest::GetRawMetadata { key } => {
+            let doc = room.doc.read().await;
+            let value = doc.get_metadata(&key);
+            NotebookResponse::RawMetadata { value }
+        }
+
+        NotebookRequest::SetRawMetadata { key, value } => {
+            let mut doc = room.doc.write().await;
+            match doc.set_metadata(&key, &value) {
+                Ok(()) => {
+                    // Notify peers of the change
+                    let _ = room.changed_tx.send(());
+                    // Persist
+                    let bytes = doc.save();
+                    let _ = room.persist_tx.send(Some(bytes));
+                    NotebookResponse::MetadataSet {}
+                }
+                Err(e) => NotebookResponse::Error {
+                    error: format!("Failed to set metadata: {e}"),
+                },
+            }
+        }
     }
 }
 
