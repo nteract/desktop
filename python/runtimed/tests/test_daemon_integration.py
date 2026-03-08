@@ -34,14 +34,17 @@ pytest.importorskip("runtimed")
 
 import runtimed
 
-
 # ============================================================================
 # Test utilities
 # ============================================================================
 
 
-def wait_for_sync(check_fn, *, timeout=3.0, interval=0.1, description="sync"):
+def wait_for_sync(check_fn, *, timeout=5.0, interval=0.1, description="sync"):
     """Poll until check_fn returns True or timeout.
+
+    The default timeout (5s) gives headroom for CI runners where write-lock
+    contention in the daemon's sync loop can slow multi-peer propagation
+    (see #626). These are pure sync tests — no kernel involved.
 
     Args:
         check_fn: Callable that returns True when sync is complete
@@ -153,7 +156,9 @@ def daemon_process():
     # Create a temp directory for this test run
     # ignore_cleanup_errors=True prevents OSError when ipykernel leaves behind
     # directories like 'magics' that aren't empty during cleanup
-    with tempfile.TemporaryDirectory(prefix="runtimed-test-", ignore_cleanup_errors=True) as tmpdir:
+    with tempfile.TemporaryDirectory(
+        prefix="runtimed-test-", ignore_cleanup_errors=True
+    ) as tmpdir:
         tmpdir = Path(tmpdir)
         socket_path = tmpdir / "runtimed.sock"
         cache_dir = tmpdir / "cache"
@@ -1291,7 +1296,9 @@ class TestDenoKernel:
 # ============================================================================
 
 
-@pytest.mark.skip(reason="Conda inline env creation via rattler can exceed 60s timeout in CI")
+@pytest.mark.skip(
+    reason="Conda inline env creation via rattler can exceed 60s timeout in CI"
+)
 class TestCondaInlineDeps:
     """Test conda inline dependency environments.
 
@@ -1866,7 +1873,7 @@ class TestAsyncContextManager:
 
         # After exit, kernel should be shut down
         # Verify by checking the room no longer has an active kernel
-# Note: The daemon may be terminated by fixture teardown before we can verify,
+        # Note: The daemon may be terminated by fixture teardown before we can verify,
         # which is fine - it means cleanup already completed
         try:
             client = runtimed.DaemonClient()
@@ -1874,7 +1881,9 @@ class TestAsyncContextManager:
             room = next((r for r in rooms if r["notebook_id"] == notebook_id), None)
             # Room may be gone entirely or kernel should not be running
             if room is not None:
-                assert not room.get("kernel_running", False), "Kernel should be shut down after context exit"
+                assert not room.get("kernel_running", False), (
+                    "Kernel should be shut down after context exit"
+                )
         except runtimed.RuntimedError:
             # Daemon already shut down by fixture teardown - that's fine
             pass
@@ -1917,9 +1926,7 @@ class TestStreamExecute:
         """stream_execute() yields output events with output data."""
         await async_session.start_kernel()
 
-        cell_id = await async_session.create_cell(
-            "print('first'); print('second')"
-        )
+        cell_id = await async_session.create_cell("print('first'); print('second')")
 
         output_events = []
         async for event in await async_session.stream_execute(cell_id):
@@ -2149,7 +2156,9 @@ class TestSubscription:
 
         # All received events should be output type
         for event in received_events:
-            assert event.event_type == "output", f"Expected only output events, got {event.event_type}"
+            assert event.event_type == "output", (
+                f"Expected only output events, got {event.event_type}"
+            )
 
     @pytest.mark.asyncio
     async def test_multiple_subscribers(self, async_session):
@@ -2243,7 +2252,10 @@ class TestOpenNotebook:
         assert session.is_connected
 
         # Verify daemon-derived notebook_id (should contain canonical path)
-        assert str(nb_path.resolve()) in session.notebook_id or nb_path.name in session.notebook_id
+        assert (
+            str(nb_path.resolve()) in session.notebook_id
+            or nb_path.name in session.notebook_id
+        )
 
         # Verify cells loaded
         cells = session.get_cells()
@@ -2251,7 +2263,9 @@ class TestOpenNotebook:
         assert cells[0].source == "x = 1"
         assert cells[1].cell_type == "markdown"
 
-    def test_open_notebook_returns_connection_info(self, daemon_process, monkeypatch, tmp_path):
+    def test_open_notebook_returns_connection_info(
+        self, daemon_process, monkeypatch, tmp_path
+    ):
         """NotebookConnectionInfo includes cell_count."""
         import json
 
@@ -2406,7 +2420,9 @@ class TestCreateNotebook:
         cells = session.get_cells()
         assert len(cells) == 1
 
-    def test_create_notebook_with_working_dir(self, daemon_process, monkeypatch, tmp_path):
+    def test_create_notebook_with_working_dir(
+        self, daemon_process, monkeypatch, tmp_path
+    ):
         """working_dir is used for project file detection."""
         socket_path, _ = daemon_process
         if socket_path is not None:
