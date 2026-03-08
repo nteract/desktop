@@ -1292,6 +1292,13 @@ async fn save_notebook_as(
         }
     };
 
+    // Shut down the kernel in the old room before disconnecting.
+    // This prevents orphaned kernels that would linger until room eviction (30s).
+    // We ignore the result: NoKernel is fine, and errors won't block save-as.
+    let _ = handle
+        .send_request(NotebookRequest::ShutdownKernel {})
+        .await;
+
     // Update the stored path and window title using daemon-returned path
     let filename = saved_path
         .file_name()
