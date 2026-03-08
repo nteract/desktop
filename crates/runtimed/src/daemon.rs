@@ -9,6 +9,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
 
+use anyhow::Context;
 use log::{debug, error, info, warn};
 use notify_debouncer_mini::DebounceEventResult;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -858,7 +859,7 @@ impl Daemon {
         )
         .await
         .map_err(|_| anyhow::anyhow!("handshake timeout (10s)"))?
-        .map_err(|e| anyhow::anyhow!("handshake read error: {}", e))?
+        .context("handshake read error")?
         .ok_or_else(|| anyhow::anyhow!("connection closed before handshake"))?;
         let handshake: Handshake = serde_json::from_slice(&handshake_bytes)?;
 
