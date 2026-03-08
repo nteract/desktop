@@ -18,6 +18,7 @@ Environment variables:
     RUNTIMED_LOG_LEVEL           - Daemon log level (default: info)
 """
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -1032,6 +1033,14 @@ class TestKernelLaunchMetadata:
         assert parsed["kernelspec"]["name"] == "python3"
         assert parsed["runt"]["schema_version"] == "1"
 
+    def test_custom_metadata_round_trip(self, session):
+        """Non-notebook metadata keys remain readable after the watch refactor."""
+        session.set_metadata("custom_key", "custom_value")
+        time.sleep(0.3)
+
+        raw = session.get_metadata("custom_key")
+        assert raw == "custom_value"
+
     def test_python_kernel_with_python_kernelspec(self, session):
         """A notebook with python kernelspec launches a Python kernel."""
         import json
@@ -1608,6 +1617,15 @@ class TestAsyncDocumentFirstExecution:
         found_ids = {c.id for c in cells}
         for cid in cell_ids:
             assert cid in found_ids
+
+    @pytest.mark.asyncio
+    async def test_async_custom_metadata_round_trip(self, async_session):
+        """Async sessions can still read metadata keys outside notebook_metadata."""
+        await async_session.set_metadata("custom_key", "custom_value")
+        await asyncio.sleep(0.3)
+
+        raw = await async_session.get_metadata("custom_key")
+        assert raw == "custom_value"
 
     @pytest.mark.asyncio
     async def test_async_delete_cell(self, async_session):

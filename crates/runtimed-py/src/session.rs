@@ -644,7 +644,7 @@ impl Session {
                 .as_ref()
                 .ok_or_else(|| to_py_err("Not connected"))?;
 
-            Ok(handle.get_metadata(&key))
+            handle.get_metadata(&key).await.map_err(to_py_err)
         })
     }
 

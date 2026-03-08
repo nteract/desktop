@@ -98,6 +98,11 @@ enum SyncCommand {
         value: String,
         reply: oneshot::Sender<Result<(), NotebookSyncError>>,
     },
+    /// Read a metadata value from the local Automerge doc replica.
+    GetMetadata {
+        key: String,
+        reply: oneshot::Sender<Option<String>>,
+    },
     /// Send a request to the daemon and wait for a response.
     SendRequest {
         request: NotebookRequest,
@@ -292,18 +297,26 @@ impl NotebookSyncHandle {
 
     /// Read a metadata value from the local Automerge doc replica.
     ///
-    /// Instant synchronous read from the latest snapshot. For the
-    /// `"notebook_metadata"` key this serializes the typed snapshot back to
-    /// JSON; other keys are not tracked and return `None`.
-    pub fn get_metadata(&self, key: &str) -> Option<String> {
+    /// `notebook_metadata` uses the watch snapshot fast path. Other metadata
+    /// keys fall back to the sync task so callers keep the pre-watch behavior.
+    pub async fn get_metadata(&self, key: &str) -> Result<Option<String>, NotebookSyncError> {
         if key == NOTEBOOK_METADATA_KEY {
             let snap = self.snapshot_rx.borrow();
-            snap.notebook_metadata
+            return Ok(snap
+                .notebook_metadata
                 .as_ref()
-                .and_then(|m| serde_json::to_string(m).ok())
-        } else {
-            None
+                .and_then(|m| serde_json::to_string(m).ok()));
         }
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(SyncCommand::GetMetadata {
+                key: key.to_string(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?;
+        reply_rx.await.map_err(|_| NotebookSyncError::ChannelClosed)
     }
 
     /// Get the typed notebook metadata snapshot.
@@ -2155,6 +2168,9 @@ async fn run_sync_task<S>(
                             publish_snapshot(&client, &snapshot_tx);
                         }
                         let _ = reply.send(result);
+                    }
+                    SyncCommand::GetMetadata { key, reply } => {
+                        let _ = reply.send(client.get_metadata(&key));
                     }
                     SyncCommand::SendRequest {
                         request,
