@@ -1980,6 +1980,13 @@ async fn run_sync_task<S>(
         notebook_id
     );
 
+    // Buffer for outgoing sync frames in pipe mode. Instead of writing directly
+    // to client.stream inside the command handler (which can corrupt framing if
+    // a socket read is pending in the select!), we queue bytes here and flush
+    // them at the top of the loop before entering select!.
+    let mut pending_pipe_frames: std::collections::VecDeque<Vec<u8>> =
+        std::collections::VecDeque::new();
+
     // Sync state for the frontend peer (used when raw_sync_tx is active).
     // This tracks what the frontend doc has seen, enabling incremental sync messages.
     //
@@ -1997,6 +2004,24 @@ async fn run_sync_task<S>(
 
     loop {
         loop_count += 1;
+
+        // Flush any queued pipe frames to the daemon BEFORE entering select!.
+        // This ensures writes happen when no read is pending on the socket.
+        while let Some(frame_data) = pending_pipe_frames.pop_front() {
+            if let Err(e) = connection::send_typed_frame(
+                &mut client.stream,
+                NotebookFrameType::AutomergeSync,
+                &frame_data,
+            )
+            .await
+            {
+                warn!(
+                    "[notebook-sync-task] Failed to flush pipe frame for {}: {}",
+                    notebook_id, e
+                );
+                break;
+            }
+        }
 
         // First, check for any pending broadcasts (collected during request/response)
         // These need to be drained before we do anything else
@@ -2149,23 +2174,12 @@ async fn run_sync_task<S>(
                     }
                     SyncCommand::ReceiveFrontendSyncMessage { message, reply } => {
                         let result = if raw_sync_tx.is_some() {
-                            // Pipe mode (Tauri): forward raw sync bytes to daemon
-                            // without merging into the relay's doc. The daemon processes
-                            // the sync message and sends back a response frame, which
-                            // arrives in the socket read branch and is forwarded raw
-                            // to the frontend via raw_sync_tx.
-                            connection::send_typed_frame(
-                                &mut client.stream,
-                                NotebookFrameType::AutomergeSync,
-                                &message,
-                            )
-                            .await
-                            .map_err(|e| {
-                                NotebookSyncError::SyncError(format!(
-                                    "forward frontend sync to daemon: {}",
-                                    e
-                                ))
-                            })
+                            // Pipe mode (Tauri): queue the sync bytes to be flushed
+                            // at the top of the next loop iteration, BEFORE the
+                            // select! starts a new socket read. Writing directly here
+                            // would corrupt framing if a daemon read was pending.
+                            pending_pipe_frames.push_back(message);
+                            Ok(())
                         } else if let Some(ref mut fe_state) = frontend_peer_state {
                             // Full peer mode (runtimed-py): merge into local doc
                             match sync::Message::decode(&message) {

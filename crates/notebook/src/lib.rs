@@ -663,10 +663,17 @@ async fn setup_sync_receivers(
     let sync_generation_for_cleanup = sync_generation.clone();
     tokio::spawn(async move {
         while let Some(broadcast) = broadcast_receiver.recv().await {
-            debug!(
-                "[notebook-sync] Broadcast for {}: {:?}",
-                notebook_id_for_broadcast, broadcast,
-            );
+            // Filter out EnvSyncState spam from debug logs — the daemon broadcasts
+            // this at high frequency and it drowns out useful messages.
+            if !matches!(
+                broadcast,
+                runtimed::protocol::NotebookBroadcast::EnvSyncState { .. }
+            ) {
+                debug!(
+                    "[notebook-sync] Broadcast for {}: {:?}",
+                    notebook_id_for_broadcast, broadcast,
+                );
+            }
             if let Err(e) =
                 emit_to_label::<_, _, _>(&window, window.label(), "daemon:broadcast", &broadcast)
             {
