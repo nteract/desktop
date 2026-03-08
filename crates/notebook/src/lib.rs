@@ -2041,7 +2041,7 @@ async fn get_automerge_doc_bytes(
     let guard = notebook_sync.lock().await;
     let handle = guard.as_ref().ok_or("Not connected to daemon")?;
 
-    // Fetch doc bytes from the daemon's canonical Automerge doc (not the relay's local replica).
+    // Fetch doc bytes from the daemon's canonical Automerge doc.
     match handle.send_request(NotebookRequest::GetDocBytes {}).await {
         Ok(NotebookResponse::DocBytes { bytes }) => Ok(bytes),
         Ok(NotebookResponse::Error { error }) => Err(error),

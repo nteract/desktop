@@ -264,7 +264,7 @@ export class NotebookHandle {
         }
     }
     /**
-     * Generate a sync message to send to the relay peer.
+     * Generate a sync message to send to the daemon (via the Tauri relay pipe).
      *
      * Returns the message as a byte array, or undefined if already in sync.
      * The caller should send these bytes via `invoke("send_automerge_sync", { syncMessage })`.
@@ -415,7 +415,7 @@ export class NotebookHandle {
         return this;
     }
     /**
-     * Receive and apply a sync message from the relay peer.
+     * Receive and apply a sync message from the daemon (via the Tauri relay pipe).
      *
      * Returns true if the document changed (caller should re-read cells).
      * @param {Uint8Array} message
@@ -439,7 +439,7 @@ export class NotebookHandle {
         }
     }
     /**
-     * Reset the sync state. Call this when reconnecting to a new relay session.
+     * Reset the sync state. Call this when reconnecting to a new daemon session.
      */
     reset_sync_state() {
         wasm.notebookhandle_reset_sync_state(this.__wbg_ptr);

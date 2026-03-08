@@ -453,7 +453,7 @@ Outputs flow through the Automerge doc, not Tauri events:
 4. Frontend receives `automerge:from-daemon` → WASM merges into local doc
 5. `materialize-cells.ts` converts the updated doc into React cell state
 
-The legacy `onOutput` broadcast path is no-opped — outputs arrive exclusively via Automerge sync.
+The `onOutput` callback in `App.tsx` is set to a no-op (`() => {}`) — outputs are rendered from Automerge sync, not broadcasts. The daemon still sends `Output` broadcasts and `useDaemonKernel.ts` still processes them (resolves blob manifests), but the resolved output is discarded by the no-op callback.
 
 ### Save and format-on-save
 
@@ -716,12 +716,12 @@ runtimed (daemon)
 
 Broadcast types:
 - `KernelStatus { status }` — idle/busy/starting
-- `Output { cell_id, output }` — **no-opped**; outputs arrive exclusively via Automerge sync
+- `Output { cell_id, output }` — daemon sends these and `useDaemonKernel.ts` processes them, but the `onOutput` rendering callback is a no-op; outputs are rendered from Automerge sync instead
 - `ExecutionStarted { cell_id, execution_count }` — clear outputs, show spinner
 - `ClearOutputs { cell_id }` — explicit clear request
 - `DisplayUpdate { cell_id, output }` — update_display_data (widget progress bars)
 
-> **Note:** `Output` broadcasts were originally intended for sub-50ms streaming, but are currently no-opped to avoid duplicates with Automerge-synced outputs (no dedup IDs). All output data arrives via the Automerge sync channel (`automerge:from-daemon` events). Issue #557 was resolved by making sync the sole output delivery channel.
+> **Note:** `Output` broadcasts are still sent by the daemon and processed by `useDaemonKernel.ts` (blob resolution runs), but the `onOutput` rendering callback in `App.tsx` is a no-op to avoid duplicates with Automerge-synced outputs (no dedup IDs). All output **rendering** is driven by the Automerge sync channel (`automerge:from-daemon` → `materializeCells`). Issue #557 was resolved by making sync the sole output rendering path.
 
 ### Project file auto-detection
 
@@ -827,9 +827,9 @@ For output manifests, the `output_type` field provides structural versioning. Ne
 
 ### Output Flow
 
-Outputs arrive at the frontend exclusively through Automerge sync: the daemon writes outputs to the notebook doc, produces a sync message, and the Tauri relay forwards raw bytes to the frontend WASM where `materialize-cells.ts` renders them.
+Output **rendering** is driven exclusively by Automerge sync: the daemon writes outputs to the notebook doc, produces a sync message, and the Tauri relay forwards raw bytes to the frontend WASM where `materialize-cells.ts` renders them. The daemon still sends `Output` broadcasts (and `useDaemonKernel.ts` processes them), but the `onOutput` rendering callback is a no-op.
 
-The `onOutput` broadcast path is no-opped — sync is the sole output delivery channel. Output latency is bounded by the Automerge sync round-trip rather than direct event delivery. Issue #557 was resolved by making sync the sole output delivery channel.
+Output latency is bounded by the Automerge sync round-trip rather than direct broadcast delivery. Re-enabling `onOutput` for lower-latency streaming would require dedup IDs to prevent duplicates with sync-delivered outputs. Issue #557 was resolved by making sync the sole output rendering path.
 
 ### Multi-Window Widget Sync (#276)
 

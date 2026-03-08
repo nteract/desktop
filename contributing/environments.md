@@ -295,7 +295,7 @@ graph TB
 
 The diagrams show two main layers:
 
-1. **Frontend** (blue) — React hooks that invoke Tauri commands and listen for `daemon:broadcast` events (kernel status, execution lifecycle) and `automerge:from-daemon` events (outputs and document state via Automerge sync). `useDaemonKernel.ts` handles kernel lifecycle via the daemon. Outputs arrive exclusively through Automerge sync, not broadcasts.
+1. **Frontend** (blue) — React hooks that invoke Tauri commands and listen for `daemon:broadcast` events (kernel status, execution lifecycle) and `automerge:from-daemon` events (document state including outputs via Automerge sync). `useDaemonKernel.ts` handles kernel lifecycle via the daemon. The daemon sends `Output` broadcasts and `useDaemonKernel.ts` processes them (blob resolution), but the `onOutput` rendering callback is a no-op — output **rendering** is driven by Automerge sync (`materializeCells`).
 
 2. **runtimed Daemon** (indigo) — A singleton background process that owns kernel processes and manages prewarmed UV and Conda environment pools. The daemon runs the detection priority chain: inline deps first, then closest project file, then prewarmed pool. Communicates via length-prefixed JSON over Unix domain sockets (or Windows named pipes). Also runs an Automerge CRDT sync server for cross-window settings and notebook state.
 

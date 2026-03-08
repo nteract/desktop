@@ -59,7 +59,7 @@ export class NotebookHandle {
      */
     detect_runtime(): string | undefined;
     /**
-     * Generate a sync message to send to the relay peer.
+     * Generate a sync message to send to the daemon (via the Tauri relay pipe).
      *
      * Returns the message as a byte array, or undefined if already in sync.
      * The caller should send these bytes via `invoke("send_automerge_sync", { syncMessage })`.
@@ -97,13 +97,13 @@ export class NotebookHandle {
      */
     constructor(notebook_id: string);
     /**
-     * Receive and apply a sync message from the relay peer.
+     * Receive and apply a sync message from the daemon (via the Tauri relay pipe).
      *
      * Returns true if the document changed (caller should re-read cells).
      */
     receive_sync_message(message: Uint8Array): boolean;
     /**
-     * Reset the sync state. Call this when reconnecting to a new relay session.
+     * Reset the sync state. Call this when reconnecting to a new daemon session.
      */
     reset_sync_state(): void;
     /**
