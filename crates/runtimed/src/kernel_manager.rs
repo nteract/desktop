@@ -262,6 +262,8 @@ pub enum KernelStatus {
     Error,
     /// Kernel is shutting down
     ShuttingDown,
+    /// Kernel process died unexpectedly
+    Dead,
 }
 
 impl std::fmt::Display for KernelStatus {
@@ -272,6 +274,9 @@ impl std::fmt::Display for KernelStatus {
             KernelStatus::Busy => write!(f, "busy"),
             KernelStatus::Error => write!(f, "error"),
             KernelStatus::ShuttingDown => write!(f, "shutdown"),
+            // Dead maps to "error" for frontend compatibility (frontend only recognizes
+            // not_started, starting, idle, busy, error, shutdown)
+            KernelStatus::Dead => write!(f, "error"),
         }
     }
 }
@@ -301,10 +306,12 @@ pub struct RoomKernel {
     iopub_task: Option<tokio::task::JoinHandle<()>>,
     /// Handle to the shell reader task
     shell_reader_task: Option<tokio::task::JoinHandle<()>>,
+    /// Handle to the process watcher task (detects process exit)
+    process_watcher_task: Option<tokio::task::JoinHandle<()>>,
+    /// Handle to the heartbeat monitor task (detects unresponsive kernel)
+    heartbeat_task: Option<tokio::task::JoinHandle<()>>,
     /// Shell writer for sending execute requests
     shell_writer: Option<runtimelib::DealerSendConnection>,
-    /// The kernel process
-    process: Option<tokio::process::Child>,
     /// Process group ID for cleanup (Unix only)
     #[cfg(unix)]
     process_group_id: Option<i32>,
@@ -350,6 +357,9 @@ pub enum QueueCommand {
     ExecutionDone { cell_id: String },
     /// A cell produced an error (for stop-on-error behavior)
     CellError { cell_id: String },
+    /// The kernel process died (iopub connection lost).
+    /// Unblocks the execution queue and notifies the frontend.
+    KernelDied,
 }
 
 /// Prepend a directory to the PATH environment variable.
@@ -410,8 +420,9 @@ impl RoomKernel {
             session_id: Uuid::new_v4().to_string(),
             iopub_task: None,
             shell_reader_task: None,
+            process_watcher_task: None,
+            heartbeat_task: None,
             shell_writer: None,
-            process: None,
             #[cfg(unix)]
             process_group_id: None,
             cell_id_map: Arc::new(StdMutex::new(HashMap::new())),
@@ -707,7 +718,7 @@ impl RoomKernel {
         #[cfg(unix)]
         cmd.process_group(0);
 
-        let process = cmd.kill_on_drop(true).spawn()?;
+        let mut process = cmd.kill_on_drop(true).spawn()?;
 
         #[cfg(unix)]
         {
@@ -727,6 +738,23 @@ impl RoomKernel {
         // Create command channel for queue processing
         let (cmd_tx, cmd_rx) = mpsc::channel::<QueueCommand>(100);
         self.cmd_tx = Some(cmd_tx.clone());
+
+        // Spawn process watcher - detects immediate process exit (e.g., os._exit(1))
+        let process_cmd_tx = cmd_tx.clone();
+        let process_watcher_task = tokio::spawn(async move {
+            let status = process.wait().await;
+            match status {
+                Ok(exit_status) => {
+                    warn!("[kernel-manager] Kernel process exited: {}", exit_status);
+                }
+                Err(e) => {
+                    error!("[kernel-manager] Error waiting for kernel process: {}", e);
+                }
+            }
+            let _ = process_cmd_tx.try_send(QueueCommand::KernelDied);
+        });
+        // Store immediately so early-return error paths can clean it up
+        self.process_watcher_task = Some(process_watcher_task);
 
         let broadcast_tx = self.broadcast_tx.clone();
         let cell_id_map = self.cell_id_map.clone();
@@ -1363,6 +1391,10 @@ impl RoomKernel {
                     }
                 }
             }
+            // Iopub loop exited — kernel is dead. Signal the queue processor
+            // so it can unblock the execution queue and notify the frontend.
+            warn!("[kernel-manager] iopub loop exited, signaling KernelDied");
+            let _ = iopub_cmd_tx.try_send(QueueCommand::KernelDied);
         });
 
         // Create shell connection
@@ -1388,10 +1420,18 @@ impl RoomKernel {
             }
             Ok(Err(e)) => {
                 error!("[kernel-manager] Error reading kernel_info_reply: {}", e);
+                // Abort process watcher to kill orphaned kernel
+                if let Some(task) = self.process_watcher_task.take() {
+                    task.abort();
+                }
                 return Err(anyhow::anyhow!("Kernel did not respond: {}", e));
             }
             Err(_) => {
                 error!("[kernel-manager] Timeout waiting for kernel_info_reply");
+                // Abort process watcher to kill orphaned kernel
+                if let Some(task) = self.process_watcher_task.take() {
+                    task.abort();
+                }
                 return Err(anyhow::anyhow!("Kernel did not respond within 30s"));
             }
         }
@@ -1607,13 +1647,47 @@ impl RoomKernel {
         // (the sync server will call execution_done when it receives ExecutionDone)
         self.cmd_rx = Some(cmd_rx);
 
-        // Store state
+        // Spawn heartbeat monitor - detects unresponsive kernel (alive but hung)
+        let hb_cmd_tx = cmd_tx.clone();
+        let hb_conn_info = connection_info.clone();
+        let heartbeat_task = tokio::spawn(async move {
+            // Give kernel time to fully initialize
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+                let check = async {
+                    let mut hb =
+                        runtimelib::create_client_heartbeat_connection(&hb_conn_info).await?;
+                    hb.single_heartbeat().await
+                };
+
+                match tokio::time::timeout(std::time::Duration::from_secs(3), check).await {
+                    Ok(Ok(())) => {
+                        // Kernel is alive, continue monitoring
+                    }
+                    Ok(Err(e)) => {
+                        warn!("[kernel-manager] Heartbeat connection error: {}", e);
+                        let _ = hb_cmd_tx.try_send(QueueCommand::KernelDied);
+                        break;
+                    }
+                    Err(_) => {
+                        warn!("[kernel-manager] Heartbeat timeout, kernel unresponsive");
+                        let _ = hb_cmd_tx.try_send(QueueCommand::KernelDied);
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Store state (process_watcher_task already stored immediately after spawn)
         self.connection_info = Some(connection_info);
         self.connection_file = Some(connection_file_path);
         self.iopub_task = Some(iopub_task);
         self.shell_reader_task = Some(shell_reader_task);
+        self.heartbeat_task = Some(heartbeat_task);
         self.shell_writer = Some(shell_writer);
-        self.process = Some(process);
         self.status = KernelStatus::Idle;
 
         // Broadcast idle status
@@ -1751,6 +1825,53 @@ impl RoomKernel {
             self.process_next().await?;
         }
         Ok(())
+    }
+
+    /// Handle kernel death (process exit or heartbeat failure).
+    ///
+    /// Unblocks the execution queue by clearing the executing cell and queue,
+    /// and broadcasts an error status to all connected peers.
+    ///
+    /// This method is idempotent - multiple calls (e.g., from both process
+    /// watcher and heartbeat monitor) are safe.
+    pub fn kernel_died(&mut self) {
+        // Idempotent: if already dead, don't re-broadcast
+        if self.status == KernelStatus::Dead {
+            debug!("[kernel-manager] kernel_died called but already dead, ignoring");
+            return;
+        }
+
+        warn!(
+            "[kernel-manager] Kernel died, executing={:?}, queued={}",
+            self.executing,
+            self.queue.len()
+        );
+
+        // Clear executing state so the queue doesn't stay permanently stuck
+        self.executing = None;
+        self.status = KernelStatus::Dead;
+
+        // Clear any queued cells — they can't execute without a kernel
+        let cleared = self.clear_queue();
+        if !cleared.is_empty() {
+            info!(
+                "[kernel-manager] Cleared {} queued cells due to kernel death",
+                cleared.len()
+            );
+        }
+
+        // Broadcast error status to all peers
+        // Note: status must be exactly "error" to match frontend's known statuses
+        let _ = self.broadcast_tx.send(NotebookBroadcast::KernelStatus {
+            status: "error".to_string(),
+            cell_id: None,
+        });
+
+        // Broadcast empty queue state
+        let _ = self.broadcast_tx.send(NotebookBroadcast::QueueChanged {
+            executing: None,
+            queued: vec![],
+        });
     }
 
     /// Interrupt the currently executing cell and clear the execution queue.
@@ -2008,6 +2129,12 @@ impl RoomKernel {
         if let Some(task) = self.shell_reader_task.take() {
             task.abort();
         }
+        if let Some(task) = self.process_watcher_task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.heartbeat_task.take() {
+            task.abort();
+        }
 
         // Try graceful shutdown via shell
         if let Some(mut shell) = self.shell_writer.take() {
@@ -2029,9 +2156,6 @@ impl RoomKernel {
                 }
             }
         }
-
-        // Clean up process
-        self.process = None;
 
         // Clean up connection file
         if let Some(ref path) = self.connection_file {
@@ -2058,6 +2182,12 @@ impl Drop for RoomKernel {
             task.abort();
         }
         if let Some(task) = self.shell_reader_task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.process_watcher_task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.heartbeat_task.take() {
             task.abort();
         }
 

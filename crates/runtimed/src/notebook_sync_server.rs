@@ -988,13 +988,39 @@ where
             }
 
             // Kernel broadcast event — forward to this client
-            Ok(broadcast) = kernel_broadcast_rx.recv() => {
-                connection::send_typed_json_frame(
-                    writer,
-                    NotebookFrameType::Broadcast,
-                    &broadcast,
-                )
-                .await?;
+            result = kernel_broadcast_rx.recv() => {
+                match result {
+                    Ok(broadcast) => {
+                        connection::send_typed_json_frame(
+                            writer,
+                            NotebookFrameType::Broadcast,
+                            &broadcast,
+                        )
+                        .await?;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(
+                            "[notebook-sync] Peer lagged {} kernel broadcasts, sending doc sync to catch up",
+                            n
+                        );
+                        // The peer missed some broadcasts (outputs, status changes).
+                        // The Automerge doc contains the persisted state, so send a
+                        // sync message to catch the peer up on any missed output data.
+                        let mut doc = room.doc.write().await;
+                        if let Some(msg) = doc.generate_sync_message(&mut peer_state) {
+                            connection::send_typed_frame(
+                                writer,
+                                NotebookFrameType::AutomergeSync,
+                                &msg.encode(),
+                            )
+                            .await?;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        // Broadcast channel closed — room is being evicted
+                        return Ok(());
+                    }
+                }
             }
         }
     }
@@ -1442,6 +1468,13 @@ async fn auto_launch_kernel(
                                     }
                                 }
                             }
+                            QueueCommand::KernelDied => {
+                                warn!("[notebook-sync] Kernel died, unblocking execution queue");
+                                let mut guard = room_kernel.lock().await;
+                                if let Some(ref mut k) = *guard {
+                                    k.kernel_died();
+                                }
+                            }
                         }
                     }
                 });
@@ -1799,6 +1832,13 @@ async fn handle_notebook_request(
                                                     cleared.len()
                                                 );
                                             }
+                                        }
+                                    }
+                                    QueueCommand::KernelDied => {
+                                        warn!("[notebook-sync] Kernel died, unblocking execution queue");
+                                        let mut guard = room_kernel.lock().await;
+                                        if let Some(ref mut k) = *guard {
+                                            k.kernel_died();
                                         }
                                     }
                                 }
