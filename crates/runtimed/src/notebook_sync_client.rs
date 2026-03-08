@@ -2005,16 +2005,15 @@ async fn run_sync_task<S>(
             continue;
         }
 
-        // Direct socket reads in the select! for instant responsiveness.
-        // If a command arrives while waiting on the socket, select! drops the
-        // socket future and processes the command immediately.
+        // Select between commands and incoming frames with fair scheduling.
+        // Both branches are equally likely to be chosen when ready, ensuring
+        // sync frames from daemon aren't starved by command polling.
         enum SelectResult {
             Command(Option<SyncCommand>),
             Frame(std::io::Result<Option<connection::TypedNotebookFrame>>),
         }
 
         let select_result = tokio::select! {
-            biased;
             cmd_opt = cmd_rx.recv() => SelectResult::Command(cmd_opt),
             frame_result = connection::recv_typed_frame(&mut client.stream) => {
                 SelectResult::Frame(frame_result)
