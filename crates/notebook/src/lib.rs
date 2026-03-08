@@ -2,7 +2,6 @@ pub mod cli_install;
 pub mod conda_env;
 pub mod deno_env;
 pub mod environment_yml;
-pub mod format;
 pub mod menu;
 pub mod notebook_state;
 pub mod pixi;
@@ -1970,20 +1969,6 @@ async fn send_automerge_sync(
 }
 
 #[tauri::command]
-async fn get_preferred_kernelspec(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<Option<String>, String> {
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-    let guard = notebook_sync.lock().await;
-    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
-    let snapshot = get_metadata_snapshot(handle)
-        .await
-        .ok_or("Failed to read metadata from daemon")?;
-    Ok(snapshot.kernelspec.map(|ks| ks.name))
-}
-
-#[tauri::command]
 async fn list_kernelspecs() -> Result<Vec<KernelspecInfo>, String> {
     let specs = runtimelib::list_kernelspecs().await;
     Ok(specs
@@ -2972,7 +2957,6 @@ pub fn run(
             send_automerge_sync,
 
             // Kernelspec discovery (used by UI)
-            get_preferred_kernelspec,
             list_kernelspecs,
             // UV dependency management
             check_uv_available,
