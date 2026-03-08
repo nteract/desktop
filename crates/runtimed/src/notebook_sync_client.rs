@@ -12,6 +12,7 @@
 //! This design avoids holding locks during network I/O.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use automerge::sync::{self, SyncDoc};
@@ -21,7 +22,7 @@ use futures::FutureExt;
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::connection::{
     self, Handshake, NotebookConnectionInfo, NotebookFrameType, ProtocolCapabilities, PROTOCOL_V2,
@@ -52,6 +53,18 @@ pub enum NotebookSyncError {
 
     #[error("Channel closed")]
     ChannelClosed,
+}
+
+/// Pre-computed snapshot for instant reads via watch channel.
+///
+/// The sync task publishes a new snapshot after every doc mutation.
+/// Handles read from the watch channel without any async or locking.
+#[derive(Clone, Default, Debug)]
+pub struct NotebookSnapshot {
+    /// Current cell state.
+    pub cells: Vec<CellSnapshot>,
+    /// JSON-serialized notebook metadata (the primary metadata field readers need).
+    pub notebook_metadata: Option<String>,
 }
 
 /// Commands sent from handles to the sync task.
@@ -91,19 +104,11 @@ enum SyncCommand {
         count: String,
         reply: oneshot::Sender<Result<(), NotebookSyncError>>,
     },
-    GetCells {
-        reply: oneshot::Sender<Vec<CellSnapshot>>,
-    },
     /// Set a metadata value in the Automerge doc and sync to daemon.
     SetMetadata {
         key: String,
         value: String,
         reply: oneshot::Sender<Result<(), NotebookSyncError>>,
-    },
-    /// Read a metadata value from the local Automerge doc replica.
-    GetMetadata {
-        key: String,
-        reply: oneshot::Sender<Option<String>>,
     },
     /// Send a request to the daemon and wait for a response.
     SendRequest {
@@ -127,8 +132,15 @@ enum SyncCommand {
 ///
 /// This is clonable and can be shared across threads. Commands are sent
 /// through a channel and processed by the background sync task.
+///
+/// Read operations (get_cells, get_notebook_metadata) are instant via a watch
+/// channel - no async, no channel round-trip. The sync task publishes a new
+/// snapshot after every doc mutation.
 #[derive(Clone)]
 pub struct NotebookSyncHandle {
+    /// Watch receiver for instant reads of pre-computed snapshots.
+    snapshot_rx: watch::Receiver<Arc<NotebookSnapshot>>,
+    /// Command channel for write operations.
     tx: mpsc::Sender<SyncCommand>,
     notebook_id: String,
 }
@@ -140,13 +152,29 @@ impl NotebookSyncHandle {
     }
 
     /// Get all cells from the local replica.
-    pub async fn get_cells(&self) -> Result<Vec<CellSnapshot>, NotebookSyncError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(SyncCommand::GetCells { reply: reply_tx })
-            .await
-            .map_err(|_| NotebookSyncError::ChannelClosed)?;
-        reply_rx.await.map_err(|_| NotebookSyncError::ChannelClosed)
+    ///
+    /// This is an instant read from the pre-computed snapshot - no async,
+    /// no channel round-trip. The sync task publishes a new snapshot after
+    /// every doc mutation.
+    pub fn get_cells(&self) -> Vec<CellSnapshot> {
+        self.snapshot_rx.borrow().cells.clone()
+    }
+
+    /// Get the notebook metadata JSON from the local replica.
+    ///
+    /// This is an instant read from the pre-computed snapshot - no async,
+    /// no channel round-trip.
+    pub fn get_notebook_metadata(&self) -> Option<String> {
+        self.snapshot_rx.borrow().notebook_metadata.clone()
+    }
+
+    /// Subscribe to snapshot changes.
+    ///
+    /// Returns a clone of the watch receiver. Use `changed().await` to wait
+    /// for updates, then `borrow()` to read the new snapshot. Useful for
+    /// the Tauri event bridge to push updates to the frontend.
+    pub fn subscribe(&self) -> watch::Receiver<Arc<NotebookSnapshot>> {
+        self.snapshot_rx.clone()
     }
 
     /// Add a new cell at the given index.
@@ -295,19 +323,6 @@ impl NotebookSyncHandle {
         reply_rx
             .await
             .map_err(|_| NotebookSyncError::ChannelClosed)?
-    }
-
-    /// Read a metadata value from the local Automerge doc replica.
-    pub async fn get_metadata(&self, key: &str) -> Result<Option<String>, NotebookSyncError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(SyncCommand::GetMetadata {
-                key: key.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| NotebookSyncError::ChannelClosed)?;
-        reply_rx.await.map_err(|_| NotebookSyncError::ChannelClosed)
     }
 
     /// Send a request to the daemon and wait for a response.
@@ -1879,6 +1894,14 @@ where
         let notebook_id = self.notebook_id.clone();
         let pending_broadcasts = self.pending_broadcasts.clone();
 
+        // Watch channel for instant reads - sync task publishes snapshots after
+        // every doc mutation, handles read via borrow() without async or locking.
+        let initial_snapshot = Arc::new(NotebookSnapshot {
+            cells: initial_cells.clone(),
+            notebook_metadata: initial_metadata.clone(),
+        });
+        let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
+
         // Channel for commands from handles
         let (cmd_tx, cmd_rx) = mpsc::channel::<SyncCommand>(32);
 
@@ -1920,6 +1943,7 @@ where
                 changes_tx,
                 broadcast_tx,
                 raw_sync_tx,
+                snapshot_tx,
             ))
             .catch_unwind()
             .await;
@@ -1942,6 +1966,7 @@ where
         });
 
         let handle = NotebookSyncHandle {
+            snapshot_rx,
             tx: cmd_tx,
             notebook_id,
         };
@@ -1965,6 +1990,7 @@ async fn run_sync_task<S>(
     changes_tx: mpsc::Sender<SyncUpdate>,
     broadcast_tx: broadcast::Sender<NotebookBroadcast>,
     raw_sync_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    snapshot_tx: watch::Sender<Arc<NotebookSnapshot>>,
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -1988,6 +2014,24 @@ async fn run_sync_task<S>(
     let mut loop_count = 0u64;
     // Track last metadata to only send updates when it actually changes
     let mut last_metadata: Option<String> = client.get_metadata(NOTEBOOK_METADATA_KEY);
+
+    // Helper to publish current doc state to watch channel.
+    // Call this after every doc mutation so handles get instant reads.
+    let publish_snapshot =
+        |doc: &AutoCommit, tx: &watch::Sender<Arc<NotebookSnapshot>>, reason: &str| {
+            let cells = get_cells_from_doc(doc);
+            debug!(
+                "[notebook-sync-task] publish_snapshot ({}) for {}: {} cells",
+                reason,
+                notebook_id,
+                cells.len()
+            );
+            let snapshot = Arc::new(NotebookSnapshot {
+                cells,
+                notebook_metadata: get_metadata_from_doc(doc, NOTEBOOK_METADATA_KEY),
+            });
+            let _ = tx.send(snapshot);
+        };
 
     loop {
         loop_count += 1;
@@ -2031,10 +2075,16 @@ async fn run_sync_task<S>(
                         reply,
                     } => {
                         let result = client.add_cell(index, &cell_id, &cell_type).await;
+                        if result.is_ok() {
+                            publish_snapshot(&client.doc, &snapshot_tx, "mutation");
+                        }
                         let _ = reply.send(result);
                     }
                     SyncCommand::DeleteCell { cell_id, reply } => {
                         let result = client.delete_cell(&cell_id).await;
+                        if result.is_ok() {
+                            publish_snapshot(&client.doc, &snapshot_tx, "mutation");
+                        }
                         let _ = reply.send(result);
                     }
                     SyncCommand::UpdateSource {
@@ -2043,6 +2093,9 @@ async fn run_sync_task<S>(
                         reply,
                     } => {
                         let result = client.update_source(&cell_id, &source).await;
+                        if result.is_ok() {
+                            publish_snapshot(&client.doc, &snapshot_tx, "mutation");
+                        }
                         let _ = reply.send(result);
                     }
                     SyncCommand::AppendSource {
@@ -2051,10 +2104,16 @@ async fn run_sync_task<S>(
                         reply,
                     } => {
                         let result = client.append_source(&cell_id, &text).await;
+                        if result.is_ok() {
+                            publish_snapshot(&client.doc, &snapshot_tx, "mutation");
+                        }
                         let _ = reply.send(result);
                     }
                     SyncCommand::ClearOutputs { cell_id, reply } => {
                         let result = client.clear_outputs(&cell_id).await;
+                        if result.is_ok() {
+                            publish_snapshot(&client.doc, &snapshot_tx, "mutation");
+                        }
                         let _ = reply.send(result);
                     }
                     SyncCommand::AppendOutput {
@@ -2063,6 +2122,9 @@ async fn run_sync_task<S>(
                         reply,
                     } => {
                         let result = client.append_output(&cell_id, &output).await;
+                        if result.is_ok() {
+                            publish_snapshot(&client.doc, &snapshot_tx, "mutation");
+                        }
                         let _ = reply.send(result);
                     }
                     SyncCommand::SetExecutionCount {
@@ -2071,18 +2133,16 @@ async fn run_sync_task<S>(
                         reply,
                     } => {
                         let result = client.set_execution_count(&cell_id, &count).await;
+                        if result.is_ok() {
+                            publish_snapshot(&client.doc, &snapshot_tx, "mutation");
+                        }
                         let _ = reply.send(result);
-                    }
-                    SyncCommand::GetCells { reply } => {
-                        let cells = client.get_cells();
-                        let _ = reply.send(cells);
                     }
                     SyncCommand::SetMetadata { key, value, reply } => {
                         let result = client.set_metadata(&key, &value).await;
-                        let _ = reply.send(result);
-                    }
-                    SyncCommand::GetMetadata { key, reply } => {
-                        let result = client.get_metadata(&key);
+                        if result.is_ok() {
+                            publish_snapshot(&client.doc, &snapshot_tx, "mutation");
+                        }
                         let _ = reply.send(result);
                     }
                     SyncCommand::SendRequest {
@@ -2169,6 +2229,8 @@ async fn run_sync_task<S>(
                                         client.doc.sync().receive_sync_message(fe_state, msg);
                                     match recv_result {
                                         Ok(()) => {
+                                            // Publish snapshot for instant reads
+                                            publish_snapshot(&client.doc, &snapshot_tx, "mutation");
                                             // Relay the changes to the daemon
                                             client.sync_to_daemon().await
                                         }
@@ -2230,6 +2292,9 @@ async fn run_sync_task<S>(
                         } else {
                             match client.process_incoming_frame(frame).await {
                                 Ok(Some(ReceivedFrame::Changes(cells))) => {
+                                    // Full peer mode: publish snapshot for instant reads
+                                    publish_snapshot(&client.doc, &snapshot_tx, "mutation");
+
                                     // Full peer mode: metadata diffing and SyncUpdate
                                     let current_metadata =
                                         client.get_metadata(NOTEBOOK_METADATA_KEY);

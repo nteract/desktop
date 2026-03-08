@@ -515,12 +515,16 @@ class TestMultiClientSync:
         # Session 1 creates cell
         cell_id = s1.create_cell("original")
 
-        # Wait for cell to sync to session 2
-        def cell_visible_to_s2():
+        # Wait for cell AND its content to sync to session 2.
+        # Automerge sync happens in rounds - the cell structure may arrive
+        # before the Text content is fully synced. We need to wait for the
+        # source content, not just cell existence, before s2 can modify it.
+        def cell_content_synced_to_s2():
             cells = s2.get_cells()
-            return any(c.id == cell_id for c in cells)
+            matching = [c for c in cells if c.id == cell_id]
+            return matching and matching[0].source == "original"
 
-        wait_for_sync(cell_visible_to_s2, description="cell visible to s2")
+        wait_for_sync(cell_content_synced_to_s2, description="cell content synced to s2")
 
         # Session 2 updates it
         s2.set_source(cell_id, "updated by s2")
