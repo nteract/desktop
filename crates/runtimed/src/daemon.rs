@@ -966,43 +966,56 @@ impl Daemon {
             )
         };
 
-        // Check if this is the first connection (doc is empty)
+        // Check-and-load atomically under write lock to prevent race conditions.
+        // Two concurrent opens could both see cell_count == 0 if we check with
+        // read lock first, leading to duplicate cells.
         let cell_count = {
-            let doc = room.doc.read().await;
-            doc.cell_count()
-        };
-
-        // If doc is empty, load from disk (first connection to this notebook)
-        let cell_count = if cell_count == 0 {
             let mut doc = room.doc.write().await;
-            match crate::notebook_sync_server::load_notebook_from_disk(&mut doc, &path_buf).await {
-                Ok(count) => {
-                    info!("[runtimed] Loaded {} cells from {} into room", count, path);
-                    count
+            let existing_count = doc.cell_count();
+            if existing_count == 0 {
+                // First connection - load from disk
+                match crate::notebook_sync_server::load_notebook_from_disk(&mut doc, &path_buf)
+                    .await
+                {
+                    Ok(count) => {
+                        info!("[runtimed] Loaded {} cells from {} into room", count, path);
+                        count
+                    }
+                    Err(e) => {
+                        // Drop the doc lock before removing room
+                        drop(doc);
+                        // Remove the room to prevent stale trust state on retry
+                        {
+                            let mut rooms = self.notebook_rooms.lock().await;
+                            rooms.remove(&notebook_id);
+                            info!(
+                                "[runtimed] Removed room {} after load failure",
+                                notebook_id
+                            );
+                        }
+                        // Send error response and return
+                        let (mut reader, mut writer) = tokio::io::split(stream);
+                        let response = NotebookConnectionInfo {
+                            protocol: PROTOCOL_V2.to_string(),
+                            notebook_id: String::new(),
+                            cell_count: 0,
+                            needs_trust_approval: false,
+                            error: Some(format!("Failed to load notebook: {}", e)),
+                        };
+                        send_json_frame(&mut writer, &response).await?;
+                        // Drain any remaining data from reader to avoid broken pipe
+                        let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
+                        return Ok(());
+                    }
                 }
-                Err(e) => {
-                    // Send error response and return
-                    let (mut reader, mut writer) = tokio::io::split(stream);
-                    let response = NotebookConnectionInfo {
-                        protocol: PROTOCOL_V2.to_string(),
-                        notebook_id: String::new(),
-                        cell_count: 0,
-                        needs_trust_approval: false,
-                        error: Some(format!("Failed to load notebook: {}", e)),
-                    };
-                    send_json_frame(&mut writer, &response).await?;
-                    // Drain any remaining data from reader to avoid broken pipe
-                    let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
-                    return Ok(());
-                }
+            } else {
+                // Room already has cells from another connection
+                info!(
+                    "[runtimed] Room for {} already has {} cells (joining existing)",
+                    path, existing_count
+                );
+                existing_count
             }
-        } else {
-            // Room already has cells from another connection
-            info!(
-                "[runtimed] Room for {} already has {} cells (joining existing)",
-                path, cell_count
-            );
-            cell_count
         };
 
         // Get trust state (already verified during room creation)
