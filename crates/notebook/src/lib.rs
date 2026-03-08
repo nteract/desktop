@@ -3,7 +3,7 @@ pub mod conda_env;
 pub mod deno_env;
 pub mod environment_yml;
 pub mod menu;
-pub mod notebook_state;
+
 pub mod pixi;
 pub mod project_file;
 pub mod pyproject;
@@ -22,7 +22,7 @@ pub mod webdriver;
 pub use runtime::Runtime;
 
 use runtimed::notebook_sync_client::{
-    NotebookBroadcastReceiver, NotebookSyncClient, NotebookSyncHandle, NotebookSyncReceiver,
+    NotebookBroadcastReceiver, NotebookSyncClient, NotebookSyncHandle,
 };
 use runtimed::protocol::{CompletionItem, HistoryEntry, NotebookRequest, NotebookResponse};
 
@@ -383,6 +383,98 @@ fn default_metadata_snapshot() -> runtimed::notebook_metadata::NotebookMetadataS
     }
 }
 
+/// Convert nbformat metadata into a `NotebookMetadataSnapshot`.
+///
+/// Used by the import commands (pyproject, pixi) that build nbformat metadata
+/// locally then need to push it to the daemon as a typed snapshot.
+fn snapshot_from_nbformat(
+    metadata: &nbformat::v4::Metadata,
+) -> runtimed::notebook_metadata::NotebookMetadataSnapshot {
+    use runtimed::notebook_metadata::*;
+
+    let kernelspec = metadata.kernelspec.as_ref().map(|ks| KernelspecSnapshot {
+        name: ks.name.clone(),
+        display_name: ks.display_name.clone(),
+        language: ks.language.clone(),
+    });
+
+    let language_info = metadata
+        .language_info
+        .as_ref()
+        .map(|li| LanguageInfoSnapshot {
+            name: li.name.clone(),
+            version: li.version.clone(),
+        });
+
+    let convert_legacy_deno = |dd: crate::deno_env::DenoDependencies| DenoMetadata {
+        permissions: dd.permissions,
+        import_map: dd.import_map,
+        config: dd.config,
+        flexible_npm_imports: if dd.flexible_npm_imports {
+            None
+        } else {
+            Some(false)
+        },
+    };
+
+    let runt = if let Some(runt_value) = metadata.additional.get("runt") {
+        let mut runt_meta = serde_json::from_value::<RuntMetadata>(runt_value.clone())
+            .unwrap_or_else(|_| RuntMetadata {
+                schema_version: "1".to_string(),
+                env_id: None,
+                uv: None,
+                conda: None,
+                deno: None,
+                trust_signature: None,
+                trust_timestamp: None,
+            });
+
+        if runt_meta.deno.is_none() {
+            if let Some(deno_value) = metadata.additional.get("deno") {
+                if let Ok(dd) =
+                    serde_json::from_value::<crate::deno_env::DenoDependencies>(deno_value.clone())
+                {
+                    runt_meta.deno = Some(convert_legacy_deno(dd));
+                }
+            }
+        }
+
+        runt_meta
+    } else {
+        let uv = metadata
+            .additional
+            .get("uv")
+            .and_then(|v| serde_json::from_value::<UvInlineMetadata>(v.clone()).ok());
+        let conda = metadata
+            .additional
+            .get("conda")
+            .and_then(|v| serde_json::from_value::<CondaInlineMetadata>(v.clone()).ok());
+        let deno = metadata
+            .additional
+            .get("deno")
+            .and_then(|v| {
+                serde_json::from_value::<crate::deno_env::DenoDependencies>(v.clone()).ok()
+            })
+            .map(convert_legacy_deno);
+
+        RuntMetadata {
+            schema_version: "1".to_string(),
+            env_id: None,
+            uv,
+            conda,
+            deno,
+            trust_signature: None,
+            trust_timestamp: None,
+        }
+    };
+
+    NotebookMetadataSnapshot {
+        kernelspec,
+        language_info,
+        runt,
+    }
+}
+
 /// Initialize notebook sync with the daemon.
 ///
 /// Connects to the daemon's notebook sync service using the split pattern,
@@ -425,7 +517,7 @@ async fn initialize_notebook_sync(
 
     // Connect using the split pattern - returns handle, receiver, broadcast receiver, initial cells, and initial metadata
     // Pass working_dir for untitled notebooks so daemon can detect project files
-    let (handle, mut receiver, mut broadcast_receiver, daemon_cells, _initial_metadata_from_daemon) =
+    let (handle, receiver, mut broadcast_receiver, daemon_cells, _initial_metadata_from_daemon) =
         NotebookSyncClient::connect_split_with_raw_sync(
             socket_path,
             notebook_id.clone(),
@@ -453,51 +545,9 @@ async fn initialize_notebook_sync(
         notebook_id
     );
 
-    // Spawn receiver task for cross-window sync
-    // The receiver is separate from the handle, so it doesn't block commands
-    let window_clone = window.clone();
-    let notebook_id_for_receiver = notebook_id.clone();
-    tokio::spawn(async move {
-        info!(
-            "[notebook-sync] Starting receiver loop for {}",
-            notebook_id_for_receiver
-        );
-        while let Some(update) = receiver.recv().await {
-            // Cell changes arrive at the frontend via automerge:from-daemon
-            // (raw sync relay). This loop only forwards metadata updates.
-
-            // If metadata changed, notify frontend
-            if let Some(ref metadata_json) = update.notebook_metadata {
-                match serde_json::from_str::<runtimed::notebook_metadata::NotebookMetadataSnapshot>(
-                    metadata_json,
-                ) {
-                    Ok(_snapshot) => {
-                        if let Err(e) = emit_to_label::<_, _, _>(
-                            &window_clone,
-                            window_clone.label(),
-                            "notebook:metadata_updated",
-                            metadata_json,
-                        ) {
-                            warn!(
-                                "[notebook-sync] Failed to emit notebook:metadata_updated: {}",
-                                e
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            "[notebook-sync] Failed to deserialize metadata from peer: {}",
-                            e
-                        );
-                    }
-                }
-            }
-        }
-        info!(
-            "[notebook-sync] Receiver loop ended for {} - changes_tx was dropped",
-            notebook_id_for_receiver
-        );
-    });
+    // Drop the SyncUpdate receiver — in pipe mode the relay never sends metadata
+    // diffs through changes_tx, and no frontend code listens for notebook:metadata_updated.
+    drop(receiver);
 
     // Spawn raw sync relay task — forwards Automerge sync messages to the frontend
     // so it can maintain its own local Automerge document replica (Phase 2).
@@ -648,11 +698,14 @@ async fn initialize_notebook_sync_open(
         needs_trust_approval: info.needs_trust_approval,
     };
 
+    // Drop the SyncUpdate receiver — in pipe mode the relay never sends metadata
+    // diffs through changes_tx, and no frontend code listens for notebook:metadata_updated.
+    drop(receiver);
+
     setup_sync_receivers(
         window,
         info.notebook_id,
         handle,
-        receiver,
         broadcast_receiver,
         raw_sync_rx,
         notebook_sync,
@@ -713,11 +766,12 @@ async fn initialize_notebook_sync_create(
         needs_trust_approval: info.needs_trust_approval,
     };
 
+    drop(receiver);
+
     setup_sync_receivers(
         window,
         info.notebook_id,
         handle,
-        receiver,
         broadcast_receiver,
         raw_sync_rx,
         notebook_sync,
@@ -731,14 +785,17 @@ async fn initialize_notebook_sync_create(
 /// Store the sync handle and spawn relay tasks for an established daemon connection.
 ///
 /// This is the common tail of `initialize_notebook_sync_open` and `_create`.
-/// It stores the handle, spawns the metadata/raw-sync/broadcast receiver tasks,
+/// It stores the handle, spawns the raw-sync and broadcast receiver tasks,
 /// and emits `daemon:ready` with the connection payload.
+///
+/// Note: No SyncUpdate receiver task is spawned — in pipe mode the relay forwards
+/// raw Automerge bytes directly, and the frontend WASM drives metadata updates
+/// via `useSyncExternalStore`.
 #[allow(clippy::too_many_arguments)]
 async fn setup_sync_receivers(
     window: tauri::WebviewWindow,
     notebook_id: String,
     handle: NotebookSyncHandle,
-    mut receiver: NotebookSyncReceiver,
     mut broadcast_receiver: NotebookBroadcastReceiver,
     mut raw_sync_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
     notebook_sync: SharedNotebookSync,
@@ -752,37 +809,6 @@ async fn setup_sync_receivers(
         "[notebook-sync] Handle stored for {} (gen {})",
         notebook_id, current_generation,
     );
-
-    // Spawn receiver task — forwards metadata updates to frontend
-    let window_for_receiver = window.clone();
-    let notebook_id_for_receiver = notebook_id.clone();
-    tokio::spawn(async move {
-        while let Some(update) = receiver.recv().await {
-            if let Some(ref metadata_json) = update.notebook_metadata {
-                match serde_json::from_str::<runtimed::notebook_metadata::NotebookMetadataSnapshot>(
-                    metadata_json,
-                ) {
-                    Ok(_) => {
-                        if let Err(e) = emit_to_label::<_, _, _>(
-                            &window_for_receiver,
-                            window_for_receiver.label(),
-                            "notebook:metadata_updated",
-                            metadata_json,
-                        ) {
-                            warn!("[notebook-sync] Failed to emit metadata_updated: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        warn!("[notebook-sync] Failed to deserialize metadata: {}", e);
-                    }
-                }
-            }
-        }
-        info!(
-            "[notebook-sync] Receiver loop ended for {}",
-            notebook_id_for_receiver,
-        );
-    });
 
     // Spawn raw sync relay task — forwards Automerge sync messages to frontend WASM
     let window_for_raw_sync = window.clone();
@@ -2377,7 +2403,7 @@ async fn import_pyproject_dependencies(
         requires_python: config.requires_python,
     };
     uv_env::set_dependencies(&mut metadata, &deps);
-    let new_snapshot = notebook_state::snapshot_from_nbformat(&metadata);
+    let new_snapshot = snapshot_from_nbformat(&metadata);
     set_metadata_snapshot(handle, &new_snapshot).await?;
     info!(
         "Imported {} dependencies from pyproject.toml into notebook",
@@ -2608,7 +2634,7 @@ async fn import_pixi_dependencies(
         env_id: None,
     };
     conda_env::set_dependencies(&mut metadata, &deps);
-    let new_snapshot = notebook_state::snapshot_from_nbformat(&metadata);
+    let new_snapshot = snapshot_from_nbformat(&metadata);
     set_metadata_snapshot(handle, &new_snapshot).await?;
     info!(
         "Imported {} dependencies from pixi.toml into notebook conda metadata",
