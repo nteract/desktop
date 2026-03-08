@@ -1213,10 +1213,10 @@ async fn save_notebook_as(
     }
     dirty.store(false, Ordering::SeqCst);
 
-    // Keep notebook_state.path in sync for legacy code paths (TODO: remove after Step 4)
+    // Keep notebook_state.path in sync for session restore
     {
         let mut nb = state.lock().map_err(|e| e.to_string())?;
-        nb.path = Some(saved_path);
+        nb.path = Some(saved_path.clone());
     }
 
     refresh_native_menu(window.app_handle(), registry.inner());
@@ -1976,20 +1976,11 @@ async fn get_preferred_kernelspec(
 ) -> Result<Option<String>, String> {
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
     let guard = notebook_sync.lock().await;
-    if let Some(handle) = guard.as_ref() {
-        if let Some(snapshot) = get_metadata_snapshot(handle).await {
-            return Ok(snapshot.kernelspec.map(|ks| ks.name));
-        }
-    }
-    // Fallback
-    let state = notebook_state_for_window(&window, registry.inner())?;
-    let state = state.lock().map_err(|e| e.to_string())?;
-    Ok(state
-        .notebook
-        .metadata
-        .kernelspec
-        .as_ref()
-        .map(|k| k.name.clone()))
+    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
+    let snapshot = get_metadata_snapshot(handle)
+        .await
+        .ok_or("Failed to read metadata from daemon")?;
+    Ok(snapshot.kernelspec.map(|ks| ks.name))
 }
 
 #[tauri::command]
@@ -2165,16 +2156,12 @@ async fn verify_notebook_trust(
 ) -> Result<trust::TrustInfo, String> {
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
     let guard = notebook_sync.lock().await;
-    if let Some(handle) = guard.as_ref() {
-        // Use raw metadata to preserve trust_signature (not in the typed RuntMetadata struct)
-        if let Some(additional) = get_raw_metadata_additional(handle).await {
-            return trust::verify_notebook_trust(&additional);
-        }
-    }
-    // Fallback
-    let state = notebook_state_for_window(&window, registry.inner())?;
-    let state = state.lock().map_err(|e| e.to_string())?;
-    trust::verify_notebook_trust(&state.notebook.metadata.additional)
+    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
+    // Use raw metadata to preserve trust_signature (not in the typed RuntMetadata struct)
+    let additional = get_raw_metadata_additional(handle)
+        .await
+        .ok_or("Failed to read metadata from daemon")?;
+    trust::verify_notebook_trust(&additional)
 }
 
 /// Approve the notebook's dependencies and sign them with the local trust key.
