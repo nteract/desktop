@@ -564,3 +564,99 @@ Deno.test("Sync: bidirectional mutations converge", () => {
   daemon.free();
   wasm.free();
 });
+
+// ── create_empty() sync-only bootstrap tests (PR #622) ──────────────
+
+Deno.test("create_empty: creates doc with zero cells", () => {
+  const handle = NotebookHandle.create_empty();
+  assertEquals(handle.cell_count(), 0);
+  assertEquals(handle.get_cells().length, 0);
+  assertEquals(handle.get_cells_json(), "[]");
+  // Empty doc has no metadata
+  assertEquals(handle.get_metadata("runtime"), undefined);
+  handle.free();
+});
+
+Deno.test("create_empty: sync-only bootstrap receives all content from daemon", () => {
+  // Daemon has existing content (simulates loaded notebook)
+  const daemon = new NotebookHandle("sync-bootstrap-test");
+  daemon.add_cell(0, "cell-1", "code");
+  daemon.update_source("cell-1", "import numpy as np");
+  daemon.add_cell(1, "cell-2", "markdown");
+  daemon.update_source("cell-2", "# Analysis");
+  daemon.set_metadata("custom_key", "custom_value");
+
+  // WASM starts completely empty (zero operations) — the #622 path
+  const wasm = NotebookHandle.create_empty();
+  assertEquals(wasm.cell_count(), 0);
+
+  // Sync should transfer all content
+  syncHandles(daemon, wasm);
+
+  // WASM should have all content from daemon
+  assertEquals(wasm.cell_count(), 2);
+  const cells = wasm.get_cells();
+  assertEquals(cells[0].id, "cell-1");
+  assertEquals(cells[0].source, "import numpy as np");
+  assertEquals(cells[1].id, "cell-2");
+  assertEquals(cells[1].source, "# Analysis");
+  assertEquals(wasm.get_metadata("custom_key"), "custom_value");
+
+  for (const c of cells) c.free();
+  daemon.free();
+  wasm.free();
+});
+
+Deno.test("create_empty: can mutate after sync bootstrap", () => {
+  const daemon = new NotebookHandle("mutate-after-bootstrap");
+  daemon.add_cell(0, "existing", "code");
+  daemon.update_source("existing", "x = 1");
+
+  const wasm = NotebookHandle.create_empty();
+  syncHandles(daemon, wasm);
+  assertEquals(wasm.cell_count(), 1);
+
+  // WASM adds a new cell after bootstrap
+  wasm.add_cell(1, "new-cell", "markdown");
+  wasm.update_source("new-cell", "# Added by WASM");
+
+  // Sync back to daemon
+  syncHandles(wasm, daemon);
+
+  // Both should have both cells
+  assertEquals(daemon.cell_count(), 2);
+  assertEquals(wasm.cell_count(), 2);
+  assertEquals(daemon.get_cell("new-cell")?.source, "# Added by WASM");
+
+  daemon.free();
+  wasm.free();
+});
+
+Deno.test("create_empty: incremental sync after bootstrap works", () => {
+  const daemon = new NotebookHandle("incremental-bootstrap");
+  daemon.add_cell(0, "cell-1", "code");
+
+  const wasm = NotebookHandle.create_empty();
+  syncHandles(daemon, wasm);
+  assertEquals(wasm.cell_count(), 1);
+
+  // Daemon adds more content after initial sync
+  daemon.add_cell(1, "cell-2", "code");
+  daemon.update_source("cell-2", "y = 2");
+
+  // Generate sync message and verify change detection
+  const msg = daemon.generate_sync_message();
+  assertExists(msg, "Daemon should have sync message after adding cell");
+
+  const changed = wasm.receive_sync_message(msg);
+  assertEquals(changed, true, "WASM should detect document changed");
+
+  // Complete sync
+  syncHandles(daemon, wasm);
+
+  assertEquals(wasm.cell_count(), 2);
+  assertEquals(wasm.get_cell("cell-2")?.source, "y = 2");
+
+  daemon.free();
+  wasm.free();
+});
