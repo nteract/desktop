@@ -11,6 +11,13 @@ import {
   cellSnapshotsToNotebookCells,
 } from "../lib/materialize-cells";
 import {
+  getNotebookCellsSnapshot,
+  replaceNotebookCells,
+  resetNotebookCells,
+  updateNotebookCells,
+  useNotebookCells,
+} from "../lib/notebook-cells";
+import {
   notifyMetadataChanged,
   setNotebookHandle,
 } from "../lib/notebook-metadata";
@@ -34,25 +41,19 @@ const wasmReady: Promise<void> = init().then(() => {
  * Local-first notebook hook backed by `runtimed-wasm` NotebookHandle.
  *
  * All document mutations (add/delete cell, edit source) execute instantly
- * inside the WASM Automerge document.  React state is derived from the doc.
+ * inside the WASM Automerge document. The external store is derived from the doc.
  * Sync messages flow through the Tauri relay to the daemon — the frontend
  * NEVER creates Automerge objects via the JS library.
  */
 export function useAutomergeNotebook() {
-  const [cells, setCells] = useState<NotebookCell[]>([]);
+  const cells = useNotebookCells();
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
   // The WASM handle is mutated in place — must live in a ref.
   const handleRef = useRef<NotebookHandle | null>(null);
-
-  // Keep a ref-mirror of cells so callbacks can read current state without
-  // re-creating (avoids stale closures in useCallback with [] deps).
-  const cellsRef = useRef<NotebookCell[]>([]);
-  useEffect(() => {
-    cellsRef.current = cells;
-  }, [cells]);
+  const awaitingInitialSyncRef = useRef(true);
 
   // Output manifest cache (shared with materialize-cells utilities).
   const outputCacheRef = useRef<Map<string, JupyterOutput>>(new Map());
@@ -74,7 +75,7 @@ export function useAutomergeNotebook() {
   // ── Helpers ────────────────────────────────────────────────────────
 
   /**
-   * Read cells from the WASM doc and push them into React state.
+   * Read cells from the WASM doc and push them into the external store.
    * Resolves blob manifest hashes as needed.
    */
   const materializeCells = useCallback(async (handle: NotebookHandle) => {
@@ -88,7 +89,7 @@ export function useAutomergeNotebook() {
       blobPort,
       outputCacheRef.current,
     );
-    setCells(newCells);
+    replaceNotebookCells(newCells);
   }, []);
 
   /**
@@ -128,7 +129,9 @@ export function useAutomergeNotebook() {
       setNotebookHandle(handle);
 
       await materializeCells(handle);
-      setIsLoading(false);
+      const hasCells = handle.cell_count() > 0;
+      awaitingInitialSyncRef.current = !hasCells;
+      setIsLoading(!hasCells);
       logger.info(
         `[automerge-notebook] Bootstrap complete — ${handle.cell_count()} cells`,
       );
@@ -148,6 +151,8 @@ export function useAutomergeNotebook() {
     let cancelled = false;
 
     // Initial bootstrap — may fail if daemon isn't ready yet, that's OK.
+    awaitingInitialSyncRef.current = true;
+    setIsLoading(true);
     bootstrap().then((ok) => {
       if (cancelled) return;
       if (!ok) {
@@ -161,6 +166,8 @@ export function useAutomergeNotebook() {
     const unlistenReady = webview.listen("daemon:ready", async () => {
       if (cancelled) return;
       refreshBlobPort();
+      awaitingInitialSyncRef.current = true;
+      setIsLoading(true);
       // Reset sync state so the new relay session starts clean.
       handleRef.current?.reset_sync_state();
       await bootstrap();
@@ -171,6 +178,9 @@ export function useAutomergeNotebook() {
       "notebook:file-opened",
       async () => {
         if (cancelled) return;
+        awaitingInitialSyncRef.current = true;
+        setIsLoading(true);
+        resetNotebookCells();
         await bootstrap();
       },
     );
@@ -185,6 +195,10 @@ export function useAutomergeNotebook() {
         try {
           const bytes = new Uint8Array(event.payload);
           const changed = handle.receive_sync_message(bytes);
+          if (awaitingInitialSyncRef.current) {
+            awaitingInitialSyncRef.current = false;
+            setIsLoading(false);
+          }
           if (changed) {
             await materializeCells(handle);
             // Notify metadata subscribers (useSyncExternalStore) that the
@@ -211,7 +225,7 @@ export function useAutomergeNotebook() {
       (event) => {
         if (cancelled) return;
         const clearedIds = new Set(event.payload);
-        setCells((prev) =>
+        updateNotebookCells((prev) =>
           prev.map((c) =>
             clearedIds.has(c.id) && c.cell_type === "code"
               ? { ...c, outputs: [], execution_count: null }
@@ -228,6 +242,7 @@ export function useAutomergeNotebook() {
       unlistenSync.then((fn) => fn());
       unlistenClearOutputs.then((fn) => fn());
       // Free WASM handle.
+      resetNotebookCells();
       setNotebookHandle(null);
       handleRef.current?.free();
       handleRef.current = null;
@@ -238,8 +253,8 @@ export function useAutomergeNotebook() {
 
   const updateCellSource = useCallback(
     (cellId: string, source: string) => {
-      // Optimistic React update (instant keystroke feedback).
-      setCells((prev) =>
+      // Optimistic store update (instant keystroke feedback).
+      updateNotebookCells((prev) =>
         prev.map((c) => (c.id === cellId ? { ...c, source } : c)),
       );
       setDirty(true);
@@ -253,7 +268,7 @@ export function useAutomergeNotebook() {
   );
 
   const clearCellOutputs = useCallback((cellId: string) => {
-    setCells((prev) =>
+    updateNotebookCells((prev) =>
       prev.map((c) =>
         c.id === cellId && c.cell_type === "code"
           ? { ...c, outputs: [], execution_count: null }
@@ -276,8 +291,8 @@ export function useAutomergeNotebook() {
             }
           : { cell_type: "markdown", id: cellId, source: "" };
 
-      // Compute insertion index from current React state (via ref).
-      const current = cellsRef.current;
+      // Compute insertion index from the latest external-store snapshot.
+      const current = getNotebookCellsSnapshot();
       let idx: number;
       if (!afterCellId) {
         idx = 0;
@@ -293,8 +308,8 @@ export function useAutomergeNotebook() {
         syncToRelay(handle);
       }
 
-      // Optimistic React update.
-      setCells((prev) => {
+      // Optimistic store update.
+      updateNotebookCells((prev) => {
         if (!afterCellId) return [newCell, ...prev];
         const i = prev.findIndex((c) => c.id === afterCellId);
         if (i === -1) return [newCell, ...prev];
@@ -313,7 +328,7 @@ export function useAutomergeNotebook() {
   const deleteCell = useCallback(
     (cellId: string) => {
       // Guard: never delete the last cell.
-      setCells((prev) => {
+      updateNotebookCells((prev) => {
         if (prev.length <= 1) return prev;
         return prev.filter((c) => c.id !== cellId);
       });
@@ -397,7 +412,7 @@ export function useAutomergeNotebook() {
   // give instant feedback from daemon broadcasts before sync lands.
 
   const appendOutput = useCallback((cellId: string, output: JupyterOutput) => {
-    setCells((prev) =>
+    updateNotebookCells((prev) =>
       prev.map((c) => {
         if (c.id !== cellId || c.cell_type !== "code") return c;
         const outputs = [...c.outputs];
@@ -422,7 +437,7 @@ export function useAutomergeNotebook() {
       newData: Record<string, unknown>,
       newMetadata?: Record<string, unknown>,
     ) => {
-      setCells((prev) =>
+      updateNotebookCells((prev) =>
         prev.map((c) => {
           if (c.cell_type !== "code") return c;
           let changed = false;
@@ -445,7 +460,7 @@ export function useAutomergeNotebook() {
   );
 
   const setExecutionCount = useCallback((cellId: string, count: number) => {
-    setCells((prev) =>
+    updateNotebookCells((prev) =>
       prev.map((c) =>
         c.id === cellId && c.cell_type === "code"
           ? { ...c, execution_count: count }
@@ -459,7 +474,6 @@ export function useAutomergeNotebook() {
   return {
     cells,
     isLoading,
-    setCells,
     focusedCellId,
     setFocusedCellId,
     updateCellSource,
