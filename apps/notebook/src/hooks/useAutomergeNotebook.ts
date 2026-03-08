@@ -413,28 +413,9 @@ export function useAutomergeNotebook() {
 
   // ── Output / execution (optimistic overlays) ───────────────────────
   //
-  // Canonical outputs arrive through Automerge sync.  These callbacks
-  // give instant feedback from daemon broadcasts before sync lands.
-
-  const appendOutput = useCallback((cellId: string, output: JupyterOutput) => {
-    updateNotebookCells((prev) =>
-      prev.map((c) => {
-        if (c.id !== cellId || c.cell_type !== "code") return c;
-        const outputs = [...c.outputs];
-        if (output.output_type === "stream" && outputs.length > 0) {
-          const last = outputs[outputs.length - 1];
-          if (last.output_type === "stream" && last.name === output.name) {
-            outputs[outputs.length - 1] = {
-              ...last,
-              text: last.text + output.text,
-            };
-            return { ...c, outputs };
-          }
-        }
-        return { ...c, outputs: [...outputs, output] };
-      }),
-    );
-  }, []);
+  // Canonical outputs arrive through Automerge sync (materializeCells).
+  // These callbacks give instant feedback from daemon broadcasts for
+  // display updates and execution counts before sync lands.
 
   const updateOutputByDisplayId = useCallback(
     (
@@ -489,7 +470,6 @@ export function useAutomergeNotebook() {
     openNotebook,
     cloneNotebook,
     dirty,
-    appendOutput,
     updateOutputByDisplayId,
     setExecutionCount,
   };
