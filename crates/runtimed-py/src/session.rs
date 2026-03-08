@@ -1664,11 +1664,16 @@ impl Session {
 impl Session {
     /// Get the current notebook metadata snapshot.
     fn get_notebook_metadata(&self) -> PyResult<NotebookMetadataSnapshot> {
-        let json_str = self.get_metadata("notebook_metadata")?;
-        match json_str {
-            Some(s) => serde_json::from_str(&s)
-                .map_err(|e| to_py_err(format!("Invalid metadata JSON: {}", e))),
-            None => Ok(NotebookMetadataSnapshot {
+        self.connect()?;
+        let state = self.state.blocking_lock();
+        let handle = state
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
+
+        Ok(handle
+            .get_notebook_metadata()
+            .unwrap_or_else(|| NotebookMetadataSnapshot {
                 kernelspec: None,
                 language_info: None,
                 runt: RuntMetadata {
@@ -1680,8 +1685,7 @@ impl Session {
                     trust_signature: None,
                     trust_timestamp: None,
                 },
-            }),
-        }
+            }))
     }
 
     /// Set the notebook metadata snapshot.

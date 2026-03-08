@@ -2167,13 +2167,9 @@ async fn get_notebook_metadata_async(
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
-    let json_str = handle.get_metadata("notebook_metadata");
-
-    match json_str {
-        Some(s) => {
-            serde_json::from_str(&s).map_err(|e| to_py_err(format!("Invalid metadata JSON: {}", e)))
-        }
-        None => Ok(NotebookMetadataSnapshot {
+    Ok(handle
+        .get_notebook_metadata()
+        .unwrap_or_else(|| NotebookMetadataSnapshot {
             kernelspec: None,
             language_info: None,
             runt: RuntMetadata {
@@ -2185,8 +2181,7 @@ async fn get_notebook_metadata_async(
                 trust_signature: None,
                 trust_timestamp: None,
             },
-        }),
-    }
+        }))
 }
 
 /// Set the notebook metadata snapshot asynchronously.

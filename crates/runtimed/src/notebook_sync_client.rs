@@ -27,10 +27,10 @@ use crate::connection::{
     self, Handshake, NotebookConnectionInfo, NotebookFrameType, ProtocolCapabilities, PROTOCOL_V2,
 };
 use crate::notebook_doc::{
-    get_all_metadata_from_doc, get_cells_from_doc, get_metadata_from_doc, set_metadata_in_doc,
+    get_cells_from_doc, get_metadata_from_doc, get_metadata_snapshot_from_doc, set_metadata_in_doc,
     CellSnapshot,
 };
-use crate::notebook_metadata::NOTEBOOK_METADATA_KEY;
+use crate::notebook_metadata::{NotebookMetadataSnapshot, NOTEBOOK_METADATA_KEY};
 use crate::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 
 /// Error type for notebook sync client operations.
@@ -292,9 +292,26 @@ impl NotebookSyncHandle {
 
     /// Read a metadata value from the local Automerge doc replica.
     ///
-    /// Instant synchronous read from the latest snapshot.
+    /// Instant synchronous read from the latest snapshot. For the
+    /// `"notebook_metadata"` key this serializes the typed snapshot back to
+    /// JSON; other keys are not tracked and return `None`.
     pub fn get_metadata(&self, key: &str) -> Option<String> {
-        self.snapshot_rx.borrow().metadata.get(key).cloned()
+        if key == NOTEBOOK_METADATA_KEY {
+            let snap = self.snapshot_rx.borrow();
+            snap.notebook_metadata
+                .as_ref()
+                .and_then(|m| serde_json::to_string(m).ok())
+        } else {
+            None
+        }
+    }
+
+    /// Get the typed notebook metadata snapshot.
+    ///
+    /// Prefer this over `get_metadata("notebook_metadata")` followed by
+    /// `serde_json::from_str` — the snapshot is already parsed.
+    pub fn get_notebook_metadata(&self) -> Option<NotebookMetadataSnapshot> {
+        self.snapshot_rx.borrow().notebook_metadata.clone()
     }
 
     /// Send a request to the daemon and wait for a response.
@@ -398,19 +415,14 @@ pub struct SyncUpdate {
 /// Modeled after automerge-repo's `DocHandle.doc()` pattern: the sync task is
 /// the single owner/writer of the Automerge doc, and publishes snapshots for
 /// consumers.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct NotebookSnapshot {
     pub cells: std::sync::Arc<Vec<CellSnapshot>>,
-    pub metadata: std::sync::Arc<std::collections::HashMap<String, String>>,
-}
-
-impl Default for NotebookSnapshot {
-    fn default() -> Self {
-        Self {
-            cells: std::sync::Arc::new(Vec::new()),
-            metadata: std::sync::Arc::new(std::collections::HashMap::new()),
-        }
-    }
+    /// Typed notebook metadata (kernelspec, language_info, runt deps/trust).
+    ///
+    /// `None` when the doc has no `metadata.notebook_metadata` key yet (e.g.
+    /// freshly created notebooks before the daemon seeds metadata).
+    pub notebook_metadata: Option<NotebookMetadataSnapshot>,
 }
 
 /// This is separate from the handle to allow receiving changes independently
@@ -1900,7 +1912,7 @@ where
         // This is the Rust equivalent of automerge-repo's DocHandle.doc() pattern.
         let initial_snapshot = NotebookSnapshot {
             cells: std::sync::Arc::new(initial_cells.clone()),
-            metadata: std::sync::Arc::new(get_all_metadata_from_doc(&self.doc)),
+            notebook_metadata: get_metadata_snapshot_from_doc(&self.doc),
         };
         let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
 
@@ -1997,7 +2009,7 @@ fn publish_snapshot<S: AsyncRead + AsyncWrite + Unpin>(
 ) {
     let snapshot = NotebookSnapshot {
         cells: std::sync::Arc::new(get_cells_from_doc(&client.doc)),
-        metadata: std::sync::Arc::new(get_all_metadata_from_doc(&client.doc)),
+        notebook_metadata: get_metadata_snapshot_from_doc(&client.doc),
     };
     let _ = snapshot_tx.send(snapshot);
 }
