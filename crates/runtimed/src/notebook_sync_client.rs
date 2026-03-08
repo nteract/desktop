@@ -652,7 +652,8 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
         .map_err(|_| NotebookSyncError::Timeout)?
         .map_err(NotebookSyncError::ConnectionFailed)?;
 
-        let (client, info) = Self::init_open_notebook(stream, path).await?;
+        let pipe_mode = raw_sync_tx.is_some();
+        let (client, info) = Self::init_open_notebook(stream, path, pipe_mode).await?;
         let (handle, receiver, broadcast_rx, cells, metadata) =
             client.into_split_with_raw_sync(raw_sync_tx);
         Ok((handle, receiver, broadcast_rx, cells, metadata, info))
@@ -687,8 +688,10 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
         .map_err(|_| NotebookSyncError::Timeout)?
         .map_err(NotebookSyncError::ConnectionFailed)?;
 
+        let pipe_mode = raw_sync_tx.is_some();
         let (client, info) =
-            Self::init_create_notebook(stream, runtime, working_dir, notebook_id).await?;
+            Self::init_create_notebook(stream, runtime, working_dir, notebook_id, pipe_mode)
+                .await?;
         let (handle, receiver, broadcast_rx, cells, metadata) =
             client.into_split_with_raw_sync(raw_sync_tx);
         Ok((handle, receiver, broadcast_rx, cells, metadata, info))
@@ -802,7 +805,8 @@ impl NotebookSyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
             .open(&pipe_name)
             .map_err(NotebookSyncError::ConnectionFailed)?;
 
-        let (client, info) = Self::init_open_notebook(stream, path).await?;
+        let pipe_mode = raw_sync_tx.is_some();
+        let (client, info) = Self::init_open_notebook(stream, path, pipe_mode).await?;
         let (handle, receiver, broadcast_rx, cells, metadata) =
             client.into_split_with_raw_sync(raw_sync_tx);
         Ok((handle, receiver, broadcast_rx, cells, metadata, info))
@@ -831,8 +835,10 @@ impl NotebookSyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
             .open(&pipe_name)
             .map_err(NotebookSyncError::ConnectionFailed)?;
 
+        let pipe_mode = raw_sync_tx.is_some();
         let (client, info) =
-            Self::init_create_notebook(stream, runtime, working_dir, notebook_id).await?;
+            Self::init_create_notebook(stream, runtime, working_dir, notebook_id, pipe_mode)
+                .await?;
         let (handle, receiver, broadcast_rx, cells, metadata) =
             client.into_split_with_raw_sync(raw_sync_tx);
         Ok((handle, receiver, broadcast_rx, cells, metadata, info))
@@ -1008,6 +1014,7 @@ where
     async fn init_open_notebook(
         mut stream: S,
         path: PathBuf,
+        pipe_mode: bool,
     ) -> Result<(Self, NotebookConnectionInfo), NotebookSyncError> {
         let path_str = path.to_string_lossy().to_string();
         info!("[notebook-sync-client] Opening notebook: {}", path_str);
@@ -1044,8 +1051,26 @@ where
             notebook_id, info.cell_count, info.needs_trust_approval
         );
 
-        // Continue with Automerge sync (same as init)
-        let client = Self::do_initial_sync(stream, notebook_id).await?;
+        // In pipe mode the relay is a transparent byte pipe — the frontend WASM
+        // handles the full Automerge sync protocol with the daemon directly.
+        // Skipping do_initial_sync means the daemon's peer_state tracks the WASM
+        // peer (through the pipe) instead of the relay, fixing the sync state
+        // mismatch that caused changed=false on every frame (#617).
+        let client = if pipe_mode {
+            info!(
+                "[notebook-sync-client] Pipe mode: skipping initial sync for {}",
+                notebook_id
+            );
+            Self {
+                doc: AutoCommit::new(),
+                peer_state: sync::State::new(),
+                stream,
+                notebook_id,
+                pending_broadcasts: Vec::new(),
+            }
+        } else {
+            Self::do_initial_sync(stream, notebook_id).await?
+        };
         Ok((client, info))
     }
 
@@ -1057,6 +1082,7 @@ where
         runtime: String,
         working_dir: Option<PathBuf>,
         notebook_id: Option<String>,
+        pipe_mode: bool,
     ) -> Result<(Self, NotebookConnectionInfo), NotebookSyncError> {
         info!(
             "[notebook-sync-client] Creating new notebook (runtime: {}, working_dir: {:?}, notebook_id: {:?})",
@@ -1102,8 +1128,22 @@ where
             notebook_id, info.cell_count
         );
 
-        // Continue with Automerge sync (same as init)
-        let client = Self::do_initial_sync(stream, notebook_id).await?;
+        // See init_open_notebook for explanation of the pipe_mode skip.
+        let client = if pipe_mode {
+            info!(
+                "[notebook-sync-client] Pipe mode: skipping initial sync for {}",
+                notebook_id
+            );
+            Self {
+                doc: AutoCommit::new(),
+                peer_state: sync::State::new(),
+                stream,
+                notebook_id,
+                pending_broadcasts: Vec::new(),
+            }
+        } else {
+            Self::do_initial_sync(stream, notebook_id).await?
+        };
         Ok((client, info))
     }
 
