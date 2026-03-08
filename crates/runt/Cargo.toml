@@ -21,7 +21,6 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 jupyter-protocol = { workspace = true }
 runtimelib = { workspace = true, features = ["tokio-runtime", "aws-lc-rs"] }
-sidecar = { path = "../sidecar" }
 runtimed = { path = "../runtimed" }
 runt-workspace = { path = "../runt-workspace" }
 clap = { version = "4.5.1", features = ["derive", "color"] }

@@ -5577,7 +5577,6 @@ dependencies = [
  "runtimelib",
  "serde",
  "serde_json",
- "sidecar",
  "tabled",
  "tokio",
  "uuid",
