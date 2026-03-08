@@ -159,6 +159,18 @@ impl NotebookDoc {
         Self { doc }
     }
 
+    /// Create a document with zero operations for sync-only bootstrap.
+    ///
+    /// Unlike `new()`, this does not create a cells list, metadata map, or
+    /// notebook_id. The sync protocol populates everything from the peer.
+    /// All read methods (`cell_count`, `get_cells`, etc.) handle the missing
+    /// keys gracefully (return 0 / empty).
+    pub fn empty() -> Self {
+        Self {
+            doc: AutoCommit::new(),
+        }
+    }
+
     /// Load a notebook document from saved bytes.
     pub fn load(data: &[u8]) -> Result<Self, AutomergeError> {
         let doc = AutoCommit::load(data)?;
@@ -980,6 +992,59 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_empty_doc_has_no_cells_or_metadata() {
+        let doc = NotebookDoc::empty();
+        assert_eq!(doc.notebook_id(), None);
+        assert_eq!(doc.cell_count(), 0);
+        assert_eq!(doc.get_cells(), vec![]);
+        assert_eq!(doc.get_metadata("runtime"), None);
+        assert!(doc.get_metadata_snapshot().is_none());
+        assert!(doc.detect_runtime().is_none());
+    }
+
+    #[test]
+    fn test_empty_doc_set_metadata() {
+        let mut doc = NotebookDoc::empty();
+        // set_metadata should work even without a pre-existing metadata map
+        let result = doc.set_metadata("runtime", "python");
+        assert!(result.is_ok());
+        assert_eq!(doc.get_metadata("runtime"), Some("python".to_string()));
+    }
+
+    #[test]
+    fn test_empty_doc_sync_with_populated_doc() {
+        use automerge::sync;
+
+        let mut daemon = NotebookDoc::new("test-notebook");
+        daemon.add_cell(0, "cell-1", "code").unwrap();
+        daemon.update_source("cell-1", "print('hello')").unwrap();
+
+        let mut empty = NotebookDoc::empty();
+        let mut daemon_state = sync::State::new();
+        let mut empty_state = sync::State::new();
+
+        // Sync until convergence
+        for _ in 0..10 {
+            let msg_from_daemon = daemon.generate_sync_message(&mut daemon_state);
+            let msg_from_empty = empty.generate_sync_message(&mut empty_state);
+            if msg_from_daemon.is_none() && msg_from_empty.is_none() {
+                break;
+            }
+            if let Some(m) = msg_from_daemon {
+                empty.receive_sync_message(&mut empty_state, m).unwrap();
+            }
+            if let Some(m) = msg_from_empty {
+                daemon.receive_sync_message(&mut daemon_state, m).unwrap();
+            }
+        }
+
+        assert_eq!(empty.cell_count(), 1);
+        let cell = empty.get_cell("cell-1").unwrap();
+        assert_eq!(cell.source, "print('hello')");
+        assert_eq!(empty.notebook_id(), Some("test-notebook".to_string()));
+    }
 
     #[test]
     fn test_new_has_empty_cells() {

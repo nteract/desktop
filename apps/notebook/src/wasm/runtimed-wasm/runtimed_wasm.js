@@ -210,6 +210,16 @@ export class NotebookHandle {
         return ret >>> 0;
     }
     /**
+     * Create a handle with an empty Automerge doc (zero operations) for
+     * sync-only bootstrap.  The sync protocol populates the doc from the
+     * daemon — no `GetDocBytes` needed.
+     * @returns {NotebookHandle}
+     */
+    static create_empty() {
+        const ret = wasm.notebookhandle_create_empty();
+        return NotebookHandle.__wrap(ret);
+    }
+    /**
      * Delete a cell by ID. Returns true if the cell was found and deleted.
      * @param {string} cell_id
      * @returns {boolean}

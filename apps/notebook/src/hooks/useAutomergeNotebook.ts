@@ -110,70 +110,75 @@ export function useAutomergeNotebook() {
   // ── Bootstrap ──────────────────────────────────────────────────────
 
   /**
-   * Load the Automerge doc bytes from the Tauri relay and create a local
-   * NotebookHandle.  Returns `true` on success.
+   * Create an empty WASM NotebookHandle for sync-only bootstrap.
    *
-   * IMPORTANT: We do NOT call `syncToRelay()` after loading.  The plan
-   * doc's hard-won lessons say: let the first mutation or daemon message
-   * trigger the first sync exchange, not the load itself.
+   * The handle starts with a zero-operation Automerge doc. The sync
+   * protocol delivers everything — cells, outputs, metadata — from the
+   * daemon through the pipe. No `GetDocBytes` call needed.
+   *
+   * Bootstrap itself is a local operation that always completes once the
+   * WASM runtime is ready, but it immediately kicks off the sync protocol
+   * via `syncToRelay()`, which performs an IPC `invoke` under the hood.
+   * Any IPC failures are logged and do not cause `bootstrap()` to reject.
+   *
+   * Loading state is set to `true` here and is cleared when the first
+   * `automerge:from-daemon` message is received, regardless of its
+   * `changed` flag.
    */
   const bootstrap = useCallback(async () => {
     await wasmReady;
-    try {
-      const bytes = await invoke<number[]>("get_automerge_doc_bytes");
-      const handle = NotebookHandle.load(new Uint8Array(bytes));
 
-      // Dispose previous handle (WASM allocation).
-      handleRef.current?.free();
-      handleRef.current = handle;
-      setNotebookHandle(handle);
+    const handle = NotebookHandle.create_empty();
 
-      await materializeCells(handle);
-      const hasCells = handle.cell_count() > 0;
-      awaitingInitialSyncRef.current = !hasCells;
-      setIsLoading(!hasCells);
-      logger.info(
-        `[automerge-notebook] Bootstrap complete — ${handle.cell_count()} cells`,
-      );
-      return true;
-    } catch (e) {
-      logger.warn(
-        "[automerge-notebook] Bootstrap failed (daemon may not be ready):",
-        e,
-      );
-      return false;
-    }
-  }, [materializeCells]);
+    // Dispose previous handle (WASM allocation).
+    handleRef.current?.free();
+    handleRef.current = handle;
+    setNotebookHandle(handle);
+
+    awaitingInitialSyncRef.current = true;
+    setIsLoading(true);
+
+    // Kick off the sync protocol. If the relay isn't connected yet this
+    // fails silently — the daemon's Phase 1 message (or the daemon:ready
+    // retry) will start the exchange.
+    syncToRelay(handle);
+
+    logger.info("[automerge-notebook] Bootstrap: empty handle, awaiting sync");
+    return true;
+  }, [syncToRelay]);
 
   // ── Lifecycle (effects) ────────────────────────────────────────────
 
   useEffect(() => {
     let cancelled = false;
 
-    // Initial bootstrap — may fail if daemon isn't ready yet, that's OK.
+    // Create empty handle immediately — sync will populate it.
     awaitingInitialSyncRef.current = true;
     setIsLoading(true);
-    bootstrap().then((ok) => {
-      if (cancelled) return;
-      if (!ok) {
-        logger.info("[automerge-notebook] Will retry on daemon:ready");
+    void bootstrap().catch((error) => {
+      logger.error("[automerge-notebook] Bootstrap failed", error);
+      if (!cancelled) {
+        awaitingInitialSyncRef.current = false;
+        setIsLoading(false);
       }
     });
 
     const webview = getCurrentWebview();
 
-    // Re-bootstrap when the daemon (re)connects.
+    // On (re)connect, create a fresh empty handle and let sync deliver
+    // everything. We must NOT reset_sync_state() on an existing handle —
+    // that creates an infinite loop of 85-byte sync messages that never
+    // converge (the WASM keeps re-requesting content it already has).
     const unlistenReady = webview.listen("daemon:ready", async () => {
       if (cancelled) return;
       refreshBlobPort();
       awaitingInitialSyncRef.current = true;
       setIsLoading(true);
-      // Reset sync state so the new relay session starts clean.
-      handleRef.current?.reset_sync_state();
       await bootstrap();
     });
 
-    // Re-bootstrap when a different file is opened via OS association.
+    // Different file opened in this window — need a fresh handle since the
+    // old handle's doc has the previous notebook's content.
     const unlistenFileOpened = webview.listen(
       "notebook:file-opened",
       async () => {

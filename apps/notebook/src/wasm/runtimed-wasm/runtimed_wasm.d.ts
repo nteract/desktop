@@ -43,6 +43,12 @@ export class NotebookHandle {
      */
     cell_count(): number;
     /**
+     * Create a handle with an empty Automerge doc (zero operations) for
+     * sync-only bootstrap.  The sync protocol populates the doc from the
+     * daemon — no `GetDocBytes` needed.
+     */
+    static create_empty(): NotebookHandle;
+    /**
      * Delete a cell by ID. Returns true if the cell was found and deleted.
      */
     delete_cell(cell_id: string): boolean;
@@ -127,6 +133,7 @@ export interface InitOutput {
     readonly jscell_execution_count: (a: number, b: number) => void;
     readonly jscell_outputs_json: (a: number, b: number) => void;
     readonly notebookhandle_new: (a: number, b: number) => number;
+    readonly notebookhandle_create_empty: () => number;
     readonly notebookhandle_load: (a: number, b: number, c: number) => void;
     readonly notebookhandle_cell_count: (a: number) => number;
     readonly notebookhandle_get_cells: (a: number, b: number) => void;

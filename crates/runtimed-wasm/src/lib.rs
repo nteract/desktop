@@ -86,6 +86,16 @@ impl NotebookHandle {
         }
     }
 
+    /// Create a handle with an empty Automerge doc (zero operations) for
+    /// sync-only bootstrap.  The sync protocol populates the doc from the
+    /// daemon — no `GetDocBytes` needed.
+    pub fn create_empty() -> NotebookHandle {
+        NotebookHandle {
+            doc: NotebookDoc::empty(),
+            sync_state: sync::State::new(),
+        }
+    }
+
     /// Load a notebook document from saved bytes (e.g., from get_automerge_doc_bytes).
     pub fn load(bytes: &[u8]) -> Result<NotebookHandle, JsError> {
         let doc =
