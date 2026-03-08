@@ -13,9 +13,12 @@ use runtimed::notebook_sync_client::{
 };
 use runtimed::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 
+use crate::daemon_paths::{get_blob_paths_sync, get_socket_path};
 use crate::error::to_py_err;
 use crate::event_stream::ExecutionEventIterator;
-use crate::output::{Cell, ExecutionEvent, ExecutionResult, Output, SyncEnvironmentResult};
+use crate::output::{
+    Cell, ExecutionEvent, ExecutionResult, NotebookConnectionInfo, Output, SyncEnvironmentResult,
+};
 use crate::output_resolver;
 use crate::subscription::EventIteratorSubscription;
 
@@ -54,6 +57,8 @@ struct SessionState {
     blob_base_url: Option<String>,
     /// Path to blob store directory (fallback for direct disk access)
     blob_store_path: Option<PathBuf>,
+    /// Connection info from daemon (for open_notebook/create_notebook)
+    connection_info: Option<NotebookConnectionInfo>,
 }
 
 impl SessionState {
@@ -66,6 +71,7 @@ impl SessionState {
             env_source: None,
             blob_base_url: None,
             blob_store_path: None,
+            connection_info: None,
         }
     }
 }
@@ -120,6 +126,132 @@ impl Session {
         state.env_source.clone()
     }
 
+    /// Get the connection info from daemon (for open_notebook/create_notebook).
+    ///
+    /// Returns None if not connected via open_notebook() or create_notebook().
+    #[getter]
+    fn connection_info(&self) -> Option<NotebookConnectionInfo> {
+        let state = self.runtime.block_on(self.state.lock());
+        state.connection_info.clone()
+    }
+
+    /// Open an existing notebook file via the daemon.
+    ///
+    /// The daemon loads the file, derives the notebook_id from the canonical path,
+    /// and returns connection info including trust status.
+    ///
+    /// Args:
+    ///     path: Path to the .ipynb file.
+    ///
+    /// Returns:
+    ///     A new Session connected to the opened notebook.
+    ///
+    /// Raises:
+    ///     RuntimedError: If the file cannot be opened or parsed.
+    #[staticmethod]
+    fn open_notebook(path: &str) -> PyResult<Self> {
+        let runtime = Runtime::new().map_err(to_py_err)?;
+        let path_buf = PathBuf::from(path);
+
+        let (notebook_id, state) = runtime.block_on(async {
+            let socket_path = get_socket_path();
+
+            let (handle, sync_rx, broadcast_rx, _cells, _metadata, info) =
+                NotebookSyncClient::connect_open_split(socket_path.clone(), path_buf, None)
+                    .await
+                    .map_err(to_py_err)?;
+
+            // Check for error in response
+            if let Some(error) = info.error {
+                return Err(to_py_err(error));
+            }
+
+            let notebook_id = info.notebook_id.clone();
+            let connection_info = NotebookConnectionInfo::from_protocol(info);
+            let (blob_base_url, blob_store_path) = get_blob_paths_sync(&socket_path);
+
+            let state = SessionState {
+                handle: Some(handle),
+                sync_rx: Some(sync_rx),
+                broadcast_rx: Some(broadcast_rx),
+                kernel_started: false,
+                env_source: None,
+                blob_base_url,
+                blob_store_path,
+                connection_info: Some(connection_info),
+            };
+
+            Ok((notebook_id, state))
+        })?;
+
+        Ok(Self {
+            runtime,
+            state: Arc::new(Mutex::new(state)),
+            notebook_id,
+        })
+    }
+
+    /// Create a new notebook via the daemon.
+    ///
+    /// The daemon creates an empty notebook with one code cell and returns
+    /// connection info with a generated UUID as the notebook_id.
+    ///
+    /// Args:
+    ///     runtime: The kernel runtime type ("python" or "deno"). Defaults to "python".
+    ///     working_dir: Optional working directory for project file detection.
+    ///
+    /// Returns:
+    ///     A new Session connected to the created notebook.
+    #[staticmethod]
+    #[pyo3(signature = (runtime="python", working_dir=None))]
+    fn create_notebook(runtime: &str, working_dir: Option<&str>) -> PyResult<Self> {
+        let rt = Runtime::new().map_err(to_py_err)?;
+        let runtime_str = runtime.to_string();
+        let working_dir_buf = working_dir.map(PathBuf::from);
+
+        let (notebook_id, state) = rt.block_on(async {
+            let socket_path = get_socket_path();
+
+            let (handle, sync_rx, broadcast_rx, _cells, _metadata, info) =
+                NotebookSyncClient::connect_create_split(
+                    socket_path.clone(),
+                    runtime_str,
+                    working_dir_buf,
+                    None,
+                )
+                .await
+                .map_err(to_py_err)?;
+
+            // Check for error in response
+            if let Some(error) = info.error {
+                return Err(to_py_err(error));
+            }
+
+            let notebook_id = info.notebook_id.clone();
+            let connection_info = NotebookConnectionInfo::from_protocol(info);
+            let (blob_base_url, blob_store_path) = get_blob_paths_sync(&socket_path);
+
+            let state = SessionState {
+                handle: Some(handle),
+                sync_rx: Some(sync_rx),
+                broadcast_rx: Some(broadcast_rx),
+                kernel_started: false,
+                env_source: None,
+                blob_base_url,
+                blob_store_path,
+                connection_info: Some(connection_info),
+            };
+
+            Ok((notebook_id, state))
+        })?;
+
+        Ok(Self {
+            runtime: rt,
+            state: Arc::new(Mutex::new(state)),
+            notebook_id,
+        })
+    }
+
     /// Connect to the daemon.
     ///
     /// This is called automatically by start_kernel() if not already connected.
@@ -131,47 +263,14 @@ impl Session {
                 return Ok(()); // Already connected
             }
 
-            // Check for socket path override via environment variable
-            let socket_path = if let Ok(path) = std::env::var("RUNTIMED_SOCKET_PATH") {
-                std::path::PathBuf::from(path)
-            } else {
-                runtimed::default_socket_path()
-            };
+            let socket_path = get_socket_path();
 
             let (handle, sync_rx, broadcast_rx, _cells, _notebook_path) =
                 NotebookSyncClient::connect_split(socket_path.clone(), self.notebook_id.clone())
                     .await
                     .map_err(to_py_err)?;
 
-            // Determine blob server URL and blob store path based on socket path
-            // In dev mode, blob server runs on a per-worktree port
-            let (blob_base_url, blob_store_path) = if let Some(parent) = socket_path.parent() {
-                // Read daemon.json to get blob port
-                let daemon_json = parent.join("daemon.json");
-                let base_url = if daemon_json.exists() {
-                    std::fs::read_to_string(&daemon_json)
-                        .ok()
-                        .and_then(|contents| {
-                            serde_json::from_str::<serde_json::Value>(&contents).ok()
-                        })
-                        .and_then(|info| info.get("blob_port").and_then(|p| p.as_u64()))
-                        .map(|port| format!("http://127.0.0.1:{}", port))
-                } else {
-                    None
-                };
-
-                // Blob store is at {daemon_dir}/blobs/
-                let store_path = parent.join("blobs");
-                let store_path = if store_path.exists() {
-                    Some(store_path)
-                } else {
-                    None
-                };
-
-                (base_url, store_path)
-            } else {
-                (None, None)
-            };
+            let (blob_base_url, blob_store_path) = get_blob_paths_sync(&socket_path);
 
             state.handle = Some(handle);
             state.sync_rx = Some(sync_rx); // Keep alive so sync task doesn't exit
