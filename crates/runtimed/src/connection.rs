@@ -65,6 +65,28 @@ pub enum Handshake {
     /// Pool state subscription: receive broadcasts when pool errors occur/clear.
     /// Read-only channel - server pushes DaemonBroadcast messages to client.
     PoolStateSubscribe,
+
+    /// Open an existing notebook file. Daemon loads from disk, derives notebook_id.
+    ///
+    /// The daemon returns `NotebookConnectionInfo` before starting sync.
+    /// After that, the connection becomes a normal notebook sync connection.
+    OpenNotebook {
+        /// Path to the .ipynb file.
+        path: String,
+    },
+
+    /// Create a new untitled notebook. Daemon creates empty room, generates env_id.
+    ///
+    /// The daemon returns `NotebookConnectionInfo` before starting sync.
+    /// After that, the connection becomes a normal notebook sync connection.
+    CreateNotebook {
+        /// Runtime type: "python" or "deno".
+        runtime: String,
+        /// Working directory for project file detection (pyproject.toml, pixi.toml, environment.yml).
+        /// Used since untitled notebooks have no path to derive working_dir from.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        working_dir: Option<String>,
+    },
 }
 
 /// Protocol version constant.
@@ -73,10 +95,32 @@ pub const PROTOCOL_V2: &str = "v2";
 /// Server response indicating protocol capabilities.
 ///
 /// Sent immediately after handshake, before starting sync.
+/// Used by the `NotebookSync` handshake variant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolCapabilities {
     /// Protocol version (currently always "v2").
     pub protocol: String,
+}
+
+/// Server response for `OpenNotebook` and `CreateNotebook` handshakes.
+///
+/// Sent immediately after handshake, before starting sync.
+/// Contains notebook_id derived by the daemon (from path or generated env_id).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotebookConnectionInfo {
+    /// Protocol version (currently always "v2").
+    pub protocol: String,
+    /// Notebook identifier derived by the daemon.
+    /// For existing files: canonical path.
+    /// For new notebooks: generated UUID (env_id).
+    pub notebook_id: String,
+    /// Number of cells in the notebook (for progress indication).
+    pub cell_count: usize,
+    /// True if the notebook has untrusted dependencies requiring user approval.
+    pub needs_trust_approval: bool,
+    /// Error message if the notebook could not be opened/created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Frame types for notebook sync connections.
@@ -379,6 +423,74 @@ mod tests {
         // Blob
         let json = serde_json::to_string(&Handshake::Blob).unwrap();
         assert_eq!(json, r#"{"channel":"blob"}"#);
+
+        // OpenNotebook
+        let json = serde_json::to_string(&Handshake::OpenNotebook {
+            path: "/home/user/notebook.ipynb".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"channel":"open_notebook","path":"/home/user/notebook.ipynb"}"#
+        );
+
+        // CreateNotebook without working_dir
+        let json = serde_json::to_string(&Handshake::CreateNotebook {
+            runtime: "python".into(),
+            working_dir: None,
+        })
+        .unwrap();
+        assert_eq!(json, r#"{"channel":"create_notebook","runtime":"python"}"#);
+
+        // CreateNotebook with working_dir
+        let json = serde_json::to_string(&Handshake::CreateNotebook {
+            runtime: "deno".into(),
+            working_dir: Some("/home/user/project".into()),
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"channel":"create_notebook","runtime":"deno","working_dir":"/home/user/project"}"#
+        );
+    }
+
+    #[test]
+    fn test_notebook_connection_info_serialization() {
+        // Success case
+        let info = NotebookConnectionInfo {
+            protocol: "v2".into(),
+            notebook_id: "/home/user/notebook.ipynb".into(),
+            cell_count: 5,
+            needs_trust_approval: false,
+            error: None,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert_eq!(
+            json,
+            r#"{"protocol":"v2","notebook_id":"/home/user/notebook.ipynb","cell_count":5,"needs_trust_approval":false}"#
+        );
+
+        // With trust approval needed
+        let info = NotebookConnectionInfo {
+            protocol: "v2".into(),
+            notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            cell_count: 1,
+            needs_trust_approval: true,
+            error: None,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains(r#""needs_trust_approval":true"#));
+
+        // Error case
+        let info = NotebookConnectionInfo {
+            protocol: "v2".into(),
+            notebook_id: String::new(),
+            cell_count: 0,
+            needs_trust_approval: false,
+            error: Some("File not found".into()),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains(r#""error":"File not found""#));
     }
 
     #[tokio::test]

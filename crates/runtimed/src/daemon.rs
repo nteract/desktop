@@ -918,12 +918,257 @@ impl Daemon {
                     self.clone(),
                     working_dir_path,
                     initial_metadata,
+                    false, // Send ProtocolCapabilities for legacy NotebookSync handshake
                 )
                 .await
             }
             Handshake::Blob => self.handle_blob_connection(stream).await,
             Handshake::PoolStateSubscribe => self.handle_pool_state_subscription(stream).await,
+            Handshake::OpenNotebook { path } => self.handle_open_notebook(stream, path).await,
+            Handshake::CreateNotebook {
+                runtime,
+                working_dir,
+            } => {
+                self.handle_create_notebook(stream, runtime, working_dir)
+                    .await
+            }
         }
+    }
+
+    /// Handle an OpenNotebook connection.
+    ///
+    /// Daemon loads the .ipynb file, derives notebook_id, creates room, populates doc.
+    /// Returns NotebookConnectionInfo, then continues as normal notebook sync.
+    async fn handle_open_notebook<S>(self: Arc<Self>, stream: S, path: String) -> anyhow::Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        use crate::connection::{send_json_frame, NotebookConnectionInfo, PROTOCOL_V2};
+
+        info!("[runtimed] OpenNotebook requested for {}", path);
+
+        // Canonicalize path to derive notebook_id (stable across processes)
+        let path_buf = std::path::PathBuf::from(&path);
+        let notebook_id = path_buf
+            .canonicalize()
+            .unwrap_or_else(|_| path_buf.clone())
+            .to_string_lossy()
+            .to_string();
+
+        // Get or create room for this notebook
+        let docs_dir = self.config.notebook_docs_dir.clone();
+        let room = {
+            let mut rooms = self.notebook_rooms.lock().await;
+            crate::notebook_sync_server::get_or_create_room(
+                &mut rooms,
+                &notebook_id,
+                &docs_dir,
+                self.blob_store.clone(),
+            )
+        };
+
+        // Check-and-load atomically under write lock to prevent race conditions.
+        // Two concurrent opens could both see cell_count == 0 if we check with
+        // read lock first, leading to duplicate cells.
+        let cell_count = {
+            let mut doc = room.doc.write().await;
+            let existing_count = doc.cell_count();
+            if existing_count == 0 {
+                // First connection - load from disk
+                match crate::notebook_sync_server::load_notebook_from_disk(&mut doc, &path_buf)
+                    .await
+                {
+                    Ok(count) => {
+                        info!("[runtimed] Loaded {} cells from {} into room", count, path);
+                        count
+                    }
+                    Err(e) => {
+                        // Drop the doc lock before removing room
+                        drop(doc);
+                        // Remove the room to prevent stale trust state on retry
+                        {
+                            let mut rooms = self.notebook_rooms.lock().await;
+                            rooms.remove(&notebook_id);
+                            info!("[runtimed] Removed room {} after load failure", notebook_id);
+                        }
+                        // Send error response and return
+                        let (mut reader, mut writer) = tokio::io::split(stream);
+                        let response = NotebookConnectionInfo {
+                            protocol: PROTOCOL_V2.to_string(),
+                            notebook_id: String::new(),
+                            cell_count: 0,
+                            needs_trust_approval: false,
+                            error: Some(format!("Failed to load notebook: {}", e)),
+                        };
+                        send_json_frame(&mut writer, &response).await?;
+                        // Drain any remaining data from reader to avoid broken pipe
+                        let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
+                        return Ok(());
+                    }
+                }
+            } else {
+                // Room already has cells from another connection
+                info!(
+                    "[runtimed] Room for {} already has {} cells (joining existing)",
+                    path, existing_count
+                );
+                existing_count
+            }
+        };
+
+        // Get trust state (already verified during room creation)
+        let trust_state = room.trust_state.read().await;
+        let needs_trust_approval = !matches!(
+            trust_state.status,
+            runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
+        );
+
+        // Send NotebookConnectionInfo response
+        let (reader, mut writer) = tokio::io::split(stream);
+        let response = NotebookConnectionInfo {
+            protocol: PROTOCOL_V2.to_string(),
+            notebook_id: notebook_id.clone(),
+            cell_count,
+            needs_trust_approval,
+            error: None,
+        };
+        send_json_frame(&mut writer, &response).await?;
+
+        // Get settings for sync and auto-launch
+        let settings = self.settings.read().await.get_all();
+        let default_runtime = settings.default_runtime;
+        let default_python_env = settings.default_python_env;
+
+        // working_dir derived from path's parent directory
+        let working_dir_path = path_buf.parent().map(|p| p.to_path_buf());
+
+        // Drop the trust_state lock before continuing
+        drop(trust_state);
+
+        // Continue with normal notebook sync (handles auto-launch internally)
+        crate::notebook_sync_server::handle_notebook_sync_connection(
+            reader,
+            writer,
+            room,
+            self.notebook_rooms.clone(),
+            notebook_id,
+            default_runtime,
+            default_python_env,
+            self.clone(),
+            working_dir_path,
+            None, // No initial_metadata - doc is already populated
+            true, // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
+        )
+        .await
+    }
+
+    /// Handle a CreateNotebook connection.
+    ///
+    /// Daemon creates empty room with one code cell, generates env_id as notebook_id.
+    /// Returns NotebookConnectionInfo, then continues as normal notebook sync.
+    async fn handle_create_notebook<S>(
+        self: Arc<Self>,
+        stream: S,
+        runtime: String,
+        working_dir: Option<String>,
+    ) -> anyhow::Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        use crate::connection::{send_json_frame, NotebookConnectionInfo, PROTOCOL_V2};
+
+        info!(
+            "[runtimed] CreateNotebook requested (runtime={}, working_dir={:?})",
+            runtime, working_dir
+        );
+
+        // Get settings for default Python env preference
+        let settings = self.settings.read().await.get_all();
+        let default_python_env = settings.default_python_env;
+        let default_runtime = settings.default_runtime;
+
+        // Generate notebook_id (env_id) upfront - UUID for untitled notebooks
+        let notebook_id = uuid::Uuid::new_v4().to_string();
+
+        // Create room for this notebook
+        let docs_dir = self.config.notebook_docs_dir.clone();
+        let room = {
+            let mut rooms = self.notebook_rooms.lock().await;
+            crate::notebook_sync_server::get_or_create_room(
+                &mut rooms,
+                &notebook_id,
+                &docs_dir,
+                self.blob_store.clone(),
+            )
+        };
+
+        // Populate the room's doc with the empty notebook content
+        let cell_count = {
+            let mut doc = room.doc.write().await;
+            match crate::notebook_sync_server::create_empty_notebook(
+                &mut doc,
+                &runtime,
+                default_python_env.clone(),
+                Some(&notebook_id),
+            ) {
+                Ok(_) => doc.cell_count(),
+                Err(e) => {
+                    // Drop the doc lock before removing room
+                    drop(doc);
+                    // Remove the room to prevent stale state (consistency with OpenNotebook)
+                    {
+                        let mut rooms = self.notebook_rooms.lock().await;
+                        rooms.remove(&notebook_id);
+                        info!(
+                            "[runtimed] Removed room {} after create failure",
+                            notebook_id
+                        );
+                    }
+                    let (mut reader, mut writer) = tokio::io::split(stream);
+                    let response = NotebookConnectionInfo {
+                        protocol: PROTOCOL_V2.to_string(),
+                        notebook_id: String::new(),
+                        cell_count: 0,
+                        needs_trust_approval: false,
+                        error: Some(format!("Failed to create notebook: {}", e)),
+                    };
+                    send_json_frame(&mut writer, &response).await?;
+                    let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
+                    return Ok(());
+                }
+            }
+        };
+
+        // Send NotebookConnectionInfo response
+        // New notebooks have no deps, so no trust approval needed
+        let (reader, mut writer) = tokio::io::split(stream);
+        let response = NotebookConnectionInfo {
+            protocol: PROTOCOL_V2.to_string(),
+            notebook_id: notebook_id.clone(),
+            cell_count,
+            needs_trust_approval: false,
+            error: None,
+        };
+        send_json_frame(&mut writer, &response).await?;
+
+        // working_dir for untitled notebooks (used for project file detection)
+        let working_dir_path = working_dir.map(std::path::PathBuf::from);
+
+        // Continue with normal notebook sync
+        crate::notebook_sync_server::handle_notebook_sync_connection(
+            reader,
+            writer,
+            room,
+            self.notebook_rooms.clone(),
+            notebook_id,
+            default_runtime,
+            default_python_env,
+            self.clone(),
+            working_dir_path,
+            None, // No initial_metadata - doc is already populated
+            true, // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
+        )
+        .await
     }
 
     /// Handle a pool state subscription connection.

@@ -665,6 +665,10 @@ pub fn get_or_create_room(
 /// doc bytes are flushed via debounced persistence.
 ///
 /// Uses v2 typed frames protocol (with first-byte type indicator).
+///
+/// If `skip_capabilities` is true, the ProtocolCapabilities frame is not sent.
+/// This is used for OpenNotebook/CreateNotebook handshakes where the protocol
+/// is already communicated in the NotebookConnectionInfo response.
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_notebook_sync_connection<R, W>(
     mut reader: R,
@@ -677,6 +681,7 @@ pub async fn handle_notebook_sync_connection<R, W>(
     daemon: std::sync::Arc<crate::daemon::Daemon>,
     working_dir: Option<PathBuf>,
     initial_metadata: Option<String>,
+    skip_capabilities: bool,
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin,
@@ -772,11 +777,13 @@ where
         }
     }
 
-    // Send capabilities response (v2 protocol)
-    let caps = connection::ProtocolCapabilities {
-        protocol: connection::PROTOCOL_V2.to_string(),
-    };
-    connection::send_json_frame(&mut writer, &caps).await?;
+    // Send capabilities response (v2 protocol) unless already sent via NotebookConnectionInfo
+    if !skip_capabilities {
+        let caps = connection::ProtocolCapabilities {
+            protocol: connection::PROTOCOL_V2.to_string(),
+        };
+        connection::send_json_frame(&mut writer, &caps).await?;
+    }
 
     let result = run_sync_loop_v2(&mut reader, &mut writer, &room, daemon.clone()).await;
 
@@ -3101,6 +3108,177 @@ fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<Vec<CellSnapshot>>
     Some(parsed_cells)
 }
 
+/// Parse notebook metadata from a .ipynb JSON value.
+///
+/// Uses `NotebookMetadataSnapshot::from_metadata_value` which extracts
+/// kernelspec, language_info, and runt namespace from the metadata.
+fn parse_metadata_from_ipynb(json: &serde_json::Value) -> Option<NotebookMetadataSnapshot> {
+    let metadata = json.get("metadata")?;
+    Some(NotebookMetadataSnapshot::from_metadata_value(metadata))
+}
+
+/// Load notebook cells and metadata from a .ipynb file into a NotebookDoc.
+///
+/// Called by daemon-owned notebook loading (`OpenNotebook` handshake).
+/// Parses the file and populates the Automerge doc with cells and metadata.
+///
+/// Returns the cell count on success.
+pub async fn load_notebook_from_disk(
+    doc: &mut NotebookDoc,
+    path: &std::path::Path,
+) -> Result<usize, String> {
+    // Read the file
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .map_err(|e| format!("Failed to read notebook: {}", e))?;
+
+    // Parse JSON
+    let json: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("Invalid notebook JSON: {}", e))?;
+
+    // Parse cells
+    let cells = parse_cells_from_ipynb(&json)
+        .ok_or_else(|| "Failed to parse cells from notebook".to_string())?;
+
+    // Populate cells in the doc
+    for (i, cell) in cells.iter().enumerate() {
+        doc.add_cell(i, &cell.id, &cell.cell_type)
+            .map_err(|e| format!("Failed to add cell: {}", e))?;
+        doc.update_source(&cell.id, &cell.source)
+            .map_err(|e| format!("Failed to update source: {}", e))?;
+        if !cell.outputs.is_empty() {
+            doc.set_outputs(&cell.id, &cell.outputs)
+                .map_err(|e| format!("Failed to set outputs: {}", e))?;
+        }
+        doc.set_execution_count(&cell.id, &cell.execution_count)
+            .map_err(|e| format!("Failed to set execution count: {}", e))?;
+    }
+
+    // Parse and set metadata
+    if let Some(metadata_snapshot) = parse_metadata_from_ipynb(&json) {
+        doc.set_metadata_snapshot(&metadata_snapshot)
+            .map_err(|e| format!("Failed to set metadata: {}", e))?;
+    }
+
+    Ok(cells.len())
+}
+
+/// Create a new empty notebook with a single code cell.
+///
+/// Called by daemon-owned notebook creation (`CreateNotebook` handshake).
+/// Uses the provided env_id or generates a new one, and populates the doc
+/// with default metadata for the specified runtime.
+///
+/// Returns the env_id used on success.
+pub fn create_empty_notebook(
+    doc: &mut NotebookDoc,
+    runtime: &str,
+    default_python_env: crate::settings_doc::PythonEnvType,
+    env_id: Option<&str>,
+) -> Result<String, String> {
+    let env_id = env_id
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let cell_id = uuid::Uuid::new_v4().to_string();
+
+    // Add a single empty code cell
+    doc.add_cell(0, &cell_id, "code")
+        .map_err(|e| format!("Failed to add cell: {}", e))?;
+
+    // Build metadata based on runtime
+    let metadata_snapshot = build_new_notebook_metadata(runtime, &env_id, default_python_env);
+
+    doc.set_metadata_snapshot(&metadata_snapshot)
+        .map_err(|e| format!("Failed to set metadata: {}", e))?;
+
+    Ok(env_id)
+}
+
+/// Build default metadata for a new notebook based on runtime.
+fn build_new_notebook_metadata(
+    runtime: &str,
+    env_id: &str,
+    default_python_env: crate::settings_doc::PythonEnvType,
+) -> NotebookMetadataSnapshot {
+    use crate::notebook_metadata::{
+        CondaInlineMetadata, KernelspecSnapshot, LanguageInfoSnapshot, RuntMetadata,
+        UvInlineMetadata,
+    };
+
+    let (kernelspec, language_info, runt) = match runtime {
+        "deno" => (
+            KernelspecSnapshot {
+                name: "deno".to_string(),
+                display_name: "Deno".to_string(),
+                language: Some("typescript".to_string()),
+            },
+            LanguageInfoSnapshot {
+                name: "typescript".to_string(),
+                version: None,
+            },
+            RuntMetadata {
+                schema_version: "1".to_string(),
+                env_id: Some(env_id.to_string()),
+                uv: None,
+                conda: None,
+                deno: None,
+                trust_signature: None,
+                trust_timestamp: None,
+            },
+        ),
+        _ => {
+            // Python (default)
+            let (uv, conda) = match default_python_env {
+                crate::settings_doc::PythonEnvType::Conda => (
+                    None,
+                    Some(CondaInlineMetadata {
+                        dependencies: vec![],
+                        // Default to conda-forge to match launch logic normalization
+                        // (avoids false channel-drift detection)
+                        channels: vec!["conda-forge".to_string()],
+                        python: None,
+                    }),
+                ),
+                crate::settings_doc::PythonEnvType::Uv
+                | crate::settings_doc::PythonEnvType::Other(_) => (
+                    Some(UvInlineMetadata {
+                        dependencies: vec![],
+                        requires_python: None,
+                    }),
+                    None,
+                ),
+            };
+
+            (
+                KernelspecSnapshot {
+                    name: "python3".to_string(),
+                    display_name: "Python 3".to_string(),
+                    language: Some("python".to_string()),
+                },
+                LanguageInfoSnapshot {
+                    name: "python".to_string(),
+                    version: None,
+                },
+                RuntMetadata {
+                    schema_version: "1".to_string(),
+                    env_id: Some(env_id.to_string()),
+                    uv,
+                    conda,
+                    deno: None,
+                    trust_signature: None,
+                    trust_timestamp: None,
+                },
+            )
+        }
+    };
+
+    NotebookMetadataSnapshot {
+        kernelspec: Some(kernelspec),
+        language_info: Some(language_info),
+        runt,
+    }
+}
+
 /// Apply external .ipynb changes to the Automerge doc.
 ///
 /// Compares cells by ID and:
@@ -4441,5 +4619,144 @@ mod tests {
             doc.get_cells()
         };
         assert_eq!(cells[0].source, "x=1", "Source should remain unchanged");
+    }
+
+    // ========================================================================
+    // Tests for daemon-owned notebook loading functions (Phase 2)
+    // ========================================================================
+
+    #[test]
+    fn test_build_new_notebook_metadata_deno() {
+        let metadata = build_new_notebook_metadata(
+            "deno",
+            "test-env-id",
+            crate::settings_doc::PythonEnvType::Uv,
+        );
+
+        assert_eq!(metadata.kernelspec.as_ref().unwrap().name, "deno");
+        assert_eq!(metadata.kernelspec.as_ref().unwrap().display_name, "Deno");
+        assert_eq!(
+            metadata.kernelspec.as_ref().unwrap().language,
+            Some("typescript".to_string())
+        );
+        assert_eq!(metadata.language_info.as_ref().unwrap().name, "typescript");
+        assert_eq!(metadata.runt.env_id, Some("test-env-id".to_string()));
+        assert!(metadata.runt.uv.is_none());
+        assert!(metadata.runt.conda.is_none());
+    }
+
+    #[test]
+    fn test_build_new_notebook_metadata_python_uv() {
+        let metadata = build_new_notebook_metadata(
+            "python",
+            "test-env-id",
+            crate::settings_doc::PythonEnvType::Uv,
+        );
+
+        assert_eq!(metadata.kernelspec.as_ref().unwrap().name, "python3");
+        assert_eq!(
+            metadata.kernelspec.as_ref().unwrap().display_name,
+            "Python 3"
+        );
+        assert_eq!(
+            metadata.kernelspec.as_ref().unwrap().language,
+            Some("python".to_string())
+        );
+        assert_eq!(metadata.language_info.as_ref().unwrap().name, "python");
+        assert_eq!(metadata.runt.env_id, Some("test-env-id".to_string()));
+        assert!(metadata.runt.uv.is_some());
+        assert!(metadata.runt.conda.is_none());
+        assert!(metadata.runt.uv.as_ref().unwrap().dependencies.is_empty());
+    }
+
+    #[test]
+    fn test_build_new_notebook_metadata_python_conda() {
+        let metadata = build_new_notebook_metadata(
+            "python",
+            "test-env-id",
+            crate::settings_doc::PythonEnvType::Conda,
+        );
+
+        assert_eq!(metadata.kernelspec.as_ref().unwrap().name, "python3");
+        assert_eq!(metadata.language_info.as_ref().unwrap().name, "python");
+        assert_eq!(metadata.runt.env_id, Some("test-env-id".to_string()));
+        assert!(metadata.runt.uv.is_none());
+        assert!(metadata.runt.conda.is_some());
+        assert!(metadata
+            .runt
+            .conda
+            .as_ref()
+            .unwrap()
+            .dependencies
+            .is_empty());
+        // Verify default channels to avoid false channel-drift detection
+        assert_eq!(
+            metadata.runt.conda.as_ref().unwrap().channels,
+            vec!["conda-forge".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_create_empty_notebook_python() {
+        let mut doc = NotebookDoc::new("test");
+        let result = create_empty_notebook(
+            &mut doc,
+            "python",
+            crate::settings_doc::PythonEnvType::Uv,
+            None,
+        );
+
+        assert!(result.is_ok());
+        let env_id = result.unwrap();
+        assert!(!env_id.is_empty(), "Should generate an env_id");
+
+        // Should have exactly one cell
+        assert_eq!(doc.cell_count(), 1);
+        let cells = doc.get_cells();
+        assert_eq!(cells[0].cell_type, "code");
+        assert!(cells[0].source.is_empty());
+    }
+
+    #[test]
+    fn test_create_empty_notebook_deno() {
+        let mut doc = NotebookDoc::new("test");
+        let result = create_empty_notebook(
+            &mut doc,
+            "deno",
+            crate::settings_doc::PythonEnvType::Uv, // Ignored for deno
+            None,
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(doc.cell_count(), 1);
+
+        // Check metadata was set correctly
+        let metadata = doc.get_metadata_snapshot();
+        assert!(metadata.is_some());
+        let metadata = metadata.unwrap();
+        assert_eq!(metadata.kernelspec.as_ref().unwrap().name, "deno");
+    }
+
+    #[test]
+    fn test_create_empty_notebook_with_provided_env_id() {
+        let mut doc = NotebookDoc::new("test");
+        let provided_id = "my-custom-env-id";
+        let result = create_empty_notebook(
+            &mut doc,
+            "python",
+            crate::settings_doc::PythonEnvType::Uv,
+            Some(provided_id),
+        );
+
+        assert!(result.is_ok());
+        let env_id = result.unwrap();
+        assert_eq!(env_id, provided_id, "Should use provided env_id");
+
+        let metadata = doc.get_metadata_snapshot().unwrap();
+        assert_eq!(
+            metadata.runt.env_id,
+            Some(provided_id.to_string()),
+            "Metadata should have provided env_id"
+        );
     }
 }

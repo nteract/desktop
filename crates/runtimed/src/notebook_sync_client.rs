@@ -23,7 +23,9 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use crate::connection::{self, Handshake, NotebookFrameType, ProtocolCapabilities, PROTOCOL_V2};
+use crate::connection::{
+    self, Handshake, NotebookConnectionInfo, NotebookFrameType, ProtocolCapabilities, PROTOCOL_V2,
+};
 use crate::notebook_doc::{
     get_cells_from_doc, get_metadata_from_doc, set_metadata_in_doc, CellSnapshot,
 };
@@ -599,6 +601,73 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
         .await?;
         Ok(client.into_split_with_raw_sync(raw_sync_tx))
     }
+
+    /// Connect by opening an existing notebook file (daemon-owned loading).
+    ///
+    /// The daemon loads the file, derives the notebook_id, and returns it.
+    /// Returns NotebookConnectionInfo so caller can get notebook_id and trust status.
+    pub async fn connect_open_split(
+        socket_path: PathBuf,
+        path: PathBuf,
+        raw_sync_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    ) -> Result<
+        (
+            NotebookSyncHandle,
+            NotebookSyncReceiver,
+            NotebookBroadcastReceiver,
+            Vec<CellSnapshot>,
+            Option<String>,
+            NotebookConnectionInfo,
+        ),
+        NotebookSyncError,
+    > {
+        let stream = tokio::time::timeout(
+            Duration::from_secs(2),
+            tokio::net::UnixStream::connect(&socket_path),
+        )
+        .await
+        .map_err(|_| NotebookSyncError::Timeout)?
+        .map_err(NotebookSyncError::ConnectionFailed)?;
+
+        let (client, info) = Self::init_open_notebook(stream, path).await?;
+        let (handle, receiver, broadcast_rx, cells, metadata) =
+            client.into_split_with_raw_sync(raw_sync_tx);
+        Ok((handle, receiver, broadcast_rx, cells, metadata, info))
+    }
+
+    /// Connect by creating a new notebook (daemon-owned creation).
+    ///
+    /// The daemon creates an empty notebook with one cell and returns the notebook_id.
+    /// Returns NotebookConnectionInfo so caller can get notebook_id.
+    pub async fn connect_create_split(
+        socket_path: PathBuf,
+        runtime: String,
+        working_dir: Option<PathBuf>,
+        raw_sync_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    ) -> Result<
+        (
+            NotebookSyncHandle,
+            NotebookSyncReceiver,
+            NotebookBroadcastReceiver,
+            Vec<CellSnapshot>,
+            Option<String>,
+            NotebookConnectionInfo,
+        ),
+        NotebookSyncError,
+    > {
+        let stream = tokio::time::timeout(
+            Duration::from_secs(2),
+            tokio::net::UnixStream::connect(&socket_path),
+        )
+        .await
+        .map_err(|_| NotebookSyncError::Timeout)?
+        .map_err(NotebookSyncError::ConnectionFailed)?;
+
+        let (client, info) = Self::init_create_notebook(stream, runtime, working_dir).await?;
+        let (handle, receiver, broadcast_rx, cells, metadata) =
+            client.into_split_with_raw_sync(raw_sync_tx);
+        Ok((handle, receiver, broadcast_rx, cells, metadata, info))
+    }
 }
 
 #[cfg(windows)]
@@ -685,6 +754,61 @@ impl NotebookSyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
             Self::connect_with_options(socket_path, notebook_id, working_dir, initial_metadata)
                 .await?;
         Ok(client.into_split_with_raw_sync(raw_sync_tx))
+    }
+
+    /// Connect by opening an existing notebook file (daemon-owned loading).
+    pub async fn connect_open_split(
+        socket_path: PathBuf,
+        path: PathBuf,
+        raw_sync_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    ) -> Result<
+        (
+            NotebookSyncHandle,
+            NotebookSyncReceiver,
+            NotebookBroadcastReceiver,
+            Vec<CellSnapshot>,
+            Option<String>,
+            NotebookConnectionInfo,
+        ),
+        NotebookSyncError,
+    > {
+        let pipe_name = socket_path.to_string_lossy().to_string();
+        let stream = tokio::net::windows::named_pipe::ClientOptions::new()
+            .open(&pipe_name)
+            .map_err(NotebookSyncError::ConnectionFailed)?;
+
+        let (client, info) = Self::init_open_notebook(stream, path).await?;
+        let (handle, receiver, broadcast_rx, cells, metadata) =
+            client.into_split_with_raw_sync(raw_sync_tx);
+        Ok((handle, receiver, broadcast_rx, cells, metadata, info))
+    }
+
+    /// Connect by creating a new notebook (daemon-owned creation).
+    pub async fn connect_create_split(
+        socket_path: PathBuf,
+        runtime: String,
+        working_dir: Option<PathBuf>,
+        raw_sync_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    ) -> Result<
+        (
+            NotebookSyncHandle,
+            NotebookSyncReceiver,
+            NotebookBroadcastReceiver,
+            Vec<CellSnapshot>,
+            Option<String>,
+            NotebookConnectionInfo,
+        ),
+        NotebookSyncError,
+    > {
+        let pipe_name = socket_path.to_string_lossy().to_string();
+        let stream = tokio::net::windows::named_pipe::ClientOptions::new()
+            .open(&pipe_name)
+            .map_err(NotebookSyncError::ConnectionFailed)?;
+
+        let (client, info) = Self::init_create_notebook(stream, runtime, working_dir).await?;
+        let (handle, receiver, broadcast_rx, cells, metadata) =
+            client.into_split_with_raw_sync(raw_sync_tx);
+        Ok((handle, receiver, broadcast_rx, cells, metadata, info))
     }
 }
 
@@ -817,6 +941,221 @@ where
                                     "[notebook-sync-client] Failed to deserialize broadcast: {} (payload: {} bytes)",
                                     e,
                                     frame.payload.len()
+                                );
+                            }
+                        }
+                    }
+                    NotebookFrameType::Response => {
+                        warn!("[notebook-sync-client] Unexpected Response frame during init");
+                    }
+                    NotebookFrameType::Request => {
+                        warn!("[notebook-sync-client] Unexpected Request frame during init");
+                    }
+                },
+                Ok(Ok(None)) => return Err(NotebookSyncError::Disconnected),
+                Ok(Err(e)) => return Err(NotebookSyncError::ConnectionFailed(e)),
+                Err(_) => break, // Timeout — initial sync is done
+            }
+        }
+
+        let cells = get_cells_from_doc(&doc);
+        info!(
+            "[notebook-sync-client] Initial sync complete for {}: {} cells, {} pending broadcasts",
+            notebook_id,
+            cells.len(),
+            pending_broadcasts.len(),
+        );
+
+        Ok(Self {
+            doc,
+            peer_state,
+            stream,
+            notebook_id,
+            pending_broadcasts,
+        })
+    }
+
+    /// Initialize by opening an existing notebook file.
+    ///
+    /// The daemon loads the file, derives notebook_id, and returns NotebookConnectionInfo.
+    async fn init_open_notebook(
+        mut stream: S,
+        path: PathBuf,
+    ) -> Result<(Self, NotebookConnectionInfo), NotebookSyncError> {
+        let path_str = path.to_string_lossy().to_string();
+        info!("[notebook-sync-client] Opening notebook: {}", path_str);
+
+        // Send OpenNotebook handshake
+        connection::send_json_frame(&mut stream, &Handshake::OpenNotebook { path: path_str })
+            .await
+            .map_err(|e| NotebookSyncError::SyncError(format!("handshake: {}", e)))?;
+
+        // Receive NotebookConnectionInfo
+        let first_frame = connection::recv_frame(&mut stream)
+            .await?
+            .ok_or(NotebookSyncError::Disconnected)?;
+
+        let info: NotebookConnectionInfo = serde_json::from_slice(&first_frame)
+            .map_err(|e| NotebookSyncError::SyncError(format!("invalid response: {}", e)))?;
+
+        // Check for error in response
+        if let Some(ref error) = info.error {
+            return Err(NotebookSyncError::SyncError(error.clone()));
+        }
+
+        // Validate protocol version
+        if info.protocol != PROTOCOL_V2 {
+            return Err(NotebookSyncError::SyncError(format!(
+                "unsupported protocol version: {}",
+                info.protocol
+            )));
+        }
+
+        let notebook_id = info.notebook_id.clone();
+        info!(
+            "[notebook-sync-client] Daemon returned notebook_id: {} ({} cells, trust_approval: {})",
+            notebook_id, info.cell_count, info.needs_trust_approval
+        );
+
+        // Continue with Automerge sync (same as init)
+        let client = Self::do_initial_sync(stream, notebook_id).await?;
+        Ok((client, info))
+    }
+
+    /// Initialize by creating a new notebook.
+    ///
+    /// The daemon creates an empty notebook and returns NotebookConnectionInfo.
+    async fn init_create_notebook(
+        mut stream: S,
+        runtime: String,
+        working_dir: Option<PathBuf>,
+    ) -> Result<(Self, NotebookConnectionInfo), NotebookSyncError> {
+        info!(
+            "[notebook-sync-client] Creating new notebook (runtime: {}, working_dir: {:?})",
+            runtime, working_dir
+        );
+
+        // Send CreateNotebook handshake
+        connection::send_json_frame(
+            &mut stream,
+            &Handshake::CreateNotebook {
+                runtime,
+                working_dir: working_dir.map(|p| p.to_string_lossy().to_string()),
+            },
+        )
+        .await
+        .map_err(|e| NotebookSyncError::SyncError(format!("handshake: {}", e)))?;
+
+        // Receive NotebookConnectionInfo
+        let first_frame = connection::recv_frame(&mut stream)
+            .await?
+            .ok_or(NotebookSyncError::Disconnected)?;
+
+        let info: NotebookConnectionInfo = serde_json::from_slice(&first_frame)
+            .map_err(|e| NotebookSyncError::SyncError(format!("invalid response: {}", e)))?;
+
+        // Check for error in response
+        if let Some(ref error) = info.error {
+            return Err(NotebookSyncError::SyncError(error.clone()));
+        }
+
+        // Validate protocol version
+        if info.protocol != PROTOCOL_V2 {
+            return Err(NotebookSyncError::SyncError(format!(
+                "unsupported protocol version: {}",
+                info.protocol
+            )));
+        }
+
+        let notebook_id = info.notebook_id.clone();
+        info!(
+            "[notebook-sync-client] Daemon created notebook_id: {} ({} cells)",
+            notebook_id, info.cell_count
+        );
+
+        // Continue with Automerge sync (same as init)
+        let client = Self::do_initial_sync(stream, notebook_id).await?;
+        Ok((client, info))
+    }
+
+    /// Perform initial Automerge sync after handshake is complete.
+    ///
+    /// This is the common sync logic used by all init methods after the handshake
+    /// response has been received.
+    async fn do_initial_sync(
+        mut stream: S,
+        notebook_id: String,
+    ) -> Result<Self, NotebookSyncError> {
+        let mut doc = AutoCommit::new();
+        let mut peer_state = sync::State::new();
+        let mut pending_broadcasts = Vec::new();
+
+        // Read the first typed frame (Automerge sync)
+        match connection::recv_typed_frame(&mut stream).await? {
+            Some(frame) => {
+                if frame.frame_type != NotebookFrameType::AutomergeSync {
+                    return Err(NotebookSyncError::SyncError(format!(
+                        "expected AutomergeSync frame, got {:?}",
+                        frame.frame_type
+                    )));
+                }
+                let message = sync::Message::decode(&frame.payload)
+                    .map_err(|e| NotebookSyncError::SyncError(format!("decode: {}", e)))?;
+                doc.sync()
+                    .receive_sync_message(&mut peer_state, message)
+                    .map_err(|e| NotebookSyncError::SyncError(format!("receive: {}", e)))?;
+            }
+            None => return Err(NotebookSyncError::Disconnected),
+        }
+
+        // Send our sync message back
+        if let Some(msg) = doc.sync().generate_sync_message(&mut peer_state) {
+            connection::send_typed_frame(
+                &mut stream,
+                NotebookFrameType::AutomergeSync,
+                &msg.encode(),
+            )
+            .await?;
+        }
+
+        // Continue sync rounds until no more messages (short timeout)
+        loop {
+            match tokio::time::timeout(
+                Duration::from_millis(100),
+                connection::recv_typed_frame(&mut stream),
+            )
+            .await
+            {
+                Ok(Ok(Some(frame))) => match frame.frame_type {
+                    NotebookFrameType::AutomergeSync => {
+                        let message = sync::Message::decode(&frame.payload)
+                            .map_err(|e| NotebookSyncError::SyncError(format!("decode: {}", e)))?;
+                        doc.sync()
+                            .receive_sync_message(&mut peer_state, message)
+                            .map_err(|e| NotebookSyncError::SyncError(format!("receive: {}", e)))?;
+
+                        if let Some(msg) = doc.sync().generate_sync_message(&mut peer_state) {
+                            connection::send_typed_frame(
+                                &mut stream,
+                                NotebookFrameType::AutomergeSync,
+                                &msg.encode(),
+                            )
+                            .await?;
+                        }
+                    }
+                    NotebookFrameType::Broadcast => {
+                        match serde_json::from_slice::<NotebookBroadcast>(&frame.payload) {
+                            Ok(broadcast) => {
+                                info!(
+                                    "[notebook-sync-client] Received broadcast during init: {:?}",
+                                    broadcast
+                                );
+                                pending_broadcasts.push(broadcast);
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "[notebook-sync-client] Failed to deserialize broadcast: {}",
+                                    e
                                 );
                             }
                         }
