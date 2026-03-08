@@ -514,6 +514,11 @@ pub struct NotebookSyncClient<S> {
     /// Broadcasts received during initial sync (before split).
     /// These are delivered immediately after into_split creates the channels.
     pending_broadcasts: Vec<NotebookBroadcast>,
+    /// Raw AutomergeSync frame payloads buffered during request/response cycles.
+    /// In pipe mode, `wait_for_response_with_broadcast` consumes sync frames from
+    /// the socket that should be forwarded to the WASM. These are buffered here
+    /// and drained by `run_sync_task` after each `SendRequest` completes.
+    pending_sync_frames: Vec<Vec<u8>>,
 }
 
 #[cfg(unix)]
@@ -1018,6 +1023,7 @@ where
             stream,
             notebook_id,
             pending_broadcasts,
+            pending_sync_frames: Vec::new(),
         })
     }
 
@@ -1080,6 +1086,7 @@ where
                 stream,
                 notebook_id,
                 pending_broadcasts: Vec::new(),
+                pending_sync_frames: Vec::new(),
             }
         } else {
             Self::do_initial_sync(stream, notebook_id).await?
@@ -1153,6 +1160,7 @@ where
                 stream,
                 notebook_id,
                 pending_broadcasts: Vec::new(),
+                pending_sync_frames: Vec::new(),
             }
         } else {
             Self::do_initial_sync(stream, notebook_id).await?
@@ -1269,6 +1277,7 @@ where
             stream,
             notebook_id,
             pending_broadcasts,
+            pending_sync_frames: Vec::new(),
         })
     }
 
@@ -1792,14 +1801,15 @@ where
                         return Ok(response);
                     }
                     NotebookFrameType::AutomergeSync => {
-                        // In pipe mode this consumes sync frames that should be
-                        // forwarded to the WASM via raw_sync_tx. Not the primary
-                        // issue (see sync convergence fix) but worth fixing later.
-                        debug!(
-                            "[notebook-sync-client] AutomergeSync frame consumed during request/response \
-                             wait ({} bytes)",
-                            frame.payload.len()
-                        );
+                        // Buffer the raw payload so run_sync_task can forward it
+                        // through raw_sync_tx in pipe mode. Without this, sync
+                        // frames arriving during request/response (e.g. run-all
+                        // sending 5x ClearOutputs) are consumed by the relay and
+                        // never reach the WASM, causing sync state divergence.
+                        self.pending_sync_frames.push(frame.payload.clone());
+
+                        // Also merge into the relay's local doc (needed for
+                        // non-pipe mode / runtimed-py, harmless in pipe mode).
                         let message = sync::Message::decode(&frame.payload)
                             .map_err(|e| NotebookSyncError::SyncError(format!("decode: {}", e)))?;
                         self.doc
@@ -2255,6 +2265,19 @@ async fn run_sync_task<S>(
                         let result = client
                             .send_request_with_broadcast(&request, Some(tx_to_use))
                             .await;
+
+                        // Forward any AutomergeSync frames that were buffered
+                        // during the request/response wait. In pipe mode these
+                        // must reach the WASM; without this, run-all breaks
+                        // because sync frames for cleared outputs get consumed.
+                        if let Some(ref tx) = raw_sync_tx {
+                            for frame_bytes in client.pending_sync_frames.drain(..) {
+                                let _ = tx.send(frame_bytes);
+                            }
+                        } else {
+                            client.pending_sync_frames.clear();
+                        }
+
                         // AutomergeSync frames may have been applied to client.doc
                         // during wait_for_response_with_broadcast — refresh snapshot
                         // so readers see daemon-driven mutations (outputs, execution
