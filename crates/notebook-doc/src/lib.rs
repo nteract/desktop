@@ -1,7 +1,7 @@
 //! Automerge-backed notebook document for cross-window sync.
 //!
 //! Also re-exports typed notebook metadata structs (`metadata` module) so all
-//! peers (daemon, Tauri relay, WASM frontend, Python bindings) share one
+//! peers (daemon, WASM frontend, Python bindings) share one
 //! definition of kernelspec, dependencies, and trust metadata.
 //!
 //! Wraps an Automerge `AutoCommit` document with typed accessors for

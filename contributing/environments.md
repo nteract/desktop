@@ -130,7 +130,7 @@ graph TB
 
     %% Daemon broadcasts back to frontend
     NSS -.->|"daemon:broadcast {KernelLaunched, env_source}"| UDK
-    KM -.->|"daemon:broadcast {Output, KernelStatus}"| UDK
+    KM -.->|"daemon:broadcast {KernelStatus, ExecutionStarted, ExecutionDone}"| UDK
     VNT -.->|trust status| UD
 
     %% Environment creation → external tools
@@ -295,7 +295,7 @@ graph TB
 
 The diagrams show two main layers:
 
-1. **Frontend** (blue) — React hooks that invoke Tauri commands and listen for `daemon:broadcast` events. `useDaemonKernel.ts` handles kernel lifecycle via the daemon.
+1. **Frontend** (blue) — React hooks that invoke Tauri commands and listen for `daemon:broadcast` events (kernel status, execution lifecycle) and `automerge:from-daemon` events (outputs and document state via Automerge sync). `useDaemonKernel.ts` handles kernel lifecycle via the daemon. Outputs arrive exclusively through Automerge sync, not broadcasts.
 
 2. **runtimed Daemon** (indigo) — A singleton background process that owns kernel processes and manages prewarmed UV and Conda environment pools. The daemon runs the detection priority chain: inline deps first, then closest project file, then prewarmed pool. Communicates via length-prefixed JSON over Unix domain sockets (or Windows named pipes). Also runs an Automerge CRDT sync server for cross-window settings and notebook state.
 
@@ -520,7 +520,7 @@ The kernel lifecycle is managed by `useDaemonKernel.ts`, which:
 | `crates/notebook/src/pixi.rs` | pixi.toml discovery and parsing |
 | `crates/notebook/src/environment_yml.rs` | environment.yml discovery and parsing |
 | `crates/notebook/src/deno_env.rs` | Deno config detection |
-| `crates/notebook/src/notebook_state.rs` | Notebook metadata and new notebook creation |
+| `crates/notebook/src/lib.rs` | Tauri commands (save, format, kernel, env), sync pipe setup |
 | `crates/notebook/src/settings.rs` | User preferences (default runtime, env type) |
 | `crates/notebook/src/trust.rs` | HMAC trust verification |
 

@@ -238,8 +238,8 @@ function getMetadataSnapshot(): NotebookMetadataSnapshot | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Write a metadata snapshot to the WASM doc and sync to the relay.
- * After this returns, both the WASM doc and the relay's doc have the update.
+ * Write a metadata snapshot to the WASM doc and sync to the daemon.
+ * After this returns, the WASM doc has the update and a sync message has been sent to the daemon.
  */
 export async function setMetadataSnapshot(
   snapshot: NotebookMetadataSnapshot,
@@ -258,8 +258,7 @@ export async function setMetadataSnapshot(
 }
 
 /**
- * Generate a sync message from the WASM doc and send it to the Tauri relay.
- * After the invoke returns, the relay's Automerge doc has the update.
+ * Generate a sync message from the WASM doc and send it to the daemon via the Tauri relay pipe.
  */
 async function syncToRelay(): Promise<void> {
   if (!_handle) return;

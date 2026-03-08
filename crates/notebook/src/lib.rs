@@ -52,7 +52,7 @@ struct WindowNotebookContext {
     /// Updated on save_notebook_as when path changes.
     notebook_id: Arc<Mutex<String>>,
     /// Runtime type for this notebook (Python or Deno).
-    /// Used by session save so it doesn't need to read from NotebookState.
+    /// Used by session save so it doesn't need to query the daemon.
     runtime: Runtime,
 }
 

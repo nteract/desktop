@@ -449,11 +449,11 @@ Outputs flow through the Automerge doc, not Tauri events:
 
 1. Kernel emits iopub message → daemon's `kernel_manager` receives it
 2. Daemon writes output to the notebook's Automerge doc (cell outputs array)
-3. Daemon produces a sync message → Tauri relay forwards it to the frontend
+3. Daemon produces a sync message → Tauri relay forwards raw bytes to the frontend (pipe mode — no Automerge processing in the relay)
 4. Frontend receives `automerge:from-daemon` → WASM merges into local doc
 5. `materialize-cells.ts` converts the updated doc into React cell state
 
-The legacy `onOutput` broadcast path is no-opped to avoid duplicate outputs (no dedup IDs yet). See #557 for the output streaming improvement plan.
+The legacy `onOutput` broadcast path is no-opped — outputs arrive exclusively via Automerge sync.
 
 ### Save and format-on-save
 
@@ -712,14 +712,16 @@ runtimed (daemon)
 | **Automerge Sync** | Document state (cells, source, outputs) | Yes |
 | **Broadcasts** | Real-time events | No |
 
-**Why both?** Automerge provides persistence and late-joiner sync. Broadcasts provide sub-50ms UI updates during execution.
+**Why both?** Automerge provides persistence and late-joiner sync. Broadcasts provide sub-50ms UI updates for kernel status during execution.
 
 Broadcast types:
 - `KernelStatus { status }` — idle/busy/starting
-- `Output { cell_id, output }` — stream/display_data/execute_result/error
+- `Output { cell_id, output }` — **no-opped**; outputs arrive exclusively via Automerge sync
 - `ExecutionStarted { cell_id, execution_count }` — clear outputs, show spinner
 - `ClearOutputs { cell_id }` — explicit clear request
 - `DisplayUpdate { cell_id, output }` — update_display_data (widget progress bars)
+
+> **Note:** `Output` broadcasts were originally intended for sub-50ms streaming, but are currently no-opped to avoid duplicates with Automerge-synced outputs (no dedup IDs). All output data arrives via the Automerge sync channel (`automerge:from-daemon` events). Issue #557 was resolved by making sync the sole output delivery channel.
 
 ### Project file auto-detection
 
@@ -785,7 +787,7 @@ Cross-cutting decisions that affect multiple phases. These are living answers �
 
 ### Acceptance criteria per phase
 
-**Phase 5**: Two windows open the same notebook, cell source edits propagate between them, and outputs from execution in window A appear in window B. Save from either window produces the same `.ipynb`. The existing `NotebookState` code path should remain as a fallback if the daemon isn't running — notebooks must still work standalone.
+**Phase 5**: Two windows open the same notebook, cell source edits propagate between them, and outputs from execution in window A appear in window B. Save from either window produces the same `.ipynb`. The daemon is required — all notebook operations go through the daemon connection.
 
 **Phase 6**: Outputs render from manifests + blob store. Images no longer bloat the CRDT. Re-opening a notebook with existing outputs renders them correctly from blobs, and new execution outputs use the manifest path.
 
@@ -823,13 +825,11 @@ For output manifests, the `output_type` field provides structural versioning. Ne
 
 ## Known Limitations
 
-### Output Flow and Deduplication
+### Output Flow
 
-Outputs arrive at the frontend exclusively through Automerge sync: the daemon writes outputs to the notebook doc, produces a sync message, and the Tauri relay forwards it to the frontend WASM where `materialize-cells.ts` renders them.
+Outputs arrive at the frontend exclusively through Automerge sync: the daemon writes outputs to the notebook doc, produces a sync message, and the Tauri relay forwards raw bytes to the frontend WASM where `materialize-cells.ts` renders them.
 
-The `onOutput` broadcast path is no-opped to avoid showing duplicate outputs — there are no dedup IDs to correlate broadcast outputs with Automerge-synced outputs. This means output latency is bounded by the Automerge sync round-trip rather than direct event delivery.
-
-See #557 for the output streaming improvement plan.
+The `onOutput` broadcast path is no-opped — sync is the sole output delivery channel. Output latency is bounded by the Automerge sync round-trip rather than direct event delivery. Issue #557 was resolved by making sync the sole output delivery channel.
 
 ### Multi-Window Widget Sync (#276)
 

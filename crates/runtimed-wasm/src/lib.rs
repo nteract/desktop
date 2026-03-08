@@ -198,7 +198,7 @@ impl NotebookHandle {
             .map_err(|e| JsError::new(&format!("set_metadata failed: {}", e)))
     }
 
-    /// Generate a sync message to send to the relay peer.
+    /// Generate a sync message to send to the daemon (via the Tauri relay pipe).
     ///
     /// Returns the message as a byte array, or undefined if already in sync.
     /// The caller should send these bytes via `invoke("send_automerge_sync", { syncMessage })`.
@@ -208,7 +208,7 @@ impl NotebookHandle {
             .map(|msg| msg.encode())
     }
 
-    /// Receive and apply a sync message from the relay peer.
+    /// Receive and apply a sync message from the daemon (via the Tauri relay pipe).
     ///
     /// Returns true if the document changed (caller should re-read cells).
     pub fn receive_sync_message(&mut self, message: &[u8]) -> Result<bool, JsError> {
@@ -233,7 +233,7 @@ impl NotebookHandle {
         self.doc.save()
     }
 
-    /// Reset the sync state. Call this when reconnecting to a new relay session.
+    /// Reset the sync state. Call this when reconnecting to a new daemon session.
     pub fn reset_sync_state(&mut self) {
         self.sync_state = sync::State::new();
     }

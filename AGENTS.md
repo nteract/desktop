@@ -200,15 +200,16 @@ runt daemon status
 
 ## Notebook Document Architecture (Local-First)
 
-The notebook uses a local-first CRDT architecture. The frontend owns its own Automerge document via WASM, making cell mutations instant. Three Automerge peers participate:
+The notebook uses a local-first CRDT architecture. The frontend owns its own Automerge document via WASM, making cell mutations instant. Two Automerge peers participate:
 
-- **Frontend (WASM)** — `NotebookHandle` from `crates/runtimed-wasm`, loaded in the webview. Cell mutations (add, delete, edit source) execute locally in WASM. React state is derived from the WASM doc via `handle.get_cells_json()`.
-- **Tauri relay** — `NotebookSyncClient` in `crates/runtimed/src/notebook_sync_client.rs`. Forwards binary Automerge sync messages between frontend and daemon. Maintains its own doc replica (transitional — will be simplified to pure relay).
+- **Frontend (WASM)** — `NotebookHandle` from `crates/runtimed-wasm`, loaded in the webview. Cell mutations (add, delete, edit source) execute locally in WASM. React state is derived from the WASM doc via `handle.get_cells_json()`. The WASM starts with an empty doc (`create_empty()`); the sync protocol delivers all state from the daemon.
 - **Daemon** — `NotebookDoc` in `crates/runtimed/src/notebook_doc.rs`. Canonical doc for kernel execution, output writing, and persistence.
 
-Mutation flow: React → WASM `handle.add_cell()` → `handle.generate_sync_message()` → `invoke("send_automerge_sync")` → Tauri relay → daemon.
+The **Tauri relay** (`NotebookSyncClient` in `crates/runtimed/src/notebook_sync_client.rs`) is a transparent byte pipe — it forwards raw Automerge sync frames between the WASM and the daemon without merging or maintaining its own doc replica. The daemon's `peer_state` tracks the WASM peer directly through the pipe. A non-pipe "full peer" mode exists for `runtimed-py` (Python bindings), where the relay does maintain a local doc replica — but this is not the Tauri path.
 
-Incoming sync: daemon → relay → `automerge:from-daemon` event → WASM `handle.receive_sync_message()` → `materializeCells()` → React state.
+Mutation flow: React → WASM `handle.add_cell()` → `handle.generate_sync_message()` → `invoke("send_automerge_sync")` → relay pipe → daemon.
+
+Incoming sync: daemon → relay pipe → `automerge:from-daemon` event → WASM `handle.receive_sync_message()` → `materializeCells()` → React state.
 
 The `runtimed-wasm` crate compiles from the same `automerge = "0.7"` as the daemon. This is critical — the JS `@automerge/automerge` package creates `Object(Text)` CRDTs for all string fields, but Rust uses scalar `Str` for metadata fields (`id`, `cell_type`, `execution_count`). Using the same Rust code in WASM guarantees schema compatibility.
 
@@ -293,7 +294,7 @@ Dependencies are signed with HMAC-SHA256 using a per-machine key at `~/.config/r
 | `crates/runtimed/src/notebook_sync_server.rs` | `auto_launch_kernel()` — runtime detection and environment resolution |
 | `crates/runtimed/src/kernel_manager.rs` | `RoomKernel::launch()` — spawns Python or Deno kernel processes |
 | `crates/runtimed/src/inline_env.rs` | Cached environment creation for inline deps (UV and Conda) |
-| `crates/notebook/src/lib.rs` | Tauri commands (save, format, kernel, env), Automerge sync relay. Cell mutation commands removed — mutations go through WASM. |
+| `crates/notebook/src/lib.rs` | Tauri commands (save, format, kernel, env), Automerge sync pipe (forwards raw frames between WASM and daemon). Cell mutation commands removed — mutations go through WASM. |
 | `crates/notebook/src/project_file.rs` | Unified closest-wins project file detection |
 | `crates/notebook/src/uv_env.rs` | UV environment creation and caching |
 | `crates/notebook/src/conda_env.rs` | Conda environment creation via rattler |
@@ -304,7 +305,7 @@ Dependencies are signed with HMAC-SHA256 using a per-machine key at `~/.config/r
 | `crates/notebook/src/trust.rs` | HMAC trust verification |
 | `crates/runtimed-wasm/src/lib.rs` | WASM bindings for NotebookDoc — cell mutations, sync messages |
 | `crates/runtimed-wasm/src/notebook_doc.rs` | Automerge document operations (copy of daemon's NotebookDoc, trimmed for WASM) |
-| `apps/notebook/src/hooks/useAutomergeNotebook.ts` | Local-first notebook hook — owns NotebookHandle WASM, drives React cell state |
+| `apps/notebook/src/hooks/useAutomergeNotebook.ts` | Local-first notebook hook — owns NotebookHandle WASM, drives React cell state, sync-only bootstrap (empty doc, no GetDocBytes) |
 | `apps/notebook/src/hooks/useDaemonKernel.ts` | Daemon-owned kernel execution, status broadcasts, environment sync |
 | `apps/notebook/src/hooks/useDependencies.ts` | Frontend UV dependency management |
 | `apps/notebook/src/hooks/useCondaDependencies.ts` | Frontend conda dependency management |
