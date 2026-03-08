@@ -643,6 +643,7 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
         socket_path: PathBuf,
         runtime: String,
         working_dir: Option<PathBuf>,
+        notebook_id: Option<String>,
         raw_sync_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
     ) -> Result<
         (
@@ -663,7 +664,8 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
         .map_err(|_| NotebookSyncError::Timeout)?
         .map_err(NotebookSyncError::ConnectionFailed)?;
 
-        let (client, info) = Self::init_create_notebook(stream, runtime, working_dir).await?;
+        let (client, info) =
+            Self::init_create_notebook(stream, runtime, working_dir, notebook_id).await?;
         let (handle, receiver, broadcast_rx, cells, metadata) =
             client.into_split_with_raw_sync(raw_sync_tx);
         Ok((handle, receiver, broadcast_rx, cells, metadata, info))
@@ -788,6 +790,7 @@ impl NotebookSyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
         socket_path: PathBuf,
         runtime: String,
         working_dir: Option<PathBuf>,
+        notebook_id: Option<String>,
         raw_sync_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
     ) -> Result<
         (
@@ -805,7 +808,8 @@ impl NotebookSyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
             .open(&pipe_name)
             .map_err(NotebookSyncError::ConnectionFailed)?;
 
-        let (client, info) = Self::init_create_notebook(stream, runtime, working_dir).await?;
+        let (client, info) =
+            Self::init_create_notebook(stream, runtime, working_dir, notebook_id).await?;
         let (handle, receiver, broadcast_rx, cells, metadata) =
             client.into_split_with_raw_sync(raw_sync_tx);
         Ok((handle, receiver, broadcast_rx, cells, metadata, info))
@@ -1029,10 +1033,11 @@ where
         mut stream: S,
         runtime: String,
         working_dir: Option<PathBuf>,
+        notebook_id: Option<String>,
     ) -> Result<(Self, NotebookConnectionInfo), NotebookSyncError> {
         info!(
-            "[notebook-sync-client] Creating new notebook (runtime: {}, working_dir: {:?})",
-            runtime, working_dir
+            "[notebook-sync-client] Creating new notebook (runtime: {}, working_dir: {:?}, notebook_id: {:?})",
+            runtime, working_dir, notebook_id
         );
 
         // Send CreateNotebook handshake
@@ -1041,6 +1046,7 @@ where
             &Handshake::CreateNotebook {
                 runtime,
                 working_dir: working_dir.map(|p| p.to_string_lossy().to_string()),
+                notebook_id,
             },
         )
         .await

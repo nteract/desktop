@@ -86,6 +86,12 @@ pub enum Handshake {
         /// Used since untitled notebooks have no path to derive working_dir from.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         working_dir: Option<String>,
+        /// Optional notebook_id hint for restoring an untitled notebook from a previous session.
+        /// If provided and the daemon has a persisted Automerge doc for this ID, the room is
+        /// reused instead of creating a fresh empty notebook. If the persisted doc doesn't exist,
+        /// a new notebook is created and this ID is used as the notebook_id/env_id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notebook_id: Option<String>,
     },
 }
 

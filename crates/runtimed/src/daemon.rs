@@ -928,8 +928,9 @@ impl Daemon {
             Handshake::CreateNotebook {
                 runtime,
                 working_dir,
+                notebook_id,
             } => {
-                self.handle_create_notebook(stream, runtime, working_dir)
+                self.handle_create_notebook(stream, runtime, working_dir, notebook_id)
                     .await
             }
         }
@@ -1071,6 +1072,7 @@ impl Daemon {
         stream: S,
         runtime: String,
         working_dir: Option<String>,
+        notebook_id_hint: Option<String>,
     ) -> anyhow::Result<()>
     where
         S: AsyncRead + AsyncWrite + Unpin,
@@ -1078,8 +1080,8 @@ impl Daemon {
         use crate::connection::{send_json_frame, NotebookConnectionInfo, PROTOCOL_V2};
 
         info!(
-            "[runtimed] CreateNotebook requested (runtime={}, working_dir={:?})",
-            runtime, working_dir
+            "[runtimed] CreateNotebook requested (runtime={}, working_dir={:?}, notebook_id_hint={:?})",
+            runtime, working_dir, notebook_id_hint
         );
 
         // Get settings for default Python env preference
@@ -1087,8 +1089,8 @@ impl Daemon {
         let default_python_env = settings.default_python_env;
         let default_runtime = settings.default_runtime;
 
-        // Generate notebook_id (env_id) upfront - UUID for untitled notebooks
-        let notebook_id = uuid::Uuid::new_v4().to_string();
+        // Use provided notebook_id (session restore) or generate a new UUID
+        let notebook_id = notebook_id_hint.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
         // Create room for this notebook
         let docs_dir = self.config.notebook_docs_dir.clone();
@@ -1102,39 +1104,51 @@ impl Daemon {
             )
         };
 
-        // Populate the room's doc with the empty notebook content
+        // Populate the room's doc with the empty notebook content — but only if the
+        // room is empty. If a persisted doc was loaded (session restore with notebook_id
+        // hint), the room already has cells and we skip creation.
         let cell_count = {
             let mut doc = room.doc.write().await;
-            match crate::notebook_sync_server::create_empty_notebook(
-                &mut doc,
-                &runtime,
-                default_python_env.clone(),
-                Some(&notebook_id),
-            ) {
-                Ok(_) => doc.cell_count(),
-                Err(e) => {
-                    // Drop the doc lock before removing room
-                    drop(doc);
-                    // Remove the room to prevent stale state (consistency with OpenNotebook)
-                    {
-                        let mut rooms = self.notebook_rooms.lock().await;
-                        rooms.remove(&notebook_id);
-                        info!(
-                            "[runtimed] Removed room {} after create failure",
-                            notebook_id
-                        );
+            if doc.cell_count() > 0 {
+                // Room already has content (loaded from persisted doc)
+                info!(
+                    "[runtimed] Room {} already has {} cells (restored from persisted doc)",
+                    notebook_id,
+                    doc.cell_count()
+                );
+                doc.cell_count()
+            } else {
+                match crate::notebook_sync_server::create_empty_notebook(
+                    &mut doc,
+                    &runtime,
+                    default_python_env.clone(),
+                    Some(&notebook_id),
+                ) {
+                    Ok(_) => doc.cell_count(),
+                    Err(e) => {
+                        // Drop the doc lock before removing room
+                        drop(doc);
+                        // Remove the room to prevent stale state (consistency with OpenNotebook)
+                        {
+                            let mut rooms = self.notebook_rooms.lock().await;
+                            rooms.remove(&notebook_id);
+                            info!(
+                                "[runtimed] Removed room {} after create failure",
+                                notebook_id
+                            );
+                        }
+                        let (mut reader, mut writer) = tokio::io::split(stream);
+                        let response = NotebookConnectionInfo {
+                            protocol: PROTOCOL_V2.to_string(),
+                            notebook_id: String::new(),
+                            cell_count: 0,
+                            needs_trust_approval: false,
+                            error: Some(format!("Failed to create notebook: {}", e)),
+                        };
+                        send_json_frame(&mut writer, &response).await?;
+                        let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
+                        return Ok(());
                     }
-                    let (mut reader, mut writer) = tokio::io::split(stream);
-                    let response = NotebookConnectionInfo {
-                        protocol: PROTOCOL_V2.to_string(),
-                        notebook_id: String::new(),
-                        cell_count: 0,
-                        needs_trust_approval: false,
-                        error: Some(format!("Failed to create notebook: {}", e)),
-                    };
-                    send_json_frame(&mut writer, &response).await?;
-                    let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
-                    return Ok(());
                 }
             }
         };
