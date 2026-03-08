@@ -1006,6 +1006,14 @@ where
             return Err(NotebookSyncError::SyncError(error.clone()));
         }
 
+        // Validate protocol version
+        if info.protocol != PROTOCOL_V2 {
+            return Err(NotebookSyncError::SyncError(format!(
+                "unsupported protocol version: {}",
+                info.protocol
+            )));
+        }
+
         let notebook_id = info.notebook_id.clone();
         info!(
             "[notebook-sync-client] Daemon returned notebook_id: {} ({} cells, trust_approval: {})",
@@ -1052,6 +1060,14 @@ where
         // Check for error in response
         if let Some(ref error) = info.error {
             return Err(NotebookSyncError::SyncError(error.clone()));
+        }
+
+        // Validate protocol version
+        if info.protocol != PROTOCOL_V2 {
+            return Err(NotebookSyncError::SyncError(format!(
+                "unsupported protocol version: {}",
+                info.protocol
+            )));
         }
 
         let notebook_id = info.notebook_id.clone();

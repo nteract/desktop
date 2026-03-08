@@ -4620,4 +4620,137 @@ mod tests {
         };
         assert_eq!(cells[0].source, "x=1", "Source should remain unchanged");
     }
+
+    // ========================================================================
+    // Tests for daemon-owned notebook loading functions (Phase 2)
+    // ========================================================================
+
+    #[test]
+    fn test_build_new_notebook_metadata_deno() {
+        let metadata = build_new_notebook_metadata(
+            "deno",
+            "test-env-id",
+            crate::settings_doc::PythonEnvType::Uv,
+        );
+
+        assert_eq!(metadata.kernelspec.as_ref().unwrap().name, "deno");
+        assert_eq!(metadata.kernelspec.as_ref().unwrap().display_name, "Deno");
+        assert_eq!(
+            metadata.kernelspec.as_ref().unwrap().language,
+            Some("typescript".to_string())
+        );
+        assert_eq!(metadata.language_info.as_ref().unwrap().name, "typescript");
+        assert_eq!(metadata.runt.env_id, Some("test-env-id".to_string()));
+        assert!(metadata.runt.uv.is_none());
+        assert!(metadata.runt.conda.is_none());
+    }
+
+    #[test]
+    fn test_build_new_notebook_metadata_python_uv() {
+        let metadata = build_new_notebook_metadata(
+            "python",
+            "test-env-id",
+            crate::settings_doc::PythonEnvType::Uv,
+        );
+
+        assert_eq!(metadata.kernelspec.as_ref().unwrap().name, "python3");
+        assert_eq!(
+            metadata.kernelspec.as_ref().unwrap().display_name,
+            "Python 3"
+        );
+        assert_eq!(
+            metadata.kernelspec.as_ref().unwrap().language,
+            Some("python".to_string())
+        );
+        assert_eq!(metadata.language_info.as_ref().unwrap().name, "python");
+        assert_eq!(metadata.runt.env_id, Some("test-env-id".to_string()));
+        assert!(metadata.runt.uv.is_some());
+        assert!(metadata.runt.conda.is_none());
+        assert!(metadata.runt.uv.as_ref().unwrap().dependencies.is_empty());
+    }
+
+    #[test]
+    fn test_build_new_notebook_metadata_python_conda() {
+        let metadata = build_new_notebook_metadata(
+            "python",
+            "test-env-id",
+            crate::settings_doc::PythonEnvType::Conda,
+        );
+
+        assert_eq!(metadata.kernelspec.as_ref().unwrap().name, "python3");
+        assert_eq!(metadata.language_info.as_ref().unwrap().name, "python");
+        assert_eq!(metadata.runt.env_id, Some("test-env-id".to_string()));
+        assert!(metadata.runt.uv.is_none());
+        assert!(metadata.runt.conda.is_some());
+        assert!(metadata.runt.conda.as_ref().unwrap().dependencies.is_empty());
+        // Verify default channels to avoid false channel-drift detection
+        assert_eq!(
+            metadata.runt.conda.as_ref().unwrap().channels,
+            vec!["conda-forge".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_create_empty_notebook_python() {
+        let mut doc = NotebookDoc::new("test");
+        let result = create_empty_notebook(
+            &mut doc,
+            "python",
+            crate::settings_doc::PythonEnvType::Uv,
+            None,
+        );
+
+        assert!(result.is_ok());
+        let env_id = result.unwrap();
+        assert!(!env_id.is_empty(), "Should generate an env_id");
+
+        // Should have exactly one cell
+        assert_eq!(doc.cell_count(), 1);
+        let cells = doc.get_cells();
+        assert_eq!(cells[0].cell_type, "code");
+        assert!(cells[0].source.is_empty());
+    }
+
+    #[test]
+    fn test_create_empty_notebook_deno() {
+        let mut doc = NotebookDoc::new("test");
+        let result = create_empty_notebook(
+            &mut doc,
+            "deno",
+            crate::settings_doc::PythonEnvType::Uv, // Ignored for deno
+            None,
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(doc.cell_count(), 1);
+
+        // Check metadata was set correctly
+        let metadata = doc.get_metadata_snapshot();
+        assert!(metadata.is_some());
+        let metadata = metadata.unwrap();
+        assert_eq!(metadata.kernelspec.as_ref().unwrap().name, "deno");
+    }
+
+    #[test]
+    fn test_create_empty_notebook_with_provided_env_id() {
+        let mut doc = NotebookDoc::new("test");
+        let provided_id = "my-custom-env-id";
+        let result = create_empty_notebook(
+            &mut doc,
+            "python",
+            crate::settings_doc::PythonEnvType::Uv,
+            Some(provided_id),
+        );
+
+        assert!(result.is_ok());
+        let env_id = result.unwrap();
+        assert_eq!(env_id, provided_id, "Should use provided env_id");
+
+        let metadata = doc.get_metadata_snapshot().unwrap();
+        assert_eq!(
+            metadata.runt.env_id,
+            Some(provided_id.to_string()),
+            "Metadata should have provided env_id"
+        );
+    }
 }

@@ -1116,6 +1116,17 @@ impl Daemon {
             ) {
                 Ok(_) => doc.cell_count(),
                 Err(e) => {
+                    // Drop the doc lock before removing room
+                    drop(doc);
+                    // Remove the room to prevent stale state (consistency with OpenNotebook)
+                    {
+                        let mut rooms = self.notebook_rooms.lock().await;
+                        rooms.remove(&notebook_id);
+                        info!(
+                            "[runtimed] Removed room {} after create failure",
+                            notebook_id
+                        );
+                    }
                     let (mut reader, mut writer) = tokio::io::split(stream);
                     let response = NotebookConnectionInfo {
                         protocol: PROTOCOL_V2.to_string(),
