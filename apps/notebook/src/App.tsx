@@ -110,6 +110,7 @@ function AppContent() {
     openNotebook,
     cloneNotebook,
     dirty,
+    appendOutput,
     updateOutputByDisplayId,
     setExecutionCount,
     clearCellOutputs,
@@ -265,12 +266,11 @@ function AppContent() {
     runAllCells: daemonRunAllCells,
     sendCommMessage,
   } = useDaemonKernel({
-    // Outputs arrive via Automerge sync (materializeCells replaces all cells).
-    // Wiring appendOutput here causes duplicates: broadcast appends, then sync
-    // replaces with doc state that already has the output. If React batches both
-    // setCells calls, the functional update in appendOutput runs against the
-    // already-replaced state → double output. Sync latency is imperceptible.
-    onOutput: () => {},
+    // In pipe mode (#608), the Automerge sync path doesn't deliver output changes
+    // (daemon's sync state tracks the relay, not the WASM — all frames arrive with
+    // changed=false). Outputs must come from broadcasts until the sync state
+    // mismatch is fixed (see .context/plans/fix-pipe-mode-sync-state.md).
+    onOutput: appendOutput,
     onExecutionCount: handleExecutionCount,
     onExecutionDone: handleExecutionDone,
     onUpdateDisplayData: updateOutputByDisplayId,
