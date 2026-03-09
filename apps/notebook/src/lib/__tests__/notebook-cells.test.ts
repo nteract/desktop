@@ -41,9 +41,7 @@ describe("replaceNotebookCells", () => {
   });
 
   it("notifies subscribers", () => {
-    const subscriber = vi.fn();
-    // We need to use the internal subscribe via replaceNotebookCells side effects.
-    // Instead, test through the public API by checking snapshot changes.
+    // Test through the public API by checking snapshot changes.
     replaceNotebookCells([codeCell("a")]);
     expect(getNotebookCellsSnapshot()).toHaveLength(1);
   });
