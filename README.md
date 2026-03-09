@@ -26,6 +26,10 @@ pip install runtimed
 | `sidecar` | Viewer for Jupyter kernel outputs |
 | `runtimed` (PyPI) | Python bindings for the daemon |
 
+## MCP Server
+
+For AI agent integration with Jupyter notebooks, see the [nteract MCP server](https://github.com/nteract/nteract).
+
 ## Usage
 
 ```bash

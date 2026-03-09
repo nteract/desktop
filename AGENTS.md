@@ -59,6 +59,10 @@ Keep descriptions short and descriptive, e.g.:
 
 The `.context/` directory is gitignored and used for per-worktree state that shouldn't be committed.
 
+## MCP Server
+
+For programmatic notebook interaction, use the [nteract MCP server](https://github.com/nteract/nteract) (`nteract` on PyPI).
+
 ## Contributing Guidelines
 
 See the `contributing/` directory for detailed guides:
