@@ -407,19 +407,13 @@ impl Session {
             let cells = handle.get_cells();
             let insert_index = index.unwrap_or(cells.len());
 
-            // Add cell to document
+            // Create cell with source atomically — a single Automerge transaction
+            // and one sync round-trip. This prevents remote peers from seeing the
+            // cell structure before its source content arrives.
             handle
-                .add_cell(insert_index, &cell_id, cell_type)
+                .add_cell_with_source(insert_index, &cell_id, cell_type, source)
                 .await
                 .map_err(to_py_err)?;
-
-            // Set source if provided
-            if !source.is_empty() {
-                handle
-                    .update_source(&cell_id, source)
-                    .await
-                    .map_err(to_py_err)?;
-            }
 
             Ok(cell_id)
         })

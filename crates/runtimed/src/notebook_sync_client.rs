@@ -18,7 +18,7 @@ use automerge::sync::{self, SyncDoc};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ReadDoc};
 use futures::FutureExt;
-use log::{debug, info, warn};
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -63,6 +63,16 @@ enum SyncCommand {
         index: usize,
         cell_id: String,
         cell_type: String,
+        reply: oneshot::Sender<Result<(), NotebookSyncError>>,
+    },
+    /// Atomically add a cell with source content in a single Automerge
+    /// transaction, producing one sync round-trip to the daemon. This avoids
+    /// the race where remote peers see the cell structure before its source.
+    AddCellWithSource {
+        index: usize,
+        cell_id: String,
+        cell_type: String,
+        source: String,
         reply: oneshot::Sender<Result<(), NotebookSyncError>>,
     },
     DeleteCell {
@@ -113,8 +123,6 @@ enum SyncCommand {
         /// instead of being queued for later delivery.
         broadcast_tx: Option<broadcast::Sender<NotebookBroadcast>>,
     },
-    /// Export the local Automerge document as bytes for frontend initialization.
-    GetDocBytes { reply: oneshot::Sender<Vec<u8>> },
     /// Apply a raw Automerge sync message from the frontend and forward to daemon.
     ReceiveFrontendSyncMessage {
         message: Vec<u8>,
@@ -161,6 +169,35 @@ impl NotebookSyncHandle {
                 index,
                 cell_id: cell_id.to_string(),
                 cell_type: cell_type.to_string(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?;
+        reply_rx
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?
+    }
+
+    /// Atomically add a cell with source content.
+    ///
+    /// Both the cell structure and its source text are written in a single
+    /// Automerge transaction and synced to the daemon in one round-trip.
+    /// This prevents remote peers from seeing an empty cell before the source
+    /// arrives (which caused flaky multi-peer sync tests).
+    pub async fn add_cell_with_source(
+        &self,
+        index: usize,
+        cell_id: &str,
+        cell_type: &str,
+        source: &str,
+    ) -> Result<(), NotebookSyncError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(SyncCommand::AddCellWithSource {
+                index,
+                cell_id: cell_id.to_string(),
+                cell_type: cell_type.to_string(),
+                source: source.to_string(),
                 reply: reply_tx,
             })
             .await
@@ -345,19 +382,6 @@ impl NotebookSyncHandle {
         reply_rx
             .await
             .map_err(|_| NotebookSyncError::ChannelClosed)?
-    }
-
-    /// Export the local Automerge document as bytes.
-    ///
-    /// The frontend can load these bytes with `Automerge.load()` to initialize
-    /// its own local document replica.
-    pub async fn get_doc_bytes(&self) -> Result<Vec<u8>, NotebookSyncError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(SyncCommand::GetDocBytes { reply: reply_tx })
-            .await
-            .map_err(|_| NotebookSyncError::ChannelClosed)?;
-        reply_rx.await.map_err(|_| NotebookSyncError::ChannelClosed)
     }
 
     /// Receive a raw Automerge sync message from the frontend.
@@ -1377,6 +1401,54 @@ where
         self.sync_to_daemon().await
     }
 
+    /// Atomically add a cell with source content and sync to daemon.
+    ///
+    /// Combines add_cell + update_source into a single Automerge transaction
+    /// so the cell structure and source text arrive as one sync message.
+    pub async fn add_cell_with_source(
+        &mut self,
+        index: usize,
+        cell_id: &str,
+        cell_type: &str,
+        source: &str,
+    ) -> Result<(), NotebookSyncError> {
+        let cells_id = self
+            .ensure_cells_list()
+            .map_err(|e| NotebookSyncError::SyncError(format!("ensure cells: {}", e)))?;
+
+        let len = self.doc.length(&cells_id);
+        let index = index.min(len);
+
+        let cell_map = self
+            .doc
+            .insert_object(&cells_id, index, ObjType::Map)
+            .map_err(|e| NotebookSyncError::SyncError(format!("insert: {}", e)))?;
+        self.doc
+            .put(&cell_map, "id", cell_id)
+            .map_err(|e| NotebookSyncError::SyncError(format!("put id: {}", e)))?;
+        self.doc
+            .put(&cell_map, "cell_type", cell_type)
+            .map_err(|e| NotebookSyncError::SyncError(format!("put type: {}", e)))?;
+        let source_id = self
+            .doc
+            .put_object(&cell_map, "source", ObjType::Text)
+            .map_err(|e| NotebookSyncError::SyncError(format!("put source: {}", e)))?;
+        // Write source text in the same transaction (before syncing to daemon)
+        if !source.is_empty() {
+            self.doc
+                .splice_text(&source_id, 0, 0, source)
+                .map_err(|e| NotebookSyncError::SyncError(format!("splice source: {}", e)))?;
+        }
+        self.doc
+            .put(&cell_map, "execution_count", "null")
+            .map_err(|e| NotebookSyncError::SyncError(format!("put exec_count: {}", e)))?;
+        self.doc
+            .put_object(&cell_map, "outputs", ObjType::List)
+            .map_err(|e| NotebookSyncError::SyncError(format!("put outputs: {}", e)))?;
+
+        self.sync_to_daemon().await
+    }
+
     /// Delete a cell by ID and sync to daemon.
     pub async fn delete_cell(&mut self, cell_id: &str) -> Result<(), NotebookSyncError> {
         let cells_id = match self.cells_list_id() {
@@ -2135,17 +2207,6 @@ async fn run_sync_task<S>(
     let mut pending_pipe_frames: std::collections::VecDeque<Vec<u8>> =
         std::collections::VecDeque::new();
 
-    // Sync state for the frontend peer (used when raw_sync_tx is active).
-    // This tracks what the frontend doc has seen, enabling incremental sync messages.
-    //
-    // IMPORTANT: Starts as None even when raw_sync_tx is provided. It gets
-    // initialized in GetDocBytes after the virtual sync handshake. Before that,
-    // the frontend hasn't loaded the doc yet, so any sync messages we generate
-    // would be stale — when the frontend later loads the doc bytes and receives
-    // those stale messages, the CRDT merge produces phantom cells (cells that
-    // exist in the list but have no readable ID).
-    let mut frontend_peer_state: Option<sync::State> = None;
-
     let mut loop_count = 0u64;
     // Track last metadata to only send updates when it actually changes
     let mut last_metadata: Option<String> = client.get_metadata(NOTEBOOK_METADATA_KEY);
@@ -2209,6 +2270,21 @@ async fn run_sync_task<S>(
                         reply,
                     } => {
                         let result = client.add_cell(index, &cell_id, &cell_type).await;
+                        if result.is_ok() {
+                            publish_snapshot(&client, &snapshot_tx);
+                        }
+                        let _ = reply.send(result);
+                    }
+                    SyncCommand::AddCellWithSource {
+                        index,
+                        cell_id,
+                        cell_type,
+                        source,
+                        reply,
+                    } => {
+                        let result = client
+                            .add_cell_with_source(index, &cell_id, &cell_type, &source)
+                            .await;
                         if result.is_ok() {
                             publish_snapshot(&client, &snapshot_tx);
                         }
@@ -2313,50 +2389,6 @@ async fn run_sync_task<S>(
                         publish_snapshot(&client, &snapshot_tx);
                         let _ = reply.send(result);
                     }
-                    SyncCommand::GetDocBytes { reply } => {
-                        let bytes = client.doc.save();
-
-                        // In pipe mode (Tauri), the frontend gets doc bytes from the
-                        // daemon via send_request(GetDocBytes), not from this command.
-                        // But runtimed-py tests may still call this. Skip the virtual
-                        // sync handshake in pipe mode — the frontend and daemon sync
-                        // directly through the byte pipe, so no relay peer state needed.
-                        if raw_sync_tx.is_none() {
-                            // Full peer mode (runtimed-py): initialize frontend_peer_state
-                            // via virtual sync handshake so we know what the peer has seen.
-                            let mut fe_state = sync::State::new();
-                            if let Ok(mut mirror) = automerge::AutoCommit::load(&bytes) {
-                                let mut mirror_state = sync::State::new();
-                                for _ in 0..10 {
-                                    let our_msg =
-                                        client.doc.sync().generate_sync_message(&mut fe_state);
-                                    let their_msg =
-                                        mirror.sync().generate_sync_message(&mut mirror_state);
-                                    if our_msg.is_none() && their_msg.is_none() {
-                                        break;
-                                    }
-                                    if let Some(m) = our_msg {
-                                        let _ = mirror
-                                            .sync()
-                                            .receive_sync_message(&mut mirror_state, m);
-                                    }
-                                    if let Some(m) = their_msg {
-                                        let _ = client
-                                            .doc
-                                            .sync()
-                                            .receive_sync_message(&mut fe_state, m);
-                                    }
-                                }
-                                debug!(
-                                    "[notebook-sync-task] Initialized frontend_peer_state via virtual sync for {}",
-                                    notebook_id
-                                );
-                            }
-                            frontend_peer_state = Some(fe_state);
-                        }
-
-                        let _ = reply.send(bytes);
-                    }
                     SyncCommand::ReceiveFrontendSyncMessage { message, reply } => {
                         let result = if raw_sync_tx.is_some() {
                             // Pipe mode (Tauri): queue the sync bytes to be flushed
@@ -2365,44 +2397,13 @@ async fn run_sync_task<S>(
                             // would corrupt framing if a daemon read was pending.
                             pending_pipe_frames.push_back(message);
                             Ok(())
-                        } else if let Some(ref mut fe_state) = frontend_peer_state {
-                            // Full peer mode (runtimed-py): merge into local doc
-                            match sync::Message::decode(&message) {
-                                Ok(msg) => {
-                                    let recv_result =
-                                        client.doc.sync().receive_sync_message(fe_state, msg);
-                                    match recv_result {
-                                        Ok(()) => {
-                                            // Relay the changes to the daemon
-                                            client.sync_to_daemon().await
-                                        }
-                                        Err(e) => Err(NotebookSyncError::SyncError(format!(
-                                            "receive frontend sync: {}",
-                                            e
-                                        ))),
-                                    }
-                                }
-                                Err(e) => Err(NotebookSyncError::SyncError(format!(
-                                    "decode frontend sync: {}",
-                                    e
-                                ))),
-                            }
                         } else {
+                            // Full peer mode (runtimed-py): no separate frontend peer
+                            // exists, so this command should not be called.
                             Err(NotebookSyncError::SyncError(
-                                "frontend sync relay not active".to_string(),
+                                "frontend sync relay not active (full peer mode)".to_string(),
                             ))
                         };
-                        // In full peer mode, send response sync message back to frontend
-                        if raw_sync_tx.is_none() {
-                            if let (Some(ref tx), Some(ref mut fe_state)) =
-                                (&raw_sync_tx, &mut frontend_peer_state)
-                            {
-                                if let Some(msg) = client.doc.sync().generate_sync_message(fe_state)
-                                {
-                                    let _ = tx.send(msg.encode());
-                                }
-                            }
-                        }
                         if result.is_ok() {
                             publish_snapshot(&client, &snapshot_tx);
                         }
@@ -2462,16 +2463,6 @@ async fn run_sync_task<S>(
                                             notebook_id, loop_count
                                         );
                                             break;
-                                        }
-                                    }
-                                    // Forward sync message to frontend (full peer mode only)
-                                    if let (Some(ref tx), Some(ref mut fe_state)) =
-                                        (&raw_sync_tx, &mut frontend_peer_state)
-                                    {
-                                        if let Some(msg) =
-                                            client.doc.sync().generate_sync_message(fe_state)
-                                        {
-                                            let _ = tx.send(msg.encode());
                                         }
                                     }
                                 }
