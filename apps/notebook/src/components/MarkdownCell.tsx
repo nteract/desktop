@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { useEditorRegistry } from "../hooks/useEditorRegistry";
 import { logger } from "../lib/logger";
+import { openUrl } from "../lib/open-url";
 import type { MarkdownCell as MarkdownCellType } from "../types";
 
 interface MarkdownCellProps {
@@ -184,9 +185,9 @@ export function MarkdownCell({
     }
   }, [cell.source, cell.id]);
 
-  // Handle link clicks from iframe
+  // Handle link clicks from iframe - open in system browser
   const handleLinkClick = useCallback((url: string) => {
-    window.open(url, "_blank", "noopener,noreferrer");
+    openUrl(url);
   }, []);
 
   // Handle keyboard navigation in view mode (when not editing)

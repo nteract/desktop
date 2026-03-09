@@ -24,6 +24,7 @@ import type { CellPagePayload, MimeBundle } from "../App";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { useEditorRegistry } from "../hooks/useEditorRegistry";
 import { kernelCompletionExtension } from "../lib/kernel-completion";
+import { openUrl } from "../lib/open-url";
 import { tabCompletionKeymap } from "../lib/tab-completion";
 import type { CodeCell as CodeCellType } from "../types";
 
@@ -296,6 +297,7 @@ export function CodeCell({
             preloadIframe
             searchQuery={searchQuery}
             onSearchMatchCount={onSearchMatchCount}
+            onLinkClick={(url) => openUrl(url)}
           />
         }
         hideOutput={cell.outputs.length === 0}

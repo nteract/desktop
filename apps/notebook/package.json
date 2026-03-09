@@ -24,6 +24,7 @@
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-shell": "^2.3.5",
     "@tauri-apps/plugin-updater": "^2.10.0",
     "@uiw/codemirror-theme-github": "^4.25.4",
     "@uiw/react-codemirror": "^4.25.4",
