@@ -171,7 +171,7 @@ impl DaemonLock {
         let info = DaemonInfo {
             endpoint: endpoint.to_string(),
             pid: std::process::id(),
-            version: format!("{}+{}", env!("CARGO_PKG_VERSION"), env!("GIT_COMMIT")),
+            version: crate::daemon_version().to_string(),
             started_at: Utc::now(),
             blob_port,
             worktree_path,

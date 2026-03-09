@@ -902,6 +902,9 @@ where
             .ok_or(NotebookSyncError::Disconnected)?;
 
         // Parse as ProtocolCapabilities - server must support v2
+        // TODO: Also validate caps.protocol_version if present, for explicit version mismatch detection.
+        // Currently only checks the string "v2", but protocol_version (u32) is more precise.
+        // See #635 for context on protocol version fields.
         match serde_json::from_slice::<ProtocolCapabilities>(&first_frame) {
             Ok(caps) if caps.protocol == PROTOCOL_V2 => {
                 info!(
@@ -1057,6 +1060,7 @@ where
         }
 
         // Validate protocol version
+        // TODO: Also validate info.protocol_version if present (#635)
         if info.protocol != PROTOCOL_V2 {
             return Err(NotebookSyncError::SyncError(format!(
                 "unsupported protocol version: {}",
@@ -1135,6 +1139,7 @@ where
         }
 
         // Validate protocol version
+        // TODO: Also validate info.protocol_version if present (#635)
         if info.protocol != PROTOCOL_V2 {
             return Err(NotebookSyncError::SyncError(format!(
                 "unsupported protocol version: {}",

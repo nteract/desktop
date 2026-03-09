@@ -20,6 +20,17 @@ interface UpdaterState {
 }
 
 const CHECK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const DAEMON_INSTALL_TIMEOUT_MS = 30 * 1000; // 30 seconds
+
+/** Run a promise with a timeout. Rejects with "timeout" if exceeded. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("timeout")), ms),
+    ),
+  ]);
+}
 
 export function useUpdater() {
   const [state, setState] = useState<UpdaterState>({
@@ -78,7 +89,10 @@ export function useUpdater() {
       // avoiding the "restart twice" problem.
       setState((prev) => ({ ...prev, status: "installing-daemon" }));
       try {
-        await invoke("install_daemon_for_update");
+        await withTimeout(
+          invoke("install_daemon_for_update"),
+          DAEMON_INSTALL_TIMEOUT_MS,
+        );
         logger.info("[updater] daemon installed, proceeding with relaunch");
       } catch (e) {
         // Log but don't block - worst case, app will upgrade daemon on next launch
