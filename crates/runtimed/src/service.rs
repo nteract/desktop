@@ -121,6 +121,58 @@ impl ServiceManager {
         Self { config }
     }
 
+    /// Remove the com.apple.quarantine extended attribute from the binary.
+    ///
+    /// macOS adds this attribute to files downloaded from the internet, and Gatekeeper
+    /// may block execution of quarantined binaries. We proactively remove it after
+    /// copying the binary to prevent startup failures.
+    ///
+    /// Returns Ok(true) if quarantine was removed, Ok(false) if not quarantined,
+    /// or Err with a warning message if removal failed.
+    #[cfg(target_os = "macos")]
+    fn remove_quarantine(&self) -> Result<bool, String> {
+        use std::process::Command;
+
+        // First check if the binary is quarantined
+        let check = Command::new("xattr")
+            .args(["-p", "com.apple.quarantine"])
+            .arg(&self.config.binary_path)
+            .output();
+
+        match check {
+            Ok(o) if o.status.success() => {
+                // Binary is quarantined, try to remove it
+                let remove = Command::new("xattr")
+                    .args(["-d", "com.apple.quarantine"])
+                    .arg(&self.config.binary_path)
+                    .output();
+
+                match remove {
+                    Ok(o) if o.status.success() => {
+                        info!("[service] Removed quarantine attribute from binary");
+                        Ok(true)
+                    }
+                    Ok(o) => {
+                        let stderr = String::from_utf8_lossy(&o.stderr);
+                        Err(format!(
+                            "Failed to remove quarantine (binary may be blocked by Gatekeeper): {}",
+                            stderr.trim()
+                        ))
+                    }
+                    Err(e) => Err(format!("xattr command failed: {}", e)),
+                }
+            }
+            Ok(_) => {
+                // Not quarantined (xattr -p returns non-zero when attribute doesn't exist)
+                Ok(false)
+            }
+            Err(e) => {
+                // xattr command itself failed - unusual but not fatal
+                Err(format!("Could not check quarantine status: {}", e))
+            }
+        }
+    }
+
     /// Install the daemon as a system service.
     ///
     /// This copies the binary to a persistent location and creates the
@@ -148,6 +200,12 @@ impl ServiceManager {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o755);
             std::fs::set_permissions(&self.config.binary_path, perms)?;
+        }
+
+        // Remove quarantine attribute on macOS (Gatekeeper may block quarantined binaries)
+        #[cfg(target_os = "macos")]
+        if let Err(warning) = self.remove_quarantine() {
+            log::warn!("[service] {}", warning);
         }
 
         // Create service configuration
@@ -204,6 +262,12 @@ impl ServiceManager {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o755);
             std::fs::set_permissions(&self.config.binary_path, perms)?;
+        }
+
+        // Remove quarantine attribute on macOS (Gatekeeper may block quarantined binaries)
+        #[cfg(target_os = "macos")]
+        if let Err(warning) = self.remove_quarantine() {
+            log::warn!("[service] {}", warning);
         }
 
         // Recreate service config to apply any template changes (e.g., new env vars)
