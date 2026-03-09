@@ -119,17 +119,24 @@ impl NotebookDoc {
     /// Remove a UV dependency by package name (case-insensitive).
     /// Returns true if a dependency was removed.
     pub fn remove_uv_dependency(&mut self, pkg: &str) -> Result<bool, AutomergeError> {
-        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        let Some(mut snapshot) = self.get_metadata_snapshot() else {
+            return Ok(false);
+        };
         let removed = snapshot.remove_uv_dependency(pkg);
-        self.set_metadata_snapshot(&snapshot)?;
+        if removed {
+            self.set_metadata_snapshot(&snapshot)?;
+        }
         Ok(removed)
     }
 
     /// Clear the UV section entirely (deps + requires-python).
     pub fn clear_uv_section(&mut self) -> Result<(), AutomergeError> {
-        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
-        snapshot.clear_uv_section();
-        self.set_metadata_snapshot(&snapshot)
+        if let Some(mut snapshot) = self.get_metadata_snapshot() {
+            snapshot.clear_uv_section();
+            self.set_metadata_snapshot(&snapshot)
+        } else {
+            Ok(())
+        }
     }
 
     /// Set UV requires-python constraint, preserving deps.
@@ -137,9 +144,12 @@ impl NotebookDoc {
         &mut self,
         requires_python: Option<String>,
     ) -> Result<(), AutomergeError> {
-        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
-        snapshot.set_uv_requires_python(requires_python);
-        self.set_metadata_snapshot(&snapshot)
+        if let Some(mut snapshot) = self.get_metadata_snapshot() {
+            snapshot.set_uv_requires_python(requires_python);
+            self.set_metadata_snapshot(&snapshot)
+        } else {
+            Ok(())
+        }
     }
 
     // ── Conda dependency convenience methods ──────────────────────
@@ -154,17 +164,24 @@ impl NotebookDoc {
     /// Remove a Conda dependency by package name (case-insensitive).
     /// Returns true if a dependency was removed.
     pub fn remove_conda_dependency(&mut self, pkg: &str) -> Result<bool, AutomergeError> {
-        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        let Some(mut snapshot) = self.get_metadata_snapshot() else {
+            return Ok(false);
+        };
         let removed = snapshot.remove_conda_dependency(pkg);
-        self.set_metadata_snapshot(&snapshot)?;
+        if removed {
+            self.set_metadata_snapshot(&snapshot)?;
+        }
         Ok(removed)
     }
 
     /// Clear the Conda section entirely.
     pub fn clear_conda_section(&mut self) -> Result<(), AutomergeError> {
-        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
-        snapshot.clear_conda_section();
-        self.set_metadata_snapshot(&snapshot)
+        if let Some(mut snapshot) = self.get_metadata_snapshot() {
+            snapshot.clear_conda_section();
+            self.set_metadata_snapshot(&snapshot)
+        } else {
+            Ok(())
+        }
     }
 
     /// Set Conda channels, preserving deps and python.
