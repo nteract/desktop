@@ -674,26 +674,29 @@ impl Session {
             .unwrap_or_default())
     }
 
-    /// Add a UV dependency to the notebook.
+    /// Add a UV dependency to the notebook. Deduplicates by package name
+    /// (case-insensitive): if the package already exists, its specifier is
+    /// replaced rather than appended.
     ///
     /// Args:
     ///     package: PEP 508 dependency specifier (e.g., "pandas>=2.0", "requests").
     ///
     /// Returns:
-    ///     Updated list of dependencies.
+    ///     None. Use `get_uv_dependencies()` to read the current state.
     fn add_uv_dependency(&self, package: &str) -> PyResult<()> {
         let mut snapshot = self.get_notebook_metadata()?;
         snapshot.add_uv_dependency(package);
         self.set_notebook_metadata(&snapshot)
     }
 
-    /// Remove a UV dependency by exact match.
+    /// Remove a UV dependency by package name (case-insensitive, version-agnostic).
     ///
     /// Args:
-    ///     package: Exact dependency string to remove.
+    ///     package: Package name to remove (e.g., "requests"). Version specifiers
+    ///         are ignored — any entry matching the package name is removed.
     ///
     /// Returns:
-    ///     Updated list of dependencies.
+    ///     bool: True if a dependency was removed, False if not found.
     fn remove_uv_dependency(&self, package: &str) -> PyResult<bool> {
         let mut snapshot = self.get_notebook_metadata()?;
         let removed = snapshot.remove_uv_dependency(package);
@@ -716,26 +719,29 @@ impl Session {
             .unwrap_or_default())
     }
 
-    /// Add a Conda dependency to the notebook.
+    /// Add a Conda dependency to the notebook. Deduplicates by package name
+    /// (case-insensitive): if the package already exists, its specifier is
+    /// replaced rather than appended.
     ///
     /// Args:
     ///     package: Conda package specifier (e.g., "numpy", "scipy>=1.0").
     ///
     /// Returns:
-    ///     Updated list of dependencies.
+    ///     None. Use `get_conda_dependencies()` to read the current state.
     fn add_conda_dependency(&self, package: &str) -> PyResult<()> {
         let mut snapshot = self.get_notebook_metadata()?;
         snapshot.add_conda_dependency(package);
         self.set_notebook_metadata(&snapshot)
     }
 
-    /// Remove a Conda dependency by exact match.
+    /// Remove a Conda dependency by package name (case-insensitive, version-agnostic).
     ///
     /// Args:
-    ///     package: Exact dependency string to remove.
+    ///     package: Package name to remove (e.g., "numpy"). Version specifiers
+    ///         are ignored — any entry matching the package name is removed.
     ///
     /// Returns:
-    ///     Updated list of dependencies.
+    ///     bool: True if a dependency was removed, False if not found.
     fn remove_conda_dependency(&self, package: &str) -> PyResult<bool> {
         let mut snapshot = self.get_notebook_metadata()?;
         let removed = snapshot.remove_conda_dependency(package);

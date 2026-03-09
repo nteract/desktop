@@ -260,7 +260,8 @@ export async function addUvDependency(pkg: string): Promise<void> {
  */
 export async function removeUvDependency(pkg: string): Promise<void> {
   if (!_handle) return;
-  _handle.remove_uv_dependency(pkg);
+  const removed = _handle.remove_uv_dependency(pkg);
+  if (!removed) return;
   await syncToRelay();
   notifyMetadataChanged();
 }
@@ -306,7 +307,8 @@ export async function addCondaDependency(pkg: string): Promise<void> {
  */
 export async function removeCondaDependency(pkg: string): Promise<void> {
   if (!_handle) return;
-  _handle.remove_conda_dependency(pkg);
+  const removed = _handle.remove_conda_dependency(pkg);
+  if (!removed) return;
   await syncToRelay();
   notifyMetadataChanged();
 }

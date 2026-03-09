@@ -805,10 +805,14 @@ impl AsyncSession {
 
     /// Add a UV dependency to the notebook.
     ///
+    /// Deduplicates by package name (case-insensitive): if a dependency with the
+    /// same package name already exists, it is replaced with the new specifier.
+    ///
     /// Args:
     ///     package: PEP 508 dependency specifier (e.g., "pandas>=2.0", "requests").
     ///
-    /// Returns a coroutine that resolves to the updated list of dependencies.
+    /// Returns a coroutine that resolves to None. Callers should use
+    /// `get_uv_dependencies()` to read current state.
     fn add_uv_dependency<'py>(
         &self,
         py: Python<'py>,
@@ -825,12 +829,12 @@ impl AsyncSession {
         })
     }
 
-    /// Remove a UV dependency by exact match.
+    /// Remove a UV dependency by package name (case-insensitive, version-agnostic).
     ///
     /// Args:
-    ///     package: Exact dependency string to remove.
+    ///     package: Package name to remove (e.g., "pandas"). Version specifiers are ignored.
     ///
-    /// Returns a coroutine that resolves to the updated list of dependencies.
+    /// Returns a coroutine that resolves to bool indicating if a dependency was removed.
     fn remove_uv_dependency<'py>(
         &self,
         py: Python<'py>,
@@ -867,10 +871,14 @@ impl AsyncSession {
 
     /// Add a Conda dependency to the notebook.
     ///
+    /// Deduplicates by package name (case-insensitive): if a dependency with the
+    /// same package name already exists, it is replaced with the new specifier.
+    ///
     /// Args:
     ///     package: Conda package specifier (e.g., "numpy", "scipy>=1.0").
     ///
-    /// Returns a coroutine that resolves to the updated list of dependencies.
+    /// Returns a coroutine that resolves to None. Callers should use
+    /// `get_conda_dependencies()` to read current state.
     fn add_conda_dependency<'py>(
         &self,
         py: Python<'py>,
@@ -887,12 +895,12 @@ impl AsyncSession {
         })
     }
 
-    /// Remove a Conda dependency by exact match.
+    /// Remove a Conda dependency by package name (case-insensitive, version-agnostic).
     ///
     /// Args:
-    ///     package: Exact dependency string to remove.
+    ///     package: Package name to remove (e.g., "numpy"). Version specifiers are ignored.
     ///
-    /// Returns a coroutine that resolves to the updated list of dependencies.
+    /// Returns a coroutine that resolves to bool indicating if a dependency was removed.
     fn remove_conda_dependency<'py>(
         &self,
         py: Python<'py>,
