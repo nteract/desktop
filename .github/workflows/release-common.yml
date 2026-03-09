@@ -998,7 +998,7 @@ jobs:
           curl -H "Content-Type: application/json" -d "{
             \"embeds\": [{
               \"title\": \"${{ inputs.release_title }} succeeded\",
-              \"description\": \"Version \\\`v${VERSION}\\\` published successfully\",
+              \"description\": \"Version \`v${VERSION}\` published successfully\",
               \"url\": \"$RUN_URL\",
               \"color\": 3066993
             }]
