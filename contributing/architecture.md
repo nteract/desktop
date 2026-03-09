@@ -119,6 +119,6 @@ The frontend now owns a local Automerge doc via `runtimed-wasm` WASM bindings, m
 ## References
 
 - `crates/runtimed/src/protocol.rs` - Request/response types
-- `crates/runtimed/src/notebook_doc.rs` - Automerge document operations
+- `crates/notebook-doc/src/lib.rs` - Shared Automerge document operations (`NotebookDoc`) used by daemon and WASM
 - `crates/runtimed/src/notebook_sync_server.rs` - Sync protocol handling
 - `crates/runtimed/src/kernel_manager.rs` - Kernel lifecycle

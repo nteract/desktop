@@ -128,9 +128,7 @@ crates/runtimed/
 │   ├── settings_doc.rs          # Settings Automerge document, schema, migration
 │   ├── sync_server.rs           # Settings sync handler
 │   ├── sync_client.rs           # Settings sync client library
-│   ├── notebook_doc.rs          # Notebook Automerge document, cell CRUD, text editing
-│   │                            # ⚠ Shared: copied to crates/runtimed-wasm/src/notebook_doc.rs
-│   │                            #   (WASM subset, daemon-only methods removed). Keep in sync.
+│   ├── (uses notebook_doc crate) # Shared `NotebookDoc` from crates/notebook-doc/src/lib.rs
 │   ├── notebook_sync_server.rs  # Room-based notebook sync, peer management, eviction
 │   ├── notebook_sync_client.rs  # Notebook sync client library
 │   ├── blob_store.rs            # Content-addressed blob store with metadata sidecars
@@ -141,7 +139,7 @@ crates/runtimed/
 │   ├── project_file.rs          # Project file detection (pyproject.toml, pixi.toml, etc.)
 │   ├── comm_state.rs            # Comm message state for ipywidgets
 │   ├── output_store.rs          # Output persistence and retrieval
-│   ├── notebook_metadata.rs     # Notebook metadata parsing
+│   ├── (metadata via notebook_doc) # `notebook_doc::metadata` re-exported as `notebook_metadata`
 │   ├── stream_terminal.rs       # Stream terminal output handling
 │   └── terminal_size.rs         # Terminal size tracking
 └── tests/
@@ -375,4 +373,3 @@ systemctl --user start runtimed.service
 | Socket | `~/Library/Caches/runt/runtimed.sock` |
 | Daemon info | `~/Library/Caches/runt/daemon.json` |
 | Logs | `~/Library/Caches/runt/runtimed.log` |
-

@@ -203,7 +203,7 @@ runt daemon status
 The notebook uses a local-first CRDT architecture. The frontend owns its own Automerge document via WASM, making cell mutations instant. Two Automerge peers participate:
 
 - **Frontend (WASM)** — `NotebookHandle` from `crates/runtimed-wasm`, loaded in the webview. Cell mutations (add, delete, edit source) execute locally in WASM. React state is derived from the WASM doc via `handle.get_cells_json()`. The WASM starts with an empty doc (`create_empty()`); the sync protocol delivers all state from the daemon.
-- **Daemon** — `NotebookDoc` in `crates/runtimed/src/notebook_doc.rs`. Canonical doc for kernel execution, output writing, and persistence.
+- **Daemon** — `NotebookDoc` from `crates/notebook-doc/src/lib.rs` (re-exported by `crates/runtimed/src/lib.rs`). Canonical doc for kernel execution, output writing, and persistence.
 
 The **Tauri relay** (`NotebookSyncClient` in `crates/runtimed/src/notebook_sync_client.rs`) is a transparent byte pipe — it forwards raw Automerge sync frames between the WASM and the daemon without merging or maintaining its own doc replica. The daemon's `peer_state` tracks the WASM peer directly through the pipe. A non-pipe "full peer" mode exists for `runtimed-py` (Python bindings), where the relay does maintain a local doc replica — but this is not the Tauri path.
 
@@ -304,7 +304,7 @@ Dependencies are signed with HMAC-SHA256 using a per-machine key at `~/.config/r
 | `crates/notebook/src/deno_env.rs` | Deno config detection and version checking |
 | `crates/notebook/src/trust.rs` | HMAC trust verification |
 | `crates/runtimed-wasm/src/lib.rs` | WASM bindings for NotebookDoc — cell mutations, sync messages |
-| `crates/runtimed-wasm/src/notebook_doc.rs` | Automerge document operations (copy of daemon's NotebookDoc, trimmed for WASM) |
+| `crates/notebook-doc/src/lib.rs` | Shared Automerge document operations (`NotebookDoc`) used by daemon and WASM bindings |
 | `apps/notebook/src/hooks/useAutomergeNotebook.ts` | Local-first notebook hook — owns NotebookHandle WASM, drives React cell state, sync-only bootstrap (empty doc, no GetDocBytes) |
 | `apps/notebook/src/hooks/useDaemonKernel.ts` | Daemon-owned kernel execution, status broadcasts, environment sync |
 | `apps/notebook/src/hooks/useDependencies.ts` | Frontend UV dependency management |

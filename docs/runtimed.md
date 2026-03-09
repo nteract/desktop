@@ -242,7 +242,7 @@ pub struct NotebookRoom {
 | `settings_doc.rs` | Settings Automerge document, schema, migration |
 | `sync_server.rs` | Settings sync handler |
 | `sync_client.rs` | Settings sync client library |
-| `notebook_doc.rs` | Notebook Automerge document, cell CRUD, text editing, persistence |
+| `crates/notebook-doc/src/lib.rs` | Notebook Automerge document, cell CRUD, text editing, persistence |
 | `notebook_sync_server.rs` | Room-based notebook sync, peer management, eviction |
 | `notebook_sync_client.rs` | Notebook sync client library |
 
@@ -775,7 +775,7 @@ The implementation:
 | `crates/runtimed/src/kernel_manager.rs` | Kernel lifecycle, iopub watching, output handling |
 | `crates/runtimed/src/notebook_sync_server.rs` | Room management, request handling, broadcasts |
 | `crates/runtimed/src/project_file.rs` | Project file detection for auto-env |
-| `crates/runtimed/src/notebook_doc.rs` | Automerge doc operations, output persistence |
+| `crates/notebook-doc/src/lib.rs` | Automerge doc operations, output persistence |
 | `crates/notebook/src/lib.rs` | Tauri commands (`launch_kernel_via_daemon`, etc.) |
 | `apps/notebook/src/hooks/useDaemonKernel.ts` | Frontend daemon kernel hook |
 
