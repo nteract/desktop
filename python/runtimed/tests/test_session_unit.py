@@ -225,6 +225,38 @@ class TestOutputTypes:
         assert hasattr(runtimed, "RuntimedError")
 
 
+class TestCreateNotebookValidation:
+    """Test create_notebook working_dir validation."""
+
+    def test_create_notebook_rejects_nonexistent_path(self):
+        """create_notebook raises FileNotFoundError for non-existent working_dir."""
+        with pytest.raises(FileNotFoundError, match="working_dir does not exist"):
+            runtimed.Session.create_notebook(working_dir="/sessions/fake-path")
+
+    def test_create_notebook_rejects_file_as_working_dir(self, tmp_path):
+        """create_notebook raises NotADirectoryError when working_dir is a file."""
+        test_file = tmp_path / "test_file.txt"
+        test_file.write_text("test")
+        with pytest.raises(NotADirectoryError, match="working_dir is not a directory"):
+            runtimed.Session.create_notebook(working_dir=str(test_file))
+
+
+class TestAsyncCreateNotebookValidation:
+    """Test AsyncSession.create_notebook working_dir validation."""
+
+    def test_async_create_notebook_rejects_nonexistent_path(self):
+        """AsyncSession.create_notebook raises FileNotFoundError for non-existent working_dir."""
+        with pytest.raises(FileNotFoundError, match="working_dir does not exist"):
+            runtimed.AsyncSession.create_notebook(working_dir="/sessions/fake-path")
+
+    def test_async_create_notebook_rejects_file_as_working_dir(self, tmp_path):
+        """AsyncSession.create_notebook raises NotADirectoryError when working_dir is a file."""
+        test_file = tmp_path / "test_file.txt"
+        test_file.write_text("test")
+        with pytest.raises(NotADirectoryError, match="working_dir is not a directory"):
+            runtimed.AsyncSession.create_notebook(working_dir=str(test_file))
+
+
 class TestModuleExports:
     """Test that all expected classes are exported."""
 
