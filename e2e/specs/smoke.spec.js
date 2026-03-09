@@ -14,6 +14,7 @@ import {
   getKernelStatus,
   typeSlowly,
   waitForAppReady,
+  waitForCellOutput,
   waitForKernelReady,
 } from "../helpers.js";
 
@@ -53,19 +54,10 @@ describe("E2E Smoke Test", () => {
     // Execute with Shift+Enter
     await browser.keys(["Shift", "Enter"]);
 
-    // Wait for output to appear
-    await browser.waitUntil(
-      async () => {
-        const output = await codeCell.$('[data-slot="ansi-stream-output"]');
-        return await output.isExisting();
-      },
-      { timeout: 30000, interval: 500, timeoutMsg: "No output appeared" },
-    );
+    // Wait for output to appear (uses global fallback for WRY compatibility)
+    const outputText = await waitForCellOutput(codeCell, 30000);
 
     // Verify output contains expected text
-    const outputText = await codeCell
-      .$('[data-slot="ansi-stream-output"]')
-      .getText();
     expect(outputText).toContain("hello from e2e");
   });
 });
