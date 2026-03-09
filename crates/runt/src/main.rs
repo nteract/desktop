@@ -1825,11 +1825,15 @@ async fn doctor_command(
     #[derive(Serialize, Clone)]
     struct DoctorReport {
         installed_binary: CheckResult,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        quarantine: Option<CheckResult>, // macOS only: com.apple.quarantine xattr check
         service_config: CheckResult,
         #[serde(skip_serializing_if = "Option::is_none")]
         plist_home_env: Option<CheckResult>,
         #[serde(skip_serializing_if = "Option::is_none")]
         launchd_service: Option<CheckResult>, // macOS only: actual launchd registration state
+        #[serde(skip_serializing_if = "Option::is_none")]
+        conflicting_services: Option<CheckResult>, // macOS only: stale/conflicting daemon services
         socket_file: CheckResult,
         daemon_state: CheckResult,
         daemon_running: CheckResult,
@@ -1863,6 +1867,45 @@ async fn doctor_command(
             status: if binary_exists { "ok" } else { "missing" }.to_string(),
             detail: None,
         };
+
+        // Check 1b: On macOS, check for quarantine xattr (Gatekeeper blocks execution)
+        #[cfg(target_os = "macos")]
+        let quarantine = if binary_exists {
+            let output = std::process::Command::new("xattr")
+                .args(["-p", "com.apple.quarantine"])
+                .arg(&binary_path)
+                .output();
+
+            match output {
+                Ok(o) if o.status.success() => {
+                    // Quarantine attribute exists - this is bad
+                    Some(CheckResult {
+                        path: "com.apple.quarantine".to_string(),
+                        status: "quarantined".to_string(),
+                        detail: Some(
+                            "binary is quarantined - Gatekeeper may block execution".to_string(),
+                        ),
+                    })
+                }
+                Ok(_) => {
+                    // xattr returned non-zero, meaning attribute doesn't exist - good
+                    Some(CheckResult {
+                        path: "com.apple.quarantine".to_string(),
+                        status: "ok".to_string(),
+                        detail: None,
+                    })
+                }
+                Err(e) => Some(CheckResult {
+                    path: "com.apple.quarantine".to_string(),
+                    status: "error".to_string(),
+                    detail: Some(format!("xattr check failed: {}", e)),
+                }),
+            }
+        } else {
+            None
+        };
+        #[cfg(not(target_os = "macos"))]
+        let quarantine: Option<CheckResult> = None;
 
         // Check 2: Service config (plist/systemd/startup script)
         let config_exists = service_config_path.exists();
@@ -1979,6 +2022,70 @@ async fn doctor_command(
         #[cfg(not(target_os = "macos"))]
         let launchd_service: Option<CheckResult> = None;
 
+        // Check 2d: On macOS, detect conflicting/stale daemon services
+        #[cfg(target_os = "macos")]
+        let conflicting_services = {
+            let current_label = runt_workspace::daemon_launchd_label();
+            // Known old/conflicting service labels
+            let stale_labels = [
+                "io.runtimed",                 // Pre-rebrand
+                "io.nteract.runtimed.preview", // Preview channel
+                "io.nteract.runtimed.nightly", // Nightly channel
+                "io.nteract.runtimed",         // Stable channel
+            ];
+
+            let output = std::process::Command::new("launchctl")
+                .args(["list"])
+                .output();
+
+            match output {
+                Ok(o) if o.status.success() => {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    let mut conflicts: Vec<String> = Vec::new();
+
+                    for line in stdout.lines() {
+                        for label in &stale_labels {
+                            // Skip the current channel's label
+                            if *label == current_label {
+                                continue;
+                            }
+                            if line.ends_with(label) {
+                                // Parse PID and status from "PID\tStatus\tLabel" format
+                                let parts: Vec<&str> = line.split('\t').collect();
+                                let status_info = if parts.len() >= 2 {
+                                    let pid = parts[0];
+                                    let exit_code = parts[1];
+                                    if pid != "-" {
+                                        format!("{} (PID {}, running)", label, pid)
+                                    } else if exit_code != "0" {
+                                        format!("{} (exit {})", label, exit_code)
+                                    } else {
+                                        format!("{} (registered)", label)
+                                    }
+                                } else {
+                                    label.to_string()
+                                };
+                                conflicts.push(status_info);
+                            }
+                        }
+                    }
+
+                    if conflicts.is_empty() {
+                        None // No conflicts, don't show this check
+                    } else {
+                        Some(CheckResult {
+                            path: "stale services".to_string(),
+                            status: "warning".to_string(),
+                            detail: Some(conflicts.join(", ")),
+                        })
+                    }
+                }
+                _ => None, // Can't check, skip
+            }
+        };
+        #[cfg(not(target_os = "macos"))]
+        let conflicting_services: Option<CheckResult> = None;
+
         // Check 3: Socket file
         let socket_exists = socket_path.exists();
         let socket_file = CheckResult {
@@ -2040,10 +2147,17 @@ async fn doctor_command(
             .as_ref()
             .map(|c| c.status == "error")
             .unwrap_or(false);
+        #[cfg(target_os = "macos")]
+        let is_quarantined = quarantine
+            .as_ref()
+            .map(|c| c.status == "quarantined")
+            .unwrap_or(false);
         #[cfg(not(target_os = "macos"))]
         let launchd_not_loaded = false;
         #[cfg(not(target_os = "macos"))]
         let launchd_error = false;
+        #[cfg(not(target_os = "macos"))]
+        let is_quarantined = false;
 
         // Determine diagnosis
         let diagnosis = if daemon_running_result {
@@ -2055,6 +2169,9 @@ async fn doctor_command(
             )
         } else if !binary_exists && config_exists {
             "Service config exists but binary missing. Need to reinstall.".to_string()
+        } else if binary_exists && is_quarantined {
+            "Binary is quarantined by Gatekeeper. Run: xattr -d com.apple.quarantine <binary_path>"
+                .to_string()
         } else if binary_exists && config_exists && launchd_not_loaded {
             "Plist exists but service not loaded in launchd. Run 'runt daemon doctor --fix' to reset.".to_string()
         } else if binary_exists && config_exists && launchd_error {
@@ -2071,9 +2188,11 @@ async fn doctor_command(
 
         DoctorReport {
             installed_binary,
+            quarantine,
             service_config,
             plist_home_env,
             launchd_service,
+            conflicting_services,
             socket_file,
             daemon_state,
             daemon_running,
@@ -2118,6 +2237,21 @@ async fn doctor_command(
     #[cfg(not(target_os = "macos"))]
     let launchd_not_loaded = false;
 
+    // On macOS, check if binary has quarantine xattr
+    #[cfg(target_os = "macos")]
+    let is_quarantined = if binary_exists {
+        std::process::Command::new("xattr")
+            .args(["-p", "com.apple.quarantine"])
+            .arg(&binary_path)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    #[cfg(not(target_os = "macos"))]
+    let is_quarantined = false;
+
     // Check daemon state for fix operations
     let daemon_state_status = if let Some(info) = daemon_info {
         if is_process_running(info.pid) {
@@ -2155,6 +2289,28 @@ async fn doctor_command(
                     }
                 } else {
                     actions_taken.push("Removed stale socket file".to_string());
+                }
+            }
+        }
+
+        // Fix quarantine xattr (macOS only) - Gatekeeper blocks quarantined binaries
+        #[cfg(target_os = "macos")]
+        if is_quarantined {
+            let result = std::process::Command::new("xattr")
+                .args(["-d", "com.apple.quarantine"])
+                .arg(&binary_path)
+                .output();
+
+            match result {
+                Ok(o) if o.status.success() => {
+                    actions_taken.push("Removed quarantine attribute from binary".to_string());
+                }
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    eprintln!("Failed to remove quarantine: {}", stderr.trim());
+                }
+                Err(e) => {
+                    eprintln!("xattr command failed: {}", e);
                 }
             }
         }
@@ -2300,6 +2456,20 @@ async fn doctor_command(
             report.installed_binary.path.dimmed(),
             colored_status_icon(&report.installed_binary.status)
         );
+        if let Some(ref quarantine_check) = report.quarantine {
+            if quarantine_check.status == "quarantined" {
+                println!(
+                    "{:<20} {}{}",
+                    "Quarantine:".bold(),
+                    colored_status_icon(&quarantine_check.status),
+                    quarantine_check
+                        .detail
+                        .as_ref()
+                        .map(|d| format!(" ({})", d).dimmed().to_string())
+                        .unwrap_or_default()
+                );
+            }
+        }
         println!(
             "{:<20} {} {}",
             "Service config:".bold(),
@@ -2328,6 +2498,18 @@ async fn doctor_command(
                     .detail
                     .as_ref()
                     .map(|d| format!(" ({})", d).dimmed().to_string())
+                    .unwrap_or_default()
+            );
+        }
+        if let Some(ref conflicts_check) = report.conflicting_services {
+            println!(
+                "{:<20} {}{}",
+                "Stale services:".bold(),
+                colored_status_icon(&conflicts_check.status),
+                conflicts_check
+                    .detail
+                    .as_ref()
+                    .map(|d| format!(" {}", d).dimmed().to_string())
                     .unwrap_or_default()
             );
         }
@@ -2518,6 +2700,8 @@ fn colored_status_icon(status: &str) -> colored::ColoredString {
         "missing" => "[missing]".red(),
         "stale" => "[stale]".yellow(),
         "not_loaded" => "[not loaded]".yellow(),
+        "quarantined" => "[quarantined]".red(),
+        "warning" => "[warning]".yellow(),
         "error" => "[error]".red(),
         "not_running" => "".normal(),
         _ => "[?]".yellow(),
