@@ -161,7 +161,9 @@ interface NotebookToolbarProps {
   onRestartKernel: () => void;
   onRunAllCells: () => void;
   onRestartAndRunAll: () => void;
-  onAddCell: (type: "code" | "markdown") => void;
+  focusedCellId?: string | null;
+  lastCellId?: string | null;
+  onAddCell: (type: "code" | "markdown", afterCellId?: string | null) => void;
   onToggleDependencies: () => void;
   isDepsOpen?: boolean;
   listKernelspecs?: () => Promise<KernelspecInfo[]>;
@@ -291,6 +293,8 @@ export function NotebookToolbar({
   onRestartKernel,
   onRunAllCells,
   onRestartAndRunAll,
+  focusedCellId,
+  lastCellId,
   onAddCell,
   onToggleDependencies,
   isDepsOpen = false,
@@ -375,7 +379,7 @@ export function NotebookToolbar({
           {/* Add cells */}
           <button
             type="button"
-            onClick={() => onAddCell("code")}
+            onClick={() => onAddCell("code", focusedCellId ?? lastCellId)}
             className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             title="Add code cell"
             data-testid="add-code-cell-button"
@@ -385,7 +389,7 @@ export function NotebookToolbar({
           </button>
           <button
             type="button"
-            onClick={() => onAddCell("markdown")}
+            onClick={() => onAddCell("markdown", focusedCellId ?? lastCellId)}
             className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             title="Add markdown cell"
             data-testid="add-markdown-cell-button"

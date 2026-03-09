@@ -949,6 +949,8 @@ function AppContent() {
         onRestartKernel={handleRestartKernel}
         onRunAllCells={handleRunAllCells}
         onRestartAndRunAll={handleRestartAndRunAll}
+        focusedCellId={focusedCellId}
+        lastCellId={cells.length > 0 ? cells[cells.length - 1].id : null}
         onAddCell={handleAddCell}
         onToggleDependencies={() => setDependencyHeaderOpen((prev) => !prev)}
         isDepsOpen={dependencyHeaderOpen}
