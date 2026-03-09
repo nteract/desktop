@@ -380,7 +380,7 @@ export function MarkdownCell({
             ref={frameRef}
             darkMode={darkMode}
             minHeight={24}
-            maxHeight={2000}
+            autoHeight
             onReady={handleFrameReady}
             onLinkClick={handleLinkClick}
             onDoubleClick={handleDoubleClick}

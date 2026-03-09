@@ -44,6 +44,14 @@ export interface IsolatedFrameProps {
   maxHeight?: number;
 
   /**
+   * When true, iframe grows to fit content without maxHeight cap.
+   * Use for content that should render fully (e.g., markdown cells).
+   * Takes precedence over maxHeight when enabled.
+   * @default false
+   */
+  autoHeight?: boolean;
+
+  /**
    * Additional CSS classes for the iframe container.
    */
   className?: string;
@@ -192,6 +200,7 @@ export const IsolatedFrame = forwardRef<
     darkMode = true,
     minHeight = 24,
     maxHeight = 2000,
+    autoHeight = false,
     className = "",
     onReady,
     onResize,
@@ -329,10 +338,9 @@ export const IsolatedFrame = forwardRef<
 
         case "resize":
           if (data.payload?.height != null) {
-            const newHeight = Math.max(
-              minHeight,
-              Math.min(maxHeight, data.payload.height),
-            );
+            const newHeight = autoHeight
+              ? Math.max(minHeight, data.payload.height)
+              : Math.max(minHeight, Math.min(maxHeight, data.payload.height));
             setHeight(newHeight);
             onResize?.(newHeight);
           }
@@ -379,6 +387,7 @@ export const IsolatedFrame = forwardRef<
     initialContent,
     minHeight,
     maxHeight,
+    autoHeight,
     onReady,
     onResize,
     onLinkClick,
