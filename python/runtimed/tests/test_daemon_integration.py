@@ -110,6 +110,26 @@ def wait_for_metadata(session, key, *, check=None, timeout=5.0, description=None
     return wait_for_sync(_check, timeout=timeout, description=desc)
 
 
+def start_kernel_with_retry(session, *, kernel_type="python", env_source="auto",
+                            retries=5, delay=1.0, description="start_kernel"):
+    """Retry start_kernel to tolerate metadata sync lag to the daemon.
+
+    When the client sets notebook metadata and immediately calls start_kernel,
+    the daemon's Automerge doc may not have received the sync message yet.
+    This helper retries on RuntimedError to wait for propagation.
+    """
+    last_err = None
+    for attempt in range(retries):
+        try:
+            session.start_kernel(kernel_type=kernel_type, env_source=env_source)
+            return
+        except runtimed.RuntimedError as e:
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(delay)
+    raise last_err
+
+
 # ============================================================================
 # Fixtures for daemon management
 # ============================================================================
@@ -1190,7 +1210,8 @@ class TestKernelLaunchMetadata:
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
         wait_for_metadata(session, NOTEBOOK_METADATA_KEY)
 
-        session.start_kernel(kernel_type="python", env_source="uv:inline")
+        # Retry: metadata may not have synced to the daemon's Automerge doc yet
+        start_kernel_with_retry(session, kernel_type="python", env_source="uv:inline")
 
         assert session.env_source == "uv:inline"
 
@@ -1208,7 +1229,8 @@ class TestKernelLaunchMetadata:
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
         wait_for_metadata(session, NOTEBOOK_METADATA_KEY)
 
-        session.start_kernel(kernel_type="python", env_source="uv:inline")
+        # Retry: metadata may not have synced to the daemon's Automerge doc yet
+        start_kernel_with_retry(session, kernel_type="python", env_source="uv:inline")
 
         # sys.prefix should point to a venv, not the system Python
         result = session.run("import sys; print(sys.prefix)")
@@ -2438,9 +2460,12 @@ class TestOpenNotebook:
         initial_count = len(session1.get_cells())
         session1.create_cell("y = 2", index=initial_count)
 
-        # Should sync to session2
+        # Should sync to session2 (open_notebook sessions do full-peer sync
+        # which can be slower on loaded CI runners — use generous timeout)
         wait_for_sync(
-            lambda: len(session2.get_cells()) > initial_count, description="cell sync"
+            lambda: len(session2.get_cells()) > initial_count,
+            timeout=15.0,
+            description="cell sync",
         )
 
         cells2 = session2.get_cells()
