@@ -220,6 +220,23 @@ impl AsyncSession {
         runtime: &str,
         working_dir: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        // Validate working_dir if provided
+        if let Some(ref wd) = working_dir {
+            let path = std::path::Path::new(wd);
+            if !path.exists() {
+                return Err(pyo3::exceptions::PyFileNotFoundError::new_err(format!(
+                    "working_dir does not exist: {}",
+                    wd
+                )));
+            }
+            if !path.is_dir() {
+                return Err(pyo3::exceptions::PyNotADirectoryError::new_err(format!(
+                    "working_dir is not a directory: {}",
+                    wd
+                )));
+            }
+        }
+
         let runtime = runtime.to_string();
         future_into_py(py, async move {
             let working_dir_str = working_dir.clone();

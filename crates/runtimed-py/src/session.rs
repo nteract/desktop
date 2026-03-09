@@ -208,6 +208,23 @@ impl Session {
     #[staticmethod]
     #[pyo3(signature = (runtime="python", working_dir=None))]
     fn create_notebook(runtime: &str, working_dir: Option<&str>) -> PyResult<Self> {
+        // Validate working_dir if provided
+        if let Some(wd) = working_dir {
+            let path = std::path::Path::new(wd);
+            if !path.exists() {
+                return Err(pyo3::exceptions::PyFileNotFoundError::new_err(format!(
+                    "working_dir does not exist: {}",
+                    wd
+                )));
+            }
+            if !path.is_dir() {
+                return Err(pyo3::exceptions::PyNotADirectoryError::new_err(format!(
+                    "working_dir is not a directory: {}",
+                    wd
+                )));
+            }
+        }
+
         let rt = Runtime::new().map_err(to_py_err)?;
         let runtime_str = runtime.to_string();
         let working_dir_str = working_dir.map(|s| s.to_string());
