@@ -39,6 +39,7 @@ export interface IsolatedFrameProps {
 
   /**
    * Maximum height of the iframe in pixels.
+   * Ignored when `autoHeight` is `true`.
    * @default 2000
    */
   maxHeight?: number;
