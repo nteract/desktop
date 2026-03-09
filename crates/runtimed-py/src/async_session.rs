@@ -21,9 +21,7 @@ use crate::output::{Cell, ExecutionResult, NotebookConnectionInfo, Output, SyncE
 use crate::output_resolver;
 use crate::subscription::EventSubscription;
 
-use notebook_doc::metadata::{
-    CondaInlineMetadata, NotebookMetadataSnapshot, RuntMetadata, UvInlineMetadata,
-};
+use notebook_doc::metadata::NotebookMetadataSnapshot;
 
 /// An async session for executing code via the runtimed daemon.
 ///
@@ -821,21 +819,9 @@ impl AsyncSession {
 
         future_into_py(py, async move {
             let mut snapshot = get_notebook_metadata_async(&state).await?;
-
-            let mut deps = snapshot
-                .runt
-                .uv
-                .map(|uv| uv.dependencies)
-                .unwrap_or_default();
-            deps.push(package);
-
-            snapshot.runt.uv = Some(UvInlineMetadata {
-                dependencies: deps.clone(),
-                requires_python: None,
-            });
-
+            snapshot.add_uv_dependency(&package);
             set_notebook_metadata_async(&state, &snapshot).await?;
-            Ok(deps)
+            Ok(())
         })
     }
 
@@ -855,21 +841,11 @@ impl AsyncSession {
 
         future_into_py(py, async move {
             let mut snapshot = get_notebook_metadata_async(&state).await?;
-
-            let mut deps = snapshot
-                .runt
-                .uv
-                .map(|uv| uv.dependencies)
-                .unwrap_or_default();
-            deps.retain(|dep| dep != &package);
-
-            snapshot.runt.uv = Some(UvInlineMetadata {
-                dependencies: deps.clone(),
-                requires_python: None,
-            });
-
-            set_notebook_metadata_async(&state, &snapshot).await?;
-            Ok(deps)
+            let removed = snapshot.remove_uv_dependency(&package);
+            if removed {
+                set_notebook_metadata_async(&state, &snapshot).await?;
+            }
+            Ok(removed)
         })
     }
 
@@ -905,24 +881,9 @@ impl AsyncSession {
 
         future_into_py(py, async move {
             let mut snapshot = get_notebook_metadata_async(&state).await?;
-
-            let existing = snapshot.runt.conda.unwrap_or(CondaInlineMetadata {
-                dependencies: vec![],
-                channels: vec!["conda-forge".to_string()],
-                python: None,
-            });
-
-            let mut deps = existing.dependencies;
-            deps.push(package);
-
-            snapshot.runt.conda = Some(CondaInlineMetadata {
-                dependencies: deps.clone(),
-                channels: existing.channels,
-                python: existing.python,
-            });
-
+            snapshot.add_conda_dependency(&package);
             set_notebook_metadata_async(&state, &snapshot).await?;
-            Ok(deps)
+            Ok(())
         })
     }
 
@@ -942,24 +903,11 @@ impl AsyncSession {
 
         future_into_py(py, async move {
             let mut snapshot = get_notebook_metadata_async(&state).await?;
-
-            let existing = snapshot.runt.conda.unwrap_or(CondaInlineMetadata {
-                dependencies: vec![],
-                channels: vec!["conda-forge".to_string()],
-                python: None,
-            });
-
-            let mut deps = existing.dependencies;
-            deps.retain(|dep| dep != &package);
-
-            snapshot.runt.conda = Some(CondaInlineMetadata {
-                dependencies: deps.clone(),
-                channels: existing.channels,
-                python: existing.python,
-            });
-
-            set_notebook_metadata_async(&state, &snapshot).await?;
-            Ok(deps)
+            let removed = snapshot.remove_conda_dependency(&package);
+            if removed {
+                set_notebook_metadata_async(&state, &snapshot).await?;
+            }
+            Ok(removed)
         })
     }
 
@@ -2184,21 +2132,7 @@ async fn get_notebook_metadata_async(
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
-    Ok(handle
-        .get_notebook_metadata()
-        .unwrap_or_else(|| NotebookMetadataSnapshot {
-            kernelspec: None,
-            language_info: None,
-            runt: RuntMetadata {
-                schema_version: "1".to_string(),
-                env_id: None,
-                uv: None,
-                conda: None,
-                deno: None,
-                trust_signature: None,
-                trust_timestamp: None,
-            },
-        }))
+    Ok(handle.get_notebook_metadata().unwrap_or_default())
 }
 
 /// Set the notebook metadata snapshot asynchronously.

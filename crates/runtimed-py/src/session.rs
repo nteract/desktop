@@ -20,9 +20,7 @@ use crate::output::{Cell, ExecutionResult, NotebookConnectionInfo, Output, SyncE
 use crate::output_resolver;
 use crate::subscription::EventIteratorSubscription;
 
-use notebook_doc::metadata::{
-    CondaInlineMetadata, NotebookMetadataSnapshot, RuntMetadata, UvInlineMetadata,
-};
+use notebook_doc::metadata::NotebookMetadataSnapshot;
 
 /// A session for executing code via the runtimed daemon.
 ///
@@ -683,24 +681,10 @@ impl Session {
     ///
     /// Returns:
     ///     Updated list of dependencies.
-    fn add_uv_dependency(&self, package: &str) -> PyResult<Vec<String>> {
+    fn add_uv_dependency(&self, package: &str) -> PyResult<()> {
         let mut snapshot = self.get_notebook_metadata()?;
-
-        let mut deps = snapshot
-            .runt
-            .uv
-            .map(|uv| uv.dependencies)
-            .unwrap_or_default();
-
-        deps.push(package.to_string());
-
-        snapshot.runt.uv = Some(UvInlineMetadata {
-            dependencies: deps.clone(),
-            requires_python: None,
-        });
-
-        self.set_notebook_metadata(&snapshot)?;
-        Ok(deps)
+        snapshot.add_uv_dependency(package);
+        self.set_notebook_metadata(&snapshot)
     }
 
     /// Remove a UV dependency by exact match.
@@ -710,23 +694,13 @@ impl Session {
     ///
     /// Returns:
     ///     Updated list of dependencies.
-    fn remove_uv_dependency(&self, package: &str) -> PyResult<Vec<String>> {
+    fn remove_uv_dependency(&self, package: &str) -> PyResult<bool> {
         let mut snapshot = self.get_notebook_metadata()?;
-
-        let mut deps = snapshot
-            .runt
-            .uv
-            .map(|uv| uv.dependencies)
-            .unwrap_or_default();
-        deps.retain(|dep| dep != package);
-
-        snapshot.runt.uv = Some(UvInlineMetadata {
-            dependencies: deps.clone(),
-            requires_python: None,
-        });
-
-        self.set_notebook_metadata(&snapshot)?;
-        Ok(deps)
+        let removed = snapshot.remove_uv_dependency(package);
+        if removed {
+            self.set_notebook_metadata(&snapshot)?;
+        }
+        Ok(removed)
     }
 
     /// Get current Conda dependencies.
@@ -749,26 +723,10 @@ impl Session {
     ///
     /// Returns:
     ///     Updated list of dependencies.
-    fn add_conda_dependency(&self, package: &str) -> PyResult<Vec<String>> {
+    fn add_conda_dependency(&self, package: &str) -> PyResult<()> {
         let mut snapshot = self.get_notebook_metadata()?;
-
-        let existing = snapshot.runt.conda.unwrap_or(CondaInlineMetadata {
-            dependencies: vec![],
-            channels: vec!["conda-forge".to_string()],
-            python: None,
-        });
-
-        let mut deps = existing.dependencies;
-        deps.push(package.to_string());
-
-        snapshot.runt.conda = Some(CondaInlineMetadata {
-            dependencies: deps.clone(),
-            channels: existing.channels,
-            python: existing.python,
-        });
-
-        self.set_notebook_metadata(&snapshot)?;
-        Ok(deps)
+        snapshot.add_conda_dependency(package);
+        self.set_notebook_metadata(&snapshot)
     }
 
     /// Remove a Conda dependency by exact match.
@@ -778,26 +736,13 @@ impl Session {
     ///
     /// Returns:
     ///     Updated list of dependencies.
-    fn remove_conda_dependency(&self, package: &str) -> PyResult<Vec<String>> {
+    fn remove_conda_dependency(&self, package: &str) -> PyResult<bool> {
         let mut snapshot = self.get_notebook_metadata()?;
-
-        let existing = snapshot.runt.conda.unwrap_or(CondaInlineMetadata {
-            dependencies: vec![],
-            channels: vec!["conda-forge".to_string()],
-            python: None,
-        });
-
-        let mut deps = existing.dependencies;
-        deps.retain(|dep| dep != package);
-
-        snapshot.runt.conda = Some(CondaInlineMetadata {
-            dependencies: deps.clone(),
-            channels: existing.channels,
-            python: existing.python,
-        });
-
-        self.set_notebook_metadata(&snapshot)?;
-        Ok(deps)
+        let removed = snapshot.remove_conda_dependency(package);
+        if removed {
+            self.set_notebook_metadata(&snapshot)?;
+        }
+        Ok(removed)
     }
 
     // =========================================================================
@@ -1682,21 +1627,7 @@ impl Session {
             .as_ref()
             .ok_or_else(|| to_py_err("Not connected"))?;
 
-        Ok(handle
-            .get_notebook_metadata()
-            .unwrap_or_else(|| NotebookMetadataSnapshot {
-                kernelspec: None,
-                language_info: None,
-                runt: RuntMetadata {
-                    schema_version: "1".to_string(),
-                    env_id: None,
-                    uv: None,
-                    conda: None,
-                    deno: None,
-                    trust_signature: None,
-                    trust_timestamp: None,
-                },
-            }))
+        Ok(handle.get_notebook_metadata().unwrap_or_default())
     }
 
     /// Set the notebook metadata snapshot.
