@@ -1828,6 +1828,8 @@ async fn doctor_command(
         service_config: CheckResult,
         #[serde(skip_serializing_if = "Option::is_none")]
         plist_home_env: Option<CheckResult>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        launchd_service: Option<CheckResult>, // macOS only: actual launchd registration state
         socket_file: CheckResult,
         daemon_state: CheckResult,
         daemon_running: CheckResult,
@@ -1903,6 +1905,80 @@ async fn doctor_command(
         #[cfg(not(target_os = "macos"))]
         let plist_home_env: Option<CheckResult> = None;
 
+        // Check 2c: On macOS, verify service is actually loaded in launchd
+        #[cfg(target_os = "macos")]
+        let launchd_service = if config_exists {
+            let label = runt_workspace::daemon_launchd_label();
+            let output = std::process::Command::new("launchctl")
+                .args(["list", label])
+                .output();
+
+            match output {
+                Ok(o) if o.status.success() => {
+                    // Output is dict/plist format with "PID" and "LastExitStatus" keys
+                    // Parse PID from output (format: "PID" = 12345; or "PID" = <missing>)
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+
+                    // Extract PID if present
+                    let pid = stdout
+                        .lines()
+                        .find(|l| l.contains("\"PID\""))
+                        .and_then(|l| {
+                            l.split('=')
+                                .nth(1)
+                                .map(|s| s.trim().trim_end_matches(';').trim())
+                        })
+                        .and_then(|s| s.parse::<u32>().ok());
+
+                    // Extract LastExitStatus
+                    let exit_status = stdout
+                        .lines()
+                        .find(|l| l.contains("\"LastExitStatus\""))
+                        .and_then(|l| {
+                            l.split('=')
+                                .nth(1)
+                                .map(|s| s.trim().trim_end_matches(';').trim())
+                        })
+                        .and_then(|s| s.parse::<i32>().ok())
+                        .unwrap_or(0);
+
+                    if let Some(p) = pid {
+                        Some(CheckResult {
+                            path: format!("launchd:{}", label),
+                            status: "ok".to_string(),
+                            detail: Some(format!("PID {}", p)),
+                        })
+                    } else if exit_status == 0 {
+                        Some(CheckResult {
+                            path: format!("launchd:{}", label),
+                            status: "ok".to_string(),
+                            detail: Some("registered, not running".to_string()),
+                        })
+                    } else {
+                        Some(CheckResult {
+                            path: format!("launchd:{}", label),
+                            status: "error".to_string(),
+                            detail: Some(format!("last exit code {}", exit_status)),
+                        })
+                    }
+                }
+                Ok(_) => Some(CheckResult {
+                    path: format!("launchd:{}", label),
+                    status: "not_loaded".to_string(),
+                    detail: Some("service not registered with launchd".to_string()),
+                }),
+                Err(e) => Some(CheckResult {
+                    path: format!("launchd:{}", label),
+                    status: "error".to_string(),
+                    detail: Some(format!("launchctl failed: {}", e)),
+                }),
+            }
+        } else {
+            None
+        };
+        #[cfg(not(target_os = "macos"))]
+        let launchd_service: Option<CheckResult> = None;
+
         // Check 3: Socket file
         let socket_exists = socket_path.exists();
         let socket_file = CheckResult {
@@ -1953,6 +2029,22 @@ async fn doctor_command(
             },
         };
 
+        // Extract launchd status for diagnosis (macOS only)
+        #[cfg(target_os = "macos")]
+        let launchd_not_loaded = launchd_service
+            .as_ref()
+            .map(|c| c.status == "not_loaded")
+            .unwrap_or(false);
+        #[cfg(target_os = "macos")]
+        let launchd_error = launchd_service
+            .as_ref()
+            .map(|c| c.status == "error")
+            .unwrap_or(false);
+        #[cfg(not(target_os = "macos"))]
+        let launchd_not_loaded = false;
+        #[cfg(not(target_os = "macos"))]
+        let launchd_error = false;
+
         // Determine diagnosis
         let diagnosis = if daemon_running_result {
             "Daemon is healthy and running.".to_string()
@@ -1963,6 +2055,10 @@ async fn doctor_command(
             )
         } else if !binary_exists && config_exists {
             "Service config exists but binary missing. Need to reinstall.".to_string()
+        } else if binary_exists && config_exists && launchd_not_loaded {
+            "Plist exists but service not loaded in launchd. Run 'runt daemon doctor --fix' to reset.".to_string()
+        } else if binary_exists && config_exists && launchd_error {
+            "Service registered but failing to start. Check logs: runt daemon logs".to_string()
         } else if binary_exists && config_exists && daemon_state_status == "stale" {
             "Daemon state is stale (process crashed). Service needs restart.".to_string()
         } else if binary_exists && config_exists && !daemon_running_result {
@@ -1977,6 +2073,7 @@ async fn doctor_command(
             installed_binary,
             service_config,
             plist_home_env,
+            launchd_service,
             socket_file,
             daemon_state,
             daemon_running,
@@ -2005,6 +2102,21 @@ async fn doctor_command(
             .unwrap_or(false);
     #[cfg(not(target_os = "macos"))]
     let plist_home_missing = false;
+
+    // On macOS, check if service is not loaded in launchd (stale registration)
+    #[cfg(target_os = "macos")]
+    let launchd_not_loaded = if config_exists {
+        let label = runt_workspace::daemon_launchd_label();
+        let output = std::process::Command::new("launchctl")
+            .args(["list", label])
+            .output();
+        // If launchctl list fails (exit code != 0), service is not loaded
+        !output.map(|o| o.status.success()).unwrap_or(false)
+    } else {
+        false
+    };
+    #[cfg(not(target_os = "macos"))]
+    let launchd_not_loaded = false;
 
     // Check daemon state for fix operations
     let daemon_state_status = if let Some(info) = daemon_info {
@@ -2060,6 +2172,54 @@ async fn doctor_command(
                 }
                 Err(e) => {
                     eprintln!("Failed to regenerate plist: {}", e);
+                }
+            }
+        }
+
+        // Fix stale launchd registration (macOS only)
+        // This happens when launchctl load/unload leaves corrupted state
+        #[cfg(target_os = "macos")]
+        if launchd_not_loaded && config_exists && binary_exists && !daemon_running_before {
+            let label = runt_workspace::daemon_launchd_label();
+
+            // Get current user's UID for the gui domain
+            let uid = std::process::Command::new("id")
+                .args(["-u"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| "501".to_string());
+            let domain = format!("gui/{}", uid);
+
+            // First bootout any stale registration (ignore errors - may not exist)
+            let _ = std::process::Command::new("launchctl")
+                .args(["bootout", &format!("{}/{}", domain, label)])
+                .output();
+
+            // Small delay for launchd to clean up
+            std::thread::sleep(std::time::Duration::from_millis(100));
+
+            // Bootstrap to register fresh
+            let result = std::process::Command::new("launchctl")
+                .args(["bootstrap", &domain, &service_config_path.to_string_lossy()])
+                .output();
+
+            match result {
+                Ok(o) if o.status.success() => {
+                    actions_taken.push("Reset launchd service registration".to_string());
+                }
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    // Error 37 means service is already loaded (which is fine)
+                    if !stderr.contains("37") {
+                        eprintln!("Failed to bootstrap service: {}", stderr.trim());
+                    } else {
+                        actions_taken.push("Launchd service already registered".to_string());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("launchctl bootstrap failed: {}", e);
                 }
             }
         }
@@ -2158,6 +2318,19 @@ async fn doctor_command(
                     .unwrap_or_default()
             );
         }
+        if let Some(ref launchd_check) = report.launchd_service {
+            println!(
+                "{:<20} {} {}{}",
+                "Launchd service:".bold(),
+                launchd_check.path.dimmed(),
+                colored_status_icon(&launchd_check.status),
+                launchd_check
+                    .detail
+                    .as_ref()
+                    .map(|d| format!(" ({})", d).dimmed().to_string())
+                    .unwrap_or_default()
+            );
+        }
         println!(
             "{:<20} {} {}",
             "Socket file:".bold(),
@@ -2190,9 +2363,14 @@ async fn doctor_command(
         println!();
 
         // Color diagnosis based on health
+        let launchd_has_issue = report
+            .launchd_service
+            .as_ref()
+            .map(|c| c.status == "not_loaded" || c.status == "error")
+            .unwrap_or(false);
         let diagnosis_colored = if report.daemon_running.status == "ok" {
             report.diagnosis.green()
-        } else if report.daemon_state.status == "stale" {
+        } else if report.daemon_state.status == "stale" || launchd_has_issue {
             report.diagnosis.yellow()
         } else {
             report.diagnosis.red()
@@ -2339,6 +2517,8 @@ fn colored_status_icon(status: &str) -> colored::ColoredString {
         "ok" => "[ok]".green(),
         "missing" => "[missing]".red(),
         "stale" => "[stale]".yellow(),
+        "not_loaded" => "[not loaded]".yellow(),
+        "error" => "[error]".red(),
         "not_running" => "".normal(),
         _ => "[?]".yellow(),
     }
