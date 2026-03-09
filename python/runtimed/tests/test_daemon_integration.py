@@ -552,12 +552,13 @@ class TestMultiClientSync:
         # Session 1 creates a cell
         cell_id = s1.create_cell("shared_var = 42")
 
-        # Poll until session 2 sees the cell
-        def cell_visible():
+        # Poll until session 2 sees the cell with its source content
+        def cell_synced():
             cells = s2.get_cells()
-            return any(c.id == cell_id for c in cells)
+            found = [c for c in cells if c.id == cell_id]
+            return len(found) == 1 and found[0].source == "shared_var = 42"
 
-        wait_for_sync(cell_visible, description="cell visible to s2")
+        wait_for_sync(cell_synced, description="cell with source visible to s2")
 
         cells = s2.get_cells()
         found = [c for c in cells if c.id == cell_id]
@@ -1789,11 +1790,12 @@ class TestAsyncMultiClientSync:
 
         cell_id = await s1.create_cell("async_shared_var = 42")
 
-        async def cell_visible():
+        async def cell_synced():
             cells = await s2.get_cells()
-            return any(c.id == cell_id for c in cells)
+            found = [c for c in cells if c.id == cell_id]
+            return len(found) == 1 and found[0].source == "async_shared_var = 42"
 
-        await async_wait_for_sync(cell_visible, description="cell sync to s2")
+        await async_wait_for_sync(cell_synced, description="cell with source sync to s2")
 
         cells = await s2.get_cells()
         found = [c for c in cells if c.id == cell_id]
