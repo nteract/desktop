@@ -88,6 +88,8 @@ export function useUpdater() {
       await relaunch();
     } catch (e) {
       logger.error("[updater] relaunch failed:", e);
+      // Revert to ready state so user can retry
+      setState((prev) => ({ ...prev, status: "ready" }));
     }
   }, []);
 
