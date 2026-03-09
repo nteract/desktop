@@ -35,6 +35,16 @@ export class NotebookHandle {
      */
     add_cell(index: number, cell_id: string, cell_type: string): void;
     /**
+     * Add a Conda dependency, deduplicating by package name (case-insensitive).
+     * Initializes the Conda section with ["conda-forge"] channels if absent.
+     */
+    add_conda_dependency(pkg: string): void;
+    /**
+     * Add a UV dependency, deduplicating by package name (case-insensitive).
+     * Initializes the UV section if absent, preserving existing fields.
+     */
+    add_uv_dependency(pkg: string): void;
+    /**
      * Append text to a cell's source (optimized for streaming, no diff).
      */
     append_source(cell_id: string, text: string): boolean;
@@ -42,6 +52,14 @@ export class NotebookHandle {
      * Get the number of cells in the document.
      */
     cell_count(): number;
+    /**
+     * Clear the Conda section entirely.
+     */
+    clear_conda_section(): void;
+    /**
+     * Clear the UV section entirely (deps + requires-python).
+     */
+    clear_uv_section(): void;
     /**
      * Create a handle with an empty Automerge doc (zero operations) for
      * sync-only bootstrap.  The sync protocol populates the doc from the
@@ -103,6 +121,16 @@ export class NotebookHandle {
      */
     receive_sync_message(message: Uint8Array): boolean;
     /**
+     * Remove a Conda dependency by package name (case-insensitive).
+     * Returns true if a dependency was removed.
+     */
+    remove_conda_dependency(pkg: string): boolean;
+    /**
+     * Remove a UV dependency by package name (case-insensitive).
+     * Returns true if a dependency was removed.
+     */
+    remove_uv_dependency(pkg: string): boolean;
+    /**
      * Reset the sync state. Call this when reconnecting to a new daemon session.
      */
     reset_sync_state(): void;
@@ -111,9 +139,24 @@ export class NotebookHandle {
      */
     save(): Uint8Array;
     /**
+     * Set Conda channels, preserving deps and python.
+     * Accepts a JSON array string (e.g. `'["conda-forge","bioconda"]'`).
+     */
+    set_conda_channels(channels_json: string): void;
+    /**
+     * Set Conda python version, preserving deps and channels.
+     * Pass undefined/null to clear the constraint.
+     */
+    set_conda_python(python?: string | null): void;
+    /**
      * Set a metadata value.
      */
     set_metadata(key: string, value: string): void;
+    /**
+     * Set UV requires-python constraint, preserving deps.
+     * Pass undefined/null to clear the constraint.
+     */
+    set_uv_requires_python(requires_python?: string | null): void;
     /**
      * Update a cell's source text using Automerge Text CRDT (Myers diff).
      */
@@ -147,6 +190,15 @@ export interface InitOutput {
     readonly notebookhandle_get_metadata_snapshot_json: (a: number, b: number) => void;
     readonly notebookhandle_detect_runtime: (a: number, b: number) => void;
     readonly notebookhandle_set_metadata: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly notebookhandle_add_uv_dependency: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_remove_uv_dependency: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_clear_uv_section: (a: number, b: number) => void;
+    readonly notebookhandle_set_uv_requires_python: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_add_conda_dependency: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_remove_conda_dependency: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_clear_conda_section: (a: number, b: number) => void;
+    readonly notebookhandle_set_conda_channels: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_set_conda_python: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_generate_sync_message: (a: number, b: number) => void;
     readonly notebookhandle_receive_sync_message: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_save: (a: number, b: number) => void;

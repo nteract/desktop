@@ -198,6 +198,85 @@ impl NotebookHandle {
             .map_err(|e| JsError::new(&format!("set_metadata failed: {}", e)))
     }
 
+    // ── UV dependency operations ─────────────────────────────────
+
+    /// Add a UV dependency, deduplicating by package name (case-insensitive).
+    /// Initializes the UV section if absent, preserving existing fields.
+    pub fn add_uv_dependency(&mut self, pkg: &str) -> Result<(), JsError> {
+        self.doc
+            .add_uv_dependency(pkg)
+            .map_err(|e| JsError::new(&format!("add_uv_dependency failed: {}", e)))
+    }
+
+    /// Remove a UV dependency by package name (case-insensitive).
+    /// Returns true if a dependency was removed.
+    pub fn remove_uv_dependency(&mut self, pkg: &str) -> Result<bool, JsError> {
+        self.doc
+            .remove_uv_dependency(pkg)
+            .map_err(|e| JsError::new(&format!("remove_uv_dependency failed: {}", e)))
+    }
+
+    /// Clear the UV section entirely (deps + requires-python).
+    pub fn clear_uv_section(&mut self) -> Result<(), JsError> {
+        self.doc
+            .clear_uv_section()
+            .map_err(|e| JsError::new(&format!("clear_uv_section failed: {}", e)))
+    }
+
+    /// Set UV requires-python constraint, preserving deps.
+    /// Pass undefined/null to clear the constraint.
+    pub fn set_uv_requires_python(
+        &mut self,
+        requires_python: Option<String>,
+    ) -> Result<(), JsError> {
+        self.doc
+            .set_uv_requires_python(requires_python)
+            .map_err(|e| JsError::new(&format!("set_uv_requires_python failed: {}", e)))
+    }
+
+    // ── Conda dependency operations ──────────────────────────────
+
+    /// Add a Conda dependency, deduplicating by package name (case-insensitive).
+    /// Initializes the Conda section with ["conda-forge"] channels if absent.
+    pub fn add_conda_dependency(&mut self, pkg: &str) -> Result<(), JsError> {
+        self.doc
+            .add_conda_dependency(pkg)
+            .map_err(|e| JsError::new(&format!("add_conda_dependency failed: {}", e)))
+    }
+
+    /// Remove a Conda dependency by package name (case-insensitive).
+    /// Returns true if a dependency was removed.
+    pub fn remove_conda_dependency(&mut self, pkg: &str) -> Result<bool, JsError> {
+        self.doc
+            .remove_conda_dependency(pkg)
+            .map_err(|e| JsError::new(&format!("remove_conda_dependency failed: {}", e)))
+    }
+
+    /// Clear the Conda section entirely.
+    pub fn clear_conda_section(&mut self) -> Result<(), JsError> {
+        self.doc
+            .clear_conda_section()
+            .map_err(|e| JsError::new(&format!("clear_conda_section failed: {}", e)))
+    }
+
+    /// Set Conda channels, preserving deps and python.
+    /// Accepts a JSON array string (e.g. `'["conda-forge","bioconda"]'`).
+    pub fn set_conda_channels(&mut self, channels_json: &str) -> Result<(), JsError> {
+        let channels: Vec<String> = serde_json::from_str(channels_json)
+            .map_err(|e| JsError::new(&format!("invalid channels JSON: {}", e)))?;
+        self.doc
+            .set_conda_channels(channels)
+            .map_err(|e| JsError::new(&format!("set_conda_channels failed: {}", e)))
+    }
+
+    /// Set Conda python version, preserving deps and channels.
+    /// Pass undefined/null to clear the constraint.
+    pub fn set_conda_python(&mut self, python: Option<String>) -> Result<(), JsError> {
+        self.doc
+            .set_conda_python(python)
+            .map_err(|e| JsError::new(&format!("set_conda_python failed: {}", e)))
+    }
+
     /// Generate a sync message to send to the daemon (via the Tauri relay pipe).
     ///
     /// Returns the message as a byte array, or undefined if already in sync.

@@ -177,6 +177,46 @@ export class NotebookHandle {
         }
     }
     /**
+     * Add a Conda dependency, deduplicating by package name (case-insensitive).
+     * Initializes the Conda section with ["conda-forge"] channels if absent.
+     * @param {string} pkg
+     */
+    add_conda_dependency(pkg) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(pkg, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_add_conda_dependency(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Add a UV dependency, deduplicating by package name (case-insensitive).
+     * Initializes the UV section if absent, preserving existing fields.
+     * @param {string} pkg
+     */
+    add_uv_dependency(pkg) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(pkg, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_add_uv_dependency(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Append text to a cell's source (optimized for streaming, no diff).
      * @param {string} cell_id
      * @param {string} text
@@ -208,6 +248,38 @@ export class NotebookHandle {
     cell_count() {
         const ret = wasm.notebookhandle_cell_count(this.__wbg_ptr);
         return ret >>> 0;
+    }
+    /**
+     * Clear the Conda section entirely.
+     */
+    clear_conda_section() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.notebookhandle_clear_conda_section(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Clear the UV section entirely (deps + requires-python).
+     */
+    clear_uv_section() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.notebookhandle_clear_uv_section(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
     }
     /**
      * Create a handle with an empty Automerge doc (zero operations) for
@@ -439,6 +511,52 @@ export class NotebookHandle {
         }
     }
     /**
+     * Remove a Conda dependency by package name (case-insensitive).
+     * Returns true if a dependency was removed.
+     * @param {string} pkg
+     * @returns {boolean}
+     */
+    remove_conda_dependency(pkg) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(pkg, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_remove_conda_dependency(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return r0 !== 0;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Remove a UV dependency by package name (case-insensitive).
+     * Returns true if a dependency was removed.
+     * @param {string} pkg
+     * @returns {boolean}
+     */
+    remove_uv_dependency(pkg) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(pkg, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_remove_uv_dependency(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return r0 !== 0;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Reset the sync state. Call this when reconnecting to a new daemon session.
      */
     reset_sync_state() {
@@ -462,6 +580,46 @@ export class NotebookHandle {
         }
     }
     /**
+     * Set Conda channels, preserving deps and python.
+     * Accepts a JSON array string (e.g. `'["conda-forge","bioconda"]'`).
+     * @param {string} channels_json
+     */
+    set_conda_channels(channels_json) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(channels_json, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_set_conda_channels(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Set Conda python version, preserving deps and channels.
+     * Pass undefined/null to clear the constraint.
+     * @param {string | null} [python]
+     */
+    set_conda_python(python) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            var ptr0 = isLikeNone(python) ? 0 : passStringToWasm0(python, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            var len0 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_set_conda_python(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Set a metadata value.
      * @param {string} key
      * @param {string} value
@@ -474,6 +632,26 @@ export class NotebookHandle {
             const ptr1 = passStringToWasm0(value, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
             const len1 = WASM_VECTOR_LEN;
             wasm.notebookhandle_set_metadata(retptr, this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Set UV requires-python constraint, preserving deps.
+     * Pass undefined/null to clear the constraint.
+     * @param {string | null} [requires_python]
+     */
+    set_uv_requires_python(requires_python) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            var ptr0 = isLikeNone(requires_python) ? 0 : passStringToWasm0(requires_python, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            var len0 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_set_uv_requires_python(retptr, this.__wbg_ptr, ptr0, len0);
             var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
             var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
             if (r1) {
@@ -610,6 +788,10 @@ let heap = new Array(1024).fill(undefined);
 heap.push(undefined, null, true, false);
 
 let heap_next = heap.length;
+
+function isLikeNone(x) {
+    return x === undefined || x === null;
+}
 
 function passArray8ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 1, 1) >>> 0;
