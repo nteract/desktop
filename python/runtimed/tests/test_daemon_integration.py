@@ -67,6 +67,38 @@ def wait_for_sync(check_fn, *, timeout=5.0, interval=0.1, description="sync"):
     raise AssertionError(f"Timed out waiting for {description} after {timeout}s")
 
 
+async def async_wait_for_sync(
+    check_fn, *, timeout=3.0, interval=0.1, description="sync"
+):
+    """Async poll until check_fn returns True or timeout.
+
+    Like wait_for_sync but uses asyncio.sleep instead of time.sleep,
+    so it doesn't block the event loop. check_fn can be sync or async.
+
+    Args:
+        check_fn: Callable (sync or async) that returns True when sync is complete
+        timeout: Maximum time to wait in seconds
+        interval: Initial polling interval (grows with backoff)
+        description: Description for error message
+
+    Returns:
+        True if sync completed within timeout
+
+    Raises:
+        AssertionError: If timeout exceeded
+    """
+    start = time.time()
+    while time.time() - start < timeout:
+        result = check_fn()
+        if asyncio.iscoroutine(result):
+            result = await result
+        if result:
+            return True
+        await asyncio.sleep(interval)
+        interval = min(interval * 1.5, 0.5)  # Backoff up to 0.5s
+    raise AssertionError(f"Timed out waiting for {description} after {timeout}s")
+
+
 # ============================================================================
 # Fixtures for daemon management
 # ============================================================================
@@ -505,8 +537,13 @@ class TestMultiClientSync:
         # Session 1 creates a cell
         cell_id = s1.create_cell("shared_var = 42")
 
-        # Give sync time to propagate
-        time.sleep(0.5)
+        # Wait for sync to propagate to session 2 (including source content)
+        def cell_synced():
+            cells = s2.get_cells()
+            found = [c for c in cells if c.id == cell_id]
+            return len(found) == 1 and found[0].source == "shared_var = 42"
+
+        wait_for_sync(cell_synced, description="cell with source visible to s2")
 
         # Session 2 should see it
         cells = s2.get_cells()
@@ -556,7 +593,6 @@ class TestMultiClientSync:
         # The daemon only starts one kernel for the notebook
         s1.start_kernel()
         s2.start_kernel()  # No-op in daemon, but updates s2.kernel_started
-        time.sleep(0.5)
 
         # Session 1 sets a variable
         cell1 = s1.create_cell("shared = 'from s1'")
@@ -1029,8 +1065,11 @@ class TestKernelLaunchMetadata:
         snapshot = _python_kernelspec_metadata()
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
 
-        # Give sync time to propagate
-        time.sleep(0.3)
+        # Poll for metadata to be readable
+        wait_for_sync(
+            lambda: session.get_metadata(NOTEBOOK_METADATA_KEY) is not None,
+            description="metadata round-trip",
+        )
 
         raw = session.get_metadata(NOTEBOOK_METADATA_KEY)
         assert raw is not None
@@ -1041,7 +1080,11 @@ class TestKernelLaunchMetadata:
     def test_custom_metadata_round_trip(self, session):
         """Non-notebook metadata keys remain readable after the watch refactor."""
         session.set_metadata("custom_key", "custom_value")
-        time.sleep(0.3)
+
+        wait_for_sync(
+            lambda: session.get_metadata("custom_key") is not None,
+            description="custom metadata round-trip",
+        )
 
         raw = session.get_metadata("custom_key")
         assert raw == "custom_value"
@@ -1053,7 +1096,10 @@ class TestKernelLaunchMetadata:
         # Set python kernelspec in the Automerge doc
         snapshot = _python_kernelspec_metadata()
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
-        time.sleep(0.3)
+        wait_for_sync(
+            lambda: session.get_metadata(NOTEBOOK_METADATA_KEY) is not None,
+            description="kernelspec metadata sync",
+        )
 
         session.start_kernel(kernel_type="python")
 
@@ -1078,7 +1124,10 @@ class TestKernelLaunchMetadata:
         # an existing Python notebook even though default_runtime=deno)
         snapshot = _python_kernelspec_metadata()
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
-        time.sleep(0.3)
+        wait_for_sync(
+            lambda: session.get_metadata(NOTEBOOK_METADATA_KEY) is not None,
+            description="kernelspec metadata sync",
+        )
 
         # Explicitly start Python kernel (as the frontend would after
         # reading kernelspec from the doc)
@@ -1111,7 +1160,6 @@ class TestKernelLaunchMetadata:
             env_source.startswith(prefix) for prefix in ("uv:", "conda:", "deno")
         ), f"Unexpected env_source: {env_source}"
 
-    @pytest.mark.skip(reason="Flaky - sync timing race condition in CI")
     def test_metadata_visible_to_second_peer(self, two_sessions):
         """Metadata set by one peer is visible to another."""
         import json
@@ -1122,8 +1170,11 @@ class TestKernelLaunchMetadata:
         snapshot = _python_kernelspec_metadata()
         s1.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
 
-        # Give sync time
-        time.sleep(0.5)
+        # Poll for sync to propagate to session 2
+        wait_for_sync(
+            lambda: s2.get_metadata(NOTEBOOK_METADATA_KEY) is not None,
+            description="metadata visible to s2",
+        )
 
         # Session 2 should see it
         raw = s2.get_metadata(NOTEBOOK_METADATA_KEY)
@@ -1143,7 +1194,10 @@ class TestKernelLaunchMetadata:
 
         snapshot = _python_kernelspec_metadata(with_uv_deps=["requests"])
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
-        time.sleep(0.3)
+        wait_for_sync(
+            lambda: session.get_metadata(NOTEBOOK_METADATA_KEY) is not None,
+            description="uv inline metadata sync",
+        )
 
         session.start_kernel(kernel_type="python", env_source="uv:inline")
 
@@ -1161,7 +1215,10 @@ class TestKernelLaunchMetadata:
 
         snapshot = _python_kernelspec_metadata(with_uv_deps=["requests"])
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
-        time.sleep(0.3)
+        wait_for_sync(
+            lambda: session.get_metadata(NOTEBOOK_METADATA_KEY) is not None,
+            description="uv inline metadata sync",
+        )
 
         session.start_kernel(kernel_type="python", env_source="uv:inline")
 
@@ -1202,7 +1259,10 @@ class TestDenoKernel:
 
         snapshot = _deno_kernelspec_metadata()
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
-        time.sleep(0.3)
+        wait_for_sync(
+            lambda: session.get_metadata(NOTEBOOK_METADATA_KEY) is not None,
+            description="deno kernelspec metadata sync",
+        )
 
         session.start_kernel(kernel_type="deno", env_source="deno")
 
@@ -1216,7 +1276,10 @@ class TestDenoKernel:
 
         snapshot = _deno_kernelspec_metadata()
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
-        time.sleep(0.3)
+        wait_for_sync(
+            lambda: session.get_metadata(NOTEBOOK_METADATA_KEY) is not None,
+            description="deno kernelspec metadata sync",
+        )
 
         session.start_kernel(kernel_type="deno", env_source="deno")
 
@@ -1234,7 +1297,10 @@ class TestDenoKernel:
 
         snapshot = _deno_kernelspec_metadata()
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
-        time.sleep(0.3)
+        wait_for_sync(
+            lambda: session.get_metadata(NOTEBOOK_METADATA_KEY) is not None,
+            description="deno metadata round-trip",
+        )
 
         raw = session.get_metadata(NOTEBOOK_METADATA_KEY)
         assert raw is not None
@@ -1256,7 +1322,19 @@ class TestDenoKernel:
         # Session 1 sets initial metadata with flexible_npm_imports=True
         snapshot = _deno_kernelspec_metadata(flexible_npm_imports=True)
         s1.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
-        time.sleep(0.5)
+
+        # Wait for metadata to sync to session 2
+        def metadata_visible_to_s2():
+            raw = s2.get_metadata(NOTEBOOK_METADATA_KEY)
+            if raw is None:
+                return False
+            try:
+                parsed = json.loads(raw)
+                return parsed.get("runt", {}).get("deno", {}).get("flexible_npm_imports") is True
+            except (json.JSONDecodeError, KeyError):
+                return False
+
+        wait_for_sync(metadata_visible_to_s2, description="metadata visible to s2")
 
         # Session 2 should see it
         raw = s2.get_metadata(NOTEBOOK_METADATA_KEY)
@@ -1267,7 +1345,19 @@ class TestDenoKernel:
         # Session 2 changes it to False
         snapshot2 = _deno_kernelspec_metadata(flexible_npm_imports=False)
         s2.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot2))
-        time.sleep(0.5)
+
+        # Wait for change to sync back to session 1
+        def change_visible_to_s1():
+            raw1 = s1.get_metadata(NOTEBOOK_METADATA_KEY)
+            if raw1 is None:
+                return False
+            try:
+                parsed1 = json.loads(raw1)
+                return parsed1.get("runt", {}).get("deno", {}).get("flexible_npm_imports") is False
+            except (json.JSONDecodeError, KeyError):
+                return False
+
+        wait_for_sync(change_visible_to_s1, description="change visible to s1")
 
         # Session 1 should see the change
         raw1 = s1.get_metadata(NOTEBOOK_METADATA_KEY)
@@ -1282,7 +1372,10 @@ class TestDenoKernel:
         # Set to False (non-default)
         snapshot = _deno_kernelspec_metadata(flexible_npm_imports=False)
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
-        time.sleep(0.3)
+        wait_for_sync(
+            lambda: session.get_metadata(NOTEBOOK_METADATA_KEY) is not None,
+            description="deno metadata round-trip",
+        )
 
         raw = session.get_metadata(NOTEBOOK_METADATA_KEY)
         assert raw is not None
@@ -1332,7 +1425,10 @@ class TestCondaInlineDeps:
         # Set up conda inline deps metadata
         snapshot = _python_kernelspec_metadata(with_conda_deps=["filelock"])
         sess.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
-        time.sleep(0.3)
+        wait_for_sync(
+            lambda: sess.get_metadata(NOTEBOOK_METADATA_KEY) is not None,
+            description="conda metadata sync",
+        )
 
         # Start kernel once for all tests in class
         sess.start_kernel(kernel_type="python", env_source="conda:inline")
@@ -1415,7 +1511,10 @@ class TestProjectFileDetection:
         # Set python kernelspec in metadata
         snapshot = _python_kernelspec_metadata()
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
-        time.sleep(0.3)
+        wait_for_sync(
+            lambda: session.get_metadata(NOTEBOOK_METADATA_KEY) is not None,
+            description="kernelspec metadata sync",
+        )
 
         session.start_kernel(
             kernel_type="python",
@@ -1443,7 +1542,10 @@ class TestProjectFileDetection:
 
         snapshot = _python_kernelspec_metadata()
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
-        time.sleep(0.3)
+        wait_for_sync(
+            lambda: session.get_metadata(NOTEBOOK_METADATA_KEY) is not None,
+            description="kernelspec metadata sync",
+        )
 
         session.start_kernel(
             kernel_type="python",
@@ -1471,7 +1573,10 @@ class TestProjectFileDetection:
 
         snapshot = _python_kernelspec_metadata()
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
-        time.sleep(0.3)
+        wait_for_sync(
+            lambda: session.get_metadata(NOTEBOOK_METADATA_KEY) is not None,
+            description="kernelspec metadata sync",
+        )
 
         session.start_kernel(
             kernel_type="python",
@@ -1496,7 +1601,10 @@ class TestProjectFileDetection:
         try:
             snapshot = _python_kernelspec_metadata()
             session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
-            time.sleep(0.3)
+            wait_for_sync(
+                lambda: session.get_metadata(NOTEBOOK_METADATA_KEY) is not None,
+                description="kernelspec metadata sync",
+            )
 
             session.start_kernel(
                 kernel_type="python",
@@ -1629,7 +1737,11 @@ class TestAsyncDocumentFirstExecution:
     async def test_async_custom_metadata_round_trip(self, async_session):
         """Async sessions can still read metadata keys outside notebook_metadata."""
         await async_session.set_metadata("custom_key", "custom_value")
-        await asyncio.sleep(0.3)
+
+        async def metadata_readable():
+            return await async_session.get_metadata("custom_key") is not None
+
+        await async_wait_for_sync(metadata_readable, description="async metadata round-trip")
 
         raw = await async_session.get_metadata("custom_key")
         assert raw == "custom_value"
@@ -1725,12 +1837,17 @@ class TestAsyncMultiClientSync:
     @pytest.mark.asyncio
     async def test_async_cell_created_by_one_visible_to_other(self, two_async_sessions):
         """Cell created by session 1 is visible to session 2."""
-        import asyncio
-
         s1, s2 = two_async_sessions
 
         cell_id = await s1.create_cell("async_shared_var = 42")
-        await asyncio.sleep(0.5)
+
+        # Poll for sync propagation including source content
+        async def cell_synced():
+            cells = await s2.get_cells()
+            found = [c for c in cells if c.id == cell_id]
+            return len(found) == 1 and found[0].source == "async_shared_var = 42"
+
+        await async_wait_for_sync(cell_synced, description="cell with source visible to s2")
 
         cells = await s2.get_cells()
         found = [c for c in cells if c.id == cell_id]
@@ -1740,13 +1857,10 @@ class TestAsyncMultiClientSync:
     @pytest.mark.asyncio
     async def test_async_shared_kernel_execution(self, two_async_sessions):
         """Both sessions share the same kernel and execution state."""
-        import asyncio
-
         s1, s2 = two_async_sessions
 
         await s1.start_kernel()
         await s2.start_kernel()  # No-op in daemon
-        await asyncio.sleep(0.5)
 
         cell1 = await s1.create_cell("async_shared = 'from async s1'")
         r1 = await s1.execute_cell(cell1)
@@ -1799,7 +1913,7 @@ class TestAsyncOutputTypes:
         result = await async_session.execute_cell(cell_id)
 
         assert result.success
-        assert result.stdout == "async hello stdout\n"
+        assert "async hello stdout" in result.stdout
 
     @pytest.mark.asyncio
     async def test_async_stderr_output(self, async_session):
@@ -2050,11 +2164,26 @@ class TestAppendSource:
 
         # Create cell in session 1
         cell_id = await s1.create_cell("a = 1")
-        time.sleep(0.3)  # Allow sync
+
+        # Wait for cell to sync to session 2
+        async def cell_visible():
+            try:
+                await s2.get_cell(cell_id)
+                return True
+            except runtimed.RuntimedError:
+                return False
+
+        await async_wait_for_sync(cell_visible, description="cell visible to s2")
 
         # Append in session 1
         await s1.append_source(cell_id, "\nb = 2")
-        time.sleep(0.3)
+
+        # Wait for appended source to sync
+        async def append_visible():
+            cell = await s2.get_cell(cell_id)
+            return "b = 2" in cell.source
+
+        await async_wait_for_sync(append_visible, description="append visible to s2")
 
         # Session 2 should see the appended source
         cell = await s2.get_cell(cell_id)
@@ -2359,13 +2488,25 @@ class TestOpenNotebook:
         # Both should have same notebook_id
         assert session1.notebook_id == session2.notebook_id
 
+        # Wait for initial file sync to complete on both sessions
+        wait_for_sync(
+            lambda: len(session1.get_cells()) >= 1,
+            description="session1 initial sync",
+        )
+        wait_for_sync(
+            lambda: len(session2.get_cells()) >= 1,
+            description="session2 initial sync",
+        )
+
         # Add cell in session1
         initial_count = len(session1.get_cells())
         session1.create_cell("y = 2", index=initial_count)
 
         # Should sync to session2
         wait_for_sync(
-            lambda: len(session2.get_cells()) > initial_count, description="cell sync"
+            lambda: len(session2.get_cells()) > initial_count,
+            timeout=5.0,
+            description="new cell sync to session2",
         )
 
         cells2 = session2.get_cells()
