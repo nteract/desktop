@@ -999,7 +999,7 @@ impl Daemon {
                         let response = NotebookConnectionInfo {
                             protocol: PROTOCOL_V2.to_string(),
                             protocol_version: Some(PROTOCOL_VERSION),
-                            daemon_version: Some(crate::daemon_version()),
+                            daemon_version: Some(crate::daemon_version().to_string()),
                             notebook_id: String::new(),
                             cell_count: 0,
                             needs_trust_approval: false,
@@ -1033,7 +1033,7 @@ impl Daemon {
         let response = NotebookConnectionInfo {
             protocol: PROTOCOL_V2.to_string(),
             protocol_version: Some(PROTOCOL_VERSION),
-            daemon_version: Some(crate::daemon_version()),
+            daemon_version: Some(crate::daemon_version().to_string()),
             notebook_id: notebook_id.clone(),
             cell_count,
             needs_trust_approval,
@@ -1149,7 +1149,7 @@ impl Daemon {
                         let response = NotebookConnectionInfo {
                             protocol: PROTOCOL_V2.to_string(),
                             protocol_version: Some(PROTOCOL_VERSION),
-                            daemon_version: Some(crate::daemon_version()),
+                            daemon_version: Some(crate::daemon_version().to_string()),
                             notebook_id: String::new(),
                             cell_count: 0,
                             needs_trust_approval: false,
@@ -1169,7 +1169,7 @@ impl Daemon {
         let response = NotebookConnectionInfo {
             protocol: PROTOCOL_V2.to_string(),
             protocol_version: Some(PROTOCOL_VERSION),
-            daemon_version: Some(crate::daemon_version()),
+            daemon_version: Some(crate::daemon_version().to_string()),
             notebook_id: notebook_id.clone(),
             cell_count,
             needs_trust_approval: false,

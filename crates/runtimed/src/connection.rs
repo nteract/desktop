@@ -512,8 +512,8 @@ mod tests {
 
         // With version info
         let info = NotebookConnectionInfo {
-            protocol: "v2".into(),
-            protocol_version: Some(2),
+            protocol: PROTOCOL_V2.into(),
+            protocol_version: Some(PROTOCOL_VERSION),
             daemon_version: Some("0.1.0+abc123".into()),
             notebook_id: "/home/user/notebook.ipynb".into(),
             cell_count: 5,
@@ -521,7 +521,7 @@ mod tests {
             error: None,
         };
         let json = serde_json::to_string(&info).unwrap();
-        assert!(json.contains(r#""protocol_version":2"#));
+        assert!(json.contains(&format!(r#""protocol_version":{}"#, PROTOCOL_VERSION)));
         assert!(json.contains(r#""daemon_version":"0.1.0+abc123""#));
 
         // With trust approval needed
