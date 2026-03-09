@@ -53,6 +53,33 @@ Cell outputs are stored as content-addressed blobs with manifest references. Thi
 - Manifest format allows lazy loading and deduplication
 - Large outputs don't block document sync
 
+**Implementation details:**
+
+The blob store uses content-addressed storage at `~/.cache/runt/blobs/`. Each blob is identified by its SHA-256 hash and stored in a two-level shard directory:
+
+```
+~/.cache/runt/blobs/
+  a1/
+    b2c3d4...       # raw bytes
+    b2c3d4....meta  # JSON metadata (media_type, size, created_at)
+```
+
+Data flow:
+1. Kernel produces output → daemon's `output_store.rs` receives it
+2. Large data (images, HTML) goes to `blob_store.rs` → returns hash
+3. Daemon broadcasts `OutputManifest` with `ContentRef` (either `{ inline: "..." }` or `{ blob: "hash", size: N }`)
+4. Frontend's `manifest-resolution.ts` checks `isManifestHash()` on output data
+5. Blob refs are fetched from `blob_server.rs` via `http://127.0.0.1:{port}/blob/{hash}`
+6. `materialize-cells.ts` converts resolved outputs to React-renderable `NotebookCell[]`
+
+Key files:
+- `crates/runtimed/src/blob_store.rs` — Content-addressed storage with atomic writes
+- `crates/runtimed/src/blob_server.rs` — HTTP server for blob retrieval
+- `crates/runtimed/src/output_store.rs` — Decides inline vs blob based on size threshold
+- `apps/notebook/src/lib/manifest-resolution.ts` — `resolveManifest()`, `resolveContentRef()`
+- `apps/notebook/src/lib/materialize-cells.ts` — Assembles cells with resolved outputs
+- `apps/notebook/src/hooks/useManifestResolver.ts` — React hook for lazy resolution
+
 ### 6. Daemon Manages Runtime Resources
 
 The daemon owns kernel lifecycle, environment pools, and tooling (ruff, deno, etc.).
