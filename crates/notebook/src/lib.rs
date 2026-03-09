@@ -3842,6 +3842,16 @@ pub fn run(
                         );
                     }
                 }
+                crate::menu::MENU_CHECK_FOR_UPDATES => {
+                    if let Some(window) = focused_window(app) {
+                        let _ = emit_to_label::<_, _, _>(
+                            &window,
+                            window.label(),
+                            "menu:check-for-updates",
+                            (),
+                        );
+                    }
+                }
                 crate::menu::MENU_INSTALL_CLI => {
                     let app_handle = app.clone();
                     match crate::cli_install::install_cli(&app_handle) {

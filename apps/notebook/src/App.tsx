@@ -329,6 +329,7 @@ function AppContent() {
   const {
     status: updateStatus,
     version: updateVersion,
+    checkForUpdate,
     downloadAndInstall: downloadUpdate,
     restartToUpdate,
   } = useUpdater();
@@ -739,6 +740,17 @@ function AppContent() {
       unlistenPromise.then((unlisten) => unlisten());
     };
   }, [handleRestartAndRunAll]);
+
+  // Check for updates via native menu
+  useEffect(() => {
+    const webview = getCurrentWebview();
+    const unlistenPromise = webview.listen("menu:check-for-updates", () => {
+      checkForUpdate();
+    });
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, [checkForUpdate]);
 
   // Zoom controls via native menu
   useEffect(() => {
