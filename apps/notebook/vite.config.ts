@@ -30,6 +30,7 @@ export default defineConfig({
       input: {
         main: path.resolve(__dirname, "index.html"),
         onboarding: path.resolve(__dirname, "onboarding/index.html"),
+        upgrade: path.resolve(__dirname, "upgrade/index.html"),
       },
       output: {
         entryFileNames: "assets/[name].js",
