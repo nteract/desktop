@@ -983,3 +983,23 @@ jobs:
           gh release edit "${{ inputs.updater_channel_tag }}" --prerelease=${{ inputs.updater_channel_prerelease }} --latest=false >/dev/null 2>&1 || true
 
           gh release upload "${{ inputs.updater_channel_tag }}" release-assets/latest.json --clobber
+
+      - name: Notify Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          VERSION: ${{ needs.compute-version.outputs.version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "No Discord webhook configured, skipping notification"
+            exit 0
+          fi
+
+          curl -H "Content-Type: application/json" -d "{
+            \"embeds\": [{
+              \"title\": \"${{ inputs.release_title }} succeeded\",
+              \"description\": \"Version \\\`v${VERSION}\\\` published successfully\",
+              \"url\": \"$RUN_URL\",
+              \"color\": 3066993
+            }]
+          }" "$DISCORD_WEBHOOK"
