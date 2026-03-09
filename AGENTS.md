@@ -63,13 +63,20 @@ The `.context/` directory is gitignored and used for per-worktree state that sho
 
 See the `contributing/` directory for detailed guides:
 - `contributing/architecture.md` - Runtime architecture principles (daemon, state, sync)
+- `contributing/build-dependencies.md` - Build dependency graph
 - `contributing/development.md` - Development workflow and build commands
 - `contributing/e2e.md` - End-to-end testing guide
 - `contributing/environments.md` - Environment management architecture
+- `contributing/frontend-architecture.md` - Frontend code organization (src/ vs apps/)
 - `contributing/iframe-isolation.md` - Security architecture for output isolation
+- `contributing/logging.md` - Logging conventions
 - `contributing/nteract-elements.md` - Working with nteract/elements registry
 - `contributing/protocol.md` - Wire protocol between clients and daemon
+- `contributing/runtimed.md` - Daemon development guide
+- `contributing/testing.md` - Testing guide (Vitest, Rust, Hone, Python, E2E)
+- `contributing/typescript-bindings.md` - ts-rs type generation from Rust
 - `contributing/ui.md` - UI components and shadcn setup
+- `contributing/widget-development.md` - Widget system internals
 
 ## Runtime Daemon (`runtimed`)
 
