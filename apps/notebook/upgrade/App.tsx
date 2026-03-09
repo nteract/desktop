@@ -50,7 +50,7 @@ function NotebookRow({
               <Circle className="h-2.5 w-2.5 fill-green-500 text-green-500" />
             )}
             <span className="text-xs text-muted-foreground capitalize">
-              {notebook.kernel_status}
+              {notebook.kernel_status?.replace("_", " ")}
             </span>
           </div>
         )}
@@ -233,7 +233,7 @@ export default function App() {
                 <p className="text-xs text-muted-foreground uppercase tracking-wide">
                   Open Notebooks
                 </p>
-                <div className="space-y-1.5">
+                <div className="space-y-1.5 max-h-64 overflow-y-auto">
                   {notebooks.map((nb) => (
                     <NotebookRow
                       key={nb.window_label}

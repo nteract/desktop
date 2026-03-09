@@ -938,8 +938,9 @@ async fn begin_upgrade(
         "Updating {}",
         runt_workspace::desktop_display_name()
     ))
-    .inner_size(500.0, 480.0)
-    .resizable(false)
+    .inner_size(500.0, 600.0)
+    .min_inner_size(500.0, 400.0)
+    .resizable(true)
     .center()
     .build()
     .map_err(|e| format!("Failed to create upgrade window: {}", e))?;
