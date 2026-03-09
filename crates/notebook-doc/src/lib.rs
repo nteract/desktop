@@ -140,16 +140,14 @@ impl NotebookDoc {
     }
 
     /// Set UV requires-python constraint, preserving deps.
+    /// Creates the metadata snapshot and UV section if absent.
     pub fn set_uv_requires_python(
         &mut self,
         requires_python: Option<String>,
     ) -> Result<(), AutomergeError> {
-        if let Some(mut snapshot) = self.get_metadata_snapshot() {
-            snapshot.set_uv_requires_python(requires_python);
-            self.set_metadata_snapshot(&snapshot)
-        } else {
-            Ok(())
-        }
+        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        snapshot.set_uv_requires_python(requires_python);
+        self.set_metadata_snapshot(&snapshot)
     }
 
     // ── Conda dependency convenience methods ──────────────────────

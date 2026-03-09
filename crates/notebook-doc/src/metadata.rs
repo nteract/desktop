@@ -349,10 +349,13 @@ impl NotebookMetadataSnapshot {
     }
 
     /// Set UV requires-python constraint, preserving deps.
+    /// Creates the UV section if it doesn't exist yet.
     pub fn set_uv_requires_python(&mut self, requires_python: Option<String>) {
-        if let Some(ref mut uv) = self.runt.uv {
-            uv.requires_python = requires_python;
-        }
+        let uv = self.runt.uv.get_or_insert_with(|| UvInlineMetadata {
+            dependencies: Vec::new(),
+            requires_python: None,
+        });
+        uv.requires_python = requires_python;
     }
 
     /// Get UV dependencies, or empty slice if no UV section.
@@ -1026,11 +1029,18 @@ mod tests {
     }
 
     #[test]
-    fn test_set_uv_requires_python_no_section_is_noop() {
+    fn test_set_uv_requires_python_creates_section() {
         let mut s = NotebookMetadataSnapshot::default();
-        s.set_uv_requires_python(Some(">=3.10".to_string()));
-        // No UV section exists, so this is a no-op
         assert!(s.runt.uv.is_none());
+
+        s.set_uv_requires_python(Some(">=3.10".to_string()));
+        // UV section is created with empty deps
+        assert!(s.runt.uv.is_some());
+        assert_eq!(
+            s.runt.uv.as_ref().unwrap().requires_python,
+            Some(">=3.10".to_string())
+        );
+        assert!(s.uv_dependencies().is_empty());
     }
 
     #[test]
