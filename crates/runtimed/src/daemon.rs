@@ -944,7 +944,9 @@ impl Daemon {
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
-        use crate::connection::{send_json_frame, NotebookConnectionInfo, PROTOCOL_V2};
+        use crate::connection::{
+            send_json_frame, NotebookConnectionInfo, PROTOCOL_V2, PROTOCOL_VERSION,
+        };
 
         info!("[runtimed] OpenNotebook requested for {}", path);
 
@@ -996,6 +998,8 @@ impl Daemon {
                         let (mut reader, mut writer) = tokio::io::split(stream);
                         let response = NotebookConnectionInfo {
                             protocol: PROTOCOL_V2.to_string(),
+                            protocol_version: Some(PROTOCOL_VERSION),
+                            daemon_version: Some(crate::daemon_version()),
                             notebook_id: String::new(),
                             cell_count: 0,
                             needs_trust_approval: false,
@@ -1028,6 +1032,8 @@ impl Daemon {
         let (reader, mut writer) = tokio::io::split(stream);
         let response = NotebookConnectionInfo {
             protocol: PROTOCOL_V2.to_string(),
+            protocol_version: Some(PROTOCOL_VERSION),
+            daemon_version: Some(crate::daemon_version()),
             notebook_id: notebook_id.clone(),
             cell_count,
             needs_trust_approval,
@@ -1077,7 +1083,9 @@ impl Daemon {
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
-        use crate::connection::{send_json_frame, NotebookConnectionInfo, PROTOCOL_V2};
+        use crate::connection::{
+            send_json_frame, NotebookConnectionInfo, PROTOCOL_V2, PROTOCOL_VERSION,
+        };
 
         info!(
             "[runtimed] CreateNotebook requested (runtime={}, working_dir={:?}, notebook_id_hint={:?})",
@@ -1140,6 +1148,8 @@ impl Daemon {
                         let (mut reader, mut writer) = tokio::io::split(stream);
                         let response = NotebookConnectionInfo {
                             protocol: PROTOCOL_V2.to_string(),
+                            protocol_version: Some(PROTOCOL_VERSION),
+                            daemon_version: Some(crate::daemon_version()),
                             notebook_id: String::new(),
                             cell_count: 0,
                             needs_trust_approval: false,
@@ -1158,6 +1168,8 @@ impl Daemon {
         let (reader, mut writer) = tokio::io::split(stream);
         let response = NotebookConnectionInfo {
             protocol: PROTOCOL_V2.to_string(),
+            protocol_version: Some(PROTOCOL_VERSION),
+            daemon_version: Some(crate::daemon_version()),
             notebook_id: notebook_id.clone(),
             cell_count,
             needs_trust_approval: false,

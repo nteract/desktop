@@ -792,6 +792,8 @@ where
     if !skip_capabilities {
         let caps = connection::ProtocolCapabilities {
             protocol: connection::PROTOCOL_V2.to_string(),
+            protocol_version: Some(connection::PROTOCOL_VERSION),
+            daemon_version: Some(crate::daemon_version()),
         };
         connection::send_json_frame(&mut writer, &caps).await?;
     }

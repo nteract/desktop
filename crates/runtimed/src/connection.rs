@@ -95,8 +95,12 @@ pub enum Handshake {
     },
 }
 
-/// Protocol version constant.
+/// Protocol version constant (string for backwards compatibility).
 pub const PROTOCOL_V2: &str = "v2";
+
+/// Numeric protocol version for version negotiation.
+/// Increment this when making breaking protocol changes.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Server response indicating protocol capabilities.
 ///
@@ -104,8 +108,16 @@ pub const PROTOCOL_V2: &str = "v2";
 /// Used by the `NotebookSync` handshake variant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolCapabilities {
-    /// Protocol version (currently always "v2").
+    /// Protocol version string (currently always "v2").
     pub protocol: String,
+    /// Numeric protocol version for explicit version checking.
+    /// Clients can compare this against their expected version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<u32>,
+    /// Daemon version string (e.g., "0.1.0-dev.10+abc123").
+    /// Useful for debugging version mismatches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon_version: Option<String>,
 }
 
 /// Server response for `OpenNotebook` and `CreateNotebook` handshakes.
@@ -114,8 +126,14 @@ pub struct ProtocolCapabilities {
 /// Contains notebook_id derived by the daemon (from path or generated env_id).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotebookConnectionInfo {
-    /// Protocol version (currently always "v2").
+    /// Protocol version string (currently always "v2").
     pub protocol: String,
+    /// Numeric protocol version for explicit version checking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<u32>,
+    /// Daemon version string (e.g., "0.1.0-dev.10+abc123").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon_version: Option<String>,
     /// Notebook identifier derived by the daemon.
     /// For existing files: canonical path.
     /// For new notebooks: generated UUID (env_id).
@@ -476,9 +494,11 @@ mod tests {
 
     #[test]
     fn test_notebook_connection_info_serialization() {
-        // Success case
+        // Success case (minimal - no optional fields)
         let info = NotebookConnectionInfo {
             protocol: "v2".into(),
+            protocol_version: None,
+            daemon_version: None,
             notebook_id: "/home/user/notebook.ipynb".into(),
             cell_count: 5,
             needs_trust_approval: false,
@@ -490,9 +510,25 @@ mod tests {
             r#"{"protocol":"v2","notebook_id":"/home/user/notebook.ipynb","cell_count":5,"needs_trust_approval":false}"#
         );
 
+        // With version info
+        let info = NotebookConnectionInfo {
+            protocol: "v2".into(),
+            protocol_version: Some(2),
+            daemon_version: Some("0.1.0+abc123".into()),
+            notebook_id: "/home/user/notebook.ipynb".into(),
+            cell_count: 5,
+            needs_trust_approval: false,
+            error: None,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains(r#""protocol_version":2"#));
+        assert!(json.contains(r#""daemon_version":"0.1.0+abc123""#));
+
         // With trust approval needed
         let info = NotebookConnectionInfo {
             protocol: "v2".into(),
+            protocol_version: None,
+            daemon_version: None,
             notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
             cell_count: 1,
             needs_trust_approval: true,
@@ -504,6 +540,8 @@ mod tests {
         // Error case
         let info = NotebookConnectionInfo {
             protocol: "v2".into(),
+            protocol_version: None,
+            daemon_version: None,
             notebook_id: String::new(),
             cell_count: 0,
             needs_trust_approval: false,
