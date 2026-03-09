@@ -102,42 +102,83 @@ impl NotebookDoc {
     /// Detect the notebook runtime from metadata (kernelspec + language_info).
     ///
     /// Returns `"python"`, `"deno"`, or `None` for unknown runtimes.
+    /// Delegates to [`metadata::NotebookMetadataSnapshot::detect_runtime`].
     pub fn detect_runtime(&self) -> Option<String> {
-        let snapshot = self.get_metadata_snapshot()?;
+        self.get_metadata_snapshot()?.detect_runtime()
+    }
 
-        // Check kernelspec.name first (most reliable)
-        if let Some(ref ks) = snapshot.kernelspec {
-            let name = ks.name.to_lowercase();
-            if name.contains("deno") {
-                return Some("deno".to_string());
-            }
-            if name.contains("python") {
-                return Some("python".to_string());
-            }
-            // Check kernelspec.language
-            if let Some(ref lang) = ks.language {
-                let lang_lower = lang.to_lowercase();
-                if lang_lower == "typescript" || lang_lower == "javascript" {
-                    return Some("deno".to_string());
-                }
-                if lang_lower == "python" {
-                    return Some("python".to_string());
-                }
-            }
-        }
+    // ── UV dependency convenience methods ─────────────────────────
 
-        // Fall back to language_info.name
-        if let Some(ref li) = snapshot.language_info {
-            let name = li.name.to_lowercase();
-            if name == "typescript" || name == "javascript" {
-                return Some("deno".to_string());
-            }
-            if name == "python" {
-                return Some("python".to_string());
-            }
-        }
+    /// Add a UV dependency, deduplicating by package name (case-insensitive).
+    pub fn add_uv_dependency(&mut self, pkg: &str) -> Result<(), AutomergeError> {
+        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        snapshot.add_uv_dependency(pkg);
+        self.set_metadata_snapshot(&snapshot)
+    }
 
-        None
+    /// Remove a UV dependency by package name (case-insensitive).
+    /// Returns true if a dependency was removed.
+    pub fn remove_uv_dependency(&mut self, pkg: &str) -> Result<bool, AutomergeError> {
+        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        let removed = snapshot.remove_uv_dependency(pkg);
+        self.set_metadata_snapshot(&snapshot)?;
+        Ok(removed)
+    }
+
+    /// Clear the UV section entirely (deps + requires-python).
+    pub fn clear_uv_section(&mut self) -> Result<(), AutomergeError> {
+        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        snapshot.clear_uv_section();
+        self.set_metadata_snapshot(&snapshot)
+    }
+
+    /// Set UV requires-python constraint, preserving deps.
+    pub fn set_uv_requires_python(
+        &mut self,
+        requires_python: Option<String>,
+    ) -> Result<(), AutomergeError> {
+        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        snapshot.set_uv_requires_python(requires_python);
+        self.set_metadata_snapshot(&snapshot)
+    }
+
+    // ── Conda dependency convenience methods ──────────────────────
+
+    /// Add a Conda dependency, deduplicating by package name (case-insensitive).
+    pub fn add_conda_dependency(&mut self, pkg: &str) -> Result<(), AutomergeError> {
+        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        snapshot.add_conda_dependency(pkg);
+        self.set_metadata_snapshot(&snapshot)
+    }
+
+    /// Remove a Conda dependency by package name (case-insensitive).
+    /// Returns true if a dependency was removed.
+    pub fn remove_conda_dependency(&mut self, pkg: &str) -> Result<bool, AutomergeError> {
+        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        let removed = snapshot.remove_conda_dependency(pkg);
+        self.set_metadata_snapshot(&snapshot)?;
+        Ok(removed)
+    }
+
+    /// Clear the Conda section entirely.
+    pub fn clear_conda_section(&mut self) -> Result<(), AutomergeError> {
+        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        snapshot.clear_conda_section();
+        self.set_metadata_snapshot(&snapshot)
+    }
+
+    /// Set Conda channels, preserving deps and python.
+    pub fn set_conda_channels(&mut self, channels: Vec<String>) -> Result<(), AutomergeError> {
+        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        snapshot.set_conda_channels(channels);
+        self.set_metadata_snapshot(&snapshot)
+    }
+
+    /// Set Conda python version, preserving deps and channels.
+    pub fn set_conda_python(&mut self, python: Option<String>) -> Result<(), AutomergeError> {
+        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        snapshot.set_conda_python(python);
+        self.set_metadata_snapshot(&snapshot)
     }
 }
 

@@ -115,7 +115,7 @@ pub struct DenoMetadata {
 /// Covers kernelspec + language_info + runt namespace — everything needed for
 /// kernel detection and environment resolution. Serialized as JSON and stored
 /// in the Automerge document under `metadata.notebook_metadata`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct NotebookMetadataSnapshot {
     /// Jupyter kernel specification (runtime type detection).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -264,6 +264,172 @@ impl NotebookMetadataSnapshot {
             obj.insert("runt".to_string(), new_runt);
         }
     }
+
+    // ── Runtime detection ────────────────────────────────────────────
+
+    /// Detect the notebook runtime from kernelspec + language_info metadata.
+    ///
+    /// Returns `"python"`, `"deno"`, or `None` for unknown runtimes.
+    ///
+    /// Priority chain:
+    /// 1. `kernelspec.name` (substring match for "deno" or "python")
+    /// 2. `kernelspec.language` (exact match: "typescript"/"javascript" → deno)
+    /// 3. `language_info.name` (exact match, including "deno")
+    /// 4. `runt.deno` presence (legacy notebooks without kernelspec)
+    pub fn detect_runtime(&self) -> Option<String> {
+        // Check kernelspec.name first (most reliable)
+        if let Some(ref ks) = self.kernelspec {
+            let name = ks.name.to_lowercase();
+            if name.contains("deno") {
+                return Some("deno".to_string());
+            }
+            if name.contains("python") {
+                return Some("python".to_string());
+            }
+            // Check kernelspec.language
+            if let Some(ref lang) = ks.language {
+                let lang_lower = lang.to_lowercase();
+                if lang_lower == "typescript" || lang_lower == "javascript" {
+                    return Some("deno".to_string());
+                }
+                if lang_lower == "python" {
+                    return Some("python".to_string());
+                }
+            }
+        }
+
+        // Fall back to language_info.name
+        if let Some(ref li) = self.language_info {
+            let name = li.name.to_lowercase();
+            if name == "deno" || name == "typescript" || name == "javascript" {
+                return Some("deno".to_string());
+            }
+            if name == "python" {
+                return Some("python".to_string());
+            }
+        }
+
+        // Fall back to runt.deno presence (legacy notebooks without kernelspec)
+        if self.runt.deno.is_some() {
+            return Some("deno".to_string());
+        }
+
+        None
+    }
+
+    // ── UV dependency operations ─────────────────────────────────────
+
+    /// Add a UV dependency, deduplicating by package name (case-insensitive).
+    /// Initializes the UV section if absent, preserving existing fields.
+    pub fn add_uv_dependency(&mut self, pkg: &str) {
+        let uv = self.runt.uv.get_or_insert_with(|| UvInlineMetadata {
+            dependencies: Vec::new(),
+            requires_python: None,
+        });
+        let name = extract_package_name(pkg);
+        uv.dependencies.retain(|d| extract_package_name(d) != name);
+        uv.dependencies.push(pkg.to_string());
+    }
+
+    /// Remove a UV dependency by package name (case-insensitive).
+    /// Returns true if a dependency was removed.
+    pub fn remove_uv_dependency(&mut self, pkg: &str) -> bool {
+        let Some(ref mut uv) = self.runt.uv else {
+            return false;
+        };
+        let name = extract_package_name(pkg);
+        let before = uv.dependencies.len();
+        uv.dependencies.retain(|d| extract_package_name(d) != name);
+        uv.dependencies.len() < before
+    }
+
+    /// Clear the UV section entirely (deps + requires-python).
+    pub fn clear_uv_section(&mut self) {
+        self.runt.uv = None;
+    }
+
+    /// Set UV requires-python constraint, preserving deps.
+    pub fn set_uv_requires_python(&mut self, requires_python: Option<String>) {
+        if let Some(ref mut uv) = self.runt.uv {
+            uv.requires_python = requires_python;
+        }
+    }
+
+    /// Get UV dependencies, or empty slice if no UV section.
+    pub fn uv_dependencies(&self) -> &[String] {
+        self.runt
+            .uv
+            .as_ref()
+            .map(|uv| uv.dependencies.as_slice())
+            .unwrap_or(&[])
+    }
+
+    // ── Conda dependency operations ──────────────────────────────────
+
+    /// Add a Conda dependency, deduplicating by package name (case-insensitive).
+    /// Initializes the Conda section with `["conda-forge"]` channels if absent.
+    pub fn add_conda_dependency(&mut self, pkg: &str) {
+        let conda = self.runt.conda.get_or_insert_with(|| CondaInlineMetadata {
+            dependencies: Vec::new(),
+            channels: vec!["conda-forge".to_string()],
+            python: None,
+        });
+        let name = extract_package_name(pkg);
+        conda
+            .dependencies
+            .retain(|d| extract_package_name(d) != name);
+        conda.dependencies.push(pkg.to_string());
+    }
+
+    /// Remove a Conda dependency by package name (case-insensitive).
+    /// Returns true if a dependency was removed.
+    pub fn remove_conda_dependency(&mut self, pkg: &str) -> bool {
+        let Some(ref mut conda) = self.runt.conda else {
+            return false;
+        };
+        let name = extract_package_name(pkg);
+        let before = conda.dependencies.len();
+        conda
+            .dependencies
+            .retain(|d| extract_package_name(d) != name);
+        conda.dependencies.len() < before
+    }
+
+    /// Clear the Conda section entirely.
+    pub fn clear_conda_section(&mut self) {
+        self.runt.conda = None;
+    }
+
+    /// Set Conda channels, preserving deps and python.
+    /// Creates the Conda section if it doesn't exist yet.
+    pub fn set_conda_channels(&mut self, channels: Vec<String>) {
+        let conda = self.runt.conda.get_or_insert_with(|| CondaInlineMetadata {
+            dependencies: Vec::new(),
+            channels: Vec::new(),
+            python: None,
+        });
+        conda.channels = channels;
+    }
+
+    /// Set Conda python version, preserving deps and channels.
+    /// Creates the Conda section if it doesn't exist yet.
+    pub fn set_conda_python(&mut self, python: Option<String>) {
+        let conda = self.runt.conda.get_or_insert_with(|| CondaInlineMetadata {
+            dependencies: Vec::new(),
+            channels: vec!["conda-forge".to_string()],
+            python: None,
+        });
+        conda.python = python;
+    }
+
+    /// Get Conda dependencies, or empty slice if no Conda section.
+    pub fn conda_dependencies(&self) -> &[String] {
+        self.runt
+            .conda
+            .as_ref()
+            .map(|c| c.dependencies.as_slice())
+            .unwrap_or(&[])
+    }
 }
 
 impl RuntMetadata {
@@ -317,6 +483,45 @@ impl RuntMetadata {
             trust_timestamp: None,
         }
     }
+}
+
+// ── Default implementations ──────────────────────────────────────────
+
+impl Default for RuntMetadata {
+    fn default() -> Self {
+        RuntMetadata {
+            schema_version: "1".to_string(),
+            env_id: None,
+            uv: None,
+            conda: None,
+            deno: None,
+            trust_signature: None,
+            trust_timestamp: None,
+        }
+    }
+}
+
+// ── Package name extraction ──────────────────────────────────────────
+
+/// Extract the base package name from a PEP 508 or conda dependency specifier.
+///
+/// Returns the lowercased package name, stripped of version constraints, extras,
+/// environment markers, and whitespace.
+///
+/// # Examples
+///
+/// ```
+/// use notebook_doc::metadata::extract_package_name;
+/// assert_eq!(extract_package_name("pandas>=2.0"), "pandas");
+/// assert_eq!(extract_package_name("requests[security]"), "requests");
+/// assert_eq!(extract_package_name("NumPy"), "numpy");
+/// ```
+pub fn extract_package_name(spec: &str) -> String {
+    spec.trim()
+        .split(&['>', '<', '=', '!', '~', '[', ';', '@', ' '][..])
+        .next()
+        .unwrap_or(spec)
+        .to_lowercase()
 }
 
 // ── Automerge document key ───────────────────────────────────────────
@@ -497,5 +702,476 @@ mod tests {
         assert!(!json.as_object().unwrap().contains_key("trust_timestamp"));
         // schema_version should always be present
         assert!(json.as_object().unwrap().contains_key("schema_version"));
+    }
+
+    // ── extract_package_name ─────────────────────────────────────
+
+    #[test]
+    fn test_extract_package_name_simple() {
+        assert_eq!(extract_package_name("pandas"), "pandas");
+        assert_eq!(extract_package_name("numpy"), "numpy");
+    }
+
+    #[test]
+    fn test_extract_package_name_version_specifiers() {
+        assert_eq!(extract_package_name("pandas>=2.0"), "pandas");
+        assert_eq!(extract_package_name("numpy==1.24.0"), "numpy");
+        assert_eq!(extract_package_name("scipy<2"), "scipy");
+        assert_eq!(extract_package_name("flask!=1.0"), "flask");
+        assert_eq!(extract_package_name("django~=4.2"), "django");
+    }
+
+    #[test]
+    fn test_extract_package_name_extras() {
+        assert_eq!(extract_package_name("requests[security]"), "requests");
+        assert_eq!(extract_package_name("pandas[sql,performance]"), "pandas");
+    }
+
+    #[test]
+    fn test_extract_package_name_env_markers() {
+        assert_eq!(
+            extract_package_name("pywin32 ; sys_platform == 'win32'"),
+            "pywin32"
+        );
+        assert_eq!(
+            extract_package_name("numpy>=1.24;python_version>=\"3.8\""),
+            "numpy"
+        );
+    }
+
+    #[test]
+    fn test_extract_package_name_at_url() {
+        assert_eq!(
+            extract_package_name("mypackage@https://example.com/pkg.tar.gz"),
+            "mypackage"
+        );
+    }
+
+    #[test]
+    fn test_extract_package_name_case_insensitive() {
+        assert_eq!(extract_package_name("NumPy"), "numpy");
+        assert_eq!(extract_package_name("Pandas>=2.0"), "pandas");
+        assert_eq!(extract_package_name("Flask"), "flask");
+    }
+
+    #[test]
+    fn test_extract_package_name_empty() {
+        assert_eq!(extract_package_name(""), "");
+    }
+
+    #[test]
+    fn test_extract_package_name_whitespace() {
+        assert_eq!(extract_package_name("  pandas  >=2.0"), "pandas");
+    }
+
+    // ── detect_runtime ───────────────────────────────────────────
+
+    fn snapshot_with_kernelspec(name: &str, language: Option<&str>) -> NotebookMetadataSnapshot {
+        NotebookMetadataSnapshot {
+            kernelspec: Some(KernelspecSnapshot {
+                name: name.to_string(),
+                display_name: name.to_string(),
+                language: language.map(String::from),
+            }),
+            language_info: None,
+            runt: RuntMetadata::default(),
+        }
+    }
+
+    fn snapshot_with_language_info(name: &str) -> NotebookMetadataSnapshot {
+        NotebookMetadataSnapshot {
+            kernelspec: None,
+            language_info: Some(LanguageInfoSnapshot {
+                name: name.to_string(),
+                version: None,
+            }),
+            runt: RuntMetadata::default(),
+        }
+    }
+
+    #[test]
+    fn test_detect_runtime_kernelspec_python() {
+        let s = snapshot_with_kernelspec("python3", Some("python"));
+        assert_eq!(s.detect_runtime(), Some("python".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_kernelspec_deno() {
+        let s = snapshot_with_kernelspec("deno", None);
+        assert_eq!(s.detect_runtime(), Some("deno".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_kernelspec_name_substring_match() {
+        // "ir-python" contains "python"
+        let s = snapshot_with_kernelspec("ir-python-kernel", None);
+        assert_eq!(s.detect_runtime(), Some("python".to_string()));
+
+        let s = snapshot_with_kernelspec("my-deno-kernel", None);
+        assert_eq!(s.detect_runtime(), Some("deno".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_kernelspec_language_typescript() {
+        let s = snapshot_with_kernelspec("custom-kernel", Some("typescript"));
+        assert_eq!(s.detect_runtime(), Some("deno".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_kernelspec_language_javascript() {
+        let s = snapshot_with_kernelspec("custom-kernel", Some("javascript"));
+        assert_eq!(s.detect_runtime(), Some("deno".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_kernelspec_language_python() {
+        let s = snapshot_with_kernelspec("custom-kernel", Some("python"));
+        assert_eq!(s.detect_runtime(), Some("python".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_language_info_python() {
+        let s = snapshot_with_language_info("python");
+        assert_eq!(s.detect_runtime(), Some("python".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_language_info_deno() {
+        let s = snapshot_with_language_info("deno");
+        assert_eq!(s.detect_runtime(), Some("deno".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_language_info_typescript() {
+        let s = snapshot_with_language_info("typescript");
+        assert_eq!(s.detect_runtime(), Some("deno".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_language_info_javascript() {
+        let s = snapshot_with_language_info("javascript");
+        assert_eq!(s.detect_runtime(), Some("deno".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_runt_deno_fallback() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.runt.deno = Some(DenoMetadata {
+            permissions: Vec::new(),
+            import_map: None,
+            config: None,
+            flexible_npm_imports: None,
+        });
+        assert_eq!(s.detect_runtime(), Some("deno".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_none_for_empty_metadata() {
+        let s = NotebookMetadataSnapshot::default();
+        assert_eq!(s.detect_runtime(), None);
+    }
+
+    #[test]
+    fn test_detect_runtime_kernelspec_takes_priority_over_language_info() {
+        // kernelspec says python, language_info says typescript
+        let s = NotebookMetadataSnapshot {
+            kernelspec: Some(KernelspecSnapshot {
+                name: "python3".to_string(),
+                display_name: "Python 3".to_string(),
+                language: None,
+            }),
+            language_info: Some(LanguageInfoSnapshot {
+                name: "typescript".to_string(),
+                version: None,
+            }),
+            runt: RuntMetadata::default(),
+        };
+        assert_eq!(s.detect_runtime(), Some("python".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_case_insensitive() {
+        let s = snapshot_with_kernelspec("Python3", Some("Python"));
+        assert_eq!(s.detect_runtime(), Some("python".to_string()));
+
+        let s = snapshot_with_kernelspec("DENO", None);
+        assert_eq!(s.detect_runtime(), Some("deno".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_unknown_kernelspec() {
+        let s = snapshot_with_kernelspec("julia-1.10", Some("julia"));
+        assert_eq!(s.detect_runtime(), None);
+    }
+
+    // ── UV dependency CRUD ───────────────────────────────────────
+
+    #[test]
+    fn test_add_uv_dependency_initializes_section() {
+        let mut s = NotebookMetadataSnapshot::default();
+        assert!(s.runt.uv.is_none());
+
+        s.add_uv_dependency("pandas");
+        assert_eq!(s.uv_dependencies(), &["pandas"]);
+    }
+
+    #[test]
+    fn test_add_uv_dependency_deduplicates_by_name() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.add_uv_dependency("pandas>=1.0");
+        s.add_uv_dependency("pandas>=2.0");
+        assert_eq!(s.uv_dependencies(), &["pandas>=2.0"]);
+    }
+
+    #[test]
+    fn test_add_uv_dependency_dedup_case_insensitive() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.add_uv_dependency("NumPy");
+        s.add_uv_dependency("numpy>=1.24");
+        assert_eq!(s.uv_dependencies(), &["numpy>=1.24"]);
+    }
+
+    #[test]
+    fn test_add_uv_dependency_preserves_requires_python() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.runt.uv = Some(UvInlineMetadata {
+            dependencies: vec!["numpy".to_string()],
+            requires_python: Some(">=3.10".to_string()),
+        });
+
+        s.add_uv_dependency("pandas");
+        assert_eq!(
+            s.runt.uv.as_ref().unwrap().requires_python,
+            Some(">=3.10".to_string())
+        );
+        assert_eq!(s.uv_dependencies(), &["numpy", "pandas"]);
+    }
+
+    #[test]
+    fn test_add_uv_dependency_multiple_packages() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.add_uv_dependency("pandas");
+        s.add_uv_dependency("numpy");
+        s.add_uv_dependency("scipy");
+        assert_eq!(s.uv_dependencies(), &["pandas", "numpy", "scipy"]);
+    }
+
+    #[test]
+    fn test_remove_uv_dependency_by_name() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.add_uv_dependency("pandas>=2.0");
+        s.add_uv_dependency("numpy");
+
+        assert!(s.remove_uv_dependency("pandas"));
+        assert_eq!(s.uv_dependencies(), &["numpy"]);
+    }
+
+    #[test]
+    fn test_remove_uv_dependency_case_insensitive() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.add_uv_dependency("pandas");
+        assert!(s.remove_uv_dependency("Pandas"));
+        assert!(s.uv_dependencies().is_empty());
+    }
+
+    #[test]
+    fn test_remove_uv_dependency_version_agnostic() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.add_uv_dependency("pandas>=2.0");
+        // Removing by bare name removes the versioned specifier
+        assert!(s.remove_uv_dependency("pandas"));
+        assert!(s.uv_dependencies().is_empty());
+    }
+
+    #[test]
+    fn test_remove_uv_dependency_not_found() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.add_uv_dependency("pandas");
+        assert!(!s.remove_uv_dependency("numpy"));
+        assert_eq!(s.uv_dependencies(), &["pandas"]);
+    }
+
+    #[test]
+    fn test_remove_uv_dependency_no_section() {
+        let mut s = NotebookMetadataSnapshot::default();
+        assert!(!s.remove_uv_dependency("pandas"));
+    }
+
+    #[test]
+    fn test_clear_uv_section() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.add_uv_dependency("pandas");
+        s.set_uv_requires_python(Some(">=3.10".to_string()));
+
+        s.clear_uv_section();
+        assert!(s.runt.uv.is_none());
+        assert!(s.uv_dependencies().is_empty());
+    }
+
+    #[test]
+    fn test_set_uv_requires_python() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.add_uv_dependency("pandas");
+
+        s.set_uv_requires_python(Some(">=3.11".to_string()));
+        assert_eq!(
+            s.runt.uv.as_ref().unwrap().requires_python,
+            Some(">=3.11".to_string())
+        );
+
+        s.set_uv_requires_python(None);
+        assert_eq!(s.runt.uv.as_ref().unwrap().requires_python, None);
+        // Deps still intact
+        assert_eq!(s.uv_dependencies(), &["pandas"]);
+    }
+
+    #[test]
+    fn test_set_uv_requires_python_no_section_is_noop() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.set_uv_requires_python(Some(">=3.10".to_string()));
+        // No UV section exists, so this is a no-op
+        assert!(s.runt.uv.is_none());
+    }
+
+    #[test]
+    fn test_uv_dependencies_empty_when_no_section() {
+        let s = NotebookMetadataSnapshot::default();
+        assert!(s.uv_dependencies().is_empty());
+    }
+
+    // ── Conda dependency CRUD ────────────────────────────────────
+
+    #[test]
+    fn test_add_conda_dependency_initializes_section() {
+        let mut s = NotebookMetadataSnapshot::default();
+        assert!(s.runt.conda.is_none());
+
+        s.add_conda_dependency("numpy");
+        assert_eq!(s.conda_dependencies(), &["numpy"]);
+        assert_eq!(s.runt.conda.as_ref().unwrap().channels, vec!["conda-forge"]);
+    }
+
+    #[test]
+    fn test_add_conda_dependency_deduplicates_by_name() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.add_conda_dependency("scipy=1.10");
+        s.add_conda_dependency("scipy=1.11");
+        assert_eq!(s.conda_dependencies(), &["scipy=1.11"]);
+    }
+
+    #[test]
+    fn test_add_conda_dependency_preserves_channels_and_python() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.runt.conda = Some(CondaInlineMetadata {
+            dependencies: vec!["numpy".to_string()],
+            channels: vec!["conda-forge".to_string(), "bioconda".to_string()],
+            python: Some("3.11".to_string()),
+        });
+
+        s.add_conda_dependency("scipy");
+        let conda = s.runt.conda.as_ref().unwrap();
+        assert_eq!(conda.channels, vec!["conda-forge", "bioconda"]);
+        assert_eq!(conda.python, Some("3.11".to_string()));
+        assert_eq!(s.conda_dependencies(), &["numpy", "scipy"]);
+    }
+
+    #[test]
+    fn test_remove_conda_dependency_by_name() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.add_conda_dependency("numpy");
+        s.add_conda_dependency("scipy");
+
+        assert!(s.remove_conda_dependency("numpy"));
+        assert_eq!(s.conda_dependencies(), &["scipy"]);
+    }
+
+    #[test]
+    fn test_remove_conda_dependency_not_found() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.add_conda_dependency("numpy");
+        assert!(!s.remove_conda_dependency("pandas"));
+    }
+
+    #[test]
+    fn test_remove_conda_dependency_no_section() {
+        let mut s = NotebookMetadataSnapshot::default();
+        assert!(!s.remove_conda_dependency("numpy"));
+    }
+
+    #[test]
+    fn test_clear_conda_section() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.add_conda_dependency("numpy");
+        s.set_conda_channels(vec!["bioconda".to_string()]);
+        s.set_conda_python(Some("3.11".to_string()));
+
+        s.clear_conda_section();
+        assert!(s.runt.conda.is_none());
+        assert!(s.conda_dependencies().is_empty());
+    }
+
+    #[test]
+    fn test_set_conda_channels() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.add_conda_dependency("numpy");
+
+        s.set_conda_channels(vec!["conda-forge".to_string(), "bioconda".to_string()]);
+        assert_eq!(
+            s.runt.conda.as_ref().unwrap().channels,
+            vec!["conda-forge", "bioconda"]
+        );
+        // Deps still intact
+        assert_eq!(s.conda_dependencies(), &["numpy"]);
+    }
+
+    #[test]
+    fn test_set_conda_channels_creates_section() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.set_conda_channels(vec!["bioconda".to_string()]);
+        assert!(s.runt.conda.is_some());
+        assert_eq!(s.runt.conda.as_ref().unwrap().channels, vec!["bioconda"]);
+    }
+
+    #[test]
+    fn test_set_conda_python() {
+        let mut s = NotebookMetadataSnapshot::default();
+        s.add_conda_dependency("numpy");
+
+        s.set_conda_python(Some("3.12".to_string()));
+        assert_eq!(
+            s.runt.conda.as_ref().unwrap().python,
+            Some("3.12".to_string())
+        );
+
+        s.set_conda_python(None);
+        assert_eq!(s.runt.conda.as_ref().unwrap().python, None);
+        // Deps still intact
+        assert_eq!(s.conda_dependencies(), &["numpy"]);
+    }
+
+    #[test]
+    fn test_conda_dependencies_empty_when_no_section() {
+        let s = NotebookMetadataSnapshot::default();
+        assert!(s.conda_dependencies().is_empty());
+    }
+
+    // ── Default impls ────────────────────────────────────────────
+
+    #[test]
+    fn test_runt_metadata_default() {
+        let meta = RuntMetadata::default();
+        assert_eq!(meta.schema_version, "1");
+        assert!(meta.uv.is_none());
+        assert!(meta.conda.is_none());
+        assert!(meta.deno.is_none());
+        assert!(meta.env_id.is_none());
+    }
+
+    #[test]
+    fn test_notebook_metadata_snapshot_default() {
+        let s = NotebookMetadataSnapshot::default();
+        assert!(s.kernelspec.is_none());
+        assert!(s.language_info.is_none());
+        assert_eq!(s.runt.schema_version, "1");
     }
 }
