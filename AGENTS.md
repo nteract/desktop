@@ -68,6 +68,7 @@ See the `contributing/` directory for detailed guides:
 - `contributing/environments.md` - Environment management architecture
 - `contributing/iframe-isolation.md` - Security architecture for output isolation
 - `contributing/nteract-elements.md` - Working with nteract/elements registry
+- `contributing/protocol.md` - Wire protocol between clients and daemon
 - `contributing/ui.md` - UI components and shadcn setup
 
 ## Runtime Daemon (`runtimed`)
