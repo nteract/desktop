@@ -54,45 +54,6 @@ pub struct TrustState {
     pub pending_launch: bool,
 }
 
-/// Detect the kernel type from a notebook's metadata snapshot.
-/// Returns "python" or "deno" based on the kernelspec and language_info.
-/// This is the #1 priority - the notebook's kernelspec determines the runtime.
-fn detect_notebook_kernel_type(snapshot: &NotebookMetadataSnapshot) -> Option<String> {
-    // Check kernelspec.name first (most reliable)
-    if let Some(ref kernelspec) = snapshot.kernelspec {
-        let name_lower = kernelspec.name.to_lowercase();
-        if name_lower.contains("deno") {
-            return Some("deno".to_string());
-        }
-        if name_lower.contains("python") {
-            return Some("python".to_string());
-        }
-        // Also check language field
-        if let Some(ref lang) = kernelspec.language {
-            let lang_lower = lang.to_lowercase();
-            if lang_lower == "typescript" || lang_lower == "javascript" {
-                return Some("deno".to_string());
-            }
-            if lang_lower == "python" {
-                return Some("python".to_string());
-            }
-        }
-    }
-
-    // Fallback: check language_info.name
-    if let Some(ref lang_info) = snapshot.language_info {
-        let name_lower = lang_info.name.to_lowercase();
-        if name_lower == "typescript" || name_lower == "javascript" || name_lower == "deno" {
-            return Some("deno".to_string());
-        }
-        if name_lower == "python" {
-            return Some("python".to_string());
-        }
-    }
-
-    None // Unknown kernel type
-}
-
 /// Check if a notebook's metadata snapshot has inline dependencies or Deno config.
 /// Returns the appropriate env_source if found ("uv:inline", "conda:inline", or "deno").
 ///
@@ -1204,9 +1165,7 @@ async fn auto_launch_kernel(
     // 4. For new notebooks (no kernelspec): use default_runtime setting
 
     // Step 1: Detect kernel type from metadata snapshot
-    let notebook_kernel_type = metadata_snapshot
-        .as_ref()
-        .and_then(detect_notebook_kernel_type);
+    let notebook_kernel_type = metadata_snapshot.as_ref().and_then(|s| s.detect_runtime());
 
     // Step 2: Check inline deps (for environment source, and runt.deno override)
     let inline_source = metadata_snapshot.as_ref().and_then(check_inline_deps);
@@ -1596,7 +1555,7 @@ async fn handle_notebook_request(
             let resolved_kernel_type = if kernel_type == "auto" || kernel_type.is_empty() {
                 metadata_snapshot
                     .as_ref()
-                    .and_then(detect_notebook_kernel_type)
+                    .and_then(|s| s.detect_runtime())
                     .unwrap_or_else(|| {
                         info!("[notebook-sync] LaunchKernel: kernel type unknown, defaulting to python");
                         "python".to_string()
@@ -2492,7 +2451,7 @@ async fn detect_room_runtime(room: &NotebookRoom) -> Option<String> {
     metadata_json
         .as_ref()
         .and_then(|json| serde_json::from_str::<NotebookMetadataSnapshot>(json).ok())
-        .and_then(|snapshot| detect_notebook_kernel_type(&snapshot))
+        .and_then(|snapshot| snapshot.detect_runtime())
 }
 
 /// Format all code cells in a notebook using ruff (Python) or deno fmt (Deno).
@@ -4005,114 +3964,8 @@ mod tests {
         assert_eq!(check_inline_deps(&snapshot), Some("deno".to_string()));
     }
 
-    // ── Tests for detect_notebook_kernel_type ──────────────────────────────
-
-    #[test]
-    fn test_detect_notebook_kernel_type_deno_kernelspec() {
-        // Deno kernelspec name should be detected
-        let snapshot = NotebookMetadataSnapshot {
-            kernelspec: Some(crate::notebook_metadata::KernelspecSnapshot {
-                name: "deno".to_string(),
-                display_name: "Deno".to_string(),
-                language: Some("typescript".to_string()),
-            }),
-            language_info: None,
-            runt: crate::notebook_metadata::RuntMetadata {
-                schema_version: "1".to_string(),
-                env_id: None,
-                uv: None,
-                conda: None,
-                deno: None,
-                trust_signature: None,
-                trust_timestamp: None,
-            },
-        };
-        assert_eq!(
-            detect_notebook_kernel_type(&snapshot),
-            Some("deno".to_string())
-        );
-    }
-
-    #[test]
-    fn test_detect_notebook_kernel_type_typescript_language() {
-        // Kernelspec with typescript language should return deno
-        let snapshot = NotebookMetadataSnapshot {
-            kernelspec: Some(crate::notebook_metadata::KernelspecSnapshot {
-                name: "some-kernel".to_string(),
-                display_name: "Some Kernel".to_string(),
-                language: Some("typescript".to_string()),
-            }),
-            language_info: None,
-            runt: crate::notebook_metadata::RuntMetadata {
-                schema_version: "1".to_string(),
-                env_id: None,
-                uv: None,
-                conda: None,
-                deno: None,
-                trust_signature: None,
-                trust_timestamp: None,
-            },
-        };
-        assert_eq!(
-            detect_notebook_kernel_type(&snapshot),
-            Some("deno".to_string())
-        );
-    }
-
-    #[test]
-    fn test_detect_notebook_kernel_type_python() {
-        // Python kernelspec should be detected
-        let snapshot = NotebookMetadataSnapshot {
-            kernelspec: Some(crate::notebook_metadata::KernelspecSnapshot {
-                name: "python3".to_string(),
-                display_name: "Python 3".to_string(),
-                language: Some("python".to_string()),
-            }),
-            language_info: None,
-            runt: crate::notebook_metadata::RuntMetadata {
-                schema_version: "1".to_string(),
-                env_id: None,
-                uv: None,
-                conda: None,
-                deno: None,
-                trust_signature: None,
-                trust_timestamp: None,
-            },
-        };
-        assert_eq!(
-            detect_notebook_kernel_type(&snapshot),
-            Some("python".to_string())
-        );
-    }
-
-    #[test]
-    fn test_detect_notebook_kernel_type_language_info_fallback() {
-        // Falls back to language_info when kernelspec doesn't match
-        let snapshot = NotebookMetadataSnapshot {
-            kernelspec: Some(crate::notebook_metadata::KernelspecSnapshot {
-                name: "unknown-kernel".to_string(),
-                display_name: "Unknown".to_string(),
-                language: None,
-            }),
-            language_info: Some(crate::notebook_metadata::LanguageInfoSnapshot {
-                name: "typescript".to_string(),
-                version: None,
-            }),
-            runt: crate::notebook_metadata::RuntMetadata {
-                schema_version: "1".to_string(),
-                env_id: None,
-                uv: None,
-                conda: None,
-                deno: None,
-                trust_signature: None,
-                trust_timestamp: None,
-            },
-        };
-        assert_eq!(
-            detect_notebook_kernel_type(&snapshot),
-            Some("deno".to_string())
-        );
-    }
+    // Runtime detection tests now live in notebook-doc/src/metadata.rs
+    // (NotebookMetadataSnapshot::detect_runtime) with comprehensive coverage.
 
     // ── Integration tests for save_notebook_to_disk ────────────────────────
 
