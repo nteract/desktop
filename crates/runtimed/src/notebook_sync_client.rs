@@ -25,6 +25,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::connection::{
     self, Handshake, NotebookConnectionInfo, NotebookFrameType, ProtocolCapabilities, PROTOCOL_V2,
+    PROTOCOL_VERSION,
 };
 use crate::notebook_doc::{
     get_cells_from_doc, get_metadata_from_doc, get_metadata_snapshot_from_doc, set_metadata_in_doc,
@@ -902,11 +903,17 @@ where
             .ok_or(NotebookSyncError::Disconnected)?;
 
         // Parse as ProtocolCapabilities - server must support v2
-        // TODO: Also validate caps.protocol_version if present, for explicit version mismatch detection.
-        // Currently only checks the string "v2", but protocol_version (u32) is more precise.
-        // See #635 for context on protocol version fields.
         match serde_json::from_slice::<ProtocolCapabilities>(&first_frame) {
             Ok(caps) if caps.protocol == PROTOCOL_V2 => {
+                // Validate numeric protocol_version if present (#635)
+                if let Some(version) = caps.protocol_version {
+                    if version != PROTOCOL_VERSION {
+                        return Err(NotebookSyncError::SyncError(format!(
+                            "protocol version mismatch: server has {}, client expects {}",
+                            version, PROTOCOL_VERSION
+                        )));
+                    }
+                }
                 info!(
                     "[notebook-sync-client] Server supports v2 protocol for {}",
                     notebook_id
@@ -1060,12 +1067,20 @@ where
         }
 
         // Validate protocol version
-        // TODO: Also validate info.protocol_version if present (#635)
         if info.protocol != PROTOCOL_V2 {
             return Err(NotebookSyncError::SyncError(format!(
                 "unsupported protocol version: {}",
                 info.protocol
             )));
+        }
+        // Validate numeric protocol_version if present (#635)
+        if let Some(version) = info.protocol_version {
+            if version != PROTOCOL_VERSION {
+                return Err(NotebookSyncError::SyncError(format!(
+                    "protocol version mismatch: server has {}, client expects {}",
+                    version, PROTOCOL_VERSION
+                )));
+            }
         }
 
         let notebook_id = info.notebook_id.clone();
@@ -1139,12 +1154,20 @@ where
         }
 
         // Validate protocol version
-        // TODO: Also validate info.protocol_version if present (#635)
         if info.protocol != PROTOCOL_V2 {
             return Err(NotebookSyncError::SyncError(format!(
                 "unsupported protocol version: {}",
                 info.protocol
             )));
+        }
+        // Validate numeric protocol_version if present (#635)
+        if let Some(version) = info.protocol_version {
+            if version != PROTOCOL_VERSION {
+                return Err(NotebookSyncError::SyncError(format!(
+                    "protocol version mismatch: server has {}, client expects {}",
+                    version, PROTOCOL_VERSION
+                )));
+            }
         }
 
         let notebook_id = info.notebook_id.clone();
