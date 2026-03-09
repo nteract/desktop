@@ -19,6 +19,7 @@ Environment variables:
 """
 
 import asyncio
+import inspect
 import os
 import subprocess
 import sys
@@ -77,7 +78,7 @@ async def async_wait_for_sync(
     start = time.time()
     while time.time() - start < timeout:
         result = check_fn()
-        if asyncio.iscoroutine(result):
+        if inspect.isawaitable(result):
             result = await result
         if result:
             return True
