@@ -1012,26 +1012,30 @@ async fn get_upgrade_notebook_status(
     Ok(statuses)
 }
 
-/// Abort (interrupt) a kernel for upgrade.
+/// Shutdown a kernel for upgrade.
 ///
-/// Sends an interrupt request to stop any running execution.
+/// Forcefully shuts down the kernel (sends SIGKILL to process group).
+/// This is more reliable than interrupt for stopping blocking operations.
 #[tauri::command]
 async fn abort_kernel_for_upgrade(
     window_label: String,
     registry: tauri::State<'_, WindowNotebookRegistry>,
 ) -> Result<(), String> {
-    log::info!("[upgrade] Aborting kernel for window: {}", window_label);
+    log::info!(
+        "[upgrade] Shutting down kernel for window: {}",
+        window_label
+    );
 
     let context = registry.get(&window_label)?;
     let guard = context.notebook_sync.lock().await;
     let handle = guard.as_ref().ok_or("Not connected to daemon")?;
 
     handle
-        .send_request(NotebookRequest::InterruptExecution {})
+        .send_request(NotebookRequest::ShutdownKernel {})
         .await
-        .map_err(|e| format!("interrupt failed: {}", e))?;
+        .map_err(|e| format!("shutdown failed: {}", e))?;
 
-    log::info!("[upgrade] Kernel interrupted for window: {}", window_label);
+    log::info!("[upgrade] Kernel shutdown for window: {}", window_label);
     Ok(())
 }
 

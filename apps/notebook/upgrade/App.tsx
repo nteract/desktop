@@ -62,7 +62,7 @@ function NotebookRow({
             disabled={aborting}
             className="h-7 text-xs"
           >
-            {aborting ? <Loader2 className="h-3 w-3 animate-spin" /> : "Abort"}
+            {aborting ? <Loader2 className="h-3 w-3 animate-spin" /> : "Stop"}
           </Button>
         )}
       </div>
@@ -254,7 +254,7 @@ export default function App() {
               <div className="flex items-start gap-2 p-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
                 <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
                 <p className="text-sm text-amber-800 dark:text-amber-200">
-                  Some notebooks have running code. Abort or wait before
+                  Some notebooks have running code. Stop or wait before
                   continuing.
                 </p>
               </div>
@@ -270,7 +270,7 @@ export default function App() {
               className="w-full"
               size="lg"
             >
-              {hasBusyKernels ? "Stop busy kernels first" : "Continue Update"}
+              {hasBusyKernels ? "Stop busy runtimes first" : "Continue Update"}
             </Button>
           </>
         )}
