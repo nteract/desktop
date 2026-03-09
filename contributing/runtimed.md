@@ -150,22 +150,13 @@ For the full architecture (all phases, schemas, and design decisions), see [docs
 
 ## Protocol
 
-All daemon communication goes through a single Unix socket with channel-based routing. Connections start with a JSON handshake:
+See [protocol.md](./protocol.md) for the full wire protocol specification covering:
 
-```rust
-pub enum Handshake {
-    Pool,
-    SettingsSync,
-    NotebookSync { notebook_id: String },
-    Blob,
-}
-```
-
-**Pool channel** uses length-framed JSON request/response (short-lived). Request types: `ping`, `status`, `take`, `return`, `shutdown`, `flush_pool`, `list_rooms`.
-
-**SettingsSync / NotebookSync** channels use Automerge sync messages (long-lived, bidirectional).
-
-**Blob channel** uses binary framing for storing content-addressed blobs.
+- Connection handshake and lifecycle
+- Frame format (length-prefixed, typed frames)
+- Automerge sync messages
+- Request/response protocol
+- Broadcast messages
 
 ## CLI Commands (for testing)
 
