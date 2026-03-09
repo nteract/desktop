@@ -2022,16 +2022,16 @@ async fn doctor_command(
         #[cfg(not(target_os = "macos"))]
         let launchd_service: Option<CheckResult> = None;
 
-        // Check 2d: On macOS, detect conflicting/stale daemon services
+        // Check 2d: On macOS, detect truly stale daemon services
+        // Note: stable and nightly can coexist intentionally, so we only warn about:
+        // - io.runtimed (pre-rebrand legacy)
+        // - io.nteract.runtimed.preview (preview channel being phased out)
         #[cfg(target_os = "macos")]
         let conflicting_services = {
-            let current_label = runt_workspace::daemon_launchd_label();
-            // Known old/conflicting service labels
+            // Only truly legacy/stale services - NOT stable/nightly which can coexist
             let stale_labels = [
-                "io.runtimed",                 // Pre-rebrand
-                "io.nteract.runtimed.preview", // Preview channel
-                "io.nteract.runtimed.nightly", // Nightly channel
-                "io.nteract.runtimed",         // Stable channel
+                "io.runtimed",                 // Pre-rebrand legacy
+                "io.nteract.runtimed.preview", // Preview channel (being phased out)
             ];
 
             let output = std::process::Command::new("launchctl")
@@ -2045,10 +2045,6 @@ async fn doctor_command(
 
                     for line in stdout.lines() {
                         for label in &stale_labels {
-                            // Skip the current channel's label
-                            if *label == current_label {
-                                continue;
-                            }
                             if line.ends_with(label) {
                                 // Parse PID and status from "PID\tStatus\tLabel" format
                                 let parts: Vec<&str> = line.split('\t').collect();
