@@ -19,7 +19,7 @@
         }
       ]
     },
-    "shell:allow-open",
+    "shell:default",
     "updater:default",
     "window-state:default"
   ]
