@@ -915,6 +915,15 @@ async fn begin_upgrade(
 ) -> Result<(), String> {
     log::info!("[upgrade] Beginning upgrade flow...");
 
+    // Check if upgrade window already exists and focus it instead of creating a new one
+    if let Some(existing_window) = app.get_webview_window("upgrade") {
+        log::info!("[upgrade] Upgrade window already exists, focusing it");
+        existing_window
+            .set_focus()
+            .map_err(|e| format!("Failed to focus upgrade window: {}", e))?;
+        return Ok(());
+    }
+
     // Save session for restore after relaunch
     session::save_session(registry.inner())?;
     log::info!("[upgrade] Session saved");

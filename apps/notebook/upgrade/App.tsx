@@ -309,14 +309,24 @@ export default function App() {
               </div>
             )}
 
-            <Button
-              onClick={handleRestart}
-              disabled={!isReady}
-              className="w-full"
-              size="lg"
-            >
-              {isReady ? "Restart Now" : "Preparing..."}
-            </Button>
+            {hasFailed ? (
+              <Button
+                onClick={() => window.close()}
+                className="w-full"
+                size="lg"
+              >
+                Close
+              </Button>
+            ) : (
+              <Button
+                onClick={handleRestart}
+                disabled={!isReady}
+                className="w-full"
+                size="lg"
+              >
+                {isReady ? "Restart Now" : "Preparing..."}
+              </Button>
+            )}
           </>
         )}
       </div>

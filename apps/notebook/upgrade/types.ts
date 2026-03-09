@@ -2,13 +2,13 @@ export interface NotebookStatus {
   window_label: string;
   notebook_id: string;
   display_name: string;
-  kernel_status: "idle" | "busy" | "starting" | "error" | null;
+  kernel_status: "idle" | "busy" | "starting" | "error" | "not_started" | null;
   is_dirty: boolean;
 }
 
 export type UpgradeStep =
   | { step: "saving_notebooks" }
-  | { step: "stopping_kernels" }
+  | { step: "stopping_runtimes" }
   | { step: "closing_windows" }
   | { step: "upgrading_daemon" }
   | { step: "ready" }
