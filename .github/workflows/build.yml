@@ -197,6 +197,17 @@ jobs:
             cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
           fi
 
+      - name: Upload Linux Rust binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-rust-binaries
+          path: |
+            target/release/runtimed
+            target/release/runt
+            crates/notebook/binaries/runtimed-*
+            crates/notebook/binaries/runt-*
+          retention-days: 1
+
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
@@ -305,8 +316,8 @@ jobs:
   # Build Tauri app once and share with E2E shards
   build-e2e-app:
     name: Build E2E Test App
-    needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true'
+    needs: [changes, build-linux]
+    if: needs.changes.outputs.source_changed == 'true' && needs.build-linux.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -364,16 +375,17 @@ jobs:
             cargo install tauri-cli tauri-driver --locked
           fi
 
-      - name: Build external binaries
+      - name: Download Linux Rust binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-rust-binaries
+          path: .
+
+      - name: Prepare external binaries for E2E jobs
         run: |
-          cargo build --release -p runtimed -p runt-cli
-          TARGET=$(rustc --print host-tuple)
-          mkdir -p crates/notebook/binaries
-          cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
-          cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
           mkdir -p target/release/binaries
-          cp target/release/runtimed "target/release/binaries/runtimed-$TARGET"
-          cp target/release/runt "target/release/binaries/runt-$TARGET"
+          cp crates/notebook/binaries/runtimed-* target/release/binaries/
+          cp crates/notebook/binaries/runt-* target/release/binaries/
 
       - name: Build Tauri app
         run: cd crates/notebook && cargo tauri build --ci --no-bundle --config '{"build":{"beforeBuildCommand":""}}'
@@ -759,11 +771,14 @@ jobs:
         with:
           shared-key: ubuntu-latest
 
+      - name: Download Linux Rust binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-rust-binaries
+          path: .
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
-
-      - name: Build runtimed binary
-        run: cargo build --release -p runtimed
 
       - name: Build runtimed-py
         working-directory: python/runtimed
