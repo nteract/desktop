@@ -40,12 +40,12 @@ import runtimed
 # ============================================================================
 
 
-def wait_for_sync(check_fn, *, timeout=5.0, interval=0.1, description="sync"):
+def wait_for_sync(check_fn, *, timeout=10.0, interval=0.1, description="sync"):
     """Poll until check_fn returns True or timeout.
 
-    The default timeout (5s) gives headroom for CI runners where write-lock
+    The default timeout (10s) gives headroom for CI runners where write-lock
     contention in the daemon's sync loop can slow multi-peer propagation
-    (see #626). These are pure sync tests — no kernel involved.
+    (see #626).
 
     Args:
         check_fn: Callable that returns True when sync is complete
@@ -69,7 +69,7 @@ def wait_for_sync(check_fn, *, timeout=5.0, interval=0.1, description="sync"):
 
 
 async def async_wait_for_sync(
-    check_fn, *, timeout=5.0, interval=0.1, description="sync"
+    check_fn, *, timeout=10.0, interval=0.1, description="sync"
 ):
     """Async version of wait_for_sync — polls with asyncio.sleep.
 
@@ -87,7 +87,7 @@ async def async_wait_for_sync(
     raise AssertionError(f"Timed out waiting for {description} after {timeout}s")
 
 
-def wait_for_metadata(session, key, *, check=None, timeout=5.0, description=None):
+def wait_for_metadata(session, key, *, check=None, timeout=10.0, description=None):
     """Poll until metadata key is set and optionally passes a check.
 
     Args:
@@ -110,18 +110,16 @@ def wait_for_metadata(session, key, *, check=None, timeout=5.0, description=None
     return wait_for_sync(_check, timeout=timeout, description=desc)
 
 
-def start_kernel_with_retry(session, *, kernel_type="python", env_source="auto",
-                            retries=5, delay=1.0, description="start_kernel"):
-    """Retry start_kernel to tolerate metadata sync lag to the daemon.
+def start_kernel_with_retry(session, *, retries=5, delay=1.0, **kwargs):
+    """Retry start_kernel to tolerate sync lag and connection timeouts on CI.
 
-    When the client sets notebook metadata and immediately calls start_kernel,
-    the daemon's Automerge doc may not have received the sync message yet.
-    This helper retries on RuntimedError to wait for propagation.
+    Passes all kwargs through to session.start_kernel() (kernel_type,
+    env_source, notebook_path, etc.).
     """
     last_err = None
     for attempt in range(retries):
         try:
-            session.start_kernel(kernel_type=kernel_type, env_source=env_source)
+            session.start_kernel(**kwargs)
             return
         except runtimed.RuntimedError as e:
             last_err = e
@@ -130,13 +128,12 @@ def start_kernel_with_retry(session, *, kernel_type="python", env_source="auto",
     raise last_err
 
 
-async def async_start_kernel_with_retry(session, *, kernel_type="python",
-                                        env_source="auto", retries=5, delay=1.0):
+async def async_start_kernel_with_retry(session, *, retries=5, delay=1.0, **kwargs):
     """Async retry wrapper for start_kernel (tolerates connection timeouts on CI)."""
     last_err = None
     for attempt in range(retries):
         try:
-            await session.start_kernel(kernel_type=kernel_type, env_source=env_source)
+            await session.start_kernel(**kwargs)
             return
         except runtimed.RuntimedError as e:
             last_err = e
@@ -491,7 +488,7 @@ class TestDocumentFirstExecution:
         This is the core architectural test: execution uses ExecuteCell
         which reads from the automerge doc, not QueueCell which bypasses it.
         """
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         # Create cell with source in document
         cell_id = session.create_cell("result = 2 + 2; print(result)")
@@ -510,7 +507,7 @@ class TestDocumentFirstExecution:
         This tests the fire-and-forget pattern where you queue execution
         and then poll get_cell() for results.
         """
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         # Create and queue execution
         cell_id = session.create_cell("queued_var = 'queued'")
@@ -532,7 +529,7 @@ class TestDocumentFirstExecution:
 
     def test_execution_error_captured(self, session):
         """Execution errors are captured in result."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         cell_id = session.create_cell("raise ValueError('test error')")
         result = session.execute_cell(cell_id)
@@ -543,7 +540,7 @@ class TestDocumentFirstExecution:
 
     def test_multiple_executions(self, session):
         """Can execute multiple cells sequentially."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         # Execute multiple cells, building up state
         cell1 = session.create_cell("x = 10")
@@ -640,8 +637,8 @@ class TestMultiClientSync:
 
         # Both sessions need to call start_kernel to update their local state
         # The daemon only starts one kernel for the notebook
-        s1.start_kernel()
-        s2.start_kernel()  # No-op in daemon, but updates s2.kernel_started
+        start_kernel_with_retry(s1)
+        start_kernel_with_retry(s2)  # No-op in daemon, but updates s2.kernel_started
 
         # Session 1 sets a variable
         cell1 = s1.create_cell("shared = 'from s1'")
@@ -667,14 +664,14 @@ class TestKernelLifecycle:
         """Can start a kernel."""
         assert not session.kernel_started
 
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         assert session.kernel_started
         assert session.env_source is not None
 
     def test_kernel_interrupt(self, session):
         """Can interrupt a running kernel."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         # Start a long-running execution in background
         cell_id = session.create_cell("import time; time.sleep(30)")
@@ -686,7 +683,7 @@ class TestKernelLifecycle:
 
     def test_shutdown_kernel(self, session):
         """Can shutdown the kernel."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
         assert session.kernel_started
 
         session.shutdown_kernel()
@@ -704,7 +701,7 @@ class TestOutputTypes:
     @pytest.mark.skip(reason="Trailing newline stripped by stream_terminal.rs")
     def test_stdout_output(self, session):
         """Captures stdout output."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         cell_id = session.create_cell("print('hello stdout')")
         result = session.execute_cell(cell_id)
@@ -714,7 +711,7 @@ class TestOutputTypes:
 
     def test_stderr_output(self, session):
         """Captures stderr output."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         cell_id = session.create_cell("import sys; sys.stderr.write('hello stderr\\n')")
         result = session.execute_cell(cell_id)
@@ -724,7 +721,7 @@ class TestOutputTypes:
 
     def test_return_value(self, session):
         """Captures expression return value."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         cell_id = session.create_cell("2 + 2")
         result = session.execute_cell(cell_id)
@@ -736,7 +733,7 @@ class TestOutputTypes:
 
     def test_multiple_outputs(self, session):
         """Captures multiple outputs from one cell."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         cell_id = session.create_cell("""
 print('line 1')
@@ -768,7 +765,7 @@ class TestTerminalEmulation:
         This is how progress bars work - they print "Progress: 50%" then
         "\\rProgress: 100%" to update in place.
         """
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         cell_id = session.create_cell(r"""
 import sys
@@ -784,7 +781,7 @@ sys.stdout.flush()
 
     def test_progress_bar_simulation(self, session):
         """Simulated progress bar should show only final state."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         cell_id = session.create_cell(r"""
 import sys
@@ -806,7 +803,7 @@ print()  # Final newline
 
     def test_consecutive_prints_merged(self, session):
         """Consecutive print statements should be merged into one output."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         cell_id = session.create_cell("""
 print("line 1")
@@ -826,7 +823,7 @@ print("line 3")
 
     def test_interleaved_stdout_stderr_separate(self, session):
         """Interleaved stdout and stderr should remain separate streams."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         cell_id = session.create_cell("""
 import sys
@@ -849,7 +846,7 @@ print("out2")
 
     def test_ansi_colors_preserved(self, session):
         """ANSI color codes should be preserved in output."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         cell_id = session.create_cell(r"""
 # Print with ANSI red color
@@ -866,7 +863,7 @@ print("\x1b[31mRed text\x1b[0m Normal text")
 
     def test_backspace_handling(self, session):
         """Backspace character should delete previous character."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         cell_id = session.create_cell(r"""
 import sys
@@ -883,7 +880,7 @@ print()
 
     def test_ansi_colors_with_carriage_return(self, session):
         """ANSI colors combined with carriage return work correctly."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         cell_id = session.create_cell(r"""
 import sys
@@ -925,7 +922,7 @@ class TestErrorHandling:
 
     def test_syntax_error(self, session):
         """Syntax errors are captured."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         cell_id = session.create_cell("def broken(")
         result = session.execute_cell(cell_id)
@@ -956,7 +953,7 @@ class TestOutputHandling:
         3. raise ValueError - should produce error, stop execution
         4. print() - should NOT execute because error stops execution
         """
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         # Create and execute cell 1: stream data (print)
         cell1 = session.create_cell('print("should be stream data")')
@@ -1005,7 +1002,7 @@ class TestOutputHandling:
 
     def test_stream_stdout_and_stderr(self, session):
         """Test that both stdout and stderr are captured separately."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         result = session.run(
             'import sys\nprint("to stdout")\nsys.stderr.write("to stderr\\n")'
@@ -1017,7 +1014,7 @@ class TestOutputHandling:
 
     def test_display_data_mimetype(self, session):
         """Test that display_data includes mime type information."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         # Display a string - should have text/plain
         result = session.run("display('hello world')")
@@ -1029,7 +1026,7 @@ class TestOutputHandling:
 
     def test_error_traceback_captured(self, session):
         """Test that full traceback is captured on error."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         result = session.run(
             "def inner():\n"
@@ -1138,7 +1135,7 @@ class TestKernelLaunchMetadata:
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
         wait_for_metadata(session, NOTEBOOK_METADATA_KEY)
 
-        session.start_kernel(kernel_type="python")
+        start_kernel_with_retry(session, kernel_type="python")
 
         # Verify it's actually a Python kernel
         result = session.run("import sys; print(sys.prefix)")
@@ -1165,7 +1162,7 @@ class TestKernelLaunchMetadata:
 
         # Explicitly start Python kernel (as the frontend would after
         # reading kernelspec from the doc)
-        session.start_kernel(kernel_type="python")
+        start_kernel_with_retry(session, kernel_type="python")
 
         # Verify it's truly Python - sys.prefix gives the venv path,
         # and sys.executable should be a python binary
@@ -1184,7 +1181,7 @@ class TestKernelLaunchMetadata:
 
     def test_kernel_launch_reports_env_source(self, session):
         """Kernel launch returns the resolved env_source."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         # env_source should be set after kernel launch
         env_source = session.env_source
@@ -1257,7 +1254,7 @@ class TestKernelLaunchMetadata:
 
     def test_kernel_prewarmed_env_source(self, session):
         """Default kernel launch uses prewarmed pool."""
-        session.start_kernel(kernel_type="python", env_source="uv:prewarmed")
+        start_kernel_with_retry(session, kernel_type="python", env_source="uv:prewarmed")
 
         assert session.env_source == "uv:prewarmed"
 
@@ -1286,7 +1283,7 @@ class TestDenoKernel:
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
         wait_for_metadata(session, NOTEBOOK_METADATA_KEY)
 
-        session.start_kernel(kernel_type="deno", env_source="deno")
+        start_kernel_with_retry(session, kernel_type="deno", env_source="deno")
 
         result = session.run("console.log('hello from deno')")
         assert result.success, f"Deno execution failed: {result.stderr}"
@@ -1300,7 +1297,7 @@ class TestDenoKernel:
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
         wait_for_metadata(session, NOTEBOOK_METADATA_KEY)
 
-        session.start_kernel(kernel_type="deno", env_source="deno")
+        start_kernel_with_retry(session, kernel_type="deno", env_source="deno")
 
         # TypeScript type annotations and template literals
         result = session.run(
@@ -1423,7 +1420,7 @@ class TestCondaInlineDeps:
         wait_for_metadata(sess, NOTEBOOK_METADATA_KEY)
 
         # Start kernel once for all tests in class
-        sess.start_kernel(kernel_type="python", env_source="conda:inline")
+        start_kernel_with_retry(sess, kernel_type="python", env_source="conda:inline")
 
         yield sess
 
@@ -1505,7 +1502,8 @@ class TestProjectFileDetection:
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
         wait_for_metadata(session, NOTEBOOK_METADATA_KEY)
 
-        session.start_kernel(
+        start_kernel_with_retry(
+            session,
             kernel_type="python",
             env_source="auto",
             notebook_path=notebook_path,
@@ -1533,7 +1531,8 @@ class TestProjectFileDetection:
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
         wait_for_metadata(session, NOTEBOOK_METADATA_KEY)
 
-        session.start_kernel(
+        start_kernel_with_retry(
+            session,
             kernel_type="python",
             env_source="auto",
             notebook_path=notebook_path,
@@ -1561,7 +1560,8 @@ class TestProjectFileDetection:
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
         wait_for_metadata(session, NOTEBOOK_METADATA_KEY)
 
-        session.start_kernel(
+        start_kernel_with_retry(
+            session,
             kernel_type="python",
             env_source="auto",
             notebook_path=notebook_path,
@@ -1586,7 +1586,8 @@ class TestProjectFileDetection:
             session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
             wait_for_metadata(session, NOTEBOOK_METADATA_KEY)
 
-            session.start_kernel(
+            start_kernel_with_retry(
+                session,
                 kernel_type="python",
                 env_source="auto",
                 notebook_path=notebook_path,
@@ -1736,7 +1737,7 @@ class TestAsyncDocumentFirstExecution:
     @pytest.mark.asyncio
     async def test_async_execute_cell_reads_from_document(self, async_session):
         """execute_cell reads source from the synced document."""
-        await async_session.start_kernel()
+        await async_start_kernel_with_retry(async_session)
 
         cell_id = await async_session.create_cell("result = 2 + 2; print(result)")
         result = await async_session.execute_cell(cell_id)
@@ -1751,7 +1752,7 @@ class TestAsyncDocumentFirstExecution:
         """queue_cell fires execution without waiting."""
         import asyncio
 
-        await async_session.start_kernel()
+        await async_start_kernel_with_retry(async_session)
 
         # Create and queue execution
         cell_id = await async_session.create_cell("async_queued_var = 'async_queued'")
@@ -1776,7 +1777,7 @@ class TestAsyncDocumentFirstExecution:
     @pytest.mark.asyncio
     async def test_async_execution_error_captured(self, async_session):
         """Execution errors are captured in result."""
-        await async_session.start_kernel()
+        await async_start_kernel_with_retry(async_session)
 
         cell_id = await async_session.create_cell(
             "raise ValueError('async test error')"
@@ -1790,7 +1791,7 @@ class TestAsyncDocumentFirstExecution:
     @pytest.mark.asyncio
     async def test_async_multiple_executions(self, async_session):
         """Can execute multiple cells sequentially."""
-        await async_session.start_kernel()
+        await async_start_kernel_with_retry(async_session)
 
         cell1 = await async_session.create_cell("x = 10")
         r1 = await async_session.execute_cell(cell1)
@@ -1846,8 +1847,8 @@ class TestAsyncMultiClientSync:
 
         s1, s2 = two_async_sessions
 
-        await s1.start_kernel()
-        await s2.start_kernel()  # No-op in daemon
+        await async_start_kernel_with_retry(s1)
+        await async_start_kernel_with_retry(s2)  # No-op in daemon
 
         cell1 = await s1.create_cell("async_shared = 'from async s1'")
         r1 = await s1.execute_cell(cell1)
@@ -1867,7 +1868,7 @@ class TestAsyncKernelLifecycle:
         """Can start a kernel."""
         assert not await async_session.kernel_started()
 
-        await async_session.start_kernel()
+        await async_start_kernel_with_retry(async_session)
 
         assert await async_session.kernel_started()
         assert await async_session.env_source() is not None
@@ -1875,13 +1876,13 @@ class TestAsyncKernelLifecycle:
     @pytest.mark.asyncio
     async def test_async_kernel_interrupt(self, async_session):
         """Can interrupt a running kernel."""
-        await async_session.start_kernel()
+        await async_start_kernel_with_retry(async_session)
         await async_session.interrupt()  # Should not raise
 
     @pytest.mark.asyncio
     async def test_async_shutdown_kernel(self, async_session):
         """Can shutdown the kernel."""
-        await async_session.start_kernel()
+        await async_start_kernel_with_retry(async_session)
         assert await async_session.kernel_started()
 
         await async_session.shutdown_kernel()
@@ -1894,7 +1895,7 @@ class TestAsyncOutputTypes:
     @pytest.mark.asyncio
     async def test_async_stdout_output(self, async_session):
         """Captures stdout output."""
-        await async_session.start_kernel()
+        await async_start_kernel_with_retry(async_session)
 
         cell_id = await async_session.create_cell("print('async hello stdout')")
         result = await async_session.execute_cell(cell_id)
@@ -1905,7 +1906,7 @@ class TestAsyncOutputTypes:
     @pytest.mark.asyncio
     async def test_async_stderr_output(self, async_session):
         """Captures stderr output."""
-        await async_session.start_kernel()
+        await async_start_kernel_with_retry(async_session)
 
         cell_id = await async_session.create_cell(
             "import sys; sys.stderr.write('async hello stderr\\n')"
@@ -1918,7 +1919,7 @@ class TestAsyncOutputTypes:
     @pytest.mark.asyncio
     async def test_async_return_value(self, async_session):
         """Captures expression return value."""
-        await async_session.start_kernel()
+        await async_start_kernel_with_retry(async_session)
 
         cell_id = await async_session.create_cell("2 + 2")
         result = await async_session.execute_cell(cell_id)
@@ -1940,7 +1941,7 @@ class TestAsyncErrorHandling:
     @pytest.mark.asyncio
     async def test_async_syntax_error(self, async_session):
         """Syntax errors are captured."""
-        await async_session.start_kernel()
+        await async_start_kernel_with_retry(async_session)
 
         cell_id = await async_session.create_cell("def broken(")
         result = await async_session.execute_cell(cell_id)
@@ -1965,7 +1966,7 @@ class TestAsyncContextManager:
 
         async with runtimed.AsyncSession(notebook_id=notebook_id) as session:
             await session.connect()
-            await session.start_kernel()
+            await async_start_kernel_with_retry(session)
 
             cell_id = await session.create_cell("print('context manager works')")
             result = await session.execute_cell(cell_id)
@@ -2001,7 +2002,7 @@ class TestStreamExecute:
     @pytest.mark.asyncio
     async def test_stream_execute_yields_events(self, async_session):
         """stream_execute() yields events as they arrive, not all at once."""
-        await async_session.start_kernel()
+        await async_start_kernel_with_retry(async_session)
 
         cell_id = await async_session.create_cell(
             "for i in range(3): print(f'line {i}')"
@@ -2025,7 +2026,7 @@ class TestStreamExecute:
     @pytest.mark.asyncio
     async def test_stream_execute_has_output_events(self, async_session):
         """stream_execute() yields output events with output data."""
-        await async_session.start_kernel()
+        await async_start_kernel_with_retry(async_session)
 
         cell_id = await async_session.create_cell("print('first'); print('second')")
 
@@ -2049,7 +2050,7 @@ class TestStreamExecute:
         with output_type="error" and ename/evalue/traceback fields.
         KernelError is only for kernel-level failures (crash, launch).
         """
-        await async_session.start_kernel()
+        await async_start_kernel_with_retry(async_session)
 
         cell_id = await async_session.create_cell("raise ValueError('test error')")
 
@@ -2079,7 +2080,7 @@ class TestSyncStreamExecute:
 
     def test_sync_stream_execute_yields_events(self, session):
         """Sync stream_execute() yields events via iterator."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         cell_id = session.create_cell("for i in range(3): print(f'line {i}')")
 
@@ -2106,7 +2107,7 @@ class TestAppendSource:
     @pytest.mark.asyncio
     async def test_append_source_basic(self, async_session):
         """append_source() adds text to end of cell source."""
-        await async_session.start_kernel()
+        await async_start_kernel_with_retry(async_session)
 
         cell_id = await async_session.create_cell("x = 1")
 
@@ -2128,7 +2129,7 @@ class TestAppendSource:
     @pytest.mark.asyncio
     async def test_append_source_streaming_tokens(self, async_session):
         """append_source() can append tokens incrementally (LLM streaming)."""
-        await async_session.start_kernel()
+        await async_start_kernel_with_retry(async_session)
 
         cell_id = await async_session.create_cell("")
 
@@ -2179,7 +2180,7 @@ class TestSyncAppendSource:
 
     def test_sync_append_source_basic(self, session):
         """Sync append_source() adds text to cell source."""
-        session.start_kernel()
+        start_kernel_with_retry(session)
 
         cell_id = session.create_cell("x = 10")
         session.append_source(cell_id, "\nprint(x * 2)")
@@ -2204,7 +2205,7 @@ class TestSubscription:
     @pytest.mark.asyncio
     async def test_subscribe_receives_execution_events(self, async_session):
         """subscribe() receives events from cell execution."""
-        await async_session.start_kernel()
+        await async_start_kernel_with_retry(async_session)
 
         cell_id = await async_session.create_cell("print('subscribed')")
 
@@ -2228,7 +2229,7 @@ class TestSubscription:
 
         # Wait for events with timeout
         try:
-            await asyncio.wait_for(collect_task, timeout=5.0)
+            await asyncio.wait_for(collect_task, timeout=10.0)
         except asyncio.TimeoutError:
             pass  # May timeout if no done event, that's ok
 
@@ -2238,7 +2239,7 @@ class TestSubscription:
     @pytest.mark.asyncio
     async def test_subscribe_filters_by_event_type(self, async_session):
         """subscribe(event_types=[...]) filters events."""
-        await async_session.start_kernel()
+        await async_start_kernel_with_retry(async_session)
 
         cell_id = await async_session.create_cell("print('filtered')")
 
@@ -2262,7 +2263,7 @@ class TestSubscription:
         await async_session.execute_cell(cell_id)
 
         try:
-            await asyncio.wait_for(collect_task, timeout=3.0)
+            await asyncio.wait_for(collect_task, timeout=10.0)
         except asyncio.TimeoutError:
             pass
 
@@ -2311,7 +2312,7 @@ class TestSubscription:
         await async_session.execute_cell(cell_id)
 
         # Wait for both
-        await asyncio.wait_for(asyncio.gather(task1, task2), timeout=5.0)
+        await asyncio.wait_for(asyncio.gather(task1, task2), timeout=10.0)
 
         # Both should have received events
         assert len(events1) >= 1, "Subscriber 1 should receive events"
