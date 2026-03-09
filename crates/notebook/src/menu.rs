@@ -174,15 +174,13 @@ pub fn create_menu(
     )?)?;
     file_menu.append(&new_notebook_submenu)?;
 
-    let open_submenu = Submenu::new(app, "Open", true)?;
-    open_submenu.append(&MenuItem::with_id(
+    file_menu.append(&MenuItem::with_id(
         app,
         MENU_OPEN,
         "Open...",
         true,
         Some("CmdOrCtrl+O"),
     )?)?;
-    open_submenu.append(&PredefinedMenuItem::separator(app)?)?;
 
     let sample_submenu = Submenu::new(app, "Sample Notebooks", true)?;
     for sample in BUNDLED_SAMPLE_NOTEBOOKS {
@@ -194,8 +192,7 @@ pub fn create_menu(
             None::<&str>,
         )?)?;
     }
-    open_submenu.append(&sample_submenu)?;
-    file_menu.append(&open_submenu)?;
+    file_menu.append(&sample_submenu)?;
     file_menu.append(&PredefinedMenuItem::separator(app)?)?;
     file_menu.append(&MenuItem::with_id(
         app,
