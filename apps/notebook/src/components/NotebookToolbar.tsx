@@ -499,15 +499,6 @@ export function NotebookToolbar({
               <span>Restart to update</span>
             </button>
           )}
-          {updateStatus === "installing-daemon" && (
-            <div
-              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-green-500/15 text-green-500 dark:text-green-400"
-              title="Preparing runtime for update…"
-            >
-              <RotateCcw className="h-3 w-3 animate-spin" />
-              <span>Preparing…</span>
-            </div>
-          )}
 
           {/* Runtime / deps toggle */}
           <button

@@ -158,6 +158,28 @@ pub enum EnvSyncState {
     },
 }
 
+/// Status of a notebook for the upgrade screen.
+#[derive(Debug, Clone, Serialize)]
+struct UpgradeNotebookStatus {
+    window_label: String,
+    notebook_id: String,
+    display_name: String,
+    kernel_status: Option<String>,
+    is_dirty: bool,
+}
+
+/// Progress events emitted during upgrade.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "step", rename_all = "snake_case")]
+enum UpgradeProgress {
+    SavingNotebooks,
+    StoppingRuntimes,
+    ClosingWindows,
+    UpgradingDaemon,
+    Ready,
+    Failed { error: String },
+}
+
 fn notebook_sync_for_window(
     window: &tauri::Window,
     registry: &WindowNotebookRegistry,
@@ -880,6 +902,300 @@ async fn install_daemon_for_update(app: tauri::AppHandle) -> Result<(), String> 
     .await?;
 
     log::info!("[updater] Daemon installed successfully, ready for app restart");
+    Ok(())
+}
+
+/// Begin the upgrade flow by opening the dedicated upgrade window.
+///
+/// Saves session state for restore after relaunch and opens the upgrade screen.
+#[tauri::command]
+async fn begin_upgrade(
+    app: tauri::AppHandle,
+    registry: tauri::State<'_, WindowNotebookRegistry>,
+) -> Result<(), String> {
+    log::info!("[upgrade] Beginning upgrade flow...");
+
+    // Check if upgrade window already exists and focus it instead of creating a new one
+    if let Some(existing_window) = app.get_webview_window("upgrade") {
+        log::info!("[upgrade] Upgrade window already exists, focusing it");
+        existing_window
+            .set_focus()
+            .map_err(|e| format!("Failed to focus upgrade window: {}", e))?;
+        return Ok(());
+    }
+
+    // Save session for restore after relaunch
+    session::save_session(registry.inner())?;
+    log::info!("[upgrade] Session saved");
+
+    // Create dedicated upgrade window
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        "upgrade",
+        tauri::WebviewUrl::App("upgrade/index.html".into()),
+    )
+    .title(format!(
+        "Updating {}",
+        runt_workspace::desktop_display_name()
+    ))
+    .inner_size(500.0, 600.0)
+    .min_inner_size(500.0, 400.0)
+    .resizable(true)
+    .center()
+    .build()
+    .map_err(|e| format!("Failed to create upgrade window: {}", e))?;
+
+    log::info!("[upgrade] Upgrade window created");
+    Ok(())
+}
+
+/// Get the status of all open notebooks for the upgrade screen.
+///
+/// Returns a list of notebooks with their kernel status, dirty state, and display name.
+#[tauri::command]
+async fn get_upgrade_notebook_status(
+    registry: tauri::State<'_, WindowNotebookRegistry>,
+) -> Result<Vec<UpgradeNotebookStatus>, String> {
+    // Extract data from registry without holding lock across await
+    let notebook_data: Vec<(String, String, String, bool, SharedNotebookSync)> = {
+        let contexts = registry.contexts.lock().map_err(|e| e.to_string())?;
+        contexts
+            .iter()
+            .filter(|(label, _)| *label != "onboarding" && *label != "upgrade")
+            .filter_map(|(label, context)| {
+                let path = context.path.lock().ok()?;
+                let notebook_id = context.notebook_id.lock().ok()?.clone();
+                let is_dirty = context.dirty.load(Ordering::SeqCst);
+                let display_name = path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Untitled".to_string());
+                Some((
+                    label.clone(),
+                    notebook_id,
+                    display_name,
+                    is_dirty,
+                    context.notebook_sync.clone(),
+                ))
+            })
+            .collect()
+    };
+
+    // Now do async operations without holding the std::sync::Mutex
+    let mut statuses = Vec::new();
+    for (window_label, notebook_id, display_name, is_dirty, notebook_sync) in notebook_data {
+        let kernel_status = {
+            let guard = notebook_sync.lock().await;
+            if let Some(handle) = guard.as_ref() {
+                match handle.send_request(NotebookRequest::GetKernelInfo {}).await {
+                    Ok(NotebookResponse::KernelInfo { status, .. }) => Some(status),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        };
+
+        statuses.push(UpgradeNotebookStatus {
+            window_label,
+            notebook_id,
+            display_name,
+            kernel_status,
+            is_dirty,
+        });
+    }
+
+    log::info!(
+        "[upgrade] Found {} notebooks for upgrade status",
+        statuses.len()
+    );
+    Ok(statuses)
+}
+
+/// Shutdown a kernel for upgrade.
+///
+/// Forcefully shuts down the kernel (sends SIGKILL to process group).
+/// This is more reliable than interrupt for stopping blocking operations.
+#[tauri::command]
+async fn abort_kernel_for_upgrade(
+    window_label: String,
+    registry: tauri::State<'_, WindowNotebookRegistry>,
+) -> Result<(), String> {
+    log::info!(
+        "[upgrade] Shutting down kernel for window: {}",
+        window_label
+    );
+
+    let context = registry.get(&window_label)?;
+    let guard = context.notebook_sync.lock().await;
+    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
+
+    handle
+        .send_request(NotebookRequest::ShutdownKernel {})
+        .await
+        .map_err(|e| format!("shutdown failed: {}", e))?;
+
+    log::info!("[upgrade] Kernel shutdown for window: {}", window_label);
+    Ok(())
+}
+
+/// Execute the full upgrade sequence.
+///
+/// Steps:
+/// 1. Save all dirty notebooks
+/// 2. Shutdown all kernels
+/// 3. Close all notebook windows
+/// 4. Upgrade the daemon
+/// 5. Signal ready for restart
+#[tauri::command]
+async fn run_upgrade(
+    app: tauri::AppHandle,
+    registry: tauri::State<'_, WindowNotebookRegistry>,
+) -> Result<(), String> {
+    log::info!("[upgrade] Starting upgrade sequence...");
+
+    // Step 1: Save all dirty notebooks
+    app.emit("upgrade:progress", UpgradeProgress::SavingNotebooks)
+        .map_err(|e| e.to_string())?;
+
+    // Extract notebooks to save (those that are dirty and have a path)
+    let notebooks_to_save: Vec<(String, SharedNotebookSync, Arc<AtomicBool>)> = {
+        let contexts = registry.contexts.lock().map_err(|e| e.to_string())?;
+        contexts
+            .iter()
+            .filter(|(label, _)| *label != "onboarding" && *label != "upgrade")
+            .filter_map(|(label, context)| {
+                let is_dirty = context.dirty.load(Ordering::SeqCst);
+                let has_path = context.path.lock().map(|p| p.is_some()).unwrap_or(false);
+                if is_dirty && has_path {
+                    Some((
+                        label.clone(),
+                        context.notebook_sync.clone(),
+                        context.dirty.clone(),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    // Save each notebook
+    for (label, notebook_sync, dirty) in notebooks_to_save {
+        let guard = notebook_sync.lock().await;
+        if let Some(handle) = guard.as_ref() {
+            match handle
+                .send_request(NotebookRequest::SaveNotebook {
+                    format_cells: false,
+                    path: None,
+                })
+                .await
+            {
+                Ok(NotebookResponse::NotebookSaved { path }) => {
+                    log::info!("[upgrade] Saved notebook: {}", path);
+                    dirty.store(false, Ordering::SeqCst);
+                }
+                Ok(NotebookResponse::Error { error }) => {
+                    log::warn!("[upgrade] Failed to save notebook {}: {}", label, error);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Step 2: Shutdown all runtimes
+    app.emit("upgrade:progress", UpgradeProgress::StoppingRuntimes)
+        .map_err(|e| e.to_string())?;
+
+    // Extract sync handles for kernel shutdown
+    let kernel_handles: Vec<(String, SharedNotebookSync)> = {
+        let contexts = registry.contexts.lock().map_err(|e| e.to_string())?;
+        contexts
+            .iter()
+            .filter(|(label, _)| *label != "onboarding" && *label != "upgrade")
+            .map(|(label, context)| (label.clone(), context.notebook_sync.clone()))
+            .collect()
+    };
+
+    // Shutdown each kernel
+    for (label, notebook_sync) in kernel_handles {
+        let guard = notebook_sync.lock().await;
+        if let Some(handle) = guard.as_ref() {
+            match handle
+                .send_request(NotebookRequest::ShutdownKernel {})
+                .await
+            {
+                Ok(_) => log::info!("[upgrade] Shutdown kernel for: {}", label),
+                Err(e) => log::warn!("[upgrade] Failed to shutdown kernel {}: {}", label, e),
+            }
+        }
+    }
+
+    // Step 3: Close all notebook windows (keep upgrade window)
+    app.emit("upgrade:progress", UpgradeProgress::ClosingWindows)
+        .map_err(|e| e.to_string())?;
+
+    // Collect window labels to close
+    let windows_to_close: Vec<String> = app
+        .webview_windows()
+        .keys()
+        .filter(|label| *label != "upgrade")
+        .cloned()
+        .collect();
+
+    // Clear sync handles using the existing pattern
+    let handles_to_clear: Vec<(String, SharedNotebookSync)> = {
+        let mut contexts = registry.contexts.lock().map_err(|e| e.to_string())?;
+        windows_to_close
+            .iter()
+            .filter_map(|label| {
+                contexts
+                    .remove(label)
+                    .map(|ctx| (label.clone(), ctx.notebook_sync))
+            })
+            .collect()
+    };
+
+    // Clear each sync handle
+    for (label, notebook_sync) in handles_to_clear {
+        let mut guard = notebook_sync.lock().await;
+        if guard.take().is_some() {
+            log::info!("[upgrade] Cleared sync handle for: {}", label);
+        }
+    }
+
+    // Close the windows
+    for label in &windows_to_close {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.close();
+            log::info!("[upgrade] Closed window: {}", label);
+        }
+    }
+
+    // Step 4: Upgrade daemon
+    app.emit("upgrade:progress", UpgradeProgress::UpgradingDaemon)
+        .map_err(|e| e.to_string())?;
+
+    if let Err(e) = upgrade_daemon_via_sidecar(&app, |progress| {
+        log::info!("[upgrade] Daemon progress: {:?}", progress);
+    })
+    .await
+    {
+        log::error!("[upgrade] Daemon upgrade failed: {}", e);
+        app.emit(
+            "upgrade:progress",
+            UpgradeProgress::Failed { error: e.clone() },
+        )
+        .map_err(|e| e.to_string())?;
+        return Err(e);
+    }
+
+    // Step 5: Signal ready
+    app.emit("upgrade:progress", UpgradeProgress::Ready)
+        .map_err(|e| e.to_string())?;
+
+    log::info!("[upgrade] Upgrade complete, ready for restart");
     Ok(())
 }
 
@@ -3058,7 +3374,7 @@ pub fn run(
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_window_state::Builder::default()
-                .with_denylist(&["onboarding"])
+                .with_denylist(&["onboarding", "upgrade"])
                 .build(),
         )
         .manage(window_registry.clone())
@@ -3094,6 +3410,10 @@ pub fn run(
             send_automerge_sync,
             // App update support
             install_daemon_for_update,
+            begin_upgrade,
+            get_upgrade_notebook_status,
+            abort_kernel_for_upgrade,
+            run_upgrade,
 
             // Kernelspec discovery (used by UI)
             list_kernelspecs,
