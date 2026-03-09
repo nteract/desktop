@@ -173,7 +173,7 @@ struct UpgradeNotebookStatus {
 #[serde(tag = "step", rename_all = "snake_case")]
 enum UpgradeProgress {
     SavingNotebooks,
-    StoppingKernels,
+    StoppingRuntimes,
     ClosingWindows,
     UpgradingDaemon,
     Ready,
@@ -1090,8 +1090,8 @@ async fn run_upgrade(
         }
     }
 
-    // Step 2: Shutdown all kernels
-    app.emit("upgrade:progress", UpgradeProgress::StoppingKernels)
+    // Step 2: Shutdown all runtimes
+    app.emit("upgrade:progress", UpgradeProgress::StoppingRuntimes)
         .map_err(|e| e.to_string())?;
 
     // Extract sync handles for kernel shutdown

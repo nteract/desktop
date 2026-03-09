@@ -109,7 +109,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [steps, setSteps] = useState<StepInfo[]>([
     { id: "saving", label: "Saving notebooks", status: "pending" },
-    { id: "stopping", label: "Stopping kernels", status: "pending" },
+    { id: "stopping", label: "Stopping runtimes", status: "pending" },
     { id: "closing", label: "Closing windows", status: "pending" },
     { id: "upgrading", label: "Upgrading daemon", status: "pending" },
     { id: "ready", label: "Ready to restart", status: "pending" },
@@ -135,7 +135,7 @@ export default function App() {
           // Mark all steps as completed up to the current one
           const stepMap: Record<string, number> = {
             saving_notebooks: 0,
-            stopping_kernels: 1,
+            stopping_runtimes: 1,
             closing_windows: 2,
             upgrading_daemon: 3,
             ready: 4,
@@ -261,7 +261,7 @@ export default function App() {
             )}
 
             <div className="text-center text-xs text-muted-foreground">
-              Kernels will restart after update
+              Runtimes will restart after update
             </div>
 
             <Button
