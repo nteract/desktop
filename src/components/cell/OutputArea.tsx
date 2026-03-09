@@ -143,6 +143,10 @@ const ISOLATED_MIME_TYPES = new Set([
   "application/vnd.vegalite.v3+json",
   "application/vnd.vega.v5+json",
   "application/vnd.vega.v4+json",
+  "application/vnd.imo.callout+json",
+  "application/vnd.imo.stat+json",
+  "application/vnd.imo.hstack+json",
+  "application/vnd.imo.vstack+json",
 ]);
 
 /**

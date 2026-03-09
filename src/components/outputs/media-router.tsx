@@ -50,6 +50,11 @@ export const DEFAULT_PRIORITY = [
   "application/vnd.vega.v5+json",
   "application/vnd.vega.v4+json",
   "application/geo+json",
+  // imo display objects (marimo-compatible renderers)
+  "application/vnd.imo.callout+json",
+  "application/vnd.imo.stat+json",
+  "application/vnd.imo.hstack+json",
+  "application/vnd.imo.vstack+json",
   // HTML and markdown
   "text/html",
   "text/markdown",

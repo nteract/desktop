@@ -15,6 +15,14 @@ import { createRoot, type Root } from "react-dom/client";
 // Import styles (Tailwind + theme variables)
 import "./styles.css";
 
+import {
+  ImoCallout,
+  type ImoCalloutData,
+  ImoLayout,
+  type ImoLayoutData,
+  ImoStat,
+  type ImoStatData,
+} from "@/components/imo";
 import type { RenderPayload } from "@/components/isolated/frame-bridge";
 // Import output components directly (not through MediaRouter's lazy loading)
 // This ensures all components are bundled inline for the isolated iframe
@@ -241,6 +249,31 @@ function OutputRenderer({ payload }: { payload: RenderPayload }) {
   if (mimeType === "application/vnd.jupyter.widget-view+json") {
     const widgetData = data as { model_id: string };
     return <WidgetView modelId={widgetData.model_id} />;
+  }
+
+  // imo display objects
+  if (mimeType === "application/vnd.imo.callout+json") {
+    return <ImoCallout data={data as ImoCalloutData} />;
+  }
+  if (mimeType === "application/vnd.imo.stat+json") {
+    return <ImoStat data={data as ImoStatData} />;
+  }
+  if (
+    mimeType === "application/vnd.imo.hstack+json" ||
+    mimeType === "application/vnd.imo.vstack+json"
+  ) {
+    const direction = mimeType.includes("hstack") ? "row" : "column";
+    return (
+      <ImoLayout
+        data={data as ImoLayoutData}
+        direction={direction}
+        renderItem={(itemMime, itemData) => (
+          <OutputRenderer
+            payload={{ mimeType: itemMime, data: itemData, metadata: {} }}
+          />
+        )}
+      />
+    );
   }
 
   // Markdown

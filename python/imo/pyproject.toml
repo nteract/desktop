@@ -1,0 +1,25 @@
+[project]
+name = "imo"
+version = "0.1.0"
+description = "Marimo-compatible display primitives for IPython/Jupyter via custom MIME types"
+license = "BSD-3-Clause"
+requires-python = ">=3.10"
+dependencies = [
+    "ipython>=7.0",
+    "markdown>=3.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/imo"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
