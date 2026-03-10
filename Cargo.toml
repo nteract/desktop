@@ -38,6 +38,7 @@ schemars = "1"
 notify = "8"
 notify-debouncer-mini = "0.7"
 ts-rs = { version = "12", features = ["serde-compat"] }
+jiter = { version = "0.13", default-features = false, features = ["num-bigint"] }
 
 [workspace.lints.rust]
 dead_code = "warn"

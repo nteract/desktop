@@ -26,7 +26,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use automerge::sync;
@@ -444,6 +444,9 @@ pub struct NotebookRoom {
     /// Stores active comms so new windows can sync widget models.
     /// Arc-wrapped so it can be shared with the kernel's iopub task.
     pub comm_state: Arc<CommState>,
+    /// Whether a streaming load is in progress for this room.
+    /// Prevents two connections from both attempting to load from disk.
+    pub is_loading: AtomicBool,
     /// Timestamp (ms since epoch) of last self-write to the .ipynb file.
     /// Used to skip file watcher events triggered by our own saves.
     pub last_self_write: Arc<AtomicU64>,
@@ -520,9 +523,25 @@ impl NotebookRoom {
             working_dir: Arc::new(RwLock::new(None)),
             auto_launch_at: Arc::new(RwLock::new(None)),
             comm_state: Arc::new(CommState::new()),
+            is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
             watcher_shutdown_tx: Mutex::new(None),
         }
+    }
+
+    /// Atomically claim the loading role for this room.
+    ///
+    /// Returns `true` if the caller won the race and should perform the load.
+    /// Returns `false` if another connection is already loading.
+    pub fn try_start_loading(&self) -> bool {
+        self.is_loading
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Mark loading as complete (success or failure).
+    pub fn finish_loading(&self) {
+        self.is_loading.store(false, Ordering::Release);
     }
 
     /// Create a new room by loading a persisted document or creating a fresh one.
@@ -556,6 +575,7 @@ impl NotebookRoom {
             working_dir: Arc::new(RwLock::new(None)),
             auto_launch_at: Arc::new(RwLock::new(None)),
             comm_state: Arc::new(CommState::new()),
+            is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
             watcher_shutdown_tx: Mutex::new(None),
         }
@@ -654,6 +674,7 @@ pub async fn handle_notebook_sync_connection<R, W>(
     working_dir: Option<PathBuf>,
     initial_metadata: Option<String>,
     skip_capabilities: bool,
+    needs_load: Option<PathBuf>,
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin,
@@ -759,7 +780,14 @@ where
         connection::send_json_frame(&mut writer, &caps).await?;
     }
 
-    let result = run_sync_loop_v2(&mut reader, &mut writer, &room, daemon.clone()).await;
+    let result = run_sync_loop_v2(
+        &mut reader,
+        &mut writer,
+        &room,
+        daemon.clone(),
+        needs_load.as_deref(),
+    )
+    .await;
 
     // Peer disconnected — decrement and possibly evict the room
     let remaining = room.active_peers.fetch_sub(1, Ordering::Relaxed) - 1;
@@ -847,12 +875,48 @@ async fn run_sync_loop_v2<R, W>(
     writer: &mut W,
     room: &NotebookRoom,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
+    needs_load: Option<&Path>,
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     let mut peer_state = sync::State::new();
+
+    // Streaming load: add cells in batches and sync after each batch so
+    // the frontend renders progressively. This runs before we subscribe
+    // to changed_rx to avoid backlog from our own notifications.
+    if let Some(load_path) = needs_load {
+        if room.try_start_loading() {
+            match streaming_load_cells(reader, writer, room, load_path, &mut peer_state).await {
+                Ok(count) => {
+                    room.finish_loading();
+                    info!(
+                        "[notebook-sync] Streaming load complete: {} cells from {}",
+                        count,
+                        load_path.display()
+                    );
+                }
+                Err(e) => {
+                    room.finish_loading();
+                    // Clear partial cells so the next connection can retry
+                    let mut doc = room.doc.write().await;
+                    doc.clear_all_cells();
+                    warn!(
+                        "[notebook-sync] Streaming load failed for {}: {}",
+                        load_path.display(),
+                        e
+                    );
+                    return Err(anyhow::anyhow!("Streaming load failed: {}", e));
+                }
+            }
+        }
+        // If we lost the race (try_start_loading returned false), another
+        // connection is loading. We'll pick up cells via changed_rx below.
+    }
+
+    // Subscribe to change notifications AFTER streaming load to avoid
+    // backlog from our own changed_tx.send(()) calls during loading.
     let mut changed_rx = room.changed_tx.subscribe();
     let mut kernel_broadcast_rx = room.kernel_broadcast_tx.subscribe();
 
@@ -3183,6 +3247,339 @@ async fn outputs_to_manifest_refs(raw_outputs: &[String], blob_store: &BlobStore
     refs
 }
 
+/// Number of cells to add per batch during streaming load.
+/// After each batch, a sync message is sent so the frontend can render
+/// cells progressively.
+const STREAMING_BATCH_SIZE: usize = 3;
+
+/// Cell data parsed for streaming load.
+///
+/// Unlike `CellSnapshot` which stores outputs as `Vec<String>` (JSON strings),
+/// this stores outputs as `serde_json::Value` to avoid the serialize→parse
+/// round-trip when processing through `create_manifest`.
+struct StreamingCell {
+    id: String,
+    cell_type: String,
+    source: String,
+    execution_count: String,
+    outputs: Vec<serde_json::Value>,
+}
+
+/// Convert a `jiter::JsonValue` to a `serde_json::Value`.
+///
+/// Used to bridge jiter's fast zero-copy parsing with code that expects
+/// serde_json types (e.g., `output_store::create_manifest`).
+fn jiter_to_serde(jv: &jiter::JsonValue<'_>) -> serde_json::Value {
+    match jv {
+        jiter::JsonValue::Null => serde_json::Value::Null,
+        jiter::JsonValue::Bool(b) => serde_json::Value::Bool(*b),
+        jiter::JsonValue::Int(i) => serde_json::json!(*i),
+        jiter::JsonValue::BigInt(b) => serde_json::Value::String(b.to_string()),
+        jiter::JsonValue::Float(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        jiter::JsonValue::Str(s) => serde_json::Value::String(s.to_string()),
+        jiter::JsonValue::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(jiter_to_serde).collect())
+        }
+        jiter::JsonValue::Object(obj) => {
+            let map = obj
+                .iter()
+                .map(|(k, v)| (k.to_string(), jiter_to_serde(v)))
+                .collect();
+            serde_json::Value::Object(map)
+        }
+    }
+}
+
+/// Look up a key in a jiter JSON object (which is a flat slice of key-value pairs).
+///
+/// `LazyIndexMap` derefs to `[(Cow<str>, JsonValue)]`, so the built-in `.get()`
+/// takes a `usize` index. This helper does the string-key search.
+fn jobj_get<'a, 's>(
+    obj: &'a [(std::borrow::Cow<'s, str>, jiter::JsonValue<'s>)],
+    key: &str,
+) -> Option<&'a jiter::JsonValue<'s>> {
+    obj.iter().find(|(k, _)| k.as_ref() == key).map(|(_, v)| v)
+}
+
+/// Parse a notebook file into streaming cells using jiter for fast JSON parsing.
+///
+/// Returns `(cells, Option<metadata_snapshot>)`. Outputs are kept as
+/// `serde_json::Value` so they can be passed directly to `create_manifest`
+/// without a serialize→parse round-trip.
+fn parse_notebook_jiter(
+    bytes: &[u8],
+) -> Result<(Vec<StreamingCell>, Option<NotebookMetadataSnapshot>), String> {
+    let json = jiter::JsonValue::parse(bytes, false)
+        .map_err(|e| format!("Invalid notebook JSON: {}", e))?;
+
+    let obj = match &json {
+        jiter::JsonValue::Object(obj) => obj,
+        _ => return Err("Notebook is not a JSON object".to_string()),
+    };
+
+    // Parse metadata by converting to serde_json (metadata is small)
+    let metadata = jobj_get(obj, "metadata").map(|m| {
+        let serde_meta = jiter_to_serde(m);
+        NotebookMetadataSnapshot::from_metadata_value(&serde_meta)
+    });
+
+    let cells_arr = match jobj_get(obj, "cells") {
+        Some(jiter::JsonValue::Array(arr)) => arr,
+        Some(_) => return Err("'cells' is not an array".to_string()),
+        None => return Ok((vec![], metadata)),
+    };
+
+    let mut cells = Vec::with_capacity(cells_arr.len());
+    for (index, cell) in cells_arr.iter().enumerate() {
+        let cell_obj = match cell {
+            jiter::JsonValue::Object(obj) => obj,
+            _ => continue,
+        };
+
+        let id = jobj_get(cell_obj, "id")
+            .and_then(|v| match v {
+                jiter::JsonValue::Str(s) => Some(s.to_string()),
+                _ => None,
+            })
+            .unwrap_or_else(|| format!("__external_cell_{}", index));
+
+        let cell_type = jobj_get(cell_obj, "cell_type")
+            .and_then(|v| match v {
+                jiter::JsonValue::Str(s) => Some(s.to_string()),
+                _ => None,
+            })
+            .unwrap_or_else(|| "code".to_string());
+
+        // Source can be a string or array of strings (Jupyter multiline format)
+        let source = match jobj_get(cell_obj, "source") {
+            Some(jiter::JsonValue::Str(s)) => s.to_string(),
+            Some(jiter::JsonValue::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| match v {
+                    jiter::JsonValue::Str(s) => Some(s.as_ref()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(""),
+            _ => String::new(),
+        };
+
+        let execution_count = match jobj_get(cell_obj, "execution_count") {
+            Some(jiter::JsonValue::Int(n)) => n.to_string(),
+            _ => "null".to_string(),
+        };
+
+        // Keep outputs as serde_json::Value — avoids serialize→parse round-trip
+        let outputs = match jobj_get(cell_obj, "outputs") {
+            Some(jiter::JsonValue::Array(arr)) => arr.iter().map(jiter_to_serde).collect(),
+            _ => vec![],
+        };
+
+        cells.push(StreamingCell {
+            id,
+            cell_type,
+            source,
+            execution_count,
+            outputs,
+        });
+    }
+
+    Ok((cells, metadata))
+}
+
+/// Convert a single output `serde_json::Value` to a blob store manifest hash.
+///
+/// Like `outputs_to_manifest_refs` but takes a `Value` directly instead of a
+/// JSON string, avoiding the serialize→parse round-trip during notebook load.
+async fn output_value_to_manifest_ref(
+    output: &serde_json::Value,
+    blob_store: &BlobStore,
+) -> String {
+    match crate::output_store::create_manifest(
+        output,
+        blob_store,
+        crate::output_store::DEFAULT_INLINE_THRESHOLD,
+    )
+    .await
+    {
+        Ok(manifest_json) => {
+            match crate::output_store::store_manifest(&manifest_json, blob_store).await {
+                Ok(hash) => hash,
+                Err(e) => {
+                    warn!("[streaming-load] Failed to store output manifest: {}", e);
+                    output.to_string()
+                }
+            }
+        }
+        Err(e) => {
+            warn!("[streaming-load] Failed to create output manifest: {}", e);
+            output.to_string()
+        }
+    }
+}
+
+/// Drain any pending incoming frames from the client.
+///
+/// During streaming load, the daemon sends sync messages after each batch.
+/// The client replies with its own sync messages. If we don't drain these,
+/// the socket buffer fills up — the client blocks on send, the daemon blocks
+/// on send, deadlock.
+///
+/// Uses a short timeout to avoid blocking: we just want to clear whatever's
+/// already in the buffer.
+async fn drain_incoming_frames<R>(reader: &mut R, room: &NotebookRoom, peer_state: &mut sync::State)
+where
+    R: AsyncRead + Unpin,
+{
+    loop {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(1),
+            connection::recv_typed_frame(reader),
+        )
+        .await
+        {
+            Ok(Ok(Some(frame))) => {
+                if matches!(frame.frame_type, NotebookFrameType::AutomergeSync) {
+                    if let Ok(msg) = sync::Message::decode(&frame.payload) {
+                        let mut doc = room.doc.write().await;
+                        let _ = doc.receive_sync_message(peer_state, msg);
+                    }
+                }
+                // Ignore non-sync frames during load (requests will be
+                // handled once the main sync loop starts).
+            }
+            // Timeout or error or EOF — stop draining
+            _ => break,
+        }
+    }
+}
+
+/// Stream notebook cells into the Automerge doc in batches, sending sync
+/// messages after each batch so the frontend renders cells progressively.
+///
+/// This replaces the "load everything then sync once" approach. With a 50-cell
+/// notebook, the frontend sees the first 3 cells in ~30ms instead of waiting
+/// for all 50.
+///
+/// The caller must have already won `room.try_start_loading()` and must call
+/// `room.finish_loading()` after this returns (success or failure).
+pub(crate) async fn streaming_load_cells<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    room: &NotebookRoom,
+    path: &Path,
+    peer_state: &mut sync::State,
+) -> Result<usize, String>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let start = std::time::Instant::now();
+
+    // 1. Read and parse the notebook file with jiter
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|e| format!("Failed to read notebook: {}", e))?;
+
+    let (cells, metadata) = parse_notebook_jiter(&bytes)?;
+
+    let total_cells = cells.len();
+    info!(
+        "[streaming-load] Parsed {} cells from {} in {:?}",
+        total_cells,
+        path.display(),
+        start.elapsed()
+    );
+
+    // 2. Stream cells in batches
+    let mut cell_iter = cells.into_iter().enumerate().peekable();
+    let mut batch_num = 0u32;
+
+    while cell_iter.peek().is_some() {
+        let batch_start = std::time::Instant::now();
+
+        // Collect one batch and process outputs through blob store (outside doc lock)
+        let mut batch: Vec<(usize, StreamingCell, Vec<String>)> = Vec::new();
+        for _ in 0..STREAMING_BATCH_SIZE {
+            let Some((idx, cell)) = cell_iter.next() else {
+                break;
+            };
+            let mut output_refs = Vec::with_capacity(cell.outputs.len());
+            for output in &cell.outputs {
+                output_refs.push(output_value_to_manifest_ref(output, &room.blob_store).await);
+            }
+            batch.push((idx, cell, output_refs));
+        }
+
+        // Add batch to Automerge doc and generate sync message (inside lock)
+        let encoded = {
+            let mut doc = room.doc.write().await;
+            for (idx, cell, output_refs) in &batch {
+                doc.add_cell_full(
+                    *idx,
+                    &cell.id,
+                    &cell.cell_type,
+                    &cell.source,
+                    output_refs,
+                    &cell.execution_count,
+                )
+                .map_err(|e| format!("Failed to add cell {}: {}", cell.id, e))?;
+            }
+            doc.generate_sync_message(peer_state).map(|m| m.encode())
+        };
+
+        // Send sync message outside the lock
+        if let Some(encoded) = encoded {
+            connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &encoded)
+                .await
+                .map_err(|e| format!("Failed to send sync message: {}", e))?;
+        }
+
+        // Notify other peers in the room
+        let _ = room.changed_tx.send(());
+
+        // Drain incoming sync replies to prevent deadlock
+        drain_incoming_frames(reader, room, peer_state).await;
+
+        batch_num += 1;
+        debug!(
+            "[streaming-load] Batch {} ({} cells) in {:?}",
+            batch_num,
+            batch.len(),
+            batch_start.elapsed()
+        );
+    }
+
+    // 3. Set metadata (if present) and sync it
+    if let Some(meta) = metadata {
+        let encoded = {
+            let mut doc = room.doc.write().await;
+            if let Err(e) = doc.set_metadata_snapshot(&meta) {
+                warn!("[streaming-load] Failed to set metadata: {}", e);
+            }
+            doc.generate_sync_message(peer_state).map(|m| m.encode())
+        };
+        if let Some(encoded) = encoded {
+            connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &encoded)
+                .await
+                .map_err(|e| format!("Failed to send metadata sync: {}", e))?;
+        }
+        let _ = room.changed_tx.send(());
+        drain_incoming_frames(reader, room, peer_state).await;
+    }
+
+    info!(
+        "[streaming-load] Loaded {} cells in {} batches ({:?})",
+        total_cells,
+        batch_num,
+        start.elapsed()
+    );
+
+    Ok(total_cells)
+}
+
 /// Load notebook cells and metadata from a .ipynb file into a NotebookDoc.
 ///
 /// Called by daemon-owned notebook loading (`OpenNotebook` handshake).
@@ -4085,6 +4482,7 @@ mod tests {
             working_dir: Arc::new(RwLock::new(None)),
             auto_launch_at: Arc::new(RwLock::new(None)),
             comm_state: Arc::new(crate::comm_state::CommState::new()),
+            is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
             watcher_shutdown_tx: Mutex::new(None),
         };

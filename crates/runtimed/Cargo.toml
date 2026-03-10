@@ -90,6 +90,9 @@ ts-rs = { workspace = true }
 notify = { workspace = true }
 notify-debouncer-mini = { workspace = true }
 
+# Fast JSON parsing for notebook loading
+jiter = { workspace = true }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 nix = { version = "0.30", features = ["signal", "process"] }
