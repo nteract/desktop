@@ -38,7 +38,10 @@ fn main() {
         "build-dmg" => cmd_build_dmg(),
         "build-app" => cmd_build_app(),
         "install-daemon" => cmd_install_daemon(),
-        "dev-daemon" => cmd_dev_daemon(),
+        "dev-daemon" => {
+            let release = args.iter().any(|a| a == "--release");
+            cmd_dev_daemon(release);
+        }
         "--help" | "-h" | "help" => print_help(),
         cmd => {
             eprintln!("Unknown command: {cmd}");
@@ -68,7 +71,7 @@ Release:
 
 Daemon:
   install-daemon             Build and install runtimed into the running service
-  dev-daemon                 Build and run runtimed in per-worktree dev mode
+  dev-daemon [--release]     Build and run runtimed in per-worktree dev mode
 
 Other:
   icons [source.png]         Generate icon variants
@@ -447,12 +450,23 @@ fn cmd_install_daemon() {
 ///
 /// This enables isolated daemon instances per git worktree, useful when
 /// developing/testing daemon code across multiple worktrees simultaneously.
-fn cmd_dev_daemon() {
-    println!("Building runtimed (debug)...");
-    run_cmd("cargo", &["build", "-p", "runtimed"]);
+fn cmd_dev_daemon(release: bool) {
+    if release {
+        println!("Building runtimed (release)...");
+        run_cmd("cargo", &["build", "--release", "-p", "runtimed"]);
+    } else {
+        println!("Building runtimed (debug)...");
+        run_cmd("cargo", &["build", "-p", "runtimed"]);
+    }
 
     let binary = if cfg!(windows) {
-        "target/debug/runtimed.exe"
+        if release {
+            "target/release/runtimed.exe"
+        } else {
+            "target/debug/runtimed.exe"
+        }
+    } else if release {
+        "target/release/runtimed"
     } else {
         "target/debug/runtimed"
     };
