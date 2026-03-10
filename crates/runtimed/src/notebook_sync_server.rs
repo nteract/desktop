@@ -3138,12 +3138,6 @@ fn parse_metadata_from_ipynb(json: &serde_json::Value) -> Option<NotebookMetadat
     Some(NotebookMetadataSnapshot::from_metadata_value(metadata))
 }
 
-/// Load notebook cells and metadata from a .ipynb file into a NotebookDoc.
-///
-/// Called by daemon-owned notebook loading (`OpenNotebook` handshake).
-/// Parses the file and populates the Automerge doc with cells and metadata.
-///
-/// Returns the cell count on success.
 /// Convert raw output JSON strings to blob store manifest references.
 ///
 /// Each output is parsed, converted to a manifest (with large data offloaded
@@ -3189,6 +3183,12 @@ async fn outputs_to_manifest_refs(raw_outputs: &[String], blob_store: &BlobStore
     refs
 }
 
+/// Load notebook cells and metadata from a .ipynb file into a NotebookDoc.
+///
+/// Called by daemon-owned notebook loading (`OpenNotebook` handshake).
+/// Parses the file and populates the Automerge doc with cells and metadata.
+///
+/// Returns the cell count on success.
 pub async fn load_notebook_from_disk(
     doc: &mut NotebookDoc,
     path: &std::path::Path,
