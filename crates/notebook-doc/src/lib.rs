@@ -401,7 +401,11 @@ impl NotebookDoc {
 
         let source_id = self.doc.put_object(&cell_map, "source", ObjType::Text)?;
         if !source.is_empty() {
-            self.doc.update_text(&source_id, source)?;
+            // splice_text directly inserts into the empty Text CRDT.
+            // update_text would run a Myers diff from "" → source, which is
+            // O(n) per character and gets progressively slower as the
+            // Automerge document grows.
+            self.doc.splice_text(&source_id, 0, 0, source)?;
         }
 
         self.doc

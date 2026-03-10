@@ -3548,7 +3548,7 @@ where
             "[streaming-load] Batch {} ({} cells) in {:?}",
             batch_num,
             batch.len(),
-            batch_start.elapsed()
+            batch_start.elapsed(),
         );
     }
 
@@ -5344,5 +5344,126 @@ mod tests {
             Some(provided_id.to_string()),
             "Metadata should have provided env_id"
         );
+    }
+
+    /// Benchmark streaming load phases against a real notebook.
+    ///
+    /// Reads `/tmp/gelmanschools-bench.ipynb` and profiles:
+    /// - jiter parse time
+    /// - blob store output processing per batch
+    /// - add_cell_full per batch
+    /// - generate_sync_message per batch
+    ///
+    /// Run with: cargo test -p runtimed -- bench_streaming_load_phases --nocapture --ignored
+    #[tokio::test]
+    #[ignore] // Only run manually — requires the fixture notebook
+    async fn bench_streaming_load_phases() {
+        let notebook_path = std::path::Path::new("/tmp/gelmanschools-bench.ipynb");
+        if !notebook_path.exists() {
+            eprintln!("Skipping: /tmp/gelmanschools-bench.ipynb not found");
+            eprintln!("Copy the gelmanschools notebook there first:");
+            eprintln!("  cp ~/Downloads/gelmanschools/index.ipynb /tmp/gelmanschools-bench.ipynb");
+            return;
+        }
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = test_blob_store(&tmp);
+
+        // Phase 0: Read + parse
+        let t0 = std::time::Instant::now();
+        let bytes = std::fs::read(notebook_path).unwrap();
+        let read_elapsed = t0.elapsed();
+
+        let t_parse = std::time::Instant::now();
+        let (cells, _metadata) = parse_notebook_jiter(&bytes).unwrap();
+        let parse_elapsed = t_parse.elapsed();
+
+        eprintln!(
+            "--- Notebook: {} cells, {} bytes ---",
+            cells.len(),
+            bytes.len()
+        );
+        eprintln!("  Read file:  {:?}", read_elapsed);
+        eprintln!("  jiter parse: {:?}", parse_elapsed);
+
+        // Create doc + peer state
+        let mut doc = crate::notebook_doc::NotebookDoc::new("bench");
+        let mut peer_state = automerge::sync::State::new();
+
+        let batch_size = STREAMING_BATCH_SIZE;
+        let mut cell_iter = cells.into_iter().enumerate().peekable();
+        let mut batch_num = 0u32;
+
+        let mut total_blob = std::time::Duration::ZERO;
+        let mut total_add = std::time::Duration::ZERO;
+        let mut total_sync_gen = std::time::Duration::ZERO;
+
+        while cell_iter.peek().is_some() {
+            // Blob store phase
+            let t_blob = std::time::Instant::now();
+            let mut batch: Vec<(usize, StreamingCell, Vec<String>)> = Vec::new();
+            let mut batch_output_bytes = 0usize;
+            for _ in 0..batch_size {
+                let Some((idx, cell)) = cell_iter.next() else {
+                    break;
+                };
+                let mut output_refs = Vec::with_capacity(cell.outputs.len());
+                for output in &cell.outputs {
+                    batch_output_bytes += output.to_string().len();
+                    output_refs.push(output_value_to_manifest_ref(output, &blob_store).await);
+                }
+                batch.push((idx, cell, output_refs));
+            }
+            let blob_elapsed = t_blob.elapsed();
+
+            // add_cell_full phase
+            let t_add = std::time::Instant::now();
+            for (idx, cell, output_refs) in &batch {
+                doc.add_cell_full(
+                    *idx,
+                    &cell.id,
+                    &cell.cell_type,
+                    &cell.source,
+                    output_refs,
+                    &cell.execution_count,
+                )
+                .unwrap();
+            }
+            let add_elapsed = t_add.elapsed();
+
+            // generate_sync_message phase
+            let t_sync = std::time::Instant::now();
+            let encoded = doc
+                .generate_sync_message(&mut peer_state)
+                .map(|m| m.encode());
+            let sync_elapsed = t_sync.elapsed();
+            let msg_size = encoded.as_ref().map(|e| e.len()).unwrap_or(0);
+
+            batch_num += 1;
+            eprintln!(
+                "  Batch {:2} ({} cells, {:6}KB output): blob={:>8?}  add={:>8?}  sync_gen={:>8?}  msg={}KB",
+                batch_num,
+                batch.len(),
+                batch_output_bytes / 1024,
+                blob_elapsed,
+                add_elapsed,
+                sync_elapsed,
+                msg_size / 1024,
+            );
+
+            total_blob += blob_elapsed;
+            total_add += add_elapsed;
+            total_sync_gen += sync_elapsed;
+        }
+
+        eprintln!("--- Totals ---");
+        eprintln!("  blob store:         {:?}", total_blob);
+        eprintln!("  add_cell_full:      {:?}", total_add);
+        eprintln!("  generate_sync_msg:  {:?}", total_sync_gen);
+        eprintln!(
+            "  total (no I/O):     {:?}",
+            total_blob + total_add + total_sync_gen
+        );
+        eprintln!("  cells: {}, batches: {}", doc.cell_count(), batch_num);
     }
 }
