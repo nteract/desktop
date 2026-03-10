@@ -67,8 +67,12 @@ impl WindowNotebookRegistry {
         label: impl Into<String>,
         context: WindowNotebookContext,
     ) -> Result<(), String> {
+        let label = label.into();
         let mut contexts = self.contexts.lock().map_err(|e| e.to_string())?;
-        contexts.insert(label.into(), context);
+        if contexts.contains_key(&label) {
+            return Err(format!("Context already exists for window '{}'", label));
+        }
+        contexts.insert(label, context);
         Ok(())
     }
 
@@ -1773,6 +1777,14 @@ fn create_notebook_window_for_daemon(
             format!("notebook-{}", uuid::Uuid::new_v4())
         }
     });
+
+    // If a window with this label already exists, focus it instead of creating a duplicate.
+    // This prevents the race condition where opening the same file twice overwrites and then
+    // removes the context, leaving the original window in a broken state (#577).
+    if let Some(existing_window) = app.get_webview_window(&label) {
+        let _ = existing_window.set_focus();
+        return Ok(label);
+    }
 
     // Placeholder notebook_id — daemon will provide the canonical one.
     let placeholder_id = match &mode {
