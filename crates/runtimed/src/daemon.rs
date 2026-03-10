@@ -489,6 +489,34 @@ impl Daemon {
             self.run_windows_server().await?;
         }
 
+        // Shut down all running kernels before exiting.
+        //
+        // Kernels are spawned in their own process group (process_group(0)),
+        // so they do NOT receive the SIGINT/SIGTERM that the daemon receives.
+        // Without explicit shutdown here, kernel processes become orphans.
+        // We cannot rely on Drop alone because:
+        //   1. RoomKernel is behind Arc<Mutex<Option<...>>> inside Arc<NotebookRoom>
+        //      — multiple spawned tasks hold Arc clones that may not all unwind
+        //      during tokio runtime teardown.
+        //   2. A second ctrl-c or SIGKILL skips destructors entirely.
+        {
+            let mut rooms = self.notebook_rooms.lock().await;
+            for (notebook_id, room) in rooms.drain() {
+                if let Some(mut kernel) = room.kernel.lock().await.take() {
+                    info!(
+                        "[runtimed] Shutting down kernel for notebook on exit: {}",
+                        notebook_id
+                    );
+                    if let Err(e) = kernel.shutdown().await {
+                        warn!(
+                            "[runtimed] Error shutting down kernel for {}: {}",
+                            notebook_id, e
+                        );
+                    }
+                }
+            }
+        }
+
         // Cleanup socket (Unix only - named pipes don't need cleanup)
         #[cfg(unix)]
         tokio::fs::remove_file(&self.config.socket_path).await.ok();
