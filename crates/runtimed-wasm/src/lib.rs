@@ -31,6 +31,7 @@ pub struct JsCell {
     source: String,
     execution_count: String,
     outputs: Vec<String>,
+    metadata: serde_json::Value,
 }
 
 #[wasm_bindgen]
@@ -60,6 +61,12 @@ impl JsCell {
     pub fn outputs_json(&self) -> String {
         serde_json::to_string(&self.outputs).unwrap_or_else(|_| "[]".to_string())
     }
+
+    /// Get metadata as a JSON object string.
+    #[wasm_bindgen(getter)]
+    pub fn metadata_json(&self) -> String {
+        serde_json::to_string(&self.metadata).unwrap_or_else(|_| "{}".to_string())
+    }
 }
 
 impl From<(usize, CellSnapshot)> for JsCell {
@@ -71,6 +78,7 @@ impl From<(usize, CellSnapshot)> for JsCell {
             source: snap.source,
             execution_count: snap.execution_count,
             outputs: snap.outputs,
+            metadata: snap.metadata,
         }
     }
 }

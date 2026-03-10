@@ -2647,33 +2647,12 @@ async fn save_notebook_to_disk(
         (cells, metadata_json)
     };
 
-    // Build existing cell metadata index (cell_id -> cell metadata from .ipynb)
-    let existing_cell_metadata: HashMap<String, serde_json::Value> = existing
-        .as_ref()
-        .and_then(|nb| nb.get("cells"))
-        .and_then(|c| c.as_array())
-        .map(|cells_arr| {
-            cells_arr
-                .iter()
-                .filter_map(|cell| {
-                    let id = cell.get("id").and_then(|v| v.as_str())?;
-                    let meta = cell
-                        .get("metadata")
-                        .cloned()
-                        .unwrap_or(serde_json::json!({}));
-                    Some((id.to_string(), meta))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
     // Reconstruct cells as JSON
+    // Cell metadata now comes from the CellSnapshot (populated during load)
     let mut nb_cells = Vec::new();
     for cell in &cells {
-        let cell_meta = existing_cell_metadata
-            .get(&cell.id)
-            .cloned()
-            .unwrap_or(serde_json::json!({}));
+        // Use metadata from the Automerge doc (populated during notebook load)
+        let cell_meta = cell.metadata.clone();
 
         // Parse source into multiline array format (split_inclusive('\n'))
         let source_lines: Vec<String> = if cell.source.is_empty() {
@@ -3184,12 +3163,19 @@ fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<Vec<CellSnapshot>>
                 })
                 .unwrap_or_default();
 
+            // Cell metadata (preserves all fields)
+            let metadata = cell
+                .get("metadata")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+
             CellSnapshot {
                 id,
                 cell_type,
                 source,
                 execution_count,
                 outputs,
+                metadata,
             }
         })
         .collect();
@@ -3267,6 +3253,7 @@ struct StreamingCell {
     source: String,
     execution_count: String,
     outputs: Vec<serde_json::Value>,
+    metadata: serde_json::Value,
 }
 
 /// Convert a `jiter::JsonValue` to a `serde_json::Value`.
@@ -3381,12 +3368,18 @@ fn parse_notebook_jiter(
             _ => vec![],
         };
 
+        // Extract cell metadata (preserves all fields)
+        let metadata = jobj_get(cell_obj, "metadata")
+            .map(jiter_to_serde)
+            .unwrap_or_else(|| serde_json::json!({}));
+
         cells.push(StreamingCell {
             id,
             cell_type,
             source,
             execution_count,
             outputs,
+            metadata,
         });
     }
 
@@ -3516,6 +3509,7 @@ where
                     &cell.source,
                     output_refs,
                     &cell.execution_count,
+                    &cell.metadata,
                 )
                 .map_err(|e| format!("Failed to add cell {}: {}", cell.id, e))?;
             }
@@ -4845,6 +4839,7 @@ mod tests {
             source: String::new(),
             execution_count: "42".to_string(),
             outputs: vec![],
+            metadata: serde_json::json!({}),
         }];
 
         let changed = apply_ipynb_changes(&room, &external_cells, false).await;
@@ -4878,6 +4873,7 @@ mod tests {
             source: "new source".to_string(),
             execution_count: "5".to_string(),
             outputs: vec![r#"{"output_type":"error"}"#.to_string()],
+            metadata: serde_json::json!({}),
         }];
 
         let changed = apply_ipynb_changes(&room, &external_cells, true).await;
@@ -4915,6 +4911,7 @@ mod tests {
                 source: String::new(),
                 execution_count: "null".to_string(),
                 outputs: vec![],
+                metadata: serde_json::json!({}),
             },
             CellSnapshot {
                 id: "new-cell".to_string(),
@@ -4922,6 +4919,7 @@ mod tests {
                 source: "print('new')".to_string(),
                 execution_count: "42".to_string(),
                 outputs: vec![r#"{"output_type":"execute_result"}"#.to_string()],
+                metadata: serde_json::json!({}),
             },
         ];
 
@@ -5418,6 +5416,7 @@ mod tests {
                     &cell.source,
                     output_refs,
                     &cell.execution_count,
+                    &cell.metadata,
                 )
                 .unwrap();
             }

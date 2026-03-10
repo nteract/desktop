@@ -1,21 +1,27 @@
+/** Cell metadata (arbitrary JSON object, preserves unknown keys) */
+export type CellMetadata = Record<string, unknown>;
+
 export interface CodeCell {
   cell_type: "code";
   id: string;
   source: string;
   execution_count: number | null;
   outputs: JupyterOutput[];
+  metadata: CellMetadata;
 }
 
 export interface MarkdownCell {
   cell_type: "markdown";
   id: string;
   source: string;
+  metadata: CellMetadata;
 }
 
 export interface RawCell {
   cell_type: "raw";
   id: string;
   source: string;
+  metadata: CellMetadata;
 }
 
 export type NotebookCell = CodeCell | MarkdownCell | RawCell;

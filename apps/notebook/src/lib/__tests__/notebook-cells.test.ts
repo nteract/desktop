@@ -13,12 +13,14 @@ const codeCell = (id: string, source = ""): NotebookCell => ({
   source,
   execution_count: null,
   outputs: [],
+  metadata: {},
 });
 
 const markdownCell = (id: string, source = ""): NotebookCell => ({
   cell_type: "markdown",
   id,
   source,
+  metadata: {},
 });
 
 afterEach(() => {
@@ -156,7 +158,7 @@ describe("mixed cell types", () => {
     const cells: NotebookCell[] = [
       codeCell("c1", "x = 1"),
       markdownCell("m1", "# Title"),
-      { cell_type: "raw", id: "r1", source: "raw content" },
+      { cell_type: "raw", id: "r1", source: "raw content", metadata: {} },
     ];
     replaceNotebookCells(cells);
     const snap = getNotebookCellsSnapshot();
@@ -179,6 +181,7 @@ describe("mixed cell types", () => {
           execution_count: 42,
         },
       ],
+      metadata: {},
     };
     replaceNotebookCells([cell]);
     const snap = getNotebookCellsSnapshot();

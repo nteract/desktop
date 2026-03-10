@@ -22,6 +22,7 @@
 //!       execution_count: Str      ← JSON-encoded i32 or "null"
 //!       outputs/                  ← List of Str
 //!         [j]: Str                ← JSON-encoded Jupyter output (Phase 5: manifest hash)
+//!       metadata: Str             ← JSON-encoded cell metadata object
 //!   metadata/                     ← Map
 //!     runtime: Str
 //!     notebook_metadata: Str      ← JSON-encoded NotebookMetadataSnapshot
@@ -51,7 +52,7 @@ pub struct StreamOutputState {
 }
 
 /// Snapshot of a single cell's state, suitable for serialization.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CellSnapshot {
     pub id: String,
     /// "code", "markdown", or "raw"
@@ -61,6 +62,54 @@ pub struct CellSnapshot {
     pub execution_count: String,
     /// JSON-encoded Jupyter output objects (will become manifest hashes in Phase 5)
     pub outputs: Vec<String>,
+    /// Cell metadata (arbitrary JSON object, preserves unknown keys)
+    #[serde(default = "default_empty_object")]
+    pub metadata: serde_json::Value,
+}
+
+fn default_empty_object() -> serde_json::Value {
+    serde_json::json!({})
+}
+
+impl CellSnapshot {
+    /// Returns true if the cell source should be hidden (JupyterLab convention).
+    pub fn is_source_hidden(&self) -> bool {
+        self.metadata
+            .get("jupyter")
+            .and_then(|j| j.get("source_hidden"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
+    /// Returns true if the cell outputs should be hidden (JupyterLab convention).
+    pub fn is_outputs_hidden(&self) -> bool {
+        self.metadata
+            .get("jupyter")
+            .and_then(|j| j.get("outputs_hidden"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
+    /// Returns true if the cell output area is collapsed (Classic Notebook convention).
+    pub fn is_collapsed(&self) -> bool {
+        self.metadata
+            .get("collapsed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
+    /// Returns cell tags (empty vec if none).
+    pub fn tags(&self) -> Vec<String> {
+        self.metadata
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 /// Wrapper around an Automerge document storing a notebook.
@@ -348,7 +397,7 @@ impl NotebookDoc {
 
     /// Insert a new cell at the given index.
     ///
-    /// Returns `Ok(())` on success. The cell starts with empty source and no outputs.
+    /// Returns `Ok(())` on success. The cell starts with empty source, no outputs, and empty metadata.
     pub fn add_cell(
         &mut self,
         index: usize,
@@ -369,6 +418,7 @@ impl NotebookDoc {
         self.doc.put_object(&cell_map, "source", ObjType::Text)?;
         self.doc.put(&cell_map, "execution_count", "null")?;
         self.doc.put_object(&cell_map, "outputs", ObjType::List)?;
+        self.doc.put(&cell_map, "metadata", "{}")?;
         Ok(())
     }
 
@@ -387,6 +437,7 @@ impl NotebookDoc {
         source: &str,
         outputs: &[String],
         execution_count: &str,
+        metadata: &serde_json::Value,
     ) -> Result<(), AutomergeError> {
         let cells_id = self
             .cells_list_id()
@@ -415,6 +466,10 @@ impl NotebookDoc {
         for (i, output) in outputs.iter().enumerate() {
             self.doc.insert(&outputs_id, i, output.as_str())?;
         }
+
+        // Store metadata as JSON string
+        let metadata_str = serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_string());
+        self.doc.put(&cell_map, "metadata", metadata_str)?;
 
         Ok(())
     }
@@ -825,7 +880,121 @@ impl NotebookDoc {
         Ok(true)
     }
 
-    // ── Metadata ────────────────────────────────────────────────────
+    // ── Cell metadata ──────────────────────────────────────────────
+
+    /// Get the raw metadata Value for a cell.
+    pub fn get_cell_metadata(&self, cell_id: &str) -> Option<serde_json::Value> {
+        let cells_id = self.cells_list_id()?;
+        let idx = self.find_cell_index(&cells_id, cell_id)?;
+        let cell_obj = self.cell_at_index(&cells_id, idx)?;
+        read_str(&self.doc, &cell_obj, "metadata").and_then(|s| serde_json::from_str(&s).ok())
+    }
+
+    /// Set the entire metadata object for a cell.
+    pub fn set_cell_metadata(
+        &mut self,
+        cell_id: &str,
+        metadata: &serde_json::Value,
+    ) -> Result<bool, AutomergeError> {
+        let cells_id = match self.cells_list_id() {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+        let idx = match self.find_cell_index(&cells_id, cell_id) {
+            Some(i) => i,
+            None => return Ok(false),
+        };
+        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+            Some(o) => o,
+            None => return Ok(false),
+        };
+
+        let metadata_str = serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_string());
+        self.doc.put(&cell_obj, "metadata", metadata_str)?;
+        Ok(true)
+    }
+
+    /// Update a nested path within cell metadata.
+    ///
+    /// Creates intermediate objects as needed. For example:
+    /// `update_cell_metadata_at("cell-1", &["jupyter", "source_hidden"], json!(true))`
+    /// will create `{"jupyter": {"source_hidden": true}}` if metadata was `{}`.
+    pub fn update_cell_metadata_at(
+        &mut self,
+        cell_id: &str,
+        path: &[&str],
+        value: serde_json::Value,
+    ) -> Result<bool, AutomergeError> {
+        if path.is_empty() {
+            return self.set_cell_metadata(cell_id, &value);
+        }
+
+        let mut metadata = self
+            .get_cell_metadata(cell_id)
+            .unwrap_or_else(|| serde_json::json!({}));
+
+        // Navigate to the parent of the target key, creating objects as needed
+        let mut current = &mut metadata;
+        for key in &path[..path.len() - 1] {
+            if !current.is_object() {
+                *current = serde_json::json!({});
+            }
+            let obj = current.as_object_mut().unwrap();
+            if !obj.contains_key(*key) {
+                obj.insert((*key).to_string(), serde_json::json!({}));
+            }
+            current = obj.get_mut(*key).unwrap();
+        }
+
+        // Set the final key
+        if !current.is_object() {
+            *current = serde_json::json!({});
+        }
+        let final_key = path[path.len() - 1];
+        current
+            .as_object_mut()
+            .unwrap()
+            .insert(final_key.to_string(), value);
+
+        self.set_cell_metadata(cell_id, &metadata)
+    }
+
+    /// Set whether the cell source should be hidden (JupyterLab convention).
+    pub fn set_cell_source_hidden(
+        &mut self,
+        cell_id: &str,
+        hidden: bool,
+    ) -> Result<bool, AutomergeError> {
+        self.update_cell_metadata_at(
+            cell_id,
+            &["jupyter", "source_hidden"],
+            serde_json::json!(hidden),
+        )
+    }
+
+    /// Set whether the cell outputs should be hidden (JupyterLab convention).
+    pub fn set_cell_outputs_hidden(
+        &mut self,
+        cell_id: &str,
+        hidden: bool,
+    ) -> Result<bool, AutomergeError> {
+        self.update_cell_metadata_at(
+            cell_id,
+            &["jupyter", "outputs_hidden"],
+            serde_json::json!(hidden),
+        )
+    }
+
+    /// Set the cell tags.
+    pub fn set_cell_tags(
+        &mut self,
+        cell_id: &str,
+        tags: Vec<String>,
+    ) -> Result<bool, AutomergeError> {
+        self.update_cell_metadata_at(cell_id, &["tags"], serde_json::json!(tags))
+    }
+
+    // ── Notebook metadata ──────────────────────────────────────────
 
     /// Read a metadata value.
     pub fn get_metadata(&self, key: &str) -> Option<String> {
@@ -958,12 +1127,18 @@ impl NotebookDoc {
             None => vec![],
         };
 
+        // Read metadata (JSON string -> Value)
+        let metadata = read_str(&self.doc, cell_obj, "metadata")
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+
         Some(CellSnapshot {
             id,
             cell_type,
             source,
             execution_count,
             outputs,
+            metadata,
         })
     }
 }
@@ -1095,12 +1270,18 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
                 _ => vec![],
             };
 
+            // Read metadata (JSON string -> Value)
+            let metadata = read_str(doc, &cell_obj, "metadata")
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+
             Some(CellSnapshot {
                 id,
                 cell_type,
                 source,
                 execution_count,
                 outputs,
+                metadata,
             })
         })
         .collect()
@@ -1880,6 +2061,7 @@ mod tests {
             "print('hello')",
             &["hash1".to_string(), "hash2".to_string()],
             "42",
+            &serde_json::json!({"tags": ["test"]}),
         )
         .unwrap();
 
@@ -1890,28 +2072,46 @@ mod tests {
         assert_eq!(cell.source, "print('hello')");
         assert_eq!(cell.execution_count, "42");
         assert_eq!(cell.outputs, vec!["hash1", "hash2"]);
+        assert_eq!(cell.tags(), vec!["test"]);
     }
 
     #[test]
     fn test_add_cell_full_empty_source() {
         let mut doc = NotebookDoc::new("nb-empty-src");
-        doc.add_cell_full(0, "cell-es", "code", "", &[], "null")
-            .unwrap();
+        doc.add_cell_full(
+            0,
+            "cell-es",
+            "code",
+            "",
+            &[],
+            "null",
+            &serde_json::json!({}),
+        )
+        .unwrap();
 
         let cell = doc.get_cell("cell-es").unwrap();
         assert_eq!(cell.source, "");
         assert_eq!(cell.execution_count, "null");
         assert!(cell.outputs.is_empty());
+        assert_eq!(cell.metadata, serde_json::json!({}));
     }
 
     #[test]
     fn test_add_cell_full_index_ordering() {
         let mut doc = NotebookDoc::new("nb-order");
-        doc.add_cell_full(0, "a", "code", "first", &[], "null")
+        doc.add_cell_full(0, "a", "code", "first", &[], "null", &serde_json::json!({}))
             .unwrap();
-        doc.add_cell_full(1, "b", "code", "second", &[], "null")
-            .unwrap();
-        doc.add_cell_full(2, "c", "code", "third", &[], "null")
+        doc.add_cell_full(
+            1,
+            "b",
+            "code",
+            "second",
+            &[],
+            "null",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        doc.add_cell_full(2, "c", "code", "third", &[], "null", &serde_json::json!({}))
             .unwrap();
 
         let cells = doc.get_cells();
@@ -1938,5 +2138,148 @@ mod tests {
 
         // notebook_id metadata should be preserved
         assert_eq!(doc.notebook_id(), Some("nb-clear".to_string()));
+    }
+
+    #[test]
+    fn test_cell_metadata_read_write() {
+        let mut doc = NotebookDoc::new("nb-meta");
+        doc.add_cell(0, "cell1", "code").unwrap();
+
+        // New cells should have empty metadata
+        let cell = doc.get_cell("cell1").unwrap();
+        assert_eq!(cell.metadata, serde_json::json!({}));
+        assert!(!cell.is_source_hidden());
+        assert!(!cell.is_outputs_hidden());
+        assert!(cell.tags().is_empty());
+
+        // Set entire metadata
+        doc.set_cell_metadata(
+            "cell1",
+            &serde_json::json!({
+                "tags": ["hide-input"],
+                "custom_field": "value"
+            }),
+        )
+        .unwrap();
+
+        let cell = doc.get_cell("cell1").unwrap();
+        assert_eq!(cell.tags(), vec!["hide-input"]);
+        assert_eq!(
+            cell.metadata.get("custom_field"),
+            Some(&serde_json::json!("value"))
+        );
+    }
+
+    #[test]
+    fn test_cell_metadata_typed_setters() {
+        let mut doc = NotebookDoc::new("nb-typed");
+        doc.add_cell(0, "cell1", "code").unwrap();
+
+        // Set source hidden
+        doc.set_cell_source_hidden("cell1", true).unwrap();
+        let cell = doc.get_cell("cell1").unwrap();
+        assert!(cell.is_source_hidden());
+        assert!(!cell.is_outputs_hidden());
+
+        // Set outputs hidden
+        doc.set_cell_outputs_hidden("cell1", true).unwrap();
+        let cell = doc.get_cell("cell1").unwrap();
+        assert!(cell.is_source_hidden());
+        assert!(cell.is_outputs_hidden());
+
+        // Set tags
+        doc.set_cell_tags("cell1", vec!["test".to_string(), "example".to_string()])
+            .unwrap();
+        let cell = doc.get_cell("cell1").unwrap();
+        assert_eq!(cell.tags(), vec!["test", "example"]);
+
+        // Verify structure: jupyter namespace is correct
+        assert_eq!(
+            cell.metadata.get("jupyter"),
+            Some(&serde_json::json!({"source_hidden": true, "outputs_hidden": true}))
+        );
+    }
+
+    #[test]
+    fn test_cell_metadata_path_update() {
+        let mut doc = NotebookDoc::new("nb-path");
+        doc.add_cell(0, "cell1", "code").unwrap();
+
+        // Update nested path
+        doc.update_cell_metadata_at(
+            "cell1",
+            &["custom", "nested", "value"],
+            serde_json::json!(42),
+        )
+        .unwrap();
+
+        let cell = doc.get_cell("cell1").unwrap();
+        assert_eq!(
+            cell.metadata,
+            serde_json::json!({"custom": {"nested": {"value": 42}}})
+        );
+
+        // Update another path without clobbering
+        doc.update_cell_metadata_at("cell1", &["custom", "other"], serde_json::json!("hello"))
+            .unwrap();
+
+        let cell = doc.get_cell("cell1").unwrap();
+        assert_eq!(
+            cell.metadata,
+            serde_json::json!({"custom": {"nested": {"value": 42}, "other": "hello"}})
+        );
+    }
+
+    #[test]
+    fn test_cell_metadata_add_cell_full() {
+        let mut doc = NotebookDoc::new("nb-full-meta");
+        doc.add_cell_full(
+            0,
+            "cell1",
+            "code",
+            "print('test')",
+            &[],
+            "null",
+            &serde_json::json!({
+                "jupyter": {"source_hidden": true},
+                "tags": ["test"]
+            }),
+        )
+        .unwrap();
+
+        let cell = doc.get_cell("cell1").unwrap();
+        assert!(cell.is_source_hidden());
+        assert_eq!(cell.tags(), vec!["test"]);
+    }
+
+    #[test]
+    fn test_cell_metadata_sync() {
+        use automerge::sync;
+
+        let mut daemon = NotebookDoc::new("nb-sync-meta");
+        daemon.add_cell(0, "cell1", "code").unwrap();
+        daemon.set_cell_source_hidden("cell1", true).unwrap();
+        daemon
+            .set_cell_tags("cell1", vec!["synced".to_string()])
+            .unwrap();
+
+        let mut client = NotebookDoc::empty();
+        let mut daemon_state = sync::State::new();
+        let mut client_state = sync::State::new();
+
+        // Sync
+        for _ in 0..5 {
+            if let Some(msg) = daemon.generate_sync_message(&mut daemon_state) {
+                client.receive_sync_message(&mut client_state, msg).unwrap();
+            }
+            if let Some(msg) = client.generate_sync_message(&mut client_state) {
+                daemon.receive_sync_message(&mut daemon_state, msg).unwrap();
+            }
+        }
+
+        // Verify client has metadata
+        let cell = client.get_cell("cell1").unwrap();
+        assert!(cell.is_source_hidden());
+        assert_eq!(cell.tags(), vec!["synced"]);
     }
 }

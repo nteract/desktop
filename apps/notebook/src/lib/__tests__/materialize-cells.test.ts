@@ -67,6 +67,7 @@ function codeSnapshot(
     source,
     execution_count: executionCount,
     outputs,
+    metadata: {},
   };
 }
 
@@ -77,11 +78,19 @@ function markdownSnapshot(id: string, source: string): CellSnapshot {
     source,
     execution_count: "null",
     outputs: [],
+    metadata: {},
   };
 }
 
 function rawSnapshot(id: string, source: string): CellSnapshot {
-  return { id, cell_type: "raw", source, execution_count: "null", outputs: [] };
+  return {
+    id,
+    cell_type: "raw",
+    source,
+    execution_count: "null",
+    outputs: [],
+    metadata: {},
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +431,7 @@ describe("cellSnapshotsToNotebookCells", () => {
       source: "print('hello')",
       execution_count: 1,
       outputs: [{ output_type: "stream", name: "stdout", text: "hello\n" }],
+      metadata: {},
     });
   });
 
@@ -436,6 +446,7 @@ describe("cellSnapshotsToNotebookCells", () => {
       source: "x = 1",
       execution_count: 3,
       outputs: [],
+      metadata: {},
     });
   });
 
@@ -448,6 +459,7 @@ describe("cellSnapshotsToNotebookCells", () => {
       id: "m1",
       cell_type: "markdown",
       source: "# Title",
+      metadata: {},
     });
   });
 
@@ -460,6 +472,7 @@ describe("cellSnapshotsToNotebookCells", () => {
       id: "r1",
       cell_type: "raw",
       source: "raw content",
+      metadata: {},
     });
   });
 
@@ -708,6 +721,7 @@ describe("cellSnapshotsToNotebookCells", () => {
       id: "m1",
       cell_type: "markdown",
       source: "text",
+      metadata: {},
     });
     expect(cells[0]).not.toHaveProperty("outputs");
     expect(cells[0]).not.toHaveProperty("execution_count");
@@ -721,6 +735,7 @@ describe("cellSnapshotsToNotebookCells", () => {
       id: "r1",
       cell_type: "raw",
       source: "content",
+      metadata: {},
     });
     expect(cells[0]).not.toHaveProperty("outputs");
     expect(cells[0]).not.toHaveProperty("execution_count");

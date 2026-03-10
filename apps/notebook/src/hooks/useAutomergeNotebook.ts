@@ -293,8 +293,9 @@ export function useAutomergeNotebook() {
               source: "",
               outputs: [],
               execution_count: null,
+              metadata: {},
             }
-          : { cell_type: "markdown", id: cellId, source: "" };
+          : { cell_type: "markdown", id: cellId, source: "", metadata: {} };
 
       // Compute insertion index from the latest external-store snapshot.
       const current = getNotebookCellsSnapshot();

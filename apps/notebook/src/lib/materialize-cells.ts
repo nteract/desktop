@@ -23,6 +23,7 @@ export interface CellSnapshot {
   source: string;
   execution_count: string; // "5" or "null"
   outputs: string[]; // JSON-encoded Jupyter outputs or manifest hashes
+  metadata: Record<string, unknown>; // Cell metadata (arbitrary JSON object)
 }
 
 /**
@@ -127,6 +128,9 @@ export async function cellSnapshotsToNotebookCells(
           ? null
           : Number.parseInt(snap.execution_count, 10);
 
+      // Metadata defaults to empty object if missing (backward compatibility)
+      const metadata = snap.metadata ?? {};
+
       if (snap.cell_type === "code") {
         // Resolve all outputs (may be manifest hashes or raw JSON)
         const resolvedOutputs = (
@@ -144,6 +148,7 @@ export async function cellSnapshotsToNotebookCells(
           source: snap.source,
           execution_count: Number.isNaN(executionCount) ? null : executionCount,
           outputs,
+          metadata,
         };
       }
 
@@ -152,6 +157,7 @@ export async function cellSnapshotsToNotebookCells(
         id: snap.id,
         cell_type: snap.cell_type as "markdown" | "raw",
         source: snap.source,
+        metadata,
       };
     }),
   );
