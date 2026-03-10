@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { check } from "@tauri-apps/plugin-updater";
 import { AlertTriangle, Check, Circle, Loader2, Notebook } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -14,6 +15,12 @@ interface StepInfo {
   label: string;
   status: "pending" | "in_progress" | "completed" | "failed";
   error?: string;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function NotebookRow({
@@ -107,7 +114,12 @@ export default function App() {
     new Set(),
   );
   const [error, setError] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<{
+    total: number | null;
+    downloaded: number;
+  } | null>(null);
   const [steps, setSteps] = useState<StepInfo[]>([
+    { id: "downloading", label: "Downloading update", status: "pending" },
     { id: "saving", label: "Saving notebooks", status: "pending" },
     { id: "stopping", label: "Stopping runtimes", status: "pending" },
     { id: "closing", label: "Closing windows", status: "pending" },
@@ -134,11 +146,12 @@ export default function App() {
 
           // Mark all steps as completed up to the current one
           const stepMap: Record<string, number> = {
-            saving_notebooks: 0,
-            stopping_runtimes: 1,
-            closing_windows: 2,
-            upgrading_daemon: 3,
-            ready: 4,
+            downloading_update: 0,
+            saving_notebooks: 1,
+            stopping_runtimes: 2,
+            closing_windows: 3,
+            upgrading_daemon: 4,
+            ready: 5,
           };
 
           if (payload.step === "failed") {
@@ -203,6 +216,57 @@ export default function App() {
   const handleContinue = useCallback(async () => {
     setPhase("progress");
     setError(null);
+
+    // Step 0: Download and install the update
+    setSteps((prev) =>
+      prev.map((s, i) => (i === 0 ? { ...s, status: "in_progress" } : s)),
+    );
+
+    try {
+      const update = await check();
+      if (!update) {
+        throw new Error("No update available");
+      }
+
+      let downloaded = 0;
+      await update.downloadAndInstall((event) => {
+        switch (event.event) {
+          case "Started":
+            setDownloadProgress({
+              total: event.data.contentLength ?? null,
+              downloaded: 0,
+            });
+            break;
+          case "Progress":
+            downloaded += event.data.chunkLength;
+            setDownloadProgress((prev) => ({
+              total: prev?.total ?? null,
+              downloaded,
+            }));
+            break;
+          case "Finished":
+            break;
+        }
+      });
+
+      // Mark download as completed
+      setSteps((prev) =>
+        prev.map((s, i) => (i === 0 ? { ...s, status: "completed" } : s)),
+      );
+      setDownloadProgress(null);
+    } catch (e) {
+      setSteps((prev) =>
+        prev.map((s) =>
+          s.status === "in_progress"
+            ? { ...s, status: "failed", error: String(e) }
+            : s,
+        ),
+      );
+      setError(String(e));
+      return;
+    }
+
+    // Steps 1-5: Save, stop, close, upgrade daemon, ready
     try {
       await invoke("run_upgrade");
     } catch (e) {
@@ -296,7 +360,31 @@ export default function App() {
 
             <div className="space-y-1 py-4">
               {steps.map((step) => (
-                <StepRow key={step.id} step={step} />
+                <div key={step.id}>
+                  <StepRow step={step} />
+                  {step.id === "downloading" &&
+                    step.status === "in_progress" &&
+                    downloadProgress && (
+                      <div className="ml-7 mt-0.5 mb-1">
+                        <div className="h-1 w-full rounded-full bg-muted overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-foreground/60 transition-all duration-300"
+                            style={{
+                              width: downloadProgress.total
+                                ? `${Math.min(100, (downloadProgress.downloaded / downloadProgress.total) * 100)}%`
+                                : "50%",
+                            }}
+                          />
+                        </div>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">
+                          {formatBytes(downloadProgress.downloaded)}
+                          {downloadProgress.total
+                            ? ` / ${formatBytes(downloadProgress.total)}`
+                            : ""}
+                        </p>
+                      </div>
+                    )}
+                </div>
               ))}
             </div>
 

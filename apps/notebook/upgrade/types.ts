@@ -7,6 +7,7 @@ export interface NotebookStatus {
 }
 
 export type UpgradeStep =
+  | { step: "downloading_update" }
   | { step: "saving_notebooks" }
   | { step: "stopping_runtimes" }
   | { step: "closing_windows" }

@@ -310,7 +310,6 @@ function AppContent() {
     status: updateStatus,
     version: updateVersion,
     checkForUpdate,
-    downloadAndInstall: downloadUpdate,
     restartToUpdate,
   } = useUpdater();
 
@@ -923,7 +922,6 @@ function AppContent() {
         isDepsOpen={dependencyHeaderOpen}
         updateStatus={updateStatus}
         updateVersion={updateVersion}
-        onDownloadUpdate={downloadUpdate}
         onRestartToUpdate={restartToUpdate}
       />
       {/* Dual-dependency choice: both UV and conda deps exist, let user pick */}
