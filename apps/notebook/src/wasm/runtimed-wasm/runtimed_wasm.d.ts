@@ -13,6 +13,10 @@ export class JsCell {
     readonly execution_count: string;
     readonly id: string;
     /**
+     * Get metadata as a JSON object string.
+     */
+    readonly metadata_json: string;
+    /**
      * Get outputs as a JSON array string.
      */
     readonly outputs_json: string;
@@ -175,6 +179,7 @@ export interface InitOutput {
     readonly jscell_source: (a: number, b: number) => void;
     readonly jscell_execution_count: (a: number, b: number) => void;
     readonly jscell_outputs_json: (a: number, b: number) => void;
+    readonly jscell_metadata_json: (a: number, b: number) => void;
     readonly notebookhandle_new: (a: number, b: number) => number;
     readonly notebookhandle_create_empty: () => number;
     readonly notebookhandle_load: (a: number, b: number, c: number) => void;
