@@ -497,10 +497,10 @@ export function NotebookToolbar({
               onClick={onRestartToUpdate}
               data-testid="update-restart-button"
               className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-green-500/15 text-green-600 hover:bg-green-500/25 dark:text-green-400 transition-colors"
-              title={`Restart to install v${updateVersion}`}
+              title={`Prepare to install v${updateVersion}`}
             >
               <RotateCcw className="h-3 w-3" />
-              <span>Restart to update</span>
+              <span>Prepare for Update</span>
             </button>
           )}
 
