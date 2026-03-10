@@ -30,9 +30,10 @@ pub const MENU_ZOOM_RESET: &str = "zoom_reset";
 pub const MENU_RUN_ALL_CELLS: &str = "run_all_cells";
 pub const MENU_RESTART_AND_RUN_ALL: &str = "restart_and_run_all";
 
-// Menu item IDs for CLI installation
+// Menu item IDs for CLI installation and settings
 pub const MENU_INSTALL_CLI: &str = "install_cli";
 pub const MENU_CHECK_FOR_UPDATES: &str = "check_for_updates";
+pub const MENU_SETTINGS: &str = "settings";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const APP_COMMIT_SHA: &str = env!("GIT_COMMIT");
 pub const APP_RELEASE_DATE: &str = env!("GIT_COMMIT_DATE");
@@ -133,6 +134,14 @@ pub fn create_menu(
         "Check for Updates...",
         true,
         None::<&str>,
+    )?)?;
+    app_menu.append(&PredefinedMenuItem::separator(app)?)?;
+    app_menu.append(&MenuItem::with_id(
+        app,
+        MENU_SETTINGS,
+        "Settings...",
+        true,
+        Some("CmdOrCtrl+,"),
     )?)?;
     app_menu.append(&PredefinedMenuItem::separator(app)?)?;
     app_menu.append(&PredefinedMenuItem::services(app, None)?)?;
