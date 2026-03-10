@@ -2976,6 +2976,19 @@ fn open_notebook_from_menu_without_window(
 ) {
     use tauri_plugin_dialog::DialogExt;
 
+    log::info!("[menu] File > Open triggered with no windows open");
+
+    // On macOS, activate the app to ensure the file dialog is visible
+    // when the app has no windows but is still running
+    #[cfg(target_os = "macos")]
+    #[allow(deprecated)]
+    unsafe {
+        use cocoa::appkit::NSApplication;
+        use cocoa::base::nil;
+        let ns_app = NSApplication::sharedApplication(nil);
+        ns_app.activateIgnoringOtherApps_(true);
+    }
+
     let app_handle = app.clone();
     let registry = registry.clone();
 
