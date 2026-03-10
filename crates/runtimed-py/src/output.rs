@@ -148,6 +148,11 @@ pub struct Cell {
     /// Cell outputs (resolved from automerge document)
     #[pyo3(get)]
     pub outputs: Vec<Output>,
+
+    /// Cell metadata as JSON string (arbitrary JSON object)
+    /// Access via metadata_json property, parse with json.loads() in Python
+    #[pyo3(get)]
+    pub metadata_json: String,
 }
 
 #[pymethods]
@@ -164,6 +169,58 @@ impl Cell {
             self.outputs.len()
         )
     }
+
+    /// Get metadata as a Python dict.
+    ///
+    /// Returns the parsed metadata object. Empty dict if no metadata.
+    #[getter]
+    fn metadata(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let json_module = py.import("json")?;
+        let result = json_module.call_method1("loads", (&self.metadata_json,))?;
+        Ok(result.unbind())
+    }
+
+    /// Check if source should be hidden (JupyterLab convention).
+    #[getter]
+    fn is_source_hidden(&self) -> bool {
+        serde_json::from_str::<serde_json::Value>(&self.metadata_json)
+            .ok()
+            .and_then(|m| m.get("jupyter")?.get("source_hidden")?.as_bool())
+            .unwrap_or(false)
+    }
+
+    /// Check if outputs should be hidden (JupyterLab convention).
+    #[getter]
+    fn is_outputs_hidden(&self) -> bool {
+        serde_json::from_str::<serde_json::Value>(&self.metadata_json)
+            .ok()
+            .and_then(|m| m.get("jupyter")?.get("outputs_hidden")?.as_bool())
+            .unwrap_or(false)
+    }
+
+    /// Check if cell is collapsed.
+    #[getter]
+    fn is_collapsed(&self) -> bool {
+        serde_json::from_str::<serde_json::Value>(&self.metadata_json)
+            .ok()
+            .and_then(|m| m.get("collapsed")?.as_bool())
+            .unwrap_or(false)
+    }
+
+    /// Get cell tags.
+    #[getter]
+    fn tags(&self) -> Vec<String> {
+        serde_json::from_str::<serde_json::Value>(&self.metadata_json)
+            .ok()
+            .and_then(|m| {
+                m.get("tags")?.as_array().map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+            })
+            .unwrap_or_default()
+    }
 }
 
 impl Cell {
@@ -172,6 +229,8 @@ impl Cell {
     pub fn from_snapshot(snapshot: runtimed::notebook_doc::CellSnapshot) -> Self {
         // Parse execution_count from JSON string ("5" or "null")
         let execution_count = snapshot.execution_count.parse::<i64>().ok();
+        let metadata_json =
+            serde_json::to_string(&snapshot.metadata).unwrap_or_else(|_| "{}".to_string());
 
         Self {
             id: snapshot.id,
@@ -179,6 +238,7 @@ impl Cell {
             source: snapshot.source,
             execution_count,
             outputs: Vec::new(),
+            metadata_json,
         }
     }
 
@@ -188,6 +248,8 @@ impl Cell {
         outputs: Vec<Output>,
     ) -> Self {
         let execution_count = snapshot.execution_count.parse::<i64>().ok();
+        let metadata_json =
+            serde_json::to_string(&snapshot.metadata).unwrap_or_else(|_| "{}".to_string());
 
         Self {
             id: snapshot.id,
@@ -195,6 +257,7 @@ impl Cell {
             source: snapshot.source,
             execution_count,
             outputs,
+            metadata_json,
         }
     }
 }

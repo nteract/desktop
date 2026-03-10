@@ -658,6 +658,146 @@ impl Session {
     }
 
     // =========================================================================
+    // Cell Metadata (per-cell metadata in automerge document)
+    // =========================================================================
+
+    /// Get cell metadata as a JSON string.
+    ///
+    /// Args:
+    ///     cell_id: The cell ID.
+    ///
+    /// Returns:
+    ///     JSON string of the cell's metadata, or None if cell not found.
+    fn get_cell_metadata(&self, cell_id: &str) -> PyResult<Option<String>> {
+        self.connect()?;
+
+        let state = self.state.blocking_lock();
+        let handle = state
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
+
+        Ok(handle
+            .get_cell_metadata(cell_id)
+            .map(|m| serde_json::to_string(&m).unwrap_or_else(|_| "{}".to_string())))
+    }
+
+    /// Set cell metadata from a JSON string.
+    ///
+    /// Args:
+    ///     cell_id: The cell ID.
+    ///     metadata_json: JSON string of the metadata to set.
+    ///
+    /// Returns:
+    ///     True if the cell was found and updated, False if cell not found.
+    fn set_cell_metadata(&self, cell_id: &str, metadata_json: &str) -> PyResult<bool> {
+        self.connect()?;
+
+        let metadata: serde_json::Value = serde_json::from_str(metadata_json)
+            .map_err(|e| to_py_err(format!("Invalid JSON: {}", e)))?;
+
+        let cell_id = cell_id.to_string();
+
+        self.runtime.block_on(async {
+            let state = self.state.lock().await;
+            let handle = state
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            handle
+                .set_cell_metadata(&cell_id, &metadata)
+                .await
+                .map_err(to_py_err)
+        })
+    }
+
+    /// Update cell metadata at a specific path.
+    ///
+    /// Args:
+    ///     cell_id: The cell ID.
+    ///     path: List of keys forming the path (e.g., ["jupyter", "source_hidden"]).
+    ///     value_json: JSON string of the value to set.
+    ///
+    /// Returns:
+    ///     True if the cell was found and updated, False if cell not found.
+    fn update_cell_metadata_at(
+        &self,
+        cell_id: &str,
+        path: Vec<String>,
+        value_json: &str,
+    ) -> PyResult<bool> {
+        self.connect()?;
+
+        let value: serde_json::Value = serde_json::from_str(value_json)
+            .map_err(|e| to_py_err(format!("Invalid JSON: {}", e)))?;
+
+        let cell_id = cell_id.to_string();
+
+        self.runtime.block_on(async {
+            let state = self.state.lock().await;
+            let handle = state
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            let path_refs: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
+            handle
+                .update_cell_metadata_at(&cell_id, &path_refs, value)
+                .await
+                .map_err(to_py_err)
+        })
+    }
+
+    /// Set whether a cell's source should be hidden (JupyterLab convention).
+    ///
+    /// Args:
+    ///     cell_id: The cell ID.
+    ///     hidden: Whether the source should be hidden.
+    ///
+    /// Returns:
+    ///     True if the cell was found and updated, False if cell not found.
+    fn set_cell_source_hidden(&self, cell_id: &str, hidden: bool) -> PyResult<bool> {
+        self.update_cell_metadata_at(
+            cell_id,
+            vec!["jupyter".to_string(), "source_hidden".to_string()],
+            &serde_json::to_string(&hidden).unwrap(),
+        )
+    }
+
+    /// Set whether a cell's outputs should be hidden (JupyterLab convention).
+    ///
+    /// Args:
+    ///     cell_id: The cell ID.
+    ///     hidden: Whether the outputs should be hidden.
+    ///
+    /// Returns:
+    ///     True if the cell was found and updated, False if cell not found.
+    fn set_cell_outputs_hidden(&self, cell_id: &str, hidden: bool) -> PyResult<bool> {
+        self.update_cell_metadata_at(
+            cell_id,
+            vec!["jupyter".to_string(), "outputs_hidden".to_string()],
+            &serde_json::to_string(&hidden).unwrap(),
+        )
+    }
+
+    /// Set cell tags.
+    ///
+    /// Args:
+    ///     cell_id: The cell ID.
+    ///     tags: List of tag strings.
+    ///
+    /// Returns:
+    ///     True if the cell was found and updated, False if cell not found.
+    fn set_cell_tags(&self, cell_id: &str, tags: Vec<String>) -> PyResult<bool> {
+        self.update_cell_metadata_at(
+            cell_id,
+            vec!["tags".to_string()],
+            &serde_json::to_string(&tags).unwrap(),
+        )
+    }
+
+    // =========================================================================
     // Dependency Management (convenience methods for notebook_metadata)
     // =========================================================================
 

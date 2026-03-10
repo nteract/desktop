@@ -127,6 +127,21 @@ impl NotebookDoc {
     pub fn doc_mut(&mut self) -> &mut AutoCommit {
         &mut self.doc
     }
+
+    /// Wrap an existing AutoCommit document.
+    ///
+    /// Use this when you need to call NotebookDoc methods on an AutoCommit
+    /// that was constructed elsewhere (e.g., in a sync client).
+    pub fn wrap(doc: AutoCommit) -> Self {
+        Self { doc }
+    }
+
+    /// Consume the NotebookDoc and return the underlying AutoCommit.
+    ///
+    /// Use this after wrapping to get back the modified AutoCommit.
+    pub fn into_inner(self) -> AutoCommit {
+        self.doc
+    }
 }
 
 // ── Typed metadata helpers ──────────────────────────────────────────

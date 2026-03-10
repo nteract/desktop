@@ -558,6 +558,127 @@ class TestDocumentFirstExecution:
 
 
 # ============================================================================
+# Cell metadata tests
+# ============================================================================
+
+
+class TestCellMetadata:
+    """Test cell metadata functionality.
+
+    These tests verify that cell metadata can be read, written, and synced
+    via the automerge document.
+    """
+
+    def test_cell_has_empty_metadata_by_default(self, session):
+        """New cells have empty metadata."""
+        cell_id = session.create_cell("x = 1")
+        cell = session.get_cell(cell_id)
+
+        assert cell.metadata == {}
+        assert cell.metadata_json == "{}"
+
+    def test_set_cell_metadata(self, session):
+        """Can set cell metadata."""
+        cell_id = session.create_cell("x = 1")
+
+        metadata = {"tags": ["test", "example"], "custom_key": 42}
+        import json
+
+        result = session.set_cell_metadata(cell_id, json.dumps(metadata))
+        assert result is True
+
+        cell = session.get_cell(cell_id)
+        assert cell.metadata["tags"] == ["test", "example"]
+        assert cell.metadata["custom_key"] == 42
+
+    def test_get_cell_metadata(self, session):
+        """Can get cell metadata as JSON string."""
+        cell_id = session.create_cell("x = 1")
+
+        import json
+
+        session.set_cell_metadata(cell_id, json.dumps({"foo": "bar"}))
+
+        metadata_json = session.get_cell_metadata(cell_id)
+        assert metadata_json is not None
+        metadata = json.loads(metadata_json)
+        assert metadata["foo"] == "bar"
+
+    def test_update_cell_metadata_at_path(self, session):
+        """Can update cell metadata at a specific path."""
+        cell_id = session.create_cell("x = 1")
+
+        # Set nested metadata using path
+        result = session.update_cell_metadata_at(
+            cell_id, ["jupyter", "source_hidden"], "true"
+        )
+        assert result is True
+
+        cell = session.get_cell(cell_id)
+        assert cell.metadata["jupyter"]["source_hidden"] is True
+
+    def test_cell_is_source_hidden(self, session):
+        """Cell.is_source_hidden property works."""
+        cell_id = session.create_cell("x = 1")
+        cell = session.get_cell(cell_id)
+
+        # Initially not hidden
+        assert cell.is_source_hidden is False
+
+        # Set source hidden via typed setter
+        session.set_cell_source_hidden(cell_id, True)
+
+        cell = session.get_cell(cell_id)
+        assert cell.is_source_hidden is True
+
+    def test_cell_is_outputs_hidden(self, session):
+        """Cell.is_outputs_hidden property works."""
+        cell_id = session.create_cell("x = 1")
+
+        session.set_cell_outputs_hidden(cell_id, True)
+
+        cell = session.get_cell(cell_id)
+        assert cell.is_outputs_hidden is True
+
+    def test_cell_tags(self, session):
+        """Cell.tags property works."""
+        cell_id = session.create_cell("x = 1")
+
+        session.set_cell_tags(cell_id, ["hide-input", "parameters"])
+
+        cell = session.get_cell(cell_id)
+        assert cell.tags == ["hide-input", "parameters"]
+
+    def test_set_cell_metadata_nonexistent_cell(self, session):
+        """Setting metadata on nonexistent cell returns False."""
+        import json
+
+        result = session.set_cell_metadata("nonexistent-id", json.dumps({}))
+        assert result is False
+
+    def test_cell_metadata_syncs_between_peers(self, two_sessions):
+        """Cell metadata syncs between connected sessions."""
+        s1, s2 = two_sessions
+
+        # Session 1 creates cell and sets metadata
+        cell_id = s1.create_cell("x = 1")
+        s1.set_cell_tags(cell_id, ["important"])
+
+        # Wait for sync
+        def check_tags():
+            try:
+                cell = s2.get_cell(cell_id)
+                return cell.tags == ["important"]
+            except Exception:
+                return False
+
+        wait_for_sync(check_tags, description="metadata sync")
+
+        cell = s2.get_cell(cell_id)
+        assert cell.tags == ["important"]
+
+
+# ============================================================================
 # Multi-client synchronization tests
 # ============================================================================
 

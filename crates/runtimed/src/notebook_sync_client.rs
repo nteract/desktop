@@ -28,8 +28,8 @@ use crate::connection::{
     PROTOCOL_VERSION,
 };
 use crate::notebook_doc::{
-    get_cells_from_doc, get_metadata_from_doc, get_metadata_snapshot_from_doc, set_metadata_in_doc,
-    CellSnapshot,
+    self, get_cells_from_doc, get_metadata_from_doc, get_metadata_snapshot_from_doc,
+    set_metadata_in_doc, CellSnapshot,
 };
 use crate::notebook_metadata::{NotebookMetadataSnapshot, NOTEBOOK_METADATA_KEY};
 use crate::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
@@ -113,6 +113,19 @@ enum SyncCommand {
     GetMetadata {
         key: String,
         reply: oneshot::Sender<Option<String>>,
+    },
+    /// Set cell metadata in the Automerge doc and sync to daemon.
+    SetCellMetadata {
+        cell_id: String,
+        metadata_json: String,
+        reply: oneshot::Sender<Result<bool, NotebookSyncError>>,
+    },
+    /// Update cell metadata at a specific path and sync to daemon.
+    UpdateCellMetadataAt {
+        cell_id: String,
+        path: Vec<String>,
+        value_json: String,
+        reply: oneshot::Sender<Result<bool, NotebookSyncError>>,
     },
     /// Send a request to the daemon and wait for a response.
     SendRequest {
@@ -363,6 +376,68 @@ impl NotebookSyncHandle {
     /// `serde_json::from_str` — the snapshot is already parsed.
     pub fn get_notebook_metadata(&self) -> Option<NotebookMetadataSnapshot> {
         self.snapshot_rx.borrow().notebook_metadata.clone()
+    }
+
+    /// Get cell metadata from the local snapshot.
+    ///
+    /// Returns None if the cell is not found.
+    pub fn get_cell_metadata(&self, cell_id: &str) -> Option<serde_json::Value> {
+        let snap = self.snapshot_rx.borrow();
+        snap.cells
+            .iter()
+            .find(|c| c.id == cell_id)
+            .map(|c| c.metadata.clone())
+    }
+
+    /// Set cell metadata and sync to daemon.
+    ///
+    /// Returns true if the cell was found and updated, false if not found.
+    pub async fn set_cell_metadata(
+        &self,
+        cell_id: &str,
+        metadata: &serde_json::Value,
+    ) -> Result<bool, NotebookSyncError> {
+        let metadata_json = serde_json::to_string(metadata)
+            .map_err(|e| NotebookSyncError::SyncError(format!("serialize metadata: {}", e)))?;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(SyncCommand::SetCellMetadata {
+                cell_id: cell_id.to_string(),
+                metadata_json,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?;
+        reply_rx
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?
+    }
+
+    /// Update cell metadata at a specific path and sync to daemon.
+    ///
+    /// Path is a sequence of keys, e.g., `["jupyter", "source_hidden"]`.
+    /// Returns true if the cell was found and updated, false if not found.
+    pub async fn update_cell_metadata_at(
+        &self,
+        cell_id: &str,
+        path: &[&str],
+        value: serde_json::Value,
+    ) -> Result<bool, NotebookSyncError> {
+        let value_json = serde_json::to_string(&value)
+            .map_err(|e| NotebookSyncError::SyncError(format!("serialize value: {}", e)))?;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(SyncCommand::UpdateCellMetadataAt {
+                cell_id: cell_id.to_string(),
+                path: path.iter().map(|s| s.to_string()).collect(),
+                value_json,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?;
+        reply_rx
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?
     }
 
     /// Send a request to the daemon and wait for a response.
@@ -1364,6 +1439,45 @@ where
         self.sync_to_daemon().await
     }
 
+    /// Set cell metadata and sync to daemon.
+    ///
+    /// Returns true if the cell was found and updated, false if not found.
+    pub async fn set_cell_metadata(
+        &mut self,
+        cell_id: &str,
+        metadata: &serde_json::Value,
+    ) -> Result<bool, NotebookSyncError> {
+        let mut doc = notebook_doc::NotebookDoc::wrap(std::mem::take(&mut self.doc));
+        let result = doc
+            .set_cell_metadata(cell_id, metadata)
+            .map_err(|e| NotebookSyncError::SyncError(format!("set_cell_metadata: {}", e)))?;
+        self.doc = doc.into_inner();
+        if result {
+            self.sync_to_daemon().await?;
+        }
+        Ok(result)
+    }
+
+    /// Update cell metadata at a specific path and sync to daemon.
+    ///
+    /// Returns true if the cell was found and updated, false if not found.
+    pub async fn update_cell_metadata_at(
+        &mut self,
+        cell_id: &str,
+        path: &[&str],
+        value: serde_json::Value,
+    ) -> Result<bool, NotebookSyncError> {
+        let mut doc = notebook_doc::NotebookDoc::wrap(std::mem::take(&mut self.doc));
+        let result = doc
+            .update_cell_metadata_at(cell_id, path, value)
+            .map_err(|e| NotebookSyncError::SyncError(format!("update_cell_metadata_at: {}", e)))?;
+        self.doc = doc.into_inner();
+        if result {
+            self.sync_to_daemon().await?;
+        }
+        Ok(result)
+    }
+
     /// Add a new cell at the given index and sync to daemon.
     pub async fn add_cell(
         &mut self,
@@ -2357,6 +2471,50 @@ async fn run_sync_task<S>(
                     }
                     SyncCommand::GetMetadata { key, reply } => {
                         let _ = reply.send(client.get_metadata(&key));
+                    }
+                    SyncCommand::SetCellMetadata {
+                        cell_id,
+                        metadata_json,
+                        reply,
+                    } => {
+                        let result = match serde_json::from_str(&metadata_json) {
+                            Ok(metadata) => {
+                                let res = client.set_cell_metadata(&cell_id, &metadata).await;
+                                if res.is_ok() {
+                                    publish_snapshot(&client, &snapshot_tx);
+                                }
+                                res
+                            }
+                            Err(e) => Err(NotebookSyncError::SyncError(format!(
+                                "parse metadata: {}",
+                                e
+                            ))),
+                        };
+                        let _ = reply.send(result);
+                    }
+                    SyncCommand::UpdateCellMetadataAt {
+                        cell_id,
+                        path,
+                        value_json,
+                        reply,
+                    } => {
+                        let result = match serde_json::from_str(&value_json) {
+                            Ok(value) => {
+                                let path_refs: Vec<&str> =
+                                    path.iter().map(|s| s.as_str()).collect();
+                                let res = client
+                                    .update_cell_metadata_at(&cell_id, &path_refs, value)
+                                    .await;
+                                if res.is_ok() {
+                                    publish_snapshot(&client, &snapshot_tx);
+                                }
+                                res
+                            }
+                            Err(e) => {
+                                Err(NotebookSyncError::SyncError(format!("parse value: {}", e)))
+                            }
+                        };
+                        let _ = reply.send(result);
                     }
                     SyncCommand::SendRequest {
                         request,
