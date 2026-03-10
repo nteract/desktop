@@ -146,7 +146,6 @@ export default function App() {
 
           // Mark all steps as completed up to the current one
           const stepMap: Record<string, number> = {
-            downloading_update: 0,
             saving_notebooks: 1,
             stopping_runtimes: 2,
             closing_windows: 3,
@@ -225,7 +224,9 @@ export default function App() {
     try {
       const update = await check();
       if (!update) {
-        throw new Error("No update available");
+        throw new Error(
+          "The update is no longer available. Please close this window and check for updates again.",
+        );
       }
 
       let downloaded = 0;
@@ -368,12 +369,22 @@ export default function App() {
                       <div className="ml-7 mt-0.5 mb-1">
                         <div className="h-1 w-full rounded-full bg-muted overflow-hidden">
                           <div
-                            className="h-full rounded-full bg-foreground/60 transition-all duration-300"
-                            style={{
-                              width: downloadProgress.total
-                                ? `${Math.min(100, (downloadProgress.downloaded / downloadProgress.total) * 100)}%`
-                                : "50%",
-                            }}
+                            className={cn(
+                              "h-full rounded-full bg-foreground/60 transition-all duration-300",
+                              !downloadProgress.total && "animate-pulse",
+                            )}
+                            style={
+                              downloadProgress.total
+                                ? {
+                                    width: `${Math.min(
+                                      100,
+                                      (downloadProgress.downloaded /
+                                        downloadProgress.total) *
+                                        100,
+                                    )}%`,
+                                  }
+                                : undefined
+                            }
                           />
                         </div>
                         <p className="text-[10px] text-muted-foreground mt-0.5">
