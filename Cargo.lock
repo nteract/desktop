@@ -3527,7 +3527,7 @@ dependencies = [
 
 [[package]]
 name = "notebook"
-version = "1.4.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -5620,7 +5620,7 @@ dependencies = [
 
 [[package]]
 name = "runt-cli"
-version = "1.4.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5670,7 +5670,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed"
-version = "0.1.0-dev.10"
+version = "2.0.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -6407,7 +6407,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "sidecar"
-version = "1.4.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "chrono",

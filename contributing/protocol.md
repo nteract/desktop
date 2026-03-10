@@ -2,6 +2,42 @@
 
 This document describes the wire protocol between notebook clients (frontend WASM + Tauri relay) and the runtimed daemon.
 
+## Versioning Contract
+
+The protocol has a numeric version (`PROTOCOL_VERSION` in `connection.rs`) that governs compatibility between clients and the daemon. All published artifacts tie their major version to this protocol version:
+
+| Artifact | Version scheme | Example |
+|----------|---------------|---------|
+| `runtimed` (PyPI) | `{PROTOCOL_VERSION}.{minor}.{patch}` | `2.0.0`, `2.1.0` |
+| `runtimed` (Rust daemon) | `{PROTOCOL_VERSION}.{minor}.{patch}` | `2.0.0` |
+| `runt-cli` | `{PROTOCOL_VERSION}.{minor}.{patch}` | `2.0.0` |
+| nteract desktop app | `{PROTOCOL_VERSION}.{minor}.{patch}` | `2.0.0` |
+
+**Rules:**
+
+- **Major version = protocol version.** A `PROTOCOL_VERSION` bump (breaking wire change) forces a new major version across all artifacts. Any `runtimed 2.x.y` client can talk to any `2.x.y` daemon.
+- **Minor version = new features.** Additive changes (new request/response/broadcast variants with serde defaults) bump the minor version. Old clients ignore unknown variants; new clients degrade gracefully against old daemons.
+- **Patch version = bug fixes.** No protocol changes.
+
+### Nightly pre-releases
+
+Nightly builds publish Python wheels to PyPI as PEP 440 alpha pre-releases:
+
+```
+2.0.1a202507150900   (nightly from 2025-07-15)
+```
+
+These sort after the current stable (`2.0.0`) but before the next stable (`2.0.1`). Install with `pip install runtimed --pre`. Stable releases are published only via `python-v*` tags.
+
+### Version negotiation
+
+- **Notebook sync** (`NotebookSync`, `OpenNotebook`, `CreateNotebook` handshakes): The daemon returns `protocol_version` and `daemon_version` in its capabilities response. The client hard-fails on mismatch.
+- **Pool IPC** (`Pool` handshake): The client sends `protocol_version` in the handshake. Old clients omit it (`None`); the daemon accepts them for backward compatibility. Future versions may reject mismatched clients with a clear error.
+
+### Desktop app compatibility
+
+The desktop app bundles its own daemon binary. Version-mismatch detection between the app and its bundled daemon compares git commit hashes (appended as `+{sha}` at build time), not semver. This is because both are always built from the same commit in CI.
+
 ## Overview
 
 The notebook app communicates with runtimed over a Unix socket (named pipe on Windows) using length-prefixed, typed frames. The protocol carries three kinds of traffic:
@@ -60,7 +96,7 @@ The daemon responds with a `NotebookConnectionInfo`:
 {
   "protocol": "v2",
   "protocol_version": 2,
-  "daemon_version": "0.1.0-dev.10+abc123",
+  "daemon_version": "2.0.0+abc123",
   "notebook_id": "derived-id",
   "cell_count": 5,
   "needs_trust_approval": false,

@@ -37,7 +37,12 @@ const MAX_CONTROL_FRAME_SIZE: usize = 64 * 1024;
 #[serde(tag = "channel", rename_all = "snake_case")]
 pub enum Handshake {
     /// Pool IPC: environment take/return/status/ping.
-    Pool,
+    Pool {
+        /// Numeric protocol version for version negotiation.
+        /// Old clients omit this; the daemon treats `None` as "legacy, accept anyway."
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        protocol_version: Option<u32>,
+    },
     /// Automerge settings sync.
     SettingsSync,
     /// Automerge notebook sync (per-notebook room).
@@ -388,21 +393,40 @@ mod tests {
 
     #[tokio::test]
     async fn test_json_frame_roundtrip() {
-        let handshake = Handshake::Pool;
+        let handshake = Handshake::Pool {
+            protocol_version: Some(PROTOCOL_VERSION),
+        };
 
         let mut buf = Vec::new();
         send_json_frame(&mut buf, &handshake).await.unwrap();
 
         let mut cursor = std::io::Cursor::new(buf);
         let received: Handshake = recv_json_frame(&mut cursor).await.unwrap().unwrap();
-        assert!(matches!(received, Handshake::Pool));
+        assert!(matches!(
+            received,
+            Handshake::Pool {
+                protocol_version: Some(PROTOCOL_VERSION)
+            }
+        ));
     }
 
     #[tokio::test]
     async fn test_handshake_serialization() {
-        // Pool
-        let json = serde_json::to_string(&Handshake::Pool).unwrap();
-        assert_eq!(json, r#"{"channel":"pool"}"#);
+        // Pool (with protocol_version)
+        let json = serde_json::to_string(&Handshake::Pool {
+            protocol_version: Some(PROTOCOL_VERSION),
+        })
+        .unwrap();
+        assert_eq!(json, r#"{"channel":"pool","protocol_version":2}"#);
+
+        // Pool (legacy, no protocol_version — still deserializes)
+        let legacy: Handshake = serde_json::from_str(r#"{"channel":"pool"}"#).unwrap();
+        assert!(matches!(
+            legacy,
+            Handshake::Pool {
+                protocol_version: None
+            }
+        ));
 
         // SettingsSync
         let json = serde_json::to_string(&Handshake::SettingsSync).unwrap();

@@ -1,6 +1,6 @@
 [package]
 name = "runtimed"
-version = "0.1.0-dev.10"
+version = "2.0.0"
 edition = "2021"
 description = "Central daemon for managing Jupyter runtimes and prewarmed environments"
 repository = "https://github.com/nteract/desktop"

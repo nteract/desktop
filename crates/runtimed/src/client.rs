@@ -302,9 +302,14 @@ impl PoolClient {
         S: AsyncRead + AsyncWrite + Unpin,
     {
         // Send the channel handshake
-        connection::send_json_frame(&mut stream, &Handshake::Pool)
-            .await
-            .map_err(|e| ClientError::ProtocolError(format!("handshake: {}", e)))?;
+        connection::send_json_frame(
+            &mut stream,
+            &Handshake::Pool {
+                protocol_version: Some(connection::PROTOCOL_VERSION),
+            },
+        )
+        .await
+        .map_err(|e| ClientError::ProtocolError(format!("handshake: {}", e)))?;
 
         // Send the request as a framed JSON message
         connection::send_json_frame(&mut stream, &request)

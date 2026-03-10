@@ -39,6 +39,11 @@ on:
         description: Whether the updater channel release is prerelease
         required: true
         type: boolean
+      publish_python_prerelease:
+        description: Whether to publish Python wheels to PyPI as pre-releases (only nightly should do this)
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -892,6 +897,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Publish to PyPI
+        if: inputs.publish_python_prerelease
         continue-on-error: true
         run: uv publish --trusted-publishing always ./wheels/*.whl
 

@@ -897,7 +897,7 @@ impl Daemon {
         let handshake: Handshake = serde_json::from_slice(&handshake_bytes)?;
 
         match handshake {
-            Handshake::Pool => self.handle_pool_connection(stream).await,
+            Handshake::Pool { .. } => self.handle_pool_connection(stream).await,
             Handshake::SettingsSync => {
                 let (reader, writer) = tokio::io::split(stream);
                 let changed_tx = self.settings_changed.clone();

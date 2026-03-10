@@ -1231,8 +1231,8 @@ where
         if !runtimed::is_dev_mode() {
             let bundled_version = bundled_daemon_version();
             if let Some(info) = runtimed::singleton::get_running_daemon_info() {
-                // Compare commit hashes only - package versions differ between crates
-                // (notebook has version like "1.4.1", runtimed has "0.1.0-dev.10")
+                // Compare commit hashes only - CI appends "+{git_sha}" to the version
+                // at build time, so commit hash is the precise compatibility check.
                 let running_commit = extract_commit_hash(&info.version);
                 let bundled_commit = extract_commit_hash(&bundled_version);
 

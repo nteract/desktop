@@ -484,6 +484,10 @@ impl SyncEnvironmentResult {
 pub struct NotebookConnectionInfo {
     /// Protocol version (currently "v2").
     pub protocol: String,
+    /// Numeric protocol version for explicit version checking.
+    pub protocol_version: Option<u32>,
+    /// Daemon version string (e.g., "2.0.0+abc123").
+    pub daemon_version: Option<String>,
     /// Notebook identifier derived by the daemon.
     /// For existing files: canonical path.
     /// For new notebooks: generated UUID.
@@ -497,9 +501,10 @@ pub struct NotebookConnectionInfo {
 #[pymethods]
 impl NotebookConnectionInfo {
     fn __repr__(&self) -> String {
+        let daemon_ver = self.daemon_version.as_deref().unwrap_or("unknown");
         format!(
-            "NotebookConnectionInfo(notebook_id={}, cells={}, needs_trust={})",
-            self.notebook_id, self.cell_count, self.needs_trust_approval
+            "NotebookConnectionInfo(notebook_id={}, cells={}, protocol_version={:?}, daemon_version={})",
+            self.notebook_id, self.cell_count, self.protocol_version, daemon_ver
         )
     }
 }
@@ -509,6 +514,8 @@ impl NotebookConnectionInfo {
     pub fn from_protocol(info: runtimed::connection::NotebookConnectionInfo) -> Self {
         Self {
             protocol: info.protocol,
+            protocol_version: info.protocol_version,
+            daemon_version: info.daemon_version,
             notebook_id: info.notebook_id,
             cell_count: info.cell_count,
             needs_trust_approval: info.needs_trust_approval,
