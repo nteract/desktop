@@ -9,7 +9,7 @@ import {
   WidgetStoreProvider,
 } from "@/components/widgets/widget-store-context";
 import { WidgetView } from "@/components/widgets/widget-view";
-import { useSyncedSettings, useSyncedTheme } from "@/hooks/useSyncedSettings";
+import { useSyncedTheme } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { CondaDependencyHeader } from "./components/CondaDependencyHeader";
 import {
@@ -84,19 +84,8 @@ function AppContent() {
   const gitInfo = useGitInfo();
   const daemonInfo = useDaemonInfo();
 
-  const { theme, setTheme } = useSyncedTheme();
-  const {
-    defaultRuntime,
-    setDefaultRuntime,
-    defaultPythonEnv,
-    setDefaultPythonEnv,
-    defaultUvPackages,
-    setDefaultUvPackages,
-    defaultCondaPackages,
-    setDefaultCondaPackages,
-    keepAliveSecs,
-    setKeepAliveSecs,
-  } = useSyncedSettings();
+  // Apply theme to this window
+  useSyncedTheme();
 
   const {
     cells,
@@ -209,15 +198,6 @@ function AppContent() {
     flexibleNpmImports,
     setFlexibleNpmImports,
   } = useDenoDependencies();
-
-  // Combine hasDependencies for toolbar badge
-  // For Deno, show badge if deno.json is found with imports
-  const hasDependencies =
-    runtime === "deno"
-      ? (denoConfigInfo?.has_imports ?? false)
-      : hasUvDependencies ||
-        hasCondaDependencies ||
-        (environmentYmlInfo?.has_dependencies ?? false);
 
   // Get widget store handler for routing comm messages
   const { handleMessage: handleWidgetMessage } = useWidgetStoreRequired();
@@ -926,23 +906,10 @@ function AppContent() {
         envSource={envSource}
         envTypeHint={envTypeHint}
         dirty={dirty}
-        hasDependencies={hasDependencies}
-        theme={theme}
         envProgress={
           envProgress.isActive || envProgress.error ? envProgress : null
         }
         runtime={runtime}
-        onThemeChange={setTheme}
-        defaultRuntime={defaultRuntime}
-        onDefaultRuntimeChange={setDefaultRuntime}
-        defaultPythonEnv={defaultPythonEnv}
-        onDefaultPythonEnvChange={setDefaultPythonEnv}
-        defaultUvPackages={defaultUvPackages}
-        onDefaultUvPackagesChange={setDefaultUvPackages}
-        defaultCondaPackages={defaultCondaPackages}
-        onDefaultCondaPackagesChange={setDefaultCondaPackages}
-        keepAliveSecs={keepAliveSecs}
-        onKeepAliveSecsChange={setKeepAliveSecs}
         onSave={save}
         onStartKernel={handleStartKernel}
         onInterruptKernel={interruptKernel}

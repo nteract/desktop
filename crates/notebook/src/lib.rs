@@ -2916,6 +2916,39 @@ async fn set_synced_setting(key: String, value: serde_json::Value) -> Result<(),
     Ok(())
 }
 
+/// Open the settings window.
+///
+/// Uses singleton pattern - focuses existing window if present, otherwise creates new one.
+#[tauri::command]
+async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    // Singleton: focus existing window if present
+    if let Some(existing_window) = app.get_webview_window("settings") {
+        existing_window
+            .set_focus()
+            .map_err(|e| format!("Failed to focus settings window: {}", e))?;
+        return Ok(());
+    }
+
+    // Create settings window
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        "settings",
+        tauri::WebviewUrl::App("settings/index.html".into()),
+    )
+    .title(format!(
+        "{} Settings",
+        runt_workspace::desktop_display_name()
+    ))
+    .inner_size(560.0, 580.0)
+    .min_inner_size(450.0, 400.0)
+    .resizable(true)
+    .center()
+    .build()
+    .map_err(|e| format!("Failed to create settings window: {}", e))?;
+
+    Ok(())
+}
+
 fn focused_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
     app.webview_windows()
         .into_values()
@@ -3468,6 +3501,7 @@ pub fn run(
             // Synced settings (via runtimed Automerge)
             get_synced_settings,
             set_synced_setting,
+            open_settings_window,
             // Onboarding
             complete_onboarding,
             // Debug info
@@ -3876,6 +3910,14 @@ pub fn run(
                             (),
                         );
                     }
+                }
+                crate::menu::MENU_SETTINGS => {
+                    let app_handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = open_settings_window(app_handle).await {
+                            log::error!("[menu] Failed to open settings window: {}", e);
+                        }
+                    });
                 }
                 crate::menu::MENU_INSTALL_CLI => {
                     let app_handle = app.clone();
