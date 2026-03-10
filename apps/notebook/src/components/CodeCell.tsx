@@ -92,6 +92,8 @@ interface CodeCellProps {
   onDelete: () => void;
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
   onInsertCellAfter?: () => void;
   onClearPagePayload?: () => void;
   isLastCell?: boolean;
@@ -115,6 +117,8 @@ export function CodeCell({
   onDelete,
   onFocusPrevious,
   onFocusNext,
+  onMoveUp,
+  onMoveDown,
   onInsertCellAfter,
   onClearPagePayload,
   isLastCell = false,
@@ -181,6 +185,8 @@ export function CodeCell({
         }
       : undefined,
     onDelete,
+    onMoveUp,
+    onMoveDown,
   });
 
   // Ctrl+R to open history search

@@ -1,8 +1,24 @@
+import {
+  DndContext,
+  type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+  PointerSensor,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS as DndCSS } from "@dnd-kit/utilities";
 import { Plus, RotateCcw, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
+import { cn } from "@/lib/utils";
 import type { CellPagePayload } from "../App";
 import {
   EditorRegistryProvider,
@@ -28,6 +44,7 @@ interface NotebookViewProps {
   onExecuteCell: (cellId: string) => void;
   onInterruptKernel: () => void;
   onDeleteCell: (cellId: string) => void;
+  onMoveCell: (cellId: string, afterCellId?: string | null) => void;
   onAddCell: (type: "code" | "markdown", afterCellId?: string | null) => void;
   onClearPagePayload: (cellId: string) => void;
   onReportOutputMatchCount?: (cellId: string, count: number) => void;
@@ -73,6 +90,67 @@ function AddCellButtons({
           </Button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Wrapper component that makes a cell sortable via drag-and-drop.
+ * Uses the ribbon as a drag handle with visual feedback.
+ */
+function SortableCellWrapper({
+  id,
+  isDragging,
+  isOver,
+  children,
+}: {
+  id: string;
+  isDragging: boolean;
+  isOver: boolean;
+  children: React.ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition } =
+    useSortable({ id });
+
+  const style = {
+    transform: DndCSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={cn(
+        "relative",
+        isDragging && "z-50 opacity-90",
+        isOver && "sortable-cell-over",
+      )}
+    >
+      {/* Drag handle overlay on the ribbon area */}
+      <div
+        {...attributes}
+        {...listeners}
+        role="button"
+        tabIndex={0}
+        className={cn(
+          "absolute left-10 top-0 bottom-0 w-1 cursor-grab z-10",
+          "hover:shadow-md hover:w-2 hover:-ml-0.5",
+          "transition-all duration-150",
+          isDragging && "cursor-grabbing shadow-lg w-2 -ml-0.5",
+          // Show grip lines on hover
+          "before:content-[''] before:absolute before:inset-x-0 before:top-1/2 before:-translate-y-1/2",
+          "before:h-4 before:opacity-0 hover:before:opacity-40",
+          "before:bg-[repeating-linear-gradient(0deg,currentColor,currentColor_1px,transparent_1px,transparent_3px)]",
+          isDragging && "before:opacity-40",
+        )}
+        aria-label="Drag to reorder cell"
+      />
+      {/* Highlight indicator when another cell is dragging over this one */}
+      {isOver && (
+        <div className="absolute left-10 right-0 top-0 h-1 bg-sky-400 dark:bg-sky-500 z-20 rounded-full" />
+      )}
+      {children}
     </div>
   );
 }
@@ -138,12 +216,59 @@ function NotebookViewContent({
   onExecuteCell,
   onInterruptKernel,
   onDeleteCell,
+  onMoveCell,
   onAddCell,
   onClearPagePayload,
   onReportOutputMatchCount,
 }: NotebookViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { focusCell } = useEditorRegistry();
+
+  // Drag and drop state
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
+
+  // Sensor with slight activation delay to prevent accidental drags
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8, // 8px movement required to start drag
+      },
+    }),
+  );
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    setActiveId(event.active.id as string);
+  }, []);
+
+  const handleDragOver = useCallback((event: DragOverEvent) => {
+    setOverId(event.over?.id as string | null);
+  }, []);
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      setActiveId(null);
+      setOverId(null);
+
+      if (over && active.id !== over.id) {
+        const oldIndex = cells.findIndex((c) => c.id === active.id);
+        const newIndex = cells.findIndex((c) => c.id === over.id);
+        if (oldIndex !== -1 && newIndex !== -1) {
+          // Convert drop index to afterCellId for fractional indexing
+          const afterCellId =
+            newIndex === 0 ? null : (cells[newIndex - 1]?.id ?? null);
+          onMoveCell(active.id as string, afterCellId);
+        }
+      }
+    },
+    [cells, onMoveCell],
+  );
+
+  const handleDragCancel = useCallback(() => {
+    setActiveId(null);
+    setOverId(null);
+  }, []);
 
   // Memoize cell IDs array
   const cellIds = useMemo(() => cells.map((c) => c.id), [cells]);
@@ -204,6 +329,16 @@ function NotebookViewContent({
         }
       };
 
+      // Move cell callbacks
+      const handleMoveUp =
+        index > 0
+          ? () => onMoveCell(cell.id, index >= 2 ? cells[index - 2]?.id : null)
+          : undefined;
+      const handleMoveDown =
+        index < cellIds.length - 1
+          ? () => onMoveCell(cell.id, cells[index + 1]?.id)
+          : undefined;
+
       if (cell.cell_type === "code") {
         const pagePayload = pagePayloads.get(cell.id) ?? null;
         // Use TypeScript for Deno, IPython otherwise (for magic/shell highlighting)
@@ -238,6 +373,8 @@ function NotebookViewContent({
             onDelete={() => onDeleteCell(cell.id)}
             onFocusPrevious={onFocusPrevious}
             onFocusNext={onFocusNext}
+            onMoveUp={handleMoveUp}
+            onMoveDown={handleMoveDown}
             onInsertCellAfter={() => onAddCell("code", cell.id)}
             onClearPagePayload={() => onClearPagePayload(cell.id)}
             isLastCell={index === cells.length - 1}
@@ -258,6 +395,8 @@ function NotebookViewContent({
             onDelete={() => onDeleteCell(cell.id)}
             onFocusPrevious={onFocusPrevious}
             onFocusNext={onFocusNext}
+            onMoveUp={handleMoveUp}
+            onMoveDown={handleMoveDown}
             onInsertCellAfter={() => onAddCell("markdown", cell.id)}
             isLastCell={index === cells.length - 1}
           />
@@ -282,12 +421,13 @@ function NotebookViewContent({
       searchQuery,
       searchCurrentMatch,
       cellIds,
-      cells.length,
+      cells,
       onFocusCell,
       onUpdateCellSource,
       onExecuteCell,
       onInterruptKernel,
       onDeleteCell,
+      onMoveCell,
       onAddCell,
       onClearPagePayload,
       onReportOutputMatchCount,
@@ -331,28 +471,43 @@ function NotebookViewContent({
           </div>
         )
       ) : (
-        // biome-ignore lint/complexity/noUselessFragments: ternary else branch requires single expression
-        <>
-          {cells.map((cell, index) => (
-            <div key={cell.id}>
-              {index === 0 && (
-                <AddCellButtons afterCellId={null} onAdd={onAddCell} />
-              )}
-              <ErrorBoundary
-                fallback={(error, resetErrorBoundary) => (
-                  <CellErrorFallback
-                    error={error}
-                    onRetry={resetErrorBoundary}
-                    onDelete={() => onDeleteCell(cell.id)}
-                  />
-                )}
+        <DndContext
+          sensors={sensors}
+          onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
+          onDragEnd={handleDragEnd}
+          onDragCancel={handleDragCancel}
+        >
+          <SortableContext
+            items={cellIds}
+            strategy={verticalListSortingStrategy}
+          >
+            {cells.map((cell, index) => (
+              <SortableCellWrapper
+                key={cell.id}
+                id={cell.id}
+                isDragging={activeId === cell.id}
+                isOver={overId === cell.id && activeId !== cell.id}
               >
-                {renderCell(cell, index)}
-              </ErrorBoundary>
-              <AddCellButtons afterCellId={cell.id} onAdd={onAddCell} />
-            </div>
-          ))}
-        </>
+                {index === 0 && (
+                  <AddCellButtons afterCellId={null} onAdd={onAddCell} />
+                )}
+                <ErrorBoundary
+                  fallback={(error, resetErrorBoundary) => (
+                    <CellErrorFallback
+                      error={error}
+                      onRetry={resetErrorBoundary}
+                      onDelete={() => onDeleteCell(cell.id)}
+                    />
+                  )}
+                >
+                  {renderCell(cell, index)}
+                </ErrorBoundary>
+                <AddCellButtons afterCellId={cell.id} onAdd={onAddCell} />
+              </SortableCellWrapper>
+            ))}
+          </SortableContext>
+        </DndContext>
       )}
     </div>
   );

@@ -95,6 +95,7 @@ function AppContent() {
     updateCellSource,
     addCell,
     deleteCell,
+    moveCell,
     save,
     openNotebook,
     cloneNotebook,
@@ -1068,6 +1069,7 @@ function AppContent() {
         onExecuteCell={handleExecuteCell}
         onInterruptKernel={interruptKernel}
         onDeleteCell={deleteCell}
+        onMoveCell={moveCell}
         onAddCell={handleAddCell}
         onClearPagePayload={clearPagePayload}
         onReportOutputMatchCount={globalFind.reportOutputMatchCount}

@@ -6,6 +6,8 @@ interface UseCellKeyboardNavigationOptions {
   onExecute?: () => void;
   onExecuteAndInsert?: () => void;
   onDelete?: () => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }
 
 export function useCellKeyboardNavigation({
@@ -14,6 +16,8 @@ export function useCellKeyboardNavigation({
   onExecute,
   onExecuteAndInsert,
   onDelete,
+  onMoveUp,
+  onMoveDown,
 }: UseCellKeyboardNavigationOptions): KeyBinding[] {
   return [
     {
@@ -89,6 +93,28 @@ export function useCellKeyboardNavigation({
             key: "Alt-Enter",
             run: () => {
               onExecuteAndInsert();
+              return true;
+            },
+          },
+        ]
+      : []),
+    ...(onMoveUp
+      ? [
+          {
+            key: "Alt-ArrowUp",
+            run: () => {
+              onMoveUp();
+              return true;
+            },
+          },
+        ]
+      : []),
+    ...(onMoveDown
+      ? [
+          {
+            key: "Alt-ArrowDown",
+            run: () => {
+              onMoveDown();
               return true;
             },
           },

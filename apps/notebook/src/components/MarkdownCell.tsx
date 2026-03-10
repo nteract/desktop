@@ -25,6 +25,8 @@ interface MarkdownCellProps {
   onDelete: () => void;
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
   onInsertCellAfter?: () => void;
   isLastCell?: boolean;
   /** Whether this cell is immediately before the focused cell */
@@ -40,6 +42,8 @@ export function MarkdownCell({
   onDelete,
   onFocusPrevious,
   onFocusNext,
+  onMoveUp,
+  onMoveDown,
   onInsertCellAfter,
   isLastCell = false,
   isPreviousCellFromFocused,
@@ -240,6 +244,8 @@ export function MarkdownCell({
     onFocusNext: handleFocusNextOrCreate,
     onExecute: () => {}, // No-op for markdown, enables Shift+Enter navigation
     onDelete,
+    onMoveUp,
+    onMoveDown,
   });
 
   // Combine navigation with markdown-specific keys
