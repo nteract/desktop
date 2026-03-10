@@ -3144,9 +3144,55 @@ fn parse_metadata_from_ipynb(json: &serde_json::Value) -> Option<NotebookMetadat
 /// Parses the file and populates the Automerge doc with cells and metadata.
 ///
 /// Returns the cell count on success.
+/// Convert raw output JSON strings to blob store manifest references.
+///
+/// Each output is parsed, converted to a manifest (with large data offloaded
+/// to the blob store), and the manifest itself is stored in the blob store.
+/// Returns a vec of manifest hashes suitable for storing in the Automerge doc.
+///
+/// Falls back to storing the raw JSON string if manifest creation fails.
+async fn outputs_to_manifest_refs(raw_outputs: &[String], blob_store: &BlobStore) -> Vec<String> {
+    let mut refs = Vec::with_capacity(raw_outputs.len());
+    for output_json in raw_outputs {
+        let output_ref = match serde_json::from_str::<serde_json::Value>(output_json) {
+            Ok(output_value) => {
+                match crate::output_store::create_manifest(
+                    &output_value,
+                    blob_store,
+                    crate::output_store::DEFAULT_INLINE_THRESHOLD,
+                )
+                .await
+                {
+                    Ok(manifest_json) => {
+                        match crate::output_store::store_manifest(&manifest_json, blob_store).await
+                        {
+                            Ok(hash) => hash,
+                            Err(e) => {
+                                warn!("[notebook-sync] Failed to store output manifest: {}", e);
+                                output_json.clone()
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("[notebook-sync] Failed to create output manifest: {}", e);
+                        output_json.clone()
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("[notebook-sync] Failed to parse output JSON: {}", e);
+                output_json.clone()
+            }
+        };
+        refs.push(output_ref);
+    }
+    refs
+}
+
 pub async fn load_notebook_from_disk(
     doc: &mut NotebookDoc,
     path: &std::path::Path,
+    blob_store: &BlobStore,
 ) -> Result<usize, String> {
     // Read the file
     let content = tokio::fs::read_to_string(path)
@@ -3168,7 +3214,8 @@ pub async fn load_notebook_from_disk(
         doc.update_source(&cell.id, &cell.source)
             .map_err(|e| format!("Failed to update source: {}", e))?;
         if !cell.outputs.is_empty() {
-            doc.set_outputs(&cell.id, &cell.outputs)
+            let output_refs = outputs_to_manifest_refs(&cell.outputs, blob_store).await;
+            doc.set_outputs(&cell.id, &output_refs)
                 .map_err(|e| format!("Failed to set outputs: {}", e))?;
         }
         doc.set_execution_count(&cell.id, &cell.execution_count)
@@ -3322,6 +3369,20 @@ async fn apply_ipynb_changes(
         doc.get_cells()
     };
 
+    // Pre-convert external outputs through the blob store so they're stored as
+    // manifest hashes rather than raw JSON. This also ensures comparisons against
+    // the doc's existing manifest hashes work correctly.
+    let converted_outputs: HashMap<String, Vec<String>> = {
+        let mut map = HashMap::new();
+        for cell in external_cells {
+            if !cell.outputs.is_empty() {
+                let refs = outputs_to_manifest_refs(&cell.outputs, &room.blob_store).await;
+                map.insert(cell.id.clone(), refs);
+            }
+        }
+        map
+    };
+
     let mut doc = room.doc.write().await;
 
     // Build maps for comparison
@@ -3376,11 +3437,19 @@ async fn apply_ipynb_changes(
                         let _ = doc.set_execution_count(&ext_cell.id, &current.execution_count);
                     } else {
                         // New cell - use external values
-                        let _ = doc.set_outputs(&ext_cell.id, &ext_cell.outputs);
+                        let ext_outputs = converted_outputs
+                            .get(ext_cell.id.as_str())
+                            .map(|v| v.as_slice())
+                            .unwrap_or(&[]);
+                        let _ = doc.set_outputs(&ext_cell.id, ext_outputs);
                         let _ = doc.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
                     }
                 } else {
-                    let _ = doc.set_outputs(&ext_cell.id, &ext_cell.outputs);
+                    let ext_outputs = converted_outputs
+                        .get(ext_cell.id.as_str())
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
+                    let _ = doc.set_outputs(&ext_cell.id, ext_outputs);
                     let _ = doc.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
                 }
             }
@@ -3425,12 +3494,16 @@ async fn apply_ipynb_changes(
 
             // Preserve outputs and execution_count if kernel is running
             if !has_running_kernel {
-                if current_cell.outputs != ext_cell.outputs {
+                let ext_outputs = converted_outputs
+                    .get(ext_cell.id.as_str())
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]);
+                if current_cell.outputs != ext_outputs {
                     debug!(
                         "[notebook-watch] Updating outputs for cell: {}",
                         ext_cell.id
                     );
-                    if let Ok(true) = doc.set_outputs(&ext_cell.id, &ext_cell.outputs) {
+                    if let Ok(true) = doc.set_outputs(&ext_cell.id, ext_outputs) {
                         changed = true;
                     }
                 }
@@ -3461,7 +3534,11 @@ async fn apply_ipynb_changes(
             {
                 changed = true;
                 let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
-                let _ = doc.set_outputs(&ext_cell.id, &ext_cell.outputs);
+                let ext_outputs = converted_outputs
+                    .get(ext_cell.id.as_str())
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]);
+                let _ = doc.set_outputs(&ext_cell.id, ext_outputs);
                 let _ = doc.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
             }
         }
@@ -4471,10 +4548,163 @@ mod tests {
         let new_cell = cells.iter().find(|c| c.id == "new-cell").unwrap();
         assert_eq!(new_cell.source, "print('new')");
         assert_eq!(new_cell.execution_count, "42");
-        assert_eq!(
-            new_cell.outputs,
-            vec![r#"{"output_type":"execute_result"}"#]
+        // Outputs are now stored as manifest hashes (64-char hex) in the blob store,
+        // not as raw JSON strings.
+        assert_eq!(new_cell.outputs.len(), 1);
+        let hash = &new_cell.outputs[0];
+        assert_eq!(hash.len(), 64, "Output should be a 64-char manifest hash");
+        assert!(
+            hash.chars().all(|c| c.is_ascii_hexdigit()),
+            "Output should be a hex hash, got: {}",
+            hash
         );
+        // Verify the manifest resolves back to the original output
+        let manifest_bytes = room.blob_store.get(hash).await.unwrap().unwrap();
+        let manifest_json = String::from_utf8(manifest_bytes).unwrap();
+        let resolved = crate::output_store::resolve_manifest(&manifest_json, &room.blob_store)
+            .await
+            .unwrap();
+        assert_eq!(resolved["output_type"], "execute_result");
+    }
+
+    #[tokio::test]
+    async fn test_load_notebook_from_disk_routes_outputs_through_blob_store() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = test_blob_store(&tmp);
+
+        // Create a .ipynb file with outputs including a large base64 image
+        let large_image = "x".repeat(16 * 1024); // 16KB, above 8KB inline threshold
+        let notebook_json = serde_json::json!({
+            "nbformat": 4,
+            "nbformat_minor": 5,
+            "metadata": {},
+            "cells": [
+                {
+                    "id": "cell-1",
+                    "cell_type": "code",
+                    "source": "1 + 1",
+                    "execution_count": 1,
+                    "metadata": {},
+                    "outputs": [
+                        {
+                            "output_type": "execute_result",
+                            "execution_count": 1,
+                            "data": { "text/plain": "2" },
+                            "metadata": {}
+                        }
+                    ]
+                },
+                {
+                    "id": "cell-2",
+                    "cell_type": "code",
+                    "source": "display(img)",
+                    "execution_count": 2,
+                    "metadata": {},
+                    "outputs": [
+                        {
+                            "output_type": "display_data",
+                            "data": {
+                                "text/plain": "<Image>",
+                                "image/png": large_image
+                            },
+                            "metadata": {}
+                        }
+                    ]
+                },
+                {
+                    "id": "cell-3",
+                    "cell_type": "code",
+                    "source": "print('hi')",
+                    "execution_count": 3,
+                    "metadata": {},
+                    "outputs": [
+                        {
+                            "output_type": "stream",
+                            "name": "stdout",
+                            "text": "hi\n"
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let ipynb_path = tmp.path().join("test.ipynb");
+        std::fs::write(
+            &ipynb_path,
+            serde_json::to_string_pretty(&notebook_json).unwrap(),
+        )
+        .unwrap();
+
+        let notebook_id = ipynb_path.to_string_lossy().to_string();
+        let mut doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
+
+        let count = load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store)
+            .await
+            .unwrap();
+        assert_eq!(count, 3);
+
+        let cells = doc.get_cells();
+        assert_eq!(cells.len(), 3);
+
+        // Every output should be a 64-char hex manifest hash, not raw JSON
+        for cell in &cells {
+            for output_ref in &cell.outputs {
+                assert_eq!(
+                    output_ref.len(),
+                    64,
+                    "Cell {} output should be a 64-char manifest hash, got: {}",
+                    cell.id,
+                    &output_ref[..output_ref.len().min(80)]
+                );
+                assert!(
+                    output_ref.chars().all(|c| c.is_ascii_hexdigit()),
+                    "Cell {} output should be hex, got: {}",
+                    cell.id,
+                    output_ref
+                );
+            }
+        }
+
+        // Resolve cell-1's execute_result and verify round-trip
+        let hash = &cells[0].outputs[0];
+        let manifest_bytes = blob_store.get(hash).await.unwrap().unwrap();
+        let manifest_json = String::from_utf8(manifest_bytes).unwrap();
+        let resolved = crate::output_store::resolve_manifest(&manifest_json, &blob_store)
+            .await
+            .unwrap();
+        assert_eq!(resolved["output_type"], "execute_result");
+        assert_eq!(resolved["data"]["text/plain"], "2");
+        assert_eq!(resolved["execution_count"], 1);
+
+        // Resolve cell-2's display_data with the large image
+        let hash = &cells[1].outputs[0];
+        let manifest_bytes = blob_store.get(hash).await.unwrap().unwrap();
+        let manifest_json = String::from_utf8(manifest_bytes).unwrap();
+        // The manifest should contain a blob ref for the large image, not inline
+        let manifest: serde_json::Value = serde_json::from_str(&manifest_json).unwrap();
+        let image_ref = &manifest["data"]["image/png"];
+        assert!(
+            image_ref.get("blob").is_some(),
+            "Large image should be stored as blob ref, not inlined: {}",
+            image_ref
+        );
+        // Full round-trip should reconstruct original data
+        let resolved = crate::output_store::resolve_manifest(&manifest_json, &blob_store)
+            .await
+            .unwrap();
+        assert_eq!(resolved["output_type"], "display_data");
+        assert_eq!(resolved["data"]["image/png"], large_image);
+
+        // Resolve cell-3's stream output
+        let hash = &cells[2].outputs[0];
+        let manifest_bytes = blob_store.get(hash).await.unwrap().unwrap();
+        let manifest_json = String::from_utf8(manifest_bytes).unwrap();
+        let resolved = crate::output_store::resolve_manifest(&manifest_json, &blob_store)
+            .await
+            .unwrap();
+        assert_eq!(resolved["output_type"], "stream");
+        assert_eq!(resolved["name"], "stdout");
+        assert_eq!(resolved["text"], "hi\n");
     }
 
     #[tokio::test]

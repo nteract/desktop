@@ -1011,8 +1011,12 @@ impl Daemon {
             let existing_count = doc.cell_count();
             if existing_count == 0 {
                 // First connection - load from disk
-                match crate::notebook_sync_server::load_notebook_from_disk(&mut doc, &path_buf)
-                    .await
+                match crate::notebook_sync_server::load_notebook_from_disk(
+                    &mut doc,
+                    &path_buf,
+                    &room.blob_store,
+                )
+                .await
                 {
                     Ok(count) => {
                         info!("[runtimed] Loaded {} cells from {} into room", count, path);
