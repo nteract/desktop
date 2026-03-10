@@ -14,6 +14,47 @@ use runtimed::EnvType;
 use tempfile::TempDir;
 use tokio::time::sleep;
 
+/// Write a test .ipynb notebook file with the given cells.
+/// Each cell is a tuple of (id, cell_type, source, outputs_json_strings).
+fn write_test_ipynb(path: &std::path::Path, cells: &[(&str, &str, &str, Vec<&str>)]) {
+    let cells_json: Vec<serde_json::Value> = cells
+        .iter()
+        .enumerate()
+        .map(|(i, (id, cell_type, source, outputs))| {
+            let mut cell = serde_json::json!({
+                "id": id,
+                "cell_type": cell_type,
+                "source": source,
+                "metadata": {},
+            });
+            if *cell_type == "code" {
+                cell["execution_count"] = serde_json::json!(i + 1);
+                let output_values: Vec<serde_json::Value> = outputs
+                    .iter()
+                    .map(|o| serde_json::from_str(o).unwrap())
+                    .collect();
+                cell["outputs"] = serde_json::Value::Array(output_values);
+            }
+            cell
+        })
+        .collect();
+
+    let notebook = serde_json::json!({
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {
+            "kernelspec": {
+                "display_name": "Python 3",
+                "language": "python",
+                "name": "python3"
+            }
+        },
+        "cells": cells_json,
+    });
+
+    std::fs::write(path, serde_json::to_string_pretty(&notebook).unwrap()).unwrap();
+}
+
 /// Create a test daemon configuration with a unique socket and lock path.
 fn test_config(temp_dir: &TempDir) -> DaemonConfig {
     DaemonConfig {
@@ -700,6 +741,212 @@ async fn test_notebook_append_and_clear_outputs() {
     );
 
     // Shutdown
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+/// Test that opening a .ipynb file via OpenNotebook streams cells to the client.
+///
+/// This exercises the full streaming load path:
+/// 1. Daemon receives OpenNotebook handshake
+/// 2. Handshake responds with cell_count=0 (load is deferred)
+/// 3. Sync loop calls streaming_load_cells which parses the file,
+///    adds cells in batches, and sends sync messages
+/// 4. Client receives cells via Automerge sync protocol
+#[tokio::test]
+async fn test_streaming_load_via_open_notebook() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+
+    // Create a notebook with 7 cells (enough for 3 batches of 3 + partial)
+    let nb_path = temp_dir.path().join("streaming_test.ipynb");
+    write_test_ipynb(
+        &nb_path,
+        &[
+            (
+                "c1",
+                "code",
+                "x = 1",
+                vec![
+                    r#"{"output_type":"execute_result","data":{"text/plain":"1"},"metadata":{},"execution_count":1}"#,
+                ],
+            ),
+            ("c2", "markdown", "# Header", vec![]),
+            ("c3", "code", "y = 2", vec![]),
+            (
+                "c4",
+                "code",
+                "print('hello')",
+                vec![r#"{"output_type":"stream","name":"stdout","text":"hello\n"}"#],
+            ),
+            ("c5", "markdown", "Some text", vec![]),
+            (
+                "c6",
+                "code",
+                "z = x + y",
+                vec![
+                    r#"{"output_type":"execute_result","data":{"text/plain":"3"},"metadata":{},"execution_count":4}"#,
+                ],
+            ),
+            ("c7", "code", "import os", vec![]),
+        ],
+    );
+
+    // Open via OpenNotebook handshake — triggers streaming load
+    let (handle, _receiver, _broadcast_rx, initial_cells, _metadata, info) =
+        NotebookSyncClient::connect_open_split(socket_path.clone(), nb_path.clone(), None)
+            .await
+            .expect("should connect and open notebook");
+
+    // Handshake reports 0 cells (streaming load is deferred)
+    assert_eq!(info.cell_count, 0);
+    assert!(info.error.is_none());
+
+    // The sync task runs in the background. Wait for cells to arrive.
+    // In pipe mode, initial_cells may be empty; cells come via sync.
+    let start = std::time::Instant::now();
+    let mut cells = initial_cells;
+    while cells.len() < 7 && start.elapsed() < Duration::from_secs(5) {
+        sleep(Duration::from_millis(50)).await;
+        cells = handle.get_cells();
+    }
+
+    assert_eq!(
+        cells.len(),
+        7,
+        "should receive all 7 cells via streaming load"
+    );
+
+    // Verify cell ordering
+    let ids: Vec<&str> = cells.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(ids, vec!["c1", "c2", "c3", "c4", "c5", "c6", "c7"]);
+
+    // Verify cell types
+    assert_eq!(cells[0].cell_type, "code");
+    assert_eq!(cells[1].cell_type, "markdown");
+
+    // Verify source content
+    assert_eq!(cells[0].source, "x = 1");
+    assert_eq!(cells[1].source, "# Header");
+    assert_eq!(cells[3].source, "print('hello')");
+    assert_eq!(cells[6].source, "import os");
+
+    // Verify outputs are manifest hashes (64-char hex), not raw JSON
+    assert_eq!(cells[0].outputs.len(), 1, "c1 should have 1 output");
+    let hash = &cells[0].outputs[0];
+    assert_eq!(
+        hash.len(),
+        64,
+        "output should be a manifest hash, got: {}",
+        hash
+    );
+    assert!(
+        hash.chars().all(|c| c.is_ascii_hexdigit()),
+        "output should be hex, got: {}",
+        hash
+    );
+
+    // Verify stream output on c4
+    assert_eq!(cells[3].outputs.len(), 1, "c4 should have 1 output");
+    let hash = &cells[3].outputs[0];
+    assert_eq!(hash.len(), 64, "c4 output should be a manifest hash");
+
+    // Verify execution counts
+    assert_eq!(cells[0].execution_count, "1");
+    assert_eq!(cells[2].execution_count, "3");
+
+    // Verify c7 (no outputs) has empty outputs list
+    assert!(cells[6].outputs.is_empty(), "c7 should have no outputs");
+
+    // Shutdown
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+/// Test that a second client joining during/after streaming load gets all cells.
+#[tokio::test]
+async fn test_streaming_load_second_client_joins() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+
+    // Create notebook
+    let nb_path = temp_dir.path().join("multi_client.ipynb");
+    write_test_ipynb(
+        &nb_path,
+        &[
+            ("a1", "code", "first", vec![]),
+            ("a2", "code", "second", vec![]),
+            ("a3", "code", "third", vec![]),
+        ],
+    );
+
+    // First client opens — triggers streaming load
+    let (handle1, _rx1, _brx1, _cells1, _meta1, _info1) =
+        NotebookSyncClient::connect_open_split(socket_path.clone(), nb_path.clone(), None)
+            .await
+            .expect("client1 should connect");
+
+    // Wait for streaming load to complete
+    let start = std::time::Instant::now();
+    while handle1.get_cells().len() < 3 && start.elapsed() < Duration::from_secs(5) {
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        handle1.get_cells().len(),
+        3,
+        "client1 should have all cells"
+    );
+
+    // Second client opens the same file — should join the existing room
+    let (handle2, _rx2, _brx2, _cells2, _meta2, info2) =
+        NotebookSyncClient::connect_open_split(socket_path.clone(), nb_path.clone(), None)
+            .await
+            .expect("client2 should connect");
+
+    // Room already loaded, so handshake may report cells > 0 or 0 depending
+    // on whether the room was found with existing cells. Either way, the
+    // second client should converge to the full cell set via sync.
+    let start = std::time::Instant::now();
+    let mut cells2 = handle2.get_cells();
+    while cells2.len() < 3 && start.elapsed() < Duration::from_secs(5) {
+        sleep(Duration::from_millis(50)).await;
+        cells2 = handle2.get_cells();
+    }
+
+    assert_eq!(cells2.len(), 3, "client2 should see all 3 cells");
+    let ids: Vec<&str> = cells2.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(ids, vec!["a1", "a2", "a3"]);
+    assert_eq!(cells2[0].source, "first");
+
+    // Both clients see the same notebook_id (canonical path)
+    assert_eq!(
+        handle1.notebook_id(),
+        handle2.notebook_id(),
+        "both clients should share the same room"
+    );
+
+    // Shutdown
+    drop(handle1);
+    drop(handle2);
+    let _ = info2; // suppress unused warning
     pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
