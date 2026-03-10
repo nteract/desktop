@@ -183,8 +183,7 @@ impl Cell {
     /// Check if source should be hidden (JupyterLab convention).
     #[getter]
     fn is_source_hidden(&self) -> bool {
-        serde_json::from_str::<serde_json::Value>(&self.metadata_json)
-            .ok()
+        self.parsed_metadata()
             .and_then(|m| m.get("jupyter")?.get("source_hidden")?.as_bool())
             .unwrap_or(false)
     }
@@ -192,8 +191,7 @@ impl Cell {
     /// Check if outputs should be hidden (JupyterLab convention).
     #[getter]
     fn is_outputs_hidden(&self) -> bool {
-        serde_json::from_str::<serde_json::Value>(&self.metadata_json)
-            .ok()
+        self.parsed_metadata()
             .and_then(|m| m.get("jupyter")?.get("outputs_hidden")?.as_bool())
             .unwrap_or(false)
     }
@@ -201,8 +199,7 @@ impl Cell {
     /// Check if cell is collapsed.
     #[getter]
     fn is_collapsed(&self) -> bool {
-        serde_json::from_str::<serde_json::Value>(&self.metadata_json)
-            .ok()
+        self.parsed_metadata()
             .and_then(|m| m.get("collapsed")?.as_bool())
             .unwrap_or(false)
     }
@@ -210,8 +207,7 @@ impl Cell {
     /// Get cell tags.
     #[getter]
     fn tags(&self) -> Vec<String> {
-        serde_json::from_str::<serde_json::Value>(&self.metadata_json)
-            .ok()
+        self.parsed_metadata()
             .and_then(|m| {
                 m.get("tags")?.as_array().map(|arr| {
                     arr.iter()
@@ -224,6 +220,11 @@ impl Cell {
 }
 
 impl Cell {
+    /// Parse metadata JSON string into a Value. Returns None if parsing fails.
+    fn parsed_metadata(&self) -> Option<serde_json::Value> {
+        serde_json::from_str(&self.metadata_json).ok()
+    }
+
     /// Create a Cell from a CellSnapshot without resolving outputs.
     /// Use `from_snapshot_with_outputs` to include resolved outputs.
     pub fn from_snapshot(snapshot: runtimed::notebook_doc::CellSnapshot) -> Self {

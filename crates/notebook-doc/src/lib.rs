@@ -899,14 +899,27 @@ impl NotebookDoc {
     // ── Cell metadata ──────────────────────────────────────────────
 
     /// Get the raw metadata Value for a cell.
+    ///
+    /// Returns `None` if the cell doesn't exist.
+    /// Returns `Some({})` if the cell exists but has no or invalid metadata.
     pub fn get_cell_metadata(&self, cell_id: &str) -> Option<serde_json::Value> {
         let cells_id = self.cells_list_id()?;
         let idx = self.find_cell_index(&cells_id, cell_id)?;
         let cell_obj = self.cell_at_index(&cells_id, idx)?;
-        read_str(&self.doc, &cell_obj, "metadata").and_then(|s| serde_json::from_str(&s).ok())
+
+        // Cell exists - return its metadata or empty object if missing/invalid
+        Some(
+            read_str(&self.doc, &cell_obj, "metadata")
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| serde_json::json!({})),
+        )
     }
 
     /// Set the entire metadata object for a cell.
+    ///
+    /// Note: Metadata is stored as a JSON-encoded string, not as a CRDT structure.
+    /// Concurrent edits from multiple peers will result in last-write-wins semantics.
+    /// Use `update_cell_metadata_at` for path-based updates when possible.
     pub fn set_cell_metadata(
         &mut self,
         cell_id: &str,
@@ -935,6 +948,10 @@ impl NotebookDoc {
     /// Creates intermediate objects as needed. For example:
     /// `update_cell_metadata_at("cell-1", &["jupyter", "source_hidden"], json!(true))`
     /// will create `{"jupyter": {"source_hidden": true}}` if metadata was `{}`.
+    ///
+    /// Note: This performs a read-modify-write on the JSON string. Concurrent updates
+    /// to different paths may conflict (last-write-wins), but this is rare in practice
+    /// since metadata updates are typically user-initiated actions.
     pub fn update_cell_metadata_at(
         &mut self,
         cell_id: &str,
