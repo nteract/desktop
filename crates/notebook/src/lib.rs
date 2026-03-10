@@ -2981,6 +2981,7 @@ fn open_notebook_from_menu_without_window(
     // On macOS, activate the app to ensure the file dialog is visible
     // when the app has no windows but is still running
     #[cfg(target_os = "macos")]
+    #[allow(deprecated)]
     unsafe {
         use cocoa::appkit::NSApplication;
         use cocoa::base::nil;
