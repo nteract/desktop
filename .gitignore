@@ -45,6 +45,8 @@ __pycache__/
 **/*.egg-info/
 .venv/
 **/.venv/
+*.dSYM/
+**/*.dSYM/
 
 # Fixture artifacts from test runs
 crates/notebook/fixtures/**/uv.lock
