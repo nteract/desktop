@@ -65,7 +65,7 @@ describe("isManifestHash", () => {
   });
 
   it("returns false for mixed valid/invalid chars at 64 length", () => {
-    const hash = "a".repeat(63) + "z";
+    const hash = `${"a".repeat(63)}z`;
     expect(isManifestHash(hash)).toBe(false);
   });
 
@@ -74,7 +74,7 @@ describe("isManifestHash", () => {
   });
 
   it("returns false for strings with spaces", () => {
-    const hash = "a".repeat(32) + " " + "b".repeat(31);
+    const hash = `${"a".repeat(32)} ${"b".repeat(31)}`;
     expect(isManifestHash(hash)).toBe(false);
   });
 });
