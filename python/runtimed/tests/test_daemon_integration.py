@@ -2451,14 +2451,38 @@ class TestOpenNotebook:
         assert info.cell_count == 0
         assert info.notebook_id == session.notebook_id
 
-    def test_open_nonexistent_file_errors(self, daemon_process, monkeypatch, tmp_path):
-        """Opening missing file returns error."""
+    def test_open_nonexistent_file_creates_notebook(self, daemon_process, monkeypatch, tmp_path):
+        """Opening missing file creates a new notebook at that path."""
         socket_path, _ = daemon_process
         if socket_path is not None:
             monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
 
-        with pytest.raises(runtimed.RuntimedError):
-            runtimed.Session.open_notebook(str(tmp_path / "missing.ipynb"))
+        # Opening a non-existent path creates a new notebook
+        session = runtimed.Session.open_notebook(str(tmp_path / "new_notebook.ipynb"))
+        try:
+            info = session.connection_info
+            # Notebook is created with the path as notebook_id
+            assert "new_notebook.ipynb" in info.notebook_id
+            # New notebook starts with cells (one empty code cell)
+            # Note: cell_count in handshake may be 0 due to streaming, but notebook_id is set
+            assert info.notebook_id != ""
+        finally:
+            session.close()
+
+    def test_open_nonexistent_file_auto_appends_ipynb(self, daemon_process, monkeypatch, tmp_path):
+        """Opening missing file without .ipynb extension auto-appends it."""
+        socket_path, _ = daemon_process
+        if socket_path is not None:
+            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
+
+        # Opening a path without .ipynb extension creates notebook with .ipynb appended
+        session = runtimed.Session.open_notebook(str(tmp_path / "mynotebook"))
+        try:
+            info = session.connection_info
+            # The .ipynb extension is auto-appended
+            assert info.notebook_id.endswith("mynotebook.ipynb")
+        finally:
+            session.close()
 
     @pytest.mark.skipif(
         os.environ.get("RUNTIMED_INTEGRATION_TEST") == "1",

@@ -953,6 +953,7 @@ impl Daemon {
                     initial_metadata,
                     false, // Send ProtocolCapabilities for legacy NotebookSync handshake
                     None,  // No streaming load for legacy handshake
+                    false, // Not a newly-created notebook at path
                 )
                 .await
             }
@@ -973,6 +974,7 @@ impl Daemon {
     /// Handle an OpenNotebook connection.
     ///
     /// Daemon loads the .ipynb file, derives notebook_id, creates room, populates doc.
+    /// If the file doesn't exist, creates a new empty notebook at that path.
     /// Returns NotebookConnectionInfo, then continues as normal notebook sync.
     async fn handle_open_notebook<S>(self: Arc<Self>, stream: S, path: String) -> anyhow::Result<()>
     where
@@ -984,13 +986,82 @@ impl Daemon {
 
         info!("[runtimed] OpenNotebook requested for {}", path);
 
-        // Canonicalize path to derive notebook_id (stable across processes)
-        let path_buf = std::path::PathBuf::from(&path);
-        let notebook_id = path_buf
-            .canonicalize()
-            .unwrap_or_else(|_| path_buf.clone())
-            .to_string_lossy()
-            .to_string();
+        // Helper to send error response to client
+        async fn send_error_response<W: AsyncWrite + Unpin>(
+            writer: &mut W,
+            error: String,
+        ) -> anyhow::Result<()> {
+            let response = NotebookConnectionInfo {
+                protocol: PROTOCOL_V2.to_string(),
+                protocol_version: Some(PROTOCOL_VERSION),
+                daemon_version: Some(crate::daemon_version().to_string()),
+                notebook_id: String::new(),
+                cell_count: 0,
+                needs_trust_approval: false,
+                error: Some(error),
+            };
+            send_json_frame(writer, &response).await?;
+            Ok(())
+        }
+
+        // Check if file exists before canonicalizing (canonicalize fails for non-existent paths)
+        let mut path_buf = std::path::PathBuf::from(&path);
+        let file_exists = match tokio::fs::metadata(&path_buf).await {
+            Ok(_) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // For new files, ensure .ipynb extension
+                if path_buf.extension().is_none_or(|ext| ext != "ipynb") {
+                    let mut new_path = path_buf.as_os_str().to_owned();
+                    new_path.push(".ipynb");
+                    path_buf = std::path::PathBuf::from(new_path);
+                    info!(
+                        "[runtimed] File {} does not exist, will create new notebook at {}",
+                        path,
+                        path_buf.display()
+                    );
+                } else {
+                    info!(
+                        "[runtimed] File {} does not exist, will create new notebook",
+                        path
+                    );
+                }
+                false
+            }
+            Err(e) => {
+                // Permission denied, I/O error, etc. - return error to client
+                let (_reader, mut writer) = tokio::io::split(stream);
+                send_error_response(
+                    &mut writer,
+                    format!("Cannot access notebook '{}': {}", path, e),
+                )
+                .await?;
+                return Ok(());
+            }
+        };
+
+        // Derive notebook_id from path
+        // For existing files: canonicalize for stable cross-process identity
+        // For new files: use absolute path (canonicalize would fail)
+        let notebook_id = if file_exists {
+            match path_buf.canonicalize() {
+                Ok(canonical) => canonical.to_string_lossy().to_string(),
+                Err(e) => {
+                    // Canonicalize failed even though file exists (permission/symlink issues)
+                    let (_reader, mut writer) = tokio::io::split(stream);
+                    send_error_response(
+                        &mut writer,
+                        format!("Cannot resolve notebook path '{}': {}", path, e),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            }
+        } else {
+            std::path::absolute(&path_buf)
+                .unwrap_or_else(|_| path_buf.clone())
+                .to_string_lossy()
+                .to_string()
+        };
 
         // Get or create room for this notebook
         let docs_dir = self.config.notebook_docs_dir.clone();
@@ -1004,10 +1075,47 @@ impl Daemon {
             )
         };
 
+        // Get settings for sync and auto-launch (needed for both new and existing notebooks)
+        let settings = self.settings.read().await.get_all();
+        let default_runtime = settings.default_runtime;
+        let default_python_env = settings.default_python_env;
+
         // Check whether this connection needs to stream-load the notebook
-        // from disk. The actual load is deferred to the sync loop so cells
-        // arrive progressively via Automerge sync messages.
-        let (cell_count, needs_load) = {
+        // from disk, or create a new empty notebook.
+        // Track if we created a new notebook at this path (for auto-launch logic)
+        let mut created_new_at_path = false;
+        let (cell_count, needs_load) = if !file_exists {
+            // File doesn't exist - create empty notebook in the doc
+            let mut doc = room.doc.write().await;
+            if doc.cell_count() == 0 {
+                match crate::notebook_sync_server::create_empty_notebook(
+                    &mut doc,
+                    &default_runtime.to_string(),
+                    default_python_env.clone(),
+                    Some(&notebook_id),
+                ) {
+                    Ok(_cell_id) => {
+                        info!("[runtimed] Created new notebook at {}", path);
+                        created_new_at_path = true;
+                    }
+                    Err(e) => {
+                        error!(
+                            "[runtimed] Failed to create new notebook at {}: {}",
+                            path, e
+                        );
+                        drop(doc);
+                        let (_reader, mut writer) = tokio::io::split(stream);
+                        send_error_response(
+                            &mut writer,
+                            format!("Failed to create notebook '{}': {}", path, e),
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                }
+            }
+            (doc.cell_count(), None) // No streaming load needed
+        } else {
             let doc = room.doc.read().await;
             let existing_count = doc.cell_count();
             if existing_count == 0 && !room.is_loading.load(std::sync::atomic::Ordering::Acquire) {
@@ -1053,11 +1161,6 @@ impl Daemon {
         };
         send_json_frame(&mut writer, &response).await?;
 
-        // Get settings for sync and auto-launch
-        let settings = self.settings.read().await.get_all();
-        let default_runtime = settings.default_runtime;
-        let default_python_env = settings.default_python_env;
-
         // working_dir derived from path's parent directory
         let working_dir_path = path_buf.parent().map(|p| p.to_path_buf());
 
@@ -1080,6 +1183,7 @@ impl Daemon {
             None, // No initial_metadata - doc is already populated
             true, // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
             needs_load,
+            created_new_at_path, // Enable auto-launch for notebooks created at non-existent paths
         )
         .await
     }
@@ -1206,9 +1310,10 @@ impl Daemon {
             default_python_env,
             self.clone(),
             working_dir_path,
-            None, // No initial_metadata - doc is already populated
-            true, // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
-            None, // No streaming load - doc was just created with empty cell
+            None,  // No initial_metadata - doc is already populated
+            true,  // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
+            None,  // No streaming load - doc was just created with empty cell
+            false, // UUID-based new notebook, handled by is_new_notebook check
         )
         .await
     }

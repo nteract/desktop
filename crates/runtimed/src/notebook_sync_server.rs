@@ -675,6 +675,9 @@ pub async fn handle_notebook_sync_connection<R, W>(
     initial_metadata: Option<String>,
     skip_capabilities: bool,
     needs_load: Option<PathBuf>,
+    // True if this is a newly-created notebook at a non-existent path.
+    // Used to enable auto-launch for notebooks created via `runt notebook newfile.ipynb`.
+    created_new_at_path: bool,
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin,
@@ -731,7 +734,8 @@ where
                 )
                 // For existing files: trust must be verified (Trusted or NoDependencies)
                 // For new notebooks (UUID, no file): NoDependencies is safe to auto-launch
-                && (room.notebook_path.exists() || is_new_notebook);
+                // For newly-created notebooks at a path: also safe to auto-launch
+                && (room.notebook_path.exists() || is_new_notebook || created_new_at_path);
             (should_launch, status)
         };
 
