@@ -3141,47 +3141,58 @@ fn parse_metadata_from_ipynb(json: &serde_json::Value) -> Option<NotebookMetadat
 /// Load notebook cells and metadata from a .ipynb file into a NotebookDoc.
 ///
 /// Called by daemon-owned notebook loading (`OpenNotebook` handshake).
-/// Parses the file and populates the Automerge doc with cells and metadata.
+/// Uses a streaming JSON parser (jiter) for faster parsing of large notebooks.
+/// Cells are added to the doc as they're parsed.
 ///
 /// Returns the cell count on success.
 pub async fn load_notebook_from_disk(
     doc: &mut NotebookDoc,
     path: &std::path::Path,
 ) -> Result<usize, String> {
-    // Read the file
-    let content = tokio::fs::read_to_string(path)
+    // Read the file as bytes (faster than read_to_string, no UTF-8 validation)
+    let data = tokio::fs::read(path)
         .await
         .map_err(|e| format!("Failed to read notebook: {}", e))?;
 
-    // Parse JSON
-    let json: serde_json::Value =
-        serde_json::from_str(&content).map_err(|e| format!("Invalid notebook JSON: {}", e))?;
-
-    // Parse cells
-    let cells = parse_cells_from_ipynb(&json)
-        .ok_or_else(|| "Failed to parse cells from notebook".to_string())?;
-
-    // Populate cells in the doc
-    for (i, cell) in cells.iter().enumerate() {
-        doc.add_cell(i, &cell.id, &cell.cell_type)
-            .map_err(|e| format!("Failed to add cell: {}", e))?;
-        doc.update_source(&cell.id, &cell.source)
-            .map_err(|e| format!("Failed to update source: {}", e))?;
+    // Use streaming parser to parse cells incrementally
+    let result = crate::streaming_ipynb::stream_notebook_cells(&data, |cell, idx| {
+        // Add each cell to the doc as it's parsed
+        doc.add_cell(idx, &cell.id, &cell.cell_type).map_err(|e| {
+            crate::streaming_ipynb::StreamError::CellProcessing(format!(
+                "Failed to add cell: {}",
+                e
+            ))
+        })?;
+        doc.update_source(&cell.id, &cell.source).map_err(|e| {
+            crate::streaming_ipynb::StreamError::CellProcessing(format!(
+                "Failed to update source: {}",
+                e
+            ))
+        })?;
         if !cell.outputs.is_empty() {
-            doc.set_outputs(&cell.id, &cell.outputs)
-                .map_err(|e| format!("Failed to set outputs: {}", e))?;
+            doc.set_outputs(&cell.id, &cell.outputs).map_err(|e| {
+                crate::streaming_ipynb::StreamError::CellProcessing(format!(
+                    "Failed to set outputs: {}",
+                    e
+                ))
+            })?;
         }
         doc.set_execution_count(&cell.id, &cell.execution_count)
-            .map_err(|e| format!("Failed to set execution count: {}", e))?;
-    }
+            .map_err(|e| {
+                crate::streaming_ipynb::StreamError::CellProcessing(format!(
+                    "Failed to set execution count: {}",
+                    e
+                ))
+            })?;
+        Ok(())
+    })
+    .map_err(|e| format!("Failed to parse notebook: {}", e))?;
 
-    // Parse and set metadata
-    if let Some(metadata_snapshot) = parse_metadata_from_ipynb(&json) {
-        doc.set_metadata_snapshot(&metadata_snapshot)
-            .map_err(|e| format!("Failed to set metadata: {}", e))?;
-    }
+    // Set metadata from the streaming result
+    doc.set_metadata_snapshot(&result.metadata)
+        .map_err(|e| format!("Failed to set metadata: {}", e))?;
 
-    Ok(cells.len())
+    Ok(result.cell_count)
 }
 
 /// Create a new empty notebook with a single code cell.

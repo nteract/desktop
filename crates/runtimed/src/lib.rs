@@ -31,6 +31,7 @@ pub mod service;
 pub mod settings_doc;
 pub mod singleton;
 pub mod stream_terminal;
+pub mod streaming_ipynb;
 pub mod sync_client;
 pub mod sync_server;
 pub mod terminal_size;

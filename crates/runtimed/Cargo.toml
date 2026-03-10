@@ -65,6 +65,9 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 # Automerge CRDT for settings sync
 automerge = "0.7"
 
+# Fast streaming JSON parser for incremental notebook loading
+jiter = "0.13"
+
 # Shared notebook document types (cell CRUD, metadata, sync)
 notebook-doc = { path = "../notebook-doc", features = ["persistence"] }
 
