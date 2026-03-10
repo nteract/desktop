@@ -429,6 +429,7 @@ impl NotebookDoc {
     /// returned by each Automerge insertion — no `find_cell_index` lookup
     /// is needed. This eliminates the O(n) linear scan per operation that
     /// makes sequential calls O(n²) during bulk loads.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_cell_full(
         &mut self,
         index: usize,
