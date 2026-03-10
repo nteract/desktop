@@ -499,20 +499,25 @@ impl Daemon {
         //      — multiple spawned tasks hold Arc clones that may not all unwind
         //      during tokio runtime teardown.
         //   2. A second ctrl-c or SIGKILL skips destructors entirely.
-        {
+        //
+        // To avoid holding the notebook_rooms lock across .await points, first
+        // drain the map into an owned collection, then shut down kernels.
+        let drained_rooms = {
             let mut rooms = self.notebook_rooms.lock().await;
-            for (notebook_id, room) in rooms.drain() {
-                if let Some(mut kernel) = room.kernel.lock().await.take() {
-                    info!(
-                        "[runtimed] Shutting down kernel for notebook on exit: {}",
-                        notebook_id
+            rooms.drain().collect::<Vec<_>>()
+        };
+
+        for (notebook_id, room) in drained_rooms {
+            if let Some(mut kernel) = room.kernel.lock().await.take() {
+                info!(
+                    "[runtimed] Shutting down kernel for notebook on exit: {}",
+                    notebook_id
+                );
+                if let Err(e) = kernel.shutdown().await {
+                    warn!(
+                        "[runtimed] Error shutting down kernel for {}: {}",
+                        notebook_id, e
                     );
-                    if let Err(e) = kernel.shutdown().await {
-                        warn!(
-                            "[runtimed] Error shutting down kernel for {}: {}",
-                            notebook_id, e
-                        );
-                    }
                 }
             }
         }
