@@ -14,6 +14,7 @@ use runtimed::singleton::get_running_daemon_info;
 
 #[derive(Parser, Debug)]
 #[command(name = "runtimed")]
+#[command(version)]
 #[command(about = "Runtime daemon for managing Jupyter environments")]
 struct Cli {
     #[command(subcommand)]
