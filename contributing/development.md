@@ -158,7 +158,13 @@ RUNTIMED_DEV=1 cargo xtask dev
 
 Per-worktree state is stored in `~/.cache/runt/worktrees/{hash}/`.
 
-**For AI agents:** Use `./target/debug/runt` directly to interact with the daemon. See the "Agent Access to Dev Daemon" section in AGENTS.md.
+**For AI agents:** Use `./target/debug/runt` directly to interact with the daemon. See the "Agent Access to Dev Daemon" section in CLAUDE.md. When using a raw terminal (not Zed tasks), set the env vars manually:
+
+```bash
+export RUNTIMED_DEV=1
+export RUNTIMED_WORKSPACE_PATH="$(pwd)"
+./target/debug/runt daemon status
+```
 
 ### Testing Against System Daemon (Production Mode)
 
@@ -201,3 +207,45 @@ If the app says "Dev daemon not running":
 - Run `cargo xtask dev-daemon` in another terminal first
 
 See [contributing/runtimed.md](./runtimed.md) for full daemon development docs.
+
+## Before You Commit
+
+CI rejects PRs that fail formatting. Run these before every commit:
+
+```bash
+# Format Rust
+cargo fmt
+
+# Format and lint TypeScript/JavaScript
+npx @biomejs/biome check --fix apps/notebook/src/ e2e/
+```
+
+Use [conventional commits](https://www.conventionalcommits.org/) for commit messages and PR titles:
+
+```
+feat(kernel): add environment source labels
+fix(runtimed): handle missing daemon socket
+docs(agents): enforce conventional commit format
+```
+
+## Zed Editor Integration
+
+The repo includes `.zed/tasks.json` with pre-configured tasks that set the correct environment variables for dev mode. Use `task: spawn` (cmd-shift-t) to run them:
+
+| Task | What it does |
+|------|-------------|
+| **Dev Daemon** | `cargo xtask dev-daemon` with `RUNTIMED_DEV=1` and `RUNTIMED_WORKSPACE_PATH` |
+| **Dev App** | `cargo xtask dev` with dev env vars and auto-assigned Vite port |
+| **Daemon Status** | `./target/debug/runt daemon status` pointed at the worktree daemon |
+| **Daemon Logs** | `./target/debug/runt daemon logs -f` with live tail |
+| **Format** | `cargo fmt` + biome in one step |
+| **Setup** | `pnpm install && cargo xtask build` for first-time setup |
+
+The tasks use `$ZED_WORKTREE_ROOT` for `RUNTIMED_WORKSPACE_PATH`, giving each Zed worktree its own isolated daemon — no conflicts when working across branches.
+
+**For agents in Zed:** The Zed task env vars aren't available in agent terminal sessions. Set them explicitly:
+
+```bash
+export RUNTIMED_DEV=1
+export RUNTIMED_WORKSPACE_PATH="/path/to/your/worktree"
+```

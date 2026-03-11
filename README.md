@@ -78,6 +78,7 @@ nteract/desktop
 │   ├── runtimed-py/       # Python bindings for the daemon
 │   ├── runtimed-wasm/     # WASM Automerge bindings for frontend (same automerge crate as daemon)
 │   ├── notebook/          # Notebook Tauri app
+│   ├── notebook-doc/      # Shared Automerge document operations (cells, metadata, sync)
 │   ├── sidecar/           # Sidecar wry/tao app
 │   ├── tauri-jupyter/     # Shared Tauri/Jupyter utilities
 │   ├── kernel-launch/     # Shared kernel launching API
@@ -148,6 +149,16 @@ The underlying Rust libraries are published to crates.io:
 - [`jupyter-protocol`](https://crates.io/crates/jupyter-protocol) — Jupyter messaging protocol
 - [`runtimelib`](https://crates.io/crates/runtimelib) — Jupyter kernel interactions over ZeroMQ
 - [`nbformat`](https://crates.io/crates/nbformat) — Notebook parsing
+
+## Contributing
+
+See the `contributing/` directory for detailed guides:
+
+- [Development workflow](contributing/development.md) — build commands, dev daemon, Zed tasks
+- [Architecture](contributing/architecture.md) — runtime principles, daemon, state, sync
+- [Protocol](contributing/protocol.md) — wire protocol, magic bytes preamble, version negotiation
+- [Releasing](contributing/releasing.md) — versioning scheme, release procedures, tag conventions
+- [Testing](contributing/testing.md) — Vitest, Rust, Python, E2E
 
 ## License
 

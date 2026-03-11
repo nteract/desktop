@@ -6,9 +6,8 @@ each other. The key insight: the Notebook app (Tauri) bundles `runtimed` and
 step. Similarly, frontend assets must be built before their consuming Rust crates
 compile.
 
-> **Note:** PR [#209](https://github.com/nteract/desktop/pull/209) improves the
-> dev workflow so `cargo xtask dev` handles the sidecar binary build
-> automatically, but for release builds the dependency chain below still applies.
+> **Note:** `cargo xtask dev` handles the sidecar binary build automatically
+> in development. For release builds the dependency chain below still applies.
 
 ## Full Build Dependency Graph
 
@@ -21,12 +20,14 @@ graph TD
 
     subgraph "Rust Crates (Cargo workspace)"
         TJ["tauri-jupyter<br/><i>shared Jupyter types</i>"]
+        ND["notebook-doc<br/><i>shared Automerge doc ops</i>"]
         RD["runtimed (lib + bin)<br/><i>daemon</i>"]
         SC["sidecar (lib + bin)<br/><i>output viewer</i>"]
         RC["runt-cli (bin: runt)<br/><i>CLI</i>"]
         NB["notebook (Tauri app)<br/><i>main app</i>"]
         XT["xtask<br/><i>build orchestrator</i>"]
         RWASM["runtimed-wasm<br/><i>WASM notebook doc ops</i>"]
+        RDPY["runtimed-py<br/><i>Python bindings</i>"]
     end
 
     subgraph "Bundled Artifacts"
@@ -42,9 +43,12 @@ graph TD
     %% Rust crate dependencies (path deps in Cargo.toml)
     TJ -->|"path dep"| SC
     TJ -->|"path dep"| NB
+    ND -->|"path dep"| RD
+    ND -->|"path dep"| RWASM
+    ND -->|"path dep"| RDPY
     RD -->|"path dep"| NB
     RD -->|"path dep"| RC
-    SC -->|"path dep"| RC
+    RD -->|"path dep"| RDPY
 
     %% External binary bundling (not a Cargo dep — a Tauri bundle dep)
     RD -.->|"binary copied to<br/>crates/notebook/binaries/"| APP
@@ -52,7 +56,7 @@ graph TD
     NB -->|"cargo tauri build"| APP
 
     %% Python package
-    RC -->|"maturin build<br/>(bindings = bin)"| PY
+    RDPY -->|"maturin build<br/>(bindings = pyo3)"| PY
     SUI -->|"embedded via<br/>rust-embed in sidecar crate"| PY
 
     %% xtask orchestrates everything
@@ -65,7 +69,7 @@ graph TD
     classDef artifact fill:#e8f5e9,stroke:#2e7d32
 
     class SUI,NUI frontend
-    class TJ,RD,SC,RC,NB,XT,RWASM rust
+    class TJ,ND,RD,SC,RC,NB,XT,RWASM,RDPY rust
     class APP,PY artifact
 ```
 
@@ -99,6 +103,7 @@ graph BT
     SC["sidecar"]
     RC["runt-cli"]
     NB["notebook"]
+    ND["notebook-doc"]
     XT["xtask"]
     KL["kernel-launch"]
     KE["kernel-env"]
@@ -115,9 +120,12 @@ graph BT
     NB -->|"depends on"| RT
     NB -->|"depends on"| RW
     RC -->|"depends on"| RD
+    RC -->|"depends on"| RW
+    RD -->|"depends on"| ND
     RD -->|"depends on"| KL
     RD -->|"depends on"| KE
     RDPY -->|"depends on"| RD
+    RWASM -->|"depends on"| ND
 
     classDef standalone fill:#fff9c4,stroke:#f9a825
     classDef leaf fill:#c8e6c9,stroke:#388e3c
@@ -126,7 +134,7 @@ graph BT
     class TJ,KL,KE,RT,RW,RWASM standalone
     class XT standalone
     class NB,RC,RDPY leaf
-    class RD shared
+    class RD,ND shared
 ```
 
 ## Key Points
@@ -139,4 +147,5 @@ graph BT
 | `isolated-renderer` built inline | The notebook-ui Vite plugin builds the isolated renderer and embeds it as a virtual module — no separate build step needed |
 | `xtask` has no Cargo deps | It shells out to `cargo build`, `pnpm`, and `cargo tauri` to orchestrate the full build |
 | `runtimed-wasm` must build before `notebook-ui` | wasm-pack output lands in `apps/notebook/src/wasm/runtimed-wasm/`; Vite imports it at build time. Artifacts are committed to the repo, so this step is only needed when changing `crates/runtimed-wasm/`. |
-| Python wheel uses maturin | `python/runtimed/pyproject.toml` points `maturin` at `crates/runt/Cargo.toml` with `bindings = "bin"` |
+| Python wheel uses maturin | `python/runtimed/pyproject.toml` points `maturin` at `crates/runtimed-py/Cargo.toml` with `bindings = "pyo3"` |
+| `notebook-doc` is shared | `crates/notebook-doc/` provides Automerge document operations used by `runtimed`, `runtimed-wasm`, and `runtimed-py` — the single source of truth for cell mutations |
