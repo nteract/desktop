@@ -111,6 +111,73 @@ export function mergeConsecutiveStreams(
 }
 
 /**
+ * Synchronous cell materialization for local mutations.
+ *
+ * Uses cache-only output resolution (no blob fetches). Safe to call when:
+ * - Adding new cells (outputs are empty)
+ * - Deleting cells (no new outputs)
+ * - Moving cells (no new outputs)
+ * - Updating source (outputs unchanged)
+ *
+ * For daemon sync with potentially new blob hashes, use cellSnapshotsToNotebookCells().
+ */
+export function cellSnapshotsToNotebookCellsSync(
+  snapshots: CellSnapshot[],
+  cache: Map<string, JupyterOutput>,
+): NotebookCell[] {
+  return snapshots.map((snap) => {
+    const executionCount =
+      snap.execution_count === "null"
+        ? null
+        : Number.parseInt(snap.execution_count, 10);
+
+    const metadata = snap.metadata ?? {};
+
+    if (snap.cell_type === "code") {
+      // Resolve outputs from cache only — skip blob fetches
+      const resolvedOutputs = snap.outputs
+        .map((outputStr) => {
+          const cached = cache.get(outputStr);
+          if (cached) return cached;
+
+          // If not a manifest hash, parse as JSON
+          if (!isManifestHash(outputStr)) {
+            try {
+              const output = JSON.parse(outputStr) as JupyterOutput;
+              cache.set(outputStr, output);
+              return output;
+            } catch {
+              return null;
+            }
+          }
+
+          // Manifest hash but not cached — return null (will resolve on daemon sync)
+          return null;
+        })
+        .filter((o): o is JupyterOutput => o !== null);
+
+      const outputs = mergeConsecutiveStreams(resolvedOutputs);
+
+      return {
+        id: snap.id,
+        cell_type: "code" as const,
+        source: snap.source,
+        execution_count: Number.isNaN(executionCount) ? null : executionCount,
+        outputs,
+        metadata,
+      };
+    }
+
+    return {
+      id: snap.id,
+      cell_type: snap.cell_type as "markdown" | "raw",
+      source: snap.source,
+      metadata,
+    };
+  });
+}
+
+/**
  * Convert CellSnapshots to NotebookCells, resolving manifest hashes.
  *
  * This is the primary materialization function shared between `useNotebook`
