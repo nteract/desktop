@@ -241,6 +241,7 @@ impl Cell {
         Self {
             id: snapshot.id,
             cell_type: snapshot.cell_type,
+            position: snapshot.position,
             source: snapshot.source,
             execution_count,
             outputs: Vec::new(),
@@ -260,6 +261,7 @@ impl Cell {
         Self {
             id: snapshot.id,
             cell_type: snapshot.cell_type,
+            position: snapshot.position,
             source: snapshot.source,
             execution_count,
             outputs,

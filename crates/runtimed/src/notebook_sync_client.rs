@@ -1494,29 +1494,52 @@ where
     }
 
     /// Add a new cell at the given index and sync to daemon.
+    ///
+    /// Internally converts the index to a fractional position using the
+    /// Map-based cell schema (schema_version 2).
     pub async fn add_cell(
         &mut self,
         index: usize,
         cell_id: &str,
         cell_type: &str,
     ) -> Result<(), NotebookSyncError> {
+        use loro_fractional_index::FractionalIndex;
+
         let cells_id = self
-            .ensure_cells_list()
+            .ensure_cells_map()
             .map_err(|e| NotebookSyncError::SyncError(format!("ensure cells: {}", e)))?;
 
-        let len = self.doc.length(&cells_id);
-        let index = index.min(len);
+        // Compute position from index: get sorted cells, find neighbors
+        let sorted_cells = get_cells_from_doc(&self.doc);
+        let position = if sorted_cells.is_empty() {
+            FractionalIndex::default()
+        } else if index == 0 {
+            let first_pos = FractionalIndex::from_hex_string(&sorted_cells[0].position);
+            FractionalIndex::new_before(&first_pos)
+        } else {
+            let clamped = index.min(sorted_cells.len());
+            let prev_pos = FractionalIndex::from_hex_string(&sorted_cells[clamped - 1].position);
+            if clamped < sorted_cells.len() {
+                let next_pos = FractionalIndex::from_hex_string(&sorted_cells[clamped].position);
+                FractionalIndex::new(Some(&prev_pos), Some(&next_pos)).unwrap_or_default()
+            } else {
+                FractionalIndex::new_after(&prev_pos)
+            }
+        };
 
         let cell_map = self
             .doc
-            .insert_object(&cells_id, index, ObjType::Map)
-            .map_err(|e| NotebookSyncError::SyncError(format!("insert: {}", e)))?;
+            .put_object(&cells_id, cell_id, ObjType::Map)
+            .map_err(|e| NotebookSyncError::SyncError(format!("put cell: {}", e)))?;
         self.doc
             .put(&cell_map, "id", cell_id)
             .map_err(|e| NotebookSyncError::SyncError(format!("put id: {}", e)))?;
         self.doc
             .put(&cell_map, "cell_type", cell_type)
             .map_err(|e| NotebookSyncError::SyncError(format!("put type: {}", e)))?;
+        self.doc
+            .put(&cell_map, "position", position.to_string().as_str())
+            .map_err(|e| NotebookSyncError::SyncError(format!("put position: {}", e)))?;
         self.doc
             .put_object(&cell_map, "source", ObjType::Text)
             .map_err(|e| NotebookSyncError::SyncError(format!("put source: {}", e)))?;
@@ -1541,23 +1564,43 @@ where
         cell_type: &str,
         source: &str,
     ) -> Result<(), NotebookSyncError> {
+        use loro_fractional_index::FractionalIndex;
+
         let cells_id = self
-            .ensure_cells_list()
+            .ensure_cells_map()
             .map_err(|e| NotebookSyncError::SyncError(format!("ensure cells: {}", e)))?;
 
-        let len = self.doc.length(&cells_id);
-        let index = index.min(len);
+        // Compute position from index
+        let sorted_cells = get_cells_from_doc(&self.doc);
+        let position = if sorted_cells.is_empty() {
+            FractionalIndex::default()
+        } else if index == 0 {
+            let first_pos = FractionalIndex::from_hex_string(&sorted_cells[0].position);
+            FractionalIndex::new_before(&first_pos)
+        } else {
+            let clamped = index.min(sorted_cells.len());
+            let prev_pos = FractionalIndex::from_hex_string(&sorted_cells[clamped - 1].position);
+            if clamped < sorted_cells.len() {
+                let next_pos = FractionalIndex::from_hex_string(&sorted_cells[clamped].position);
+                FractionalIndex::new(Some(&prev_pos), Some(&next_pos)).unwrap_or_default()
+            } else {
+                FractionalIndex::new_after(&prev_pos)
+            }
+        };
 
         let cell_map = self
             .doc
-            .insert_object(&cells_id, index, ObjType::Map)
-            .map_err(|e| NotebookSyncError::SyncError(format!("insert: {}", e)))?;
+            .put_object(&cells_id, cell_id, ObjType::Map)
+            .map_err(|e| NotebookSyncError::SyncError(format!("put cell: {}", e)))?;
         self.doc
             .put(&cell_map, "id", cell_id)
             .map_err(|e| NotebookSyncError::SyncError(format!("put id: {}", e)))?;
         self.doc
             .put(&cell_map, "cell_type", cell_type)
             .map_err(|e| NotebookSyncError::SyncError(format!("put type: {}", e)))?;
+        self.doc
+            .put(&cell_map, "position", position.to_string().as_str())
+            .map_err(|e| NotebookSyncError::SyncError(format!("put position: {}", e)))?;
         let source_id = self
             .doc
             .put_object(&cell_map, "source", ObjType::Text)
@@ -1580,18 +1623,14 @@ where
 
     /// Delete a cell by ID and sync to daemon.
     pub async fn delete_cell(&mut self, cell_id: &str) -> Result<(), NotebookSyncError> {
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
         };
 
-        let idx = match self.find_cell_index(&cells_id, cell_id) {
-            Some(i) => i,
-            None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
-        };
-
+        // Direct key delete — O(1), no find_cell_index needed
         self.doc
-            .delete(&cells_id, idx)
+            .delete(&cells_id, cell_id)
             .map_err(|e| NotebookSyncError::SyncError(format!("delete: {}", e)))?;
 
         self.sync_to_daemon().await
@@ -1603,15 +1642,11 @@ where
         cell_id: &str,
         source: &str,
     ) -> Result<(), NotebookSyncError> {
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
         };
-        let idx = match self.find_cell_index(&cells_id, cell_id) {
-            Some(i) => i,
-            None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
-        };
-        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
             Some(o) => o,
             None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
         };
@@ -1639,15 +1674,11 @@ where
         cell_id: &str,
         text: &str,
     ) -> Result<(), NotebookSyncError> {
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
         };
-        let idx = match self.find_cell_index(&cells_id, cell_id) {
-            Some(i) => i,
-            None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
-        };
-        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
             Some(o) => o,
             None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
         };
@@ -1678,15 +1709,11 @@ where
         cell_id: &str,
         outputs: &[String],
     ) -> Result<(), NotebookSyncError> {
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
         };
-        let idx = match self.find_cell_index(&cells_id, cell_id) {
-            Some(i) => i,
-            None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
-        };
-        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
             Some(o) => o,
             None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
         };
@@ -1711,15 +1738,11 @@ where
         cell_id: &str,
         output: &str,
     ) -> Result<(), NotebookSyncError> {
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
         };
-        let idx = match self.find_cell_index(&cells_id, cell_id) {
-            Some(i) => i,
-            None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
-        };
-        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
             Some(o) => o,
             None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
         };
@@ -1738,15 +1761,11 @@ where
 
     /// Clear all outputs and reset execution_count for a cell, then sync to daemon.
     pub async fn clear_outputs(&mut self, cell_id: &str) -> Result<(), NotebookSyncError> {
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
         };
-        let idx = match self.find_cell_index(&cells_id, cell_id) {
-            Some(i) => i,
-            None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
-        };
-        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
             Some(o) => o,
             None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
         };
@@ -1771,15 +1790,11 @@ where
         cell_id: &str,
         count: &str,
     ) -> Result<(), NotebookSyncError> {
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
         };
-        let idx = match self.find_cell_index(&cells_id, cell_id) {
-            Some(i) => i,
-            None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
-        };
-        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
             Some(o) => o,
             None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
         };
@@ -2079,27 +2094,9 @@ where
         }
     }
 
-    fn cells_list_id(&self) -> Option<automerge::ObjId> {
+    fn cells_map_id(&self) -> Option<automerge::ObjId> {
         self.doc
             .get(automerge::ROOT, "cells")
-            .ok()
-            .flatten()
-            .and_then(|(value, id)| match value {
-                automerge::Value::Object(ObjType::List) => Some(id),
-                _ => None,
-            })
-    }
-
-    fn ensure_cells_list(&mut self) -> Result<automerge::ObjId, automerge::AutomergeError> {
-        if let Some(id) = self.cells_list_id() {
-            return Ok(id);
-        }
-        self.doc.put_object(automerge::ROOT, "cells", ObjType::List)
-    }
-
-    fn cell_at_index(&self, cells_id: &automerge::ObjId, index: usize) -> Option<automerge::ObjId> {
-        self.doc
-            .get(cells_id, index)
             .ok()
             .flatten()
             .and_then(|(value, id)| match value {
@@ -2108,30 +2105,22 @@ where
             })
     }
 
-    fn find_cell_index(&self, cells_id: &automerge::ObjId, cell_id: &str) -> Option<usize> {
-        let len = self.doc.length(cells_id);
-        for i in 0..len {
-            if let Some(cell_obj) = self.cell_at_index(cells_id, i) {
-                if self
-                    .doc
-                    .get(&cell_obj, "id")
-                    .ok()
-                    .flatten()
-                    .and_then(|(v, _)| match v {
-                        automerge::Value::Scalar(s) => match s.as_ref() {
-                            automerge::ScalarValue::Str(s) => Some(s.to_string()),
-                            _ => None,
-                        },
-                        _ => None,
-                    })
-                    .as_deref()
-                    == Some(cell_id)
-                {
-                    return Some(i);
-                }
-            }
+    fn ensure_cells_map(&mut self) -> Result<automerge::ObjId, automerge::AutomergeError> {
+        if let Some(id) = self.cells_map_id() {
+            return Ok(id);
         }
-        None
+        self.doc.put_object(automerge::ROOT, "cells", ObjType::Map)
+    }
+
+    fn cell_obj_id(&self, cells_id: &automerge::ObjId, cell_id: &str) -> Option<automerge::ObjId> {
+        self.doc
+            .get(cells_id, cell_id)
+            .ok()
+            .flatten()
+            .and_then(|(value, id)| match value {
+                automerge::Value::Object(ObjType::Map) => Some(id),
+                _ => None,
+            })
     }
 
     fn outputs_list_id(&self, cell_obj: &automerge::ObjId) -> Option<automerge::ObjId> {
