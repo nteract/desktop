@@ -7,7 +7,7 @@ This document describes the wire protocol between notebook clients (frontend WAS
 Two independent version numbers handle compatibility, separate from the artifact version:
 
 - **Protocol version** (`PROTOCOL_VERSION` in `connection.rs`, currently `2`) — governs wire compatibility. Validated by the 5-byte magic preamble (`0xC0DE01AC` + version byte) at the start of every connection. Bump when the framing, handshake shape, or message serialization format changes.
-- **Schema version** (`SCHEMA_VERSION` in `notebook-doc/src/lib.rs`, currently `1`) — governs Automerge document compatibility. Stored in the doc root as `schema_version`. Bump when the document structure changes (e.g., switching cells from ordered list to fractional-indexed map).
+- **Schema version** (`SCHEMA_VERSION` in `notebook-doc/src/lib.rs`, currently `2`) — governs Automerge document compatibility. Stored in the doc root as `schema_version`. Bump when the document structure changes (v2 switched cells from an ordered list to a fractional-indexed map).
 
 These are just incrementing integers. They evolve independently from each other and from the artifact version. A protocol or schema bump doesn't automatically force a major version bump — that depends on whether the change is user-facing.
 
