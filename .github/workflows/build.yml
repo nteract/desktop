@@ -470,6 +470,14 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
+      - name: Pre-seed settings to skip onboarding
+        run: |
+          # The app shows an onboarding window on fresh installs, which has no
+          # notebook webview for WebDriver to interact with. Pre-seed settings
+          # so the app opens a notebook directly.
+          mkdir -p ~/.config/nteract-nightly
+          echo '{"onboarding_completed": true}' > ~/.config/nteract-nightly/settings.json
+
       - name: Start E2E daemon
         run: |
           TARGET=$(ls target/release/binaries/ | grep runtimed | head -1)
@@ -634,6 +642,10 @@ jobs:
 
             echo "=== Running $name ==="
 
+            # Pre-seed settings to skip onboarding
+            mkdir -p ~/.config/nteract-nightly
+            echo '{"onboarding_completed": true}' > ~/.config/nteract-nightly/settings.json
+
             # Start daemon fresh for each test
             TARGET=$(ls target/release/binaries/ | grep runtimed | head -1)
             RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
@@ -669,6 +681,10 @@ jobs:
             local name="$3"
 
             echo "=== Running $name ==="
+
+            # Pre-seed settings to skip onboarding
+            mkdir -p ~/.config/nteract-nightly
+            echo '{"onboarding_completed": true}' > ~/.config/nteract-nightly/settings.json
 
             # Start daemon with fixture directory as workspace path
             TARGET=$(ls target/release/binaries/ | grep runtimed | head -1)
