@@ -4,7 +4,7 @@
  * Verifies that notebooks with inline conda dependencies get a cached
  * environment with those deps installed (via rattler, not the prewarmed pool).
  *
- * Fixture: 3-conda-inline.ipynb (has numpy dependency via conda)
+ * Fixture: 3-conda-inline.ipynb (has markupsafe dependency via conda)
  */
 
 import { browser } from "@wdio/globals";
@@ -56,7 +56,7 @@ describe("Conda Inline Dependencies", () => {
     await browser.keys([modKey, "a"]);
     await browser.pause(100);
 
-    await typeSlowly("import numpy; print(numpy.__version__)");
+    await typeSlowly("import markupsafe; print(markupsafe.__version__)");
     await browser.keys(["Shift", "Enter"]);
 
     // Wait for version output

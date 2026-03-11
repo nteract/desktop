@@ -1623,7 +1623,7 @@ class TestProjectFileDetection:
         """notebook_path near pyproject.toml auto-detects uv:pyproject.
 
         Uses `uv run --with ipykernel` to install deps from the fixture
-        pyproject.toml (pandas>=2.0, numpy).
+        pyproject.toml (httpx).
         """
         import json
 
@@ -1643,10 +1643,10 @@ class TestProjectFileDetection:
 
         assert session.env_source == "uv:pyproject"
 
-        # The fixture pyproject.toml declares numpy as a dependency
-        result = session.run("import numpy; print(numpy.__version__)")
+        # The fixture pyproject.toml declares httpx as a dependency
+        result = session.run("import httpx; print(httpx.__version__)")
         assert result.success, (
-            f"Failed to import numpy from pyproject env: {result.stderr}"
+            f"Failed to import httpx from pyproject env: {result.stderr}"
         )
 
     def test_pixi_auto_detection(self, session):

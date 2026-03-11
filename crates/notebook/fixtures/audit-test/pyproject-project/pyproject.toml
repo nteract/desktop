@@ -3,11 +3,5 @@ name = "audit-test"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "pandas>=2.0",
-    "numpy",
-]
-
-[tool.uv]
-dev-dependencies = [
-    "pytest",
+    "httpx",
 ]

@@ -6,7 +6,7 @@
  *
  * The app captures its working directory at startup and uses it
  * for project file detection. This test runs the app from a fixture
- * directory containing pyproject.toml with pandas.
+ * directory containing pyproject.toml with httpx.
  *
  * Run with: ./e2e/dev.sh test-untitled-pyproject
  */
@@ -25,14 +25,14 @@ describe("Untitled Notebook with pyproject.toml", () => {
     await waitForKernelReady(120000);
   });
 
-  it("should have project deps available (pandas from pyproject.toml)", async () => {
+  it("should have project deps available (httpx from pyproject.toml)", async () => {
     const cell = await setupCodeCell();
-    await typeSlowly("import pandas; print(pandas.__version__)");
+    await typeSlowly("import httpx; print(httpx.__version__)");
     await browser.keys(["Shift", "Enter"]);
 
     // Wait for version output
     const output = await waitForCellOutput(cell, 60000);
-    // Should show pandas version (e.g., "2.1.0")
+    // Should show httpx version (e.g., "0.27.0")
     expect(output).toMatch(/^\d+\.\d+/);
   });
 });

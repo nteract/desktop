@@ -3,7 +3,4 @@ channels:
   - conda-forge
 dependencies:
   - python=3.12
-  - numpy
-  - pandas>=2.0
-  - pip:
-    - seaborn>=0.13
+  - markupsafe

@@ -5,7 +5,7 @@
  * `uv run` to get project dependencies.
  *
  * Fixture: pyproject-project/5-pyproject.ipynb
- *          pyproject-project/pyproject.toml (has pandas, numpy)
+ *          pyproject-project/pyproject.toml (has httpx)
  */
 
 import { browser } from "@wdio/globals";
@@ -33,7 +33,7 @@ describe("UV pyproject.toml Detection", () => {
     expect(output).toContain("python");
   });
 
-  it("should have project deps available (pandas)", async () => {
+  it("should have project deps available (httpx)", async () => {
     // Find a cell and type import test
     const cells = await $$('[data-cell-type="code"]');
     const cell = cells.length > 1 ? cells[1] : cells[0];
@@ -47,12 +47,12 @@ describe("UV pyproject.toml Detection", () => {
     await browser.keys([modKey, "a"]);
     await browser.pause(100);
 
-    await typeSlowly("import pandas; print(pandas.__version__)");
+    await typeSlowly("import httpx; print(httpx.__version__)");
     await browser.keys(["Shift", "Enter"]);
 
     // Wait for version output
     const output = await waitForCellOutput(cell, 60000);
-    // Should show pandas version (e.g., "2.1.0")
+    // Should show httpx version (e.g., "0.27.0")
     expect(output).toMatch(/^\d+\.\d+/);
   });
 });

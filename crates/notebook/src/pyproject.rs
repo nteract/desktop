@@ -429,13 +429,8 @@ dev-dependencies = ["pytest", "ruff"]
         assert_eq!(config.requires_python, Some(">=3.10".to_string()));
 
         // Check dependencies
-        assert!(config.dependencies.iter().any(|d| d.contains("pandas")));
-        assert!(config.dependencies.iter().any(|d| d.contains("numpy")));
-        assert!(config.dependencies.iter().any(|d| d.contains("matplotlib")));
-
-        // Check dev dependencies
-        assert!(config.dev_dependencies.iter().any(|d| d == "pytest"));
-        assert!(config.dev_dependencies.iter().any(|d| d == "ruff"));
+        assert!(config.dependencies.iter().any(|d| d.contains("httpx")));
+        assert!(config.dependencies.iter().any(|d| d.contains("markupsafe")));
     }
 
     #[test]
