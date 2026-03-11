@@ -64,6 +64,7 @@ function codeSnapshot(
   return {
     id,
     cell_type: "code",
+    position: "80",
     source,
     execution_count: executionCount,
     outputs,
@@ -75,6 +76,7 @@ function markdownSnapshot(id: string, source: string): CellSnapshot {
   return {
     id,
     cell_type: "markdown",
+    position: "80",
     source,
     execution_count: "null",
     outputs: [],
@@ -86,6 +88,7 @@ function rawSnapshot(id: string, source: string): CellSnapshot {
   return {
     id,
     cell_type: "raw",
+    position: "80",
     source,
     execution_count: "null",
     outputs: [],
