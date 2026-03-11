@@ -581,12 +581,14 @@ impl NotebookDoc {
         cell_id: &str,
         cell_type: &str,
     ) -> Result<(), AutomergeError> {
-        // Convert index to after_cell_id
+        // Convert index to after_cell_id. Indices greater than the current cell
+        // count are treated as "insert at end" by clamping to cells.len().
         let cells = self.get_cells();
-        let after_cell_id = if index == 0 {
+        let clamped = index.min(cells.len());
+        let after_cell_id = if clamped == 0 {
             None
         } else {
-            cells.get(index.saturating_sub(1)).map(|c| c.id.as_str())
+            cells.get(clamped - 1).map(|c| c.id.as_str())
         };
 
         self.add_cell_after(cell_id, cell_type, after_cell_id)?;
@@ -1331,7 +1333,17 @@ impl NotebookDoc {
                             &cells[i].position,
                         ))
                     }
-                    None => FractionalIndex::default(),
+                    None => {
+                        // after_cell_id not found: insert at end (after the last cell)
+                        cells
+                            .last()
+                            .map(|c| {
+                                FractionalIndex::new_after(&FractionalIndex::from_hex_string(
+                                    &c.position,
+                                ))
+                            })
+                            .unwrap_or_default()
+                    }
                 }
             }
         }
