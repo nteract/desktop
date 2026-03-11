@@ -480,7 +480,7 @@ impl NotebookHandle {
                     .map(|p| {
                         serde_json::json!({
                             "peer_id": p.peer_id,
-                            "peer_type": p.peer_type as u8,
+                            "peer_label": p.peer_label,
                             "channel_count": p.channels.len(),
                         })
                     })

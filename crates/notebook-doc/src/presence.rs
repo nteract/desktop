@@ -100,28 +100,12 @@ impl TryFrom<u8> for Channel {
     }
 }
 
-/// Peer type byte (for snapshot metadata).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[repr(u8)]
-pub enum PeerType {
-    Wasm = 0x00,
-    Python = 0x01,
-    Mcp = 0x02,
-    Daemon = 0x03,
-}
-
-impl TryFrom<u8> for PeerType {
-    type Error = PresenceError;
-    fn try_from(b: u8) -> Result<Self, Self::Error> {
-        match b {
-            0x00 => Ok(Self::Wasm),
-            0x01 => Ok(Self::Python),
-            0x02 => Ok(Self::Mcp),
-            0x03 => Ok(Self::Daemon),
-            _ => Err(PresenceError::InvalidPeerType(b)),
-        }
-    }
-}
+// Peer identity is a free-form string label, not a fixed enum.
+// Examples: "human", "agent", "daemon", "mcp:claude", "pydantic-ai:analyzer"
+//
+// This keeps the protocol flexible for future identity models (user IDs,
+// MCP server names, agent framework identifiers) without burning a byte
+// enum that we'd have to version later.
 
 /// Kernel status byte (for kernel state channel).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,7 +136,7 @@ impl TryFrom<u8> for KernelStatus {
 
 impl KernelStatus {
     /// Parse from a status string (as used in protocol broadcasts).
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_status_str(s: &str) -> Self {
         match s {
             "starting" => Self::Starting,
             "idle" => Self::Idle,
@@ -238,7 +222,8 @@ pub enum PresenceMessage {
 #[derive(Debug, Clone)]
 pub struct PeerSnapshot {
     pub peer_id: String,
-    pub peer_type: PeerType,
+    /// Free-form label identifying the peer (e.g. "human", "agent", "daemon").
+    pub peer_label: String,
     pub channels: Vec<(Channel, Vec<u8>)>,
 }
 
@@ -252,8 +237,7 @@ pub enum PresenceError {
     InvalidMessageType(u8),
     #[error("invalid channel: 0x{0:02X}")]
     InvalidChannel(u8),
-    #[error("invalid peer type: 0x{0:02X}")]
-    InvalidPeerType(u8),
+
     #[error("invalid kernel status: 0x{0:02X}")]
     InvalidKernelStatus(u8),
     #[error("invalid UTF-8 in peer_id")]
@@ -332,7 +316,7 @@ pub fn encode_snapshot(sender_peer_id: &str, peers: &[PeerSnapshot]) -> Vec<u8> 
     // Pre-calculate size estimate
     let mut size = 1 + 2 + sender_peer_id.len() + 2;
     for peer in peers {
-        size += 2 + peer.peer_id.len() + 1 + 2;
+        size += 2 + peer.peer_id.len() + 2 + peer.peer_label.len() + 2;
         for (_, data) in &peer.channels {
             size += 1 + 2 + data.len();
         }
@@ -345,7 +329,7 @@ pub fn encode_snapshot(sender_peer_id: &str, peers: &[PeerSnapshot]) -> Vec<u8> 
 
     for peer in peers {
         write_str(&mut buf, &peer.peer_id);
-        buf.push(peer.peer_type as u8);
+        write_str(&mut buf, &peer.peer_label);
         write_u16(&mut buf, peer.channels.len() as u16);
         for (channel, data) in &peer.channels {
             buf.push(*channel as u8);
@@ -382,8 +366,7 @@ pub fn decode_message(data: &[u8]) -> Result<PresenceMessage, PresenceError> {
             let mut peers = Vec::with_capacity(peer_count as usize);
             for _ in 0..peer_count {
                 let snap_peer_id = read_str(data, &mut pos)?;
-                let peer_type_byte = read_u8(data, &mut pos)?;
-                let peer_type = PeerType::try_from(peer_type_byte)?;
+                let peer_label = read_str(data, &mut pos)?;
                 let channel_count = read_u16(data, &mut pos)?;
                 let mut channels = Vec::with_capacity(channel_count as usize);
                 for _ in 0..channel_count {
@@ -395,7 +378,7 @@ pub fn decode_message(data: &[u8]) -> Result<PresenceMessage, PresenceError> {
                 }
                 peers.push(PeerSnapshot {
                     peer_id: snap_peer_id,
-                    peer_type,
+                    peer_label,
                     channels,
                 });
             }
@@ -489,7 +472,8 @@ pub fn encode_channel_data(data: &ChannelData) -> (Channel, Vec<u8>) {
 #[derive(Debug, Clone)]
 pub struct PeerPresence {
     pub peer_id: String,
-    pub peer_type: PeerType,
+    /// Free-form label identifying the peer (e.g. "human", "agent", "daemon").
+    pub peer_label: String,
     pub channels: HashMap<Channel, ChannelData>,
     /// Last time this peer sent any message (update or heartbeat), in ms.
     pub last_seen_ms: u64,
@@ -520,7 +504,7 @@ impl PresenceState {
     pub fn update_peer(
         &mut self,
         peer_id: &str,
-        peer_type: PeerType,
+        peer_label: &str,
         channel: Channel,
         data: ChannelData,
         now_ms: u64,
@@ -531,7 +515,7 @@ impl PresenceState {
             .entry(peer_id.to_string())
             .or_insert_with(|| PeerPresence {
                 peer_id: peer_id.to_string(),
-                peer_type,
+                peer_label: peer_label.to_string(),
                 channels: HashMap::new(),
                 last_seen_ms: now_ms,
                 last_active_ms: now_ms,
@@ -539,7 +523,7 @@ impl PresenceState {
         entry.channels.insert(channel, data);
         entry.last_seen_ms = now_ms;
         entry.last_active_ms = now_ms;
-        entry.peer_type = peer_type;
+        entry.peer_label = peer_label.to_string();
         is_new
     }
 
@@ -613,7 +597,7 @@ impl PresenceState {
                     .collect();
                 PeerSnapshot {
                     peer_id: peer.peer_id.clone(),
-                    peer_type: peer.peer_type,
+                    peer_label: peer.peer_label.clone(),
                     channels,
                 }
             })
@@ -635,7 +619,7 @@ impl PresenceState {
                 snap.peer_id.clone(),
                 PeerPresence {
                     peer_id: snap.peer_id.clone(),
-                    peer_type: snap.peer_type,
+                    peer_label: snap.peer_label.clone(),
                     channels,
                     last_seen_ms: now_ms,
                     last_active_ms: now_ms,
@@ -647,11 +631,8 @@ impl PresenceState {
     /// Get the kernel state from the daemon peer, if present.
     pub fn kernel_state(&self) -> Option<&KernelStateData> {
         for peer in self.peers.values() {
-            if peer.peer_type == PeerType::Daemon {
-                if let Some(ChannelData::KernelState(ks)) = peer.channels.get(&Channel::KernelState)
-                {
-                    return Some(ks);
-                }
+            if let Some(ChannelData::KernelState(ks)) = peer.channels.get(&Channel::KernelState) {
+                return Some(ks);
             }
         }
         None
@@ -873,12 +854,12 @@ mod tests {
         let peers = vec![
             PeerSnapshot {
                 peer_id: "user-1".into(),
-                peer_type: PeerType::Wasm,
+                peer_label: "human".into(),
                 channels: vec![(cursor_ch, cursor_bytes)],
             },
             PeerSnapshot {
                 peer_id: "daemon".into(),
-                peer_type: PeerType::Daemon,
+                peer_label: "daemon".into(),
                 channels: vec![(kernel_ch, kernel_bytes)],
             },
         ];
@@ -890,10 +871,10 @@ mod tests {
                 assert_eq!(peer_id, "daemon");
                 assert_eq!(peers.len(), 2);
                 assert_eq!(peers[0].peer_id, "user-1");
-                assert_eq!(peers[0].peer_type, PeerType::Wasm);
+                assert_eq!(peers[0].peer_label, "human");
                 assert_eq!(peers[0].channels.len(), 1);
                 assert_eq!(peers[1].peer_id, "daemon");
-                assert_eq!(peers[1].peer_type, PeerType::Daemon);
+                assert_eq!(peers[1].peer_label, "daemon");
             }
             _ => panic!("expected Snapshot"),
         }
@@ -940,7 +921,7 @@ mod tests {
             line: 1,
             column: 0,
         });
-        let is_new = state.update_peer("peer-1", PeerType::Wasm, Channel::Cursor, cursor, 1000);
+        let is_new = state.update_peer("peer-1", "human", Channel::Cursor, cursor, 1000);
         assert!(is_new);
         assert_eq!(state.peer_count(), 1);
         assert!(state.get_peer("peer-1").is_some());
@@ -959,8 +940,8 @@ mod tests {
             line: 5,
             column: 10,
         });
-        assert!(state.update_peer("peer-1", PeerType::Wasm, Channel::Cursor, c1, 1000));
-        assert!(!state.update_peer("peer-1", PeerType::Wasm, Channel::Cursor, c2, 2000));
+        assert!(state.update_peer("peer-1", "human", Channel::Cursor, c1, 1000));
+        assert!(!state.update_peer("peer-1", "human", Channel::Cursor, c2, 2000));
         assert_eq!(state.peer_count(), 1);
         let peer = state.get_peer("peer-1").unwrap();
         assert_eq!(peer.last_active_ms, 2000);
@@ -978,8 +959,8 @@ mod tests {
             line: 0,
             column: 0,
         });
-        state.update_peer("old", PeerType::Wasm, Channel::Cursor, cursor.clone(), 1000);
-        state.update_peer("recent", PeerType::Python, Channel::Cursor, cursor, 50_000);
+        state.update_peer("old", "human", Channel::Cursor, cursor.clone(), 1000);
+        state.update_peer("recent", "agent", Channel::Cursor, cursor, 50_000);
 
         let pruned = state.prune_stale(60_000, DEFAULT_PEER_TTL_MS);
         assert_eq!(pruned, vec!["old"]);
@@ -995,7 +976,7 @@ mod tests {
             line: 0,
             column: 0,
         });
-        state.update_peer("peer-1", PeerType::Wasm, Channel::Cursor, cursor, 1000);
+        state.update_peer("peer-1", "human", Channel::Cursor, cursor, 1000);
 
         // Heartbeat at 30s keeps it alive
         state.mark_seen("peer-1", 30_000);
@@ -1013,7 +994,7 @@ mod tests {
             line: 0,
             column: 0,
         });
-        state.update_peer("peer-1", PeerType::Wasm, Channel::Cursor, cursor, 1000);
+        state.update_peer("peer-1", "human", Channel::Cursor, cursor, 1000);
         assert_eq!(state.peer_count(), 1);
         let removed = state.remove_peer("peer-1");
         assert!(removed.is_some());
@@ -1029,7 +1010,7 @@ mod tests {
             status: KernelStatus::Idle,
             env_source: "uv:inline".into(),
         });
-        state.update_peer("daemon", PeerType::Daemon, Channel::KernelState, ks, 1000);
+        state.update_peer("daemon", "daemon", Channel::KernelState, ks, 1000);
 
         let kernel = state.kernel_state().unwrap();
         assert_eq!(kernel.status, KernelStatus::Idle);
@@ -1049,8 +1030,8 @@ mod tests {
             line: 5,
             column: 3,
         });
-        state.update_peer("me", PeerType::Wasm, Channel::Cursor, c1, 1000);
-        state.update_peer("agent", PeerType::Mcp, Channel::Cursor, c2, 1000);
+        state.update_peer("me", "human", Channel::Cursor, c1, 1000);
+        state.update_peer("agent", "agent", Channel::Cursor, c2, 1000);
 
         let cursors = state.remote_cursors("me");
         assert_eq!(cursors.len(), 1);
@@ -1087,8 +1068,8 @@ mod tests {
             status: KernelStatus::Busy,
             env_source: "conda:prewarmed".into(),
         });
-        state1.update_peer("user", PeerType::Wasm, Channel::Cursor, cursor, 1000);
-        state1.update_peer("daemon", PeerType::Daemon, Channel::KernelState, ks, 1000);
+        state1.update_peer("user", "human", Channel::Cursor, cursor, 1000);
+        state1.update_peer("daemon", "daemon", Channel::KernelState, ks, 1000);
 
         let snapshot_bytes = state1.encode_snapshot("daemon");
 
@@ -1145,8 +1126,8 @@ mod tests {
             head_line: 3,
             head_col: 10,
         });
-        state.update_peer("peer-1", PeerType::Wasm, Channel::Cursor, cursor, 1000);
-        state.update_peer("peer-1", PeerType::Wasm, Channel::Selection, sel, 1000);
+        state.update_peer("peer-1", "human", Channel::Cursor, cursor, 1000);
+        state.update_peer("peer-1", "human", Channel::Selection, sel, 1000);
 
         let peer = state.get_peer("peer-1").unwrap();
         assert_eq!(peer.channels.len(), 2);

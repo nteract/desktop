@@ -1148,7 +1148,7 @@ where
                                         // not the one in the frame — clients don't know their peer_id).
                                         let is_new = room.presence.write().await.update_peer(
                                             peer_id,
-                                            presence::PeerType::Wasm,
+                                            "peer",
                                             channel,
                                             data,
                                             now_ms,
