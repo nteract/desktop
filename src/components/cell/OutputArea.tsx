@@ -303,6 +303,9 @@ export function OutputArea({
 
   // Track dark mode state and observe changes
   const [darkMode, setDarkMode] = useState(() => detectDarkMode());
+  // Ref for reading current darkMode in callbacks without adding to deps
+  const darkModeRef = useRef(darkMode);
+  darkModeRef.current = darkMode;
 
   useEffect(() => {
     // Update dark mode when document class changes
@@ -374,7 +377,8 @@ export function OutputArea({
     }
 
     // Ensure theme is in sync before re-rendering (fixes theme drift after cell moves)
-    frameRef.current.setTheme(darkMode);
+    // Use ref to avoid adding darkMode to deps which would cause re-renders on theme toggle
+    frameRef.current.setTheme(darkModeRef.current);
 
     // Clear existing content
     frameRef.current.clear();
@@ -428,7 +432,7 @@ export function OutputArea({
     if (searchQueryRef.current) {
       frameRef.current?.search(searchQueryRef.current);
     }
-  }, [outputs, priority, shouldUseBridge, widgetContext, darkMode]);
+  }, [outputs, priority, shouldUseBridge, widgetContext]);
 
   // Clean up bridge on unmount
   useEffect(() => {
