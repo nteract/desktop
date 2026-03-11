@@ -4,6 +4,11 @@
 //! Automerge document replica of the notebook. Changes made locally are sent
 //! to the daemon, and changes from other peers arrive as sync messages.
 //!
+//! ## Remote Heads Tracking (Phase A)
+//!
+//! Full-peer clients can call [`NotebookSyncHandle::confirm_sync`] before
+//! execution requests to verify the daemon has merged their latest changes.
+//!
 //! The client uses a split pattern with channels:
 //! - `NotebookSyncHandle` is a clonable handle for sending commands
 //! - `NotebookSyncReceiver` receives incoming changes from other peers
