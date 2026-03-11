@@ -15,6 +15,7 @@ import {
   typeSlowly,
   waitForAppReady,
   waitForCellOutput,
+  waitForCodeCells,
   waitForKernelReady,
 } from "../helpers.js";
 
@@ -33,6 +34,10 @@ describe("E2E Smoke Test", () => {
   });
 
   it("should execute code and show output", async () => {
+    // Wait for cells to materialize from Automerge sync — kernel idle
+    // can arrive before cell content is synced to the frontend.
+    await waitForCodeCells(1, 15000);
+
     // Find the first code cell
     const codeCell = await $('[data-cell-type="code"]');
     await codeCell.waitForExist({ timeout: 5000 });
