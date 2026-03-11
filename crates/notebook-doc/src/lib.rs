@@ -559,8 +559,8 @@ impl NotebookDoc {
             })
             .collect();
 
-        // Sort by position (lexicographic comparison)
-        cells.sort_by(|a, b| a.position.cmp(&b.position));
+        // Sort by position, tiebreak on cell ID for deterministic order across peers
+        cells.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
         cells
     }
 
@@ -1548,8 +1548,8 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
         })
         .collect();
 
-    // Sort by position
-    cells.sort_by(|a, b| a.position.cmp(&b.position));
+    // Sort by position, tiebreak on cell ID for deterministic order across peers
+    cells.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
     cells
 }
 
