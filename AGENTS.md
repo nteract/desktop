@@ -76,6 +76,7 @@ See the `contributing/` directory for detailed guides:
 - `contributing/logging.md` - Logging conventions
 - `contributing/nteract-elements.md` - Working with nteract/elements registry
 - `contributing/protocol.md` - Wire protocol between clients and daemon
+- `contributing/releasing.md` - Versioning scheme, release procedures, tag conventions
 - `contributing/runtimed.md` - Daemon development guide
 - `contributing/testing.md` - Testing guide (Vitest, Rust, Hone, Python, E2E)
 - `contributing/typescript-bindings.md` - ts-rs type generation from Rust

@@ -19,15 +19,21 @@ The protocol has a numeric version (`PROTOCOL_VERSION` in `connection.rs`) that 
 - **Minor version = new features.** Additive changes (new request/response/broadcast variants with serde defaults) bump the minor version. Old clients ignore unknown variants; new clients degrade gracefully against old daemons.
 - **Patch version = bug fixes.** No protocol changes.
 
-### Nightly pre-releases
+### Release channels
 
-Nightly builds publish Python wheels to PyPI as PEP 440 alpha pre-releases:
+**Stable:** Pushing a `v*` tag publishes Python wheels to PyPI at the version in `pyproject.toml` (e.g., `2.0.0`). No separate `python-v*` tag needed — the desktop release ships the Python package too.
+
+**Nightly:** Daily builds publish PEP 440 alpha pre-releases:
 
 ```
 2.0.1a202507150900   (nightly from 2025-07-15)
 ```
 
-These sort after the current stable (`2.0.0`) but before the next stable (`2.0.1`). Install with `pip install runtimed --pre`. Stable releases are published only via `python-v*` tags.
+These sort after the current stable (`2.0.0`) but before the next stable (`2.0.1`). Install with `pip install runtimed --pre`.
+
+**Python-only:** The `python-v*` tag path (`python-package.yml`) exists for Python-specific patches that don't need a full desktop release.
+
+See `contributing/releasing.md` for the full release procedures.
 
 ### Version negotiation
 
