@@ -470,12 +470,19 @@ impl NotebookSyncHandle {
             .map_err(|_| NotebookSyncError::ChannelClosed)?
     }
 
-    /// Confirm that the daemon has merged all our local changes.
+    /// Best-effort confirmation that the daemon has merged our local changes.
     ///
-    /// Checks that `peer_state.shared_heads` includes our local heads,
-    /// doing additional sync rounds if needed. Call this before sending
-    /// a request that depends on a prior mutation (e.g. `ExecuteCell`
-    /// after `create_cell`).
+    /// Intended for full-peer programmatic clients (`runtimed-py`) where
+    /// `create_cell` → `execute_cell` can fire in microseconds. Not needed
+    /// for the Tauri pipe path — the WASM frontend owns its doc locally,
+    /// and human interaction provides natural sync latency.
+    ///
+    /// Attempts up to 5 sync rounds, checking `peer_state.shared_heads`
+    /// after each. If confirmation does not arrive, degrades gracefully
+    /// and returns `Ok(())` because failing execution is worse than the
+    /// residual race — after 5 rounds the changes are almost certainly
+    /// applied, the heads just haven't fully converged (e.g. concurrent
+    /// edits from another peer).
     pub async fn confirm_sync(&self) -> Result<(), NotebookSyncError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
@@ -2120,21 +2127,26 @@ where
         Ok(())
     }
 
-    /// Like [`sync_to_daemon`], but verifies the daemon has confirmed our
-    /// latest changes by checking that `peer_state.shared_heads` includes
-    /// all of our local heads.
+    /// Best-effort confirmation that the daemon has merged our local
+    /// changes, by checking `peer_state.shared_heads` after sync.
     ///
-    /// This is critical for the document-first architecture: after a cell
-    /// mutation, the daemon must have the cell in its doc before we can
-    /// send an `ExecuteCell` request that references it. Without this,
-    /// `create_cell` → `execute_cell` races because the sync message may
-    /// still be in flight when the execute request arrives.
+    /// **Scope:** Full-peer clients (`runtimed-py`) only. The Tauri pipe
+    /// relay keeps an empty local doc and forwards raw bytes — it has no
+    /// meaningful heads to confirm. The WASM frontend doesn't need this
+    /// because human interaction provides natural sync latency.
     ///
-    /// The Automerge sync protocol's `shared_heads` on `sync::State`
-    /// tracks exactly which change hashes both peers have confirmed. After
-    /// each `sync_to_daemon` round-trip, we check whether the daemon's
-    /// confirmed heads include all of ours. If not, we do additional
-    /// rounds (bounded) until confirmed or exhausted.
+    /// **Contract:** Attempts confirmation for a bounded number of rounds
+    /// (currently 5). If confirmation does not arrive, degrades gracefully
+    /// and returns `Ok(())`. Failing execution is worse than the residual
+    /// race — after multiple sync round-trips the changes are almost
+    /// certainly applied, the heads just haven't converged yet (e.g.
+    /// concurrent edits from another peer, or slow daemon under load).
+    ///
+    /// **Why it exists:** In the document-first architecture, the daemon
+    /// reads cell source from its own Automerge doc when executing. If
+    /// `create_cell` → `execute_cell` fires faster than the sync
+    /// round-trip, the daemon won't find the cell. This method closes
+    /// that gap for programmatic callers.
     async fn sync_to_daemon_confirmed(&mut self) -> Result<(), NotebookSyncError> {
         // Do the initial sync round
         self.sync_to_daemon().await?;
