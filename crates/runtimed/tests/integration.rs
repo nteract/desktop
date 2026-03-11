@@ -12,6 +12,7 @@ use runtimed::daemon::{Daemon, DaemonConfig};
 use runtimed::notebook_sync_client::NotebookSyncClient;
 use runtimed::EnvType;
 use tempfile::TempDir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::sleep;
 
 /// Write a test .ipynb notebook file with the given cells.
@@ -948,5 +949,66 @@ async fn test_streaming_load_second_client_joins() {
     drop(handle2);
     let _ = info2; // suppress unused warning
     pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+/// Test that a legacy client (pre-2.0.0, no magic bytes preamble) can still
+/// connect to the daemon. This is critical for the upgrade path: the old app
+/// installs the new daemon binary, then pings it to verify it's running.
+/// Without backward compat, the upgrade fails with "daemon did not become ready."
+#[tokio::test]
+async fn test_legacy_client_no_preamble() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    // Wait for daemon with a modern client first
+    let client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&client, Duration::from_secs(5)).await);
+
+    // Now connect as a legacy client: send a raw length-prefixed JSON
+    // handshake WITHOUT the magic bytes preamble.
+    let mut stream = tokio::net::UnixStream::connect(&socket_path)
+        .await
+        .expect("legacy client should connect");
+
+    // Send Pool handshake as length-prefixed JSON (old protocol)
+    let handshake = br#"{"channel":"pool"}"#;
+    let len = (handshake.len() as u32).to_be_bytes();
+    stream.write_all(&len).await.unwrap();
+    stream.write_all(handshake).await.unwrap();
+    stream.flush().await.unwrap();
+
+    // Send a Ping request
+    let ping = br#"{"type":"ping"}"#;
+    let len = (ping.len() as u32).to_be_bytes();
+    stream.write_all(&len).await.unwrap();
+    stream.write_all(ping).await.unwrap();
+    stream.flush().await.unwrap();
+
+    // Read the response — should be a Pong
+    let mut resp_len = [0u8; 4];
+    stream.read_exact(&mut resp_len).await.unwrap();
+    let resp_size = u32::from_be_bytes(resp_len) as usize;
+    let mut resp_buf = vec![0u8; resp_size];
+    stream.read_exact(&mut resp_buf).await.unwrap();
+
+    let resp: serde_json::Value = serde_json::from_slice(&resp_buf).unwrap();
+    assert_eq!(
+        resp["type"], "pong",
+        "legacy client should get a Pong response"
+    );
+
+    // Also verify a modern client still works alongside
+    let result = client.ping().await;
+    assert!(result.is_ok(), "modern client should still work");
+
+    // Shutdown
+    client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
