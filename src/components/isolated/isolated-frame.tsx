@@ -318,18 +318,52 @@ export const IsolatedFrame = forwardRef<
 
       // Handle specific message types
       switch (data.type) {
-        case "ready":
+        case "ready": {
           // Iframe bootstrap HTML is loaded.
-          // If we already bootstrapped, the iframe was reloaded (e.g., DOM move
-          // caused the browser to tear down and reload the iframe). Reset
-          // bootstrap state so the renderer gets re-injected.
-          if (bootstrappingRef.current || isReadyRef.current) {
+          // Snapshot current bootstrap/ready state so we can detect whether
+          // this "ready" corresponds to an initial load, a reload during
+          // bootstrapping, or a reload after the renderer was ready.
+          const wasBootstrapping = bootstrappingRef.current;
+          const wasRendererReady = isReadyRef.current;
+
+          // If we already bootstrapped or the renderer was ready, the iframe
+          // was reloaded (e.g., DOM move caused the browser to tear down and
+          // reload the iframe). Reset bootstrap state so the renderer gets
+          // re-injected.
+          if (wasBootstrapping || wasRendererReady) {
             bootstrappingRef.current = false;
+            // Keep the imperative readiness ref in sync with state so that
+            // synchronous send() calls don't treat the frame as ready during
+            // a reload window.
+            isReadyRef.current = false;
+            // Pending messages were targeted at the old iframe instance; drop
+            // them so they don't get delivered to the reloaded frame.
+            pendingMessagesRef.current.length = 0;
             setIsReady(false);
           }
-          // Renderer injection is handled by a separate useEffect
-          setIsIframeReady(true);
+
+          // Renderer injection is handled by a separate useEffect that depends
+          // on React state (e.g., isIframeReady). When the iframe reloads
+          // *during* bootstrapping (wasBootstrapping && !wasRendererReady),
+          // previous state values can make setIsReady(false) and
+          // setIsIframeReady(true) both no-ops, so the injection effect would
+          // not re-run. To avoid this, force a real state transition on
+          // isIframeReady by toggling it in separate render passes.
+          if (wasBootstrapping && !wasRendererReady) {
+            // Reload happened while the renderer was still bootstrapping.
+            // First mark the iframe as not ready, then in the next tick mark
+            // it ready again so effects depending on isIframeReady re-run.
+            setIsIframeReady(false);
+            setTimeout(() => {
+              setIsIframeReady(true);
+            }, 0);
+          } else {
+            // Initial load, or reload after the renderer was fully ready:
+            // a single transition to "ready" is sufficient.
+            setIsIframeReady(true);
+          }
           break;
+        }
 
         case "renderer_ready":
           // React renderer bundle is initialized
