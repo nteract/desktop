@@ -964,18 +964,37 @@ impl Session {
             let blob_base_url = state.blob_base_url.clone();
             let blob_store_path = state.blob_store_path.clone();
 
-            // Execute cell (daemon reads source from automerge doc)
-            let response = handle
-                .send_request(NotebookRequest::ExecuteCell {
-                    cell_id: cell_id.clone(),
-                })
-                .await
-                .map_err(to_py_err)?;
+            // Execute cell (daemon reads source from automerge doc).
+            // The daemon may not have merged the cell yet if create_cell was
+            // called moments ago — Automerge sync is async. Retry briefly on
+            // "Cell not found" to let the sync round-trip complete.
+            let mut last_err: Option<String> = None;
+            for attempt in 0..10 {
+                let response = handle
+                    .send_request(NotebookRequest::ExecuteCell {
+                        cell_id: cell_id.clone(),
+                    })
+                    .await
+                    .map_err(to_py_err)?;
 
-            match response {
-                NotebookResponse::CellQueued { .. } => {}
-                NotebookResponse::Error { error } => return Err(to_py_err(error)),
-                other => return Err(to_py_err(format!("Unexpected response: {:?}", other))),
+                match response {
+                    NotebookResponse::CellQueued { .. } => {
+                        last_err = None;
+                        break;
+                    }
+                    NotebookResponse::Error { error }
+                        if error.contains("not found") && attempt < 9 =>
+                    {
+                        last_err = Some(error);
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        continue;
+                    }
+                    NotebookResponse::Error { error } => return Err(to_py_err(error)),
+                    other => return Err(to_py_err(format!("Unexpected response: {:?}", other))),
+                }
+            }
+            if let Some(err) = last_err {
+                return Err(to_py_err(err));
             }
 
             drop(state); // Release lock before waiting for broadcasts
