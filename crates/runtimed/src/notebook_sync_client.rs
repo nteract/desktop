@@ -79,6 +79,11 @@ enum SyncCommand {
         cell_id: String,
         reply: oneshot::Sender<Result<(), NotebookSyncError>>,
     },
+    MoveCell {
+        cell_id: String,
+        after_cell_id: Option<String>,
+        reply: oneshot::Sender<Result<String, NotebookSyncError>>,
+    },
     UpdateSource {
         cell_id: String,
         source: String,
@@ -226,6 +231,26 @@ impl NotebookSyncHandle {
         self.tx
             .send(SyncCommand::DeleteCell {
                 cell_id: cell_id.to_string(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?;
+        reply_rx
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?
+    }
+
+    /// Move a cell to a new position. Returns the new fractional position string.
+    pub async fn move_cell(
+        &self,
+        cell_id: &str,
+        after_cell_id: Option<&str>,
+    ) -> Result<String, NotebookSyncError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(SyncCommand::MoveCell {
+                cell_id: cell_id.to_string(),
+                after_cell_id: after_cell_id.map(|s| s.to_string()),
                 reply: reply_tx,
             })
             .await
@@ -1636,6 +1661,62 @@ where
         self.sync_to_daemon().await
     }
 
+    /// Move a cell to a new position and sync to daemon.
+    /// Returns the new fractional position string.
+    pub async fn move_cell(
+        &mut self,
+        cell_id: &str,
+        after_cell_id: Option<&str>,
+    ) -> Result<String, NotebookSyncError> {
+        use loro_fractional_index::FractionalIndex;
+        use notebook_doc::get_cells_from_doc;
+
+        let cells_id = match self.cells_map_id() {
+            Some(id) => id,
+            None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
+        };
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
+            Some(o) => o,
+            None => return Err(NotebookSyncError::CellNotFound(cell_id.to_string())),
+        };
+
+        // Compute new position from sorted cells
+        let sorted_cells = get_cells_from_doc(&self.doc);
+        let position = match after_cell_id {
+            None => {
+                // Move to start
+                sorted_cells
+                    .first()
+                    .map(|c| {
+                        FractionalIndex::new_before(&FractionalIndex::from_hex_string(&c.position))
+                    })
+                    .unwrap_or_default()
+            }
+            Some(after_id) => {
+                let idx = sorted_cells.iter().position(|c| c.id == after_id);
+                match idx {
+                    Some(i) if i + 1 < sorted_cells.len() => {
+                        let prev = FractionalIndex::from_hex_string(&sorted_cells[i].position);
+                        let next = FractionalIndex::from_hex_string(&sorted_cells[i + 1].position);
+                        FractionalIndex::new(Some(&prev), Some(&next)).unwrap_or_default()
+                    }
+                    Some(i) => FractionalIndex::new_after(&FractionalIndex::from_hex_string(
+                        &sorted_cells[i].position,
+                    )),
+                    None => FractionalIndex::default(),
+                }
+            }
+        };
+
+        let position_str = position.to_string();
+        self.doc
+            .put(&cell_obj, "position", position_str.as_str())
+            .map_err(|e| NotebookSyncError::SyncError(format!("put position: {}", e)))?;
+
+        self.sync_to_daemon().await?;
+        Ok(position_str)
+    }
+
     /// Update a cell's source text and sync to daemon.
     pub async fn update_source(
         &mut self,
@@ -2410,6 +2491,17 @@ async fn run_sync_task<S>(
                     }
                     SyncCommand::DeleteCell { cell_id, reply } => {
                         let result = client.delete_cell(&cell_id).await;
+                        if result.is_ok() {
+                            publish_snapshot(&client, &snapshot_tx);
+                        }
+                        let _ = reply.send(result);
+                    }
+                    SyncCommand::MoveCell {
+                        cell_id,
+                        after_cell_id,
+                        reply,
+                    } => {
+                        let result = client.move_cell(&cell_id, after_cell_id.as_deref()).await;
                         if result.is_ok() {
                             publish_snapshot(&client, &snapshot_tx);
                         }

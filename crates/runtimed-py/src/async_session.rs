@@ -681,6 +681,42 @@ impl AsyncSession {
         })
     }
 
+    /// Move a cell to a new position in the notebook.
+    ///
+    /// Updates the cell's fractional index position field. No delete/re-insert —
+    /// the cell object is preserved in the Automerge document.
+    ///
+    /// Args:
+    ///     cell_id: The cell ID to move.
+    ///     after_cell_id: Place the cell after this cell ID. None means move to the start.
+    ///
+    /// Returns:
+    ///     A coroutine that resolves to the new fractional position string.
+    #[pyo3(signature = (cell_id, after_cell_id=None))]
+    fn move_cell<'py>(
+        &self,
+        py: Python<'py>,
+        cell_id: &str,
+        after_cell_id: Option<&str>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let cell_id = cell_id.to_string();
+        let after_cell_id = after_cell_id.map(|s| s.to_string());
+
+        future_into_py(py, async move {
+            let state_guard = state.lock().await;
+            let handle = state_guard
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            handle
+                .move_cell(&cell_id, after_cell_id.as_deref())
+                .await
+                .map_err(to_py_err)
+        })
+    }
+
     /// Save the notebook to a .ipynb file.
     ///
     /// Reads cells and metadata from the synced Automerge document, resolves
