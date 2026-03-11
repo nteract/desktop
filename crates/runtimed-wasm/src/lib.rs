@@ -426,16 +426,12 @@ impl NotebookHandle {
     pub fn decode_presence_message(data: &[u8]) -> Option<String> {
         let msg = presence::decode_message(data).ok()?;
         let json = match msg {
-            presence::PresenceMessage::Update {
-                peer_id,
-                channel,
-                data,
-            } => {
-                let channel_str = match channel {
-                    presence::Channel::Cursor => "cursor",
-                    presence::Channel::Selection => "selection",
-                    presence::Channel::KernelState => "kernel_state",
-                    presence::Channel::Custom => "custom",
+            presence::PresenceMessage::Update { peer_id, data } => {
+                let channel_str = match &data {
+                    presence::ChannelData::Cursor(_) => "cursor",
+                    presence::ChannelData::Selection(_) => "selection",
+                    presence::ChannelData::KernelState(_) => "kernel_state",
+                    presence::ChannelData::Custom(_) => "custom",
                 };
                 match data {
                     presence::ChannelData::Cursor(c) => serde_json::json!({

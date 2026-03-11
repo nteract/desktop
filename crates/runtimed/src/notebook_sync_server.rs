@@ -1143,13 +1143,13 @@ where
                                     .as_millis() as u64;
 
                                 match presence::decode_message(&frame.payload) {
-                                    Ok(presence::PresenceMessage::Update { channel, data, .. }) => {
+                                    Ok(presence::PresenceMessage::Update { data, .. }) => {
+                                        let data_for_relay = data.clone();
                                         // Update the room's presence state (using our known peer_id,
                                         // not the one in the frame — clients don't know their peer_id).
                                         let is_new = room.presence.write().await.update_peer(
                                             peer_id,
                                             "peer",
-                                            channel,
                                             data,
                                             now_ms,
                                         );
@@ -1165,35 +1165,16 @@ where
                                             .await?;
                                         }
 
-                                        // Re-encode with the server-assigned peer_id and relay
-                                        let relay_bytes = match channel {
-                                            presence::Channel::Cursor => {
-                                                if let Some(peer) = room.presence.read().await.get_peer(peer_id) {
-                                                    if let Some(presence::ChannelData::Cursor(ref c)) = peer.channels.get(&presence::Channel::Cursor) {
-                                                        Some(presence::encode_cursor_update(peer_id, c))
-                                                    } else { None }
-                                                } else { None }
-                                            }
-                                            presence::Channel::Selection => {
-                                                if let Some(peer) = room.presence.read().await.get_peer(peer_id) {
-                                                    if let Some(presence::ChannelData::Selection(ref s)) = peer.channels.get(&presence::Channel::Selection) {
-                                                        Some(presence::encode_selection_update(peer_id, s))
-                                                    } else { None }
-                                                } else { None }
-                                            }
-                                            presence::Channel::KernelState => {
-                                                // Clients should not publish kernel state — daemon-only
-                                                warn!("[notebook-sync] Client tried to publish KernelState presence, ignoring");
-                                                None
-                                            }
-                                            presence::Channel::Custom => {
-                                                // Re-encode with server-assigned peer_id to prevent spoofing
-                                                if let Some(peer) = room.presence.read().await.get_peer(peer_id) {
-                                                    if let Some(presence::ChannelData::Custom(ref bytes)) = peer.channels.get(&presence::Channel::Custom) {
-                                                        Some(presence::encode_custom_update(peer_id, bytes))
-                                                    } else { None }
-                                                } else { None }
-                                            }
+                                        // Re-encode with server-assigned peer_id to prevent
+                                        // spoofing, and reject channels clients shouldn't publish.
+                                        let relay_bytes = if matches!(data_for_relay, presence::ChannelData::KernelState(_)) {
+                                            warn!("[notebook-sync] Client tried to publish KernelState presence, ignoring");
+                                            None
+                                        } else {
+                                            presence::encode_message(&presence::PresenceMessage::Update {
+                                                peer_id: peer_id.to_string(),
+                                                data: data_for_relay,
+                                            }).ok()
                                         };
 
                                         if let Some(bytes) = relay_bytes {
