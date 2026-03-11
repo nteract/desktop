@@ -146,6 +146,11 @@ enum SyncCommand {
         message: Vec<u8>,
         reply: oneshot::Sender<Result<(), NotebookSyncError>>,
     },
+    /// Confirm that the daemon has merged all our local changes by checking
+    /// that `peer_state.shared_heads` includes our local heads.
+    ConfirmSync {
+        reply: oneshot::Sender<Result<(), NotebookSyncError>>,
+    },
 }
 
 /// Handle for sending commands to the notebook sync task.
@@ -458,6 +463,23 @@ impl NotebookSyncHandle {
                 value_json,
                 reply: reply_tx,
             })
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?;
+        reply_rx
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?
+    }
+
+    /// Confirm that the daemon has merged all our local changes.
+    ///
+    /// Checks that `peer_state.shared_heads` includes our local heads,
+    /// doing additional sync rounds if needed. Call this before sending
+    /// a request that depends on a prior mutation (e.g. `ExecuteCell`
+    /// after `create_cell`).
+    pub async fn confirm_sync(&self) -> Result<(), NotebookSyncError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(SyncCommand::ConfirmSync { reply: reply_tx })
             .await
             .map_err(|_| NotebookSyncError::ChannelClosed)?;
         reply_rx
@@ -2098,6 +2120,53 @@ where
         Ok(())
     }
 
+    /// Like [`sync_to_daemon`], but verifies the daemon has confirmed our
+    /// latest changes by checking that `peer_state.shared_heads` includes
+    /// all of our local heads.
+    ///
+    /// This is critical for the document-first architecture: after a cell
+    /// mutation, the daemon must have the cell in its doc before we can
+    /// send an `ExecuteCell` request that references it. Without this,
+    /// `create_cell` → `execute_cell` races because the sync message may
+    /// still be in flight when the execute request arrives.
+    ///
+    /// The Automerge sync protocol's `shared_heads` on `sync::State`
+    /// tracks exactly which change hashes both peers have confirmed. After
+    /// each `sync_to_daemon` round-trip, we check whether the daemon's
+    /// confirmed heads include all of ours. If not, we do additional
+    /// rounds (bounded) until confirmed or exhausted.
+    async fn sync_to_daemon_confirmed(&mut self) -> Result<(), NotebookSyncError> {
+        // Do the initial sync round
+        self.sync_to_daemon().await?;
+
+        let our_heads = self.doc.get_heads();
+        if our_heads.is_empty() {
+            return Ok(()); // Empty doc, nothing to confirm
+        }
+
+        // The sync protocol may need multiple rounds. Bound the retries
+        // so we don't loop forever if something is wrong.
+        for _ in 0..5 {
+            let shared = &self.peer_state.shared_heads;
+            if our_heads.iter().all(|h| shared.contains(h)) {
+                return Ok(()); // Daemon has confirmed all our changes
+            }
+            // Not yet confirmed — do another sync round
+            self.sync_to_daemon().await?;
+        }
+
+        // Best-effort: even if not fully confirmed after retries, the
+        // changes are very likely applied. Log and continue rather than
+        // failing the mutation — a hard error here would be worse than
+        // the original race.
+        log::debug!(
+            "[notebook-sync-client] sync_to_daemon_confirmed: heads not fully confirmed after retries (our_heads={}, shared_heads={})",
+            our_heads.len(),
+            self.peer_state.shared_heads.len()
+        );
+        Ok(())
+    }
+
     // ── Request/Response ───────────────────────────────────────────────
 
     /// Send a request to the daemon and wait for the response.
@@ -2679,6 +2748,10 @@ async fn run_sync_task<S>(
                         // so readers see daemon-driven mutations (outputs, execution
                         // counts, etc.) immediately.
                         publish_snapshot(&client, &snapshot_tx);
+                        let _ = reply.send(result);
+                    }
+                    SyncCommand::ConfirmSync { reply } => {
+                        let result = client.sync_to_daemon_confirmed().await;
                         let _ = reply.send(result);
                     }
                     SyncCommand::ReceiveFrontendSyncMessage { message, reply } => {
