@@ -1172,6 +1172,9 @@ where
                     NotebookFrameType::Response => {
                         warn!("[notebook-sync-client] Unexpected Response frame during init");
                     }
+                    NotebookFrameType::Presence => {
+                        // Ignore presence frames during init — we'll handle them in the main loop
+                    }
                     NotebookFrameType::Request => {
                         warn!("[notebook-sync-client] Unexpected Request frame during init");
                     }
@@ -1453,6 +1456,9 @@ where
                     }
                     NotebookFrameType::Response => {
                         warn!("[notebook-sync-client] Unexpected Response frame during init");
+                    }
+                    NotebookFrameType::Presence => {
+                        // Ignore presence frames during initial sync
                     }
                     NotebookFrameType::Request => {
                         warn!("[notebook-sync-client] Unexpected Request frame during init");
@@ -1967,6 +1973,10 @@ where
                     // Ignore broadcast frames - caller can handle separately
                     Ok(self.get_cells())
                 }
+                NotebookFrameType::Presence => {
+                    // Ignore presence frames in recv_changes
+                    Ok(self.get_cells())
+                }
                 _ => {
                     warn!(
                         "[notebook-sync-client] Unexpected frame type in recv_changes: {:?}",
@@ -2023,6 +2033,10 @@ where
                         NotebookSyncError::SyncError(format!("deserialize broadcast: {}", e))
                     })?;
                 Ok(Some(ReceivedFrame::Broadcast(broadcast)))
+            }
+            NotebookFrameType::Presence => {
+                // Skip presence frames in process_incoming_frame
+                Ok(None)
             }
             NotebookFrameType::Response => {
                 let response: NotebookResponse =
@@ -2266,6 +2280,9 @@ where
                             .receive_sync_message(&mut self.peer_state, message)
                             .map_err(|e| NotebookSyncError::SyncError(format!("receive: {}", e)))?;
                         // Continue waiting for Response
+                    }
+                    NotebookFrameType::Presence => {
+                        // Skip presence frames while waiting for response
                     }
                     NotebookFrameType::Broadcast => {
                         // Parse the broadcast

@@ -44,6 +44,7 @@ use crate::markdown_assets::resolve_markdown_assets;
 use crate::notebook_doc::{notebook_doc_filename, CellSnapshot, NotebookDoc};
 use crate::notebook_metadata::{NotebookMetadataSnapshot, NOTEBOOK_METADATA_KEY};
 use crate::protocol::{EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse};
+use notebook_doc::presence::{self, PresenceState};
 
 /// Trust state for a notebook room.
 /// Tracks whether the notebook's dependencies are trusted for auto-launch.
@@ -475,6 +476,12 @@ pub struct NotebookRoom {
     pub changed_tx: broadcast::Sender<()>,
     /// Broadcast channel for kernel events (outputs, status changes).
     pub kernel_broadcast_tx: broadcast::Sender<NotebookBroadcast>,
+    /// Broadcast channel for presence frames (cursor, selection, kernel state).
+    /// Carries raw presence bytes to relay to other peers.
+    pub presence_tx: broadcast::Sender<(String, Vec<u8>)>,
+    /// Transient peer state (cursors, selections, kernel status).
+    /// Protected by RwLock for concurrent reads from multiple peer loops.
+    pub presence: Arc<RwLock<PresenceState>>,
     /// Channel to send doc bytes to the debounced persistence task.
     /// Uses watch for "latest value" semantics - always keeps most recent state.
     pub persist_tx: watch::Sender<Option<Vec<u8>>>,
@@ -570,10 +577,14 @@ impl NotebookRoom {
             notebook_id, trust_state.status
         );
 
+        let (presence_tx, _) = broadcast::channel(64);
+
         Self {
             doc: Arc::new(RwLock::new(doc)),
             changed_tx,
             kernel_broadcast_tx,
+            presence_tx,
+            presence: Arc::new(RwLock::new(PresenceState::new())),
             persist_tx,
             persist_path,
             active_peers: AtomicUsize::new(0),
@@ -856,6 +867,17 @@ where
     )
     .await;
 
+    // Clean up presence state for this peer
+    if let Ok(ref peer_id) = result {
+        room.presence.write().await.remove_peer(peer_id);
+        // Notify other peers that this peer left
+        let left_bytes = presence::encode_left(peer_id);
+        let _ = room.presence_tx.send((peer_id.clone(), left_bytes));
+    }
+
+    // Map Result<String> (peer_id) to Result<()> for the caller
+    let result = result.map(|_| ());
+
     // Peer disconnected — decrement and possibly evict the room
     let remaining = room.active_peers.fetch_sub(1, Ordering::Relaxed) - 1;
     if remaining == 0 {
@@ -943,12 +965,15 @@ async fn run_sync_loop_v2<R, W>(
     room: &NotebookRoom,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
     needs_load: Option<&Path>,
-) -> anyhow::Result<()>
+) -> anyhow::Result<String>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     let mut peer_state = sync::State::new();
+
+    // Generate a unique peer ID for this connection.
+    let peer_id = uuid::Uuid::new_v4().to_string();
 
     // Streaming load: add cells in batches and sync after each batch so
     // the frontend renders progressively. This runs before we subscribe
@@ -990,6 +1015,7 @@ where
     // backlog from our own changed_tx.send(()) calls during loading.
     let mut changed_rx = room.changed_tx.subscribe();
     let mut kernel_broadcast_rx = room.kernel_broadcast_tx.subscribe();
+    let mut presence_rx = room.presence_tx.subscribe();
 
     // Phase 1: Initial sync — server sends first (typed frame)
     // Encode the sync message inside the lock, then send outside it
@@ -1018,6 +1044,17 @@ where
                 &NotebookBroadcast::CommSync { comms },
             )
             .await?;
+        }
+    }
+
+    // Phase 1.6: Send presence snapshot so late joiners see current peer state
+    // (kernel status, cursors, selections from other connected peers).
+    {
+        let presence_state = room.presence.read().await;
+        if presence_state.peer_count() > 0 {
+            let snapshot_bytes = presence_state.encode_snapshot(&peer_id);
+            connection::send_typed_frame(writer, NotebookFrameType::Presence, &snapshot_bytes)
+                .await?;
         }
     }
 
@@ -1086,6 +1123,75 @@ where
                                 .await?;
                             }
 
+                            NotebookFrameType::Presence => {
+                                // Client sent a presence update (cursor, selection, etc.)
+                                // Decode, update room state, relay to other peers.
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis() as u64;
+
+                                match presence::decode_message(&frame.payload) {
+                                    Ok(presence::PresenceMessage::Update { channel, data, .. }) => {
+                                        // Update the room's presence state (using our known peer_id,
+                                        // not the one in the frame — clients don't know their peer_id).
+                                        let is_new = room.presence.write().await.update_peer(
+                                            &peer_id,
+                                            presence::PeerType::Wasm,
+                                            channel,
+                                            data,
+                                            now_ms,
+                                        );
+
+                                        if is_new {
+                                            // New peer — send them a snapshot of everyone else
+                                            let snapshot_bytes = room.presence.read().await.encode_snapshot(&peer_id);
+                                            connection::send_typed_frame(
+                                                writer,
+                                                NotebookFrameType::Presence,
+                                                &snapshot_bytes,
+                                            )
+                                            .await?;
+                                        }
+
+                                        // Re-encode with the server-assigned peer_id and relay
+                                        let relay_bytes = match channel {
+                                            presence::Channel::Cursor => {
+                                                if let Some(peer) = room.presence.read().await.get_peer(&peer_id) {
+                                                    if let Some(presence::ChannelData::Cursor(ref c)) = peer.channels.get(&presence::Channel::Cursor) {
+                                                        Some(presence::encode_cursor_update(&peer_id, c))
+                                                    } else { None }
+                                                } else { None }
+                                            }
+                                            presence::Channel::Selection => {
+                                                if let Some(peer) = room.presence.read().await.get_peer(&peer_id) {
+                                                    if let Some(presence::ChannelData::Selection(ref s)) = peer.channels.get(&presence::Channel::Selection) {
+                                                        Some(presence::encode_selection_update(&peer_id, s))
+                                                    } else { None }
+                                                } else { None }
+                                            }
+                                            _ => Some(frame.payload.clone()),
+                                        };
+
+                                        if let Some(bytes) = relay_bytes {
+                                            let _ = room.presence_tx.send((peer_id.clone(), bytes));
+                                        }
+                                    }
+                                    Ok(presence::PresenceMessage::Heartbeat { .. }) => {
+                                        room.presence.write().await.mark_seen(&peer_id, now_ms);
+                                    }
+                                    Ok(_) => {
+                                        // Snapshot/Left from a client — ignore
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "[notebook-sync] Failed to decode presence frame: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+
                             NotebookFrameType::Response | NotebookFrameType::Broadcast => {
                                 // Clients shouldn't send these
                                 warn!(
@@ -1097,7 +1203,7 @@ where
                     }
                     None => {
                         // Client disconnected
-                        return Ok(());
+                        return Ok(peer_id);
                     }
                 }
             }
@@ -1118,6 +1224,41 @@ where
                         &encoded,
                     )
                     .await?;
+                }
+            }
+
+            // Presence update from another peer — forward to this client
+            result = presence_rx.recv() => {
+                match result {
+                    Ok((sender_peer_id, bytes)) => {
+                        // Don't echo back to the sender
+                        if sender_peer_id != peer_id {
+                            connection::send_typed_frame(
+                                writer,
+                                NotebookFrameType::Presence,
+                                &bytes,
+                            )
+                            .await?;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        // Missed some presence updates — send a full snapshot to catch up
+                        log::debug!(
+                            "[notebook-sync] Peer {} lagged {} presence updates, sending snapshot",
+                            peer_id, n
+                        );
+                        let snapshot_bytes = room.presence.read().await.encode_snapshot(&peer_id);
+                        connection::send_typed_frame(
+                            writer,
+                            NotebookFrameType::Presence,
+                            &snapshot_bytes,
+                        )
+                        .await?;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        // Presence channel closed — room is being evicted
+                        return Ok(peer_id);
+                    }
                 }
             }
 
@@ -1157,7 +1298,7 @@ where
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         // Broadcast channel closed — room is being evicted
-                        return Ok(());
+                        return Ok(peer_id);
                     }
                 }
             }
@@ -4662,10 +4803,14 @@ mod tests {
         let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
         spawn_persist_debouncer(persist_rx, persist_path.clone());
 
+        let (presence_tx, _) = broadcast::channel(64);
+
         let room = NotebookRoom {
             doc: Arc::new(RwLock::new(doc)),
             changed_tx,
             kernel_broadcast_tx,
+            presence_tx,
+            presence: Arc::new(RwLock::new(PresenceState::new())),
             persist_tx,
             persist_path,
             active_peers: AtomicUsize::new(0),
