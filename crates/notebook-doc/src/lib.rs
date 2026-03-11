@@ -32,6 +32,7 @@
 //! ```
 
 pub mod metadata;
+pub mod presence;
 
 use std::collections::HashMap;
 
