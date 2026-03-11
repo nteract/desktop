@@ -152,6 +152,10 @@ export function cellSnapshotsToNotebookCellsSync(
           }
 
           // Manifest hash but not cached — return null (will resolve on daemon sync)
+          logger.debug(
+            "[materialize-cells] Manifest hash not in cache during sync materialization:",
+            outputStr.slice(0, 16),
+          );
           return null;
         })
         .filter((o): o is JupyterOutput => o !== null);

@@ -274,20 +274,24 @@ export function useAutomergeNotebook() {
   const updateCellSource = useCallback(
     (cellId: string, source: string) => {
       const handle = handleRef.current;
-      if (!handle) return;
+      if (!handle || awaitingInitialSyncRef.current) return;
 
       // Mutate WASM (instant, local-first)
-      handle.update_source(cellId, source);
+      const updated = handle.update_source(cellId, source);
+      if (!updated) return;
 
-      // Re-read from WASM (single source of truth)
-      rematerializeCellsSync(handle);
+      // Fast-path: update only the affected cell in the store (avoids full
+      // rematerialization on every keystroke, which would cause typing lag)
+      updateNotebookCells((prev) =>
+        prev.map((c) => (c.id === cellId ? { ...c, source } : c)),
+      );
 
       // Sync to daemon (fire-and-forget)
       syncToRelay(handle);
 
       setDirty(true);
     },
-    [rematerializeCellsSync, syncToRelay],
+    [syncToRelay],
   );
 
   const clearCellOutputs = useCallback((cellId: string) => {
@@ -302,19 +306,39 @@ export function useAutomergeNotebook() {
 
   const addCell = useCallback(
     (cellType: "code" | "markdown", afterCellId?: string | null) => {
-      const cellId = crypto.randomUUID();
       const handle = handleRef.current;
 
-      if (handle) {
-        // Mutate WASM (instant, local-first)
-        handle.add_cell_after(cellId, cellType, afterCellId ?? null);
-
-        // Re-read from WASM (single source of truth)
-        rematerializeCellsSync(handle);
-
-        // Sync to daemon (fire-and-forget)
-        syncToRelay(handle);
+      // Don't allow adding cells while bootstrapping or if no handle
+      if (!handle || awaitingInitialSyncRef.current) {
+        // Return a placeholder cell without mutating state
+        const placeholderId = crypto.randomUUID();
+        return cellType === "code"
+          ? {
+              cell_type: "code" as const,
+              id: placeholderId,
+              source: "",
+              outputs: [],
+              execution_count: null,
+              metadata: {},
+            }
+          : {
+              cell_type: cellType,
+              id: placeholderId,
+              source: "",
+              metadata: {},
+            };
       }
+
+      const cellId = crypto.randomUUID();
+
+      // Mutate WASM (instant, local-first)
+      handle.add_cell_after(cellId, cellType, afterCellId ?? null);
+
+      // Re-read from WASM (single source of truth)
+      rematerializeCellsSync(handle);
+
+      // Sync to daemon (fire-and-forget)
+      syncToRelay(handle);
 
       setFocusedCellId(cellId);
       setDirty(true);
@@ -339,7 +363,7 @@ export function useAutomergeNotebook() {
   const moveCell = useCallback(
     (cellId: string, afterCellId?: string | null) => {
       const handle = handleRef.current;
-      if (!handle) return;
+      if (!handle || awaitingInitialSyncRef.current) return;
 
       // Mutate WASM (instant, local-first)
       handle.move_cell(cellId, afterCellId ?? null);
@@ -358,13 +382,14 @@ export function useAutomergeNotebook() {
   const deleteCell = useCallback(
     (cellId: string) => {
       const handle = handleRef.current;
-      if (!handle) return;
+      if (!handle || awaitingInitialSyncRef.current) return;
 
       // Guard: never delete the last cell
       if (handle.cell_count() <= 1) return;
 
       // Mutate WASM (instant, local-first)
-      handle.delete_cell(cellId);
+      const deleted = handle.delete_cell(cellId);
+      if (!deleted) return;
 
       // Re-read from WASM (single source of truth)
       rematerializeCellsSync(handle);
