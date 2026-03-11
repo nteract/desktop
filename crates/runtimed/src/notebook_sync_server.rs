@@ -40,6 +40,7 @@ use crate::blob_store::BlobStore;
 use crate::comm_state::CommState;
 use crate::connection::{self, NotebookFrameType};
 use crate::kernel_manager::{DenoLaunchedConfig, LaunchedEnvConfig, RoomKernel};
+use crate::markdown_images::{extract_relative_images, media_type_from_extension};
 use crate::notebook_doc::{notebook_doc_filename, CellSnapshot, NotebookDoc};
 use crate::notebook_metadata::{NotebookMetadataSnapshot, NOTEBOOK_METADATA_KEY};
 use crate::protocol::{EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse};
@@ -257,6 +258,116 @@ fn compute_env_sync_diff(
             channels_changed,
             deno_changed,
         })
+    }
+}
+
+/// Process markdown cells to resolve relative image paths.
+///
+/// For each markdown cell with relative image paths (e.g., `![](assets/image.png)`),
+/// this function:
+/// 1. Extracts relative image paths from the markdown source
+/// 2. Resolves each path against the notebook directory
+/// 3. Reads the file and stores it in the blob store
+/// 4. Updates the cell's attachments map with the path → blob hash mapping
+///
+/// Security: Paths are canonicalized and validated to stay within the notebook's
+/// directory, preventing directory traversal attacks.
+async fn process_markdown_attachments(room: &NotebookRoom) {
+    // Only process if notebook has a valid file path (not untitled)
+    let notebook_dir = match room.notebook_path.parent() {
+        Some(dir) if room.notebook_path.exists() => dir,
+        _ => return,
+    };
+
+    // Canonicalize notebook directory for security checks
+    let canonical_dir = match notebook_dir.canonicalize() {
+        Ok(dir) => dir,
+        Err(_) => return,
+    };
+
+    // Get all markdown cells
+    let markdown_cells: Vec<(String, String, HashMap<String, String>)> = {
+        let doc = room.doc.read().await;
+        doc.get_cells()
+            .into_iter()
+            .filter(|cell| cell.cell_type == "markdown")
+            .map(|cell| (cell.id, cell.source, cell.attachments))
+            .collect()
+    };
+
+    for (cell_id, source, existing_attachments) in markdown_cells {
+        let relative_paths = extract_relative_images(&source);
+        if relative_paths.is_empty() {
+            continue;
+        }
+
+        let mut new_attachments = false;
+
+        for rel_path in relative_paths {
+            // Skip if already resolved
+            if existing_attachments.contains_key(&rel_path) {
+                continue;
+            }
+
+            // Resolve path against notebook directory
+            let resolved = notebook_dir.join(&rel_path);
+            let canonical = match resolved.canonicalize() {
+                Ok(p) => p,
+                Err(_) => {
+                    // File doesn't exist, skip
+                    continue;
+                }
+            };
+
+            // Security: ensure path stays within notebook directory
+            if !canonical.starts_with(&canonical_dir) {
+                warn!(
+                    "[notebook-sync] Blocked path traversal attempt: {} -> {:?}",
+                    rel_path, canonical
+                );
+                continue;
+            }
+
+            // Read file and store in blob store
+            let data = match tokio::fs::read(&canonical).await {
+                Ok(d) => d,
+                Err(e) => {
+                    debug!("[notebook-sync] Failed to read image {}: {}", rel_path, e);
+                    continue;
+                }
+            };
+
+            let media_type = media_type_from_extension(&rel_path);
+            let hash = match room.blob_store.put(&data, media_type).await {
+                Ok(h) => h,
+                Err(e) => {
+                    warn!("[notebook-sync] Failed to store image in blob store: {}", e);
+                    continue;
+                }
+            };
+
+            // Update cell attachment
+            {
+                let mut doc = room.doc.write().await;
+                if let Err(e) = doc.set_cell_attachment(&cell_id, &rel_path, &hash) {
+                    warn!(
+                        "[notebook-sync] Failed to set attachment for {}: {}",
+                        rel_path, e
+                    );
+                } else {
+                    debug!(
+                        "[notebook-sync] Resolved image {} -> blob:{}",
+                        rel_path, hash
+                    );
+                    new_attachments = true;
+                }
+            }
+        }
+
+        // If we added new attachments, notify peers
+        if new_attachments {
+            let _ = room.changed_tx.send(());
+        }
     }
 }
 
@@ -1005,6 +1116,9 @@ where
 
                                 // Check if metadata changed and kernel is running - broadcast sync state
                                 check_and_broadcast_sync_state(room).await;
+
+                                // Process markdown cells to resolve relative images
+                                process_markdown_attachments(room).await;
                             }
 
                             NotebookFrameType::Request => {
@@ -3197,6 +3311,7 @@ fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<Vec<CellSnapshot>>
                 execution_count,
                 outputs,
                 metadata,
+                attachments: std::collections::HashMap::new(),
             }
         })
         .collect();
@@ -4876,6 +4991,7 @@ mod tests {
             execution_count: "42".to_string(),
             outputs: vec![],
             metadata: serde_json::json!({}),
+            attachments: std::collections::HashMap::new(),
         }];
 
         let changed = apply_ipynb_changes(&room, &external_cells, false).await;
@@ -4911,6 +5027,7 @@ mod tests {
             execution_count: "5".to_string(),
             outputs: vec![r#"{"output_type":"error"}"#.to_string()],
             metadata: serde_json::json!({}),
+            attachments: std::collections::HashMap::new(),
         }];
 
         let changed = apply_ipynb_changes(&room, &external_cells, true).await;
@@ -4950,6 +5067,7 @@ mod tests {
                 execution_count: "null".to_string(),
                 outputs: vec![],
                 metadata: serde_json::json!({}),
+                attachments: std::collections::HashMap::new(),
             },
             CellSnapshot {
                 id: "new-cell".to_string(),
@@ -4959,6 +5077,7 @@ mod tests {
                 execution_count: "42".to_string(),
                 outputs: vec![r#"{"output_type":"execute_result"}"#.to_string()],
                 metadata: serde_json::json!({}),
+                attachments: std::collections::HashMap::new(),
             },
         ];
 

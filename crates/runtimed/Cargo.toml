@@ -58,6 +58,9 @@ alacritty_terminal = "0.25"
 # Error parsing
 regex = "1"
 
+# Markdown parsing for image extraction
+pulldown-cmark = "0.13"
+
 # HTTP blob server
 hyper = { version = "1", features = ["http1", "server"] }
 http-body-util = "0.1"
