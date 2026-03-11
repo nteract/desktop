@@ -39,7 +39,7 @@ jobs:
     steps:
       - name: Resolve pull request head commit
         id: resolve
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const prNumber = Number(context.payload.inputs.pr_number);
@@ -72,7 +72,7 @@ jobs:
 
     steps:
       - name: Checkout pinned PR commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ needs.resolve-pr.outputs.head_sha }}
           fetch-depth: 1
@@ -91,7 +91,7 @@ jobs:
           shared-key: pr-binary-${{ inputs.target_os }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
 
@@ -104,7 +104,7 @@ jobs:
 
       - name: Cache pnpm store (Unix)
         if: runner.os != 'Windows'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.pnpm-store
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -113,7 +113,7 @@ jobs:
 
       - name: Cache pnpm store (Windows)
         if: runner.os == 'Windows'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~\AppData\Local\pnpm\store
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -128,7 +128,7 @@ jobs:
 
       - name: Cache tauri-cli binary (Unix)
         if: runner.os != 'Windows'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin
           key: cargo-bin-${{ inputs.target_os }}-tauri-cli-${{ hashFiles('rust-toolchain.toml') }}
@@ -137,7 +137,7 @@ jobs:
 
       - name: Cache tauri-cli binary (Windows)
         if: runner.os == 'Windows'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~\.cargo\bin
           key: cargo-bin-${{ inputs.target_os }}-tauri-cli-${{ hashFiles('rust-toolchain.toml') }}
@@ -161,7 +161,7 @@ jobs:
 
       - name: Bake PR + commit into version
         id: version
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
           COMMIT_SHORT_SHA: ${{ needs.resolve-pr.outputs.head_short_sha }}
@@ -274,14 +274,14 @@ jobs:
 
       - name: Upload runnable binary artifact
         id: upload-artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ needs.resolve-pr.outputs.artifact_prefix }}-${{ inputs.target_os == 'linux' && 'linux-x64' || inputs.target_os == 'macos' && 'macos' || 'windows-x64' }}
           path: pr-binary/
           retention-days: 14
 
       - name: Comment on PR with artifact link
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
           TARGET_OS: ${{ inputs.target_os }}

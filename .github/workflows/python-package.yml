@@ -40,7 +40,7 @@ jobs:
           - runner: macos-latest
             target: x86_64-apple-darwin
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
@@ -69,7 +69,7 @@ jobs:
           maturin-version: "v1.11.5"
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-macos-${{ matrix.platform.target }}
           path: python/runtimed/dist
@@ -77,7 +77,7 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
@@ -102,7 +102,7 @@ jobs:
           maturin-version: "v1.11.5"
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-linux-x86_64
           path: python/runtimed/dist
@@ -117,15 +117,15 @@ jobs:
       contents: write
       attestations: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
 
       - name: Generate artifact attestation
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: "wheels-*/*"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: Publish to PyPI
         run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/runtimed/ 'wheels-*/*'

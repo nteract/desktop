@@ -20,7 +20,7 @@ jobs:
     outputs:
       source_changed: ${{ steps.filter.outputs.source }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -58,7 +58,7 @@ jobs:
     if: needs.changes.outputs.source_changed == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -67,7 +67,7 @@ jobs:
         run: cargo fmt --check
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
 
@@ -91,10 +91,10 @@ jobs:
     if: needs.changes.outputs.source_changed == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
 
@@ -105,7 +105,7 @@ jobs:
         run: pnpm config set store-dir ~/.pnpm-store
 
       - name: Cache pnpm store
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.pnpm-store
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -121,7 +121,7 @@ jobs:
           pnpm --dir apps/notebook build
 
       - name: Upload UI build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-build-dist
           path: |
@@ -135,10 +135,10 @@ jobs:
     if: needs.changes.outputs.source_changed == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download UI build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ui-build-dist
           path: apps
@@ -149,7 +149,7 @@ jobs:
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -159,7 +159,7 @@ jobs:
           shared-key: ubuntu-latest
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
 
@@ -170,7 +170,7 @@ jobs:
         run: pnpm config set store-dir ~/.pnpm-store
 
       - name: Cache pnpm store
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.pnpm-store
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -198,7 +198,7 @@ jobs:
           fi
 
       - name: Upload Linux Rust binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-rust-binaries
           path: |
@@ -259,12 +259,12 @@ jobs:
         if: needs.changes.outputs.source_changed == 'true' && github.event_name == 'pull_request' && !matrix.platform.run_on_pr
         run: echo "Skipping this platform for pull_request events."
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
 
       - name: Download UI build artifacts
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ui-build-dist
           path: apps
@@ -275,7 +275,7 @@ jobs:
 
       - name: Install uv
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: Install rust
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
@@ -320,7 +320,7 @@ jobs:
     if: needs.changes.outputs.source_changed == 'true' && needs.build-linux.result == 'success'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install system dependencies
         run: |
@@ -335,7 +335,7 @@ jobs:
           shared-key: ubuntu-latest
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
 
@@ -346,7 +346,7 @@ jobs:
         run: pnpm config set store-dir ~/.pnpm-store
 
       - name: Cache pnpm store
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.pnpm-store
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -362,7 +362,7 @@ jobs:
           pnpm --dir apps/notebook build
 
       - name: Cache cargo bin
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin
           key: cargo-bin-ubuntu-tauri-cli-tauri-driver-${{ hashFiles('rust-toolchain.toml') }}
@@ -376,7 +376,7 @@ jobs:
           fi
 
       - name: Download Linux Rust binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: linux-rust-binaries
           path: .
@@ -391,7 +391,7 @@ jobs:
         run: cd crates/notebook && cargo tauri build --ci --no-bundle --config '{"build":{"beforeBuildCommand":""}}'
 
       - name: Upload E2E artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-app-linux
           path: |
@@ -406,7 +406,7 @@ jobs:
     needs: [changes, build-e2e-app]
     if: needs.changes.outputs.source_changed == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install system dependencies
         run: |
@@ -419,7 +419,7 @@ jobs:
             webkit2gtk-driver
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
 
@@ -430,7 +430,7 @@ jobs:
         run: pnpm config set store-dir ~/.pnpm-store
 
       - name: Cache pnpm store
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.pnpm-store
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -441,7 +441,7 @@ jobs:
         run: pnpm install
 
       - name: Download E2E artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: e2e-app-linux
           path: ./target/release
@@ -452,7 +452,7 @@ jobs:
           chmod +x target/release/binaries/*
 
       - name: Cache tauri-driver
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/tauri-driver
           key: cargo-bin-tauri-driver-v0.1
@@ -468,7 +468,7 @@ jobs:
           fi
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: Start E2E daemon
         run: |
@@ -526,7 +526,7 @@ jobs:
 
       - name: Upload failure screenshots
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-screenshots
           path: e2e-screenshots/failures/
@@ -534,7 +534,7 @@ jobs:
 
       - name: Upload daemon logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-daemon-logs
           path: e2e-logs/
@@ -547,7 +547,7 @@ jobs:
     needs: [changes, build-e2e-app, e2e]
     if: needs.changes.outputs.source_changed == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install system dependencies
         run: |
@@ -560,7 +560,7 @@ jobs:
             webkit2gtk-driver
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
 
@@ -571,7 +571,7 @@ jobs:
         run: pnpm config set store-dir ~/.pnpm-store
 
       - name: Cache pnpm store
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.pnpm-store
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -582,7 +582,7 @@ jobs:
         run: pnpm install
 
       - name: Download E2E artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: e2e-app-linux
           path: ./target/release
@@ -593,7 +593,7 @@ jobs:
           chmod +x target/release/binaries/*
 
       - name: Cache tauri-driver
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/tauri-driver
           key: cargo-bin-tauri-driver-v0.1
@@ -609,7 +609,7 @@ jobs:
           fi
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: Run kernel launch fixture tests
         timeout-minutes: 15
@@ -736,7 +736,7 @@ jobs:
 
       - name: Upload failure screenshots
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-fixture-screenshots
           path: e2e-screenshots/failures/
@@ -744,7 +744,7 @@ jobs:
 
       - name: Upload test logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-fixture-logs
           path: e2e-logs/
@@ -757,7 +757,7 @@ jobs:
     needs: [changes, build-linux]
     if: needs.changes.outputs.source_changed == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install system dependencies
         run: |
@@ -772,7 +772,7 @@ jobs:
           shared-key: ubuntu-latest
 
       - name: Download Linux Rust binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: linux-rust-binaries
           path: .
@@ -781,7 +781,7 @@ jobs:
         run: chmod +x target/release/runtimed target/release/runt
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: Build runtimed-py
         working-directory: python/runtimed
@@ -811,7 +811,7 @@ jobs:
 
       - name: Upload test logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: runtimed-py-integration-logs
           path: python/runtimed/integration-logs/
