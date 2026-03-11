@@ -252,7 +252,7 @@ def daemon_process():
             "--blob-store-dir",
             str(blob_dir),
             "--uv-pool-size",
-            "3",  # Pool for sequential tests (need headroom for replenishment)
+            "6",  # Pool for sequential tests (need headroom for replenishment)
             "--conda-pool-size",
             "3",  # Need headroom for conda project file tests + inline fallback
         ]
@@ -2572,7 +2572,9 @@ class TestOpenNotebook:
         assert info.cell_count == 0
         assert info.notebook_id == session.notebook_id
 
-    def test_open_nonexistent_file_creates_notebook(self, daemon_process, monkeypatch, tmp_path):
+    def test_open_nonexistent_file_creates_notebook(
+        self, daemon_process, monkeypatch, tmp_path
+    ):
         """Opening missing file creates a new notebook at that path."""
         socket_path, _ = daemon_process
         if socket_path is not None:
@@ -2590,7 +2592,9 @@ class TestOpenNotebook:
         finally:
             session.close()
 
-    def test_open_nonexistent_file_auto_appends_ipynb(self, daemon_process, monkeypatch, tmp_path):
+    def test_open_nonexistent_file_auto_appends_ipynb(
+        self, daemon_process, monkeypatch, tmp_path
+    ):
         """Opening missing file without .ipynb extension auto-appends it."""
         socket_path, _ = daemon_process
         if socket_path is not None:

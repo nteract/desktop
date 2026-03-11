@@ -455,7 +455,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/tauri-driver
-          key: cargo-bin-tauri-driver-v0.1
+          key: cargo-bin-tauri-driver-${{ hashFiles('rust-toolchain.toml') }}
           restore-keys: |
             cargo-bin-tauri-driver-
 
@@ -511,6 +511,8 @@ jobs:
           RUNTIMED_WORKSPACE_PATH: ${{ github.workspace }}
           NO_AT_BRIDGE: 1
           LIBGL_ALWAYS_SOFTWARE: 1
+          WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: 1
+          WEBKIT_DISABLE_COMPOSITING_MODE: 1
           RUST_LOG: info,notebook=debug,runtimed=debug
 
       - name: Collect daemon logs
@@ -596,7 +598,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/tauri-driver
-          key: cargo-bin-tauri-driver-v0.1
+          key: cargo-bin-tauri-driver-${{ hashFiles('rust-toolchain.toml') }}
           restore-keys: |
             cargo-bin-tauri-driver-
 
@@ -725,6 +727,8 @@ jobs:
           RUNTIMED_WORKSPACE_PATH: ${{ github.workspace }}
           NO_AT_BRIDGE: 1
           LIBGL_ALWAYS_SOFTWARE: 1
+          WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: 1
+          WEBKIT_DISABLE_COMPOSITING_MODE: 1
           RUST_LOG: info,notebook=debug,runtimed=debug
 
       - name: Collect daemon logs

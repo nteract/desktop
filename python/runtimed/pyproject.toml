@@ -37,5 +37,6 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 # Global timeout catches truly stuck tests. Must be high enough
 # to cover the daemon_process fixture startup (up to 150s for socket +
-# pool warmup on first test in the module).
-timeout = 300
+# pool warmup on first test in the module) and survive at least one
+# 300s LaunchKernel wire timeout with room for retries.
+timeout = 600
