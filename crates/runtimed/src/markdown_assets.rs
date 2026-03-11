@@ -151,11 +151,12 @@ fn strip_query_and_fragment(path: &str) -> &str {
 }
 
 fn extract_html_image_refs(html: &str) -> Vec<String> {
-    static IMG_SRC_RE: OnceLock<Regex> = OnceLock::new();
-    let re = IMG_SRC_RE.get_or_init(|| {
+    static IMG_SRC_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+    let Ok(re) = IMG_SRC_RE.get_or_init(|| {
         Regex::new(r#"(?is)<img\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`]+))"#)
-            .expect("valid img src regex")
-    });
+    }) else {
+        return Vec::new();
+    };
 
     re.captures_iter(html)
         .filter_map(|caps| {

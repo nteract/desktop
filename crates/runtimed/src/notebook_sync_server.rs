@@ -3348,6 +3348,15 @@ async fn outputs_to_manifest_refs(raw_outputs: &[String], blob_store: &BlobStore
 /// cells progressively.
 const STREAMING_BATCH_SIZE: usize = 3;
 
+type NbformatAttachmentMap = HashMap<String, serde_json::Value>;
+type ResolvedAssets = HashMap<String, String>;
+type ParsedStreamingNotebook = (
+    Vec<StreamingCell>,
+    Option<NotebookMetadataSnapshot>,
+    NbformatAttachmentMap,
+);
+type StreamingLoadBatchEntry = (usize, StreamingCell, Vec<String>, ResolvedAssets);
+
 /// Cell data parsed for streaming load.
 ///
 /// Unlike `CellSnapshot` which stores outputs as `Vec<String>` (JSON strings),
@@ -3406,16 +3415,7 @@ fn jobj_get<'a, 's>(
 /// Returns `(cells, Option<metadata_snapshot>)`. Outputs are kept as
 /// `serde_json::Value` so they can be passed directly to `create_manifest`
 /// without a serialize→parse round-trip.
-fn parse_notebook_jiter(
-    bytes: &[u8],
-) -> Result<
-    (
-        Vec<StreamingCell>,
-        Option<NotebookMetadataSnapshot>,
-        HashMap<String, serde_json::Value>,
-    ),
-    String,
-> {
+fn parse_notebook_jiter(bytes: &[u8]) -> Result<ParsedStreamingNotebook, String> {
     let json = jiter::JsonValue::parse(bytes, false)
         .map_err(|e| format!("Invalid notebook JSON: {}", e))?;
 
@@ -3627,8 +3627,7 @@ where
         let batch_start = std::time::Instant::now();
 
         // Collect one batch and process outputs through blob store (outside doc lock)
-        let mut batch: Vec<(usize, StreamingCell, Vec<String>, HashMap<String, String>)> =
-            Vec::new();
+        let mut batch: Vec<StreamingLoadBatchEntry> = Vec::new();
         for _ in 0..STREAMING_BATCH_SIZE {
             let Some((idx, cell)) = cell_iter.next() else {
                 break;
