@@ -65,6 +65,9 @@ print(result.error)
 # Save the notebook to disk
 path = session.save()                       # Save to current path
 path = session.save(path="/tmp/copy.ipynb")  # Save-as
+
+# Reorder cells
+new_position = session.move_cell(cell_id, after_cell_id="other-id")
 ```
 
 ## AsyncSession API
@@ -81,6 +84,9 @@ async with runtimed.AsyncSession(notebook_id="my-notebook") as session:
     # Save the notebook to disk
     path = await session.save()                       # Save to current path
     path = await session.save(path="/tmp/copy.ipynb")  # Save-as
+
+    # Reorder cells
+    new_position = await session.move_cell(cell_id, after_cell_id="other-id")
 ```
 
 ## DaemonClient API

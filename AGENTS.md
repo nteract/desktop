@@ -215,12 +215,14 @@ runt daemon status
 
 The notebook uses a local-first CRDT architecture. The frontend owns its own Automerge document via WASM, making cell mutations instant. Two Automerge peers participate:
 
-- **Frontend (WASM)** — `NotebookHandle` from `crates/runtimed-wasm`, loaded in the webview. Cell mutations (add, delete, edit source) execute locally in WASM. React state is derived from the WASM doc via `handle.get_cells_json()`. The WASM starts with an empty doc (`create_empty()`); the sync protocol delivers all state from the daemon.
+- **Frontend (WASM)** — `NotebookHandle` from `crates/runtimed-wasm`, loaded in the webview. Cell mutations (add, delete, move, edit source) execute locally in WASM. React state is derived from the WASM doc via `handle.get_cells_json()`. The WASM starts with an empty doc (`create_empty()`); the sync protocol delivers all state from the daemon.
 - **Daemon** — `NotebookDoc` from `crates/notebook-doc/src/lib.rs` (re-exported by `crates/runtimed/src/lib.rs`). Canonical doc for kernel execution, output writing, and persistence.
 
 The **Tauri relay** (`NotebookSyncClient` in `crates/runtimed/src/notebook_sync_client.rs`) is a transparent byte pipe — it forwards raw Automerge sync frames between the WASM and the daemon without merging or maintaining its own doc replica. The daemon's `peer_state` tracks the WASM peer directly through the pipe. A non-pipe "full peer" mode exists for `runtimed-py` (Python bindings), where the relay does maintain a local doc replica — but this is not the Tauri path.
 
-Mutation flow: React → WASM `handle.add_cell()` → `handle.generate_sync_message()` → `invoke("send_automerge_sync")` → relay pipe → daemon.
+Cells are stored in an Automerge Map keyed by cell ID, with a `position` field (fractional index hex string) for ordering. `move_cell` updates only the position field — no delete/re-insert. `get_cells()` returns cells sorted by position with cell ID as tiebreaker.
+
+Mutation flow: React → WASM `handle.add_cell_after()` → `handle.generate_sync_message()` → `invoke("send_automerge_sync")` → relay pipe → daemon.
 
 Incoming sync: daemon → relay pipe → `automerge:from-daemon` event → WASM `handle.receive_sync_message()` → `materializeCells()` → React state.
 

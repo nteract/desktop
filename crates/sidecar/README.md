@@ -15,7 +15,7 @@ TODO: Include updated demo!
 
 Sidecar is not published to crates.io (it embeds UI assets at compile time that live outside the crate directory). Install via one of:
 
-**Pre-built binaries** from [GitHub Releases](https://github.com/runtimed/runtimed/releases):
+**Pre-built binaries** from [GitHub Releases](https://github.com/nteract/desktop/releases):
 
 ```bash
 # Download the latest release for your platform

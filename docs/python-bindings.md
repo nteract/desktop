@@ -5,7 +5,7 @@ The `runtimed` Python package provides programmatic access to the notebook daemo
 ## Installation
 
 ```bash
-# From PyPI (when published)
+# From PyPI
 pip install runtimed
 
 # From source
@@ -117,6 +117,9 @@ cells = session.get_cells()
 
 # Delete a cell
 session.delete_cell(cell_id)
+
+# Move a cell (returns new fractional position string)
+new_position = session.move_cell(cell_id, after_cell_id="other-cell-id")
 ```
 
 ### Saving Notebooks
@@ -256,6 +259,9 @@ cells = await session.get_cells()
 
 # Delete a cell
 await session.delete_cell(cell_id)
+
+# Move a cell
+new_position = await session.move_cell(cell_id, after_cell_id="other-cell-id")
 ```
 
 ### Saving Notebooks
@@ -414,6 +420,7 @@ cell = session.get_cell(cell_id)
 
 cell.id              # Cell identifier
 cell.cell_type       # "code", "markdown", or "raw"
+cell.position        # Fractional index string for ordering
 cell.source          # Cell source content
 cell.execution_count # Execution count if executed
 ```

@@ -178,7 +178,7 @@ This creates a symlink to `/usr/local/bin/runt`, so you can run `runt doctor` di
 If you're still stuck:
 
 1. Check the logs for error messages: `runt daemon logs -n 50`
-2. [Open an issue on GitHub](https://github.com/nteract/nteract/issues) with:
+2. [Open an issue on GitHub](https://github.com/nteract/desktop/issues) with:
    - The output of `runt doctor`
    - Any relevant log messages
    - Your macOS/Linux version

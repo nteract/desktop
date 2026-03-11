@@ -6,7 +6,7 @@ each other. The key insight: the Notebook app (Tauri) bundles `runtimed` and
 step. Similarly, frontend assets must be built before their consuming Rust crates
 compile.
 
-> **Note:** PR [#209](https://github.com/runtimed/runt/pull/209) improves the
+> **Note:** PR [#209](https://github.com/nteract/desktop/pull/209) improves the
 > dev workflow so `cargo xtask dev` handles the sidecar binary build
 > automatically, but for release builds the dependency chain below still applies.
 

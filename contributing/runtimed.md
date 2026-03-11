@@ -212,6 +212,12 @@ print(result.outputs)  # [Output(stream, stdout: "hello\n")]
 # Get cell with outputs (includes historical outputs from other clients)
 cell = session.get_cell(result.cell_id)
 print(cell.outputs)  # [Output(stream, stdout: "hello\n")]
+
+# Move a cell (updates fractional index position)
+new_position = session.move_cell("cell-id", after_cell_id="other-cell-id")
+
+# Cell objects include position
+print(cell.position)  # fractional index string e.g. "80", "C0"
 ```
 
 ### Socket Path Configuration

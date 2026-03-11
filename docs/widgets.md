@@ -171,6 +171,6 @@ Instead of `jupyterlab-sidecar`, use regular notebook outputs. Output appears in
 
 ## See Also
 
-- [GitHub Issue #44](https://github.com/runtimed/runt/issues/44) — Widget compatibility testing matrix
+- [GitHub Issue #44](https://github.com/nteract/desktop/issues/44) — Widget compatibility testing matrix
 - [anywidget documentation](https://anywidget.dev/)
 - `src/components/widgets/controls/` — Built-in widget implementations
