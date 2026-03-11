@@ -137,6 +137,11 @@ pub struct Cell {
     #[pyo3(get)]
     pub cell_type: String,
 
+    /// Fractional index hex string for ordering (e.g., "80", "7F80").
+    /// Cells are sorted by this field.
+    #[pyo3(get)]
+    pub position: String,
+
     /// Cell source code/content
     #[pyo3(get)]
     pub source: String,

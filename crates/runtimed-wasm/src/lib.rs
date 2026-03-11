@@ -24,10 +24,12 @@ pub struct NotebookHandle {
 /// A cell snapshot returned to JavaScript.
 #[wasm_bindgen]
 pub struct JsCell {
+    /// Index in the sorted cell list (for backward compatibility).
     #[wasm_bindgen(readonly)]
     pub index: usize,
     id: String,
     cell_type: String,
+    position: String,
     source: String,
     execution_count: String,
     outputs: Vec<String>,
@@ -44,6 +46,12 @@ impl JsCell {
     #[wasm_bindgen(getter)]
     pub fn cell_type(&self) -> String {
         self.cell_type.clone()
+    }
+
+    /// Fractional index hex string for ordering (e.g., "80", "7F80").
+    #[wasm_bindgen(getter)]
+    pub fn position(&self) -> String {
+        self.position.clone()
     }
 
     #[wasm_bindgen(getter)]
@@ -75,6 +83,7 @@ impl From<(usize, CellSnapshot)> for JsCell {
             index,
             id: snap.id,
             cell_type: snap.cell_type,
+            position: snap.position,
             source: snap.source,
             execution_count: snap.execution_count,
             outputs: snap.outputs,
@@ -145,7 +154,9 @@ impl NotebookHandle {
             .map(JsCell::from)
     }
 
-    /// Add a new cell at the given index.
+    /// Add a new cell at the given index (backward-compatible API).
+    ///
+    /// Internally converts the index to an after_cell_id for fractional indexing.
     pub fn add_cell(
         &mut self,
         index: usize,
@@ -155,6 +166,40 @@ impl NotebookHandle {
         self.doc
             .add_cell(index, cell_id, cell_type)
             .map_err(|e| JsError::new(&format!("add_cell failed: {}", e)))
+    }
+
+    /// Add a new cell after the specified cell (semantic API).
+    ///
+    /// - `after_cell_id = None` → insert at the beginning
+    /// - `after_cell_id = Some(id)` → insert after that cell
+    ///
+    /// Returns the position string of the new cell.
+    pub fn add_cell_after(
+        &mut self,
+        cell_id: &str,
+        cell_type: &str,
+        after_cell_id: Option<String>,
+    ) -> Result<String, JsError> {
+        self.doc
+            .add_cell_after(cell_id, cell_type, after_cell_id.as_deref())
+            .map_err(|e| JsError::new(&format!("add_cell_after failed: {}", e)))
+    }
+
+    /// Move a cell to a new position (after the specified cell).
+    ///
+    /// - `after_cell_id = None` → move to the beginning
+    /// - `after_cell_id = Some(id)` → move after that cell
+    ///
+    /// This only updates the cell's position field — no delete/re-insert.
+    /// Returns the new position string.
+    pub fn move_cell(
+        &mut self,
+        cell_id: &str,
+        after_cell_id: Option<String>,
+    ) -> Result<String, JsError> {
+        self.doc
+            .move_cell(cell_id, after_cell_id.as_deref())
+            .map_err(|e| JsError::new(&format!("move_cell failed: {}", e)))
     }
 
     /// Delete a cell by ID. Returns true if the cell was found and deleted.
