@@ -20,6 +20,7 @@ export {
 export interface CellSnapshot {
   id: string;
   cell_type: string;
+  position: string; // Fractional index hex string for ordering (e.g., "80", "7F80")
   source: string;
   execution_count: string; // "5" or "null"
   outputs: string[]; // JSON-encoded Jupyter outputs or manifest hashes

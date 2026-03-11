@@ -11,7 +11,6 @@ import {
   cellSnapshotsToNotebookCells,
 } from "../lib/materialize-cells";
 import {
-  getNotebookCellsSnapshot,
   replaceNotebookCells,
   resetNotebookCells,
   updateNotebookCells,
@@ -297,20 +296,11 @@ export function useAutomergeNotebook() {
             }
           : { cell_type: "markdown", id: cellId, source: "", metadata: {} };
 
-      // Compute insertion index from the latest external-store snapshot.
-      const current = getNotebookCellsSnapshot();
-      let idx: number;
-      if (!afterCellId) {
-        idx = 0;
-      } else {
-        const afterIdx = current.findIndex((c) => c.id === afterCellId);
-        idx = afterIdx === -1 ? 0 : afterIdx + 1;
-      }
-
       // Mutate the WASM doc first — this is the source of truth.
+      // Uses fractional indexing: afterCellId=null inserts at start.
       const handle = handleRef.current;
       if (handle) {
-        handle.add_cell(idx, cellId, cellType);
+        handle.add_cell_after(cellId, cellType, afterCellId ?? null);
         syncToRelay(handle);
       }
 
@@ -327,6 +317,33 @@ export function useAutomergeNotebook() {
       setFocusedCellId(cellId);
       setDirty(true);
       return newCell;
+    },
+    [syncToRelay],
+  );
+
+  const moveCell = useCallback(
+    (cellId: string, afterCellId?: string | null) => {
+      const handle = handleRef.current;
+      if (handle) {
+        handle.move_cell(cellId, afterCellId ?? null);
+        syncToRelay(handle);
+      }
+
+      // Optimistic store update: remove cell from old position, insert after target.
+      updateNotebookCells((prev) => {
+        const cellIdx = prev.findIndex((c) => c.id === cellId);
+        if (cellIdx === -1) return prev;
+        const cell = prev[cellIdx];
+        const without = prev.filter((c) => c.id !== cellId);
+        if (!afterCellId) return [cell, ...without];
+        const targetIdx = without.findIndex((c) => c.id === afterCellId);
+        if (targetIdx === -1) return [cell, ...without];
+        const next = [...without];
+        next.splice(targetIdx + 1, 0, cell);
+        return next;
+      });
+
+      setDirty(true);
     },
     [syncToRelay],
   );
@@ -466,6 +483,7 @@ export function useAutomergeNotebook() {
     updateCellSource,
     clearCellOutputs,
     addCell,
+    moveCell,
     deleteCell,
     save,
     openNotebook,

@@ -558,6 +558,33 @@ impl Session {
         })
     }
 
+    /// Move a cell to a new position in the notebook.
+    ///
+    /// Updates the cell's fractional index position field. No delete/re-insert —
+    /// the cell object is preserved in the Automerge document.
+    ///
+    /// Args:
+    ///     cell_id: The cell ID to move.
+    ///     after_cell_id: Place the cell after this cell ID. None means move to the start.
+    ///
+    /// Returns:
+    ///     The new fractional position string.
+    #[pyo3(signature = (cell_id, after_cell_id=None))]
+    fn move_cell(&self, cell_id: &str, after_cell_id: Option<&str>) -> PyResult<String> {
+        self.runtime.block_on(async {
+            let state = self.state.lock().await;
+            let handle = state
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+
+            handle
+                .move_cell(cell_id, after_cell_id)
+                .await
+                .map_err(to_py_err)
+        })
+    }
+
     /// Save the notebook to a .ipynb file.
     ///
     /// Reads cells and metadata from the synced Automerge document, resolves

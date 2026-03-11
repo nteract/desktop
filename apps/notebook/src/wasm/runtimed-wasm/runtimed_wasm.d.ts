@@ -8,6 +8,9 @@ export class JsCell {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
+    /**
+     * Index in the sorted cell list (for backward compatibility).
+     */
     readonly index: number;
     readonly cell_type: string;
     readonly execution_count: string;
@@ -20,6 +23,10 @@ export class JsCell {
      * Get outputs as a JSON array string.
      */
     readonly outputs_json: string;
+    /**
+     * Fractional index hex string for ordering (e.g., "80", "7F80").
+     */
+    readonly position: string;
     readonly source: string;
 }
 
@@ -35,9 +42,20 @@ export class NotebookHandle {
     free(): void;
     [Symbol.dispose](): void;
     /**
-     * Add a new cell at the given index.
+     * Add a new cell at the given index (backward-compatible API).
+     *
+     * Internally converts the index to an after_cell_id for fractional indexing.
      */
     add_cell(index: number, cell_id: string, cell_type: string): void;
+    /**
+     * Add a new cell after the specified cell (semantic API).
+     *
+     * - `after_cell_id = null` → insert at the beginning
+     * - `after_cell_id = "id"` → insert after that cell
+     *
+     * Returns the position string of the new cell.
+     */
+    add_cell_after(cell_id: string, cell_type: string, after_cell_id?: string | null): string;
     /**
      * Add a Conda dependency, deduplicating by package name (case-insensitive).
      * Initializes the Conda section with ["conda-forge"] channels if absent.
@@ -115,6 +133,16 @@ export class NotebookHandle {
      */
     static load(bytes: Uint8Array): NotebookHandle;
     /**
+     * Move a cell to a new position (after the specified cell).
+     *
+     * - `after_cell_id = null` → move to the beginning
+     * - `after_cell_id = "id"` → move after that cell
+     *
+     * This only updates the cell's position field — no delete/re-insert.
+     * Returns the new position string.
+     */
+    move_cell(cell_id: string, after_cell_id?: string | null): string;
+    /**
      * Create a new empty notebook document.
      */
     constructor(notebook_id: string);
@@ -176,6 +204,7 @@ export interface InitOutput {
     readonly __wbg_get_jscell_index: (a: number) => number;
     readonly jscell_id: (a: number, b: number) => void;
     readonly jscell_cell_type: (a: number, b: number) => void;
+    readonly jscell_position: (a: number, b: number) => void;
     readonly jscell_source: (a: number, b: number) => void;
     readonly jscell_execution_count: (a: number, b: number) => void;
     readonly jscell_outputs_json: (a: number, b: number) => void;
@@ -188,6 +217,8 @@ export interface InitOutput {
     readonly notebookhandle_get_cells_json: (a: number, b: number) => void;
     readonly notebookhandle_get_cell: (a: number, b: number, c: number) => number;
     readonly notebookhandle_add_cell: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+    readonly notebookhandle_add_cell_after: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+    readonly notebookhandle_move_cell: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_delete_cell: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_update_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_append_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;

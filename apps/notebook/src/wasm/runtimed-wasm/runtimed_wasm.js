@@ -22,6 +22,7 @@ export class JsCell {
         wasm.__wbg_jscell_free(ptr, 0);
     }
     /**
+     * Index in the sorted cell list (for backward compatibility).
      * @returns {number}
      */
     get index() {
@@ -126,6 +127,26 @@ export class JsCell {
         }
     }
     /**
+     * Fractional index hex string for ordering (e.g., "80", "7F80").
+     * @returns {string}
+     */
+    get position() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.jscell_position(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export2(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * @returns {string}
      */
     get source() {
@@ -174,7 +195,9 @@ export class NotebookHandle {
         wasm.__wbg_notebookhandle_free(ptr, 0);
     }
     /**
-     * Add a new cell at the given index.
+     * Add a new cell at the given index (backward-compatible API).
+     *
+     * Internally converts the index to an after_cell_id for fractional indexing.
      * @param {number} index
      * @param {string} cell_id
      * @param {string} cell_type
@@ -194,6 +217,48 @@ export class NotebookHandle {
             }
         } finally {
             wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Add a new cell after the specified cell (semantic API).
+     *
+     * - `after_cell_id = null` → insert at the beginning
+     * - `after_cell_id = "id"` → insert after that cell
+     *
+     * Returns the position string of the new cell.
+     * @param {string} cell_id
+     * @param {string} cell_type
+     * @param {string | null} [after_cell_id]
+     * @returns {string}
+     */
+    add_cell_after(cell_id, cell_type, after_cell_id) {
+        let deferred5_0;
+        let deferred5_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(cell_id, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(cell_type, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            const len1 = WASM_VECTOR_LEN;
+            var ptr2 = isLikeNone(after_cell_id) ? 0 : passStringToWasm0(after_cell_id, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            var len2 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_add_cell_after(retptr, this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+            var ptr4 = r0;
+            var len4 = r1;
+            if (r3) {
+                ptr4 = 0; len4 = 0;
+                throw takeObject(r2);
+            }
+            deferred5_0 = ptr4;
+            deferred5_1 = len4;
+            return getStringFromWasm0(ptr4, len4);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export2(deferred5_0, deferred5_1, 1);
         }
     }
     /**
@@ -492,6 +557,46 @@ export class NotebookHandle {
             return NotebookHandle.__wrap(r0);
         } finally {
             wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Move a cell to a new position (after the specified cell).
+     *
+     * - `after_cell_id = null` → move to the beginning
+     * - `after_cell_id = "id"` → move after that cell
+     *
+     * This only updates the cell's position field — no delete/re-insert.
+     * Returns the new position string.
+     * @param {string} cell_id
+     * @param {string | null} [after_cell_id]
+     * @returns {string}
+     */
+    move_cell(cell_id, after_cell_id) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(cell_id, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            const len0 = WASM_VECTOR_LEN;
+            var ptr1 = isLikeNone(after_cell_id) ? 0 : passStringToWasm0(after_cell_id, wasm.__wbindgen_export3, wasm.__wbindgen_export4);
+            var len1 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_move_cell(retptr, this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+            var ptr3 = r0;
+            var len3 = r1;
+            if (r3) {
+                ptr3 = 0; len3 = 0;
+                throw takeObject(r2);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export2(deferred4_0, deferred4_1, 1);
         }
     }
     /**

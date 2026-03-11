@@ -137,6 +137,11 @@ pub struct Cell {
     #[pyo3(get)]
     pub cell_type: String,
 
+    /// Fractional index hex string for ordering (e.g., "80", "7F80").
+    /// Cells are sorted by this field.
+    #[pyo3(get)]
+    pub position: String,
+
     /// Cell source code/content
     #[pyo3(get)]
     pub source: String,
@@ -236,6 +241,7 @@ impl Cell {
         Self {
             id: snapshot.id,
             cell_type: snapshot.cell_type,
+            position: snapshot.position,
             source: snapshot.source,
             execution_count,
             outputs: Vec::new(),
@@ -255,6 +261,7 @@ impl Cell {
         Self {
             id: snapshot.id,
             cell_type: snapshot.cell_type,
+            position: snapshot.position,
             source: snapshot.source,
             execution_count,
             outputs,
