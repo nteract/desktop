@@ -74,6 +74,10 @@ export async function waitForKernelReady(timeout = 60000) {
  * Returns the cell element for further assertions.
  */
 export async function executeFirstCell() {
+  // Wait for cells to materialize from Automerge sync before querying.
+  // Kernel status (idle) can arrive before cell content is synced.
+  await waitForCodeCells(1, 15000);
+
   const codeCell = await $('[data-cell-type="code"]');
   await codeCell.waitForExist({ timeout: 5000 });
 
