@@ -9,16 +9,17 @@
 //! copy in a "room"; each connected notebook window holds a local replica
 //! that syncs via the Automerge sync protocol.
 //!
-//! ## Document schema
+//! ## Document schema (v2)
 //!
 //! ```text
 //! ROOT/
-//!   schema_version: u64           ← Document schema version (1 = ordered list cells)
+//!   schema_version: u64           ← Document schema version (2 = fractional-indexed map cells)
 //!   notebook_id: Str
-//!   cells/                        ← List of Map
-//!     [i]/
-//!       id: Str                   ← cell UUID
+//!   cells/                        ← Map keyed by cell ID (O(1) lookup)
+//!     {cell_id}/
+//!       id: Str                   ← cell UUID (redundant but convenient)
 //!       cell_type: Str            ← "code" | "markdown" | "raw"
+//!       position: Str             ← Fractional index hex string for ordering
 //!       source: Text              ← Automerge Text CRDT (character-level merging)
 //!       execution_count: Str      ← JSON-encoded i32 or "null"
 //!       outputs/                  ← List of Str
@@ -37,12 +38,14 @@ pub mod metadata;
 /// structure (e.g., switching cells from an ordered list to a fractional-indexed map).
 ///
 /// - **1** — Original schema: `cells` is an ordered `List` of `Map`.
-pub const SCHEMA_VERSION: u64 = 1;
+/// - **2** — Fractional indexing: `cells` is a `Map` keyed by cell ID, each cell has a `position` field.
+pub const SCHEMA_VERSION: u64 = 2;
 
 use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, AutomergeError, ObjId, ObjType, ReadDoc};
+use loro_fractional_index::FractionalIndex;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "persistence")]
@@ -66,6 +69,9 @@ pub struct CellSnapshot {
     pub id: String,
     /// "code", "markdown", or "raw"
     pub cell_type: String,
+    /// Fractional index hex string for ordering (e.g., "80", "7F80").
+    /// Cells are sorted lexicographically by this field.
+    pub position: String,
     pub source: String,
     /// JSON-encoded execution count: a number string like "5" or "null"
     pub execution_count: String,
@@ -278,8 +284,8 @@ impl NotebookDoc {
         let _ = doc.put(automerge::ROOT, "schema_version", SCHEMA_VERSION);
         let _ = doc.put(automerge::ROOT, "notebook_id", notebook_id);
 
-        // cells: empty List
-        let _ = doc.put_object(automerge::ROOT, "cells", ObjType::List);
+        // cells: empty Map (keyed by cell ID, with fractional indexing for order)
+        let _ = doc.put_object(automerge::ROOT, "cells", ObjType::Map);
 
         // metadata: Map with default runtime
         if let Ok(meta_id) = doc.put_object(automerge::ROOT, "metadata", ObjType::Map) {
@@ -406,37 +412,44 @@ impl NotebookDoc {
 
     /// Number of cells in the notebook.
     pub fn cell_count(&self) -> usize {
-        match self.cells_list_id() {
+        match self.cells_map_id() {
             Some(id) => self.doc.length(&id),
             None => 0,
         }
     }
 
-    /// Get all cells as snapshots, in order.
+    /// Get all cells as snapshots, sorted by position.
     pub fn get_cells(&self) -> Vec<CellSnapshot> {
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return vec![],
         };
-        let len = self.doc.length(&cells_id);
-        (0..len)
-            .filter_map(|i| {
-                let cell_obj = self.cell_at_index(&cells_id, i)?;
+
+        // Iterate over all keys in the map
+        let mut cells: Vec<CellSnapshot> = self
+            .doc
+            .keys(&cells_id)
+            .filter_map(|key| {
+                let cell_obj = self.cell_obj_id(&cells_id, &key)?;
                 self.read_cell(&cell_obj)
             })
-            .collect()
+            .collect();
+
+        // Sort by position (lexicographic comparison)
+        cells.sort_by(|a, b| a.position.cmp(&b.position));
+        cells
     }
 
-    /// Get a single cell by ID.
+    /// Get a single cell by ID (O(1) lookup).
     pub fn get_cell(&self, cell_id: &str) -> Option<CellSnapshot> {
-        let cells_id = self.cells_list_id()?;
-        let idx = self.find_cell_index(&cells_id, cell_id)?;
-        let cell_obj = self.cell_at_index(&cells_id, idx)?;
+        let cells_id = self.cells_map_id()?;
+        let cell_obj = self.cell_obj_id(&cells_id, cell_id)?;
         self.read_cell(&cell_obj)
     }
 
-    /// Insert a new cell at the given index.
+    /// Insert a new cell at the given index (backward-compatible API).
     ///
+    /// Internally converts the index to an `after_cell_id` and calls `add_cell_after`.
     /// Returns `Ok(())` on success. The cell starts with empty source, no outputs, and empty metadata.
     pub fn add_cell(
         &mut self,
@@ -444,52 +457,88 @@ impl NotebookDoc {
         cell_id: &str,
         cell_type: &str,
     ) -> Result<(), AutomergeError> {
+        // Convert index to after_cell_id
+        let cells = self.get_cells();
+        let after_cell_id = if index == 0 {
+            None
+        } else {
+            cells.get(index.saturating_sub(1)).map(|c| c.id.as_str())
+        };
+
+        self.add_cell_after(cell_id, cell_type, after_cell_id)?;
+        Ok(())
+    }
+
+    /// Insert a new cell after the specified cell (semantic API).
+    ///
+    /// - `after_cell_id = None` → insert at the beginning
+    /// - `after_cell_id = Some(id)` → insert after that cell
+    ///
+    /// Returns the position string of the new cell on success.
+    pub fn add_cell_after(
+        &mut self,
+        cell_id: &str,
+        cell_type: &str,
+        after_cell_id: Option<&str>,
+    ) -> Result<String, AutomergeError> {
         let cells_id = self
-            .cells_list_id()
-            .ok_or_else(|| AutomergeError::InvalidObjId("cells list not found".into()))?;
+            .cells_map_id()
+            .ok_or_else(|| AutomergeError::InvalidObjId("cells map not found".into()))?;
 
-        // Clamp index to list length
-        let len = self.doc.length(&cells_id);
-        let index = index.min(len);
+        let position = self.compute_position(after_cell_id);
+        let position_str = position.to_string();
 
-        let cell_map = self.doc.insert_object(&cells_id, index, ObjType::Map)?;
+        // Create cell as a nested Map keyed by cell_id
+        let cell_map = self.doc.put_object(&cells_id, cell_id, ObjType::Map)?;
         self.doc.put(&cell_map, "id", cell_id)?;
         self.doc.put(&cell_map, "cell_type", cell_type)?;
+        self.doc.put(&cell_map, "position", position_str.as_str())?;
         self.doc.put_object(&cell_map, "source", ObjType::Text)?;
         self.doc.put(&cell_map, "execution_count", "null")?;
         self.doc.put_object(&cell_map, "outputs", ObjType::List)?;
         self.doc.put(&cell_map, "metadata", "{}")?;
-        Ok(())
+
+        Ok(position_str)
     }
 
-    /// Insert a fully-populated cell at the given index in a single operation.
+    /// Insert a fully-populated cell with an explicit position string.
     ///
-    /// Unlike calling `add_cell` + `update_source` + `set_outputs` +
-    /// `set_execution_count` sequentially, this method reuses the `ObjId`
-    /// returned by each Automerge insertion — no `find_cell_index` lookup
-    /// is needed. This eliminates the O(n) linear scan per operation that
-    /// makes sequential calls O(n²) during bulk loads.
+    /// This is the preferred method for bulk loads (e.g., loading from .ipynb).
+    /// The caller provides the position string directly, avoiding O(n²) overhead
+    /// from repeated `compute_position` calls.
+    ///
+    /// For bulk loads, generate positions incrementally:
+    /// ```ignore
+    /// let mut prev_position: Option<FractionalIndex> = None;
+    /// for cell in ipynb_cells {
+    ///     let position = match &prev_position {
+    ///         None => FractionalIndex::default(),
+    ///         Some(prev) => FractionalIndex::new_after(prev),
+    ///     };
+    ///     doc.add_cell_full(cell_id, cell_type, &position.to_string(), ...)?;
+    ///     prev_position = Some(position);
+    /// }
+    /// ```
     #[allow(clippy::too_many_arguments)]
     pub fn add_cell_full(
         &mut self,
-        index: usize,
         cell_id: &str,
         cell_type: &str,
+        position: &str,
         source: &str,
         outputs: &[String],
         execution_count: &str,
         metadata: &serde_json::Value,
     ) -> Result<(), AutomergeError> {
         let cells_id = self
-            .cells_list_id()
-            .ok_or_else(|| AutomergeError::InvalidObjId("cells list not found".into()))?;
+            .cells_map_id()
+            .ok_or_else(|| AutomergeError::InvalidObjId("cells map not found".into()))?;
 
-        let len = self.doc.length(&cells_id);
-        let index = index.min(len);
-
-        let cell_map = self.doc.insert_object(&cells_id, index, ObjType::Map)?;
+        // Create cell as a nested Map keyed by cell_id
+        let cell_map = self.doc.put_object(&cells_id, cell_id, ObjType::Map)?;
         self.doc.put(&cell_map, "id", cell_id)?;
         self.doc.put(&cell_map, "cell_type", cell_type)?;
+        self.doc.put(&cell_map, "position", position)?;
 
         let source_id = self.doc.put_object(&cell_map, "source", ObjType::Text)?;
         if !source.is_empty() {
@@ -515,19 +564,55 @@ impl NotebookDoc {
         Ok(())
     }
 
-    /// Delete a cell by ID. Returns `true` if the cell was found and deleted.
+    /// Delete a cell by ID (O(1) map delete). Returns `true` if the cell was found and deleted.
     pub fn delete_cell(&mut self, cell_id: &str) -> Result<bool, AutomergeError> {
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return Ok(false),
         };
-        match self.find_cell_index(&cells_id, cell_id) {
-            Some(idx) => {
-                self.doc.delete(&cells_id, idx)?;
-                Ok(true)
-            }
-            None => Ok(false),
+
+        // Check if cell exists before deleting
+        if self.cell_obj_id(&cells_id, cell_id).is_none() {
+            return Ok(false);
         }
+
+        self.doc.delete(&cells_id, cell_id)?;
+        Ok(true)
+    }
+
+    /// Move a cell to a new position (after the specified cell).
+    ///
+    /// - `after_cell_id = None` → move to the beginning
+    /// - `after_cell_id = Some(id)` → move after that cell
+    ///
+    /// This only updates the cell's `position` field — no delete/re-insert needed.
+    /// Returns the new position string on success.
+    ///
+    /// ## Concurrent move semantics
+    ///
+    /// When two users move the same cell to different positions simultaneously,
+    /// Automerge's last-write-wins (LWW) on the `position` scalar means one wins
+    /// arbitrarily. After sync, both users see the same final position. This is
+    /// acceptable behavior — it's a coordination problem between collaborators,
+    /// not a data integrity issue.
+    pub fn move_cell(
+        &mut self,
+        cell_id: &str,
+        after_cell_id: Option<&str>,
+    ) -> Result<String, AutomergeError> {
+        let cells_id = self
+            .cells_map_id()
+            .ok_or_else(|| AutomergeError::InvalidObjId("cells map not found".into()))?;
+
+        let cell_obj = self
+            .cell_obj_id(&cells_id, cell_id)
+            .ok_or_else(|| AutomergeError::InvalidObjId(format!("cell not found: {}", cell_id)))?;
+
+        let position = self.compute_position(after_cell_id);
+        let position_str = position.to_string();
+
+        self.doc.put(&cell_obj, "position", position_str.as_str())?;
+        Ok(position_str)
     }
 
     /// Remove all cells from the document.
@@ -535,11 +620,11 @@ impl NotebookDoc {
     /// Used to clean up after a failed streaming load so the next
     /// connection can retry from a clean state.
     pub fn clear_all_cells(&mut self) -> Result<(), AutomergeError> {
-        if let Some(cells_id) = self.cells_list_id() {
-            let len = self.doc.length(&cells_id);
-            // Delete from the end to avoid index shifting
-            for i in (0..len).rev() {
-                self.doc.delete(&cells_id, i)?;
+        if let Some(cells_id) = self.cells_map_id() {
+            // Collect all cell IDs first to avoid modifying while iterating
+            let cell_ids: Vec<String> = self.doc.keys(&cells_id).collect();
+            for cell_id in cell_ids {
+                self.doc.delete(&cells_id, &cell_id)?;
             }
         }
         Ok(())
@@ -556,15 +641,11 @@ impl NotebookDoc {
         cell_id: &str,
         new_source: &str,
     ) -> Result<bool, AutomergeError> {
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return Ok(false),
         };
-        let idx = match self.find_cell_index(&cells_id, cell_id) {
-            Some(i) => i,
-            None => return Ok(false),
-        };
-        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
             Some(o) => o,
             None => return Ok(false),
         };
@@ -584,15 +665,11 @@ impl NotebookDoc {
     /// Text CRDT. This is ideal for streaming/agentic use cases where an
     /// external process is appending tokens incrementally.
     pub fn append_source(&mut self, cell_id: &str, text: &str) -> Result<bool, AutomergeError> {
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return Ok(false),
         };
-        let idx = match self.find_cell_index(&cells_id, cell_id) {
-            Some(i) => i,
-            None => return Ok(false),
-        };
-        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
             Some(o) => o,
             None => return Ok(false),
         };
@@ -614,15 +691,11 @@ impl NotebookDoc {
         cell_id: &str,
         outputs: &[String],
     ) -> Result<bool, AutomergeError> {
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return Ok(false),
         };
-        let idx = match self.find_cell_index(&cells_id, cell_id) {
-            Some(i) => i,
-            None => return Ok(false),
-        };
-        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
             Some(o) => o,
             None => return Ok(false),
         };
@@ -638,15 +711,11 @@ impl NotebookDoc {
 
     /// Append a single output to a cell's output list.
     pub fn append_output(&mut self, cell_id: &str, output: &str) -> Result<bool, AutomergeError> {
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return Ok(false),
         };
-        let idx = match self.find_cell_index(&cells_id, cell_id) {
-            Some(i) => i,
-            None => return Ok(false),
-        };
-        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
             Some(o) => o,
             None => return Ok(false),
         };
@@ -681,15 +750,11 @@ impl NotebookDoc {
         output_ref: &str,
         known_state: Option<&StreamOutputState>,
     ) -> Result<(bool, usize), AutomergeError> {
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return Ok((false, 0)),
         };
-        let idx = match self.find_cell_index(&cells_id, cell_id) {
-            Some(i) => i,
-            None => return Ok((false, 0)),
-        };
-        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
             Some(o) => o,
             None => return Ok((false, 0)),
         };
@@ -741,14 +806,15 @@ impl NotebookDoc {
         new_data: &serde_json::Value,
         new_metadata: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<bool, AutomergeError> {
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return Ok(false),
         };
 
-        let cell_count = self.doc.length(&cells_id);
-        for cell_idx in 0..cell_count {
-            let cell_obj = match self.cell_at_index(&cells_id, cell_idx) {
+        // Iterate over all cell keys in the map
+        let cell_ids: Vec<String> = self.doc.keys(&cells_id).collect();
+        for cell_id in cell_ids {
+            let cell_obj = match self.cell_obj_id(&cells_id, &cell_id) {
                 Some(o) => o,
                 None => continue,
             };
@@ -811,27 +877,15 @@ impl NotebookDoc {
     /// Used by manifest-aware UpdateDisplayData handling.
     pub fn get_all_outputs(&self) -> Vec<(String, usize, String)> {
         let mut results = Vec::new();
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return results,
         };
 
-        let cell_count = self.doc.length(&cells_id);
-        for cell_idx in 0..cell_count {
-            let cell_obj = match self.cell_at_index(&cells_id, cell_idx) {
+        // Iterate over all cell keys in the map
+        for cell_id in self.doc.keys(&cells_id) {
+            let cell_obj = match self.cell_obj_id(&cells_id, &cell_id) {
                 Some(o) => o,
-                None => continue,
-            };
-
-            // Get cell_id
-            let cell_id: Option<String> = self
-                .doc
-                .get(&cell_obj, "id")
-                .ok()
-                .flatten()
-                .and_then(|(v, _)| v.into_string().ok());
-            let cell_id = match cell_id {
-                Some(id) => id,
                 None => continue,
             };
 
@@ -867,21 +921,14 @@ impl NotebookDoc {
         output_idx: usize,
         new_output: &str,
     ) -> Result<bool, AutomergeError> {
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return Ok(false),
         };
-
-        let idx = match self.find_cell_index(&cells_id, cell_id) {
-            Some(i) => i,
-            None => return Ok(false),
-        };
-
-        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
             Some(o) => o,
             None => return Ok(false),
         };
-
         let outputs_id = match self.list_id(&cell_obj, "outputs") {
             Some(id) => id,
             None => return Ok(false),
@@ -904,15 +951,11 @@ impl NotebookDoc {
         cell_id: &str,
         count: &str,
     ) -> Result<bool, AutomergeError> {
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return Ok(false),
         };
-        let idx = match self.find_cell_index(&cells_id, cell_id) {
-            Some(i) => i,
-            None => return Ok(false),
-        };
-        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
             Some(o) => o,
             None => return Ok(false),
         };
@@ -928,9 +971,8 @@ impl NotebookDoc {
     /// Returns `None` if the cell doesn't exist.
     /// Returns `Some({})` if the cell exists but has no or invalid metadata.
     pub fn get_cell_metadata(&self, cell_id: &str) -> Option<serde_json::Value> {
-        let cells_id = self.cells_list_id()?;
-        let idx = self.find_cell_index(&cells_id, cell_id)?;
-        let cell_obj = self.cell_at_index(&cells_id, idx)?;
+        let cells_id = self.cells_map_id()?;
+        let cell_obj = self.cell_obj_id(&cells_id, cell_id)?;
 
         // Cell exists - return its metadata or empty object if missing/invalid
         Some(
@@ -950,15 +992,11 @@ impl NotebookDoc {
         cell_id: &str,
         metadata: &serde_json::Value,
     ) -> Result<bool, AutomergeError> {
-        let cells_id = match self.cells_list_id() {
+        let cells_id = match self.cells_map_id() {
             Some(id) => id,
             None => return Ok(false),
         };
-        let idx = match self.find_cell_index(&cells_id, cell_id) {
-            Some(i) => i,
-            None => return Ok(false),
-        };
-        let cell_obj = match self.cell_at_index(&cells_id, idx) {
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
             Some(o) => o,
             None => return Ok(false),
         };
@@ -1095,13 +1133,14 @@ impl NotebookDoc {
 
     // ── Internal helpers ────────────────────────────────────────────
 
-    fn cells_list_id(&self) -> Option<ObjId> {
+    /// Get the cells Map object ID.
+    fn cells_map_id(&self) -> Option<ObjId> {
         self.doc
             .get(automerge::ROOT, "cells")
             .ok()
             .flatten()
             .and_then(|(value, id)| match value {
-                automerge::Value::Object(ObjType::List) => Some(id),
+                automerge::Value::Object(ObjType::Map) => Some(id),
                 _ => None,
             })
     }
@@ -1117,9 +1156,10 @@ impl NotebookDoc {
             })
     }
 
-    fn cell_at_index(&self, cells_id: &ObjId, index: usize) -> Option<ObjId> {
+    /// Get a cell's ObjId by its ID (O(1) map lookup).
+    fn cell_obj_id(&self, cells_id: &ObjId, cell_id: &str) -> Option<ObjId> {
         self.doc
-            .get(cells_id, index)
+            .get(cells_id, cell_id)
             .ok()
             .flatten()
             .and_then(|(value, id)| match value {
@@ -1128,16 +1168,49 @@ impl NotebookDoc {
             })
     }
 
-    fn find_cell_index(&self, cells_id: &ObjId, cell_id: &str) -> Option<usize> {
-        let len = self.doc.length(cells_id);
-        for i in 0..len {
-            if let Some(cell_obj) = self.cell_at_index(cells_id, i) {
-                if read_str(&self.doc, &cell_obj, "id").as_deref() == Some(cell_id) {
-                    return Some(i);
+    /// Compute a position for a new cell.
+    ///
+    /// - `after_cell_id = None` → insert at start (before first cell)
+    /// - `after_cell_id = Some(id)` → insert after that cell
+    fn compute_position(&self, after_cell_id: Option<&str>) -> FractionalIndex {
+        let cells = self.get_cells(); // sorted by position
+
+        match after_cell_id {
+            None => {
+                // Insert at start
+                cells
+                    .first()
+                    .map(|c| {
+                        FractionalIndex::new_before(&FractionalIndex::from_hex_string(&c.position))
+                    })
+                    .unwrap_or_default()
+            }
+            Some(after_id) => {
+                let idx = cells.iter().position(|c| c.id == after_id);
+                match idx {
+                    Some(i) if i + 1 < cells.len() => {
+                        // Insert between after and next
+                        FractionalIndex::new_between(
+                            &FractionalIndex::from_hex_string(&cells[i].position),
+                            &FractionalIndex::from_hex_string(&cells[i + 1].position),
+                        )
+                        .unwrap_or_else(|| {
+                            // Fallback: insert after if between fails
+                            FractionalIndex::new_after(&FractionalIndex::from_hex_string(
+                                &cells[i].position,
+                            ))
+                        })
+                    }
+                    Some(i) => {
+                        // Insert at end (after the last cell)
+                        FractionalIndex::new_after(&FractionalIndex::from_hex_string(
+                            &cells[i].position,
+                        ))
+                    }
+                    None => FractionalIndex::default(),
                 }
             }
         }
-        None
     }
 
     fn text_id(&self, parent: &ObjId, key: &str) -> Option<ObjId> {
@@ -1165,6 +1238,8 @@ impl NotebookDoc {
     fn read_cell(&self, cell_obj: &ObjId) -> Option<CellSnapshot> {
         let id = read_str(&self.doc, cell_obj, "id")?;
         let cell_type = read_str(&self.doc, cell_obj, "cell_type").unwrap_or_default();
+        let position =
+            read_str(&self.doc, cell_obj, "position").unwrap_or_else(|| "80".to_string());
         let execution_count =
             read_str(&self.doc, cell_obj, "execution_count").unwrap_or_else(|| "null".to_string());
 
@@ -1193,6 +1268,7 @@ impl NotebookDoc {
         Some(CellSnapshot {
             id,
             cell_type,
+            position,
             source,
             execution_count,
             outputs,
@@ -1289,22 +1365,25 @@ pub fn notebook_doc_filename(notebook_id: &str) -> String {
 }
 
 /// Read cells from a raw AutoCommit document (used by the sync client).
+///
+/// Returns cells sorted by position.
 pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
     let cells_id = match doc.get(automerge::ROOT, "cells").ok().flatten() {
-        Some((automerge::Value::Object(ObjType::List), id)) => id,
+        Some((automerge::Value::Object(ObjType::Map), id)) => id,
         _ => return vec![],
     };
 
-    let len = doc.length(&cells_id);
-    (0..len)
-        .filter_map(|i| {
-            let cell_obj = match doc.get(&cells_id, i).ok().flatten() {
+    let mut cells: Vec<CellSnapshot> = doc
+        .keys(&cells_id)
+        .filter_map(|cell_id| {
+            let cell_obj = match doc.get(&cells_id, &cell_id).ok().flatten() {
                 Some((automerge::Value::Object(ObjType::Map), id)) => id,
                 _ => return None,
             };
 
             let id = read_str(doc, &cell_obj, "id")?;
             let cell_type = read_str(doc, &cell_obj, "cell_type").unwrap_or_default();
+            let position = read_str(doc, &cell_obj, "position").unwrap_or_else(|| "80".to_string());
             let execution_count =
                 read_str(doc, &cell_obj, "execution_count").unwrap_or_else(|| "null".to_string());
 
@@ -1336,13 +1415,18 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
             Some(CellSnapshot {
                 id,
                 cell_type,
+                position,
                 source,
                 execution_count,
                 outputs,
                 metadata,
             })
         })
-        .collect()
+        .collect();
+
+    // Sort by position
+    cells.sort_by(|a, b| a.position.cmp(&b.position));
+    cells
 }
 
 #[cfg(test)]
@@ -2113,9 +2197,9 @@ mod tests {
     fn test_add_cell_full_populates_all_fields() {
         let mut doc = NotebookDoc::new("nb-full");
         doc.add_cell_full(
-            0,
             "cell-full",
             "code",
+            "80", // position
             "print('hello')",
             &["hash1".to_string(), "hash2".to_string()],
             "42",
@@ -2127,6 +2211,7 @@ mod tests {
         let cell = doc.get_cell("cell-full").unwrap();
         assert_eq!(cell.id, "cell-full");
         assert_eq!(cell.cell_type, "code");
+        assert_eq!(cell.position, "80");
         assert_eq!(cell.source, "print('hello')");
         assert_eq!(cell.execution_count, "42");
         assert_eq!(cell.outputs, vec!["hash1", "hash2"]);
@@ -2137,9 +2222,9 @@ mod tests {
     fn test_add_cell_full_empty_source() {
         let mut doc = NotebookDoc::new("nb-empty-src");
         doc.add_cell_full(
-            0,
             "cell-es",
             "code",
+            "80", // position
             "",
             &[],
             "null",
@@ -2155,22 +2240,46 @@ mod tests {
     }
 
     #[test]
-    fn test_add_cell_full_index_ordering() {
+    fn test_add_cell_full_position_ordering() {
+        use loro_fractional_index::FractionalIndex;
+
         let mut doc = NotebookDoc::new("nb-order");
-        doc.add_cell_full(0, "a", "code", "first", &[], "null", &serde_json::json!({}))
-            .unwrap();
+
+        // Generate positions incrementally (like bulk load)
+        let pos_a = FractionalIndex::default();
+        let pos_b = FractionalIndex::new_after(&pos_a);
+        let pos_c = FractionalIndex::new_after(&pos_b);
+
         doc.add_cell_full(
-            1,
+            "a",
+            "code",
+            &pos_a.to_string(),
+            "first",
+            &[],
+            "null",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        doc.add_cell_full(
             "b",
             "code",
+            &pos_b.to_string(),
             "second",
             &[],
             "null",
             &serde_json::json!({}),
         )
         .unwrap();
-        doc.add_cell_full(2, "c", "code", "third", &[], "null", &serde_json::json!({}))
-            .unwrap();
+        doc.add_cell_full(
+            "c",
+            "code",
+            &pos_c.to_string(),
+            "third",
+            &[],
+            "null",
+            &serde_json::json!({}),
+        )
+        .unwrap();
 
         let cells = doc.get_cells();
         assert_eq!(cells.len(), 3);
@@ -2292,9 +2401,9 @@ mod tests {
     fn test_cell_metadata_add_cell_full() {
         let mut doc = NotebookDoc::new("nb-full-meta");
         doc.add_cell_full(
-            0,
             "cell1",
             "code",
+            "80", // position
             "print('test')",
             &[],
             "null",
@@ -2339,5 +2448,210 @@ mod tests {
         let cell = client.get_cell("cell1").unwrap();
         assert!(cell.is_source_hidden());
         assert_eq!(cell.tags(), vec!["synced"]);
+    }
+
+    // ── Fractional indexing tests ─────────────────────────────────────
+
+    #[test]
+    fn test_add_cell_after_at_start() {
+        let mut doc = NotebookDoc::new("nb-fi");
+        doc.add_cell(0, "b", "code").unwrap();
+        doc.add_cell(1, "c", "code").unwrap();
+
+        // Add cell at start (before first)
+        let pos = doc.add_cell_after("a", "code", None).unwrap();
+        assert!(!pos.is_empty());
+
+        let cells = doc.get_cells();
+        assert_eq!(cells.len(), 3);
+        assert_eq!(cells[0].id, "a");
+        assert_eq!(cells[1].id, "b");
+        assert_eq!(cells[2].id, "c");
+    }
+
+    #[test]
+    fn test_add_cell_after_in_middle() {
+        let mut doc = NotebookDoc::new("nb-fi");
+        doc.add_cell(0, "a", "code").unwrap();
+        doc.add_cell(1, "c", "code").unwrap();
+
+        // Add cell after "a" (between a and c)
+        doc.add_cell_after("b", "code", Some("a")).unwrap();
+
+        let cells = doc.get_cells();
+        assert_eq!(cells.len(), 3);
+        assert_eq!(cells[0].id, "a");
+        assert_eq!(cells[1].id, "b");
+        assert_eq!(cells[2].id, "c");
+    }
+
+    #[test]
+    fn test_add_cell_after_at_end() {
+        let mut doc = NotebookDoc::new("nb-fi");
+        doc.add_cell(0, "a", "code").unwrap();
+        doc.add_cell(1, "b", "code").unwrap();
+
+        // Add cell after last
+        doc.add_cell_after("c", "code", Some("b")).unwrap();
+
+        let cells = doc.get_cells();
+        assert_eq!(cells.len(), 3);
+        assert_eq!(cells[0].id, "a");
+        assert_eq!(cells[1].id, "b");
+        assert_eq!(cells[2].id, "c");
+    }
+
+    #[test]
+    fn test_move_cell_to_start() {
+        let mut doc = NotebookDoc::new("nb-move");
+        doc.add_cell(0, "a", "code").unwrap();
+        doc.add_cell(1, "b", "code").unwrap();
+        doc.add_cell(2, "c", "code").unwrap();
+
+        // Move c to start
+        doc.move_cell("c", None).unwrap();
+
+        let cells = doc.get_cells();
+        assert_eq!(cells.len(), 3);
+        assert_eq!(cells[0].id, "c");
+        assert_eq!(cells[1].id, "a");
+        assert_eq!(cells[2].id, "b");
+    }
+
+    #[test]
+    fn test_move_cell_to_middle() {
+        let mut doc = NotebookDoc::new("nb-move");
+        doc.add_cell(0, "a", "code").unwrap();
+        doc.add_cell(1, "b", "code").unwrap();
+        doc.add_cell(2, "c", "code").unwrap();
+
+        // Move c after a (between a and b)
+        doc.move_cell("c", Some("a")).unwrap();
+
+        let cells = doc.get_cells();
+        assert_eq!(cells.len(), 3);
+        assert_eq!(cells[0].id, "a");
+        assert_eq!(cells[1].id, "c");
+        assert_eq!(cells[2].id, "b");
+    }
+
+    #[test]
+    fn test_move_cell_to_end() {
+        let mut doc = NotebookDoc::new("nb-move");
+        doc.add_cell(0, "a", "code").unwrap();
+        doc.add_cell(1, "b", "code").unwrap();
+        doc.add_cell(2, "c", "code").unwrap();
+
+        // Move a to end (after c)
+        doc.move_cell("a", Some("c")).unwrap();
+
+        let cells = doc.get_cells();
+        assert_eq!(cells.len(), 3);
+        assert_eq!(cells[0].id, "b");
+        assert_eq!(cells[1].id, "c");
+        assert_eq!(cells[2].id, "a");
+    }
+
+    #[test]
+    fn test_move_cell_preserves_content() {
+        let mut doc = NotebookDoc::new("nb-move");
+        doc.add_cell(0, "a", "code").unwrap();
+        doc.update_source("a", "original source").unwrap();
+        doc.set_outputs("a", &["output1".to_string()]).unwrap();
+        doc.set_execution_count("a", "42").unwrap();
+
+        doc.add_cell(1, "b", "code").unwrap();
+
+        // Move a after b
+        doc.move_cell("a", Some("b")).unwrap();
+
+        // Verify content preserved
+        let cell = doc.get_cell("a").unwrap();
+        assert_eq!(cell.source, "original source");
+        assert_eq!(cell.outputs, vec!["output1"]);
+        assert_eq!(cell.execution_count, "42");
+    }
+
+    #[test]
+    fn test_move_cell_nonexistent() {
+        let mut doc = NotebookDoc::new("nb-move");
+        doc.add_cell(0, "a", "code").unwrap();
+
+        let result = doc.move_cell("nonexistent", None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_position_ordering_stress() {
+        // Insert many cells between two positions to stress test position generation
+        let mut doc = NotebookDoc::new("nb-stress");
+        doc.add_cell(0, "first", "code").unwrap();
+        doc.add_cell(1, "last", "code").unwrap();
+
+        // Insert 50 cells between first and last
+        for i in 0..50 {
+            let cell_id = format!("middle-{}", i);
+            doc.add_cell_after(&cell_id, "code", Some("first")).unwrap();
+        }
+
+        let cells = doc.get_cells();
+        assert_eq!(cells.len(), 52);
+        assert_eq!(cells[0].id, "first");
+        assert_eq!(cells[51].id, "last");
+
+        // Verify all positions are unique and properly ordered
+        let mut prev_pos = String::new();
+        for cell in &cells {
+            assert!(
+                cell.position > prev_pos,
+                "Position {} should be > {}",
+                cell.position,
+                prev_pos
+            );
+            prev_pos = cell.position.clone();
+        }
+    }
+
+    #[test]
+    fn test_move_cell_sync() {
+        use automerge::sync;
+
+        let mut daemon = NotebookDoc::new("nb-sync");
+        daemon.add_cell(0, "a", "code").unwrap();
+        daemon.add_cell(1, "b", "code").unwrap();
+        daemon.add_cell(2, "c", "code").unwrap();
+
+        // Sync to client
+        let mut client = NotebookDoc::empty();
+        let mut daemon_state = sync::State::new();
+        let mut client_state = sync::State::new();
+
+        for _ in 0..3 {
+            if let Some(msg) = daemon.generate_sync_message(&mut daemon_state) {
+                client.receive_sync_message(&mut client_state, msg).unwrap();
+            }
+            if let Some(msg) = client.generate_sync_message(&mut client_state) {
+                daemon.receive_sync_message(&mut daemon_state, msg).unwrap();
+            }
+        }
+
+        // Move cell on daemon
+        daemon.move_cell("c", None).unwrap();
+
+        // Sync again
+        for _ in 0..3 {
+            if let Some(msg) = daemon.generate_sync_message(&mut daemon_state) {
+                client.receive_sync_message(&mut client_state, msg).unwrap();
+            }
+            if let Some(msg) = client.generate_sync_message(&mut client_state) {
+                daemon.receive_sync_message(&mut daemon_state, msg).unwrap();
+            }
+        }
+
+        // Verify client sees the new order
+        let cells = client.get_cells();
+        assert_eq!(cells[0].id, "c");
+        assert_eq!(cells[1].id, "a");
+        assert_eq!(cells[2].id, "b");
     }
 }

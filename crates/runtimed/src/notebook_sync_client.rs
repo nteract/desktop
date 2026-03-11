@@ -2718,17 +2718,19 @@ mod tests {
 
     #[test]
     fn test_get_cells_from_populated_doc() {
-        // Manually build a notebook structure in an AutoCommit
+        // Manually build a notebook structure in an AutoCommit (Map-based schema v2)
         let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "schema_version", 2u64).unwrap();
         doc.put(automerge::ROOT, "notebook_id", "test").unwrap();
         let cells_id = doc
-            .put_object(automerge::ROOT, "cells", ObjType::List)
+            .put_object(automerge::ROOT, "cells", ObjType::Map)
             .unwrap();
 
-        // Add a code cell
-        let cell = doc.insert_object(&cells_id, 0, ObjType::Map).unwrap();
+        // Add a code cell (keyed by cell ID)
+        let cell = doc.put_object(&cells_id, "c1", ObjType::Map).unwrap();
         doc.put(&cell, "id", "c1").unwrap();
         doc.put(&cell, "cell_type", "code").unwrap();
+        doc.put(&cell, "position", "80").unwrap();
         let source = doc.put_object(&cell, "source", ObjType::Text).unwrap();
         doc.splice_text(&source, 0, 0, "x = 1").unwrap();
         doc.put(&cell, "execution_count", "1").unwrap();
@@ -2740,6 +2742,7 @@ mod tests {
         assert_eq!(cells.len(), 1);
         assert_eq!(cells[0].id, "c1");
         assert_eq!(cells[0].cell_type, "code");
+        assert_eq!(cells[0].position, "80");
         assert_eq!(cells[0].source, "x = 1");
         assert_eq!(cells[0].execution_count, "1");
         assert_eq!(cells[0].outputs.len(), 1);

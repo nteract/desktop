@@ -3110,8 +3110,15 @@ const SELF_WRITE_SKIP_WINDOW_MS: u64 = 600;
 /// For older notebooks (pre-nbformat 4.5) that don't have cell IDs, we generate
 /// stable fallback IDs based on the cell index. This prevents data loss when
 /// merging changes from externally-generated notebooks.
+///
+/// Positions are generated incrementally using fractional indexing.
 fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<Vec<CellSnapshot>> {
+    use loro_fractional_index::FractionalIndex;
+
     let cells_json = json.get("cells").and_then(|c| c.as_array())?;
+
+    // Generate positions incrementally
+    let mut prev_position: Option<FractionalIndex> = None;
 
     let parsed_cells = cells_json
         .iter()
@@ -3130,6 +3137,14 @@ fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<Vec<CellSnapshot>>
                 .and_then(|v| v.as_str())
                 .unwrap_or("code")
                 .to_string();
+
+            // Generate position incrementally (O(1) per cell, not O(n²))
+            let position = match &prev_position {
+                None => FractionalIndex::default(),
+                Some(prev) => FractionalIndex::new_after(prev),
+            };
+            let position_str = position.to_string();
+            prev_position = Some(position);
 
             // Source can be a string or array of strings
             let source = match cell.get("source") {
@@ -3168,6 +3183,7 @@ fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<Vec<CellSnapshot>>
             CellSnapshot {
                 id,
                 cell_type,
+                position: position_str,
                 source,
                 execution_count,
                 outputs,
@@ -3246,6 +3262,7 @@ const STREAMING_BATCH_SIZE: usize = 3;
 struct StreamingCell {
     id: String,
     cell_type: String,
+    position: String,
     source: String,
     execution_count: String,
     outputs: Vec<serde_json::Value>,
@@ -3318,6 +3335,9 @@ fn parse_notebook_jiter(
         None => return Ok((vec![], metadata)),
     };
 
+    use loro_fractional_index::FractionalIndex;
+    let mut prev_position: Option<FractionalIndex> = None;
+
     let mut cells = Vec::with_capacity(cells_arr.len());
     for (index, cell) in cells_arr.iter().enumerate() {
         let cell_obj = match cell {
@@ -3338,6 +3358,14 @@ fn parse_notebook_jiter(
                 _ => None,
             })
             .unwrap_or_else(|| "code".to_string());
+
+        // Generate position incrementally (O(1) per cell, not O(n²))
+        let position = match &prev_position {
+            None => FractionalIndex::default(),
+            Some(prev) => FractionalIndex::new_after(prev),
+        };
+        let position_str = position.to_string();
+        prev_position = Some(position);
 
         // Source can be a string or array of strings (Jupyter multiline format)
         let source = match jobj_get(cell_obj, "source") {
@@ -3373,6 +3401,7 @@ fn parse_notebook_jiter(
         cells.push(StreamingCell {
             id,
             cell_type,
+            position: position_str,
             source,
             execution_count,
             outputs,
@@ -3498,11 +3527,11 @@ where
         // Add batch to Automerge doc and generate sync message (inside lock)
         let encoded = {
             let mut doc = room.doc.write().await;
-            for (idx, cell, output_refs) in &batch {
+            for (_idx, cell, output_refs) in &batch {
                 doc.add_cell_full(
-                    *idx,
                     &cell.id,
                     &cell.cell_type,
+                    &cell.position,
                     &cell.source,
                     output_refs,
                     &cell.execution_count,
@@ -4833,6 +4862,7 @@ mod tests {
         let external_cells = vec![CellSnapshot {
             id: "cell-1".to_string(),
             cell_type: "code".to_string(),
+            position: "80".to_string(),
             source: String::new(),
             execution_count: "42".to_string(),
             outputs: vec![],
@@ -4867,6 +4897,7 @@ mod tests {
         let external_cells = vec![CellSnapshot {
             id: "cell-1".to_string(),
             cell_type: "code".to_string(),
+            position: "80".to_string(),
             source: "new source".to_string(),
             execution_count: "5".to_string(),
             outputs: vec![r#"{"output_type":"error"}"#.to_string()],
@@ -4905,6 +4936,7 @@ mod tests {
             CellSnapshot {
                 id: "existing-cell".to_string(),
                 cell_type: "code".to_string(),
+                position: "80".to_string(),
                 source: String::new(),
                 execution_count: "null".to_string(),
                 outputs: vec![],
@@ -4913,6 +4945,7 @@ mod tests {
             CellSnapshot {
                 id: "new-cell".to_string(),
                 cell_type: "code".to_string(),
+                position: "81".to_string(),
                 source: "print('new')".to_string(),
                 execution_count: "42".to_string(),
                 outputs: vec![r#"{"output_type":"execute_result"}"#.to_string()],
@@ -5405,11 +5438,11 @@ mod tests {
 
             // add_cell_full phase
             let t_add = std::time::Instant::now();
-            for (idx, cell, output_refs) in &batch {
+            for (_idx, cell, output_refs) in &batch {
                 doc.add_cell_full(
-                    *idx,
                     &cell.id,
                     &cell.cell_type,
+                    &cell.position,
                     &cell.source,
                     output_refs,
                     &cell.execution_count,
