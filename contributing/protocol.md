@@ -2,43 +2,39 @@
 
 This document describes the wire protocol between notebook clients (frontend WASM + Tauri relay) and the runtimed daemon.
 
-## Versioning Contract
+## Compatibility
 
-The protocol has a numeric version (`PROTOCOL_VERSION` in `connection.rs`) that governs compatibility between clients and the daemon. All published artifacts tie their major version to this protocol version:
+Two independent version numbers handle compatibility, separate from the artifact version:
 
-| Artifact | Version scheme | Example |
-|----------|---------------|---------|
-| `runtimed` (PyPI) | `{PROTOCOL_VERSION}.{minor}.{patch}` | `2.0.0`, `2.1.0` |
-| `runtimed` (Rust daemon) | `{PROTOCOL_VERSION}.{minor}.{patch}` | `2.0.0` |
-| `runt-cli` | `{PROTOCOL_VERSION}.{minor}.{patch}` | `2.0.0` |
-| nteract desktop app | `{PROTOCOL_VERSION}.{minor}.{patch}` | `2.0.0` |
+- **Protocol version** (`PROTOCOL_VERSION` in `connection.rs`, currently `2`) — governs wire compatibility. Validated by the 5-byte magic preamble (`0xC0DE01AC` + version byte) at the start of every connection. Bump when the framing, handshake shape, or message serialization format changes.
+- **Schema version** (`SCHEMA_VERSION` in `notebook-doc/src/lib.rs`, currently `1`) — governs Automerge document compatibility. Stored in the doc root as `schema_version`. Bump when the document structure changes (e.g., switching cells from ordered list to fractional-indexed map).
 
-**Rules:**
+These are just incrementing integers. They evolve independently from each other and from the artifact version. A protocol or schema bump doesn't automatically force a major version bump — that depends on whether the change is user-facing.
 
-- **Major version = protocol version.** A `PROTOCOL_VERSION` bump (breaking wire change) forces a new major version across all artifacts. Any `runtimed 2.x.y` client can talk to any `2.x.y` daemon.
-- **Minor version = new features.** Additive changes (new request/response/broadcast variants with serde defaults) bump the minor version. Old clients ignore unknown variants; new clients degrade gracefully against old daemons.
-- **Patch version = bug fixes.** No protocol changes.
+Artifact versions follow standard semver based on what users see.
 
 ### Release channels
 
-**Stable:** Pushing a `v*` tag publishes Python wheels to PyPI at the version in `pyproject.toml` (e.g., `2.0.0`). No separate `python-v*` tag needed — the desktop release ships the Python package too.
+**Stable:** Pushing a `v*` tag publishes Python wheels to PyPI at the version in `pyproject.toml`. No separate `python-v*` tag needed — the desktop release ships the Python package too.
 
-**Nightly:** Daily builds publish PEP 440 alpha pre-releases:
-
-```
-2.0.1a202507150900   (nightly from 2025-07-15)
-```
-
-These sort after the current stable (`2.0.0`) but before the next stable (`2.0.1`). Install with `pip install runtimed --pre`.
+**Nightly:** Daily builds publish PEP 440 alpha pre-releases (e.g., `2.0.1a202603100900`). Install with `pip install runtimed --pre`.
 
 **Python-only:** The `python-v*` tag path (`python-package.yml`) exists for Python-specific patches that don't need a full desktop release.
 
 See `contributing/releasing.md` for the full release procedures.
 
-### Version negotiation
+### Connection preamble
 
-- **Notebook sync** (`NotebookSync`, `OpenNotebook`, `CreateNotebook` handshakes): The daemon returns `protocol_version` and `daemon_version` in its capabilities response. The client hard-fails on mismatch.
-- **Pool IPC** (`Pool` handshake): The client sends `protocol_version` in the handshake. Old clients omit it (`None`); the daemon accepts them for backward compatibility. Future versions may reject mismatched clients with a clear error.
+Every connection starts with a 5-byte preamble before the JSON handshake frame:
+
+| Bytes | Content |
+|-------|---------|
+| 0–3 | Magic: `0xC0 0xDE 0x01 0xAC` |
+| 4 | Protocol version (currently `2`) |
+
+The daemon validates both before reading the handshake. Non-runtimed connections get a clear "invalid magic bytes" error. Protocol mismatches are rejected before any JSON parsing.
+
+After the preamble, the notebook sync path also returns `protocol_version` and `daemon_version` in its `ProtocolCapabilities` / `NotebookConnectionInfo` responses for informational purposes.
 
 ### Desktop app compatibility
 

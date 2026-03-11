@@ -14,11 +14,20 @@ All published artifacts share the same version and follow semver:
 | `runtimed` Python package | PyPI | `python/runtimed/pyproject.toml` |
 | `sidecar` | Bundled in Python wheel | `crates/sidecar/Cargo.toml` |
 
-**Major version = protocol version.** `PROTOCOL_VERSION` in `crates/runtimed/src/connection.rs` governs the major version. Any `runtimed 2.x.y` client can talk to any `2.x.y` daemon.
+Standard semver rules apply:
 
-- **Major** — breaking wire protocol change (`PROTOCOL_VERSION` bump)
-- **Minor** — new features (additive request/response/broadcast types)
-- **Patch** — bug fixes, no protocol changes
+- **Major** — breaking changes to user-facing APIs or behavior
+- **Minor** — new features, additive protocol/schema changes
+- **Patch** — bug fixes
+
+### Internal compatibility markers
+
+Two independent version numbers handle compatibility, separate from the artifact version:
+
+- **Protocol version** (`PROTOCOL_VERSION` in `connection.rs`) — governs wire compatibility. Validated by the magic bytes preamble at connection time. Bump when the framing, handshake shape, or message serialization format changes.
+- **Schema version** (`SCHEMA_VERSION` in `notebook-doc/src/lib.rs`) — governs Automerge document compatibility. Stored in the doc root. Bump when the document structure changes (e.g., switching cells from ordered list to fractional-indexed map).
+
+These are just incrementing integers. They evolve independently from each other and from the artifact version. A protocol bump doesn't force a major version bump — it depends on whether the change is user-facing.
 
 ## Bumping Versions
 
@@ -105,12 +114,21 @@ This builds macOS + Linux wheels and publishes to PyPI. Use this when you need t
 When making a breaking wire protocol change:
 
 1. Bump `PROTOCOL_VERSION` in `crates/runtimed/src/connection.rs`
-2. Bump the major version in all six version sources
-3. Update `PROTOCOL_V2` string constant if the version string changes
-4. Update `contributing/protocol.md` versioning table
-5. Tag as the new major version (e.g., `v3.0.0`)
+2. Update `PROTOCOL_V2` string constant if the version string changes
+3. Update `contributing/protocol.md`
+4. Decide whether this warrants a major, minor, or patch version bump based on user impact
 
-The notebook sync path hard-fails on protocol mismatch. The pool IPC path sends `protocol_version` in the handshake for forward compatibility.
+The magic bytes preamble rejects connections with mismatched protocol versions at the wire level, before any JSON parsing.
+
+## Schema Version Changes
+
+When changing the Automerge document structure:
+
+1. Bump `SCHEMA_VERSION` in `crates/notebook-doc/src/lib.rs`
+2. Add migration logic in the daemon's doc loading path (detect old schema, convert in-place)
+3. Update the document schema comment in `notebook-doc/src/lib.rs`
+
+Schema changes don't necessarily require a protocol bump — the wire format for sync frames stays the same, only the doc content changes.
 
 See `contributing/protocol.md` for the full versioning contract.
 
@@ -135,6 +153,6 @@ Before tagging a stable release:
 
 - [ ] All version sources bumped and in sync
 - [ ] `cargo check` passes (Cargo.lock updated)
-- [ ] `PROTOCOL_VERSION` matches major version
+- [ ] `PROTOCOL_VERSION` and `SCHEMA_VERSION` are correct for this release
 - [ ] CI is green on `main`
 - [ ] Changelog-worthy items use conventional commit prefixes (`feat`, `fix`, `perf`)
