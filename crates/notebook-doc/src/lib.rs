@@ -345,13 +345,16 @@ impl NotebookDoc {
             }
             cells
         } else {
-            Vec::new()
+            // No v1 List found — cells is either missing or already a Map.
+            // Just bump schema version and return.
+            self.doc
+                .put(automerge::ROOT, "schema_version", SCHEMA_VERSION)?;
+            return Ok(());
         };
 
-        // Delete old cells key
+        // Delete old List and create new Map
         let _ = self.doc.delete(automerge::ROOT, "cells");
 
-        // Create new Map
         let cells_map = self
             .doc
             .put_object(automerge::ROOT, "cells", ObjType::Map)?;
@@ -2928,18 +2931,13 @@ mod tests {
 
         let cells_before = doc.get_cells();
 
-        // Calling migrate on a v2 doc should succeed but not lose data.
-        // The List lookup returns None, so it creates an empty Map and
-        // overwrites — but we guard against this at the call site.
-        // This test verifies the call site guard is needed.
+        // Calling migrate on a v2 doc is a no-op: the early return
+        // checks schema_version >= SCHEMA_VERSION before touching anything.
         let result = doc.migrate_v1_to_v2();
-        // The migration finds no List, creates empty Map, loses cells.
-        // This is why load_or_create only calls migrate when version < SCHEMA_VERSION.
         assert!(result.is_ok());
 
-        // Verify the call-site version check is essential:
-        // A v2 doc should never reach migrate_v1_to_v2 in production.
-        let _ = cells_before; // acknowledged
+        // Verify cells are unchanged.
+        assert_eq!(cells_before, doc.get_cells());
     }
 
     #[test]
