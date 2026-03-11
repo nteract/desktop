@@ -508,7 +508,11 @@ impl NotebookSyncHandle {
     ///
     /// The data should be encoded via `notebook_doc::presence::encode_*` functions.
     /// The daemon will decode, update room state, and relay to other peers.
+    ///
+    /// Returns an error if the frame exceeds `MAX_PRESENCE_FRAME_SIZE` (4 KiB).
     pub async fn send_presence(&self, data: Vec<u8>) -> Result<(), NotebookSyncError> {
+        notebook_doc::presence::validate_frame_size(&data)
+            .map_err(|e| NotebookSyncError::SyncError(e.to_string()))?;
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(SyncCommand::SendPresence {

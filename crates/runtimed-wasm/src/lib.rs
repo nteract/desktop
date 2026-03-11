@@ -460,12 +460,13 @@ impl NotebookHandle {
                         "env_source": k.env_source,
                     }),
                     presence::ChannelData::Custom(bytes) => {
-                        let custom_str = String::from_utf8_lossy(&bytes);
+                        // Emit raw bytes as a JSON array of numbers — lossless
+                        // without requiring a base64 dependency.
                         serde_json::json!({
                             "type": "update",
                             "peer_id": peer_id,
                             "channel": channel_str,
-                            "data": custom_str,
+                            "data": bytes,
                         })
                     }
                 }

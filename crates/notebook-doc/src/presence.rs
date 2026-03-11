@@ -151,6 +151,9 @@ pub enum PresenceMessage {
         data: ChannelData,
     },
     Snapshot {
+        /// The sender of this snapshot (typically "daemon").
+        /// This is NOT the receiver's peer_id — it identifies who generated
+        /// the snapshot so receivers know the source.
         peer_id: String,
         peers: Vec<PeerSnapshot>,
     },
@@ -179,6 +182,8 @@ pub enum PresenceError {
     Encode(String),
     #[error("CBOR decode error: {0}")]
     Decode(String),
+    #[error("presence frame too large: {size} bytes (max {max})")]
+    FrameTooLarge { size: usize, max: usize },
 }
 
 // ── CBOR encoding ────────────────────────────────────────────────────
@@ -199,6 +204,7 @@ pub fn decode_message(data: &[u8]) -> Result<PresenceMessage, PresenceError> {
 
 /// Encode a cursor update message.
 pub fn encode_cursor_update(peer_id: &str, pos: &CursorPosition) -> Vec<u8> {
+    // Cursor encoding is infallible for valid types — unwrap is safe here.
     encode_message(&PresenceMessage::Update {
         peer_id: peer_id.to_string(),
         data: ChannelData::Cursor(pos.clone()),
@@ -225,12 +231,13 @@ pub fn encode_kernel_state_update(peer_id: &str, state: &KernelStateData) -> Vec
 }
 
 /// Encode a custom channel update message (arbitrary bytes).
-pub fn encode_custom_update(peer_id: &str, data: &[u8]) -> Vec<u8> {
+///
+/// Returns `Err` if encoding fails (e.g. data too large for CBOR).
+pub fn encode_custom_update(peer_id: &str, data: &[u8]) -> Result<Vec<u8>, PresenceError> {
     encode_message(&PresenceMessage::Update {
         peer_id: peer_id.to_string(),
         data: ChannelData::Custom(data.to_vec()),
     })
-    .expect("CBOR encoding of custom data should not fail")
 }
 
 /// Encode a heartbeat message.
@@ -256,6 +263,21 @@ pub fn encode_snapshot(sender_peer_id: &str, peers: &[PeerSnapshot]) -> Vec<u8> 
         peers: peers.to_vec(),
     })
     .expect("CBOR encoding of snapshot should not fail")
+}
+
+/// Validate that a presence frame payload is within the size limit.
+///
+/// Call this before sending to avoid wasting bandwidth on frames the
+/// daemon will drop.
+pub fn validate_frame_size(data: &[u8]) -> Result<(), PresenceError> {
+    if data.len() > MAX_PRESENCE_FRAME_SIZE {
+        Err(PresenceError::FrameTooLarge {
+            size: data.len(),
+            max: MAX_PRESENCE_FRAME_SIZE,
+        })
+    } else {
+        Ok(())
+    }
 }
 
 // ── Presence State ───────────────────────────────────────────────────
@@ -572,7 +594,7 @@ mod tests {
     #[test]
     fn test_custom_channel_roundtrip() {
         let custom = b"{\"foo\":\"bar\"}";
-        let encoded = encode_custom_update("agent-x", custom);
+        let encoded = encode_custom_update("agent-x", custom).unwrap();
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::Update { peer_id, data } => {
@@ -581,6 +603,22 @@ mod tests {
             }
             _ => panic!("expected Update"),
         }
+    }
+
+    #[test]
+    fn test_validate_frame_size() {
+        let small = encode_cursor_update(
+            "p1",
+            &CursorPosition {
+                cell_id: "c1".into(),
+                line: 0,
+                column: 0,
+            },
+        );
+        assert!(validate_frame_size(&small).is_ok());
+
+        let oversized = vec![0u8; MAX_PRESENCE_FRAME_SIZE + 1];
+        assert!(validate_frame_size(&oversized).is_err());
     }
 
     #[test]

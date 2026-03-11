@@ -873,10 +873,10 @@ where
     .await;
 
     // Always clean up presence on disconnect, whether the sync loop
-    // exited cleanly (Ok) or with an error (Err). The peer_id is always
-    // available because run_sync_loop_v2 returns it as part of the tuple.
-    // remove_peer is a no-op for unknown peers (e.g. error before any
-    // presence was registered).
+    // exited cleanly (Ok) or with an error (Err). The peer_id was
+    // generated before starting the sync loop, so it is always
+    // available here. remove_peer is a no-op for unknown peers
+    // (e.g. error before any presence was registered).
     room.presence.write().await.remove_peer(&peer_id);
     let left_bytes = presence::encode_left(&peer_id);
     let _ = room.presence_tx.send((peer_id, left_bytes));
@@ -1050,12 +1050,28 @@ where
 
     // Phase 1.6: Send presence snapshot so late joiners see current peer state
     // (kernel status, cursors, selections from other connected peers).
+    // The snapshot's peer_id field identifies the sender (daemon), not the receiver.
+    // We filter out the receiver's own peer_id to prevent them from rendering
+    // their own cursor as a remote peer (clients don't know their server-assigned ID).
     {
         let presence_state = room.presence.read().await;
         if presence_state.peer_count() > 0 {
-            let snapshot_bytes = presence_state.encode_snapshot(peer_id);
-            connection::send_typed_frame(writer, NotebookFrameType::Presence, &snapshot_bytes)
-                .await?;
+            // Build snapshot excluding this peer (they shouldn't see themselves)
+            let other_peers: Vec<presence::PeerSnapshot> = presence_state
+                .peers()
+                .values()
+                .filter(|p| p.peer_id != peer_id)
+                .map(|p| presence::PeerSnapshot {
+                    peer_id: p.peer_id.clone(),
+                    peer_label: p.peer_label.clone(),
+                    channels: p.channels.values().cloned().collect(),
+                })
+                .collect();
+            if !other_peers.is_empty() {
+                let snapshot_bytes = presence::encode_snapshot("daemon", &other_peers);
+                connection::send_typed_frame(writer, NotebookFrameType::Presence, &snapshot_bytes)
+                    .await?;
+            }
         }
     }
 
@@ -1144,41 +1160,57 @@ where
 
                                 match presence::decode_message(&frame.payload) {
                                     Ok(presence::PresenceMessage::Update { data, .. }) => {
-                                        let data_for_relay = data.clone();
-                                        // Update the room's presence state (using our known peer_id,
-                                        // not the one in the frame — clients don't know their peer_id).
-                                        let is_new = room.presence.write().await.update_peer(
-                                            peer_id,
-                                            "peer",
-                                            data,
-                                            now_ms,
-                                        );
-
-                                        if is_new {
-                                            // New peer — send them a snapshot of everyone else
-                                            let snapshot_bytes = room.presence.read().await.encode_snapshot(peer_id);
-                                            connection::send_typed_frame(
-                                                writer,
-                                                NotebookFrameType::Presence,
-                                                &snapshot_bytes,
-                                            )
-                                            .await?;
-                                        }
-
-                                        // Re-encode with server-assigned peer_id to prevent
-                                        // spoofing, and reject channels clients shouldn't publish.
-                                        let relay_bytes = if matches!(data_for_relay, presence::ChannelData::KernelState(_)) {
+                                        // Reject daemon-owned channels before updating shared state.
+                                        // This prevents clients from spoofing kernel status.
+                                        if matches!(data, presence::ChannelData::KernelState(_)) {
                                             warn!("[notebook-sync] Client tried to publish KernelState presence, ignoring");
-                                            None
                                         } else {
-                                            presence::encode_message(&presence::PresenceMessage::Update {
-                                                peer_id: peer_id.to_string(),
-                                                data: data_for_relay,
-                                            }).ok()
-                                        };
+                                            let data_for_relay = data.clone();
+                                            // Update the room's presence state (using our known peer_id,
+                                            // not the one in the frame — clients don't know their peer_id).
+                                            let is_new = room.presence.write().await.update_peer(
+                                                peer_id,
+                                                "peer",
+                                                data,
+                                                now_ms,
+                                            );
 
-                                        if let Some(bytes) = relay_bytes {
-                                            let _ = room.presence_tx.send((peer_id.to_string(), bytes));
+                                            if is_new {
+                                                // New peer — send snapshot of everyone else (excluding self)
+                                                let other_peers: Vec<presence::PeerSnapshot> = room
+                                                    .presence
+                                                    .read()
+                                                    .await
+                                                    .peers()
+                                                    .values()
+                                                    .filter(|p| p.peer_id != peer_id)
+                                                    .map(|p| presence::PeerSnapshot {
+                                                        peer_id: p.peer_id.clone(),
+                                                        peer_label: p.peer_label.clone(),
+                                                        channels: p.channels.values().cloned().collect(),
+                                                    })
+                                                    .collect();
+                                                if !other_peers.is_empty() {
+                                                    let snapshot_bytes =
+                                                        presence::encode_snapshot("daemon", &other_peers);
+                                                    connection::send_typed_frame(
+                                                        writer,
+                                                        NotebookFrameType::Presence,
+                                                        &snapshot_bytes,
+                                                    )
+                                                    .await?;
+                                                }
+                                            }
+
+                                            // Re-encode with server-assigned peer_id and relay
+                                            if let Ok(bytes) = presence::encode_message(
+                                                &presence::PresenceMessage::Update {
+                                                    peer_id: peer_id.to_string(),
+                                                    data: data_for_relay,
+                                                },
+                                            ) {
+                                                let _ = room.presence_tx.send((peer_id.to_string(), bytes));
+                                            }
                                         }
                                     }
                                     Ok(presence::PresenceMessage::Heartbeat { .. }) => {
