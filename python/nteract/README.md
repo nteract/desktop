@@ -1,0 +1,192 @@
+# nteract/nteract
+
+## What's going on?
+
+If you're here looking for the Electron-based nteract desktop app, you can view the source [in this repo](https://github.com/nteract/archived-desktop-app). **That desktop app is not actively maintained.**
+
+We're actively developing the spritual successor to the nteract desktop app in the [nteract/desktop repo](https://github.com/nteract/desktop).
+
+### The New Desktop App
+
+We're actively developing the spritual successor to the nteract desktop app in the [nteract/desktop repo](https://github.com/nteract/desktop).
+
+The new app is a native desktop app with instant startup and intelligent environment management.
+
+<img width="1100" height="750" alt="Screenshot 2026-02-27 at 8 33 13 AM" src="https://github.com/user-attachments/assets/06be5ab5-9390-43a9-993a-ccb07ec9139d" />
+
+## Bringing Agents in the Loop
+
+We're in the prelimiary stages of hooking up the realtime system from nteract/desktop to any agent of your choice. Collaborate with agents in notebooks, render interactive elements, and explore data together.
+
+### Quick Start
+
+#### Claude Code
+
+```bash
+# Stable desktop 1.4.x / stable MCP
+claude mcp add nteract -- uvx nteract
+```
+
+For desktop nightly / the upcoming 2.x transition, use the prerelease MCP package and nightly socket:
+
+```bash
+claude mcp add nteract-nightly -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-nightly/runtimed.sock" uvx --prerelease allow nteract
+```
+
+That's it. Now Claude can execute Python code, create visualizations, and work with your data.
+
+## What is this?
+
+nteract is an MCP (Model Context Protocol) server that connects AI assistants like Claude to Jupyter notebooks. It enables:
+
+- **Code execution**: Run Python in a persistent kernel
+- **Real-time collaboration**: Watch the AI work in the nteract desktop app
+- **Shared state**: Multiple agents can work on the same notebook
+- **Environment management**: Automatic Python environment setup
+
+## Example
+
+Ask Claude:
+
+> "Help me visualize my log data"
+
+Claude will:
+1. Connect to a notebook session
+2. Write and execute code
+3. Generate visualizations
+4. Show you the results
+
+You can open the same notebook in the [nteract desktop app](https://github.com/nteract/desktop) to see changes in real-time and collaborate with the AI.
+
+## Installation
+
+Stable line for desktop `1.4.x`:
+
+```bash
+uvx nteract
+```
+
+Prerelease line for desktop nightly / 2.x transition:
+
+```bash
+uvx --prerelease allow nteract
+```
+
+## Claude Code Setup
+
+Add stable `nteract` as an MCP server:
+
+```bash
+claude mcp add nteract -- uvx nteract
+```
+
+Or manually add to your Claude configuration:
+
+```json
+{
+  "mcpServers": {
+    "nteract": {
+      "command": "uvx",
+      "args": ["nteract"]
+    }
+  }
+}
+```
+
+### Using with Nightly
+
+If you're using nteract desktop nightly builds, point at the nightly socket and allow prereleases:
+
+```bash
+claude mcp add nteract -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-nightly/runtimed.sock" uvx --prerelease allow nteract
+```
+
+### Release Tracks
+
+- `main` publishes prerelease `nteract` builds for the 2.x transition and tracks `runtimed 2.x` prereleases.
+- `release/1.9.x` is the stable maintenance line for desktop `1.4.x` and stays on `runtimed 1.9.0`.
+
+## Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `connect_notebook` | Connect to a notebook by ID |
+| `open_notebook` | Open an existing .ipynb file |
+| `create_notebook` | Create a new notebook |
+| `save_notebook` | Save notebook to disk as .ipynb file |
+| `create_cell` | Add a cell to the notebook (use `and_run=True` to execute) |
+| `execute_cell` | Run a specific cell (returns partial results after timeout) |
+| `run_all_cells` | Queue all code cells for execution |
+| `append_source` | Stream tokens into a cell (ideal for LLM output) |
+| `get_cell` | Get a cell by ID with outputs |
+| `get_all_cells` | View all cells in the notebook |
+| `set_cell_source` | Update a cell's source code |
+| `move_cell` | Reorder a cell within the notebook |
+| `clear_outputs` | Clear a cell's outputs |
+| `delete_cell` | Remove a cell from the notebook |
+| `start_kernel` | Start a Python kernel |
+| `restart_kernel` | Restart kernel with updated dependencies |
+| `get_kernel_status` | Check kernel state |
+| `get_queue_state` | See what's executing and what's queued |
+| `complete_code` | Get code completions from the kernel |
+| `get_history` | Search kernel execution history |
+| `add_dependency` | Add a Python package dependency |
+| `remove_dependency` | Remove a dependency |
+| `get_dependencies` | List current dependencies |
+| `sync_environment` | Hot-install new deps without restart |
+
+## Architecture
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   Claude    │────▶│   nteract   │────▶│   runtimed  │
+│  (or other  │     │ MCP Server  │     │   daemon    │
+│     AI)     │     │             │     │             │
+└─────────────┘     └─────────────┘     └──────┬──────┘
+                                               │
+                    ┌─────────────┐             │
+                    │   nteract   │◀────────────┘
+                    │ Desktop App │  (real-time sync)
+                    └─────────────┘
+```
+
+- **nteract** (this package): MCP server for AI assistants
+- **runtimed**: Low-level daemon and Python bindings ([docs](https://github.com/nteract/desktop))
+- **nteract desktop**: Native app for humans to collaborate with AI
+
+## Real-time Collaboration
+
+The magic of nteract is that AI and humans share the same notebook:
+
+1. AI connects via MCP and runs code
+2. Human opens the same notebook in nteract desktop
+3. Changes sync instantly via CRDT
+4. Both see the same kernel state
+
+This enables workflows like:
+- AI does initial analysis, human refines
+- Human writes code, AI debugs errors
+- Multiple AI agents collaborate on complex tasks
+
+## Development
+
+```bash
+# Clone
+git clone https://github.com/nteract/nteract
+cd nteract
+
+# Install dependencies
+uv sync
+
+# Run tests
+uv run pytest
+```
+
+## Related Projects
+
+- [nteract/desktop](https://github.com/nteract/desktop) - Native desktop app
+- [runtimed on PyPI](https://pypi.org/project/runtimed/) - Low-level Python bindings
+
+## License
+
+BSD-3-Clause
