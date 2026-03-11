@@ -299,6 +299,22 @@ impl Session {
             state.blob_base_url = blob_base_url;
             state.blob_store_path = blob_store_path;
 
+            // Query daemon for current kernel state (handles connecting to already-running kernels)
+            if let Some(ref handle) = state.handle {
+                if let Ok(response) = handle.send_request(NotebookRequest::GetKernelInfo {}).await {
+                    if let NotebookResponse::KernelInfo {
+                        env_source, status, ..
+                    } = response
+                    {
+                        let is_running = matches!(status.as_str(), "idle" | "busy" | "starting");
+                        state.kernel_started = is_running;
+                        if is_running {
+                            state.env_source = env_source;
+                        }
+                    }
+                }
+            }
+
             Ok(())
         })
     }
