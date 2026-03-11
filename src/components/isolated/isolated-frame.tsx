@@ -319,7 +319,14 @@ export const IsolatedFrame = forwardRef<
       // Handle specific message types
       switch (data.type) {
         case "ready":
-          // Iframe bootstrap HTML is loaded
+          // Iframe bootstrap HTML is loaded.
+          // If we already bootstrapped, the iframe was reloaded (e.g., DOM move
+          // caused the browser to tear down and reload the iframe). Reset
+          // bootstrap state so the renderer gets re-injected.
+          if (bootstrappingRef.current || isReadyRef.current) {
+            bootstrappingRef.current = false;
+            setIsReady(false);
+          }
           // Renderer injection is handled by a separate useEffect
           setIsIframeReady(true);
           break;
