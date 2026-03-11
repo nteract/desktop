@@ -2981,11 +2981,12 @@ async fn clean_worktree_command(
         let h = runt_workspace::worktree_hash(&workspace_path);
         let path = worktrees_dir.join(&h);
         if !path.exists() {
-            anyhow::bail!(
-                "No worktree state found for {} (hash: {})",
+            println!(
+                "No worktree state to clean for {} (hash: {})",
                 workspace_path.display(),
                 h
             );
+            return Ok(());
         }
         targets.push(WorktreeTarget {
             hash: h,
