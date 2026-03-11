@@ -886,17 +886,78 @@ impl Daemon {
     {
         // Read preamble + handshake with a timeout so that idle/stalled
         // connections don't hold resources.
+        //
+        // Backward compatibility: old clients (pre-2.0.0) send a length-prefixed
+        // JSON handshake without the magic bytes preamble. We detect this by
+        // peeking at the first byte: 0xC0 = new protocol (magic preamble),
+        // 0x00 = old protocol (4-byte big-endian length prefix for any
+        // reasonable handshake size). This allows the daemon upgrade to succeed
+        // even when the old app is still verifying daemon health.
         let handshake_bytes = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            // Validate magic bytes + protocol version
-            connection::recv_preamble(&mut stream)
+            // Peek at first byte to detect protocol version
+            let mut first_byte = [0u8; 1];
+            tokio::io::AsyncReadExt::read_exact(&mut stream, &mut first_byte)
                 .await
-                .map_err(|e| anyhow::anyhow!("preamble: {}", e))?;
+                .map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                        anyhow::anyhow!("connection closed before preamble")
+                    } else {
+                        anyhow::anyhow!("preamble read: {}", e)
+                    }
+                })?;
 
-            // Read the JSON handshake frame
-            connection::recv_control_frame(&mut stream)
-                .await
-                .context("handshake read error")?
-                .ok_or_else(|| anyhow::anyhow!("connection closed before handshake"))
+            if first_byte[0] == connection::MAGIC[0] {
+                // New protocol: read remaining 4 bytes of preamble (3 more magic + 1 version)
+                let mut rest = [0u8; 4];
+                tokio::io::AsyncReadExt::read_exact(&mut stream, &mut rest)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("preamble: {}", e))?;
+
+                if rest[..3] != connection::MAGIC[1..] {
+                    anyhow::bail!(
+                        "invalid magic bytes: expected {:02X?}, got {:02X?}",
+                        connection::MAGIC,
+                        [&first_byte[..], &rest[..3]].concat()
+                    );
+                }
+
+                let version = rest[3];
+                if version != connection::PROTOCOL_VERSION as u8 {
+                    anyhow::bail!(
+                        "protocol version mismatch: expected {}, got {}",
+                        connection::PROTOCOL_VERSION,
+                        version
+                    );
+                }
+
+                // Read the JSON handshake frame
+                connection::recv_control_frame(&mut stream)
+                    .await
+                    .context("handshake read error")?
+                    .ok_or_else(|| anyhow::anyhow!("connection closed before handshake"))
+            } else {
+                // Legacy protocol (pre-2.0.0): first byte is part of a 4-byte
+                // big-endian length prefix. Read remaining 3 length bytes.
+                log::debug!("[runtimed] Legacy client detected (no magic preamble)");
+                let mut len_rest = [0u8; 3];
+                tokio::io::AsyncReadExt::read_exact(&mut stream, &mut len_rest)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("legacy length read: {}", e))?;
+
+                let len_bytes = [first_byte[0], len_rest[0], len_rest[1], len_rest[2]];
+                let len = u32::from_be_bytes(len_bytes) as usize;
+
+                if len > 64 * 1024 {
+                    anyhow::bail!("legacy handshake frame too large: {} bytes", len);
+                }
+
+                let mut buf = vec![0u8; len];
+                tokio::io::AsyncReadExt::read_exact(&mut stream, &mut buf)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("legacy handshake read: {}", e))?;
+
+                Ok(buf)
+            }
         })
         .await
         .map_err(|_| anyhow::anyhow!("handshake timeout (10s)"))??;
