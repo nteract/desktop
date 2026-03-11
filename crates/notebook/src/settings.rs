@@ -163,7 +163,8 @@ mod tests {
     #[test]
     fn test_settings_path_is_valid() {
         let path = settings_path();
-        assert!(path.ends_with("nteract/settings.json"));
+        let expected = format!("{}/settings.json", runtimed::config_namespace());
+        assert!(path.ends_with(&expected));
     }
 
     #[test]
