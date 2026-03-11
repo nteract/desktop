@@ -1286,6 +1286,9 @@ impl AsyncSession {
                 .as_ref()
                 .ok_or_else(|| to_py_err("Not connected"))?;
 
+            // Confirm the daemon has merged our latest changes before executing.
+            handle.confirm_sync().await.map_err(to_py_err)?;
+
             // Queue the cell for execution
             let response = handle
                 .send_request(NotebookRequest::ExecuteCell {
@@ -1441,6 +1444,9 @@ impl AsyncSession {
                     .as_ref()
                     .ok_or_else(|| to_py_err("Not connected"))?;
 
+                // Confirm the daemon has merged our latest changes before executing.
+                handle.confirm_sync().await.map_err(to_py_err)?;
+
                 let response = handle
                     .send_request(NotebookRequest::ExecuteCell {
                         cell_id: cell_id.clone(),
@@ -1506,6 +1512,9 @@ impl AsyncSession {
                 .handle
                 .as_ref()
                 .ok_or_else(|| to_py_err("Not connected"))?;
+
+            // Confirm the daemon has merged our latest changes before executing.
+            handle.confirm_sync().await.map_err(to_py_err)?;
 
             // Queue cell execution (daemon reads source from automerge doc)
             let response = handle
