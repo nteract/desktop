@@ -15,23 +15,21 @@ use std::process::Command;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildChannel {
     Stable,
-    Preview,
     Nightly,
 }
 
 fn build_channel_from_str(channel: Option<&str>) -> BuildChannel {
     match channel {
-        Some(value) if value.eq_ignore_ascii_case("preview") => BuildChannel::Preview,
-        Some(value) if value.eq_ignore_ascii_case("weekly") => BuildChannel::Preview,
-        Some(value) if value.eq_ignore_ascii_case("nightly") => BuildChannel::Nightly,
-        _ => BuildChannel::Stable,
+        Some(value) if value.eq_ignore_ascii_case("stable") => BuildChannel::Stable,
+        _ => BuildChannel::Nightly,
     }
 }
 
 /// Build channel for this binary.
 ///
 /// Controlled by the compile-time `RUNT_BUILD_CHANNEL` environment variable.
-/// Unset or unknown values fall back to `stable`.
+/// Only `stable` is explicitly recognized; all other values (including unset)
+/// default to `Nightly`. This ensures building from source is always nightly.
 pub fn build_channel() -> BuildChannel {
     build_channel_from_str(option_env!("RUNT_BUILD_CHANNEL"))
 }
@@ -39,7 +37,6 @@ pub fn build_channel() -> BuildChannel {
 fn desktop_product_name_for(channel: BuildChannel) -> &'static str {
     match channel {
         BuildChannel::Stable => "nteract",
-        BuildChannel::Preview => "nteract-preview",
         BuildChannel::Nightly => "nteract-nightly",
     }
 }
@@ -47,7 +44,6 @@ fn desktop_product_name_for(channel: BuildChannel) -> &'static str {
 fn desktop_display_name_for(channel: BuildChannel) -> &'static str {
     match channel {
         BuildChannel::Stable => "nteract",
-        BuildChannel::Preview => "nteract (Preview)",
         BuildChannel::Nightly => "nteract (Nightly)",
     }
 }
@@ -55,7 +51,6 @@ fn desktop_display_name_for(channel: BuildChannel) -> &'static str {
 fn cache_namespace_for(channel: BuildChannel) -> &'static str {
     match channel {
         BuildChannel::Stable => "runt",
-        BuildChannel::Preview => "runt-preview",
         BuildChannel::Nightly => "runt-nightly",
     }
 }
@@ -63,7 +58,6 @@ fn cache_namespace_for(channel: BuildChannel) -> &'static str {
 fn config_namespace_for(channel: BuildChannel) -> &'static str {
     match channel {
         BuildChannel::Stable => "nteract",
-        BuildChannel::Preview => "nteract-preview",
         BuildChannel::Nightly => "nteract-nightly",
     }
 }
@@ -71,7 +65,6 @@ fn config_namespace_for(channel: BuildChannel) -> &'static str {
 fn daemon_binary_basename_for(channel: BuildChannel) -> &'static str {
     match channel {
         BuildChannel::Stable => "runtimed",
-        BuildChannel::Preview => "runtimed-preview",
         BuildChannel::Nightly => "runtimed-nightly",
     }
 }
@@ -83,7 +76,6 @@ fn daemon_service_basename_for(channel: BuildChannel) -> &'static str {
 fn daemon_launchd_label_for(channel: BuildChannel) -> &'static str {
     match channel {
         BuildChannel::Stable => "io.nteract.runtimed",
-        BuildChannel::Preview => "io.nteract.runtimed.preview",
         BuildChannel::Nightly => "io.nteract.runtimed.nightly",
     }
 }
@@ -91,7 +83,6 @@ fn daemon_launchd_label_for(channel: BuildChannel) -> &'static str {
 fn cli_command_name_for(channel: BuildChannel) -> &'static str {
     match channel {
         BuildChannel::Stable => "runt",
-        BuildChannel::Preview => "runt-preview",
         BuildChannel::Nightly => "runt-nightly",
     }
 }
@@ -99,7 +90,6 @@ fn cli_command_name_for(channel: BuildChannel) -> &'static str {
 fn cli_notebook_alias_name_for(channel: BuildChannel) -> &'static str {
     match channel {
         BuildChannel::Stable => "nb",
-        BuildChannel::Preview => "nb-preview",
         BuildChannel::Nightly => "nb-nightly",
     }
 }
@@ -153,7 +143,6 @@ pub fn cli_notebook_alias_name() -> &'static str {
 pub fn channel_display_name() -> &'static str {
     match build_channel() {
         BuildChannel::Stable => "stable",
-        BuildChannel::Preview => "preview",
         BuildChannel::Nightly => "nightly",
     }
 }
@@ -330,22 +319,19 @@ mod tests {
 
     #[test]
     fn test_build_channel_parsing() {
-        assert_eq!(build_channel_from_str(None), BuildChannel::Stable);
-        assert_eq!(
-            build_channel_from_str(Some("preview")),
-            BuildChannel::Preview
-        );
-        assert_eq!(
-            build_channel_from_str(Some("weekly")),
-            BuildChannel::Preview
-        );
+        // Unset defaults to nightly (building from source)
+        assert_eq!(build_channel_from_str(None), BuildChannel::Nightly);
+        // Only explicit "stable" gives stable
+        assert_eq!(build_channel_from_str(Some("stable")), BuildChannel::Stable);
+        assert_eq!(build_channel_from_str(Some("STABLE")), BuildChannel::Stable);
+        // Everything else is nightly
         assert_eq!(
             build_channel_from_str(Some("nightly")),
             BuildChannel::Nightly
         );
         assert_eq!(
             build_channel_from_str(Some("something-else")),
-            BuildChannel::Stable
+            BuildChannel::Nightly
         );
     }
 
@@ -353,32 +339,19 @@ mod tests {
     fn test_branding_matrix_values() {
         assert_eq!(desktop_product_name_for(BuildChannel::Stable), "nteract");
         assert_eq!(
-            desktop_product_name_for(BuildChannel::Preview),
-            "nteract-preview"
-        );
-        assert_eq!(
             desktop_product_name_for(BuildChannel::Nightly),
             "nteract-nightly"
         );
         assert_eq!(desktop_display_name_for(BuildChannel::Stable), "nteract");
-        assert_eq!(
-            desktop_display_name_for(BuildChannel::Preview),
-            "nteract (Preview)"
-        );
         assert_eq!(
             desktop_display_name_for(BuildChannel::Nightly),
             "nteract (Nightly)"
         );
 
         assert_eq!(cache_namespace_for(BuildChannel::Stable), "runt");
-        assert_eq!(cache_namespace_for(BuildChannel::Preview), "runt-preview");
         assert_eq!(cache_namespace_for(BuildChannel::Nightly), "runt-nightly");
 
         assert_eq!(config_namespace_for(BuildChannel::Stable), "nteract");
-        assert_eq!(
-            config_namespace_for(BuildChannel::Preview),
-            "nteract-preview"
-        );
         assert_eq!(
             config_namespace_for(BuildChannel::Nightly),
             "nteract-nightly"
@@ -386,22 +359,13 @@ mod tests {
 
         assert_eq!(daemon_binary_basename_for(BuildChannel::Stable), "runtimed");
         assert_eq!(
-            daemon_binary_basename_for(BuildChannel::Preview),
-            "runtimed-preview"
-        );
-        assert_eq!(
             daemon_binary_basename_for(BuildChannel::Nightly),
             "runtimed-nightly"
         );
 
         assert_eq!(cli_command_name_for(BuildChannel::Stable), "runt");
-        assert_eq!(cli_command_name_for(BuildChannel::Preview), "runt-preview");
         assert_eq!(cli_command_name_for(BuildChannel::Nightly), "runt-nightly");
         assert_eq!(cli_notebook_alias_name_for(BuildChannel::Stable), "nb");
-        assert_eq!(
-            cli_notebook_alias_name_for(BuildChannel::Preview),
-            "nb-preview"
-        );
         assert_eq!(
             cli_notebook_alias_name_for(BuildChannel::Nightly),
             "nb-nightly"
@@ -410,10 +374,6 @@ mod tests {
         assert_eq!(
             daemon_launchd_label_for(BuildChannel::Stable),
             "io.nteract.runtimed"
-        );
-        assert_eq!(
-            daemon_launchd_label_for(BuildChannel::Preview),
-            "io.nteract.runtimed.preview"
         );
         assert_eq!(
             daemon_launchd_label_for(BuildChannel::Nightly),
