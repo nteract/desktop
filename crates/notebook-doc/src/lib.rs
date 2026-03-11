@@ -32,6 +32,8 @@
 
 pub mod metadata;
 
+use std::collections::HashMap;
+
 /// Current document schema version.
 ///
 /// Bump this when making incompatible changes to the Automerge document
@@ -80,6 +82,9 @@ pub struct CellSnapshot {
     /// Cell metadata (arbitrary JSON object, preserves unknown keys)
     #[serde(default = "default_empty_object")]
     pub metadata: serde_json::Value,
+    /// Attachments for markdown cells: relative path → blob hash
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub attachments: HashMap<String, String>,
 }
 
 fn default_empty_object() -> serde_json::Value {
@@ -632,6 +637,8 @@ impl NotebookDoc {
         self.doc.put(&cell_map, "execution_count", "null")?;
         self.doc.put_object(&cell_map, "outputs", ObjType::List)?;
         self.doc.put(&cell_map, "metadata", "{}")?;
+        self.doc
+            .put_object(&cell_map, "attachments", ObjType::Map)?;
 
         Ok(position_str)
     }
@@ -695,6 +702,9 @@ impl NotebookDoc {
         // Store metadata as JSON string
         let metadata_str = serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_string());
         self.doc.put(&cell_map, "metadata", metadata_str)?;
+
+        self.doc
+            .put_object(&cell_map, "attachments", ObjType::Map)?;
 
         Ok(())
     }
@@ -1225,6 +1235,82 @@ impl NotebookDoc {
         self.update_cell_metadata_at(cell_id, &["tags"], serde_json::json!(tags))
     }
 
+    // ── Attachments ───────────────────────────────────────────────────
+
+    /// Get all attachments for a cell (path → blob hash).
+    pub fn get_cell_attachments(&self, cell_id: &str) -> Option<HashMap<String, String>> {
+        let cells_id = self.cells_map_id()?;
+        let cell_obj = self.cell_obj_id(&cells_id, cell_id)?;
+        let attachments_id = self.map_id(&cell_obj, "attachments")?;
+
+        Some(
+            self.doc
+                .map_range(&attachments_id, ..)
+                .filter_map(|item| {
+                    if let automerge::ValueRef::Scalar(automerge::ScalarValueRef::Str(hash)) =
+                        item.value
+                    {
+                        return Some((item.key.to_string(), hash.to_string()));
+                    }
+                    None
+                })
+                .collect(),
+        )
+    }
+
+    /// Set a single attachment for a cell.
+    ///
+    /// Creates the attachments map if it doesn't exist.
+    pub fn set_cell_attachment(
+        &mut self,
+        cell_id: &str,
+        path: &str,
+        blob_hash: &str,
+    ) -> Result<bool, AutomergeError> {
+        let cells_id = match self.cells_map_id() {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
+            Some(o) => o,
+            None => return Ok(false),
+        };
+
+        // Get or create attachments map
+        let attachments_id = match self.map_id(&cell_obj, "attachments") {
+            Some(id) => id,
+            None => self
+                .doc
+                .put_object(&cell_obj, "attachments", ObjType::Map)?,
+        };
+
+        self.doc.put(&attachments_id, path, blob_hash)?;
+        Ok(true)
+    }
+
+    /// Remove a single attachment from a cell.
+    pub fn remove_cell_attachment(
+        &mut self,
+        cell_id: &str,
+        path: &str,
+    ) -> Result<bool, AutomergeError> {
+        let cells_id = match self.cells_map_id() {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
+            Some(o) => o,
+            None => return Ok(false),
+        };
+        let attachments_id = match self.map_id(&cell_obj, "attachments") {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+
+        self.doc.delete(&attachments_id, path)?;
+        Ok(true)
+    }
+
     // ── Notebook metadata ──────────────────────────────────────────
 
     /// Read a metadata value.
@@ -1380,6 +1466,17 @@ impl NotebookDoc {
             })
     }
 
+    fn map_id(&self, parent: &ObjId, key: &str) -> Option<ObjId> {
+        self.doc
+            .get(parent, key)
+            .ok()
+            .flatten()
+            .and_then(|(value, id)| match value {
+                automerge::Value::Object(ObjType::Map) => Some(id),
+                _ => None,
+            })
+    }
+
     fn read_cell(&self, cell_obj: &ObjId) -> Option<CellSnapshot> {
         let id = read_str(&self.doc, cell_obj, "id")?;
         let cell_type = read_str(&self.doc, cell_obj, "cell_type").unwrap_or_default();
@@ -1410,6 +1507,23 @@ impl NotebookDoc {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_else(|| serde_json::json!({}));
 
+        // Read attachments map
+        let attachments = match self.map_id(cell_obj, "attachments") {
+            Some(map_id) => self
+                .doc
+                .map_range(&map_id, ..)
+                .filter_map(|item| {
+                    if let automerge::ValueRef::Scalar(automerge::ScalarValueRef::Str(hash)) =
+                        item.value
+                    {
+                        return Some((item.key.to_string(), hash.to_string()));
+                    }
+                    None
+                })
+                .collect(),
+            None => HashMap::new(),
+        };
+
         Some(CellSnapshot {
             id,
             cell_type,
@@ -1418,6 +1532,7 @@ impl NotebookDoc {
             execution_count,
             outputs,
             metadata,
+            attachments,
         })
     }
 }
@@ -1557,6 +1672,22 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_else(|| serde_json::json!({}));
 
+            // Read attachments map
+            let attachments = match doc.get(&cell_obj, "attachments").ok().flatten() {
+                Some((automerge::Value::Object(ObjType::Map), map_id)) => doc
+                    .map_range(&map_id, ..)
+                    .filter_map(|item| {
+                        if let automerge::ValueRef::Scalar(automerge::ScalarValueRef::Str(hash)) =
+                            item.value
+                        {
+                            return Some((item.key.to_string(), hash.to_string()));
+                        }
+                        None
+                    })
+                    .collect(),
+                _ => HashMap::new(),
+            };
+
             Some(CellSnapshot {
                 id,
                 cell_type,
@@ -1565,6 +1696,7 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
                 execution_count,
                 outputs,
                 metadata,
+                attachments,
             })
         })
         .collect();
