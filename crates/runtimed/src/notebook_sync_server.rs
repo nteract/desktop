@@ -858,25 +858,28 @@ where
         connection::send_json_frame(&mut writer, &caps).await?;
     }
 
+    // Generate peer_id here so it's available for cleanup regardless of
+    // whether the sync loop exits with Ok or Err.
+    let peer_id = uuid::Uuid::new_v4().to_string();
+
     let result = run_sync_loop_v2(
         &mut reader,
         &mut writer,
         &room,
         daemon.clone(),
         needs_load.as_deref(),
+        &peer_id,
     )
     .await;
 
-    // Clean up presence state for this peer
-    if let Ok(ref peer_id) = result {
-        room.presence.write().await.remove_peer(peer_id);
-        // Notify other peers that this peer left
-        let left_bytes = presence::encode_left(peer_id);
-        let _ = room.presence_tx.send((peer_id.clone(), left_bytes));
-    }
-
-    // Map Result<String> (peer_id) to Result<()> for the caller
-    let result = result.map(|_| ());
+    // Always clean up presence on disconnect, whether the sync loop
+    // exited cleanly (Ok) or with an error (Err). The peer_id is always
+    // available because run_sync_loop_v2 returns it as part of the tuple.
+    // remove_peer is a no-op for unknown peers (e.g. error before any
+    // presence was registered).
+    room.presence.write().await.remove_peer(&peer_id);
+    let left_bytes = presence::encode_left(&peer_id);
+    let _ = room.presence_tx.send((peer_id, left_bytes));
 
     // Peer disconnected — decrement and possibly evict the room
     let remaining = room.active_peers.fetch_sub(1, Ordering::Relaxed) - 1;
@@ -965,15 +968,13 @@ async fn run_sync_loop_v2<R, W>(
     room: &NotebookRoom,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
     needs_load: Option<&Path>,
-) -> anyhow::Result<String>
+    peer_id: &str,
+) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     let mut peer_state = sync::State::new();
-
-    // Generate a unique peer ID for this connection.
-    let peer_id = uuid::Uuid::new_v4().to_string();
 
     // Streaming load: add cells in batches and sync after each batch so
     // the frontend renders progressively. This runs before we subscribe
@@ -1052,7 +1053,7 @@ where
     {
         let presence_state = room.presence.read().await;
         if presence_state.peer_count() > 0 {
-            let snapshot_bytes = presence_state.encode_snapshot(&peer_id);
+            let snapshot_bytes = presence_state.encode_snapshot(peer_id);
             connection::send_typed_frame(writer, NotebookFrameType::Presence, &snapshot_bytes)
                 .await?;
         }
@@ -1125,6 +1126,16 @@ where
 
                             NotebookFrameType::Presence => {
                                 // Client sent a presence update (cursor, selection, etc.)
+                                // Reject oversized frames — presence data is small (~20-30 bytes).
+                                if frame.payload.len() > presence::MAX_PRESENCE_FRAME_SIZE {
+                                    warn!(
+                                        "[notebook-sync] Oversized presence frame ({} bytes, max {}), dropping",
+                                        frame.payload.len(),
+                                        presence::MAX_PRESENCE_FRAME_SIZE
+                                    );
+                                    continue;
+                                }
+
                                 // Decode, update room state, relay to other peers.
                                 let now_ms = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
@@ -1136,7 +1147,7 @@ where
                                         // Update the room's presence state (using our known peer_id,
                                         // not the one in the frame — clients don't know their peer_id).
                                         let is_new = room.presence.write().await.update_peer(
-                                            &peer_id,
+                                            peer_id,
                                             presence::PeerType::Wasm,
                                             channel,
                                             data,
@@ -1145,7 +1156,7 @@ where
 
                                         if is_new {
                                             // New peer — send them a snapshot of everyone else
-                                            let snapshot_bytes = room.presence.read().await.encode_snapshot(&peer_id);
+                                            let snapshot_bytes = room.presence.read().await.encode_snapshot(peer_id);
                                             connection::send_typed_frame(
                                                 writer,
                                                 NotebookFrameType::Presence,
@@ -1157,28 +1168,40 @@ where
                                         // Re-encode with the server-assigned peer_id and relay
                                         let relay_bytes = match channel {
                                             presence::Channel::Cursor => {
-                                                if let Some(peer) = room.presence.read().await.get_peer(&peer_id) {
+                                                if let Some(peer) = room.presence.read().await.get_peer(peer_id) {
                                                     if let Some(presence::ChannelData::Cursor(ref c)) = peer.channels.get(&presence::Channel::Cursor) {
-                                                        Some(presence::encode_cursor_update(&peer_id, c))
+                                                        Some(presence::encode_cursor_update(peer_id, c))
                                                     } else { None }
                                                 } else { None }
                                             }
                                             presence::Channel::Selection => {
-                                                if let Some(peer) = room.presence.read().await.get_peer(&peer_id) {
+                                                if let Some(peer) = room.presence.read().await.get_peer(peer_id) {
                                                     if let Some(presence::ChannelData::Selection(ref s)) = peer.channels.get(&presence::Channel::Selection) {
-                                                        Some(presence::encode_selection_update(&peer_id, s))
+                                                        Some(presence::encode_selection_update(peer_id, s))
                                                     } else { None }
                                                 } else { None }
                                             }
-                                            _ => Some(frame.payload.clone()),
+                                            presence::Channel::KernelState => {
+                                                // Clients should not publish kernel state — daemon-only
+                                                warn!("[notebook-sync] Client tried to publish KernelState presence, ignoring");
+                                                None
+                                            }
+                                            presence::Channel::Custom => {
+                                                // Re-encode with server-assigned peer_id to prevent spoofing
+                                                if let Some(peer) = room.presence.read().await.get_peer(peer_id) {
+                                                    if let Some(presence::ChannelData::Custom(ref bytes)) = peer.channels.get(&presence::Channel::Custom) {
+                                                        Some(presence::encode_custom_update(peer_id, bytes))
+                                                    } else { None }
+                                                } else { None }
+                                            }
                                         };
 
                                         if let Some(bytes) = relay_bytes {
-                                            let _ = room.presence_tx.send((peer_id.clone(), bytes));
+                                            let _ = room.presence_tx.send((peer_id.to_string(), bytes));
                                         }
                                     }
                                     Ok(presence::PresenceMessage::Heartbeat { .. }) => {
-                                        room.presence.write().await.mark_seen(&peer_id, now_ms);
+                                        room.presence.write().await.mark_seen(peer_id, now_ms);
                                     }
                                     Ok(_) => {
                                         // Snapshot/Left from a client — ignore
@@ -1203,7 +1226,7 @@ where
                     }
                     None => {
                         // Client disconnected
-                        return Ok(peer_id);
+                        return Ok(());
                     }
                 }
             }
@@ -1230,13 +1253,13 @@ where
             // Presence update from another peer — forward to this client
             result = presence_rx.recv() => {
                 match result {
-                    Ok((sender_peer_id, bytes)) => {
+                    Ok((ref sender_peer_id, ref bytes)) => {
                         // Don't echo back to the sender
                         if sender_peer_id != peer_id {
                             connection::send_typed_frame(
                                 writer,
                                 NotebookFrameType::Presence,
-                                &bytes,
+                                bytes,
                             )
                             .await?;
                         }
@@ -1247,7 +1270,7 @@ where
                             "[notebook-sync] Peer {} lagged {} presence updates, sending snapshot",
                             peer_id, n
                         );
-                        let snapshot_bytes = room.presence.read().await.encode_snapshot(&peer_id);
+                        let snapshot_bytes = room.presence.read().await.encode_snapshot(peer_id);
                         connection::send_typed_frame(
                             writer,
                             NotebookFrameType::Presence,
@@ -1257,7 +1280,7 @@ where
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         // Presence channel closed — room is being evicted
-                        return Ok(peer_id);
+                        return Ok(());
                     }
                 }
             }
@@ -1298,7 +1321,7 @@ where
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         // Broadcast channel closed — room is being evicted
-                        return Ok(peer_id);
+                        return Ok(());
                     }
                 }
             }

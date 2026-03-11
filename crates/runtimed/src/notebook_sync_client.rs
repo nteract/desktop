@@ -1196,7 +1196,7 @@ where
                         warn!("[notebook-sync-client] Unexpected Response frame during init");
                     }
                     NotebookFrameType::Presence => {
-                        // Ignore presence frames during init — we'll handle them in the main loop
+                        // Presence frames are currently unsupported in this client; ignore during init.
                     }
                     NotebookFrameType::Request => {
                         warn!("[notebook-sync-client] Unexpected Request frame during init");
@@ -1481,7 +1481,7 @@ where
                         warn!("[notebook-sync-client] Unexpected Response frame during init");
                     }
                     NotebookFrameType::Presence => {
-                        // Ignore presence frames during initial sync
+                        // Presence frames are currently unsupported in this client; ignore during initial sync.
                     }
                     NotebookFrameType::Request => {
                         warn!("[notebook-sync-client] Unexpected Request frame during init");

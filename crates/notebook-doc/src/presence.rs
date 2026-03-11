@@ -47,6 +47,11 @@ pub const DEFAULT_HEARTBEAT_MS: u64 = 15_000;
 /// Default peer TTL in milliseconds (3× heartbeat = 45 seconds).
 pub const DEFAULT_PEER_TTL_MS: u64 = 3 * DEFAULT_HEARTBEAT_MS;
 
+/// Maximum size for a presence frame payload (4 KiB).
+/// Presence data is small (cursor ~18 bytes, selection ~26 bytes).
+/// Anything larger is likely malformed or malicious.
+pub const MAX_PRESENCE_FRAME_SIZE: usize = 4 * 1024;
+
 // ── Message types ────────────────────────────────────────────────────
 
 /// Top-level presence message type byte.
@@ -690,6 +695,12 @@ fn write_u16(buf: &mut Vec<u8>, val: u16) {
 }
 
 fn write_str(buf: &mut Vec<u8>, s: &str) {
+    assert!(
+        s.len() <= u16::MAX as usize,
+        "presence wire format error: string length {} exceeds u16 max ({})",
+        s.len(),
+        u16::MAX
+    );
     write_u16(buf, s.len() as u16);
     buf.extend_from_slice(s.as_bytes());
 }
