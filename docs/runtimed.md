@@ -189,18 +189,24 @@ Each open notebook gets a "room" in the daemon. Multiple windows editing the sam
 
 ```
 ROOT/
+  schema_version: u64           <- Document schema version (2 = fractional-indexed map cells)
   notebook_id: Str
-  cells/                        <- List of Map
-    [i]/
-      id: Str                   <- cell UUID
+  cells/                        <- Map keyed by cell ID (O(1) lookup)
+    {cell_id}/
+      id: Str                   <- cell UUID (redundant but convenient)
       cell_type: Str            <- "code" | "markdown" | "raw"
+      position: Str             <- Fractional index hex string for ordering
       source: Text              <- Automerge Text CRDT (character-level merging)
       execution_count: Str      <- JSON-encoded i32 or "null"
-      outputs/                  <- List of Str (Phase 6 changes these to manifest hashes)
-        [j]: Str                <- JSON-encoded Jupyter output
-  metadata/
+      outputs/                  <- List of Str
+        [j]: Str                <- JSON-encoded Jupyter output (manifest hash)
+      metadata: Str             <- JSON-encoded cell metadata object
+  metadata/                     <- Map
     runtime: Str
+    notebook_metadata: Str      <- JSON-encoded NotebookMetadataSnapshot
 ```
+
+Cell ordering uses fractional indexing via the `position` field. Cells are sorted lexicographically by `position`, with `cell_id` as a tiebreaker for the (rare) case where two cells receive the same fractional index.
 
 **Design decisions**:
 - Cell `source` uses `ObjType::Text` for proper concurrent edit merging. `update_source()` uses Automerge's `update_text()` (Myers diff internally) for efficient character-level patches.
@@ -337,6 +343,10 @@ All daemon communication goes through a single multiplexed socket with channel-b
 
 One socket: `~/.cache/runt/runtimed.sock`
 
+Every connection begins with a 5-byte preamble: 4-byte magic (`0xC0DE01AC`) + 1-byte protocol version. The daemon validates both before reading the handshake frame.
+
+After the preamble, all frames use length-prefixed framing:
+
 ```
 [4 bytes: payload length (big-endian u32)] [payload bytes]
 ```
@@ -355,7 +365,7 @@ pub enum Handshake {
 }
 ```
 
-The daemon's `route_connection()` reads the handshake via `recv_control_frame()` and dispatches:
+The daemon's `route_connection()` validates the preamble first via `recv_preamble()`, then reads the handshake via `recv_control_frame()` and dispatches:
 
 | Channel | After handshake | Lifetime |
 |---------|----------------|----------|
@@ -586,7 +596,7 @@ Manifests are themselves blobs (media type `application/x-jupyter-output+json`),
 Outputs change from JSON strings to manifest hashes:
 
 ```
-cell/
+cells/{cell_id}/
   outputs/           <- List of Str
     [0]: Str         <- output manifest hash (e.g. "a1b2c3d4...")
 ```
@@ -817,7 +827,7 @@ If latency becomes an issue during rapid output bursts (e.g., training loops), t
 
 ### Schema versioning: lightweight, not a framework
 
-Add a `schema_version: Str` field to the notebook doc root (`"1"` for Phase 5, `"2"` when Phase 6 changes outputs to manifest hashes). The reader checks this on load and handles both versions with simple branching. No formal migration framework — the schema is simple enough that version-checking `if` branches suffice. This mirrors how settings doc migration already works (flat keys -> nested structure).
+The notebook doc root contains a `schema_version: u64` field. Version 1 stored cells as an ordered `List`; version 2 stores cells as a `Map` with fractional indexing (see Phase 2 schema above). The v1→v2 migration is automatic on load via `migrate_v1_to_v2()`. The reader checks this on load and handles both versions with simple branching. No formal migration framework — the schema is simple enough that version-checking `if` branches suffice. This mirrors how settings doc migration already works (flat keys -> nested structure).
 
 For output manifests, the `output_type` field provides structural versioning. New fields can be added without breaking old readers.
 

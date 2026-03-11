@@ -182,7 +182,7 @@ pub struct ProtocolCapabilities {
     /// Clients can compare this against their expected version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_version: Option<u32>,
-    /// Daemon version string (e.g., "0.1.0-dev.10+abc123").
+    /// Daemon version string (e.g., "2.0.0+abc123").
     /// Useful for debugging version mismatches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daemon_version: Option<String>,
@@ -199,7 +199,7 @@ pub struct NotebookConnectionInfo {
     /// Numeric protocol version for explicit version checking.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_version: Option<u32>,
-    /// Daemon version string (e.g., "0.1.0-dev.10+abc123").
+    /// Daemon version string (e.g., "2.0.0+abc123").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daemon_version: Option<String>,
     /// Notebook identifier derived by the daemon.
