@@ -373,6 +373,9 @@ export function OutputArea({
       });
     }
 
+    // Ensure theme is in sync before re-rendering (fixes theme drift after cell moves)
+    frameRef.current.setTheme(darkMode);
+
     // Clear existing content
     frameRef.current.clear();
 
@@ -425,7 +428,7 @@ export function OutputArea({
     if (searchQueryRef.current) {
       frameRef.current?.search(searchQueryRef.current);
     }
-  }, [outputs, priority, shouldUseBridge, widgetContext]);
+  }, [outputs, priority, shouldUseBridge, widgetContext, darkMode]);
 
   // Clean up bridge on unmount
   useEffect(() => {
