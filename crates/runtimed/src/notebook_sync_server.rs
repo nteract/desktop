@@ -1956,6 +1956,15 @@ async fn handle_notebook_request(
                 match doc.get_cell(&cell_id) {
                     Some(c) => (c.source, c.cell_type),
                     None => {
+                        let cells = doc.get_cells();
+                        let cell_ids: Vec<&str> = cells.iter().map(|c| c.id.as_str()).collect();
+                        warn!(
+                            "[notebook-sync] ExecuteCell: cell {} not found in document \
+                             (doc has {} cells: {:?})",
+                            cell_id,
+                            cells.len(),
+                            cell_ids,
+                        );
                         return NotebookResponse::Error {
                             error: format!("Cell not found in document: {}", cell_id),
                         };

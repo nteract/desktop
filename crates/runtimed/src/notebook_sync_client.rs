@@ -2048,26 +2048,51 @@ where
             connection::send_typed_frame(&mut self.stream, NotebookFrameType::AutomergeSync, &data)
                 .await?;
 
-            match tokio::time::timeout(
-                Duration::from_millis(500),
-                connection::recv_typed_frame(&mut self.stream),
-            )
-            .await
-            {
-                Ok(Ok(Some(frame))) => {
-                    // Only handle AutomergeSync frames; ignore broadcasts
-                    if frame.frame_type == NotebookFrameType::AutomergeSync {
-                        let message = sync::Message::decode(&frame.payload)
-                            .map_err(|e| NotebookSyncError::SyncError(format!("decode: {}", e)))?;
-                        self.doc
-                            .sync()
-                            .receive_sync_message(&mut self.peer_state, message)
-                            .map_err(|e| NotebookSyncError::SyncError(format!("receive: {}", e)))?;
-                    }
+            // Loop until we receive the AutomergeSync ack or the deadline
+            // expires. Previous code read exactly one frame, so a Broadcast
+            // arriving before the ack would be silently dropped and the ack
+            // left unprocessed in the buffer — leaving peer_state stale.
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+            loop {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    break; // Timeout — server had nothing to send back
                 }
-                Ok(Ok(None)) => return Err(NotebookSyncError::Disconnected),
-                Ok(Err(e)) => return Err(NotebookSyncError::ConnectionFailed(e)),
-                Err(_) => {} // Timeout — server had nothing to send back
+
+                match tokio::time::timeout(
+                    remaining,
+                    connection::recv_typed_frame(&mut self.stream),
+                )
+                .await
+                {
+                    Ok(Ok(Some(frame))) => {
+                        if frame.frame_type == NotebookFrameType::AutomergeSync {
+                            let message = sync::Message::decode(&frame.payload).map_err(|e| {
+                                NotebookSyncError::SyncError(format!("decode: {}", e))
+                            })?;
+                            self.doc
+                                .sync()
+                                .receive_sync_message(&mut self.peer_state, message)
+                                .map_err(|e| {
+                                    NotebookSyncError::SyncError(format!("receive: {}", e))
+                                })?;
+                            break; // Got the ack
+                        }
+                        // Queue non-ack frames (broadcasts) for later delivery
+                        // instead of silently dropping them.
+                        if frame.frame_type == NotebookFrameType::Broadcast {
+                            if let Ok(broadcast) =
+                                serde_json::from_slice::<NotebookBroadcast>(&frame.payload)
+                            {
+                                self.pending_broadcasts.push(broadcast);
+                            }
+                        }
+                        // Continue looping to find the ack
+                    }
+                    Ok(Ok(None)) => return Err(NotebookSyncError::Disconnected),
+                    Ok(Err(e)) => return Err(NotebookSyncError::ConnectionFailed(e)),
+                    Err(_) => break, // Timeout — server had nothing to send back
+                }
             }
         }
         Ok(())
