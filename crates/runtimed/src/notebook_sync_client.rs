@@ -905,6 +905,11 @@ where
         working_dir: Option<PathBuf>,
         initial_metadata: Option<String>,
     ) -> Result<Self, NotebookSyncError> {
+        // Send preamble (magic bytes + protocol version)
+        connection::send_preamble(&mut stream)
+            .await
+            .map_err(|e| NotebookSyncError::SyncError(format!("preamble: {}", e)))?;
+
         // Send the channel handshake, requesting v2 protocol
         connection::send_json_frame(
             &mut stream,
@@ -1072,6 +1077,11 @@ where
         let path_str = path.to_string_lossy().to_string();
         info!("[notebook-sync-client] Opening notebook: {}", path_str);
 
+        // Send preamble (magic bytes + protocol version)
+        connection::send_preamble(&mut stream)
+            .await
+            .map_err(|e| NotebookSyncError::SyncError(format!("preamble: {}", e)))?;
+
         // Send OpenNotebook handshake
         connection::send_json_frame(&mut stream, &Handshake::OpenNotebook { path: path_str })
             .await
@@ -1151,6 +1161,11 @@ where
             "[notebook-sync-client] Creating new notebook (runtime: {}, working_dir: {:?}, notebook_id: {:?})",
             runtime, working_dir, notebook_id
         );
+
+        // Send preamble (magic bytes + protocol version)
+        connection::send_preamble(&mut stream)
+            .await
+            .map_err(|e| NotebookSyncError::SyncError(format!("preamble: {}", e)))?;
 
         // Send CreateNotebook handshake
         connection::send_json_frame(

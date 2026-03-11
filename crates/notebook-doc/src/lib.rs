@@ -13,6 +13,7 @@
 //!
 //! ```text
 //! ROOT/
+//!   schema_version: u64           ← Document schema version (1 = ordered list cells)
 //!   notebook_id: Str
 //!   cells/                        ← List of Map
 //!     [i]/
@@ -28,6 +29,14 @@
 //! ```
 
 pub mod metadata;
+
+/// Current document schema version.
+///
+/// Bump this when making incompatible changes to the Automerge document
+/// structure (e.g., switching cells from an ordered list to a fractional-indexed map).
+///
+/// - **1** — Original schema: `cells` is an ordered `List` of `Map`.
+pub const SCHEMA_VERSION: u64 = 1;
 
 use automerge::sync;
 use automerge::sync::SyncDoc;
@@ -202,6 +211,7 @@ impl NotebookDoc {
     pub fn new(notebook_id: &str) -> Self {
         let mut doc = AutoCommit::new();
 
+        let _ = doc.put(automerge::ROOT, "schema_version", SCHEMA_VERSION);
         let _ = doc.put(automerge::ROOT, "notebook_id", notebook_id);
 
         // cells: empty List
@@ -213,6 +223,21 @@ impl NotebookDoc {
         }
 
         Self { doc }
+    }
+
+    /// Read the schema version from the document, if present.
+    ///
+    /// Returns `None` for documents created before schema versioning was added.
+    /// Callers can treat `None` as schema version 1 (the original format).
+    pub fn schema_version(&self) -> Option<u64> {
+        match self.doc.get(automerge::ROOT, "schema_version").ok()?? {
+            (automerge::Value::Scalar(s), _) => match s.as_ref() {
+                automerge::ScalarValue::Uint(v) => Some(*v),
+                automerge::ScalarValue::Int(v) => Some(*v as u64),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// Create a document with zero operations for sync-only bootstrap.

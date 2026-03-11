@@ -884,20 +884,26 @@ impl Daemon {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        // Read the handshake with the control frame limit (64 KiB) and a
-        // timeout so that idle/stalled connections don't hold resources.
-        let handshake_bytes = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            connection::recv_control_frame(&mut stream),
-        )
+        // Read preamble + handshake with a timeout so that idle/stalled
+        // connections don't hold resources.
+        let handshake_bytes = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            // Validate magic bytes + protocol version
+            connection::recv_preamble(&mut stream)
+                .await
+                .map_err(|e| anyhow::anyhow!("preamble: {}", e))?;
+
+            // Read the JSON handshake frame
+            connection::recv_control_frame(&mut stream)
+                .await
+                .context("handshake read error")?
+                .ok_or_else(|| anyhow::anyhow!("connection closed before handshake"))
+        })
         .await
-        .map_err(|_| anyhow::anyhow!("handshake timeout (10s)"))?
-        .context("handshake read error")?
-        .ok_or_else(|| anyhow::anyhow!("connection closed before handshake"))?;
+        .map_err(|_| anyhow::anyhow!("handshake timeout (10s)"))??;
         let handshake: Handshake = serde_json::from_slice(&handshake_bytes)?;
 
         match handshake {
-            Handshake::Pool { .. } => self.handle_pool_connection(stream).await,
+            Handshake::Pool => self.handle_pool_connection(stream).await,
             Handshake::SettingsSync => {
                 let (reader, writer) = tokio::io::split(stream);
                 let changed_tx = self.settings_changed.clone();

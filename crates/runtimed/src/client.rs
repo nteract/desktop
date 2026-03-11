@@ -301,15 +301,15 @@ impl PoolClient {
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
+        // Send preamble (magic bytes + protocol version)
+        connection::send_preamble(&mut stream)
+            .await
+            .map_err(|e| ClientError::ProtocolError(format!("preamble: {}", e)))?;
+
         // Send the channel handshake
-        connection::send_json_frame(
-            &mut stream,
-            &Handshake::Pool {
-                protocol_version: Some(connection::PROTOCOL_VERSION),
-            },
-        )
-        .await
-        .map_err(|e| ClientError::ProtocolError(format!("handshake: {}", e)))?;
+        connection::send_json_frame(&mut stream, &Handshake::Pool)
+            .await
+            .map_err(|e| ClientError::ProtocolError(format!("handshake: {}", e)))?;
 
         // Send the request as a framed JSON message
         connection::send_json_frame(&mut stream, &request)
@@ -664,8 +664,11 @@ pub async fn subscribe_pool_state(
         }
     };
 
-    // Send the handshake
+    // Send preamble + handshake
     let mut stream = stream;
+    connection::send_preamble(&mut stream)
+        .await
+        .map_err(|e| ClientError::ProtocolError(format!("preamble: {}", e)))?;
     connection::send_json_frame(&mut stream, &Handshake::PoolStateSubscribe)
         .await
         .map_err(|e| ClientError::ProtocolError(format!("handshake: {}", e)))?;

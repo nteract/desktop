@@ -112,6 +112,11 @@ where
     /// Initialize the client by sending the handshake and performing
     /// the initial sync exchange.
     async fn init(mut stream: S) -> Result<Self, SyncClientError> {
+        // Send preamble (magic bytes + protocol version)
+        connection::send_preamble(&mut stream)
+            .await
+            .map_err(|e| SyncClientError::SyncError(format!("preamble: {}", e)))?;
+
         // Send the channel handshake so the daemon routes us to settings sync
         connection::send_json_frame(&mut stream, &Handshake::SettingsSync)
             .await
