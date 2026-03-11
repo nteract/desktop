@@ -5,22 +5,23 @@
  * A cell snapshot returned to JavaScript.
  */
 export class JsCell {
-    private constructor();
-    free(): void;
-    [Symbol.dispose](): void;
-    readonly index: number;
-    readonly cell_type: string;
-    readonly execution_count: string;
-    readonly id: string;
-    /**
-     * Get metadata as a JSON object string.
-     */
-    readonly metadata_json: string;
-    /**
-     * Get outputs as a JSON array string.
-     */
-    readonly outputs_json: string;
-    readonly source: string;
+  private constructor();
+  free(): void;
+  [Symbol.dispose](): void;
+  readonly index: number;
+  readonly cell_type: string;
+  readonly execution_count: string;
+  readonly id: string;
+  readonly position: string;
+  /**
+   * Get metadata as a JSON object string.
+   */
+  readonly metadata_json: string;
+  /**
+   * Get outputs as a JSON array string.
+   */
+  readonly outputs_json: string;
+  readonly source: string;
 }
 
 /**
@@ -32,187 +33,294 @@ export class JsCell {
  * frontend re-reads cells to update React state.
  */
 export class NotebookHandle {
-    free(): void;
-    [Symbol.dispose](): void;
-    /**
-     * Add a new cell at the given index.
-     */
-    add_cell(index: number, cell_id: string, cell_type: string): void;
-    /**
-     * Add a Conda dependency, deduplicating by package name (case-insensitive).
-     * Initializes the Conda section with ["conda-forge"] channels if absent.
-     */
-    add_conda_dependency(pkg: string): void;
-    /**
-     * Add a UV dependency, deduplicating by package name (case-insensitive).
-     * Initializes the UV section if absent, preserving existing fields.
-     */
-    add_uv_dependency(pkg: string): void;
-    /**
-     * Append text to a cell's source (optimized for streaming, no diff).
-     */
-    append_source(cell_id: string, text: string): boolean;
-    /**
-     * Get the number of cells in the document.
-     */
-    cell_count(): number;
-    /**
-     * Clear the Conda section entirely.
-     */
-    clear_conda_section(): void;
-    /**
-     * Clear the UV section entirely (deps + requires-python).
-     */
-    clear_uv_section(): void;
-    /**
-     * Create a handle with an empty Automerge doc (zero operations) for
-     * sync-only bootstrap.  The sync protocol populates the doc from the
-     * daemon — no `GetDocBytes` needed.
-     */
-    static create_empty(): NotebookHandle;
-    /**
-     * Delete a cell by ID. Returns true if the cell was found and deleted.
-     */
-    delete_cell(cell_id: string): boolean;
-    /**
-     * Detect the notebook runtime from kernelspec/language_info metadata.
-     *
-     * Returns "python", "deno", or undefined for unknown runtimes.
-     */
-    detect_runtime(): string | undefined;
-    /**
-     * Generate a sync message to send to the daemon (via the Tauri relay pipe).
-     *
-     * Returns the message as a byte array, or undefined if already in sync.
-     * The caller should send these bytes via `invoke("send_automerge_sync", { syncMessage })`.
-     */
-    generate_sync_message(): Uint8Array | undefined;
-    /**
-     * Get a single cell by ID, or null if not found.
-     */
-    get_cell(cell_id: string): JsCell | undefined;
-    /**
-     * Get all cells as an array of JsCell objects.
-     */
-    get_cells(): JsCell[];
-    /**
-     * Get all cells as a JSON string (for bulk materialization).
-     */
-    get_cells_json(): string;
-    /**
-     * Get a metadata value by key.
-     */
-    get_metadata(key: string): string | undefined;
-    /**
-     * Get the full typed metadata as a JSON string.
-     *
-     * Returns the `NotebookMetadataSnapshot` serialized as JSON, or undefined
-     * if no metadata is set. The frontend can parse this with a shared TS interface.
-     */
-    get_metadata_snapshot_json(): string | undefined;
-    /**
-     * Load a notebook document from saved bytes (e.g., from get_automerge_doc_bytes).
-     */
-    static load(bytes: Uint8Array): NotebookHandle;
-    /**
-     * Create a new empty notebook document.
-     */
-    constructor(notebook_id: string);
-    /**
-     * Receive and apply a sync message from the daemon (via the Tauri relay pipe).
-     *
-     * Returns true if the document changed (caller should re-read cells).
-     */
-    receive_sync_message(message: Uint8Array): boolean;
-    /**
-     * Remove a Conda dependency by package name (case-insensitive).
-     * Returns true if a dependency was removed.
-     */
-    remove_conda_dependency(pkg: string): boolean;
-    /**
-     * Remove a UV dependency by package name (case-insensitive).
-     * Returns true if a dependency was removed.
-     */
-    remove_uv_dependency(pkg: string): boolean;
-    /**
-     * Reset the sync state. Call this when reconnecting to a new daemon session.
-     */
-    reset_sync_state(): void;
-    /**
-     * Export the full document as bytes (for debugging or persistence).
-     */
-    save(): Uint8Array;
-    /**
-     * Set Conda channels, preserving deps and python.
-     * Accepts a JSON array string (e.g. `'["conda-forge","bioconda"]'`).
-     */
-    set_conda_channels(channels_json: string): void;
-    /**
-     * Set Conda python version, preserving deps and channels.
-     * Pass undefined/null to clear the constraint.
-     */
-    set_conda_python(python?: string | null): void;
-    /**
-     * Set a metadata value.
-     */
-    set_metadata(key: string, value: string): void;
-    /**
-     * Set UV requires-python constraint, preserving deps.
-     * Pass undefined/null to clear the constraint.
-     */
-    set_uv_requires_python(requires_python?: string | null): void;
-    /**
-     * Update a cell's source text using Automerge Text CRDT (Myers diff).
-     */
-    update_source(cell_id: string, source: string): boolean;
+  free(): void;
+  [Symbol.dispose](): void;
+  /**
+   * Add a new cell at the given index.
+   * Internally converts the index to a fractional position.
+   */
+  add_cell(index: number, cell_id: string, cell_type: string): void;
+  /**
+   * Add a new cell after the given cell ID (or at the start if null).
+   * Returns the fractional position string of the new cell.
+   */
+  add_cell_after(
+    cell_id: string,
+    cell_type: string,
+    after_cell_id?: string | null,
+  ): string;
+  /**
+   * Move a cell to a new position after the given cell ID (or to the start if null).
+   * Returns the new fractional position string.
+   */
+  move_cell(cell_id: string, after_cell_id?: string | null): string;
+  /**
+   * Add a Conda dependency, deduplicating by package name (case-insensitive).
+   * Initializes the Conda section with ["conda-forge"] channels if absent.
+   */
+  add_conda_dependency(pkg: string): void;
+  /**
+   * Add a UV dependency, deduplicating by package name (case-insensitive).
+   * Initializes the UV section if absent, preserving existing fields.
+   */
+  add_uv_dependency(pkg: string): void;
+  /**
+   * Append text to a cell's source (optimized for streaming, no diff).
+   */
+  append_source(cell_id: string, text: string): boolean;
+  /**
+   * Get the number of cells in the document.
+   */
+  cell_count(): number;
+  /**
+   * Clear the Conda section entirely.
+   */
+  clear_conda_section(): void;
+  /**
+   * Clear the UV section entirely (deps + requires-python).
+   */
+  clear_uv_section(): void;
+  /**
+   * Create a handle with an empty Automerge doc (zero operations) for
+   * sync-only bootstrap.  The sync protocol populates the doc from the
+   * daemon — no `GetDocBytes` needed.
+   */
+  static create_empty(): NotebookHandle;
+  /**
+   * Delete a cell by ID. Returns true if the cell was found and deleted.
+   */
+  delete_cell(cell_id: string): boolean;
+  /**
+   * Detect the notebook runtime from kernelspec/language_info metadata.
+   *
+   * Returns "python", "deno", or undefined for unknown runtimes.
+   */
+  detect_runtime(): string | undefined;
+  /**
+   * Generate a sync message to send to the daemon (via the Tauri relay pipe).
+   *
+   * Returns the message as a byte array, or undefined if already in sync.
+   * The caller should send these bytes via `invoke("send_automerge_sync", { syncMessage })`.
+   */
+  generate_sync_message(): Uint8Array | undefined;
+  /**
+   * Get a single cell by ID, or null if not found.
+   */
+  get_cell(cell_id: string): JsCell | undefined;
+  /**
+   * Get all cells as an array of JsCell objects.
+   */
+  get_cells(): JsCell[];
+  /**
+   * Get all cells as a JSON string (for bulk materialization).
+   */
+  get_cells_json(): string;
+  /**
+   * Get a metadata value by key.
+   */
+  get_metadata(key: string): string | undefined;
+  /**
+   * Get the full typed metadata as a JSON string.
+   *
+   * Returns the `NotebookMetadataSnapshot` serialized as JSON, or undefined
+   * if no metadata is set. The frontend can parse this with a shared TS interface.
+   */
+  get_metadata_snapshot_json(): string | undefined;
+  /**
+   * Load a notebook document from saved bytes (e.g., from get_automerge_doc_bytes).
+   */
+  static load(bytes: Uint8Array): NotebookHandle;
+  /**
+   * Create a new empty notebook document.
+   */
+  constructor(notebook_id: string);
+  /**
+   * Receive and apply a sync message from the daemon (via the Tauri relay pipe).
+   *
+   * Returns true if the document changed (caller should re-read cells).
+   */
+  receive_sync_message(message: Uint8Array): boolean;
+  /**
+   * Remove a Conda dependency by package name (case-insensitive).
+   * Returns true if a dependency was removed.
+   */
+  remove_conda_dependency(pkg: string): boolean;
+  /**
+   * Remove a UV dependency by package name (case-insensitive).
+   * Returns true if a dependency was removed.
+   */
+  remove_uv_dependency(pkg: string): boolean;
+  /**
+   * Reset the sync state. Call this when reconnecting to a new daemon session.
+   */
+  reset_sync_state(): void;
+  /**
+   * Export the full document as bytes (for debugging or persistence).
+   */
+  save(): Uint8Array;
+  /**
+   * Set Conda channels, preserving deps and python.
+   * Accepts a JSON array string (e.g. `'["conda-forge","bioconda"]'`).
+   */
+  set_conda_channels(channels_json: string): void;
+  /**
+   * Set Conda python version, preserving deps and channels.
+   * Pass undefined/null to clear the constraint.
+   */
+  set_conda_python(python?: string | null): void;
+  /**
+   * Set a metadata value.
+   */
+  set_metadata(key: string, value: string): void;
+  /**
+   * Set UV requires-python constraint, preserving deps.
+   * Pass undefined/null to clear the constraint.
+   */
+  set_uv_requires_python(requires_python?: string | null): void;
+  /**
+   * Update a cell's source text using Automerge Text CRDT (Myers diff).
+   */
+  update_source(cell_id: string, source: string): boolean;
 }
 
-export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
+export type InitInput =
+  | RequestInfo
+  | URL
+  | Response
+  | BufferSource
+  | WebAssembly.Module;
 
 export interface InitOutput {
-    readonly memory: WebAssembly.Memory;
-    readonly __wbg_notebookhandle_free: (a: number, b: number) => void;
-    readonly __wbg_jscell_free: (a: number, b: number) => void;
-    readonly __wbg_get_jscell_index: (a: number) => number;
-    readonly jscell_id: (a: number, b: number) => void;
-    readonly jscell_cell_type: (a: number, b: number) => void;
-    readonly jscell_source: (a: number, b: number) => void;
-    readonly jscell_execution_count: (a: number, b: number) => void;
-    readonly jscell_outputs_json: (a: number, b: number) => void;
-    readonly jscell_metadata_json: (a: number, b: number) => void;
-    readonly notebookhandle_new: (a: number, b: number) => number;
-    readonly notebookhandle_create_empty: () => number;
-    readonly notebookhandle_load: (a: number, b: number, c: number) => void;
-    readonly notebookhandle_cell_count: (a: number) => number;
-    readonly notebookhandle_get_cells: (a: number, b: number) => void;
-    readonly notebookhandle_get_cells_json: (a: number, b: number) => void;
-    readonly notebookhandle_get_cell: (a: number, b: number, c: number) => number;
-    readonly notebookhandle_add_cell: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
-    readonly notebookhandle_delete_cell: (a: number, b: number, c: number, d: number) => void;
-    readonly notebookhandle_update_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
-    readonly notebookhandle_append_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
-    readonly notebookhandle_get_metadata: (a: number, b: number, c: number, d: number) => void;
-    readonly notebookhandle_get_metadata_snapshot_json: (a: number, b: number) => void;
-    readonly notebookhandle_detect_runtime: (a: number, b: number) => void;
-    readonly notebookhandle_set_metadata: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
-    readonly notebookhandle_add_uv_dependency: (a: number, b: number, c: number, d: number) => void;
-    readonly notebookhandle_remove_uv_dependency: (a: number, b: number, c: number, d: number) => void;
-    readonly notebookhandle_clear_uv_section: (a: number, b: number) => void;
-    readonly notebookhandle_set_uv_requires_python: (a: number, b: number, c: number, d: number) => void;
-    readonly notebookhandle_add_conda_dependency: (a: number, b: number, c: number, d: number) => void;
-    readonly notebookhandle_remove_conda_dependency: (a: number, b: number, c: number, d: number) => void;
-    readonly notebookhandle_clear_conda_section: (a: number, b: number) => void;
-    readonly notebookhandle_set_conda_channels: (a: number, b: number, c: number, d: number) => void;
-    readonly notebookhandle_set_conda_python: (a: number, b: number, c: number, d: number) => void;
-    readonly notebookhandle_generate_sync_message: (a: number, b: number) => void;
-    readonly notebookhandle_receive_sync_message: (a: number, b: number, c: number, d: number) => void;
-    readonly notebookhandle_save: (a: number, b: number) => void;
-    readonly notebookhandle_reset_sync_state: (a: number) => void;
-    readonly __wbindgen_export: (a: number) => void;
-    readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
-    readonly __wbindgen_export2: (a: number, b: number, c: number) => void;
-    readonly __wbindgen_export3: (a: number, b: number) => number;
-    readonly __wbindgen_export4: (a: number, b: number, c: number, d: number) => number;
+  readonly memory: WebAssembly.Memory;
+  readonly __wbg_notebookhandle_free: (a: number, b: number) => void;
+  readonly __wbg_jscell_free: (a: number, b: number) => void;
+  readonly __wbg_get_jscell_index: (a: number) => number;
+  readonly jscell_id: (a: number, b: number) => void;
+  readonly jscell_cell_type: (a: number, b: number) => void;
+  readonly jscell_source: (a: number, b: number) => void;
+  readonly jscell_execution_count: (a: number, b: number) => void;
+  readonly jscell_outputs_json: (a: number, b: number) => void;
+  readonly jscell_metadata_json: (a: number, b: number) => void;
+  readonly notebookhandle_new: (a: number, b: number) => number;
+  readonly notebookhandle_create_empty: () => number;
+  readonly notebookhandle_load: (a: number, b: number, c: number) => void;
+  readonly notebookhandle_cell_count: (a: number) => number;
+  readonly notebookhandle_get_cells: (a: number, b: number) => void;
+  readonly notebookhandle_get_cells_json: (a: number, b: number) => void;
+  readonly notebookhandle_get_cell: (a: number, b: number, c: number) => number;
+  readonly notebookhandle_add_cell: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+    g: number,
+  ) => void;
+  readonly notebookhandle_delete_cell: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+  ) => void;
+  readonly notebookhandle_update_source: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+  ) => void;
+  readonly notebookhandle_append_source: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+  ) => void;
+  readonly notebookhandle_get_metadata: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+  ) => void;
+  readonly notebookhandle_get_metadata_snapshot_json: (
+    a: number,
+    b: number,
+  ) => void;
+  readonly notebookhandle_detect_runtime: (a: number, b: number) => void;
+  readonly notebookhandle_set_metadata: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+    e: number,
+    f: number,
+  ) => void;
+  readonly notebookhandle_add_uv_dependency: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+  ) => void;
+  readonly notebookhandle_remove_uv_dependency: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+  ) => void;
+  readonly notebookhandle_clear_uv_section: (a: number, b: number) => void;
+  readonly notebookhandle_set_uv_requires_python: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+  ) => void;
+  readonly notebookhandle_add_conda_dependency: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+  ) => void;
+  readonly notebookhandle_remove_conda_dependency: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+  ) => void;
+  readonly notebookhandle_clear_conda_section: (a: number, b: number) => void;
+  readonly notebookhandle_set_conda_channels: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+  ) => void;
+  readonly notebookhandle_set_conda_python: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+  ) => void;
+  readonly notebookhandle_generate_sync_message: (a: number, b: number) => void;
+  readonly notebookhandle_receive_sync_message: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+  ) => void;
+  readonly notebookhandle_save: (a: number, b: number) => void;
+  readonly notebookhandle_reset_sync_state: (a: number) => void;
+  readonly __wbindgen_export: (a: number) => void;
+  readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
+  readonly __wbindgen_export2: (a: number, b: number, c: number) => void;
+  readonly __wbindgen_export3: (a: number, b: number) => number;
+  readonly __wbindgen_export4: (
+    a: number,
+    b: number,
+    c: number,
+    d: number,
+  ) => number;
 }
 
 export type SyncInitInput = BufferSource | WebAssembly.Module;
@@ -225,7 +333,9 @@ export type SyncInitInput = BufferSource | WebAssembly.Module;
  *
  * @returns {InitOutput}
  */
-export function initSync(module: { module: SyncInitInput } | SyncInitInput): InitOutput;
+export function initSync(
+  module: { module: SyncInitInput } | SyncInitInput,
+): InitOutput;
 
 /**
  * If `module_or_path` is {RequestInfo} or {URL}, makes a request and
@@ -235,4 +345,9 @@ export function initSync(module: { module: SyncInitInput } | SyncInitInput): Ini
  *
  * @returns {Promise<InitOutput>}
  */
-export default function __wbg_init (module_or_path?: { module_or_path: InitInput | Promise<InitInput> } | InitInput | Promise<InitInput>): Promise<InitOutput>;
+export default function __wbg_init(
+  module_or_path?:
+    | { module_or_path: InitInput | Promise<InitInput> }
+    | InitInput
+    | Promise<InitInput>,
+): Promise<InitOutput>;
