@@ -300,6 +300,8 @@ function NotebookViewContent({
       ref={containerRef}
       className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain py-4 pl-8 pr-4"
       style={{ contain: "paint" }}
+      data-notebook-synced={!isLoading && cells.length > 0}
+      data-cell-count={cells.length}
     >
       {cells.length === 0 ? (
         isLoading ? (

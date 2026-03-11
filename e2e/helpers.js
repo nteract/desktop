@@ -32,6 +32,31 @@ export async function waitForAppReady() {
 }
 
 /**
+ * Wait for the notebook to finish initial Automerge sync and render cells.
+ *
+ * Checks the `data-notebook-synced` attribute set by NotebookView when
+ * `isLoading` is false and `cells.length > 0`. This is the canonical
+ * signal that the doc has synced and cells are in the DOM — no arbitrary
+ * timeouts or cell-count polling needed.
+ */
+export async function waitForNotebookSynced(timeout = 15000) {
+  await waitForAppReady();
+  await browser.waitUntil(
+    async () => {
+      return await browser.execute(() => {
+        const el = document.querySelector("[data-notebook-synced]");
+        return el?.getAttribute("data-notebook-synced") === "true";
+      });
+    },
+    {
+      timeout,
+      interval: 300,
+      timeoutMsg: `Notebook not synced within ${timeout / 1000}s`,
+    },
+  );
+}
+
+/**
  * Wait for a specific number of code cells to be loaded.
  * Use this in fixture tests where the notebook has pre-populated cells.
  */
@@ -74,9 +99,8 @@ export async function waitForKernelReady(timeout = 60000) {
  * Returns the cell element for further assertions.
  */
 export async function executeFirstCell() {
-  // Wait for cells to materialize from Automerge sync before querying.
-  // Kernel status (idle) can arrive before cell content is synced.
-  await waitForCodeCells(1, 15000);
+  // Wait for the notebook to finish Automerge sync and render cells.
+  await waitForNotebookSynced();
 
   const codeCell = await $('[data-cell-type="code"]');
   await codeCell.waitForExist({ timeout: 5000 });

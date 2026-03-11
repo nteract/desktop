@@ -15,8 +15,8 @@ import {
   typeSlowly,
   waitForAppReady,
   waitForCellOutput,
-  waitForCodeCells,
   waitForKernelReady,
+  waitForNotebookSynced,
 } from "../helpers.js";
 
 describe("E2E Smoke Test", () => {
@@ -34,9 +34,8 @@ describe("E2E Smoke Test", () => {
   });
 
   it("should execute code and show output", async () => {
-    // Wait for cells to materialize from Automerge sync — kernel idle
-    // can arrive before cell content is synced to the frontend.
-    await waitForCodeCells(1, 15000);
+    // Wait for the notebook to finish Automerge sync and render cells.
+    await waitForNotebookSynced();
 
     // Find the first code cell
     const codeCell = await $('[data-cell-type="code"]');
