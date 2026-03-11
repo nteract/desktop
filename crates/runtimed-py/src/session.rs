@@ -569,6 +569,7 @@ impl Session {
     ///
     /// Returns:
     ///     The new fractional position string.
+    #[pyo3(signature = (cell_id, after_cell_id=None))]
     fn move_cell(&self, cell_id: &str, after_cell_id: Option<&str>) -> PyResult<String> {
         self.runtime.block_on(async {
             let state = self.state.lock().await;

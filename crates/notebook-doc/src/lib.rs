@@ -318,7 +318,13 @@ impl NotebookDoc {
     pub fn migrate_v1_to_v2(&mut self) -> Result<(), AutomergeError> {
         use loro_fractional_index::FractionalIndex;
 
-        // Read cells from the old List schema
+        // Idempotent: skip if already at current schema version
+        if self.schema_version().unwrap_or(0) >= SCHEMA_VERSION {
+            return Ok(());
+        }
+
+        // Only migrate if cells is actually a List (v1 schema).
+        // If cells is already a Map or missing, create a fresh empty Map.
         let old_cells_id = self
             .doc
             .get(automerge::ROOT, "cells")

@@ -1546,7 +1546,8 @@ where
             let prev_pos = FractionalIndex::from_hex_string(&sorted_cells[clamped - 1].position);
             if clamped < sorted_cells.len() {
                 let next_pos = FractionalIndex::from_hex_string(&sorted_cells[clamped].position);
-                FractionalIndex::new(Some(&prev_pos), Some(&next_pos)).unwrap_or_default()
+                FractionalIndex::new(Some(&prev_pos), Some(&next_pos))
+                    .unwrap_or_else(|| FractionalIndex::new_after(&prev_pos))
             } else {
                 FractionalIndex::new_after(&prev_pos)
             }
@@ -1607,7 +1608,8 @@ where
             let prev_pos = FractionalIndex::from_hex_string(&sorted_cells[clamped - 1].position);
             if clamped < sorted_cells.len() {
                 let next_pos = FractionalIndex::from_hex_string(&sorted_cells[clamped].position);
-                FractionalIndex::new(Some(&prev_pos), Some(&next_pos)).unwrap_or_default()
+                FractionalIndex::new(Some(&prev_pos), Some(&next_pos))
+                    .unwrap_or_else(|| FractionalIndex::new_after(&prev_pos))
             } else {
                 FractionalIndex::new_after(&prev_pos)
             }
@@ -1685,12 +1687,12 @@ where
         let position = match after_cell_id {
             None => {
                 // Move to start
-                sorted_cells
-                    .first()
-                    .map(|c| {
-                        FractionalIndex::new_before(&FractionalIndex::from_hex_string(&c.position))
-                    })
-                    .unwrap_or_default()
+                if sorted_cells.is_empty() {
+                    FractionalIndex::default()
+                } else {
+                    let first_pos = FractionalIndex::from_hex_string(&sorted_cells[0].position);
+                    FractionalIndex::new_before(&first_pos)
+                }
             }
             Some(after_id) => {
                 let idx = sorted_cells.iter().position(|c| c.id == after_id);
@@ -1698,12 +1700,23 @@ where
                     Some(i) if i + 1 < sorted_cells.len() => {
                         let prev = FractionalIndex::from_hex_string(&sorted_cells[i].position);
                         let next = FractionalIndex::from_hex_string(&sorted_cells[i + 1].position);
-                        FractionalIndex::new(Some(&prev), Some(&next)).unwrap_or_default()
+                        FractionalIndex::new(Some(&prev), Some(&next))
+                            .unwrap_or_else(|| FractionalIndex::new_after(&prev))
                     }
                     Some(i) => FractionalIndex::new_after(&FractionalIndex::from_hex_string(
                         &sorted_cells[i].position,
                     )),
-                    None => FractionalIndex::default(),
+                    None => {
+                        // after_cell_id not found: fall back to end
+                        sorted_cells
+                            .last()
+                            .map(|c| {
+                                FractionalIndex::new_after(&FractionalIndex::from_hex_string(
+                                    &c.position,
+                                ))
+                            })
+                            .unwrap_or_default()
+                    }
                 }
             }
         };

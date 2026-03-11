@@ -222,8 +222,8 @@ export class NotebookHandle {
     /**
      * Add a new cell after the specified cell (semantic API).
      *
-     * - `after_cell_id = None` → insert at the beginning
-     * - `after_cell_id = Some(id)` → insert after that cell
+     * - `after_cell_id = null` → insert at the beginning
+     * - `after_cell_id = "id"` → insert after that cell
      *
      * Returns the position string of the new cell.
      * @param {string} cell_id
@@ -562,8 +562,8 @@ export class NotebookHandle {
     /**
      * Move a cell to a new position (after the specified cell).
      *
-     * - `after_cell_id = None` → move to the beginning
-     * - `after_cell_id = Some(id)` → move after that cell
+     * - `after_cell_id = null` → move to the beginning
+     * - `after_cell_id = "id"` → move after that cell
      *
      * This only updates the cell's position field — no delete/re-insert.
      * Returns the new position string.
