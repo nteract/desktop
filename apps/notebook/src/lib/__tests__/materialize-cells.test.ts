@@ -3,6 +3,7 @@ import type { JupyterOutput } from "../../types";
 import {
   type CellSnapshot,
   cellSnapshotsToNotebookCells,
+  cellSnapshotsToNotebookCellsSync,
   mergeConsecutiveStreams,
   resolveOutput,
 } from "../materialize-cells";
@@ -72,7 +73,11 @@ function codeSnapshot(
   };
 }
 
-function markdownSnapshot(id: string, source: string): CellSnapshot {
+function markdownSnapshot(
+  id: string,
+  source: string,
+  resolvedAssets?: Record<string, string>,
+): CellSnapshot {
   return {
     id,
     cell_type: "markdown",
@@ -81,6 +86,7 @@ function markdownSnapshot(id: string, source: string): CellSnapshot {
     execution_count: "null",
     outputs: [],
     metadata: {},
+    resolved_assets: resolvedAssets,
   };
 }
 
@@ -463,6 +469,36 @@ describe("cellSnapshotsToNotebookCells", () => {
       cell_type: "markdown",
       source: "# Title",
       metadata: {},
+    });
+  });
+
+  it("preserves resolved markdown assets", async () => {
+    const snap = markdownSnapshot("m1", "![x](attachment:image.png)", {
+      "attachment:image.png": "abc123",
+    });
+
+    const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
+    expect(cells[0]).toEqual({
+      id: "m1",
+      cell_type: "markdown",
+      source: "![x](attachment:image.png)",
+      metadata: {},
+      resolvedAssets: { "attachment:image.png": "abc123" },
+    });
+  });
+
+  it("preserves resolved markdown assets during sync materialization", () => {
+    const snap = markdownSnapshot("m1", "![x](images/foo.png)", {
+      "images/foo.png": "abc123",
+    });
+
+    const cells = cellSnapshotsToNotebookCellsSync([snap], new Map());
+    expect(cells[0]).toEqual({
+      id: "m1",
+      cell_type: "markdown",
+      source: "![x](images/foo.png)",
+      metadata: {},
+      resolvedAssets: { "images/foo.png": "abc123" },
     });
   });
 

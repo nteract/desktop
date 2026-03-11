@@ -5714,6 +5714,7 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "automerge",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "clap",

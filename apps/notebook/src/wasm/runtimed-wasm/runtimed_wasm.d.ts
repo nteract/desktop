@@ -27,6 +27,10 @@ export class JsCell {
      * Fractional index hex string for ordering (e.g., "80", "7F80").
      */
     readonly position: string;
+    /**
+     * Get resolved asset refs as a JSON object string (`ref` → blob hash).
+     */
+    readonly resolved_assets_json: string;
     readonly source: string;
 }
 
@@ -209,6 +213,7 @@ export interface InitOutput {
     readonly jscell_execution_count: (a: number, b: number) => void;
     readonly jscell_outputs_json: (a: number, b: number) => void;
     readonly jscell_metadata_json: (a: number, b: number) => void;
+    readonly jscell_resolved_assets_json: (a: number, b: number) => void;
     readonly notebookhandle_new: (a: number, b: number) => number;
     readonly notebookhandle_create_empty: () => number;
     readonly notebookhandle_load: (a: number, b: number, c: number) => void;

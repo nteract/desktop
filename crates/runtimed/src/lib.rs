@@ -19,7 +19,7 @@ pub mod connection;
 pub mod daemon;
 pub mod inline_env;
 pub mod kernel_manager;
-pub mod markdown_images;
+pub mod markdown_assets;
 pub use notebook_doc;
 pub use notebook_doc::metadata as notebook_metadata;
 pub mod notebook_sync_client;

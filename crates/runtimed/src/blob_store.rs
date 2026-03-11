@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Maximum blob size accepted by `put()` (100 MiB).
-const MAX_BLOB_SIZE: usize = 100 * 1024 * 1024;
+pub const MAX_BLOB_SIZE: usize = 100 * 1024 * 1024;
 
 /// Metadata stored alongside each blob.
 #[derive(Debug, Clone, Serialize, Deserialize)]

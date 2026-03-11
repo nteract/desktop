@@ -11,6 +11,7 @@ export const jscell_source: (a: number, b: number) => void;
 export const jscell_execution_count: (a: number, b: number) => void;
 export const jscell_outputs_json: (a: number, b: number) => void;
 export const jscell_metadata_json: (a: number, b: number) => void;
+export const jscell_resolved_assets_json: (a: number, b: number) => void;
 export const notebookhandle_new: (a: number, b: number) => number;
 export const notebookhandle_create_empty: () => number;
 export const notebookhandle_load: (a: number, b: number, c: number) => void;

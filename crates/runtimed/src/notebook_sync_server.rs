@@ -40,7 +40,7 @@ use crate::blob_store::BlobStore;
 use crate::comm_state::CommState;
 use crate::connection::{self, NotebookFrameType};
 use crate::kernel_manager::{DenoLaunchedConfig, LaunchedEnvConfig, RoomKernel};
-use crate::markdown_images::{extract_relative_images, media_type_from_extension};
+use crate::markdown_assets::resolve_markdown_assets;
 use crate::notebook_doc::{notebook_doc_filename, CellSnapshot, NotebookDoc};
 use crate::notebook_metadata::{NotebookMetadataSnapshot, NOTEBOOK_METADATA_KEY};
 use crate::protocol::{EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse};
@@ -261,114 +261,61 @@ fn compute_env_sync_diff(
     }
 }
 
-/// Process markdown cells to resolve relative image paths.
+/// Rebuild resolved markdown asset refs for all markdown cells.
 ///
-/// For each markdown cell with relative image paths (e.g., `![](assets/image.png)`),
-/// this function:
-/// 1. Extracts relative image paths from the markdown source
-/// 2. Resolves each path against the notebook directory
-/// 3. Reads the file and stores it in the blob store
-/// 4. Updates the cell's attachments map with the path → blob hash mapping
-///
-/// Security: Paths are canonicalized and validated to stay within the notebook's
-/// directory, preventing directory traversal attacks.
-async fn process_markdown_attachments(room: &NotebookRoom) {
-    // Only process if notebook has a valid file path (not untitled)
-    let notebook_dir = match room.notebook_path.parent() {
-        Some(dir) if room.notebook_path.exists() => dir,
-        _ => return,
-    };
+/// This resolves both notebook-relative files and nbformat attachments into
+/// blob-store hashes, then updates the cell-local `resolved_assets` maps so
+/// isolated markdown rendering can rewrite those refs to blob URLs.
+async fn process_markdown_assets(room: &NotebookRoom) {
+    let notebook_path = room
+        .notebook_path
+        .exists()
+        .then_some(room.notebook_path.clone());
+    let nbformat_attachments = room.nbformat_attachments.read().await.clone();
 
-    // Canonicalize notebook directory for security checks
-    let canonical_dir = match notebook_dir.canonicalize() {
-        Ok(dir) => dir,
-        Err(_) => return,
-    };
-
-    // Get all markdown cells
     let markdown_cells: Vec<(String, String, HashMap<String, String>)> = {
         let doc = room.doc.read().await;
         doc.get_cells()
             .into_iter()
             .filter(|cell| cell.cell_type == "markdown")
-            .map(|cell| (cell.id, cell.source, cell.attachments))
+            .map(|cell| (cell.id, cell.source, cell.resolved_assets))
             .collect()
     };
 
-    for (cell_id, source, existing_attachments) in markdown_cells {
-        let relative_paths = extract_relative_images(&source);
-        if relative_paths.is_empty() {
-            continue;
-        }
+    let mut updates = Vec::new();
+    for (cell_id, source, existing_assets) in markdown_cells {
+        let desired_assets = resolve_markdown_assets(
+            &source,
+            notebook_path.as_deref(),
+            nbformat_attachments.get(&cell_id),
+            &room.blob_store,
+        )
+        .await;
 
-        let mut new_attachments = false;
-
-        for rel_path in relative_paths {
-            // Skip if already resolved
-            if existing_attachments.contains_key(&rel_path) {
-                continue;
-            }
-
-            // Resolve path against notebook directory
-            let resolved = notebook_dir.join(&rel_path);
-            let canonical = match resolved.canonicalize() {
-                Ok(p) => p,
-                Err(_) => {
-                    // File doesn't exist, skip
-                    continue;
-                }
-            };
-
-            // Security: ensure path stays within notebook directory
-            if !canonical.starts_with(&canonical_dir) {
-                warn!(
-                    "[notebook-sync] Blocked path traversal attempt: {} -> {:?}",
-                    rel_path, canonical
-                );
-                continue;
-            }
-
-            // Read file and store in blob store
-            let data = match tokio::fs::read(&canonical).await {
-                Ok(d) => d,
-                Err(e) => {
-                    debug!("[notebook-sync] Failed to read image {}: {}", rel_path, e);
-                    continue;
-                }
-            };
-
-            let media_type = media_type_from_extension(&rel_path);
-            let hash = match room.blob_store.put(&data, media_type).await {
-                Ok(h) => h,
-                Err(e) => {
-                    warn!("[notebook-sync] Failed to store image in blob store: {}", e);
-                    continue;
-                }
-            };
-
-            // Update cell attachment
-            {
-                let mut doc = room.doc.write().await;
-                if let Err(e) = doc.set_cell_attachment(&cell_id, &rel_path, &hash) {
-                    warn!(
-                        "[notebook-sync] Failed to set attachment for {}: {}",
-                        rel_path, e
-                    );
-                } else {
-                    debug!(
-                        "[notebook-sync] Resolved image {} -> blob:{}",
-                        rel_path, hash
-                    );
-                    new_attachments = true;
-                }
-            }
-        }
-
-        // If we added new attachments, notify peers
-        if new_attachments {
-            let _ = room.changed_tx.send(());
+        if desired_assets != existing_assets {
+            updates.push((cell_id, desired_assets));
         }
     }
+
+    if updates.is_empty() {
+        return;
+    }
+
+    let persist_bytes = {
+        let mut doc = room.doc.write().await;
+        for (cell_id, resolved_assets) in &updates {
+            if let Err(e) = doc.set_cell_resolved_assets(cell_id, resolved_assets) {
+                warn!(
+                    "[notebook-sync] Failed to sync resolved markdown assets for {}: {}",
+                    cell_id, e
+                );
+            }
+        }
+        doc.save()
+    };
+
+    let _ = room.changed_tx.send(());
+    let _ = room.persist_tx.send(Some(persist_bytes));
 }
 
 /// Check if the current metadata differs from kernel's launched config and broadcast sync state.
@@ -544,6 +491,9 @@ pub struct NotebookRoom {
     pub trust_state: Arc<RwLock<TrustState>>,
     /// The notebook file path (notebook_id is the path).
     pub notebook_path: PathBuf,
+    /// Raw nbformat attachments preserved from disk, keyed by cell ID.
+    /// These are not user-editable in the current UI, so the file remains the source of truth.
+    pub nbformat_attachments: Arc<RwLock<HashMap<String, serde_json::Value>>>,
     /// Working directory for untitled notebooks (used for project file detection).
     /// When the notebook_id is a UUID (untitled), this provides the directory context
     /// for finding pyproject.toml, pixi.toml, or environment.yaml.
@@ -631,6 +581,7 @@ impl NotebookRoom {
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
             notebook_path,
+            nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
             working_dir: Arc::new(RwLock::new(None)),
             auto_launch_at: Arc::new(RwLock::new(None)),
             comm_state: Arc::new(CommState::new()),
@@ -683,6 +634,7 @@ impl NotebookRoom {
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
             notebook_path,
+            nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
             working_dir: Arc::new(RwLock::new(None)),
             auto_launch_at: Arc::new(RwLock::new(None)),
             comm_state: Arc::new(CommState::new()),
@@ -1117,8 +1069,8 @@ where
                                 // Check if metadata changed and kernel is running - broadcast sync state
                                 check_and_broadcast_sync_state(room).await;
 
-                                // Process markdown cells to resolve relative images
-                                process_markdown_attachments(room).await;
+                                // Rebuild markdown asset refs after source sync.
+                                process_markdown_assets(room).await;
                             }
 
                             NotebookFrameType::Request => {
@@ -2773,6 +2725,7 @@ async fn save_notebook_to_disk(
         let metadata_json = doc.get_metadata(NOTEBOOK_METADATA_KEY);
         (cells, metadata_json)
     };
+    let nbformat_attachments = room.nbformat_attachments.read().await.clone();
 
     // Reconstruct cells as JSON
     // Cell metadata now comes from the CellSnapshot (populated during load)
@@ -2817,6 +2770,10 @@ async fn save_notebook_to_disk(
             let exec_count: serde_json::Value =
                 serde_json::from_str(&cell.execution_count).unwrap_or(serde_json::Value::Null);
             cell_json["execution_count"] = exec_count;
+        } else if matches!(cell.cell_type.as_str(), "markdown" | "raw") {
+            if let Some(attachments) = nbformat_attachments.get(&cell.id) {
+                cell_json["attachments"] = attachments.clone();
+            }
         }
 
         nb_cells.push(cell_json);
@@ -2886,7 +2843,7 @@ async fn save_notebook_to_disk(
 /// - A fresh env_id (so it gets its own environment)
 /// - All outputs cleared
 /// - All execution_counts reset to null
-/// - Cell metadata and attachments preserved from the source notebook
+/// - Cell metadata and nbformat attachments preserved from the source notebook
 async fn clone_notebook_to_disk(room: &NotebookRoom, target_path: &str) -> Result<String, String> {
     let path = PathBuf::from(target_path);
 
@@ -2911,30 +2868,14 @@ async fn clone_notebook_to_disk(room: &NotebookRoom, target_path: &str) -> Resul
         (doc.get_cells(), doc.get_metadata(NOTEBOOK_METADATA_KEY))
     };
 
-    // Read existing source notebook to preserve attachments
-    // (cell metadata now comes from Automerge doc, attachments are not synced)
+    let nbformat_attachments = room.nbformat_attachments.read().await.clone();
+
+    // Read existing source notebook to preserve unknown top-level metadata keys.
     let existing: Option<serde_json::Value> =
         match tokio::fs::read_to_string(&room.notebook_path).await {
             Ok(content) => serde_json::from_str(&content).ok(),
             Err(_) => None,
         };
-
-    // Build attachments index from existing notebook (metadata comes from Automerge)
-    let existing_attachments: HashMap<String, serde_json::Value> = existing
-        .as_ref()
-        .and_then(|nb| nb.get("cells"))
-        .and_then(|c| c.as_array())
-        .map(|cells_arr| {
-            cells_arr
-                .iter()
-                .filter_map(|cell| {
-                    let id = cell.get("id").and_then(|v| v.as_str())?;
-                    let attachments = cell.get("attachments").cloned()?;
-                    Some((id.to_string(), attachments))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
 
     // Generate fresh env_id for the cloned notebook
     let new_env_id = uuid::Uuid::new_v4().to_string();
@@ -2966,9 +2907,8 @@ async fn clone_notebook_to_disk(room: &NotebookRoom, target_path: &str) -> Resul
             // Clear outputs and execution_count for cloned notebook
             cell_json["outputs"] = serde_json::json!([]);
             cell_json["execution_count"] = serde_json::Value::Null;
-        } else if cell.cell_type == "markdown" {
-            // Preserve attachments for markdown cells (embedded images, not synced via Automerge)
-            if let Some(att) = existing_attachments.get(&cell.id) {
+        } else if matches!(cell.cell_type.as_str(), "markdown" | "raw") {
+            if let Some(att) = nbformat_attachments.get(&cell.id) {
                 cell_json["attachments"] = att.clone();
             }
         }
@@ -3311,12 +3251,42 @@ fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<Vec<CellSnapshot>>
                 execution_count,
                 outputs,
                 metadata,
-                attachments: std::collections::HashMap::new(),
+                resolved_assets: std::collections::HashMap::new(),
             }
         })
         .collect();
 
     Some(parsed_cells)
+}
+
+/// Parse nbformat attachment payloads from a .ipynb JSON value.
+///
+/// Returns a map of `cell_id -> attachments JSON object` for any cell carrying attachments.
+fn parse_nbformat_attachments_from_ipynb(
+    json: &serde_json::Value,
+) -> HashMap<String, serde_json::Value> {
+    let Some(cells_json) = json.get("cells").and_then(|c| c.as_array()) else {
+        return HashMap::new();
+    };
+
+    cells_json
+        .iter()
+        .enumerate()
+        .filter_map(|(index, cell)| {
+            let id = cell
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("__external_cell_{}", index));
+
+            let attachments = cell.get("attachments")?;
+            if attachments.is_object() {
+                Some((id, attachments.clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Parse notebook metadata from a .ipynb JSON value.
@@ -3438,7 +3408,14 @@ fn jobj_get<'a, 's>(
 /// without a serialize→parse round-trip.
 fn parse_notebook_jiter(
     bytes: &[u8],
-) -> Result<(Vec<StreamingCell>, Option<NotebookMetadataSnapshot>), String> {
+) -> Result<
+    (
+        Vec<StreamingCell>,
+        Option<NotebookMetadataSnapshot>,
+        HashMap<String, serde_json::Value>,
+    ),
+    String,
+> {
     let json = jiter::JsonValue::parse(bytes, false)
         .map_err(|e| format!("Invalid notebook JSON: {}", e))?;
 
@@ -3456,13 +3433,14 @@ fn parse_notebook_jiter(
     let cells_arr = match jobj_get(obj, "cells") {
         Some(jiter::JsonValue::Array(arr)) => arr,
         Some(_) => return Err("'cells' is not an array".to_string()),
-        None => return Ok((vec![], metadata)),
+        None => return Ok((vec![], metadata, HashMap::new())),
     };
 
     use loro_fractional_index::FractionalIndex;
     let mut prev_position: Option<FractionalIndex> = None;
 
     let mut cells = Vec::with_capacity(cells_arr.len());
+    let mut attachments = HashMap::new();
     for (index, cell) in cells_arr.iter().enumerate() {
         let cell_obj = match cell {
             jiter::JsonValue::Object(obj) => obj,
@@ -3522,6 +3500,15 @@ fn parse_notebook_jiter(
             _ => serde_json::json!({}),
         };
 
+        if let Some(jiter::JsonValue::Object(_)) = jobj_get(cell_obj, "attachments") {
+            attachments.insert(
+                id.clone(),
+                jobj_get(cell_obj, "attachments")
+                    .map(jiter_to_serde)
+                    .unwrap_or_else(|| serde_json::json!({})),
+            );
+        }
+
         cells.push(StreamingCell {
             id,
             cell_type,
@@ -3533,7 +3520,7 @@ fn parse_notebook_jiter(
         });
     }
 
-    Ok((cells, metadata))
+    Ok((cells, metadata, attachments))
 }
 
 /// Convert a single output `serde_json::Value` to a blob store manifest hash.
@@ -3618,7 +3605,11 @@ where
         .await
         .map_err(|e| format!("Failed to read notebook: {}", e))?;
 
-    let (cells, metadata) = parse_notebook_jiter(&bytes)?;
+    let (cells, metadata, nbformat_attachments) = parse_notebook_jiter(&bytes)?;
+    {
+        let mut cache = room.nbformat_attachments.write().await;
+        *cache = nbformat_attachments.clone();
+    }
 
     let total_cells = cells.len();
     info!(
@@ -3636,7 +3627,8 @@ where
         let batch_start = std::time::Instant::now();
 
         // Collect one batch and process outputs through blob store (outside doc lock)
-        let mut batch: Vec<(usize, StreamingCell, Vec<String>)> = Vec::new();
+        let mut batch: Vec<(usize, StreamingCell, Vec<String>, HashMap<String, String>)> =
+            Vec::new();
         for _ in 0..STREAMING_BATCH_SIZE {
             let Some((idx, cell)) = cell_iter.next() else {
                 break;
@@ -3645,13 +3637,20 @@ where
             for output in &cell.outputs {
                 output_refs.push(output_value_to_manifest_ref(output, &room.blob_store).await);
             }
-            batch.push((idx, cell, output_refs));
+            let resolved_assets = resolve_markdown_assets(
+                &cell.source,
+                Some(path),
+                nbformat_attachments.get(&cell.id),
+                &room.blob_store,
+            )
+            .await;
+            batch.push((idx, cell, output_refs, resolved_assets));
         }
 
         // Add batch to Automerge doc and generate sync message (inside lock)
         let encoded = {
             let mut doc = room.doc.write().await;
-            for (_idx, cell, output_refs) in &batch {
+            for (_idx, cell, output_refs, resolved_assets) in &batch {
                 doc.add_cell_full(
                     &cell.id,
                     &cell.cell_type,
@@ -3662,6 +3661,8 @@ where
                     &cell.metadata,
                 )
                 .map_err(|e| format!("Failed to add cell {}: {}", cell.id, e))?;
+                doc.set_cell_resolved_assets(&cell.id, resolved_assets)
+                    .map_err(|e| format!("Failed to set resolved assets for {}: {}", cell.id, e))?;
             }
             doc.generate_sync_message(peer_state).map(|m| m.encode())
         };
@@ -3739,6 +3740,7 @@ pub async fn load_notebook_from_disk(
     // Parse cells
     let cells = parse_cells_from_ipynb(&json)
         .ok_or_else(|| "Failed to parse cells from notebook".to_string())?;
+    let nbformat_attachments = parse_nbformat_attachments_from_ipynb(&json);
 
     // Populate cells in the doc
     for (i, cell) in cells.iter().enumerate() {
@@ -3753,6 +3755,15 @@ pub async fn load_notebook_from_disk(
         }
         doc.set_execution_count(&cell.id, &cell.execution_count)
             .map_err(|e| format!("Failed to set execution count: {}", e))?;
+        let resolved_assets = resolve_markdown_assets(
+            &cell.source,
+            Some(path),
+            nbformat_attachments.get(&cell.id),
+            blob_store,
+        )
+        .await;
+        doc.set_cell_resolved_assets(&cell.id, &resolved_assets)
+            .map_err(|e| format!("Failed to set resolved assets: {}", e))?;
     }
 
     // Parse and set metadata
@@ -3895,6 +3906,7 @@ fn build_new_notebook_metadata(
 async fn apply_ipynb_changes(
     room: &NotebookRoom,
     external_cells: &[CellSnapshot],
+    external_attachments: &HashMap<String, serde_json::Value>,
     has_running_kernel: bool,
 ) -> bool {
     let current_cells = {
@@ -3915,8 +3927,28 @@ async fn apply_ipynb_changes(
         }
         map
     };
+    let converted_assets: HashMap<String, HashMap<String, String>> = {
+        let mut map = HashMap::new();
+        for cell in external_cells {
+            let resolved_assets = resolve_markdown_assets(
+                &cell.source,
+                Some(&room.notebook_path),
+                external_attachments.get(&cell.id),
+                &room.blob_store,
+            )
+            .await;
+            map.insert(cell.id.clone(), resolved_assets);
+        }
+        map
+    };
+
+    {
+        let mut cache = room.nbformat_attachments.write().await;
+        *cache = external_attachments.clone();
+    }
 
     let mut doc = room.doc.write().await;
+    let empty_assets = HashMap::new();
 
     // Build maps for comparison
     let current_map: HashMap<&str, &CellSnapshot> =
@@ -3985,6 +4017,10 @@ async fn apply_ipynb_changes(
                     let _ = doc.set_outputs(&ext_cell.id, ext_outputs);
                     let _ = doc.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
                 }
+                let ext_assets = converted_assets
+                    .get(ext_cell.id.as_str())
+                    .unwrap_or(&empty_assets);
+                let _ = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets);
             }
         }
         return true;
@@ -4054,6 +4090,15 @@ async fn apply_ipynb_changes(
                     }
                 }
             }
+
+            let ext_assets = converted_assets
+                .get(ext_cell.id.as_str())
+                .unwrap_or(&empty_assets);
+            if current_cell.resolved_assets != *ext_assets {
+                if let Ok(true) = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets) {
+                    changed = true;
+                }
+            }
         } else {
             // New cell - add it
             // New cells don't have any in-progress state, so always use external values
@@ -4073,6 +4118,10 @@ async fn apply_ipynb_changes(
                     .unwrap_or(&[]);
                 let _ = doc.set_outputs(&ext_cell.id, ext_outputs);
                 let _ = doc.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
+                let ext_assets = converted_assets
+                    .get(ext_cell.id.as_str())
+                    .unwrap_or(&empty_assets);
+                let _ = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets);
             }
         }
     }
@@ -4209,12 +4258,19 @@ pub(crate) fn spawn_notebook_file_watcher(
                                     continue;
                                 }
                             };
+                            let external_attachments = parse_nbformat_attachments_from_ipynb(&json);
 
                             // Check if kernel is running (to preserve outputs)
                             let has_kernel = room.has_kernel().await;
 
                             // Apply changes to Automerge doc
-                            let changed = apply_ipynb_changes(&room, &external_cells, has_kernel).await;
+                            let changed = apply_ipynb_changes(
+                                &room,
+                                &external_cells,
+                                &external_attachments,
+                                has_kernel,
+                            )
+                            .await;
 
                             if changed {
                                 info!(
@@ -4615,6 +4671,7 @@ mod tests {
                 pending_launch: false,
             })),
             notebook_path: notebook_path.clone(),
+            nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
             working_dir: Arc::new(RwLock::new(None)),
             auto_launch_at: Arc::new(RwLock::new(None)),
             comm_state: Arc::new(crate::comm_state::CommState::new()),
@@ -4959,7 +5016,7 @@ mod tests {
 
         // Apply empty external cells - should delete all cells
         let external_cells = vec![];
-        let changed = apply_ipynb_changes(&room, &external_cells, false).await;
+        let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), false).await;
         assert!(changed, "Should apply changes to clear all cells");
 
         // Verify all cells were deleted
@@ -4991,10 +5048,10 @@ mod tests {
             execution_count: "42".to_string(),
             outputs: vec![],
             metadata: serde_json::json!({}),
-            attachments: std::collections::HashMap::new(),
+            resolved_assets: std::collections::HashMap::new(),
         }];
 
-        let changed = apply_ipynb_changes(&room, &external_cells, false).await;
+        let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), false).await;
         assert!(changed, "Should detect execution_count change");
 
         let cells = {
@@ -5027,10 +5084,10 @@ mod tests {
             execution_count: "5".to_string(),
             outputs: vec![r#"{"output_type":"error"}"#.to_string()],
             metadata: serde_json::json!({}),
-            attachments: std::collections::HashMap::new(),
+            resolved_assets: std::collections::HashMap::new(),
         }];
 
-        let changed = apply_ipynb_changes(&room, &external_cells, true).await;
+        let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), true).await;
         assert!(changed, "Should apply source change");
 
         let cells = {
@@ -5067,7 +5124,7 @@ mod tests {
                 execution_count: "null".to_string(),
                 outputs: vec![],
                 metadata: serde_json::json!({}),
-                attachments: std::collections::HashMap::new(),
+                resolved_assets: std::collections::HashMap::new(),
             },
             CellSnapshot {
                 id: "new-cell".to_string(),
@@ -5077,11 +5134,11 @@ mod tests {
                 execution_count: "42".to_string(),
                 outputs: vec![r#"{"output_type":"execute_result"}"#.to_string()],
                 metadata: serde_json::json!({}),
-                attachments: std::collections::HashMap::new(),
+                resolved_assets: std::collections::HashMap::new(),
             },
         ];
 
-        let changed = apply_ipynb_changes(&room, &external_cells, true).await;
+        let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), true).await;
         assert!(changed, "Should add new cell");
 
         let cells = {
@@ -5254,6 +5311,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_load_notebook_from_disk_resolves_nbformat_attachments() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = test_blob_store(&tmp);
+
+        let notebook_json = serde_json::json!({
+            "nbformat": 4,
+            "nbformat_minor": 5,
+            "metadata": {},
+            "cells": [
+                {
+                    "id": "markdown-1",
+                    "cell_type": "markdown",
+                    "source": ["![inline](attachment:image.png)"],
+                    "metadata": {},
+                    "attachments": {
+                        "image.png": {
+                            "image/png": "aGVsbG8="
+                        }
+                    }
+                }
+            ]
+        });
+
+        let ipynb_path = tmp.path().join("attachments.ipynb");
+        std::fs::write(
+            &ipynb_path,
+            serde_json::to_string_pretty(&notebook_json).unwrap(),
+        )
+        .unwrap();
+
+        let notebook_id = ipynb_path.to_string_lossy().to_string();
+        let mut doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
+
+        let count = load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let cells = doc.get_cells();
+        assert_eq!(cells.len(), 1);
+
+        let hash = cells[0]
+            .resolved_assets
+            .get("attachment:image.png")
+            .expect("attachment should resolve into render assets");
+
+        let bytes = blob_store.get(hash).await.unwrap().unwrap();
+        assert_eq!(bytes, b"hello");
+    }
+
+    #[tokio::test]
+    async fn test_process_markdown_assets_rebuilds_stale_refs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, notebook_path) = test_room_with_path(&tmp, "assets.ipynb");
+        std::fs::write(&notebook_path, "{}").unwrap();
+        std::fs::write(tmp.path().join("img1.png"), b"one").unwrap();
+        std::fs::write(tmp.path().join("img2.png"), b"two").unwrap();
+
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "markdown-1", "markdown").unwrap();
+            doc.update_source("markdown-1", "![one](img1.png)").unwrap();
+        }
+
+        process_markdown_assets(&room).await;
+
+        {
+            let cells = room.doc.read().await.get_cells();
+            let assets = &cells[0].resolved_assets;
+            assert!(assets.contains_key("img1.png"));
+            assert_eq!(assets.len(), 1);
+        }
+
+        {
+            let mut doc = room.doc.write().await;
+            doc.update_source("markdown-1", "![two](img2.png)").unwrap();
+        }
+
+        process_markdown_assets(&room).await;
+
+        let cells = room.doc.read().await.get_cells();
+        let assets = &cells[0].resolved_assets;
+        assert!(assets.contains_key("img2.png"));
+        assert!(!assets.contains_key("img1.png"));
+        assert_eq!(assets.len(), 1);
+    }
+
+    #[tokio::test]
     async fn test_save_notebook_to_disk_with_target_path() {
         let tmp = tempfile::TempDir::new().unwrap();
         let (room, _original_path) = test_room_with_path(&tmp, "original.ipynb");
@@ -5278,6 +5423,79 @@ mod tests {
         let content = std::fs::read_to_string(&new_path).unwrap();
         let notebook: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(notebook["cells"][0]["source"], serde_json::json!(["x = 1"]));
+    }
+
+    #[tokio::test]
+    async fn test_save_notebook_to_disk_preserves_nbformat_attachments_from_cache() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, original_path) = test_room_with_path(&tmp, "original.ipynb");
+
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "markdown-1", "markdown").unwrap();
+            doc.update_source("markdown-1", "![inline](attachment:image.png)")
+                .unwrap();
+        }
+        {
+            let mut attachments = room.nbformat_attachments.write().await;
+            attachments.insert(
+                "markdown-1".to_string(),
+                serde_json::json!({
+                    "image.png": {
+                        "image/png": "aGVsbG8="
+                    }
+                }),
+            );
+        }
+
+        save_notebook_to_disk(&room, None).await.unwrap();
+
+        let content = std::fs::read_to_string(&original_path).unwrap();
+        let notebook: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(
+            notebook["cells"][0]["attachments"],
+            serde_json::json!({
+                "image.png": {
+                    "image/png": "aGVsbG8="
+                }
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn test_save_notebook_to_disk_preserves_raw_cell_attachments_from_cache() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, original_path) = test_room_with_path(&tmp, "raw.ipynb");
+
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "raw-1", "raw").unwrap();
+            doc.update_source("raw-1", "attachment ref").unwrap();
+        }
+        {
+            let mut attachments = room.nbformat_attachments.write().await;
+            attachments.insert(
+                "raw-1".to_string(),
+                serde_json::json!({
+                    "snippet.txt": {
+                        "text/plain": "hello"
+                    }
+                }),
+            );
+        }
+
+        save_notebook_to_disk(&room, None).await.unwrap();
+
+        let content = std::fs::read_to_string(&original_path).unwrap();
+        let notebook: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(
+            notebook["cells"][0]["attachments"],
+            serde_json::json!({
+                "snippet.txt": {
+                    "text/plain": "hello"
+                }
+            })
+        );
     }
 
     #[tokio::test]
@@ -5523,7 +5741,7 @@ mod tests {
         let read_elapsed = t0.elapsed();
 
         let t_parse = std::time::Instant::now();
-        let (cells, _metadata) = parse_notebook_jiter(&bytes).unwrap();
+        let (cells, _metadata, _attachments) = parse_notebook_jiter(&bytes).unwrap();
         let parse_elapsed = t_parse.elapsed();
 
         eprintln!(

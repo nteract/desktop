@@ -25,7 +25,7 @@ export interface CellSnapshot {
   execution_count: string; // "5" or "null"
   outputs: string[]; // JSON-encoded Jupyter outputs or manifest hashes
   metadata: Record<string, unknown>; // Cell metadata (arbitrary JSON object)
-  attachments?: Record<string, string>; // path → blob hash (markdown cells)
+  resolved_assets?: Record<string, string>; // asset ref → blob hash (markdown cells)
 }
 
 /**
@@ -173,9 +173,19 @@ export function cellSnapshotsToNotebookCellsSync(
       };
     }
 
+    if (snap.cell_type === "markdown") {
+      return {
+        id: snap.id,
+        cell_type: "markdown" as const,
+        source: snap.source,
+        metadata,
+        resolvedAssets: snap.resolved_assets,
+      };
+    }
+
     return {
       id: snap.id,
-      cell_type: snap.cell_type as "markdown" | "raw",
+      cell_type: "raw" as const,
       source: snap.source,
       metadata,
     };
@@ -232,7 +242,7 @@ export async function cellSnapshotsToNotebookCells(
           cell_type: "markdown" as const,
           source: snap.source,
           metadata,
-          attachments: snap.attachments,
+          resolvedAssets: snap.resolved_assets,
         };
       }
 

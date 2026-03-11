@@ -25,6 +25,7 @@
 //!       outputs/                  ← List of Str
 //!         [j]: Str                ← JSON-encoded Jupyter output (Phase 5: manifest hash)
 //!       metadata: Str             ← JSON-encoded cell metadata object
+//!       resolved_assets/          ← Map of markdown asset ref -> blob hash
 //!   metadata/                     ← Map
 //!     runtime: Str
 //!     notebook_metadata: Str      ← JSON-encoded NotebookMetadataSnapshot
@@ -82,9 +83,9 @@ pub struct CellSnapshot {
     /// Cell metadata (arbitrary JSON object, preserves unknown keys)
     #[serde(default = "default_empty_object")]
     pub metadata: serde_json::Value,
-    /// Attachments for markdown cells: relative path → blob hash
+    /// Resolved markdown asset refs (e.g. `attachment:image.png`, `images/foo.png`) → blob hash
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub attachments: HashMap<String, String>,
+    pub resolved_assets: HashMap<String, String>,
 }
 
 fn default_empty_object() -> serde_json::Value {
@@ -638,7 +639,7 @@ impl NotebookDoc {
         self.doc.put_object(&cell_map, "outputs", ObjType::List)?;
         self.doc.put(&cell_map, "metadata", "{}")?;
         self.doc
-            .put_object(&cell_map, "attachments", ObjType::Map)?;
+            .put_object(&cell_map, "resolved_assets", ObjType::Map)?;
 
         Ok(position_str)
     }
@@ -704,7 +705,7 @@ impl NotebookDoc {
         self.doc.put(&cell_map, "metadata", metadata_str)?;
 
         self.doc
-            .put_object(&cell_map, "attachments", ObjType::Map)?;
+            .put_object(&cell_map, "resolved_assets", ObjType::Map)?;
 
         Ok(())
     }
@@ -1235,17 +1236,17 @@ impl NotebookDoc {
         self.update_cell_metadata_at(cell_id, &["tags"], serde_json::json!(tags))
     }
 
-    // ── Attachments ───────────────────────────────────────────────────
+    // ── Resolved markdown assets ──────────────────────────────────────
 
-    /// Get all attachments for a cell (path → blob hash).
-    pub fn get_cell_attachments(&self, cell_id: &str) -> Option<HashMap<String, String>> {
+    /// Get all resolved markdown asset refs for a cell (`ref` → blob hash).
+    pub fn get_cell_resolved_assets(&self, cell_id: &str) -> Option<HashMap<String, String>> {
         let cells_id = self.cells_map_id()?;
         let cell_obj = self.cell_obj_id(&cells_id, cell_id)?;
-        let attachments_id = self.map_id(&cell_obj, "attachments")?;
+        let resolved_assets_id = self.map_id(&cell_obj, "resolved_assets")?;
 
         Some(
             self.doc
-                .map_range(&attachments_id, ..)
+                .map_range(&resolved_assets_id, ..)
                 .filter_map(|item| {
                     if let automerge::ValueRef::Scalar(automerge::ScalarValueRef::Str(hash)) =
                         item.value
@@ -1258,14 +1259,13 @@ impl NotebookDoc {
         )
     }
 
-    /// Set a single attachment for a cell.
+    /// Replace the resolved markdown asset refs for a cell.
     ///
-    /// Creates the attachments map if it doesn't exist.
-    pub fn set_cell_attachment(
+    /// Returns `true` if the map changed.
+    pub fn set_cell_resolved_assets(
         &mut self,
         cell_id: &str,
-        path: &str,
-        blob_hash: &str,
+        resolved_assets: &HashMap<String, String>,
     ) -> Result<bool, AutomergeError> {
         let cells_id = match self.cells_map_id() {
             Some(id) => id,
@@ -1276,38 +1276,30 @@ impl NotebookDoc {
             None => return Ok(false),
         };
 
-        // Get or create attachments map
-        let attachments_id = match self.map_id(&cell_obj, "attachments") {
+        let existing = self.get_cell_resolved_assets(cell_id).unwrap_or_default();
+        if existing == *resolved_assets {
+            return Ok(false);
+        }
+
+        let resolved_assets_id = match self.map_id(&cell_obj, "resolved_assets") {
             Some(id) => id,
             None => self
                 .doc
-                .put_object(&cell_obj, "attachments", ObjType::Map)?,
+                .put_object(&cell_obj, "resolved_assets", ObjType::Map)?,
         };
 
-        self.doc.put(&attachments_id, path, blob_hash)?;
-        Ok(true)
-    }
+        for key in existing.keys() {
+            if !resolved_assets.contains_key(key) {
+                self.doc.delete(&resolved_assets_id, key)?;
+            }
+        }
 
-    /// Remove a single attachment from a cell.
-    pub fn remove_cell_attachment(
-        &mut self,
-        cell_id: &str,
-        path: &str,
-    ) -> Result<bool, AutomergeError> {
-        let cells_id = match self.cells_map_id() {
-            Some(id) => id,
-            None => return Ok(false),
-        };
-        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
-            Some(o) => o,
-            None => return Ok(false),
-        };
-        let attachments_id = match self.map_id(&cell_obj, "attachments") {
-            Some(id) => id,
-            None => return Ok(false),
-        };
+        for (asset_ref, blob_hash) in resolved_assets {
+            if existing.get(asset_ref) != Some(blob_hash) {
+                self.doc.put(&resolved_assets_id, asset_ref, blob_hash)?;
+            }
+        }
 
-        self.doc.delete(&attachments_id, path)?;
         Ok(true)
     }
 
@@ -1507,8 +1499,8 @@ impl NotebookDoc {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_else(|| serde_json::json!({}));
 
-        // Read attachments map
-        let attachments = match self.map_id(cell_obj, "attachments") {
+        // Read resolved asset map
+        let resolved_assets = match self.map_id(cell_obj, "resolved_assets") {
             Some(map_id) => self
                 .doc
                 .map_range(&map_id, ..)
@@ -1532,7 +1524,7 @@ impl NotebookDoc {
             execution_count,
             outputs,
             metadata,
-            attachments,
+            resolved_assets,
         })
     }
 }
@@ -1672,8 +1664,8 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_else(|| serde_json::json!({}));
 
-            // Read attachments map
-            let attachments = match doc.get(&cell_obj, "attachments").ok().flatten() {
+            // Read resolved asset map
+            let resolved_assets = match doc.get(&cell_obj, "resolved_assets").ok().flatten() {
                 Some((automerge::Value::Object(ObjType::Map), map_id)) => doc
                     .map_range(&map_id, ..)
                     .filter_map(|item| {
@@ -1696,7 +1688,7 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
                 execution_count,
                 outputs,
                 metadata,
-                attachments,
+                resolved_assets,
             })
         })
         .collect();

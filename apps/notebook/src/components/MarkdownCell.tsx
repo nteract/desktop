@@ -14,33 +14,9 @@ import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { useEditorRegistry } from "../hooks/useEditorRegistry";
 import { fetchBlobPortWithRetry } from "../hooks/useManifestResolver";
 import { logger } from "../lib/logger";
+import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
 import { openUrl } from "../lib/open-url";
 import type { MarkdownCell as MarkdownCellType } from "../types";
-
-/**
- * Apply cell attachments to markdown source.
- * Replaces relative image paths with blob URLs.
- */
-function applyAttachments(
-  source: string,
-  attachments: Record<string, string> | undefined,
-  blobPort: number | null,
-): string {
-  if (!attachments || !blobPort || Object.keys(attachments).length === 0) {
-    return source;
-  }
-
-  let result = source;
-  for (const [path, hash] of Object.entries(attachments)) {
-    const blobUrl = `http://127.0.0.1:${blobPort}/blob/${hash}`;
-    // Escape special regex characters in the path
-    const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    // Replace ![...](path) with ![...](blobUrl)
-    const regex = new RegExp(`(!\\[[^\\]]*\\])\\(${escapedPath}\\)`, "g");
-    result = result.replace(regex, `$1(${blobUrl})`);
-  }
-  return result;
-}
 
 interface MarkdownCellProps {
   cell: MarkdownCellType;
@@ -166,7 +142,7 @@ export function MarkdownCell({
     return () => observer.disconnect();
   }, []);
 
-  // Fetch blob port for resolving attachments
+  // Fetch blob port for resolving markdown assets
   const [blobPort, setBlobPort] = useState<number | null>(null);
   useEffect(() => {
     fetchBlobPortWithRetry().then(setBlobPort);
@@ -197,9 +173,9 @@ export function MarkdownCell({
   // Render markdown content when iframe is ready
   const handleFrameReady = useCallback(() => {
     if (!frameRef.current || !cell.source) return;
-    const processedSource = applyAttachments(
+    const processedSource = rewriteMarkdownAssetRefs(
       cell.source,
-      cell.attachments,
+      cell.resolvedAssets,
       blobPort,
     );
     frameRef.current.render({
@@ -208,14 +184,14 @@ export function MarkdownCell({
       cellId: cell.id,
       replace: true,
     });
-  }, [cell.source, cell.id, cell.attachments, blobPort]);
+  }, [cell.source, cell.id, cell.resolvedAssets, blobPort]);
 
-  // Sync markdown to iframe whenever source or attachments change (supports RTC updates)
+  // Sync markdown to iframe whenever source or resolved assets change (supports RTC updates)
   useEffect(() => {
     if (frameRef.current?.isReady && cell.source) {
-      const processedSource = applyAttachments(
+      const processedSource = rewriteMarkdownAssetRefs(
         cell.source,
-        cell.attachments,
+        cell.resolvedAssets,
         blobPort,
       );
       frameRef.current.render({
@@ -225,7 +201,7 @@ export function MarkdownCell({
         replace: true,
       });
     }
-  }, [cell.source, cell.id, cell.attachments, blobPort]);
+  }, [cell.source, cell.id, cell.resolvedAssets, blobPort]);
 
   // Handle link clicks from iframe - open in system browser
   const handleLinkClick = useCallback((url: string) => {

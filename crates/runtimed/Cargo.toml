@@ -57,6 +57,7 @@ alacritty_terminal = "0.25"
 
 # Error parsing
 regex = "1"
+base64 = "0.22"
 
 # Markdown parsing for image extraction
 pulldown-cmark = "0.13"
