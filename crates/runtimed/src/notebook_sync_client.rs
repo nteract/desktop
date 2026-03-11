@@ -156,6 +156,11 @@ enum SyncCommand {
     ConfirmSync {
         reply: oneshot::Sender<Result<(), NotebookSyncError>>,
     },
+    /// Send a raw presence frame (type 0x04) to the daemon.
+    SendPresence {
+        data: Vec<u8>,
+        reply: oneshot::Sender<Result<(), NotebookSyncError>>,
+    },
 }
 
 /// Handle for sending commands to the notebook sync task.
@@ -492,6 +497,24 @@ impl NotebookSyncHandle {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(SyncCommand::ConfirmSync { reply: reply_tx })
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?;
+        reply_rx
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?
+    }
+
+    /// Send a raw presence frame (type 0x04) to the daemon.
+    ///
+    /// The data should be encoded via `notebook_doc::presence::encode_*` functions.
+    /// The daemon will decode, update room state, and relay to other peers.
+    pub async fn send_presence(&self, data: Vec<u8>) -> Result<(), NotebookSyncError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(SyncCommand::SendPresence {
+                data,
+                reply: reply_tx,
+            })
             .await
             .map_err(|_| NotebookSyncError::ChannelClosed)?;
         reply_rx
@@ -2786,6 +2809,16 @@ async fn run_sync_task<S>(
                     }
                     SyncCommand::ConfirmSync { reply } => {
                         let result = client.sync_to_daemon_confirmed().await;
+                        let _ = reply.send(result);
+                    }
+                    SyncCommand::SendPresence { data, reply } => {
+                        let result = connection::send_typed_frame(
+                            &mut client.stream,
+                            connection::NotebookFrameType::Presence,
+                            &data,
+                        )
+                        .await
+                        .map_err(|e| NotebookSyncError::SyncError(format!("send presence: {}", e)));
                         let _ = reply.send(result);
                     }
                     SyncCommand::ReceiveFrontendSyncMessage { message, reply } => {
