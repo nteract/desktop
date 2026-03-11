@@ -455,9 +455,9 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/tauri-driver
-          key: cargo-bin-tauri-driver-${{ hashFiles('rust-toolchain.toml') }}
+          key: cargo-bin-tauri-driver-v1-${{ hashFiles('rust-toolchain.toml') }}
           restore-keys: |
-            cargo-bin-tauri-driver-
+            cargo-bin-tauri-driver-v1-
 
       - name: Install tauri-driver
         run: |
@@ -598,9 +598,9 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/tauri-driver
-          key: cargo-bin-tauri-driver-${{ hashFiles('rust-toolchain.toml') }}
+          key: cargo-bin-tauri-driver-v1-${{ hashFiles('rust-toolchain.toml') }}
           restore-keys: |
-            cargo-bin-tauri-driver-
+            cargo-bin-tauri-driver-v1-
 
       - name: Install tauri-driver
         run: |
