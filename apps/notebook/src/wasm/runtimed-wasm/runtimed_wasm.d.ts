@@ -194,6 +194,34 @@ export class NotebookHandle {
      */
     save(): Uint8Array;
     /**
+     * Replace entire cell metadata (last-write-wins).
+     *
+     * Accepts metadata as a JSON object string.
+     * Returns true if the cell was found and updated.
+     */
+    set_cell_metadata(cell_id: string, metadata_json: string): boolean;
+    /**
+     * Set whether the cell outputs should be hidden (JupyterLab convention).
+     *
+     * Sets `metadata.jupyter.outputs_hidden` for the specified cell.
+     * Returns true if the cell was found and updated.
+     */
+    set_cell_outputs_hidden(cell_id: string, hidden: boolean): boolean;
+    /**
+     * Set whether the cell source should be hidden (JupyterLab convention).
+     *
+     * Sets `metadata.jupyter.source_hidden` for the specified cell.
+     * Returns true if the cell was found and updated.
+     */
+    set_cell_source_hidden(cell_id: string, hidden: boolean): boolean;
+    /**
+     * Set the cell tags.
+     *
+     * Accepts a JSON array string (e.g. `'["hide-input", "parameters"]'`).
+     * Returns true if the cell was found and updated.
+     */
+    set_cell_tags(cell_id: string, tags_json: string): boolean;
+    /**
      * Set Conda channels, preserving deps and python.
      * Accepts a JSON array string (e.g. `'["conda-forge","bioconda"]'`).
      */
@@ -212,6 +240,14 @@ export class NotebookHandle {
      * Pass undefined/null to clear the constraint.
      */
     set_uv_requires_python(requires_python?: string | null): void;
+    /**
+     * Update cell metadata at a specific path (e.g., ["jupyter", "source_hidden"]).
+     *
+     * Creates intermediate objects if they don't exist.
+     * Accepts path and value as JSON strings.
+     * Returns true if the cell was found and updated.
+     */
+    update_cell_metadata_at(cell_id: string, path_json: string, value_json: string): boolean;
     /**
      * Update a cell's source text using Automerge Text CRDT (Myers diff).
      */
@@ -263,6 +299,11 @@ export interface InitOutput {
     readonly notebookhandle_get_metadata_snapshot_json: (a: number, b: number) => void;
     readonly notebookhandle_detect_runtime: (a: number, b: number) => void;
     readonly notebookhandle_set_metadata: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly notebookhandle_set_cell_source_hidden: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly notebookhandle_set_cell_outputs_hidden: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly notebookhandle_set_cell_tags: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly notebookhandle_update_cell_metadata_at: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+    readonly notebookhandle_set_cell_metadata: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_add_uv_dependency: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_remove_uv_dependency: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_clear_uv_section: (a: number, b: number) => void;

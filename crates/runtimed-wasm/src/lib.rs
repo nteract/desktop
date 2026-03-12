@@ -294,6 +294,81 @@ impl NotebookHandle {
             .map_err(|e| JsError::new(&format!("set_metadata failed: {}", e)))
     }
 
+    // ── Cell metadata operations ─────────────────────────────────
+
+    /// Set whether the cell source should be hidden (JupyterLab convention).
+    ///
+    /// Sets `metadata.jupyter.source_hidden` for the specified cell.
+    /// Returns true if the cell was found and updated.
+    pub fn set_cell_source_hidden(&mut self, cell_id: &str, hidden: bool) -> Result<bool, JsError> {
+        self.doc
+            .set_cell_source_hidden(cell_id, hidden)
+            .map_err(|e| JsError::new(&format!("set_cell_source_hidden failed: {}", e)))
+    }
+
+    /// Set whether the cell outputs should be hidden (JupyterLab convention).
+    ///
+    /// Sets `metadata.jupyter.outputs_hidden` for the specified cell.
+    /// Returns true if the cell was found and updated.
+    pub fn set_cell_outputs_hidden(
+        &mut self,
+        cell_id: &str,
+        hidden: bool,
+    ) -> Result<bool, JsError> {
+        self.doc
+            .set_cell_outputs_hidden(cell_id, hidden)
+            .map_err(|e| JsError::new(&format!("set_cell_outputs_hidden failed: {}", e)))
+    }
+
+    /// Set the cell tags.
+    ///
+    /// Accepts a JSON array string (e.g. `'["hide-input", "parameters"]'`).
+    /// Returns true if the cell was found and updated.
+    pub fn set_cell_tags(&mut self, cell_id: &str, tags_json: &str) -> Result<bool, JsError> {
+        let tags: Vec<String> = serde_json::from_str(tags_json)
+            .map_err(|e| JsError::new(&format!("invalid tags JSON: {}", e)))?;
+        self.doc
+            .set_cell_tags(cell_id, tags)
+            .map_err(|e| JsError::new(&format!("set_cell_tags failed: {}", e)))
+    }
+
+    /// Update cell metadata at a specific path (e.g., ["jupyter", "source_hidden"]).
+    ///
+    /// Creates intermediate objects if they don't exist.
+    /// Accepts path and value as JSON strings.
+    /// Returns true if the cell was found and updated.
+    pub fn update_cell_metadata_at(
+        &mut self,
+        cell_id: &str,
+        path_json: &str,
+        value_json: &str,
+    ) -> Result<bool, JsError> {
+        let path: Vec<String> = serde_json::from_str(path_json)
+            .map_err(|e| JsError::new(&format!("invalid path JSON: {}", e)))?;
+        let value: serde_json::Value = serde_json::from_str(value_json)
+            .map_err(|e| JsError::new(&format!("invalid value JSON: {}", e)))?;
+        let path_refs: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
+        self.doc
+            .update_cell_metadata_at(cell_id, &path_refs, value)
+            .map_err(|e| JsError::new(&format!("update_cell_metadata_at failed: {}", e)))
+    }
+
+    /// Replace entire cell metadata (last-write-wins).
+    ///
+    /// Accepts metadata as a JSON object string.
+    /// Returns true if the cell was found and updated.
+    pub fn set_cell_metadata(
+        &mut self,
+        cell_id: &str,
+        metadata_json: &str,
+    ) -> Result<bool, JsError> {
+        let metadata: serde_json::Value = serde_json::from_str(metadata_json)
+            .map_err(|e| JsError::new(&format!("invalid metadata JSON: {}", e)))?;
+        self.doc
+            .set_cell_metadata(cell_id, &metadata)
+            .map_err(|e| JsError::new(&format!("set_cell_metadata failed: {}", e)))
+    }
+
     // ── UV dependency operations ─────────────────────────────────
 
     /// Add a UV dependency, deduplicating by package name (case-insensitive).

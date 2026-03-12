@@ -15,9 +15,9 @@
  */
 
 import {
+  assert,
   assertEquals,
   assertExists,
-  assert,
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 
 // @ts-nocheck — wasm-bindgen output doesn't have Deno-compatible type declarations
@@ -446,7 +446,11 @@ Deno.test("Sync: load from bytes + incremental sync with changed flag", () => {
 
   // WASM receives and should report changed=true
   const changed = wasm.receive_sync_message(msg);
-  assertEquals(changed, true, "receive_sync_message should return true when doc changes");
+  assertEquals(
+    changed,
+    true,
+    "receive_sync_message should return true when doc changes",
+  );
 
   // WASM should now have the new cell
   assertEquals(wasm.cell_count(), 2);
@@ -470,12 +474,23 @@ Deno.test("Sync: converged peers have no sync messages", () => {
   syncHandles(daemon, wasm);
 
   // After convergence, neither should have messages
-  assertEquals(daemon.generate_sync_message(), undefined, "Daemon has no message when converged");
-  assertEquals(wasm.generate_sync_message(), undefined, "WASM has no message when converged");
+  assertEquals(
+    daemon.generate_sync_message(),
+    undefined,
+    "Daemon has no message when converged",
+  );
+  assertEquals(
+    wasm.generate_sync_message(),
+    undefined,
+    "WASM has no message when converged",
+  );
 
   // Verify both have identical content
   assertEquals(daemon.cell_count(), wasm.cell_count());
-  assertEquals(daemon.get_cell("cell-1")?.source, wasm.get_cell("cell-1")?.source);
+  assertEquals(
+    daemon.get_cell("cell-1")?.source,
+    wasm.get_cell("cell-1")?.source,
+  );
 
   daemon.free();
   wasm.free();
@@ -501,7 +516,10 @@ Deno.test("Sync: reset_sync_state allows re-sync from scratch", () => {
 
   // After reset, WASM should need to sync again
   const wasmMsg = wasm.generate_sync_message();
-  assertExists(wasmMsg, "After reset_sync_state, WASM should generate sync message");
+  assertExists(
+    wasmMsg,
+    "After reset_sync_state, WASM should generate sync message",
+  );
 
   // Sync should converge with daemon's update
   syncHandles(daemon, wasm);
@@ -656,6 +674,144 @@ Deno.test("create_empty: incremental sync after bootstrap works", () => {
 
   assertEquals(wasm.cell_count(), 2);
   assertEquals(wasm.get_cell("cell-2")?.source, "y = 2");
+
+  daemon.free();
+  wasm.free();
+});
+
+// ── Cell metadata tests ─────────────────────────────────────────────
+
+Deno.test("Cell metadata: set_cell_source_hidden", () => {
+  const handle = new NotebookHandle("metadata-test");
+  handle.add_cell(0, "cell-1", "code");
+  handle.update_source("cell-1", "print('hello')");
+
+  // Initially not hidden
+  const cells1 = JSON.parse(handle.get_cells_json());
+  assertEquals(cells1[0].metadata?.jupyter?.source_hidden, undefined);
+
+  // Hide source
+  const updated = handle.set_cell_source_hidden("cell-1", true);
+  assertEquals(updated, true);
+
+  const cells2 = JSON.parse(handle.get_cells_json());
+  assertEquals(cells2[0].metadata?.jupyter?.source_hidden, true);
+
+  // Unhide source
+  handle.set_cell_source_hidden("cell-1", false);
+  const cells3 = JSON.parse(handle.get_cells_json());
+  assertEquals(cells3[0].metadata?.jupyter?.source_hidden, false);
+
+  handle.free();
+});
+
+Deno.test("Cell metadata: set_cell_outputs_hidden", () => {
+  const handle = new NotebookHandle("metadata-test");
+  handle.add_cell(0, "cell-1", "code");
+
+  // Hide outputs
+  const updated = handle.set_cell_outputs_hidden("cell-1", true);
+  assertEquals(updated, true);
+
+  const cells = JSON.parse(handle.get_cells_json());
+  assertEquals(cells[0].metadata?.jupyter?.outputs_hidden, true);
+
+  // Unhide outputs
+  handle.set_cell_outputs_hidden("cell-1", false);
+  const cells2 = JSON.parse(handle.get_cells_json());
+  assertEquals(cells2[0].metadata?.jupyter?.outputs_hidden, false);
+
+  handle.free();
+});
+
+Deno.test("Cell metadata: set_cell_tags", () => {
+  const handle = new NotebookHandle("metadata-test");
+  handle.add_cell(0, "cell-1", "code");
+
+  // Set tags
+  const updated = handle.set_cell_tags(
+    "cell-1",
+    '["hide-input", "parameters"]',
+  );
+  assertEquals(updated, true);
+
+  const cells = JSON.parse(handle.get_cells_json());
+  assertEquals(cells[0].metadata?.tags, ["hide-input", "parameters"]);
+
+  // Clear tags
+  handle.set_cell_tags("cell-1", "[]");
+  const cells2 = JSON.parse(handle.get_cells_json());
+  assertEquals(cells2[0].metadata?.tags, []);
+
+  handle.free();
+});
+
+Deno.test("Cell metadata: update_cell_metadata_at", () => {
+  const handle = new NotebookHandle("metadata-test");
+  handle.add_cell(0, "cell-1", "code");
+
+  // Set nested value
+  const updated = handle.update_cell_metadata_at(
+    "cell-1",
+    '["custom", "nested", "key"]',
+    '"test-value"',
+  );
+  assertEquals(updated, true);
+
+  const cells = JSON.parse(handle.get_cells_json());
+  assertEquals(cells[0].metadata?.custom?.nested?.key, "test-value");
+
+  handle.free();
+});
+
+Deno.test("Cell metadata: set_cell_metadata (full replacement)", () => {
+  const handle = new NotebookHandle("metadata-test");
+  handle.add_cell(0, "cell-1", "code");
+
+  // Set full metadata
+  const updated = handle.set_cell_metadata(
+    "cell-1",
+    '{"jupyter": {"source_hidden": true}, "custom": "value"}',
+  );
+  assertEquals(updated, true);
+
+  const cells = JSON.parse(handle.get_cells_json());
+  assertEquals(cells[0].metadata?.jupyter?.source_hidden, true);
+  assertEquals(cells[0].metadata?.custom, "value");
+
+  handle.free();
+});
+
+Deno.test("Cell metadata: returns false for non-existent cell", () => {
+  const handle = new NotebookHandle("metadata-test");
+  handle.add_cell(0, "cell-1", "code");
+
+  // Try to update non-existent cell
+  const updated = handle.set_cell_source_hidden("non-existent", true);
+  assertEquals(updated, false);
+
+  handle.free();
+});
+
+Deno.test("Cell metadata: syncs between handles", () => {
+  const daemon = new NotebookHandle("metadata-sync-test");
+  daemon.add_cell(0, "cell-1", "code");
+  daemon.update_source("cell-1", "x = 1");
+
+  const wasm = NotebookHandle.load(daemon.save());
+  syncHandles(daemon, wasm);
+
+  // WASM sets metadata
+  wasm.set_cell_source_hidden("cell-1", true);
+  wasm.set_cell_tags("cell-1", '["hide-input"]');
+
+  // Sync to daemon
+  syncHandles(wasm, daemon);
+
+  // Daemon should have the metadata
+  const daemonCells = JSON.parse(daemon.get_cells_json());
+  assertEquals(daemonCells[0].metadata?.jupyter?.source_hidden, true);
+  assertEquals(daemonCells[0].metadata?.tags, ["hide-input"]);
 
   daemon.free();
   wasm.free();

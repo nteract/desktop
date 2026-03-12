@@ -763,6 +763,114 @@ export class NotebookHandle {
         }
     }
     /**
+     * Replace entire cell metadata (last-write-wins).
+     *
+     * Accepts metadata as a JSON object string.
+     * Returns true if the cell was found and updated.
+     * @param {string} cell_id
+     * @param {string} metadata_json
+     * @returns {boolean}
+     */
+    set_cell_metadata(cell_id, metadata_json) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(cell_id, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(metadata_json, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len1 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_set_cell_metadata(retptr, this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return r0 !== 0;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Set whether the cell outputs should be hidden (JupyterLab convention).
+     *
+     * Sets `metadata.jupyter.outputs_hidden` for the specified cell.
+     * Returns true if the cell was found and updated.
+     * @param {string} cell_id
+     * @param {boolean} hidden
+     * @returns {boolean}
+     */
+    set_cell_outputs_hidden(cell_id, hidden) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(cell_id, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_set_cell_outputs_hidden(retptr, this.__wbg_ptr, ptr0, len0, hidden);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return r0 !== 0;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Set whether the cell source should be hidden (JupyterLab convention).
+     *
+     * Sets `metadata.jupyter.source_hidden` for the specified cell.
+     * Returns true if the cell was found and updated.
+     * @param {string} cell_id
+     * @param {boolean} hidden
+     * @returns {boolean}
+     */
+    set_cell_source_hidden(cell_id, hidden) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(cell_id, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_set_cell_source_hidden(retptr, this.__wbg_ptr, ptr0, len0, hidden);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return r0 !== 0;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Set the cell tags.
+     *
+     * Accepts a JSON array string (e.g. `'["hide-input", "parameters"]'`).
+     * Returns true if the cell was found and updated.
+     * @param {string} cell_id
+     * @param {string} tags_json
+     * @returns {boolean}
+     */
+    set_cell_tags(cell_id, tags_json) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(cell_id, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(tags_json, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len1 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_set_cell_tags(retptr, this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return r0 !== 0;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Set Conda channels, preserving deps and python.
      * Accepts a JSON array string (e.g. `'["conda-forge","bioconda"]'`).
      * @param {string} channels_json
@@ -840,6 +948,38 @@ export class NotebookHandle {
             if (r1) {
                 throw takeObject(r0);
             }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Update cell metadata at a specific path (e.g., ["jupyter", "source_hidden"]).
+     *
+     * Creates intermediate objects if they don't exist.
+     * Accepts path and value as JSON strings.
+     * Returns true if the cell was found and updated.
+     * @param {string} cell_id
+     * @param {string} path_json
+     * @param {string} value_json
+     * @returns {boolean}
+     */
+    update_cell_metadata_at(cell_id, path_json, value_json) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(cell_id, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(path_json, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(value_json, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len2 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_update_cell_metadata_at(retptr, this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return r0 !== 0;
         } finally {
             wasm.__wbindgen_add_to_stack_pointer(16);
         }

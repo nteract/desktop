@@ -29,6 +29,11 @@ export const notebookhandle_get_metadata: (a: number, b: number, c: number, d: n
 export const notebookhandle_get_metadata_snapshot_json: (a: number, b: number) => void;
 export const notebookhandle_detect_runtime: (a: number, b: number) => void;
 export const notebookhandle_set_metadata: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+export const notebookhandle_set_cell_source_hidden: (a: number, b: number, c: number, d: number, e: number) => void;
+export const notebookhandle_set_cell_outputs_hidden: (a: number, b: number, c: number, d: number, e: number) => void;
+export const notebookhandle_set_cell_tags: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+export const notebookhandle_update_cell_metadata_at: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+export const notebookhandle_set_cell_metadata: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const notebookhandle_add_uv_dependency: (a: number, b: number, c: number, d: number) => void;
 export const notebookhandle_remove_uv_dependency: (a: number, b: number, c: number, d: number) => void;
 export const notebookhandle_clear_uv_section: (a: number, b: number) => void;
