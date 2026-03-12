@@ -1088,7 +1088,7 @@ async fn test_pipe_mode_forwards_sync_frames() {
 }
 
 #[tokio::test]
-async fn test_pipe_mode_forwards_broadcast_frames() {
+async fn test_pipe_mode_only_pipes_allowed_frame_types() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
@@ -1115,7 +1115,10 @@ async fn test_pipe_mode_forwards_broadcast_frames() {
         .await
         .unwrap();
 
-    // Second client adds a cell to trigger sync activity
+    // Second client adds a cell to trigger sync activity.
+    // Note: this only produces AutomergeSync frames — actual Broadcast frames
+    // require a kernel launch, which is covered by E2E tests. This test
+    // verifies the type-byte filter, not broadcast-specific forwarding.
     let mut client2 =
         NotebookSyncClient::connect(socket_path.clone(), "pipe-broadcast-test".to_string())
             .await
@@ -1289,7 +1292,7 @@ async fn test_pipe_mode_preserves_frame_order() {
         .filter(|f| !f.is_empty() && f[0] == frame_types::AUTOMERGE_SYNC)
         .collect();
 
-    // Should receive multiple sync frames — at least one per add_cell/update_source batch
+    // Should receive multiple sync frames
     assert!(
         sync_frames.len() >= 3,
         "expected at least 3 sync frames for 3 cell additions + source updates, got {}",
@@ -1304,6 +1307,35 @@ async fn test_pipe_mode_preserves_frame_order() {
             i
         );
     }
+
+    // Verify no duplicate frames (coalescing would violate the ordering contract)
+    let unique_count = {
+        let mut seen = std::collections::HashSet::new();
+        sync_frames
+            .iter()
+            .filter(|f| seen.insert(f.to_vec()))
+            .count()
+    };
+    assert_eq!(
+        unique_count,
+        sync_frames.len(),
+        "pipe should not coalesce or duplicate sync frames"
+    );
+
+    // Connect a third full-peer client and verify convergence — this proves
+    // the daemon processed all mutations and that the sync traffic the pipe
+    // received (in channel order) represents the correct state transitions.
+    let client3 = NotebookSyncClient::connect(socket_path.clone(), "pipe-order-test".to_string())
+        .await
+        .unwrap();
+    let cells = client3.get_cells();
+    assert_eq!(cells.len(), 3, "third client should see all 3 cells");
+    assert_eq!(cells[0].id, "cell-1");
+    assert_eq!(cells[1].id, "cell-2");
+    assert_eq!(cells[2].id, "cell-3");
+    assert_eq!(cells[0].source, "a = 1");
+    assert_eq!(cells[1].source, "b = 2");
+    assert_eq!(cells[2].source, "c = 3");
 
     // Shutdown
     pool_client.shutdown().await.ok();
