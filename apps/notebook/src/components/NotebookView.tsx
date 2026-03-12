@@ -160,7 +160,9 @@ function CellDragPreview({ cell }: { cell: NotebookCell | undefined }) {
   const ribbonColor =
     cell.cell_type === "code"
       ? "bg-sky-400 dark:bg-sky-500"
-      : "bg-emerald-400 dark:bg-emerald-500";
+      : cell.cell_type === "raw"
+        ? "bg-rose-400 dark:bg-rose-500"
+        : "bg-emerald-400 dark:bg-emerald-500";
 
   return (
     <div className="w-80 rounded-lg bg-background shadow-2xl ring-1 ring-border/50 rotate-1 scale-[1.02] overflow-hidden">
