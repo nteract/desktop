@@ -135,9 +135,17 @@ export function CodeCell({
     const register = () => {
       if (editorRef.current) {
         registerEditor(cell.id, {
-          focus: () => editorRef.current?.focus(),
-          setCursorPosition: (position) =>
-            editorRef.current?.setCursorPosition(position),
+          focus: () => {
+            const handle = editorRef.current;
+            const hasView = handle?.getEditor?.() != null;
+            console.debug(
+              `[cell-nav] CodeCell.focus callback: cell=${cell.id.slice(0, 8)} hasHandle=${!!handle} hasView=${hasView}`,
+            );
+            handle?.focus();
+          },
+          setCursorPosition: (position) => {
+            editorRef.current?.setCursorPosition(position);
+          },
         });
         return true;
       }
