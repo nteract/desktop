@@ -812,11 +812,26 @@ impl RoomKernel {
 
                             JupyterMessageContent::ExecuteInput(input) => {
                                 if let Some(ref cid) = cell_id {
-                                    // Persist execution count in Automerge before notifying clients
-                                    // so UI reads the updated value immediately.
+                                    // Clear terminal emulator state for this cell before new execution
+                                    {
+                                        let mut terminals = stream_terminals.lock().await;
+                                        terminals.clear(cid);
+                                    }
+
+                                    // Clear outputs and set execution count in Automerge before
+                                    // notifying clients so UI reads the updated value immediately.
+                                    // Clearing outputs here (when execution truly starts) ensures
+                                    // a single source of truth - both frontend and MCP-triggered
+                                    // executions get outputs cleared authoritatively by the daemon.
                                     let execution_count = input.execution_count.0 as i64;
                                     let persist_bytes = {
                                         let mut doc_guard = doc.write().await;
+                                        if let Err(e) = doc_guard.clear_outputs(cid) {
+                                            warn!(
+                                                "[kernel-manager] Failed to clear outputs in doc: {}",
+                                                e
+                                            );
+                                        }
                                         if let Err(e) = doc_guard
                                             .set_execution_count(cid, &execution_count.to_string())
                                         {
