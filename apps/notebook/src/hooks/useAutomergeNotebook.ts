@@ -350,7 +350,7 @@ export function useAutomergeNotebook() {
   }, []);
 
   const addCell = useCallback(
-    (cellType: "code" | "markdown", afterCellId?: string | null) => {
+    (cellType: "code" | "markdown" | "raw", afterCellId?: string | null) => {
       const handle = handleRef.current;
 
       // Don't allow adding cells while bootstrapping or if no handle

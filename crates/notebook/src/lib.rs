@@ -3888,6 +3888,28 @@ pub fn run(
                         );
                     }
                 }
+                crate::menu::MENU_INSERT_CODE_CELL => {
+                    if let Some(window) = focused_window(app) {
+                        let _ =
+                            emit_to_label::<_, _, _>(&window, window.label(), "menu:insert-cell", "code");
+                    }
+                }
+                crate::menu::MENU_INSERT_MARKDOWN_CELL => {
+                    if let Some(window) = focused_window(app) {
+                        let _ = emit_to_label::<_, _, _>(
+                            &window,
+                            window.label(),
+                            "menu:insert-cell",
+                            "markdown",
+                        );
+                    }
+                }
+                crate::menu::MENU_INSERT_RAW_CELL => {
+                    if let Some(window) = focused_window(app) {
+                        let _ =
+                            emit_to_label::<_, _, _>(&window, window.label(), "menu:insert-cell", "raw");
+                    }
+                }
                 crate::menu::MENU_CHECK_FOR_UPDATES => {
                     if let Some(window) = focused_window(app) {
                         let _ = emit_to_label::<_, _, _>(

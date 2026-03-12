@@ -33,6 +33,7 @@ import type { CodeCell as CodeCellType, NotebookCell } from "../types";
 import { CellSkeleton } from "./CellSkeleton";
 import { CodeCell } from "./CodeCell";
 import { MarkdownCell } from "./MarkdownCell";
+import { RawCell } from "./RawCell";
 
 interface NotebookViewProps {
   cells: NotebookCell[];
@@ -159,7 +160,9 @@ function CellDragPreview({ cell }: { cell: NotebookCell | undefined }) {
   const ribbonColor =
     cell.cell_type === "code"
       ? "bg-sky-400 dark:bg-sky-500"
-      : "bg-emerald-400 dark:bg-emerald-500";
+      : cell.cell_type === "raw"
+        ? "bg-rose-400 dark:bg-rose-500"
+        : "bg-emerald-400 dark:bg-emerald-500";
 
   return (
     <div className="w-80 rounded-lg bg-background shadow-2xl ring-1 ring-border/50 rotate-1 scale-[1.02] overflow-hidden">
@@ -464,13 +467,24 @@ function NotebookViewContent({
         );
       }
 
-      // Raw cells rendered as plain text for now
+      // Raw cells
       return (
-        <div key={cell.id} className="px-4 py-2">
-          <pre className="text-sm text-muted-foreground whitespace-pre-wrap">
-            {cell.source}
-          </pre>
-        </div>
+        <RawCell
+          key={cell.id}
+          cell={cell}
+          isFocused={isFocused}
+          isPreviousCellFromFocused={cell.id === previousCellId}
+          searchQuery={searchQuery}
+          onFocus={() => onFocusCell(cell.id)}
+          onUpdateSource={(source) => onUpdateCellSource(cell.id, source)}
+          onDelete={() => onDeleteCell(cell.id)}
+          onFocusPrevious={onFocusPrevious}
+          onFocusNext={onFocusNext}
+          onInsertCellAfter={() => onAddCell("code", cell.id)}
+          isLastCell={index === cells.length - 1}
+          dragHandleProps={dragHandleProps}
+          isDragging={isDragging}
+        />
       );
     },
     [

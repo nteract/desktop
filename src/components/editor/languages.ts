@@ -4,6 +4,7 @@ import { json } from "@codemirror/lang-json";
 import { markdown } from "@codemirror/lang-markdown";
 import { python } from "@codemirror/lang-python";
 import { sql } from "@codemirror/lang-sql";
+import { yaml } from "@codemirror/lang-yaml";
 import { indentUnit } from "@codemirror/language";
 import type { Extension } from "@codemirror/state";
 
@@ -28,6 +29,8 @@ export type SupportedLanguage =
   | "javascript"
   | "typescript"
   | "json"
+  | "yaml"
+  | "toml"
   | "plain";
 
 /**
@@ -60,6 +63,10 @@ export function getLanguageExtension(language: SupportedLanguage): Extension {
       return javascript({ typescript: true });
     case "json":
       return json();
+    case "yaml":
+      return yaml();
+    case "toml":
+      return []; // plain text fallback - no official CodeMirror package
     default:
       return [];
   }
@@ -135,6 +142,8 @@ export const languageDisplayNames: Record<SupportedLanguage, string> = {
   javascript: "JavaScript",
   typescript: "TypeScript",
   json: "JSON",
+  yaml: "YAML",
+  toml: "TOML",
   plain: "Plain Text",
 };
 
@@ -154,6 +163,9 @@ export const fileExtensionToLanguage: Record<string, SupportedLanguage> = {
   ".ts": "typescript",
   ".tsx": "typescript",
   ".json": "json",
+  ".yaml": "yaml",
+  ".yml": "yaml",
+  ".toml": "toml",
   ".txt": "plain",
 };
 

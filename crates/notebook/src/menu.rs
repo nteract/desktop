@@ -30,6 +30,11 @@ pub const MENU_ZOOM_RESET: &str = "zoom_reset";
 pub const MENU_RUN_ALL_CELLS: &str = "run_all_cells";
 pub const MENU_RESTART_AND_RUN_ALL: &str = "restart_and_run_all";
 
+// Menu item IDs for cell operations
+pub const MENU_INSERT_CODE_CELL: &str = "insert_code_cell";
+pub const MENU_INSERT_MARKDOWN_CELL: &str = "insert_markdown_cell";
+pub const MENU_INSERT_RAW_CELL: &str = "insert_raw_cell";
+
 // Menu item IDs for CLI installation and settings
 pub const MENU_INSTALL_CLI: &str = "install_cli";
 pub const MENU_CHECK_FOR_UPDATES: &str = "check_for_updates";
@@ -229,6 +234,31 @@ pub fn create_menu(
     edit_menu.append(&PredefinedMenuItem::paste(app, None)?)?;
     edit_menu.append(&PredefinedMenuItem::select_all(app, None)?)?;
     menu.append(&edit_menu)?;
+
+    // Cell menu
+    let cell_menu = Submenu::new(app, "Cell", true)?;
+    cell_menu.append(&MenuItem::with_id(
+        app,
+        MENU_INSERT_CODE_CELL,
+        "Insert Code Cell",
+        true,
+        Some("CmdOrCtrl+Shift+C"),
+    )?)?;
+    cell_menu.append(&MenuItem::with_id(
+        app,
+        MENU_INSERT_MARKDOWN_CELL,
+        "Insert Markdown Cell",
+        true,
+        Some("CmdOrCtrl+Shift+M"),
+    )?)?;
+    cell_menu.append(&MenuItem::with_id(
+        app,
+        MENU_INSERT_RAW_CELL,
+        "Insert Raw Cell",
+        true,
+        Some("CmdOrCtrl+Shift+R"),
+    )?)?;
+    menu.append(&cell_menu)?;
 
     // Runtime menu
     let kernel_menu = Submenu::new(app, "Runtime", true)?;
