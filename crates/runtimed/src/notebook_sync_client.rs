@@ -713,9 +713,11 @@ pub struct NotebookSyncClient<S> {
     pending_broadcasts: Vec<NotebookBroadcast>,
     /// Raw AutomergeSync frame payloads buffered during request/response cycles.
     /// In pipe mode, `wait_for_response_with_broadcast` consumes sync frames from
-    /// the socket that should be forwarded to the WASM. These are buffered here
-    /// and drained by `run_sync_task` after each `SendRequest` completes.
-    pending_sync_frames: Vec<Vec<u8>>,
+    /// the socket that should be forwarded to the frontend. These are buffered
+    /// here and drained by `run_sync_task` after each `SendRequest` completes.
+    /// Each entry is a fully-typed frame (type byte + payload) that can include
+    /// AutomergeSync, Broadcast, or Presence frames.
+    pending_pipe_frames: Vec<Vec<u8>>,
 }
 
 #[cfg(unix)]
@@ -1242,7 +1244,7 @@ where
             stream,
             notebook_id,
             pending_broadcasts,
-            pending_sync_frames: Vec::new(),
+            pending_pipe_frames: Vec::new(),
         })
     }
 
@@ -1319,7 +1321,7 @@ where
                 stream,
                 notebook_id,
                 pending_broadcasts: Vec::new(),
-                pending_sync_frames: Vec::new(),
+                pending_pipe_frames: Vec::new(),
             }
         } else {
             Self::do_initial_sync(stream, notebook_id).await?
@@ -1407,7 +1409,7 @@ where
                 stream,
                 notebook_id,
                 pending_broadcasts: Vec::new(),
-                pending_sync_frames: Vec::new(),
+                pending_pipe_frames: Vec::new(),
             }
         } else {
             Self::do_initial_sync(stream, notebook_id).await?
@@ -1527,7 +1529,7 @@ where
             stream,
             notebook_id,
             pending_broadcasts,
-            pending_sync_frames: Vec::new(),
+            pending_pipe_frames: Vec::new(),
         })
     }
 
@@ -2311,10 +2313,10 @@ where
                         // run_sync_task can forward them through the unified pipe.
                         // Without this, frames arriving during request/response
                         // (e.g. run-all sending 5x ClearOutputs) are consumed
-                        // by the relay and never reach the WASM.
+                        // by the relay and never reach the frontend.
                         let mut typed = vec![NotebookFrameType::AutomergeSync as u8];
                         typed.extend_from_slice(&frame.payload);
-                        self.pending_sync_frames.push(typed);
+                        self.pending_pipe_frames.push(typed);
 
                         // Also merge into the relay's local doc (needed for
                         // non-pipe mode / runtimed-py, harmless in pipe mode).
@@ -2330,7 +2332,7 @@ where
                         // Buffer as typed frame bytes for the unified pipe.
                         let mut typed = vec![NotebookFrameType::Broadcast as u8];
                         typed.extend_from_slice(&frame.payload);
-                        self.pending_sync_frames.push(typed);
+                        self.pending_pipe_frames.push(typed);
 
                         // Also deliver via broadcast_tx for non-pipe consumers.
                         if let Ok(broadcast) =
@@ -2350,7 +2352,7 @@ where
                         // Buffer as typed frame bytes for the unified pipe.
                         let mut typed = vec![NotebookFrameType::Presence as u8];
                         typed.extend_from_slice(&frame.payload);
-                        self.pending_sync_frames.push(typed);
+                        self.pending_pipe_frames.push(typed);
                     }
                     NotebookFrameType::Request => {
                         // Unexpected - server shouldn't send requests
@@ -2819,13 +2821,13 @@ async fn run_sync_task<S>(
                         // the frontend; without this, run-all breaks because
                         // sync frames for cleared outputs get consumed.
                         if let Some(ref pipe) = pipe_channel {
-                            for frame_bytes in client.pending_sync_frames.drain(..) {
-                                let mut typed = vec![NotebookFrameType::AutomergeSync as u8];
-                                typed.extend_from_slice(&frame_bytes);
-                                let _ = pipe.frame_tx.send(typed);
+                            // pending_pipe_frames already stores fully-typed frames
+                            // (type byte + payload). Forward as-is — no re-prefixing.
+                            for frame_bytes in client.pending_pipe_frames.drain(..) {
+                                let _ = pipe.frame_tx.send(frame_bytes);
                             }
                         } else {
-                            client.pending_sync_frames.clear();
+                            client.pending_pipe_frames.clear();
                         }
 
                         // AutomergeSync frames may have been applied to client.doc
