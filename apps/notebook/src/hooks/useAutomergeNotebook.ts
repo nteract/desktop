@@ -142,7 +142,7 @@ export function useAutomergeNotebook() {
    * Any IPC failures are logged and do not cause `bootstrap()` to reject.
    *
    * Loading state is set to `true` here and is cleared when the first
-   * `automerge:from-daemon` message is received, regardless of its
+   * `daemon:frame` sync message is received, regardless of its
    * `changed` flag.
    */
   const bootstrap = useCallback(async () => {
@@ -463,8 +463,11 @@ export function useAutomergeNotebook() {
       if (handle) {
         const msg = handle.generate_sync_message();
         if (msg) {
-          await invoke("send_automerge_sync", {
-            syncMessage: Array.from(msg),
+          const frameData = new Uint8Array(1 + msg.length);
+          frameData[0] = frame_types.AUTOMERGE_SYNC;
+          frameData.set(msg, 1);
+          await invoke("send_frame", {
+            frameData: Array.from(frameData),
           });
         }
       }

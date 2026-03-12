@@ -376,7 +376,8 @@ impl NotebookHandle {
     /// Generate a sync message to send to the daemon (via the Tauri relay pipe).
     ///
     /// Returns the message as a byte array, or undefined if already in sync.
-    /// The caller should send these bytes via `invoke("send_automerge_sync", { syncMessage })`.
+    /// The caller should prepend the frame type byte (0x00 for AutomergeSync)
+    /// and send via `invoke("send_frame", { frameData })`.
     pub fn generate_sync_message(&mut self) -> Option<Vec<u8>> {
         self.doc
             .generate_sync_message(&mut self.sync_state)

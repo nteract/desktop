@@ -2370,25 +2370,6 @@ async fn get_automerge_doc_bytes(
     }
 }
 
-/// Receive a raw Automerge sync message from the frontend.
-///
-/// The message is forwarded to the daemon via the relay.
-#[tauri::command]
-async fn send_automerge_sync(
-    window: tauri::Window,
-    sync_message: Vec<u8>,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<(), String> {
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-    let guard = notebook_sync.lock().await;
-    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
-
-    handle
-        .receive_frontend_sync_message(sync_message)
-        .await
-        .map_err(|e| format!("Failed to relay sync message: {}", e))
-}
-
 /// Send a typed frame to the daemon.
 ///
 /// The first byte is the frame type, the rest is the payload.
@@ -3471,7 +3452,6 @@ pub fn run(
             complete_via_daemon,
             reconnect_to_daemon,
             get_automerge_doc_bytes,
-            send_automerge_sync,
             send_frame,
             // App update support
             install_daemon_for_update,
