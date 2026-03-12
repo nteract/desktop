@@ -9,10 +9,13 @@ use std::time::Duration;
 
 use runtimed::client::PoolClient;
 use runtimed::daemon::{Daemon, DaemonConfig};
-use runtimed::notebook_sync_client::NotebookSyncClient;
+use runtimed::notebook_doc::frame_types;
+use runtimed::notebook_sync_client::{NotebookSyncClient, PipeChannel};
+use runtimed::protocol::{NotebookRequest, NotebookResponse};
 use runtimed::EnvType;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::mpsc;
 use tokio::time::sleep;
 
 /// Write a test .ipynb notebook file with the given cells.
@@ -1010,5 +1013,299 @@ async fn test_legacy_client_no_preamble() {
 
     // Shutdown
     client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
+async fn test_pipe_mode_forwards_sync_frames() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+
+    // Create a pipe channel
+    let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let pipe = Some(PipeChannel { frame_tx });
+
+    // Connect pipe client
+    let (_handle, _receiver, _broadcast_rx, _cells, _metadata) =
+        NotebookSyncClient::connect_split_with_pipe(
+            socket_path.clone(),
+            "pipe-sync-test".to_string(),
+            None,
+            None,
+            pipe,
+        )
+        .await
+        .unwrap();
+
+    // Second client (full peer) adds a cell and updates source
+    let mut client2 =
+        NotebookSyncClient::connect(socket_path.clone(), "pipe-sync-test".to_string())
+            .await
+            .unwrap();
+    client2.add_cell(0, "cell-1", "code").await.unwrap();
+    client2
+        .update_source("cell-1", "print('hello from pipe test')")
+        .await
+        .unwrap();
+
+    // Wait for sync propagation
+    sleep(Duration::from_millis(200)).await;
+
+    // Drain frames from the pipe
+    let mut frames = Vec::new();
+    loop {
+        match tokio::time::timeout(Duration::from_millis(500), frame_rx.recv()).await {
+            Ok(Some(frame)) => frames.push(frame),
+            _ => break,
+        }
+    }
+
+    assert!(!frames.is_empty(), "pipe should receive at least one frame");
+
+    // Verify at least one frame is an AutomergeSync frame
+    let sync_count = frames
+        .iter()
+        .filter(|f| !f.is_empty() && f[0] == frame_types::AUTOMERGE_SYNC)
+        .count();
+    assert!(
+        sync_count > 0,
+        "pipe should contain at least one AUTOMERGE_SYNC frame, got {} frames total",
+        frames.len()
+    );
+
+    // Shutdown
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
+async fn test_pipe_mode_forwards_broadcast_frames() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+
+    let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let pipe = Some(PipeChannel { frame_tx });
+
+    let (_handle, _receiver, _broadcast_rx, _cells, _metadata) =
+        NotebookSyncClient::connect_split_with_pipe(
+            socket_path.clone(),
+            "pipe-broadcast-test".to_string(),
+            None,
+            None,
+            pipe,
+        )
+        .await
+        .unwrap();
+
+    // Second client adds a cell to trigger sync activity
+    let mut client2 =
+        NotebookSyncClient::connect(socket_path.clone(), "pipe-broadcast-test".to_string())
+            .await
+            .unwrap();
+    client2.add_cell(0, "bc-cell", "code").await.unwrap();
+    client2.update_source("bc-cell", "x = 1").await.unwrap();
+
+    sleep(Duration::from_millis(200)).await;
+
+    // Drain all frames
+    let mut frames = Vec::new();
+    loop {
+        match tokio::time::timeout(Duration::from_millis(500), frame_rx.recv()).await {
+            Ok(Some(frame)) => frames.push(frame),
+            _ => break,
+        }
+    }
+
+    assert!(
+        !frames.is_empty(),
+        "pipe should receive frames after peer activity"
+    );
+
+    // Every piped frame must have a valid type byte from the forwarded set:
+    // AutomergeSync, Broadcast, or Presence — never Request or Response.
+    let allowed_types = [
+        frame_types::AUTOMERGE_SYNC,
+        frame_types::BROADCAST,
+        frame_types::PRESENCE,
+    ];
+    for (i, frame) in frames.iter().enumerate() {
+        assert!(!frame.is_empty(), "frame {} should not be empty", i);
+        assert!(
+            allowed_types.contains(&frame[0]),
+            "frame {} has unexpected type byte 0x{:02x} — only AUTOMERGE_SYNC, BROADCAST, and PRESENCE are piped",
+            i,
+            frame[0]
+        );
+    }
+
+    // Shutdown
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
+async fn test_pipe_mode_does_not_forward_response_frames() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+
+    let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let pipe = Some(PipeChannel { frame_tx });
+
+    let (handle, _receiver, _broadcast_rx, _cells, _metadata) =
+        NotebookSyncClient::connect_split_with_pipe(
+            socket_path.clone(),
+            "pipe-response-test".to_string(),
+            None,
+            None,
+            pipe,
+        )
+        .await
+        .unwrap();
+
+    // Send a request that produces a Response frame
+    let response = tokio::time::timeout(
+        Duration::from_secs(5),
+        handle.send_request(NotebookRequest::GetDocBytes {}),
+    )
+    .await
+    .expect("request should not time out")
+    .expect("request should succeed");
+
+    // Verify the response came back normally through the handle
+    assert!(
+        matches!(response, NotebookResponse::DocBytes { .. }),
+        "should receive DocBytes response"
+    );
+
+    // Wait briefly for any straggling frames
+    sleep(Duration::from_millis(200)).await;
+
+    // Drain all frames from the pipe
+    let mut frames = Vec::new();
+    loop {
+        match tokio::time::timeout(Duration::from_millis(500), frame_rx.recv()).await {
+            Ok(Some(frame)) => frames.push(frame),
+            _ => break,
+        }
+    }
+
+    // None of the piped frames should be Response frames
+    for (i, frame) in frames.iter().enumerate() {
+        assert!(
+            frame.is_empty() || frame[0] != frame_types::RESPONSE,
+            "frame {} is a RESPONSE (0x{:02x}) — responses must not be piped",
+            i,
+            frame_types::RESPONSE
+        );
+    }
+
+    // Shutdown
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
+async fn test_pipe_mode_preserves_frame_order() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
+
+    let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let pipe = Some(PipeChannel { frame_tx });
+
+    let (_handle, _receiver, _broadcast_rx, _cells, _metadata) =
+        NotebookSyncClient::connect_split_with_pipe(
+            socket_path.clone(),
+            "pipe-order-test".to_string(),
+            None,
+            None,
+            pipe,
+        )
+        .await
+        .unwrap();
+
+    // Second client rapidly adds multiple cells
+    let mut client2 =
+        NotebookSyncClient::connect(socket_path.clone(), "pipe-order-test".to_string())
+            .await
+            .unwrap();
+    client2.add_cell(0, "cell-1", "code").await.unwrap();
+    client2.add_cell(1, "cell-2", "code").await.unwrap();
+    client2.add_cell(2, "cell-3", "code").await.unwrap();
+    client2.update_source("cell-1", "a = 1").await.unwrap();
+    client2.update_source("cell-2", "b = 2").await.unwrap();
+    client2.update_source("cell-3", "c = 3").await.unwrap();
+
+    // Wait for sync propagation
+    sleep(Duration::from_millis(200)).await;
+
+    // Collect all frames
+    let mut frames = Vec::new();
+    loop {
+        match tokio::time::timeout(Duration::from_millis(500), frame_rx.recv()).await {
+            Ok(Some(frame)) => frames.push(frame),
+            _ => break,
+        }
+    }
+
+    // Filter to sync frames only
+    let sync_frames: Vec<&Vec<u8>> = frames
+        .iter()
+        .filter(|f| !f.is_empty() && f[0] == frame_types::AUTOMERGE_SYNC)
+        .collect();
+
+    // Should receive multiple sync frames — at least one per add_cell/update_source batch
+    assert!(
+        sync_frames.len() >= 3,
+        "expected at least 3 sync frames for 3 cell additions + source updates, got {}",
+        sync_frames.len()
+    );
+
+    // All sync frame payloads must be non-trivial (type byte + automerge data)
+    for (i, frame) in sync_frames.iter().enumerate() {
+        assert!(
+            frame.len() > 1,
+            "sync frame {} should have payload beyond the type byte",
+            i
+        );
+    }
+
+    // Shutdown
+    pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
