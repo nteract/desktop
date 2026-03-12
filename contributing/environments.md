@@ -129,8 +129,8 @@ graph TB
     UCD -->|"invoke(detect_pixi_toml)"| DETP
 
     %% Daemon broadcasts back to frontend
-    NSS -.->|"daemon:broadcast {KernelLaunched, env_source}"| UDK
-    KM -.->|"daemon:broadcast {KernelStatus, ExecutionStarted, ExecutionDone}"| UDK
+    NSS -.->|"notebook:broadcast {KernelLaunched, env_source}"| UDK
+    KM -.->|"notebook:broadcast {KernelStatus, ExecutionStarted, ExecutionDone}"| UDK
     VNT -.->|trust status| UD
 
     %% Environment creation → external tools
@@ -210,7 +210,7 @@ sequenceDiagram
     KM-->>DM: Kernel ready
 
     DM-->>TC: KernelLaunched response
-    TC-->>FE: daemon:broadcast {KernelLaunched, env_source}
+    TC-->>FE: notebook:broadcast {KernelLaunched, env_source}
 ```
 
 ### Daemon Pool Architecture
@@ -295,7 +295,7 @@ graph TB
 
 The diagrams show two main layers:
 
-1. **Frontend** (blue) — React hooks that invoke Tauri commands and listen for `daemon:broadcast` events (kernel status, execution lifecycle) and `automerge:from-daemon` events (document state including outputs via Automerge sync). `useDaemonKernel.ts` handles kernel lifecycle via the daemon. The daemon sends `Output` broadcasts and `useDaemonKernel.ts` processes them (blob resolution), but the `onOutput` rendering callback is a no-op — output **rendering** is driven by Automerge sync (`materializeCells`).
+1. **Frontend** (blue) — React hooks that invoke Tauri commands and listen for `notebook:broadcast` events (kernel status, execution lifecycle) and `notebook:frame` events (document state including outputs via Automerge sync, demuxed by WASM). `useDaemonKernel.ts` handles kernel lifecycle via the daemon. The daemon sends `Output` broadcasts and `useDaemonKernel.ts` processes them (blob resolution), but the `onOutput` rendering callback is a no-op — output **rendering** is driven by Automerge sync (`materializeCells`).
 
 2. **runtimed Daemon** (indigo) — A singleton background process that owns kernel processes and manages prewarmed UV and Conda environment pools. The daemon runs the detection priority chain: inline deps first, then closest project file, then prewarmed pool. Communicates via length-prefixed JSON over Unix domain sockets (or Windows named pipes). Also runs an Automerge CRDT sync server for cross-window settings and notebook state.
 
@@ -470,7 +470,7 @@ Three UI components manage dependencies for different runtimes:
 | `DenoDependencyHeader.tsx` | — | Deno configuration and deno.json detection |
 
 The kernel lifecycle is managed by `useDaemonKernel.ts`, which:
-- Listens for `daemon:broadcast` events from the backend
+- Listens for `notebook:broadcast` events (re-emitted by `useAutomergeNotebook` after WASM frame demux)
 - Captures the `env_source` string (e.g. `"uv:pyproject"`, `"conda:pixi"`) from `KernelLaunched` responses
 - Tracks kernel status and execution queue
 - Provides `launchKernel()`, `executeCell()`, `syncEnvironment()` methods

@@ -104,6 +104,8 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
 |------|------|
 | `useAutomergeNotebook` | Owns WASM NotebookHandle, drives cell state |
 | `useDaemonKernel` | Kernel execution, status broadcasts |
+| `usePresence` | Remote cursor/selection tracking via presence frames |
+| `useEnvProgress` | Environment setup progress tracking |
 | `useDependencies` | UV dependency management |
 | `useCondaDependencies` | Conda dependency management |
 | `useManifestResolver` | Resolves blob hashes to output data |
@@ -115,33 +117,38 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
 ┌─────────────────────────────────────────────────────────────────┐
 │ Frontend                                                        │
 │                                                                 │
-│  ┌──────────────┐    sync     ┌──────────────────┐             │
-│  │ NotebookHandle│◄──────────►│ Daemon           │             │
-│  │ (WASM)       │             │ (notebook room)  │             │
-│  └──────┬───────┘             └────────┬─────────┘             │
-│         │                              │                        │
-│         │ get_cells_json()             │ kernel broadcasts      │
-│         ▼                              ▼                        │
-│  ┌──────────────┐             ┌──────────────────┐             │
-│  │ materialize- │             │ useDaemonKernel  │             │
-│  │ Cells()      │             │                  │             │
-│  └──────┬───────┘             └────────┬─────────┘             │
-│         │                              │                        │
-│         │ NotebookCell[]               │ outputs, status        │
-│         ▼                              ▼                        │
-│  ┌─────────────────────────────────────────────────┐           │
-│  │ React Components                                 │           │
-│  │ (CellContainer → CodeCell/MarkdownCell → Outputs)│           │
-│  └─────────────────────────────────────────────────┘           │
+│  Tauri relay ── "notebook:frame" ──► useAutomergeNotebook       │
+│                                      (WASM receive_frame demux) │
+│                                        │          │         │   │
+│                          sync_applied ─┘          │         │   │
+│                          ▼                        │         │   │
+│                   ┌──────────────┐                │         │   │
+│                   │ materialize- │    "notebook:   │  "notebook: │
+│                   │ Cells()      │    broadcast"   │  presence"  │
+│                   └──────┬───────┘        │         │       │   │
+│                          │                ▼         │       │   │
+│                          │        ┌──────────────┐  │       │   │
+│                          │        │useDaemonKernel│  │       │   │
+│                          │        │useEnvProgress │  │       │   │
+│                          │        └──────┬───────┘  │       │   │
+│                          │               │          ▼       │   │
+│                          │               │   ┌────────────┐ │   │
+│                          │               │   │usePresence │ │   │
+│                          │               │   └─────┬──────┘ │   │
+│                          ▼               ▼         ▼        │   │
+│  ┌─────────────────────────────────────────────────────────┐│   │
+│  │ React Components                                         ││   │
+│  │ (CellContainer → CodeCell/MarkdownCell → Outputs)        ││   │
+│  └─────────────────────────────────────────────────────────┘│   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-1. **NotebookHandle (WASM)** — Local Automerge doc for instant cell edits
-2. **materializeCells()** — Converts WASM cell snapshots to React-friendly objects
-3. **useDaemonKernel** — Receives kernel outputs and status via daemon broadcasts
-4. **React components** — Render cells and outputs
+1. **useAutomergeNotebook** — Single ingress point. Listens for `notebook:frame`, demuxes via WASM `receive_frame()`, applies sync locally, re-emits `notebook:broadcast` and `notebook:presence` for downstream hooks
+2. **materializeCells()** — Converts WASM cell snapshots to React-friendly objects on sync changes
+3. **useDaemonKernel / useEnvProgress** — Consume `notebook:broadcast` events for kernel status, outputs, and environment progress
+4. **usePresence** — Consumes `notebook:presence` events for remote cursor/selection state
 
-Cell mutations (add, delete, edit) go through the WASM handle for instant response, then sync to the daemon. Execution requests go to the daemon, which reads from the synced document.
+Cell mutations (add, delete, edit) go through the WASM handle for instant response, then sync to the daemon via `invoke("send_frame")`. Execution requests go to the daemon via dedicated Tauri commands.
 
 ## Key Files
 
@@ -151,5 +158,7 @@ Cell mutations (add, delete, edit) go through the WASM handle for instant respon
 | `apps/notebook/src/App.tsx` | Root component, provider setup |
 | `apps/notebook/src/hooks/useAutomergeNotebook.ts` | WASM notebook sync |
 | `apps/notebook/src/lib/materialize-cells.ts` | WASM → React conversion |
+| `apps/notebook/src/hooks/usePresence.ts` | Remote presence tracking |
+| `apps/notebook/src/lib/frame-types.ts` | Frame type constants (mirrors Rust) |
 | `src/components/outputs/media-router.tsx` | Output type dispatch |
 | `src/components/editor/codemirror-editor.tsx` | Main editor |
