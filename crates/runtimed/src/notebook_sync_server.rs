@@ -1960,52 +1960,56 @@ async fn handle_notebook_request(
             } else if env_source == "auto" || env_source.is_empty() || env_source == "prewarmed" {
                 // Auto-detect Python environment
 
-                // Check PEP 723 deps upfront (for priority 2)
-                let has_pep723_deps = {
-                    let cells = room.doc.read().await.get_cells();
-                    match notebook_doc::pep723::find_pep723_in_cells(&cells) {
-                        Ok(Some(ref m)) if !m.dependencies.is_empty() => true,
-                        Ok(_) => false,
-                        Err(e) => {
-                            warn!(
-                                "[notebook-sync] Failed to parse PEP 723 script blocks: {}",
-                                e
-                            );
-                            false
-                        }
-                    }
-                };
-
-                // Priority 1: Check inline deps in notebook metadata
-                if let Some(inline_source) = metadata_snapshot.as_ref().and_then(check_inline_deps)
+                // Priority 1: Check inline deps in notebook metadata (filter out "deno" - we're resolving Python env)
+                if let Some(inline_source) = metadata_snapshot
+                    .as_ref()
+                    .and_then(check_inline_deps)
+                    .filter(|s| s != "deno")
                 {
                     info!(
                         "[notebook-sync] Found inline deps in notebook metadata -> {}",
                         inline_source
                     );
                     inline_source
-                }
-                // Priority 2: Check PEP 723 script blocks in cell source
-                else if has_pep723_deps {
-                    info!("[notebook-sync] Found PEP 723 deps in cell source");
-                    "uv:pep723".to_string()
-                }
-                // Priority 3: Detect project files near notebook path
-                else if let Some(detected) = notebook_path
-                    .as_ref()
-                    .and_then(|path| crate::project_file::detect_project_file(path))
-                {
-                    info!(
-                        "[notebook-sync] Auto-detected project file: {:?} -> {}",
-                        detected.path,
-                        detected.to_env_source()
-                    );
-                    detected.to_env_source().to_string()
-                }
-                // Priority 4: Fall back to prewarmed
-                else {
-                    info!("[notebook-sync] No project file detected, using prewarmed");
-                    "uv:prewarmed".to_string()
+                } else {
+                    // Priority 2: Check PEP 723 script blocks in cell source
+                    // Only parsed if metadata check above didn't find inline deps (lazy evaluation).
+                    let has_pep723_deps = {
+                        let cells = room.doc.read().await.get_cells();
+                        match notebook_doc::pep723::find_pep723_in_cells(&cells) {
+                            Ok(Some(ref m)) if !m.dependencies.is_empty() => true,
+                            Ok(_) => false,
+                            Err(e) => {
+                                warn!(
+                                    "[notebook-sync] Failed to parse PEP 723 script blocks: {}",
+                                    e
+                                );
+                                false
+                            }
+                        }
+                    };
+
+                    if has_pep723_deps {
+                        info!("[notebook-sync] Found PEP 723 deps in cell source");
+                        "uv:pep723".to_string()
+                    }
+                    // Priority 3: Detect project files near notebook path
+                    else if let Some(detected) = notebook_path
+                        .as_ref()
+                        .and_then(|path| crate::project_file::detect_project_file(path))
+                    {
+                        info!(
+                            "[notebook-sync] Auto-detected project file: {:?} -> {}",
+                            detected.path,
+                            detected.to_env_source()
+                        );
+                        detected.to_env_source().to_string()
+                    }
+                    // Priority 4: Fall back to prewarmed
+                    else {
+                        info!("[notebook-sync] No project file detected, using prewarmed");
+                        "uv:prewarmed".to_string()
+                    }
                 }
             } else {
                 // Use explicit env_source (e.g., "uv:inline", "conda:inline")
