@@ -94,6 +94,7 @@ function AppContent() {
     setFocusedCellId,
     updateCellSource,
     addCell,
+    moveCell,
     deleteCell,
     save,
     openNotebook,
@@ -1069,6 +1070,7 @@ function AppContent() {
         onInterruptKernel={interruptKernel}
         onDeleteCell={deleteCell}
         onAddCell={handleAddCell}
+        onMoveCell={moveCell}
         onClearPagePayload={clearPagePayload}
         onReportOutputMatchCount={globalFind.reportOutputMatchCount}
       />

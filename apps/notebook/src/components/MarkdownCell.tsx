@@ -31,6 +31,10 @@ interface MarkdownCellProps {
   isLastCell?: boolean;
   /** Whether this cell is immediately before the focused cell */
   isPreviousCellFromFocused?: boolean;
+  /** Props for dnd-kit drag handle (applied to ribbon) */
+  dragHandleProps?: Record<string, unknown>;
+  /** Whether this cell is currently being dragged */
+  isDragging?: boolean;
 }
 
 export function MarkdownCell({
@@ -45,6 +49,8 @@ export function MarkdownCell({
   onInsertCellAfter,
   isLastCell = false,
   isPreviousCellFromFocused,
+  dragHandleProps,
+  isDragging,
 }: MarkdownCellProps) {
   const applyInlineFormatting = useCallback(
     (prefix: string, suffix = prefix) =>
@@ -254,6 +260,7 @@ export function MarkdownCell({
     onFocusNext: handleFocusNextOrCreate,
     onExecute: () => {}, // No-op for markdown, enables Shift+Enter navigation
     onDelete,
+    cellId: cell.id,
   });
 
   // Combine navigation with markdown-specific keys
@@ -340,6 +347,8 @@ export function MarkdownCell({
       isFocused={isFocused}
       isPreviousCellFromFocused={isPreviousCellFromFocused}
       onFocus={onFocus}
+      dragHandleProps={dragHandleProps}
+      isDragging={isDragging}
     >
       {/* Editor section - hidden when not editing */}
       <div className={editing ? "block" : "hidden"}>

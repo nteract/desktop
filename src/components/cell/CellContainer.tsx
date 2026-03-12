@@ -23,9 +23,10 @@ interface CellContainerProps {
   customGutterColors?: Record<string, GutterColorConfig>;
   /** Whether this cell is immediately before the focused cell (keeps output bright) */
   isPreviousCellFromFocused?: boolean;
-  onDragStart?: (e: React.DragEvent) => void;
-  onDragOver?: (e: React.DragEvent) => void;
-  onDrop?: (e: React.DragEvent) => void;
+  /** Props for dnd-kit drag handle (applied to ribbon) */
+  dragHandleProps?: Record<string, unknown>;
+  /** Whether this cell is currently being dragged */
+  isDragging?: boolean;
   className?: string;
 }
 
@@ -44,9 +45,8 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
       rightGutterContent,
       customGutterColors,
       isPreviousCellFromFocused = false,
-      onDragStart,
-      onDragOver,
-      onDrop,
+      dragHandleProps,
+      isDragging = false,
       className,
     },
     ref,
@@ -74,13 +74,10 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
           "cell-container group flex transition-colors duration-150",
           bgColor,
           isFocused && "-mx-16 px-16",
+          isDragging && "opacity-50",
           className,
         )}
         onMouseDown={onFocus}
-        draggable={!!onDragStart}
-        onDragStart={onDragStart}
-        onDragOver={onDragOver}
-        onDrop={onDrop}
       >
         {/* Gutter area - action content only (ribbon moves to content rows for segmented) */}
         <div className="flex w-10 flex-shrink-0 flex-col items-end justify-start gap-0.5 pr-1 pt-3 select-none">
@@ -92,9 +89,13 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
             {/* Code row - ribbon + content together so heights match */}
             <div className="flex">
               <div
+                {...dragHandleProps}
                 className={cn(
                   "w-1 transition-colors duration-150",
                   ribbonColor,
+                  dragHandleProps &&
+                    "cursor-grab hover:brightness-125 touch-none",
+                  isDragging && "cursor-grabbing",
                 )}
               />
               <div className="min-w-0 flex-1 py-3 pl-6 pr-3">{codeContent}</div>
@@ -123,9 +124,13 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
           /* Legacy layout - ribbon + content side by side */
           <div className="flex min-w-0 flex-1">
             <div
+              {...dragHandleProps}
               className={cn(
                 "w-1 self-stretch transition-colors duration-150",
                 ribbonColor,
+                dragHandleProps &&
+                  "cursor-grab hover:brightness-125 touch-none",
+                isDragging && "cursor-grabbing",
               )}
             />
             <div className="min-w-0 flex-1 py-3 pl-6 pr-3">{children}</div>

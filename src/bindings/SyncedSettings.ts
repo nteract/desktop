@@ -8,35 +8,36 @@ import type { UvDefaults } from "./UvDefaults";
 /**
  * Snapshot of all synced settings.
  */
-export type SyncedSettings = { 
-/**
- * UI theme
- */
-theme: ThemeMode, 
-/**
- * Default runtime for new notebooks
- */
-default_runtime: Runtime, 
-/**
- * Default Python environment type (uv or conda)
- */
-default_python_env: PythonEnvType, 
-/**
- * UV environment defaults
- */
-uv: UvDefaults, 
-/**
- * Conda environment defaults
- */
-conda: CondaDefaults, 
-/**
- * How long (in seconds) to keep notebook rooms alive after all clients disconnect.
- * This allows you to close and reopen the window without losing your kernel state.
- * Range: 5 seconds to 7 days (604800 seconds).
- */
-keep_alive_secs: bigint, 
-/**
- * Whether the user has completed the first-launch onboarding flow.
- * When false, the app shows the onboarding screen on startup.
- */
-onboarding_completed: boolean, };
+export type SyncedSettings = {
+  /**
+   * UI theme
+   */
+  theme: ThemeMode;
+  /**
+   * Default runtime for new notebooks
+   */
+  default_runtime: Runtime;
+  /**
+   * Default Python environment type (uv or conda)
+   */
+  default_python_env: PythonEnvType;
+  /**
+   * UV environment defaults
+   */
+  uv: UvDefaults;
+  /**
+   * Conda environment defaults
+   */
+  conda: CondaDefaults;
+  /**
+   * How long (in seconds) to keep notebook rooms alive after all clients disconnect.
+   * This allows you to close and reopen the window without losing your kernel state.
+   * Range: 5 seconds to 7 days (604800 seconds).
+   */
+  keep_alive_secs: bigint;
+  /**
+   * Whether the user has completed the first-launch onboarding flow.
+   * When false, the app shows the onboarding screen on startup.
+   */
+  onboarding_completed: boolean;
+};

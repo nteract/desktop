@@ -97,6 +97,10 @@ interface CodeCellProps {
   isLastCell?: boolean;
   /** Whether this cell is immediately before the focused cell */
   isPreviousCellFromFocused?: boolean;
+  /** Props for dnd-kit drag handle (applied to ribbon) */
+  dragHandleProps?: Record<string, unknown>;
+  /** Whether this cell is currently being dragged */
+  isDragging?: boolean;
 }
 
 export function CodeCell({
@@ -119,6 +123,8 @@ export function CodeCell({
   onClearPagePayload,
   isLastCell = false,
   isPreviousCellFromFocused,
+  dragHandleProps,
+  isDragging,
 }: CodeCellProps) {
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const { registerEditor, unregisterEditor } = useEditorRegistry();
@@ -181,6 +187,7 @@ export function CodeCell({
         }
       : undefined,
     onDelete,
+    cellId: cell.id,
   });
 
   // Ctrl+R to open history search
@@ -254,6 +261,8 @@ export function CodeCell({
         onFocus={onFocus}
         gutterContent={gutterContent}
         rightGutterContent={rightGutterContent}
+        dragHandleProps={dragHandleProps}
+        isDragging={isDragging}
         codeContent={
           <>
             {/* Editor */}

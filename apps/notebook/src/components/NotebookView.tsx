@@ -1,15 +1,35 @@
+import {
+  closestCenter,
+  DndContext,
+  type DragEndEvent,
+  DragOverlay,
+  type DragStartEvent,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS as DndCSS } from "@dnd-kit/utilities";
 import { Plus, RotateCcw, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
+import { cn } from "@/lib/utils";
 import type { CellPagePayload } from "../App";
 import {
   EditorRegistryProvider,
   useEditorRegistry,
 } from "../hooks/useEditorRegistry";
 import type { FindMatch } from "../hooks/useGlobalFind";
-import type { NotebookCell } from "../types";
+import { logger } from "../lib/logger";
+import type { CodeCell as CodeCellType, NotebookCell } from "../types";
 import { CellSkeleton } from "./CellSkeleton";
 import { CodeCell } from "./CodeCell";
 import { MarkdownCell } from "./MarkdownCell";
@@ -29,6 +49,7 @@ interface NotebookViewProps {
   onInterruptKernel: () => void;
   onDeleteCell: (cellId: string) => void;
   onAddCell: (type: "code" | "markdown", afterCellId?: string | null) => void;
+  onMoveCell: (cellId: string, afterCellId?: string | null) => void;
   onClearPagePayload: (cellId: string) => void;
   onReportOutputMatchCount?: (cellId: string, count: number) => void;
 }
@@ -124,6 +145,107 @@ function CellErrorFallback({
   );
 }
 
+/** Index card preview shown when dragging a cell */
+function CellDragPreview({ cell }: { cell: NotebookCell | undefined }) {
+  if (!cell) return null;
+
+  // Get first 3 lines of source, truncated
+  const sourceLines = cell.source.split("\n").slice(0, 3);
+  const hasMoreLines = cell.source.split("\n").length > 3;
+  const hasOutputs =
+    cell.cell_type === "code" && (cell as CodeCellType).outputs.length > 0;
+
+  // Ribbon color based on cell type
+  const ribbonColor =
+    cell.cell_type === "code"
+      ? "bg-sky-400 dark:bg-sky-500"
+      : "bg-emerald-400 dark:bg-emerald-500";
+
+  return (
+    <div className="w-80 rounded-lg bg-background shadow-2xl ring-1 ring-border/50 rotate-1 scale-[1.02] overflow-hidden">
+      <div className="flex">
+        <div className={cn("w-1 flex-shrink-0", ribbonColor)} />
+        <div className="flex-1 p-3 min-w-0">
+          {sourceLines.length > 0 && sourceLines[0] !== "" ? (
+            <pre className="text-xs text-foreground font-mono whitespace-pre overflow-hidden">
+              {sourceLines.map((line, i) => (
+                <div key={i} className="truncate">
+                  {line || " "}
+                </div>
+              ))}
+            </pre>
+          ) : (
+            <p className="text-xs text-muted-foreground italic">Empty cell</p>
+          )}
+          {(hasMoreLines || hasOutputs) && (
+            <div className="mt-2 flex items-center gap-2 text-[10px] text-muted-foreground">
+              {hasMoreLines && <span>...</span>}
+              {hasOutputs && (
+                <span className="rounded bg-muted px-1.5 py-0.5">
+                  {(cell as CodeCellType).outputs.length} output
+                  {(cell as CodeCellType).outputs.length !== 1 ? "s" : ""}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Wrapper component for sortable cells */
+function SortableCell({
+  cell,
+  index,
+  renderCell,
+  onAddCell,
+  onDeleteCell,
+}: {
+  cell: NotebookCell;
+  index: number;
+  renderCell: (
+    cell: NotebookCell,
+    index: number,
+    dragHandleProps?: Record<string, unknown>,
+    isDragging?: boolean,
+  ) => React.ReactNode;
+  onAddCell: (type: "code" | "markdown", afterCellId?: string | null) => void;
+  onDeleteCell: (cellId: string) => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: cell.id });
+
+  const style = {
+    transform: DndCSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} {...attributes}>
+      {index === 0 && <AddCellButtons afterCellId={null} onAdd={onAddCell} />}
+      <ErrorBoundary
+        fallback={(error, resetErrorBoundary) => (
+          <CellErrorFallback
+            error={error}
+            onRetry={resetErrorBoundary}
+            onDelete={() => onDeleteCell(cell.id)}
+          />
+        )}
+      >
+        {renderCell(cell, index, listeners, isDragging)}
+      </ErrorBoundary>
+      <AddCellButtons afterCellId={cell.id} onAdd={onAddCell} />
+    </div>
+  );
+}
+
 function NotebookViewContent({
   cells,
   isLoading = false,
@@ -139,11 +261,59 @@ function NotebookViewContent({
   onInterruptKernel,
   onDeleteCell,
   onAddCell,
+  onMoveCell,
   onClearPagePayload,
   onReportOutputMatchCount,
 }: NotebookViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { focusCell } = useEditorRegistry();
+
+  // Drag-and-drop state
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const activeCell = activeId ? cells.find((c) => c.id === activeId) : null;
+
+  // Configure dnd-kit sensors
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 8 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    setActiveId(event.active.id as string);
+  }, []);
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      setActiveId(null);
+
+      if (over && active.id !== over.id) {
+        const oldIndex = cells.findIndex((c) => c.id === active.id);
+        const newIndex = cells.findIndex((c) => c.id === over.id);
+
+        // Calculate afterCellId: we want to place the cell after the cell
+        // that will be above it in the new position
+        let afterCellId: string | null;
+        if (newIndex === 0) {
+          // Moving to the beginning
+          afterCellId = null;
+        } else if (newIndex > oldIndex) {
+          // Moving down: place after the cell at newIndex
+          afterCellId = cells[newIndex].id;
+        } else {
+          // Moving up: place after the cell at newIndex - 1
+          afterCellId = newIndex > 0 ? cells[newIndex - 1].id : null;
+        }
+
+        onMoveCell(active.id as string, afterCellId);
+      }
+    },
+    [cells, onMoveCell],
+  );
 
   // Memoize cell IDs array
   const cellIds = useMemo(() => cells.map((c) => c.id), [cells]);
@@ -183,24 +353,43 @@ function NotebookViewContent({
   }, [searchCurrentMatch]);
 
   const renderCell = useCallback(
-    (cell: NotebookCell, index: number) => {
+    (
+      cell: NotebookCell,
+      index: number,
+      dragHandleProps?: Record<string, unknown>,
+      isDragging?: boolean,
+    ) => {
       const isFocused = cell.id === focusedCellId;
       const isExecuting = executingCellIds.has(cell.id);
 
       // Navigation callbacks
       const onFocusPrevious = (cursorPosition: "start" | "end") => {
+        logger.debug(
+          `[cell-nav] onFocusPrevious called: cell=${cell.id.slice(0, 8)} index=${index} cellIds=${cellIds.map((id) => id.slice(0, 8)).join(",")}`,
+        );
         if (index > 0) {
           const prevCellId = cellIds[index - 1];
+          logger.debug(
+            `[cell-nav] Focusing previous: ${prevCellId.slice(0, 8)}`,
+          );
           onFocusCell(prevCellId);
           focusCell(prevCellId, cursorPosition);
+        } else {
+          logger.debug("[cell-nav] No previous cell (index=0)");
         }
       };
 
       const onFocusNext = (cursorPosition: "start" | "end") => {
+        logger.debug(
+          `[cell-nav] onFocusNext called: cell=${cell.id.slice(0, 8)} index=${index} cellIds=${cellIds.map((id) => id.slice(0, 8)).join(",")}`,
+        );
         if (index < cellIds.length - 1) {
           const nextCellId = cellIds[index + 1];
+          logger.debug(`[cell-nav] Focusing next: ${nextCellId.slice(0, 8)}`);
           onFocusCell(nextCellId);
           focusCell(nextCellId, cursorPosition);
+        } else {
+          logger.debug("[cell-nav] No next cell (at end)");
         }
       };
 
@@ -241,6 +430,8 @@ function NotebookViewContent({
             onInsertCellAfter={() => onAddCell("code", cell.id)}
             onClearPagePayload={() => onClearPagePayload(cell.id)}
             isLastCell={index === cells.length - 1}
+            dragHandleProps={dragHandleProps}
+            isDragging={isDragging}
           />
         );
       }
@@ -260,6 +451,8 @@ function NotebookViewContent({
             onFocusNext={onFocusNext}
             onInsertCellAfter={() => onAddCell("markdown", cell.id)}
             isLastCell={index === cells.length - 1}
+            dragHandleProps={dragHandleProps}
+            isDragging={isDragging}
           />
         );
       }
@@ -333,28 +526,31 @@ function NotebookViewContent({
           </div>
         )
       ) : (
-        // biome-ignore lint/complexity/noUselessFragments: ternary else branch requires single expression
-        <>
-          {cells.map((cell, index) => (
-            <div key={cell.id}>
-              {index === 0 && (
-                <AddCellButtons afterCellId={null} onAdd={onAddCell} />
-              )}
-              <ErrorBoundary
-                fallback={(error, resetErrorBoundary) => (
-                  <CellErrorFallback
-                    error={error}
-                    onRetry={resetErrorBoundary}
-                    onDelete={() => onDeleteCell(cell.id)}
-                  />
-                )}
-              >
-                {renderCell(cell, index)}
-              </ErrorBoundary>
-              <AddCellButtons afterCellId={cell.id} onAdd={onAddCell} />
-            </div>
-          ))}
-        </>
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext
+            items={cellIds}
+            strategy={verticalListSortingStrategy}
+          >
+            {cells.map((cell, index) => (
+              <SortableCell
+                key={cell.id}
+                cell={cell}
+                index={index}
+                renderCell={renderCell}
+                onAddCell={onAddCell}
+                onDeleteCell={onDeleteCell}
+              />
+            ))}
+          </SortableContext>
+          <DragOverlay>
+            {activeCell && <CellDragPreview cell={activeCell} />}
+          </DragOverlay>
+        </DndContext>
       )}
     </div>
   );

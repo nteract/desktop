@@ -5,6 +5,7 @@ import {
   useContext,
   useRef,
 } from "react";
+import { logger } from "../lib/logger";
 
 export interface EditorRef {
   focus: () => void;
@@ -35,6 +36,12 @@ export function EditorRegistryProvider({ children }: { children: ReactNode }) {
   const focusCell = useCallback(
     (cellId: string, cursorPosition: "start" | "end") => {
       const editor = editorsRef.current.get(cellId);
+      const registeredIds = Array.from(editorsRef.current.keys()).map((id) =>
+        id.slice(0, 8),
+      );
+      logger.debug(
+        `[cell-nav] focusCell: target=${cellId.slice(0, 8)} found=${!!editor} registered=[${registeredIds.join(",")}]`,
+      );
       if (editor) {
         editor.setCursorPosition(cursorPosition);
         editor.focus();
@@ -45,6 +52,10 @@ export function EditorRegistryProvider({ children }: { children: ReactNode }) {
         if (cellElement) {
           cellElement.scrollIntoView({ behavior: "smooth", block: "nearest" });
         }
+      } else {
+        logger.warn(
+          `[cell-nav] Editor not found for cell ${cellId.slice(0, 8)}`,
+        );
       }
     },
     [],
