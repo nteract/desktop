@@ -169,9 +169,9 @@ function CellDragPreview({ cell }: { cell: NotebookCell | undefined }) {
           {sourceLines.length > 0 && sourceLines[0] !== "" ? (
             <pre className="text-xs text-foreground font-mono whitespace-pre overflow-hidden">
               {sourceLines.map((line, i) => (
-                <div key={i} className="truncate">
+                <span key={i} className="block truncate">
                   {line || " "}
-                </div>
+                </span>
               ))}
             </pre>
           ) : (
@@ -227,8 +227,15 @@ function SortableCell({
     transition,
   };
 
+  // Combine listeners and attributes for the drag handle
+  // This enables keyboard-initiated dragging (Space/Enter + arrows)
+  const dragHandleProps = {
+    ...listeners,
+    ...attributes,
+  };
+
   return (
-    <div ref={setNodeRef} style={style} {...attributes}>
+    <div ref={setNodeRef} style={style}>
       {index === 0 && <AddCellButtons afterCellId={null} onAdd={onAddCell} />}
       <ErrorBoundary
         fallback={(error, resetErrorBoundary) => (
@@ -239,7 +246,7 @@ function SortableCell({
           />
         )}
       >
-        {renderCell(cell, index, listeners, isDragging)}
+        {renderCell(cell, index, dragHandleProps, isDragging)}
       </ErrorBoundary>
       <AddCellButtons afterCellId={cell.id} onAdd={onAddCell} />
     </div>
@@ -531,6 +538,7 @@ function NotebookViewContent({
           collisionDetection={closestCenter}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
+          onDragCancel={() => setActiveId(null)}
         >
           <SortableContext
             items={cellIds}
