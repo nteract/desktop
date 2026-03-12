@@ -1959,17 +1959,9 @@ async fn handle_notebook_request(
                 "deno".to_string()
             } else if env_source == "auto" || env_source.is_empty() || env_source == "prewarmed" {
                 // Auto-detect Python environment
-                // Priority 1: Check inline deps in notebook metadata
-                if let Some(inline_source) = metadata_snapshot.as_ref().and_then(check_inline_deps)
-                {
-                    info!(
-                        "[notebook-sync] Found inline deps in notebook metadata -> {}",
-                        inline_source
-                    );
-                    inline_source
-                }
-                // Priority 2: Check PEP 723 script blocks in cell source
-                else if {
+
+                // Check PEP 723 deps upfront (for priority 2)
+                let has_pep723_deps = {
                     let cells = room.doc.read().await.get_cells();
                     match notebook_doc::pep723::find_pep723_in_cells(&cells) {
                         Ok(Some(ref m)) if !m.dependencies.is_empty() => true,
@@ -1982,7 +1974,19 @@ async fn handle_notebook_request(
                             false
                         }
                     }
-                } {
+                };
+
+                // Priority 1: Check inline deps in notebook metadata
+                if let Some(inline_source) = metadata_snapshot.as_ref().and_then(check_inline_deps)
+                {
+                    info!(
+                        "[notebook-sync] Found inline deps in notebook metadata -> {}",
+                        inline_source
+                    );
+                    inline_source
+                }
+                // Priority 2: Check PEP 723 script blocks in cell source
+                else if has_pep723_deps {
                     info!("[notebook-sync] Found PEP 723 deps in cell source");
                     "uv:pep723".to_string()
                 }
