@@ -2,6 +2,7 @@
 //!
 //! Provides access to daemon status, pool information, and room listing.
 
+use crate::daemon_paths::get_socket_path;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use tokio::runtime::Runtime;
@@ -28,13 +29,14 @@ pub struct DaemonClient {
 impl DaemonClient {
     /// Create a new daemon client.
     ///
-    /// Connects to the daemon at the default socket path, which is
-    /// automatically determined based on environment variables
-    /// (RUNTIMED_WORKSPACE_PATH for dev mode).
+    /// Connects to the daemon socket. Respects RUNTIMED_SOCKET_PATH env var
+    /// if set, otherwise falls back to the default path (which uses
+    /// RUNTIMED_WORKSPACE_PATH for dev mode).
     #[new]
     fn new() -> PyResult<Self> {
         let runtime = Runtime::new().map_err(to_py_err)?;
-        let client = runtimed::client::PoolClient::default();
+        let socket_path = get_socket_path();
+        let client = runtimed::client::PoolClient::new(socket_path);
         Ok(Self { runtime, client })
     }
 
