@@ -12,7 +12,7 @@ import { isDarkMode as detectDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { useEditorRegistry } from "../hooks/useEditorRegistry";
-import { fetchBlobPortWithRetry } from "../hooks/useManifestResolver";
+import { useBlobPort } from "../hooks/useManifestResolver";
 import { logger } from "../lib/logger";
 import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
 import { openUrl } from "../lib/open-url";
@@ -142,11 +142,7 @@ export function MarkdownCell({
     return () => observer.disconnect();
   }, []);
 
-  // Fetch blob port for resolving markdown assets
-  const [blobPort, setBlobPort] = useState<number | null>(null);
-  useEffect(() => {
-    fetchBlobPortWithRetry().then(setBlobPort);
-  }, []);
+  const blobPort = useBlobPort();
 
   // Register editor with the registry for cross-cell navigation
   useEffect(() => {

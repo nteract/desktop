@@ -3357,6 +3357,10 @@ type ParsedStreamingNotebook = (
 );
 type StreamingLoadBatchEntry = (usize, StreamingCell, Vec<String>, ResolvedAssets);
 
+fn should_resolve_markdown_assets(cell_type: &str) -> bool {
+    cell_type == "markdown"
+}
+
 /// Cell data parsed for streaming load.
 ///
 /// Unlike `CellSnapshot` which stores outputs as `Vec<String>` (JSON strings),
@@ -3636,13 +3640,17 @@ where
             for output in &cell.outputs {
                 output_refs.push(output_value_to_manifest_ref(output, &room.blob_store).await);
             }
-            let resolved_assets = resolve_markdown_assets(
-                &cell.source,
-                Some(path),
-                nbformat_attachments.get(&cell.id),
-                &room.blob_store,
-            )
-            .await;
+            let resolved_assets = if should_resolve_markdown_assets(&cell.cell_type) {
+                resolve_markdown_assets(
+                    &cell.source,
+                    Some(path),
+                    nbformat_attachments.get(&cell.id),
+                    &room.blob_store,
+                )
+                .await
+            } else {
+                ResolvedAssets::new()
+            };
             batch.push((idx, cell, output_refs, resolved_assets));
         }
 
@@ -3754,15 +3762,17 @@ pub async fn load_notebook_from_disk(
         }
         doc.set_execution_count(&cell.id, &cell.execution_count)
             .map_err(|e| format!("Failed to set execution count: {}", e))?;
-        let resolved_assets = resolve_markdown_assets(
-            &cell.source,
-            Some(path),
-            nbformat_attachments.get(&cell.id),
-            blob_store,
-        )
-        .await;
-        doc.set_cell_resolved_assets(&cell.id, &resolved_assets)
-            .map_err(|e| format!("Failed to set resolved assets: {}", e))?;
+        if should_resolve_markdown_assets(&cell.cell_type) {
+            let resolved_assets = resolve_markdown_assets(
+                &cell.source,
+                Some(path),
+                nbformat_attachments.get(&cell.id),
+                blob_store,
+            )
+            .await;
+            doc.set_cell_resolved_assets(&cell.id, &resolved_assets)
+                .map_err(|e| format!("Failed to set resolved assets: {}", e))?;
+        }
     }
 
     // Parse and set metadata
@@ -3926,17 +3936,19 @@ async fn apply_ipynb_changes(
         }
         map
     };
-    let converted_assets: HashMap<String, HashMap<String, String>> = {
+    let converted_assets: HashMap<String, ResolvedAssets> = {
         let mut map = HashMap::new();
         for cell in external_cells {
-            let resolved_assets = resolve_markdown_assets(
-                &cell.source,
-                Some(&room.notebook_path),
-                external_attachments.get(&cell.id),
-                &room.blob_store,
-            )
-            .await;
-            map.insert(cell.id.clone(), resolved_assets);
+            if should_resolve_markdown_assets(&cell.cell_type) {
+                let resolved_assets = resolve_markdown_assets(
+                    &cell.source,
+                    Some(&room.notebook_path),
+                    external_attachments.get(&cell.id),
+                    &room.blob_store,
+                )
+                .await;
+                map.insert(cell.id.clone(), resolved_assets);
+            }
         }
         map
     };
@@ -5358,6 +5370,48 @@ mod tests {
 
         let bytes = blob_store.get(hash).await.unwrap().unwrap();
         assert_eq!(bytes, b"hello");
+    }
+
+    #[tokio::test]
+    async fn test_load_notebook_from_disk_skips_code_cell_asset_resolution() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = test_blob_store(&tmp);
+        std::fs::write(tmp.path().join("image.png"), b"hello").unwrap();
+
+        let notebook_json = serde_json::json!({
+            "nbformat": 4,
+            "nbformat_minor": 5,
+            "metadata": {},
+            "cells": [
+                {
+                    "id": "code-1",
+                    "cell_type": "code",
+                    "source": ["![inline](image.png)"],
+                    "metadata": {},
+                    "outputs": [],
+                    "execution_count": null
+                }
+            ]
+        });
+
+        let ipynb_path = tmp.path().join("code-assets.ipynb");
+        std::fs::write(
+            &ipynb_path,
+            serde_json::to_string_pretty(&notebook_json).unwrap(),
+        )
+        .unwrap();
+
+        let notebook_id = ipynb_path.to_string_lossy().to_string();
+        let mut doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
+
+        let count = load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let cells = doc.get_cells();
+        assert_eq!(cells.len(), 1);
+        assert!(cells[0].resolved_assets.is_empty());
     }
 
     #[tokio::test]

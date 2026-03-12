@@ -198,7 +198,7 @@ async fn resolve_nbformat_attachment(
     nbformat_attachments: Option<&serde_json::Value>,
     blob_store: &BlobStore,
 ) -> Option<String> {
-    let attachment = nbformat_attachments?.get(name)?;
+    let attachment = nbformat_attachments?.get(strip_query_and_fragment(name))?;
     let (media_type, payload) = pick_attachment_payload(attachment)?;
     let data = decode_attachment_payload(media_type, payload)?;
     blob_store.put(&data, media_type).await.ok()
@@ -491,5 +491,26 @@ Some text
         .await;
 
         assert!(resolved.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_markdown_assets_strips_attachment_query_and_fragment() {
+        let dir = TempDir::new().unwrap();
+        let blob_store = BlobStore::new(dir.path().join("blobs"));
+        let attachments = serde_json::json!({
+            "image.png": {
+                "image/png": "aGVsbG8="
+            }
+        });
+
+        let resolved = resolve_markdown_assets(
+            "![alt](attachment:image.png?raw=1#fragment)",
+            None,
+            Some(&attachments),
+            &blob_store,
+        )
+        .await;
+
+        assert!(resolved.contains_key("attachment:image.png?raw=1#fragment"));
     }
 }
