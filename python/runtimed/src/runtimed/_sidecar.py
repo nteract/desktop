@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import Optional, Union
 
 from runtimed._binary import find_binary
 
@@ -15,7 +14,7 @@ class Sidecar:
     def __init__(self, process: subprocess.Popen, connection_file: Path) -> None:
         self._process = process
         self._connection_file = connection_file
-        self._stderr_cache: Optional[str] = None
+        self._stderr_cache: str | None = None
 
     @property
     def process(self) -> subprocess.Popen:
@@ -33,7 +32,7 @@ class Sidecar:
         return self._process.poll() is None
 
     @property
-    def error(self) -> Optional[str]:
+    def error(self) -> str | None:
         """Error message if the process has exited with an error, None otherwise.
 
         This reads stderr from the process, so it should only be called after
@@ -62,7 +61,7 @@ class Sidecar:
             err = self.error
             if err:
                 # Take first line of error for brevity
-                first_line = err.split('\n')[0]
+                first_line = err.split("\n")[0]
                 if len(first_line) > 60:
                     first_line = first_line[:57] + "..."
                 status = f"failed: {first_line}"
@@ -95,10 +94,10 @@ class BridgedSidecar(Sidecar):
 
 
 def sidecar(
-    connection_file: Optional[Union[str, Path]] = None,
+    connection_file: str | Path | None = None,
     *,
     quiet: bool = True,
-    dump: Optional[Union[str, Path]] = None,
+    dump: str | Path | None = None,
 ) -> Sidecar:
     """Launch the sidecar viewer for a running Jupyter kernel.
 
@@ -142,9 +141,7 @@ def sidecar(
 
     connection_path = Path(connection_file)
     if not connection_path.exists():
-        raise FileNotFoundError(
-            f"Kernel connection file not found: {connection_path}"
-        )
+        raise FileNotFoundError(f"Kernel connection file not found: {connection_path}")
 
     runt_bin = find_binary("runt")
 
@@ -179,9 +176,7 @@ def _detect_environment() -> str:
     return "unknown"
 
 
-def _launch_bridged_sidecar(
-    *, quiet: bool, dump: Optional[Union[str, Path]]
-) -> BridgedSidecar:
+def _launch_bridged_sidecar(*, quiet: bool, dump: str | Path | None) -> BridgedSidecar:
     """Create an IOPub bridge and launch the sidecar against it."""
     try:
         from runtimed._ipython_bridge import install_bridge

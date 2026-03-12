@@ -37,9 +37,7 @@ def _well_known_paths(name: str) -> list[str]:
         paths.append(f"/usr/local/bin/{name}")
         # runtimed daemon binary location
         home = os.path.expanduser("~")
-        paths.append(
-            os.path.join(home, "Library", "Application Support", "runt", "bin", name)
-        )
+        paths.append(os.path.join(home, "Library", "Application Support", "runt", "bin", name))
     elif sys.platform == "linux":
         paths.append(f"/usr/local/bin/{name}")
         home = os.path.expanduser("~")

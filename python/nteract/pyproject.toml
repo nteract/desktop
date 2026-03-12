@@ -11,8 +11,11 @@ requires-python = ">=3.10"
 dependencies = [
     "mcp>=1.26.0",
     "httpx>=0.27.0,<1.0",
-    "runtimed>=2.0.1a0,<3.0",
+    "runtimed>=2.0.0a0,<3.0",
 ]
+
+[tool.uv.sources]
+runtimed = { workspace = true }
 
 [project.scripts]
 nteract = "nteract._mcp_server:main"
@@ -36,24 +39,6 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-
-[tool.ruff]
-line-length = 100
-target-version = "py310"
-
-[tool.ruff.lint]
-select = [
-    "E",      # pycodestyle errors
-    "W",      # pycodestyle warnings
-    "F",      # pyflakes
-    "I",      # isort
-    "UP",     # pyupgrade
-    "B",      # flake8-bugbear
-    "SIM",    # flake8-simplify
-]
-
-[tool.ruff.format]
-quote-style = "double"
 
 [tool.ty.environment]
 python-version = "3.10"

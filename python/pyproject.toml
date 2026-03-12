@@ -1,0 +1,32 @@
+[project]
+name = "nteract-workspace"
+version = "0.0.0"
+description = "Development workspace for nteract Python packages"
+requires-python = ">=3.10"
+
+[tool.uv.workspace]
+members = ["runtimed", "nteract"]
+
+[tool.uv.sources]
+runtimed = { workspace = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "SIM",    # flake8-simplify
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["SIM105", "SIM117"]
+
+[tool.ruff.format]
+quote-style = "double"

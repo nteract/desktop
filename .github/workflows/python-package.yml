@@ -31,7 +31,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  nteract-lint:
+  python-lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -42,17 +42,11 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Install dependencies
-        run: uv sync --dev
-        working-directory: python/nteract
-
       - name: Ruff check
-        run: uv run ruff check src/
-        working-directory: python/nteract
+        run: uvx ruff check --config python/pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/
 
       - name: Ruff format check
-        run: uv run ruff format --check src/
-        working-directory: python/nteract
+        run: uvx ruff format --check --config python/pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/
 
   nteract-test:
     runs-on: ubuntu-latest
@@ -66,7 +60,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --dev --no-sources
         working-directory: python/nteract
 
       - name: Run smoke tests
@@ -174,11 +168,11 @@ jobs:
           echo "Setting nteract version to: ${DEV_VERSION}"
           sed -i "s/^version = .*/version = \"${DEV_VERSION}\"/" pyproject.toml
           # Pin runtimed dep to the same prerelease series
-          sed -i "s/runtimed>=2.0.1a0/runtimed>=${DEV_VERSION}/" pyproject.toml
+          sed -i "s/runtimed>=2.0.0a0/runtimed>=${DEV_VERSION}/" pyproject.toml
         working-directory: python/nteract
 
       - name: Build
-        run: uv build
+        run: uv build --no-sources
         working-directory: python/nteract
 
       - name: Upload dist

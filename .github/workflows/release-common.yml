@@ -668,11 +668,11 @@ jobs:
           echo "Setting nteract version to: ${DEV_VERSION}"
           sed -i "s/^version = .*/version = \"${DEV_VERSION}\"/" pyproject.toml
           # Pin runtimed dep to the same prerelease timestamp
-          sed -i "s/runtimed>=2.0.1a0/runtimed>=${DEV_VERSION}/" pyproject.toml
+          sed -i "s/runtimed>=2.0.0a0/runtimed>=${DEV_VERSION}/" pyproject.toml
         working-directory: python/nteract
 
       - name: Build sdist + wheel
-        run: uv build
+        run: uv build --no-sources
         working-directory: python/nteract
 
       - name: Upload dist

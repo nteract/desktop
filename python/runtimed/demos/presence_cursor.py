@@ -60,9 +60,7 @@ def main():
     cell = max(cells, key=lambda c: len(c.source))
     source = cell.source
     lines = source.split("\n")
-    print(
-        f"\nAnimating cursor across cell {cell.id} ({len(source)} chars, {len(lines)} lines)"
-    )
+    print(f"\nAnimating cursor across cell {cell.id} ({len(source)} chars, {len(lines)} lines)")
 
     # Sweep across each line
     for line_num, line_text in enumerate(lines):

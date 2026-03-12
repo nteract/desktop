@@ -10,14 +10,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import os
 import sys
 import tempfile
 import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import zmq
 
@@ -114,9 +113,9 @@ class IPythonBridge:
         socket: zmq.Socket,
         identities: list[bytes],
         msg_type: str,
-        parent_header: Optional[dict],
+        parent_header: dict | None,
         content: dict,
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
     ) -> None:
         header = self._make_header(msg_type)
         header_b = json.dumps(header).encode()
@@ -132,7 +131,7 @@ class IPythonBridge:
         self,
         msg_type: str,
         content: dict,
-        parent_header: Optional[dict] = None,
+        parent_header: dict | None = None,
     ) -> None:
         self._send(self._iopub_socket, [], msg_type, parent_header, content)
 
@@ -169,7 +168,9 @@ class IPythonBridge:
             "implementation_version": "0.1.0",
             "language_info": {
                 "name": "python",
-                "version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+                "version": (
+                    f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+                ),
                 "mimetype": "text/x-python",
                 "file_extension": ".py",
                 "pygments_lexer": "ipython3",
@@ -184,9 +185,7 @@ class IPythonBridge:
         # Also publish kernel info on IOPub so the sidecar sees it
         self._send_iopub("status", {"execution_state": "idle"}, parent)
 
-    def _handle_execute(
-        self, identities: list[bytes], parent: dict, content: dict
-    ) -> None:
+    def _handle_execute(self, identities: list[bytes], parent: dict, content: dict) -> None:
         user_expressions = content.get("user_expressions", {})
         results: dict[str, Any] = {}
         for key, expr in user_expressions.items():
@@ -224,9 +223,7 @@ class IPythonBridge:
 
     # --- IPython hook methods (called from main thread) ---
 
-    def publish_execute_result(
-        self, data: dict, metadata: dict, execution_count: int
-    ) -> None:
+    def publish_execute_result(self, data: dict, metadata: dict, execution_count: int) -> None:
         content = {
             "execution_count": execution_count,
             "data": data,
@@ -238,7 +235,7 @@ class IPythonBridge:
         self._send_iopub("stream", {"name": name, "text": text})
 
     def publish_display_data(
-        self, data: dict, metadata: Optional[dict] = None, transient: Optional[dict] = None
+        self, data: dict, metadata: dict | None = None, transient: dict | None = None
     ) -> None:
         self._send_iopub(
             "display_data",
@@ -246,9 +243,7 @@ class IPythonBridge:
         )
 
     def publish_error(self, ename: str, evalue: str, traceback_list: list[str]) -> None:
-        self._send_iopub(
-            "error", {"ename": ename, "evalue": evalue, "traceback": traceback_list}
-        )
+        self._send_iopub("error", {"ename": ename, "evalue": evalue, "traceback": traceback_list})
 
     def publish_status(self, execution_state: str) -> None:
         self._send_iopub("status", {"execution_state": execution_state})

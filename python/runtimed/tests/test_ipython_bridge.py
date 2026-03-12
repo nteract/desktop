@@ -2,15 +2,13 @@
 
 import json
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 import zmq
-
 from runtimed._ipython_bridge import (
     IPythonBridge,
-    _TeeStream,
     _rewrite_widget_data,
+    _TeeStream,
     install_bridge,
 )
 
@@ -110,9 +108,7 @@ class TestIPythonBridge:
             h.update(content)
             sig = h.hexdigest().encode()
 
-            dealer.send_multipart(
-                [b"<IDS|MSG>", sig, header, parent, metadata, content]
-            )
+            dealer.send_multipart([b"<IDS|MSG>", sig, header, parent, metadata, content])
 
             # Wait for reply
             assert dealer.poll(3000)
@@ -173,9 +169,7 @@ class TestIPythonBridge:
             h.update(content)
             sig = h.hexdigest().encode()
 
-            dealer.send_multipart(
-                [b"<IDS|MSG>", sig, header, parent, metadata, content]
-            )
+            dealer.send_multipart([b"<IDS|MSG>", sig, header, parent, metadata, content])
 
             assert dealer.poll(3000)
             parts = dealer.recv_multipart()
