@@ -144,6 +144,7 @@ After the handshake, frames are typed by their first byte:
 | `0x01`    | NotebookRequest    | JSON |
 | `0x02`    | NotebookResponse   | JSON |
 | `0x03`    | NotebookBroadcast  | JSON |
+| `0x04`    | Presence           | Binary (CBOR, see `notebook_doc::presence`) |
 
 ## Automerge Sync
 
@@ -161,13 +162,15 @@ User types in cell
   → React calls WASM handle.update_source(cell_id, text)
   → WASM applies mutation locally (instant)
   → handle.generate_sync_message() → sync bytes
-  → Tauri invoke("send_automerge_sync", bytes)
-  → Relay pipes bytes to daemon socket (frame type 0x00)
+  → Frontend prepends 0x00 type byte → invoke("send_frame", { frameData })
+  → Tauri send_frame dispatches by type → relay pipes to daemon socket
   → Daemon applies sync, updates canonical doc
-  → Daemon generates response sync message
-  → Relay receives bytes, emits "automerge:from-daemon" event
-  → WASM handle.receive_sync_message(bytes)
-  → materializeCells() updates React state if doc changed
+  → Daemon generates response sync message → frame type 0x00
+  → Relay receives, emits "notebook:frame" Tauri event (raw typed bytes)
+  → Frontend useAutomergeNotebook listener → WASM handle.receive_frame(bytes)
+  → WASM demuxes by first byte, applies sync, returns FrameEvent[]
+  → sync_applied event → materializeCells() updates React state if doc changed
+  → sync_reply event → prepend 0x00, invoke("send_frame", { frameData }) back to daemon
 ```
 
 ## Request / Response
@@ -243,21 +246,26 @@ Kernel produces output
   → Daemon writes output to Automerge doc (as blob manifest)
   → Daemon sends NotebookBroadcast::Output on broadcast channel
   → Frame type 0x03 sent to all connected clients
-  → Relay receives, emits "daemon:broadcast" Tauri event
-  → Frontend useDaemonKernel hook processes the broadcast
+  → Relay receives, emits "notebook:frame" Tauri event
+  → WASM handle.receive_frame() demuxes → Broadcast event
+  → useAutomergeNotebook re-emits as "notebook:broadcast" webview event
+  → useDaemonKernel hook processes the broadcast
   → UI updates
 ```
 
 ## Tauri Event Bridge
 
-The relay emits these Tauri events to the frontend:
+The relay and frontend use these Tauri events:
 
-| Event | Payload | Purpose |
-|-------|---------|---------|
-| `automerge:from-daemon` | `Vec<u8>` | Raw Automerge sync bytes from daemon |
-| `daemon:broadcast` | JSON | Serialized `NotebookBroadcast` |
-| `daemon:ready` | — | Connection established, ready to bootstrap |
-| `daemon:disconnected` | — | Connection to daemon lost |
+| Event | Direction | Payload | Purpose |
+|-------|-----------|---------|---------|
+| `notebook:frame` | Relay → Frontend | `number[]` (typed frame bytes) | All daemon frames (sync, broadcast, presence) via unified pipe |
+| `notebook:broadcast` | Frontend → Frontend | JSON | Re-emitted by `useAutomergeNotebook` after WASM demux; consumed by `useDaemonKernel`, `useEnvProgress` |
+| `notebook:presence` | Frontend → Frontend | JSON | Re-emitted by `useAutomergeNotebook` after WASM CBOR decode; consumed by `usePresence` |
+| `daemon:ready` | Relay → Frontend | `DaemonReadyPayload` | Connection established, ready to bootstrap |
+| `daemon:disconnected` | Relay → Frontend | — | Connection to daemon lost |
+
+Outgoing frames from the frontend use `invoke("send_frame", { frameData })` where `frameData` is `number[]` with the first byte as the frame type. Only `0x00` (AutomergeSync) and `0x04` (Presence) are valid outgoing types.
 
 ## Output Storage
 
@@ -280,5 +288,7 @@ Cell outputs use a blob manifest system rather than inline data. When the daemon
 | `crates/notebook/src/lib.rs` | Tauri commands and relay tasks (pipes sync bytes, emits events) |
 | `crates/runtimed-wasm/src/lib.rs` | WASM bindings for local-first cell mutations |
 | `crates/notebook-doc/src/lib.rs` | Shared Automerge document schema and operations |
+| `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00–0x04) |
+| `apps/notebook/src/lib/frame-types.ts` | TypeScript mirror of frame type constants |
 | `apps/notebook/src/hooks/useAutomergeNotebook.ts` | Frontend sync integration (WASM handle, sync loop, cell materialization) |
 | `apps/notebook/src/hooks/useDaemonKernel.ts` | Frontend broadcast handling (kernel status, outputs, environment) |

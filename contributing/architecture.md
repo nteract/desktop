@@ -9,7 +9,7 @@ This document defines the core architectural principles for the runtimed daemon 
 The runtimed daemon owns all runtime state. Clients (UI, agents, CLI) are views into daemon state, not independent state holders.
 
 **Implications:**
-- Clients subscribe to daemon state, they don't maintain parallel copies
+- Clients subscribe to daemon state via Automerge sync. The frontend maintains a local WASM doc for instant editing, but the daemon's doc is authoritative for execution and persistence
 - State changes flow through the daemon, not peer-to-peer between clients
 - If the daemon restarts, clients reconnect and resync
 
@@ -98,14 +98,15 @@ The principle of "automerge as canonical state" is violated when execution reque
 ```
 Client                              Daemon
   |                                   |
-  |-- [sync: update cell source] ---->|
-  |<-- [sync: ack] -------------------|
+  |-- [WASM mutates local doc] -------|  // Instant, no round-trip
+  |-- [sync frame 0x00] ------------>|  // invoke("send_frame")
+  |<-- [sync frame 0x00] ------------|  // "notebook:frame" event
   |                                   |
   |-- ExecuteCell { cell_id } ------->|  // No code parameter
   |<-- CellQueued --------------------|
   |                                   |
-  |<-- ExecutionStarted --------------|
-  |<-- Output -------------------------|
+  |<-- ExecutionStarted --------------|  // broadcast via notebook:frame
+  |<-- Output -------------------------|  // broadcast via notebook:frame
   |<-- ExecutionDone -----------------|
 ```
 
@@ -149,3 +150,8 @@ The frontend now owns a local Automerge doc via `runtimed-wasm` WASM bindings, m
 - `crates/notebook-doc/src/lib.rs` - Shared Automerge document operations (`NotebookDoc`) used by daemon and WASM
 - `crates/runtimed/src/notebook_sync_server.rs` - Sync protocol handling
 - `crates/runtimed/src/kernel_manager.rs` - Kernel lifecycle
+- `crates/runtimed/src/notebook_sync_client.rs` - Tauri relay: transparent byte pipe between WASM and daemon (`PipeChannel`)
+- `crates/runtimed-wasm/src/lib.rs` - WASM bindings: local Automerge peer, frame demux (`receive_frame`)
+- `crates/notebook/src/lib.rs` - Tauri commands and relay tasks (`send_frame`, `setup_sync_receivers`)
+- `crates/notebook-doc/src/frame_types.rs` - Shared frame type constants (0x00–0x04)
+- `apps/notebook/src/hooks/useAutomergeNotebook.ts` - Frontend sync hub: WASM handle, `notebook:frame` listener, cell materialization

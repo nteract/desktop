@@ -222,9 +222,9 @@ The **Tauri relay** (`NotebookSyncClient` in `crates/runtimed/src/notebook_sync_
 
 Cells are stored in an Automerge Map keyed by cell ID, with a `position` field (fractional index hex string) for ordering. `move_cell` updates only the position field — no delete/re-insert. `get_cells()` returns cells sorted by position with cell ID as tiebreaker.
 
-Mutation flow: React → WASM `handle.add_cell_after()` → `handle.generate_sync_message()` → `invoke("send_automerge_sync")` → relay pipe → daemon.
+Mutation flow: React → WASM `handle.add_cell_after()` → `handle.generate_sync_message()` → prepend `0x00` type byte → `invoke("send_frame", { frameData })` → relay pipe → daemon.
 
-Incoming sync: daemon → relay pipe → `automerge:from-daemon` event → WASM `handle.receive_sync_message()` → `materializeCells()` → React state.
+Incoming sync: daemon → relay pipe → `notebook:frame` event → WASM `handle.receive_frame()` → demux by type byte → `materializeCells()` → React state. Broadcasts and presence are re-emitted as `notebook:broadcast` and `notebook:presence` webview events for downstream hooks.
 
 The `runtimed-wasm` crate compiles from the same `automerge = "0.7"` as the daemon. This is critical — the JS `@automerge/automerge` package creates `Object(Text)` CRDTs for all string fields, but Rust uses scalar `Str` for metadata fields (`id`, `cell_type`, `execution_count`). Using the same Rust code in WASM guarantees schema compatibility.
 
@@ -264,7 +264,7 @@ Deno kernels don't use environment pools. The daemon:
 
 ### Environment Source Labels
 
-The backend returns an `env_source` string with the `KernelLaunched` response (via `daemon:broadcast`) so the frontend can display the environment origin. Values:
+The backend returns an `env_source` string with the `KernelLaunched` response (via `notebook:broadcast`) so the frontend can display the environment origin.
 
 - `"uv:inline"` / `"uv:pyproject"` / `"uv:prewarmed"`
 - `"conda:inline"` / `"conda:env_yml"` / `"conda:pixi"` / `"conda:prewarmed"`

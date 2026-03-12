@@ -437,7 +437,7 @@ The frontend runs `runtimed-wasm` (compiled from `crates/runtimed-wasm/`) as a W
 │              Binary sync message                        │
 │                   │                                     │
 │                   ▼                                     │
-│  Tauri relay (automerge:to-daemon / automerge:from-daemon) │
+│  Tauri relay (send_frame / notebook:frame — unified pipe)  │
 │                   │                                     │
 │                   ▼                                     │
 │  Daemon (NotebookRoom)                                  │
@@ -460,7 +460,7 @@ Outputs flow through the Automerge doc, not Tauri events:
 1. Kernel emits iopub message → daemon's `kernel_manager` receives it
 2. Daemon writes output to the notebook's Automerge doc (cell outputs array)
 3. Daemon produces a sync message → Tauri relay forwards raw bytes to the frontend (pipe mode — no Automerge processing in the relay)
-4. Frontend receives `automerge:from-daemon` → WASM merges into local doc
+4. Frontend receives `notebook:frame` → WASM `receive_frame()` demuxes and merges into local doc
 5. `materialize-cells.ts` converts the updated doc into React cell state
 
 The `onOutput` callback in `App.tsx` is set to a no-op (`() => {}`) — outputs are rendered from Automerge sync, not broadcasts. The daemon still sends `Output` broadcasts and `useDaemonKernel.ts` still processes them (resolves blob manifests), but the resolved output is discarded by the no-op callback.
@@ -731,7 +731,7 @@ Broadcast types:
 - `ClearOutputs { cell_id }` — explicit clear request
 - `DisplayUpdate { cell_id, output }` — update_display_data (widget progress bars)
 
-> **Note:** `Output` broadcasts are still sent by the daemon and processed by `useDaemonKernel.ts` (blob resolution runs), but the `onOutput` rendering callback in `App.tsx` is a no-op to avoid duplicates with Automerge-synced outputs (no dedup IDs). All output **rendering** is driven by the Automerge sync channel (`automerge:from-daemon` → `materializeCells`). Issue #557 was resolved by making sync the sole output rendering path.
+> **Note:** `Output` broadcasts are still sent by the daemon and processed by `useDaemonKernel.ts` (blob resolution runs), but the `onOutput` rendering callback in `App.tsx` is a no-op to avoid duplicates with Automerge-synced outputs (no dedup IDs). All output **rendering** is driven by the Automerge sync channel (`notebook:frame` → WASM `receive_frame()` → `materializeCells`). Issue #557 was resolved by making sync the sole output rendering path.
 
 ### Project file auto-detection
 
