@@ -8,7 +8,41 @@
 use automerge::sync;
 use notebook_doc::presence;
 use notebook_doc::{CellSnapshot, NotebookDoc};
+use serde::Serialize;
 use wasm_bindgen::prelude::*;
+
+use notebook_doc::frame_types;
+
+/// Event returned from `receive_frame()` for the frontend to handle.
+///
+/// Serialized as JSON via serde — the frontend parses the `type` tag
+/// to dispatch to the appropriate handler.
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FrameEvent {
+    /// Automerge sync message was applied; frontend should materialize cells.
+    SyncApplied {
+        /// True if the document changed (new cells, updated source, etc.)
+        changed: bool,
+    },
+    /// A sync message was generated in response; frontend should send it back.
+    SyncReply {
+        /// The sync message bytes to send to the daemon.
+        reply: Vec<u8>,
+    },
+    /// Broadcast event from the daemon (kernel status, output, etc.)
+    Broadcast {
+        /// The broadcast payload as a JSON value (parsed from the frame).
+        payload: serde_json::Value,
+    },
+    /// Presence update from a remote peer.
+    Presence {
+        /// The decoded presence message as a JSON value.
+        payload: serde_json::Value,
+    },
+    /// Unknown frame type — frontend can log and ignore.
+    Unknown { frame_type: u8 },
+}
 
 /// A handle to a local Automerge notebook document.
 ///
@@ -379,124 +413,102 @@ impl NotebookHandle {
         self.sync_state = sync::State::new();
     }
 
-    // ── Presence ─────────────────────────────────────────────────────
-
-    /// Encode a cursor position as a presence frame payload (binary).
+    /// Receive a typed frame from the daemon, demux by type byte, return events for the frontend.
     ///
-    /// The frontend should send these bytes as a frame type 0x04 via
-    /// the Tauri relay. The `peer_id` is a local identifier — the daemon
-    /// will replace it with the server-assigned peer ID before relaying.
-    pub fn encode_cursor_presence(peer_id: &str, cell_id: &str, line: u32, column: u32) -> Vec<u8> {
-        presence::encode_cursor_update(
-            peer_id,
-            &presence::CursorPosition {
-                cell_id: cell_id.to_string(),
-                line,
-                column,
-            },
-        )
-    }
-
-    /// Encode a selection range as a presence frame payload (binary).
-    pub fn encode_selection_presence(
-        peer_id: &str,
-        cell_id: &str,
-        anchor_line: u32,
-        anchor_col: u32,
-        head_line: u32,
-        head_col: u32,
-    ) -> Vec<u8> {
-        presence::encode_selection_update(
-            peer_id,
-            &presence::SelectionRange {
-                cell_id: cell_id.to_string(),
-                anchor_line,
-                anchor_col,
-                head_line,
-                head_col,
-            },
-        )
-    }
-
-    /// Decode a presence frame payload into a JSON string for the frontend.
+    /// The input is the raw frame bytes from the `daemon:frame` Tauri event:
+    /// `[frame_type_byte, ...payload]`.
     ///
-    /// Returns a JSON object with the decoded presence message, or null
-    /// if decoding fails. The frontend can parse this to render remote
-    /// cursors, selections, and kernel state.
-    pub fn decode_presence_message(data: &[u8]) -> Option<String> {
-        let msg = presence::decode_message(data).ok()?;
-        let json = match msg {
-            presence::PresenceMessage::Update { peer_id, data } => {
-                let channel_str = match &data {
-                    presence::ChannelData::Cursor(_) => "cursor",
-                    presence::ChannelData::Selection(_) => "selection",
-                    presence::ChannelData::KernelState(_) => "kernel_state",
-                    presence::ChannelData::Custom(_) => "custom",
-                };
-                match data {
-                    presence::ChannelData::Cursor(c) => serde_json::json!({
-                        "type": "update",
-                        "peer_id": peer_id,
-                        "channel": channel_str,
-                        "cell_id": c.cell_id,
-                        "line": c.line,
-                        "column": c.column,
-                    }),
-                    presence::ChannelData::Selection(s) => serde_json::json!({
-                        "type": "update",
-                        "peer_id": peer_id,
-                        "channel": channel_str,
-                        "cell_id": s.cell_id,
-                        "anchor_line": s.anchor_line,
-                        "anchor_col": s.anchor_col,
-                        "head_line": s.head_line,
-                        "head_col": s.head_col,
-                    }),
-                    presence::ChannelData::KernelState(k) => serde_json::json!({
-                        "type": "update",
-                        "peer_id": peer_id,
-                        "channel": channel_str,
-                        "status": k.status.as_str(),
-                        "env_source": k.env_source,
-                    }),
-                    presence::ChannelData::Custom(bytes) => {
-                        // Emit raw bytes as a JSON array of numbers — lossless
-                        // without requiring a base64 dependency.
-                        serde_json::json!({
-                            "type": "update",
-                            "peer_id": peer_id,
-                            "channel": channel_str,
-                            "data": bytes,
-                        })
-                    }
+    /// Returns a JSON array of `FrameEvent` objects. Usually one event, but sync
+    /// frames may produce both a `sync_applied` and a `sync_reply` if the local
+    /// doc needs to send a response.
+    ///
+    /// Returns `undefined` if the frame is empty or cannot be processed.
+    pub fn receive_frame(&mut self, frame_bytes: &[u8]) -> Option<String> {
+        if frame_bytes.is_empty() {
+            return None;
+        }
+
+        let frame_type = frame_bytes[0];
+        let payload = &frame_bytes[1..];
+
+        let mut events: Vec<FrameEvent> = Vec::new();
+
+        match frame_type {
+            frame_types::AUTOMERGE_SYNC => {
+                // Decode and apply the sync message to our local doc
+                let msg = sync::Message::decode(payload).ok()?;
+                let heads_before = self.doc.doc_mut().get_heads();
+                self.doc
+                    .receive_sync_message(&mut self.sync_state, msg)
+                    .ok()?;
+                let heads_after = self.doc.doc_mut().get_heads();
+                let changed = heads_before != heads_after;
+
+                events.push(FrameEvent::SyncApplied { changed });
+
+                // The sync protocol may need a reply
+                if let Some(reply_msg) = self.doc.generate_sync_message(&mut self.sync_state) {
+                    events.push(FrameEvent::SyncReply {
+                        reply: reply_msg.encode(),
+                    });
                 }
             }
-            presence::PresenceMessage::Snapshot { peer_id, peers } => {
-                let peer_list: Vec<serde_json::Value> = peers
-                    .iter()
-                    .map(|p| {
-                        serde_json::json!({
-                            "peer_id": p.peer_id,
-                            "peer_label": p.peer_label,
-                            "channel_count": p.channels.len(),
-                        })
-                    })
-                    .collect();
-                serde_json::json!({
-                    "type": "snapshot",
-                    "peer_id": peer_id,
-                    "peers": peer_list,
-                })
+            frame_types::BROADCAST => {
+                // Parse JSON broadcast payload
+                let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
+                events.push(FrameEvent::Broadcast { payload: value });
             }
-            presence::PresenceMessage::Left { peer_id } => serde_json::json!({
-                "type": "left",
-                "peer_id": peer_id,
-            }),
-            presence::PresenceMessage::Heartbeat { peer_id } => serde_json::json!({
-                "type": "heartbeat",
-                "peer_id": peer_id,
-            }),
-        };
-        serde_json::to_string(&json).ok()
+            frame_types::PRESENCE => {
+                // Decode CBOR presence into a JSON value for the frontend
+                let msg = presence::decode_message(payload).ok()?;
+                let value = serde_json::to_value(&msg).ok()?;
+                events.push(FrameEvent::Presence { payload: value });
+            }
+            _ => {
+                events.push(FrameEvent::Unknown { frame_type });
+            }
+        }
+
+        serde_json::to_string(&events).ok()
     }
+}
+
+// ── Presence encoding (free functions for wasm_bindgen export) ────────
+
+/// Encode a cursor position as a presence frame payload (CBOR).
+///
+/// The frontend should prepend the frame type byte (0x04) and send
+/// via `invoke("send_frame", { frameData })`.
+#[wasm_bindgen]
+pub fn encode_cursor_presence(peer_id: &str, cell_id: &str, line: u32, column: u32) -> Vec<u8> {
+    presence::encode_cursor_update(
+        peer_id,
+        &presence::CursorPosition {
+            cell_id: cell_id.to_string(),
+            line,
+            column,
+        },
+    )
+}
+
+/// Encode a selection range as a presence frame payload (CBOR).
+#[wasm_bindgen]
+pub fn encode_selection_presence(
+    peer_id: &str,
+    cell_id: &str,
+    anchor_line: u32,
+    anchor_col: u32,
+    head_line: u32,
+    head_col: u32,
+) -> Vec<u8> {
+    presence::encode_selection_update(
+        peer_id,
+        &presence::SelectionRange {
+            cell_id: cell_id.to_string(),
+            anchor_line,
+            anchor_col,
+            head_line,
+            head_col,
+        },
+    )
 }

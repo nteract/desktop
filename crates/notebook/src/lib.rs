@@ -21,9 +21,7 @@ pub mod webdriver;
 
 pub use runtime::Runtime;
 
-use runtimed::notebook_sync_client::{
-    NotebookBroadcastReceiver, NotebookSyncClient, NotebookSyncHandle,
-};
+use runtimed::notebook_sync_client::{NotebookSyncClient, NotebookSyncHandle};
 use runtimed::protocol::{CompletionItem, HistoryEntry, NotebookRequest, NotebookResponse};
 
 use log::{debug, info, warn};
@@ -519,10 +517,11 @@ async fn initialize_notebook_sync_open(
         socket_path.display(),
     );
 
-    let (raw_sync_tx, raw_sync_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let (frame_tx, raw_frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let pipe_channel = runtimed::notebook_sync_client::PipeChannel { frame_tx };
 
-    let (handle, receiver, broadcast_receiver, _cells, _metadata, info) =
-        NotebookSyncClient::connect_open_split(socket_path, path, Some(raw_sync_tx))
+    let (handle, receiver, _broadcast_receiver, _cells, _metadata, info) =
+        NotebookSyncClient::connect_open_split(socket_path, path, Some(pipe_channel))
             .await
             .map_err(|e| format!("sync connect (open): {}", e))?;
 
@@ -550,8 +549,7 @@ async fn initialize_notebook_sync_open(
         window,
         info.notebook_id,
         handle,
-        broadcast_receiver,
-        raw_sync_rx,
+        raw_frame_rx,
         notebook_sync,
         sync_generation,
         current_generation,
@@ -584,15 +582,16 @@ async fn initialize_notebook_sync_create(
         socket_path.display(),
     );
 
-    let (raw_sync_tx, raw_sync_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let (frame_tx, raw_frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let pipe_channel = runtimed::notebook_sync_client::PipeChannel { frame_tx };
 
-    let (handle, receiver, broadcast_receiver, _cells, _metadata, info) =
+    let (handle, receiver, _broadcast_receiver, _cells, _metadata, info) =
         NotebookSyncClient::connect_create_split(
             socket_path,
             runtime,
             working_dir,
             notebook_id_hint,
-            Some(raw_sync_tx),
+            Some(pipe_channel),
         )
         .await
         .map_err(|e| format!("sync connect (create): {}", e))?;
@@ -619,8 +618,7 @@ async fn initialize_notebook_sync_create(
         window,
         info.notebook_id,
         handle,
-        broadcast_receiver,
-        raw_sync_rx,
+        raw_frame_rx,
         notebook_sync,
         sync_generation,
         current_generation,
@@ -643,8 +641,7 @@ async fn setup_sync_receivers(
     window: tauri::WebviewWindow,
     notebook_id: String,
     handle: NotebookSyncHandle,
-    mut broadcast_receiver: NotebookBroadcastReceiver,
-    mut raw_sync_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    mut raw_frame_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
     notebook_sync: SharedNotebookSync,
     sync_generation: Arc<AtomicU64>,
     current_generation: u64,
@@ -657,65 +654,32 @@ async fn setup_sync_receivers(
         notebook_id, current_generation,
     );
 
-    // Spawn raw sync relay task — forwards Automerge sync messages to frontend WASM
-    let window_for_raw_sync = window.clone();
-    let notebook_id_for_raw_sync = notebook_id.clone();
-    tokio::spawn(async move {
-        while let Some(sync_bytes) = raw_sync_rx.recv().await {
-            if let Err(e) = emit_to_label::<_, _, _>(
-                &window_for_raw_sync,
-                window_for_raw_sync.label(),
-                "automerge:from-daemon",
-                &sync_bytes,
-            ) {
-                warn!(
-                    "[notebook-sync] Failed to emit automerge:from-daemon: {}",
-                    e
-                );
-            }
-        }
-        info!(
-            "[notebook-sync] Raw sync relay ended for {}",
-            notebook_id_for_raw_sync,
-        );
-    });
-
-    // Spawn broadcast receiver task — forwards daemon kernel events to frontend.
+    // Spawn unified frame relay task — forwards all typed frames (AutomergeSync,
+    // Broadcast, Presence) to the frontend as raw bytes via one event.
     // On disconnect, conditionally clears the handle using the generation counter
     // to avoid clobbering a newer connection's handle.
     let window_for_ready = window.clone();
     let notebook_sync_for_disconnect = notebook_sync.clone();
-    let notebook_id_for_broadcast = notebook_id.clone();
+    let notebook_id_for_relay = notebook_id.clone();
     let sync_generation_for_cleanup = sync_generation.clone();
     tokio::spawn(async move {
-        while let Some(broadcast) = broadcast_receiver.recv().await {
-            // Filter out EnvSyncState spam from debug logs — the daemon broadcasts
-            // this at high frequency and it drowns out useful messages.
-            if !matches!(
-                broadcast,
-                runtimed::protocol::NotebookBroadcast::EnvSyncState { .. }
-            ) {
-                debug!(
-                    "[notebook-sync] Broadcast for {}: {:?}",
-                    notebook_id_for_broadcast, broadcast,
-                );
-            }
+        while let Some(frame_bytes) = raw_frame_rx.recv().await {
             if let Err(e) =
-                emit_to_label::<_, _, _>(&window, window.label(), "daemon:broadcast", &broadcast)
+                emit_to_label::<_, _, _>(&window, window.label(), "daemon:frame", &frame_bytes)
             {
-                warn!("[notebook-sync] Failed to emit daemon:broadcast: {}", e);
+                warn!("[notebook-sync] Failed to emit daemon:frame: {}", e);
             }
         }
         warn!(
-            "[notebook-sync] Broadcast ended for {} (gen {}) — daemon disconnected",
-            notebook_id_for_broadcast, current_generation,
+            "[notebook-sync] Frame relay ended for {} (gen {}) — daemon disconnected",
+            notebook_id_for_relay, current_generation,
         );
 
         let current_gen = sync_generation_for_cleanup.load(Ordering::SeqCst);
         if current_gen == current_generation {
             info!(
                 "[notebook-sync] Clearing handle for {} (gen {})",
-                notebook_id_for_broadcast, current_generation,
+                notebook_id_for_relay, current_generation,
             );
             *notebook_sync_for_disconnect.lock().await = None;
             if let Err(e) =
@@ -726,7 +690,7 @@ async fn setup_sync_receivers(
         } else {
             info!(
                 "[notebook-sync] Skipping cleanup for {} (gen {} != {})",
-                notebook_id_for_broadcast, current_generation, current_gen,
+                notebook_id_for_relay, current_generation, current_gen,
             );
         }
     });
@@ -2424,6 +2388,47 @@ async fn send_automerge_sync(
         .map_err(|e| format!("Failed to relay sync message: {}", e))
 }
 
+/// Send a typed frame to the daemon.
+///
+/// The first byte is the frame type, the rest is the payload.
+/// Supported outgoing types:
+/// - 0x00: AutomergeSync (forwarded via receive_frontend_sync_message)
+/// - 0x04: Presence (forwarded via send_presence)
+#[tauri::command]
+async fn send_frame(
+    window: tauri::Window,
+    frame_data: Vec<u8>,
+    registry: tauri::State<'_, WindowNotebookRegistry>,
+) -> Result<(), String> {
+    if frame_data.is_empty() {
+        return Err("Empty frame".to_string());
+    }
+
+    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
+    let guard = notebook_sync.lock().await;
+    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
+
+    use runtimed::notebook_doc::frame_types;
+
+    let frame_type = frame_data[0];
+    let payload = &frame_data[1..];
+
+    match frame_type {
+        frame_types::AUTOMERGE_SYNC => handle
+            .receive_frontend_sync_message(payload.to_vec())
+            .await
+            .map_err(|e| format!("send_frame(sync): {}", e)),
+        frame_types::PRESENCE => handle
+            .send_presence(payload.to_vec())
+            .await
+            .map_err(|e| format!("send_frame(presence): {}", e)),
+        _ => Err(format!(
+            "Unsupported outgoing frame type: 0x{:02x}",
+            frame_type
+        )),
+    }
+}
+
 #[tauri::command]
 async fn list_kernelspecs() -> Result<Vec<KernelspecInfo>, String> {
     let specs = runtimelib::list_kernelspecs().await;
@@ -3466,6 +3471,7 @@ pub fn run(
             reconnect_to_daemon,
             get_automerge_doc_bytes,
             send_automerge_sync,
+            send_frame,
             // App update support
             install_daemon_for_update,
             begin_upgrade,

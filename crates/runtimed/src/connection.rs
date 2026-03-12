@@ -218,31 +218,34 @@ pub struct NotebookConnectionInfo {
 /// Frame types for notebook sync connections.
 ///
 /// The first byte of each frame payload indicates the type of message.
+/// The byte values are defined in `notebook_doc::frame_types` so all
+/// consumers (daemon, WASM, Python) share one source of truth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum NotebookFrameType {
     /// Automerge sync message (binary).
-    AutomergeSync = 0x00,
+    AutomergeSync = notebook_doc::frame_types::AUTOMERGE_SYNC,
     /// NotebookRequest (JSON).
-    Request = 0x01,
+    Request = notebook_doc::frame_types::REQUEST,
     /// NotebookResponse (JSON).
-    Response = 0x02,
+    Response = notebook_doc::frame_types::RESPONSE,
     /// NotebookBroadcast (JSON).
-    Broadcast = 0x03,
-    /// Presence (binary, see notebook_doc::presence).
-    Presence = 0x04,
+    Broadcast = notebook_doc::frame_types::BROADCAST,
+    /// Presence (CBOR, see notebook_doc::presence).
+    Presence = notebook_doc::frame_types::PRESENCE,
 }
 
 impl TryFrom<u8> for NotebookFrameType {
     type Error = std::io::Error;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
+        use notebook_doc::frame_types;
         match value {
-            0x00 => Ok(Self::AutomergeSync),
-            0x01 => Ok(Self::Request),
-            0x02 => Ok(Self::Response),
-            0x03 => Ok(Self::Broadcast),
-            0x04 => Ok(Self::Presence),
+            frame_types::AUTOMERGE_SYNC => Ok(Self::AutomergeSync),
+            frame_types::REQUEST => Ok(Self::Request),
+            frame_types::RESPONSE => Ok(Self::Response),
+            frame_types::BROADCAST => Ok(Self::Broadcast),
+            frame_types::PRESENCE => Ok(Self::Presence),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("unknown notebook frame type: 0x{:02x}", value),

@@ -31,6 +31,7 @@
 //!     notebook_metadata: Str      ← JSON-encoded NotebookMetadataSnapshot
 //! ```
 
+pub mod frame_types;
 pub mod metadata;
 pub mod presence;
 

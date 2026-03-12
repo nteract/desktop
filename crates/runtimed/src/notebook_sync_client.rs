@@ -61,6 +61,17 @@ pub enum NotebookSyncError {
     ChannelClosed,
 }
 
+/// Single channel for pipe mode (Tauri relay).
+///
+/// In pipe mode, the sync task forwards raw typed frame bytes to the Tauri
+/// process instead of processing them locally. All frame types (AutomergeSync,
+/// Broadcast, Presence) flow through one channel, preserving daemon-sent order.
+/// Response frames are consumed by the request/response cycle and never piped.
+pub struct PipeChannel {
+    /// Raw typed frame bytes (frame type byte + payload) forwarded to the frontend.
+    pub frame_tx: mpsc::UnboundedSender<Vec<u8>>,
+}
+
 /// Commands sent from handles to the sync task.
 #[derive(Debug)]
 enum SyncCommand {
@@ -807,7 +818,7 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
         notebook_id: String,
         working_dir: Option<PathBuf>,
         initial_metadata: Option<String>,
-        raw_sync_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+        pipe_channel: Option<PipeChannel>,
     ) -> Result<
         (
             NotebookSyncHandle,
@@ -826,7 +837,7 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
             initial_metadata,
         )
         .await?;
-        Ok(client.into_split_with_raw_sync(raw_sync_tx))
+        Ok(client.into_split_with_pipe(pipe_channel))
     }
 
     /// Connect by opening an existing notebook file (daemon-owned loading).
@@ -836,7 +847,7 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
     pub async fn connect_open_split(
         socket_path: PathBuf,
         path: PathBuf,
-        raw_sync_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+        pipe_channel: Option<PipeChannel>,
     ) -> Result<
         (
             NotebookSyncHandle,
@@ -856,10 +867,10 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
         .map_err(|_| NotebookSyncError::Timeout)?
         .map_err(NotebookSyncError::ConnectionFailed)?;
 
-        let pipe_mode = raw_sync_tx.is_some();
+        let pipe_mode = pipe_channel.is_some();
         let (client, info) = Self::init_open_notebook(stream, path, pipe_mode).await?;
         let (handle, receiver, broadcast_rx, cells, metadata) =
-            client.into_split_with_raw_sync(raw_sync_tx);
+            client.into_split_with_pipe(pipe_channel);
         Ok((handle, receiver, broadcast_rx, cells, metadata, info))
     }
 
@@ -872,7 +883,7 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
         runtime: String,
         working_dir: Option<PathBuf>,
         notebook_id: Option<String>,
-        raw_sync_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+        pipe_channel: Option<PipeChannel>,
     ) -> Result<
         (
             NotebookSyncHandle,
@@ -892,12 +903,12 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
         .map_err(|_| NotebookSyncError::Timeout)?
         .map_err(NotebookSyncError::ConnectionFailed)?;
 
-        let pipe_mode = raw_sync_tx.is_some();
+        let pipe_mode = pipe_channel.is_some();
         let (client, info) =
             Self::init_create_notebook(stream, runtime, working_dir, notebook_id, pipe_mode)
                 .await?;
         let (handle, receiver, broadcast_rx, cells, metadata) =
-            client.into_split_with_raw_sync(raw_sync_tx);
+            client.into_split_with_pipe(pipe_channel);
         Ok((handle, receiver, broadcast_rx, cells, metadata, info))
     }
 }
@@ -971,7 +982,7 @@ impl NotebookSyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
         notebook_id: String,
         working_dir: Option<PathBuf>,
         initial_metadata: Option<String>,
-        raw_sync_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+        pipe_channel: Option<PipeChannel>,
     ) -> Result<
         (
             NotebookSyncHandle,
@@ -985,14 +996,14 @@ impl NotebookSyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
         let client =
             Self::connect_with_options(socket_path, notebook_id, working_dir, initial_metadata)
                 .await?;
-        Ok(client.into_split_with_raw_sync(raw_sync_tx))
+        Ok(client.into_split_with_pipe(pipe_channel))
     }
 
     /// Connect by opening an existing notebook file (daemon-owned loading).
     pub async fn connect_open_split(
         socket_path: PathBuf,
         path: PathBuf,
-        raw_sync_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+        pipe_channel: Option<PipeChannel>,
     ) -> Result<
         (
             NotebookSyncHandle,
@@ -1009,10 +1020,10 @@ impl NotebookSyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
             .open(&pipe_name)
             .map_err(NotebookSyncError::ConnectionFailed)?;
 
-        let pipe_mode = raw_sync_tx.is_some();
+        let pipe_mode = pipe_channel.is_some();
         let (client, info) = Self::init_open_notebook(stream, path, pipe_mode).await?;
         let (handle, receiver, broadcast_rx, cells, metadata) =
-            client.into_split_with_raw_sync(raw_sync_tx);
+            client.into_split_with_pipe(pipe_channel);
         Ok((handle, receiver, broadcast_rx, cells, metadata, info))
     }
 
@@ -1022,7 +1033,7 @@ impl NotebookSyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
         runtime: String,
         working_dir: Option<PathBuf>,
         notebook_id: Option<String>,
-        raw_sync_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+        pipe_channel: Option<PipeChannel>,
     ) -> Result<
         (
             NotebookSyncHandle,
@@ -1039,12 +1050,12 @@ impl NotebookSyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
             .open(&pipe_name)
             .map_err(NotebookSyncError::ConnectionFailed)?;
 
-        let pipe_mode = raw_sync_tx.is_some();
+        let pipe_mode = pipe_channel.is_some();
         let (client, info) =
             Self::init_create_notebook(stream, runtime, working_dir, notebook_id, pipe_mode)
                 .await?;
         let (handle, receiver, broadcast_rx, cells, metadata) =
-            client.into_split_with_raw_sync(raw_sync_tx);
+            client.into_split_with_pipe(pipe_channel);
         Ok((handle, receiver, broadcast_rx, cells, metadata, info))
     }
 }
@@ -2420,19 +2431,19 @@ where
         Vec<CellSnapshot>,
         Option<String>,
     ) {
-        self.into_split_with_raw_sync(None)
+        self.into_split_with_pipe(None)
     }
 
     /// Split into handle/receiver/broadcast, optionally forwarding raw Automerge
     /// sync messages from the daemon to a channel.
     ///
     /// When `raw_sync_tx` is provided, incoming `AutomergeSync` frames from the
-    /// daemon are also forwarded as raw bytes to this channel (in addition to
-    /// being applied to the local doc as usual). This enables the Tauri process
-    /// to relay sync messages to the frontend for Phase 2 local-first support.
-    pub fn into_split_with_raw_sync(
+    /// daemon are forwarded as raw typed frame bytes to this channel. This
+    /// enables the Tauri process to relay all frame types to the frontend
+    /// through a single event.
+    pub fn into_split_with_pipe(
         self,
-        raw_sync_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+        pipe_channel: Option<PipeChannel>,
     ) -> (
         NotebookSyncHandle,
         NotebookSyncReceiver,
@@ -2493,7 +2504,7 @@ where
                 cmd_rx,
                 changes_tx,
                 broadcast_tx,
-                raw_sync_tx,
+                pipe_channel,
                 snapshot_tx,
             ))
             .catch_unwind()
@@ -2556,7 +2567,7 @@ async fn run_sync_task<S>(
     mut cmd_rx: mpsc::Receiver<SyncCommand>,
     changes_tx: mpsc::Sender<SyncUpdate>,
     broadcast_tx: broadcast::Sender<NotebookBroadcast>,
-    raw_sync_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    pipe_channel: Option<PipeChannel>,
     snapshot_tx: watch::Sender<NotebookSnapshot>,
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -2792,13 +2803,15 @@ async fn run_sync_task<S>(
                             .send_request_with_broadcast(&request, Some(tx_to_use))
                             .await;
 
-                        // Forward any AutomergeSync frames that were buffered
-                        // during the request/response wait. In pipe mode these
-                        // must reach the WASM; without this, run-all breaks
-                        // because sync frames for cleared outputs get consumed.
-                        if let Some(ref tx) = raw_sync_tx {
+                        // Forward any frames that were buffered during the
+                        // request/response wait. In pipe mode these must reach
+                        // the frontend; without this, run-all breaks because
+                        // sync frames for cleared outputs get consumed.
+                        if let Some(ref pipe) = pipe_channel {
                             for frame_bytes in client.pending_sync_frames.drain(..) {
-                                let _ = tx.send(frame_bytes);
+                                let mut typed = vec![NotebookFrameType::AutomergeSync as u8];
+                                typed.extend_from_slice(&frame_bytes);
+                                let _ = pipe.frame_tx.send(typed);
                             }
                         } else {
                             client.pending_sync_frames.clear();
@@ -2826,7 +2839,7 @@ async fn run_sync_task<S>(
                         let _ = reply.send(result);
                     }
                     SyncCommand::ReceiveFrontendSyncMessage { message, reply } => {
-                        let result = if raw_sync_tx.is_some() {
+                        let result = if pipe_channel.is_some() {
                             // Pipe mode (Tauri): queue the sync bytes to be flushed
                             // at the top of the next loop iteration, BEFORE the
                             // select! starts a new socket read. Writing directly here
@@ -2860,18 +2873,32 @@ async fn run_sync_task<S>(
                 // v2 protocol: direct socket read completed
                 match frame_result {
                     Ok(Some(frame)) => {
-                        // Pipe mode (Tauri): forward AutomergeSync frames raw to the
-                        // frontend without merging into the relay's doc. This makes
-                        // the relay a transparent byte pipe between frontend and daemon
-                        // — two Automerge peers instead of three.
-                        // Broadcast and Response frames still need normal processing.
-                        if raw_sync_tx.is_some()
-                            && frame.frame_type == NotebookFrameType::AutomergeSync
-                        {
-                            if let Some(ref tx) = raw_sync_tx {
-                                let _ = tx.send(frame.payload);
+                        // Pipe mode (Tauri): forward all frame types except Response
+                        // as raw typed frame bytes (type byte + payload) through
+                        // one channel, preserving daemon-sent order. Response frames
+                        // are consumed by the request/response cycle.
+                        if let Some(ref pipe) = pipe_channel {
+                            match frame.frame_type {
+                                NotebookFrameType::Response => {
+                                    // Fall through to process_incoming_frame —
+                                    // needed for send_request/wait_for_response
+                                }
+                                NotebookFrameType::Request => {
+                                    warn!(
+                                        "[notebook-sync-task] Unexpected Request frame from daemon"
+                                    );
+                                    continue;
+                                }
+                                _ => {
+                                    // AutomergeSync, Broadcast, Presence — pipe raw
+                                    let mut frame_bytes = vec![frame.frame_type as u8];
+                                    frame_bytes.extend_from_slice(&frame.payload);
+                                    let _ = pipe.frame_tx.send(frame_bytes);
+                                    continue;
+                                }
                             }
-                        } else {
+                        }
+                        {
                             match client.process_incoming_frame(frame).await {
                                 Ok(Some(ReceivedFrame::Changes(cells))) => {
                                     publish_snapshot(&client, &snapshot_tx);
