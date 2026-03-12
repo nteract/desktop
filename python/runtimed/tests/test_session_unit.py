@@ -5,7 +5,6 @@ properties, and error handling for disconnected sessions.
 """
 
 import pytest
-
 import runtimed
 
 

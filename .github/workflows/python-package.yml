@@ -42,21 +42,11 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Ruff check (nteract)
-        run: uvx ruff check src/
-        working-directory: python/nteract
+      - name: Ruff check
+        run: uvx ruff check --config python/pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/
 
-      - name: Ruff check (runtimed)
-        run: uvx ruff check src/ tests/
-        working-directory: python/runtimed
-
-      - name: Ruff format check (nteract)
-        run: uvx ruff format --check src/
-        working-directory: python/nteract
-
-      - name: Ruff format check (runtimed)
-        run: uvx ruff format --check src/ tests/
-        working-directory: python/runtimed
+      - name: Ruff format check
+        run: uvx ruff format --check --config python/pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/
 
   nteract-test:
     runs-on: ubuntu-latest
@@ -70,7 +60,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --dev --no-sources
+        run: uv sync --dev --no-sources --no-install-workspace
         working-directory: python/nteract
 
       - name: Run smoke tests
