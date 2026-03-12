@@ -132,13 +132,28 @@ export function CodeCell({
 
   // Register editor with the registry for cross-cell navigation
   useEffect(() => {
-    if (editorRef.current) {
-      registerEditor(cell.id, {
-        focus: () => editorRef.current?.focus(),
-        setCursorPosition: (position) =>
-          editorRef.current?.setCursorPosition(position),
-      });
+    const register = () => {
+      if (editorRef.current) {
+        registerEditor(cell.id, {
+          focus: () => editorRef.current?.focus(),
+          setCursorPosition: (position) =>
+            editorRef.current?.setCursorPosition(position),
+        });
+        return true;
+      }
+      return false;
+    };
+
+    // Register immediately if ref is ready, otherwise wait for next frame
+    if (!register()) {
+      // Ref not ready yet - try again after mount completes
+      const frame = requestAnimationFrame(() => register());
+      return () => {
+        cancelAnimationFrame(frame);
+        unregisterEditor(cell.id);
+      };
     }
+
     return () => unregisterEditor(cell.id);
   }, [cell.id, registerEditor, unregisterEditor]);
 
