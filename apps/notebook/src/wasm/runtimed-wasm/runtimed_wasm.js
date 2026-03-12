@@ -641,6 +641,11 @@ export class NotebookHandle {
      * frames may produce both a `sync_applied` and a `sync_reply` if the local
      * doc needs to send a response.
      *
+     * When a `SyncReply` event is returned, its `reply` field contains raw
+     * Automerge sync bytes (no frame type prefix). The frontend must prepend
+     * the frame type byte (`0x00` for AutomergeSync) to form a complete typed
+     * frame, then send it back via `invoke("send_frame", { frameData })`.
+     *
      * Returns `undefined` if the frame is empty or cannot be processed.
      * @param {Uint8Array} frame_bytes
      * @returns {string | undefined}
