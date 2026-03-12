@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
+import { subscribeBroadcast } from "../lib/notebook-frame-bus";
 import type {
   DaemonBroadcast,
   EnvProgressEvent,
@@ -212,24 +213,21 @@ export function useEnvProgress() {
       processEvent(event.payload);
     });
 
-    // Also listen for notebook:broadcast events with env_progress
+    // Also subscribe to broadcast events with env_progress via the frame bus
     // (from daemon-managed environment preparation during kernel launch)
-    const unlistenBroadcast = listen<DaemonBroadcast>(
-      "notebook:broadcast",
-      (event) => {
-        const broadcast = event.payload;
-        if (broadcast.event === "env_progress") {
-          // The daemon broadcast has the same shape as EnvProgressEvent
-          // (env_type + flattened phase fields) plus the "event" tag
-          processEvent(broadcast as unknown as EnvProgressEvent);
-        }
-      },
-    );
+    const unsubscribeBroadcast = subscribeBroadcast((payload) => {
+      const broadcast = payload as DaemonBroadcast;
+      if (broadcast.event === "env_progress") {
+        // The daemon broadcast has the same shape as EnvProgressEvent
+        // (env_type + flattened phase fields) plus the "event" tag
+        processEvent(broadcast as unknown as EnvProgressEvent);
+      }
+    });
 
     return () => {
       cancelled = true;
       unlisten.then((fn) => fn());
-      unlistenBroadcast.then((fn) => fn());
+      unsubscribeBroadcast();
     };
   }, []);
 

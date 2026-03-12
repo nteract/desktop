@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { frame_types } from "../lib/frame-types";
 import { logger } from "../lib/logger";
+import { subscribePresence } from "../lib/notebook-frame-bus";
 import {
   encode_cursor_presence,
   encode_selection_presence,
@@ -74,8 +74,8 @@ type PresenceMessage =
 /**
  * Manages presence state (remote cursors, selections) from the unified frame pipe.
  *
- * Presence events arrive as decoded JSON via `notebook:presence` webview events,
- * re-emitted by the `useAutomergeNotebook` frame listener. This hook maintains
+ * Presence events arrive as decoded JSON via the notebook frame bus,
+ * dispatched by `useAutomergeNotebook` after WASM demux. This hook maintains
  * a map of remote peers and exposes helpers for sending local presence and
  * querying remote presence per cell.
  *
@@ -98,81 +98,77 @@ export function usePresence(peerId: string | null) {
     if (!peerId) return;
 
     let cancelled = false;
-    const webview = getCurrentWebview();
 
-    const unlistenPresence = webview.listen<PresenceMessage>(
-      "notebook:presence",
-      (event) => {
-        if (cancelled) return;
-        const msg = event.payload;
+    const unsubscribePresence = subscribePresence((payload) => {
+      if (cancelled) return;
+      const msg = payload as PresenceMessage;
 
-        switch (msg.type) {
-          case "update": {
-            // Ignore our own presence echoed back
-            if (msg.peer_id === peerId) return;
+      switch (msg.type) {
+        case "update": {
+          // Ignore our own presence echoed back
+          if (msg.peer_id === peerId) return;
 
-            const existing = peersRef.current.get(msg.peer_id);
-            const peer: RemotePeer = existing ?? {
-              peerId: msg.peer_id,
-              peerLabel: "",
-            };
+          const existing = peersRef.current.get(msg.peer_id);
+          const peer: RemotePeer = existing ?? {
+            peerId: msg.peer_id,
+            peerLabel: "",
+          };
 
-            if (msg.channel === "cursor") {
-              peer.cursor = msg.data as CursorPosition;
-            } else if (msg.channel === "selection") {
-              peer.selection = msg.data as SelectionRange;
-            }
-            // kernel_state and custom channels are ignored for now
-
-            const isNew = !existing;
-            peersRef.current.set(msg.peer_id, peer);
-            if (isNew) {
-              setPeerVersion((v) => v + 1);
-            }
-            break;
+          if (msg.channel === "cursor") {
+            peer.cursor = msg.data as CursorPosition;
+          } else if (msg.channel === "selection") {
+            peer.selection = msg.data as SelectionRange;
           }
+          // kernel_state and custom channels are ignored for now
 
-          case "snapshot": {
-            const newPeers = new Map<string, RemotePeer>();
-            for (const snap of msg.peers) {
-              // Skip our own peer entry from snapshots
-              if (snap.peer_id === peerId) continue;
-
-              const peer: RemotePeer = {
-                peerId: snap.peer_id,
-                peerLabel: snap.peer_label,
-              };
-              for (const ch of snap.channels) {
-                if (ch.channel === "cursor") {
-                  peer.cursor = ch.data as CursorPosition;
-                } else if (ch.channel === "selection") {
-                  peer.selection = ch.data as SelectionRange;
-                }
-              }
-              newPeers.set(snap.peer_id, peer);
-            }
-            peersRef.current = newPeers;
+          const isNew = !existing;
+          peersRef.current.set(msg.peer_id, peer);
+          if (isNew) {
             setPeerVersion((v) => v + 1);
-            break;
           }
-
-          case "left": {
-            if (peersRef.current.delete(msg.peer_id)) {
-              setPeerVersion((v) => v + 1);
-            }
-            break;
-          }
-
-          case "heartbeat":
-            // No state change needed — staleness pruning is a future concern
-            break;
+          break;
         }
-      },
-    );
+
+        case "snapshot": {
+          const newPeers = new Map<string, RemotePeer>();
+          for (const snap of msg.peers) {
+            // Skip our own peer entry from snapshots
+            if (snap.peer_id === peerId) continue;
+
+            const peer: RemotePeer = {
+              peerId: snap.peer_id,
+              peerLabel: snap.peer_label,
+            };
+            for (const ch of snap.channels) {
+              if (ch.channel === "cursor") {
+                peer.cursor = ch.data as CursorPosition;
+              } else if (ch.channel === "selection") {
+                peer.selection = ch.data as SelectionRange;
+              }
+            }
+            newPeers.set(snap.peer_id, peer);
+          }
+          peersRef.current = newPeers;
+          setPeerVersion((v) => v + 1);
+          break;
+        }
+
+        case "left": {
+          if (peersRef.current.delete(msg.peer_id)) {
+            setPeerVersion((v) => v + 1);
+          }
+          break;
+        }
+
+        case "heartbeat":
+          // No state change needed — staleness pruning is a future concern
+          break;
+      }
+    });
 
     return () => {
       cancelled = true;
-      unlistenPresence.then((fn) => fn()).catch(() => {});
+      unsubscribePresence();
     };
   }, [peerId]);
 

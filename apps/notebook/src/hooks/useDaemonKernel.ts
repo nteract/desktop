@@ -15,6 +15,7 @@ import {
   type KernelStatus,
 } from "../lib/kernel-status";
 import { logger } from "../lib/logger";
+import { subscribeBroadcast } from "../lib/notebook-frame-bus";
 import type {
   DaemonBroadcast,
   DaemonNotebookResponse,
@@ -145,289 +146,283 @@ export function useDaemonKernel({
     // Fetch blob port for manifest resolution
     refreshBlobPort();
 
-    const unlistenBroadcast = webview.listen<DaemonBroadcast>(
-      "notebook:broadcast",
-      (event) => {
-        if (cancelled) return;
+    const unsubscribeBroadcast = subscribeBroadcast((payload) => {
+      if (cancelled) return;
 
-        const broadcast = event.payload;
+      const broadcast = payload as DaemonBroadcast;
 
-        switch (broadcast.event) {
-          case "kernel_status": {
-            const rawStatus = broadcast.status;
-            if (!isKernelStatus(rawStatus)) {
-              logger.warn(
-                `[daemon-kernel] Ignoring unknown kernel status: ${rawStatus}`,
-              );
-              break;
-            }
-            const status: DaemonKernelStatus = rawStatus;
-
-            if (status === KERNEL_STATUS.BUSY) {
-              // Throttle busy: only show if it persists past threshold
-              // This ignores transient busy states from completions
-              if (busyTimerRef.current === null) {
-                busyTimerRef.current = window.setTimeout(() => {
-                  busyTimerRef.current = null;
-                  setKernelStatus(KERNEL_STATUS.BUSY);
-                  callbacksRef.current.onStatusChange?.(
-                    KERNEL_STATUS.BUSY,
-                    broadcast.cell_id,
-                  );
-                }, 60);
-              }
-            } else if (status === KERNEL_STATUS.IDLE) {
-              // Cancel pending busy transition if idle arrives quickly
-              if (busyTimerRef.current !== null) {
-                clearTimeout(busyTimerRef.current);
-                busyTimerRef.current = null;
-                // Don't update - stay at current status (probably idle)
-              } else {
-                // No pending busy, show idle immediately
-                setKernelStatus(status);
-                callbacksRef.current.onStatusChange?.(
-                  status,
-                  broadcast.cell_id,
-                );
-              }
-            } else {
-              // Other statuses (starting, error, shutdown, etc.) shown immediately
-              // Also clear any pending busy timer
-              if (busyTimerRef.current !== null) {
-                clearTimeout(busyTimerRef.current);
-                busyTimerRef.current = null;
-              }
-              setKernelStatus(status);
-              callbacksRef.current.onStatusChange?.(status, broadcast.cell_id);
-
-              // Clear sync state when kernel shuts down
-              if (status === KERNEL_STATUS.SHUTDOWN) {
-                setEnvSyncState(null);
-              }
-            }
-            break;
-          }
-
-          case "execution_started": {
-            callbacksRef.current.onExecutionCount(
-              broadcast.cell_id,
-              broadcast.execution_count,
+      switch (broadcast.event) {
+        case "kernel_status": {
+          const rawStatus = broadcast.status;
+          if (!isKernelStatus(rawStatus)) {
+            logger.warn(
+              `[daemon-kernel] Ignoring unknown kernel status: ${rawStatus}`,
             );
             break;
           }
+          const status: DaemonKernelStatus = rawStatus;
 
-          case "output": {
-            // Skip blob resolution entirely when no onOutput callback is
-            // registered. Sync delivers outputs via materializeCells; the
-            // broadcast path is only needed for OutputWidget capture.
-            if (!callbacksRef.current.onOutput) break;
-
-            // Resolve output (may be blob hash or raw JSON)
-            const cellId = broadcast.cell_id;
-            const outputJson = broadcast.output_json;
-
-            // Helper to resolve with retry if port is unavailable or stale
-            const resolveWithRetry = async (retried = false) => {
-              let port = blobPortRef.current;
-              // If port not yet available, try to fetch it
-              if (!port) {
-                const freshPort = await fetchBlobPortWithRetry();
-                if (freshPort) {
-                  blobPortRef.current = freshPort;
-                  port = freshPort;
-                }
-              }
-              if (!port) {
-                logger.error(
-                  "[daemon-kernel] Blob port unavailable, cannot resolve output",
+          if (status === KERNEL_STATUS.BUSY) {
+            // Throttle busy: only show if it persists past threshold
+            // This ignores transient busy states from completions
+            if (busyTimerRef.current === null) {
+              busyTimerRef.current = window.setTimeout(() => {
+                busyTimerRef.current = null;
+                setKernelStatus(KERNEL_STATUS.BUSY);
+                callbacksRef.current.onStatusChange?.(
+                  KERNEL_STATUS.BUSY,
+                  broadcast.cell_id,
                 );
-                return;
-              }
-              const output = await resolveOutputString(outputJson, port);
-              if (cancelled) return;
-              if (output) {
-                callbacksRef.current.onOutput?.(cellId, output);
-              } else if (!retried) {
-                // Resolution failed - port may be stale, refresh and retry once
-                logger.debug(
-                  "[daemon-kernel] Output resolution failed, refreshing port",
-                );
-                blobPortRef.current = 0;
-                await resolveWithRetry(true);
-              } else {
-                logger.error(
-                  "[daemon-kernel] Failed to resolve output for cell:",
-                  cellId,
-                );
-              }
-            };
+              }, 60);
+            }
+          } else if (status === KERNEL_STATUS.IDLE) {
+            // Cancel pending busy transition if idle arrives quickly
+            if (busyTimerRef.current !== null) {
+              clearTimeout(busyTimerRef.current);
+              busyTimerRef.current = null;
+              // Don't update - stay at current status (probably idle)
+            } else {
+              // No pending busy, show idle immediately
+              setKernelStatus(status);
+              callbacksRef.current.onStatusChange?.(status, broadcast.cell_id);
+            }
+          } else {
+            // Other statuses (starting, error, shutdown, etc.) shown immediately
+            // Also clear any pending busy timer
+            if (busyTimerRef.current !== null) {
+              clearTimeout(busyTimerRef.current);
+              busyTimerRef.current = null;
+            }
+            setKernelStatus(status);
+            callbacksRef.current.onStatusChange?.(status, broadcast.cell_id);
 
-            resolveWithRetry().catch((e) => {
-              logger.error("[daemon-kernel] Failed to resolve output:", e);
-            });
-            break;
+            // Clear sync state when kernel shuts down
+            if (status === KERNEL_STATUS.SHUTDOWN) {
+              setEnvSyncState(null);
+            }
           }
+          break;
+        }
 
-          case "display_update": {
-            // Update an existing output by display_id (e.g., progress bars)
-            const { onUpdateDisplayData } = callbacksRef.current;
-            if (onUpdateDisplayData) {
-              onUpdateDisplayData(
-                broadcast.display_id,
-                broadcast.data,
-                broadcast.metadata,
+        case "execution_started": {
+          callbacksRef.current.onExecutionCount(
+            broadcast.cell_id,
+            broadcast.execution_count,
+          );
+          break;
+        }
+
+        case "output": {
+          // Skip blob resolution entirely when no onOutput callback is
+          // registered. Sync delivers outputs via materializeCells; the
+          // broadcast path is only needed for OutputWidget capture.
+          if (!callbacksRef.current.onOutput) break;
+
+          // Resolve output (may be blob hash or raw JSON)
+          const cellId = broadcast.cell_id;
+          const outputJson = broadcast.output_json;
+
+          // Helper to resolve with retry if port is unavailable or stale
+          const resolveWithRetry = async (retried = false) => {
+            let port = blobPortRef.current;
+            // If port not yet available, try to fetch it
+            if (!port) {
+              const freshPort = await fetchBlobPortWithRetry();
+              if (freshPort) {
+                blobPortRef.current = freshPort;
+                port = freshPort;
+              }
+            }
+            if (!port) {
+              logger.error(
+                "[daemon-kernel] Blob port unavailable, cannot resolve output",
+              );
+              return;
+            }
+            const output = await resolveOutputString(outputJson, port);
+            if (cancelled) return;
+            if (output) {
+              callbacksRef.current.onOutput?.(cellId, output);
+            } else if (!retried) {
+              // Resolution failed - port may be stale, refresh and retry once
+              logger.debug(
+                "[daemon-kernel] Output resolution failed, refreshing port",
+              );
+              blobPortRef.current = 0;
+              await resolveWithRetry(true);
+            } else {
+              logger.error(
+                "[daemon-kernel] Failed to resolve output for cell:",
+                cellId,
               );
             }
-            break;
-          }
+          };
 
-          case "execution_done": {
-            callbacksRef.current.onExecutionDone(broadcast.cell_id);
-            break;
-          }
+          resolveWithRetry().catch((e) => {
+            logger.error("[daemon-kernel] Failed to resolve output:", e);
+          });
+          break;
+        }
 
-          case "queue_changed": {
-            const newState: DaemonQueueState = {
-              executing: broadcast.executing ?? null,
-              queued: broadcast.queued,
+        case "display_update": {
+          // Update an existing output by display_id (e.g., progress bars)
+          const { onUpdateDisplayData } = callbacksRef.current;
+          if (onUpdateDisplayData) {
+            onUpdateDisplayData(
+              broadcast.display_id,
+              broadcast.data,
+              broadcast.metadata,
+            );
+          }
+          break;
+        }
+
+        case "execution_done": {
+          callbacksRef.current.onExecutionDone(broadcast.cell_id);
+          break;
+        }
+
+        case "queue_changed": {
+          const newState: DaemonQueueState = {
+            executing: broadcast.executing ?? null,
+            queued: broadcast.queued,
+          };
+          setQueueState(newState);
+          callbacksRef.current.onQueueChange?.(newState);
+          break;
+        }
+
+        case "kernel_error": {
+          setKernelStatus(KERNEL_STATUS.ERROR);
+          callbacksRef.current.onKernelError?.(broadcast.error);
+          break;
+        }
+
+        case "outputs_cleared": {
+          callbacksRef.current.onClearOutputs?.(broadcast.cell_id);
+          break;
+        }
+
+        case "comm": {
+          // Comm message from kernel (for widgets)
+          const { onCommMessage } = callbacksRef.current;
+          if (onCommMessage) {
+            // Convert daemon broadcast to JupyterMessage format expected by widget store
+            const msg: JupyterMessage = {
+              header: {
+                msg_id: crypto.randomUUID(),
+                msg_type: broadcast.msg_type,
+                session: "",
+                username: "kernel",
+                date: new Date().toISOString(),
+                version: "5.3",
+              },
+              metadata: {},
+              content: broadcast.content,
+              // Convert number[][] back to ArrayBuffer[] for widgets
+              buffers: broadcast.buffers.map(
+                (arr) => new Uint8Array(arr).buffer,
+              ),
             };
-            setQueueState(newState);
-            callbacksRef.current.onQueueChange?.(newState);
-            break;
+            onCommMessage(msg);
           }
+          break;
+        }
 
-          case "kernel_error": {
-            setKernelStatus(KERNEL_STATUS.ERROR);
-            callbacksRef.current.onKernelError?.(broadcast.error);
-            break;
-          }
-
-          case "outputs_cleared": {
-            callbacksRef.current.onClearOutputs?.(broadcast.cell_id);
-            break;
-          }
-
-          case "comm": {
-            // Comm message from kernel (for widgets)
-            const { onCommMessage } = callbacksRef.current;
-            if (onCommMessage) {
-              // Convert daemon broadcast to JupyterMessage format expected by widget store
+        case "comm_sync": {
+          // Initial comm state sync from daemon for multi-window widget reconstruction
+          // Replay all comms as comm_open messages to the widget store
+          const { onCommMessage } = callbacksRef.current;
+          if (onCommMessage && broadcast.comms) {
+            logger.debug(
+              `[daemon-kernel] comm_sync: replaying ${broadcast.comms.length} comms`,
+            );
+            for (const comm of broadcast.comms) {
+              // Synthesize a comm_open message for each active comm
               const msg: JupyterMessage = {
                 header: {
                   msg_id: crypto.randomUUID(),
-                  msg_type: broadcast.msg_type,
+                  msg_type: "comm_open",
                   session: "",
                   username: "kernel",
                   date: new Date().toISOString(),
                   version: "5.3",
                 },
                 metadata: {},
-                content: broadcast.content,
-                // Convert number[][] back to ArrayBuffer[] for widgets
-                buffers: broadcast.buffers.map(
-                  (arr) => new Uint8Array(arr).buffer,
-                ),
+                content: {
+                  comm_id: comm.comm_id,
+                  target_name: comm.target_name,
+                  data: {
+                    state: comm.state,
+                    buffer_paths: [],
+                  },
+                },
+                // Convert buffers if present
+                buffers: comm.buffers
+                  ? comm.buffers.map((arr) => new Uint8Array(arr).buffer)
+                  : [],
               };
               onCommMessage(msg);
             }
-            break;
-          }
-
-          case "comm_sync": {
-            // Initial comm state sync from daemon for multi-window widget reconstruction
-            // Replay all comms as comm_open messages to the widget store
-            const { onCommMessage } = callbacksRef.current;
-            if (onCommMessage && broadcast.comms) {
-              logger.debug(
-                `[daemon-kernel] comm_sync: replaying ${broadcast.comms.length} comms`,
-              );
-              for (const comm of broadcast.comms) {
-                // Synthesize a comm_open message for each active comm
-                const msg: JupyterMessage = {
-                  header: {
-                    msg_id: crypto.randomUUID(),
-                    msg_type: "comm_open",
-                    session: "",
-                    username: "kernel",
-                    date: new Date().toISOString(),
-                    version: "5.3",
-                  },
-                  metadata: {},
-                  content: {
-                    comm_id: comm.comm_id,
-                    target_name: comm.target_name,
-                    data: {
-                      state: comm.state,
-                      buffer_paths: [],
-                    },
-                  },
-                  // Convert buffers if present
-                  buffers: comm.buffers
-                    ? comm.buffers.map((arr) => new Uint8Array(arr).buffer)
-                    : [],
-                };
-                onCommMessage(msg);
-              }
-            } else if (!onCommMessage) {
-              logger.debug(
-                "[daemon-kernel] comm_sync received but onCommMessage not set",
-              );
-            }
-            break;
-          }
-
-          case "env_progress":
-            // Handled by useEnvProgress hook's own notebook:broadcast listener
-            break;
-
-          case "env_sync_state": {
-            // Environment sync state changed - metadata differs from launched config
-            const syncBroadcast = broadcast as {
-              in_sync: boolean;
-              diff?: {
-                added: string[];
-                removed: string[];
-                channels_changed: boolean;
-                deno_changed: boolean;
-              };
-            };
-            setEnvSyncState({
-              inSync: syncBroadcast.in_sync,
-              diff: syncBroadcast.diff
-                ? {
-                    added: syncBroadcast.diff.added,
-                    removed: syncBroadcast.diff.removed,
-                    channelsChanged: syncBroadcast.diff.channels_changed,
-                    denoChanged: syncBroadcast.diff.deno_changed,
-                  }
-                : undefined,
-            });
-            break;
-          }
-
-          case "file_changed": {
-            // External file changes detected and merged into Automerge doc.
-            // The actual cell data comes through `notebook:frame` (Automerge sync relay).
-            // This broadcast is for notification purposes.
-            const fileBroadcast = broadcast as {
-              cells: unknown[];
-              metadata?: string;
-            };
-            logger.info(
-              `[daemon-kernel] External file changes detected (${fileBroadcast.cells.length} cells)`,
-            );
-            break;
-          }
-
-          default: {
-            // Log unknown events to help debug unexpected broadcast types
+          } else if (!onCommMessage) {
             logger.debug(
-              `[daemon-kernel] Unknown broadcast event: ${(broadcast as { event: string }).event}`,
+              "[daemon-kernel] comm_sync received but onCommMessage not set",
             );
           }
+          break;
         }
-      },
-    );
+
+        case "env_progress":
+          // Handled by useEnvProgress hook's own frame bus subscriber
+          break;
+
+        case "env_sync_state": {
+          // Environment sync state changed - metadata differs from launched config
+          const syncBroadcast = broadcast as {
+            in_sync: boolean;
+            diff?: {
+              added: string[];
+              removed: string[];
+              channels_changed: boolean;
+              deno_changed: boolean;
+            };
+          };
+          setEnvSyncState({
+            inSync: syncBroadcast.in_sync,
+            diff: syncBroadcast.diff
+              ? {
+                  added: syncBroadcast.diff.added,
+                  removed: syncBroadcast.diff.removed,
+                  channelsChanged: syncBroadcast.diff.channels_changed,
+                  denoChanged: syncBroadcast.diff.deno_changed,
+                }
+              : undefined,
+          });
+          break;
+        }
+
+        case "file_changed": {
+          // External file changes detected and merged into Automerge doc.
+          // The actual cell data comes through `notebook:frame` (Automerge sync relay).
+          // This broadcast is for notification purposes.
+          const fileBroadcast = broadcast as {
+            cells: unknown[];
+            metadata?: string;
+          };
+          logger.info(
+            `[daemon-kernel] External file changes detected (${fileBroadcast.cells.length} cells)`,
+          );
+          break;
+        }
+
+        default: {
+          // Log unknown events to help debug unexpected broadcast types
+          logger.debug(
+            `[daemon-kernel] Unknown broadcast event: ${(broadcast as { event: string }).event}`,
+          );
+        }
+      }
+    });
 
     // Helper to fetch kernel info with retry for "not_started" status
     // (kernel may still be auto-launching when daemon:ready fires)
@@ -515,7 +510,7 @@ export function useDaemonKernel({
         clearTimeout(busyTimerRef.current);
         busyTimerRef.current = null;
       }
-      unlistenBroadcast.then((fn) => fn()).catch(() => {});
+      unsubscribeBroadcast();
       unlistenDisconnect.then((fn) => fn()).catch(() => {});
       unlistenReady.then((fn) => fn()).catch(() => {});
     };

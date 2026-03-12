@@ -19,6 +19,7 @@ import {
   updateNotebookCells,
   useNotebookCells,
 } from "../lib/notebook-cells";
+import { emitBroadcast, emitPresence } from "../lib/notebook-frame-bus";
 import {
   notifyMetadataChanged,
   setNotebookHandle,
@@ -216,8 +217,8 @@ export function useAutomergeNotebook() {
     // one event. The WASM handle.receive_frame() demuxes by the first byte,
     // applies sync internally, and returns typed FrameEvent JSON.
     //
-    // Broadcasts are re-emitted as "notebook:broadcast" for backward compat
-    // with useDaemonKernel and useEnvProgress (they listen independently).
+    // Broadcasts and presence are dispatched via the frame bus (in-memory
+    // pub/sub) to useDaemonKernel, useEnvProgress, and usePresence.
     const unlistenFrame = webview.listen<number[]>(
       "notebook:frame",
       async (event) => {
@@ -264,21 +265,14 @@ export function useAutomergeNotebook() {
                 break;
               }
               case "broadcast": {
-                // Re-emit as "notebook:broadcast" for useDaemonKernel/useEnvProgress
-                // backward compat. They listen independently and expect JSON payloads.
                 if (frameEvent.payload) {
-                  webview
-                    .emit("notebook:broadcast", frameEvent.payload)
-                    .catch(() => {});
+                  emitBroadcast(frameEvent.payload);
                 }
                 break;
               }
               case "presence": {
-                // Re-emit for usePresence hook
                 if (frameEvent.payload) {
-                  webview
-                    .emit("notebook:presence", frameEvent.payload)
-                    .catch(() => {});
+                  emitPresence(frameEvent.payload);
                 }
                 break;
               }
