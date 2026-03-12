@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import pytest
-
 from nteract._editing import (
+    MAX_REGEX_SOURCE_LEN,
     EditSpan,
     PatternError,
     apply_edit,
+    offset_to_line_col,
     replace_match,
     replace_regex,
     resolve_pattern,
@@ -269,3 +270,49 @@ class TestEdgeCases:
         source = "x = 1\n" * 10_000 + "unique_marker = 42\n"
         span = resolve_pattern(source, "unique_marker = 42")
         assert span.start == 60_000
+
+    def test_source_too_large_for_regex(self):
+        """Regex resolution rejects sources beyond MAX_REGEX_SOURCE_LEN."""
+        source = "a" * (MAX_REGEX_SOURCE_LEN + 1)
+        with pytest.raises(PatternError, match="source too large"):
+            resolve_regex(source, "a")
+
+    def test_source_too_large_for_pattern(self):
+        """Literal pattern resolution also rejects oversized sources."""
+        source = "a" * (MAX_REGEX_SOURCE_LEN + 1)
+        with pytest.raises(PatternError, match="source too large"):
+            resolve_pattern(source, "a")
+
+
+# ── offset_to_line_col ───────────────────────────────────────────────
+
+
+class TestOffsetToLineCol:
+    def test_start_of_file(self):
+        assert offset_to_line_col("hello\nworld", 0) == (0, 0)
+
+    def test_middle_of_first_line(self):
+        assert offset_to_line_col("hello\nworld", 3) == (0, 3)
+
+    def test_start_of_second_line(self):
+        assert offset_to_line_col("hello\nworld", 6) == (1, 0)
+
+    def test_middle_of_second_line(self):
+        assert offset_to_line_col("hello\nworld", 8) == (1, 2)
+
+    def test_end_of_file(self):
+        assert offset_to_line_col("hello\nworld", 11) == (1, 5)
+
+    def test_newline_char(self):
+        assert offset_to_line_col("hello\nworld", 5) == (0, 5)
+
+    def test_multiline(self):
+        source = "line0\nline1\nline2\n"
+        assert offset_to_line_col(source, 12) == (2, 0)
+        assert offset_to_line_col(source, 15) == (2, 3)
+
+    def test_empty_string(self):
+        assert offset_to_line_col("", 0) == (0, 0)
+
+    def test_single_line(self):
+        assert offset_to_line_col("hello", 3) == (0, 3)

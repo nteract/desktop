@@ -893,6 +893,19 @@ async def set_cell_source(cell_id: str, source: str) -> dict[str, Any]:
     return {"cell_id": cell_id, "updated": True}
 
 
+async def _send_edit_cursor(
+    session: runtimed.AsyncSession, cell_id: str, source: str, offset: int
+) -> None:
+    """Send cursor presence at a character offset (best-effort, non-blocking)."""
+    from nteract._editing import offset_to_line_col
+
+    try:
+        line, col = offset_to_line_col(source, offset)
+        await session.set_cursor(cell_id=cell_id, line=line, column=col)
+    except Exception:
+        pass  # Presence is best-effort — don't fail the edit
+
+
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def replace_match(
     cell_id: str,
@@ -908,7 +921,7 @@ async def replace_match(
     Use context_before/context_after to disambiguate if the match text
     appears multiple times.
 
-    The UI will animate the edit as cursor movement, selection, then typing.
+    The agent's cursor will appear at the edit location in the UI.
 
     Args:
         cell_id: The cell to edit.
@@ -918,7 +931,10 @@ async def replace_match(
         context_after: Text that must appear immediately after the match (for disambiguation).
 
     Returns:
-        Edit result with old text, new source, and the resolved span.
+        Edit result with old_text, span offsets, and new_source_length.
+
+    Raises:
+        RuntimeError: If the match is empty, not found, or ambiguous.
     """
     from nteract._editing import PatternError
     from nteract._editing import replace_match as _replace_match
@@ -930,9 +946,16 @@ async def replace_match(
     try:
         result = _replace_match(source, match, content, context_before, context_after)
     except PatternError as e:
-        return {"error": str(e), "match_count": e.match_count, "source_length": len(source)}
+        raise RuntimeError(f"{e} (match_count={e.match_count}, source_length={len(source)})") from e
+
+    # Show cursor at edit location before applying
+    await _send_edit_cursor(session, cell_id, source, result.span.start)
 
     await session.set_source(cell_id=cell_id, source=result.new_source)
+
+    # Move cursor to end of replacement
+    end_offset = result.span.start + len(content)
+    await _send_edit_cursor(session, cell_id, result.new_source, end_offset)
 
     return {
         "cell_id": cell_id,
@@ -958,13 +981,18 @@ async def replace_regex(
     Prefer replace_match for simple edits — this tool is for cases where
     regex power is needed (e.g., matching patterns across multiple tokens).
 
+    The agent's cursor will appear at the edit location in the UI.
+
     Args:
         cell_id: The cell to edit.
         pattern: Regex pattern (must match exactly once). Compiled with re.MULTILINE.
         content: Replacement text for the matched span.
 
     Returns:
-        Edit result with old text, new source, and the resolved span.
+        Edit result with old_text, span offsets, and new_source_length.
+
+    Raises:
+        RuntimeError: If the pattern is invalid, not found, or ambiguous.
     """
     from nteract._editing import PatternError
     from nteract._editing import replace_regex as _replace_regex
@@ -976,9 +1004,16 @@ async def replace_regex(
     try:
         result = _replace_regex(source, pattern, content)
     except PatternError as e:
-        return {"error": str(e), "match_count": e.match_count, "source_length": len(source)}
+        raise RuntimeError(f"{e} (match_count={e.match_count}, source_length={len(source)})") from e
+
+    # Show cursor at edit location before applying
+    await _send_edit_cursor(session, cell_id, source, result.span.start)
 
     await session.set_source(cell_id=cell_id, source=result.new_source)
+
+    # Move cursor to end of replacement
+    end_offset = result.span.start + len(content)
+    await _send_edit_cursor(session, cell_id, result.new_source, end_offset)
 
     return {
         "cell_id": cell_id,

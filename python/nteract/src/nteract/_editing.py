@@ -117,33 +117,61 @@ def resolve_regex(
     return _resolve_compiled(source, pattern, pattern)
 
 
+# Maximum source length for regex mode (guard against catastrophic backtracking)
+MAX_REGEX_SOURCE_LEN = 1_000_000  # 1MB — well beyond any reasonable cell
+
+
 def _resolve_compiled(source: str, pattern: str, display: str) -> EditSpan:
     """Internal: compile and resolve a regex pattern to exactly one span."""
+    if len(source) > MAX_REGEX_SOURCE_LEN:
+        raise PatternError(
+            f"source too large for regex resolution ({len(source)} chars, "
+            f"max {MAX_REGEX_SOURCE_LEN})",
+            match_count=0,
+        )
+
     try:
         compiled = re.compile(pattern, re.MULTILINE)
     except re.error as e:
         raise PatternError(f"invalid pattern {display!r}: {e}") from e
 
-    matches = list(compiled.finditer(source))
+    # Early exit after 2nd match — no need to materialize all matches
+    first_match = None
+    locations: list[str] = []
+    match_count = 0
 
-    if len(matches) == 0:
+    for m in compiled.finditer(source):
+        match_count += 1
+        if first_match is None:
+            first_match = m
+        if len(locations) < 5:
+            locations.append(f"offset {m.start()}")
+
+    if match_count == 0:
         raise PatternError(
             f"no match found for {display!r} in source ({len(source)} chars)",
             match_count=0,
         )
 
-    if len(matches) > 1:
-        locations = [f"offset {m.start()}" for m in matches[:5]]
-        suffix = f" (and {len(matches) - 5} more)" if len(matches) > 5 else ""
+    if match_count > 1:
+        suffix = f" (and {match_count - 5} more)" if match_count > 5 else ""
         raise PatternError(
-            f"expected exactly 1 match for {display!r}, found {len(matches)} "
+            f"expected exactly 1 match for {display!r}, found {match_count} "
             f"at {', '.join(locations)}{suffix}. "
             f"Use context_before/context_after to disambiguate.",
-            match_count=len(matches),
+            match_count=match_count,
         )
 
-    m = matches[0]
-    return EditSpan(start=m.start(), end=m.end())
+    assert first_match is not None
+    return EditSpan(start=first_match.start(), end=first_match.end())
+
+
+def offset_to_line_col(source: str, offset: int) -> tuple[int, int]:
+    """Convert a character offset to a (line, column) tuple (both 0-based)."""
+    line = source[:offset].count("\n")
+    last_newline = source.rfind("\n", 0, offset)
+    col = offset if last_newline == -1 else offset - last_newline - 1
+    return line, col
 
 
 def apply_edit(
