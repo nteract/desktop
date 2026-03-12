@@ -22,7 +22,6 @@ import { AnsiOutput } from "@/components/outputs/ansi-output";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import type { CellPagePayload, MimeBundle } from "../App";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
-import { useEditorRegistry } from "../hooks/useEditorRegistry";
 import { kernelCompletionExtension } from "../lib/kernel-completion";
 import { openUrl } from "../lib/open-url";
 import { tabCompletionKeymap } from "../lib/tab-completion";
@@ -127,43 +126,7 @@ export function CodeCell({
   isDragging,
 }: CodeCellProps) {
   const editorRef = useRef<CodeMirrorEditorRef>(null);
-  const { registerEditor, unregisterEditor } = useEditorRegistry();
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
-
-  // Register editor with the registry for cross-cell navigation
-  useEffect(() => {
-    const register = () => {
-      if (editorRef.current) {
-        registerEditor(cell.id, {
-          focus: () => {
-            const handle = editorRef.current;
-            const hasView = handle?.getEditor?.() != null;
-            console.debug(
-              `[cell-nav] CodeCell.focus callback: cell=${cell.id.slice(0, 8)} hasHandle=${!!handle} hasView=${hasView}`,
-            );
-            handle?.focus();
-          },
-          setCursorPosition: (position) => {
-            editorRef.current?.setCursorPosition(position);
-          },
-        });
-        return true;
-      }
-      return false;
-    };
-
-    // Register immediately if ref is ready, otherwise wait for next frame
-    if (!register()) {
-      // Ref not ready yet - try again after mount completes
-      const frame = requestAnimationFrame(() => register());
-      return () => {
-        cancelAnimationFrame(frame);
-        unregisterEditor(cell.id);
-      };
-    }
-
-    return () => unregisterEditor(cell.id);
-  }, [cell.id, registerEditor, unregisterEditor]);
 
   // Handle Escape key to dismiss page payload
   useEffect(() => {

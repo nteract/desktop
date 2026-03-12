@@ -229,24 +229,9 @@ export const CodeMirrorEditor = forwardRef<
       ref,
       () => ({
         focus: () => {
-          const hasDom = view?.dom?.isConnected;
-          console.debug(
-            `[cell-nav] CodeMirrorEditor.focus() called, view=${!!view}, domConnected=${hasDom}`,
-          );
-          if (view) {
-            view.focus();
-            // Log what actually received focus
-            setTimeout(() => {
-              console.debug(
-                `[cell-nav] After focus: activeElement=${document.activeElement?.tagName}, hasFocus=${view.hasFocus}`,
-              );
-            }, 0);
-          }
+          view?.focus();
         },
         setCursorPosition: (position: "start" | "end") => {
-          console.debug(
-            `[cell-nav] CodeMirrorEditor.setCursorPosition(${position}) called, view=${!!view}`,
-          );
           if (view) {
             const doc = view.state.doc;
             const pos = position === "start" ? 0 : doc.length;
