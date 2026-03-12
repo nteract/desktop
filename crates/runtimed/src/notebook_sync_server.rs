@@ -129,7 +129,7 @@ fn build_launched_config(
     let mut config = LaunchedEnvConfig::default();
 
     match env_source {
-        "uv:inline" => {
+        "uv:inline" | "uv:pep723" => {
             config.uv_deps = inline_deps.map(|d| d.to_vec());
             config.venv_path = venv_path;
             config.python_path = python_path;
@@ -1485,6 +1485,27 @@ async fn auto_launch_kernel(
     // Step 2: Check inline deps (for environment source, and runt.deno override)
     let inline_source = metadata_snapshot.as_ref().and_then(check_inline_deps);
 
+    // Step 2b: If no metadata inline deps, check cell source for PEP 723 script blocks
+    let (inline_source, pep723_deps) = if inline_source.is_some() {
+        (inline_source, None)
+    } else {
+        let cells = room.doc.read().await.get_cells();
+        match notebook_doc::pep723::find_pep723_in_cells(&cells) {
+            Ok(Some(meta)) if !meta.dependencies.is_empty() => {
+                info!(
+                    "[notebook-sync] Auto-launch: found PEP 723 deps: {:?}",
+                    meta.dependencies
+                );
+                (Some("uv:pep723".to_string()), Some(meta.dependencies))
+            }
+            Ok(_) => (None, None),
+            Err(e) => {
+                warn!("[notebook-sync] PEP 723 parse error: {}", e);
+                (None, None)
+            }
+        }
+    };
+
     // Step 3: Check project files (for Python environment resolution)
     // Use notebook path for saved notebooks, or working_dir for untitled notebooks
     let detection_path = notebook_path_opt
@@ -1548,10 +1569,11 @@ async fn auto_launch_kernel(
                 );
                 prewarmed.to_string()
             };
-            // For uv:inline, uv:pyproject, and conda:inline we don't need a pooled env -
+            // For uv:inline, uv:pep723, uv:pyproject, and conda:inline we don't need a pooled env -
             // these sources prepare their own environments
             let pooled_env = if env_source == "uv:pyproject"
                 || env_source == "uv:inline"
+                || env_source == "uv:pep723"
                 || env_source == "conda:inline"
             {
                 info!(
@@ -1602,10 +1624,11 @@ async fn auto_launch_kernel(
                     );
                     prewarmed.to_string()
                 };
-                // For uv:inline, uv:pyproject, and conda:inline we don't need a pooled env -
+                // For uv:inline, uv:pep723, uv:pyproject, and conda:inline we don't need a pooled env -
                 // these sources prepare their own environments
                 let pooled_env = if env_source == "uv:pyproject"
                     || env_source == "uv:inline"
+                    || env_source == "uv:pep723"
                     || env_source == "conda:inline"
                 {
                     info!(
@@ -1645,7 +1668,41 @@ async fn auto_launch_kernel(
         crate::inline_env::BroadcastProgressHandler::new(room.kernel_broadcast_tx.clone()),
     );
 
-    let (pooled_env, inline_deps) = if env_source == "uv:inline" {
+    let (pooled_env, inline_deps) = if env_source == "uv:pep723" {
+        // PEP 723 deps were extracted from cell source in step 2b
+        if let Some(ref deps) = pep723_deps {
+            info!(
+                "[notebook-sync] Preparing cached UV env for PEP 723 deps: {:?}",
+                deps
+            );
+            match crate::inline_env::prepare_uv_inline_env(deps, progress_handler.clone()).await {
+                Ok(prepared) => {
+                    info!(
+                        "[notebook-sync] Using cached PEP 723 env at {:?}",
+                        prepared.python_path
+                    );
+                    let env = Some(crate::PooledEnv {
+                        env_type: crate::EnvType::Uv,
+                        venv_path: prepared.env_path,
+                        python_path: prepared.python_path,
+                    });
+                    (env, Some(deps.clone()))
+                }
+                Err(e) => {
+                    error!("[notebook-sync] Failed to prepare PEP 723 env: {}", e);
+                    let _ = room
+                        .kernel_broadcast_tx
+                        .send(NotebookBroadcast::KernelStatus {
+                            status: format!("error: Failed to prepare environment: {}", e),
+                            cell_id: None,
+                        });
+                    return;
+                }
+            }
+        } else {
+            (None, None)
+        }
+    } else if env_source == "uv:inline" {
         if let Some(deps) = metadata_snapshot.as_ref().and_then(get_inline_uv_deps) {
             info!(
                 "[notebook-sync] Preparing cached UV env for inline deps: {:?}",
@@ -1911,7 +1968,25 @@ async fn handle_notebook_request(
                     );
                     inline_source
                 }
-                // Priority 2: Detect project files near notebook path
+                // Priority 2: Check PEP 723 script blocks in cell source
+                else if {
+                    let cells = room.doc.read().await.get_cells();
+                    match notebook_doc::pep723::find_pep723_in_cells(&cells) {
+                        Ok(Some(ref m)) if !m.dependencies.is_empty() => true,
+                        Ok(_) => false,
+                        Err(e) => {
+                            warn!(
+                                "[notebook-sync] Failed to parse PEP 723 script blocks: {}",
+                                e
+                            );
+                            false
+                        }
+                    }
+                } {
+                    info!("[notebook-sync] Found PEP 723 deps in cell source");
+                    "uv:pep723".to_string()
+                }
+                // Priority 3: Detect project files near notebook path
                 else if let Some(detected) = notebook_path
                     .as_ref()
                     .and_then(|path| crate::project_file::detect_project_file(path))
@@ -1923,7 +1998,7 @@ async fn handle_notebook_request(
                     );
                     detected.to_env_source().to_string()
                 }
-                // Priority 3: Fall back to prewarmed
+                // Priority 4: Fall back to prewarmed
                 else {
                     info!("[notebook-sync] No project file detected, using prewarmed");
                     "uv:prewarmed".to_string()
@@ -1968,7 +2043,7 @@ async fn handle_notebook_request(
                             };
                         }
                     },
-                    "uv:pyproject" | "uv:inline" | "conda:inline" => {
+                    "uv:pyproject" | "uv:inline" | "uv:pep723" | "conda:inline" => {
                         // These sources prepare their own environments, no pooled env needed
                         info!(
                             "[notebook-sync] LaunchKernel: {} prepares its own env, no pool env",
@@ -2008,7 +2083,60 @@ async fn handle_notebook_request(
                     room.kernel_broadcast_tx.clone(),
                 ));
 
-            let (pooled_env, inline_deps) = if resolved_env_source == "uv:inline" {
+            let (pooled_env, inline_deps) = if resolved_env_source == "uv:pep723" {
+                // Extract PEP 723 deps from cell source
+                let cells = room.doc.read().await.get_cells();
+                let pep723_deps = match notebook_doc::pep723::find_pep723_in_cells(&cells) {
+                    Ok(Some(m)) if !m.dependencies.is_empty() => Some(m.dependencies),
+                    Ok(_) => None,
+                    Err(e) => {
+                        error!(
+                            "[notebook-sync] Invalid PEP 723 metadata in notebook: {}",
+                            e
+                        );
+                        return NotebookResponse::Error {
+                            error: format!("Invalid PEP 723 metadata in notebook: {}", e),
+                        };
+                    }
+                };
+
+                if let Some(deps) = pep723_deps {
+                    info!(
+                        "[notebook-sync] LaunchKernel: Preparing cached UV env for PEP 723 deps: {:?}",
+                        deps
+                    );
+                    match crate::inline_env::prepare_uv_inline_env(
+                        &deps,
+                        launch_progress_handler.clone(),
+                    )
+                    .await
+                    {
+                        Ok(prepared) => {
+                            info!(
+                                "[notebook-sync] LaunchKernel: Using cached PEP 723 env at {:?}",
+                                prepared.python_path
+                            );
+                            let env = Some(crate::PooledEnv {
+                                env_type: crate::EnvType::Uv,
+                                venv_path: prepared.env_path,
+                                python_path: prepared.python_path,
+                            });
+                            (env, Some(deps))
+                        }
+                        Err(e) => {
+                            error!("[notebook-sync] Failed to prepare PEP 723 env: {}", e);
+                            return NotebookResponse::Error {
+                                error: format!("Failed to prepare PEP 723 environment: {}", e),
+                            };
+                        }
+                    }
+                } else {
+                    return NotebookResponse::Error {
+                        error: "No PEP 723 dependencies found in notebook cells for requested env_source \"uv:pep723\""
+                            .to_string(),
+                    };
+                }
+            } else if resolved_env_source == "uv:inline" {
                 if let Some(deps) = metadata_snapshot.as_ref().and_then(get_inline_uv_deps) {
                     info!(
                         "[notebook-sync] LaunchKernel: Preparing cached UV env for inline deps: {:?}",

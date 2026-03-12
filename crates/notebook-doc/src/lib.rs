@@ -33,6 +33,7 @@
 
 pub mod frame_types;
 pub mod metadata;
+pub mod pep723;
 pub mod presence;
 
 use std::collections::HashMap;
