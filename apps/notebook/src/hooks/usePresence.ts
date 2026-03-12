@@ -74,7 +74,7 @@ type PresenceMessage =
 /**
  * Manages presence state (remote cursors, selections) from the unified frame pipe.
  *
- * Presence events arrive as decoded JSON via `daemon:presence` webview events,
+ * Presence events arrive as decoded JSON via `notebook:presence` webview events,
  * re-emitted by the `useAutomergeNotebook` frame listener. This hook maintains
  * a map of remote peers and exposes helpers for sending local presence and
  * querying remote presence per cell.
@@ -101,7 +101,7 @@ export function usePresence(peerId: string | null) {
     const webview = getCurrentWebview();
 
     const unlistenPresence = webview.listen<PresenceMessage>(
-      "daemon:presence",
+      "notebook:presence",
       (event) => {
         if (cancelled) return;
         const msg = event.payload;

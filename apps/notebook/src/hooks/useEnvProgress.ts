@@ -212,10 +212,10 @@ export function useEnvProgress() {
       processEvent(event.payload);
     });
 
-    // Also listen for daemon:broadcast events with env_progress
+    // Also listen for notebook:broadcast events with env_progress
     // (from daemon-managed environment preparation during kernel launch)
     const unlistenBroadcast = listen<DaemonBroadcast>(
-      "daemon:broadcast",
+      "notebook:broadcast",
       (event) => {
         const broadcast = event.payload;
         if (broadcast.event === "env_progress") {

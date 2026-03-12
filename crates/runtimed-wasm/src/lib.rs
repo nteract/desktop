@@ -416,7 +416,7 @@ impl NotebookHandle {
 
     /// Receive a typed frame from the daemon, demux by type byte, return events for the frontend.
     ///
-    /// The input is the raw frame bytes from the `daemon:frame` Tauri event:
+    /// The input is the raw frame bytes from the `notebook:frame` Tauri event:
     /// `[frame_type_byte, ...payload]`.
     ///
     /// Returns a JSON array of `FrameEvent` objects. Usually one event, but sync

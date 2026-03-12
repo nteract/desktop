@@ -632,7 +632,7 @@ async fn initialize_notebook_sync_create(
 /// This is the common tail of `initialize_notebook_sync_open` and `_create`.
 /// It stores the handle, spawns a single relay task that forwards all typed
 /// frames (AutomergeSync, Broadcast, Presence) to the frontend via the
-/// `daemon:frame` event, and emits `daemon:ready` with the connection payload.
+/// `notebook:frame` event, and emits `daemon:ready` with the connection payload.
 ///
 /// Note: No SyncUpdate receiver task is spawned — in pipe mode the relay forwards
 /// raw Automerge bytes directly, and the frontend WASM drives metadata updates
@@ -666,9 +666,9 @@ async fn setup_sync_receivers(
     tokio::spawn(async move {
         while let Some(frame_bytes) = raw_frame_rx.recv().await {
             if let Err(e) =
-                emit_to_label::<_, _, _>(&window, window.label(), "daemon:frame", &frame_bytes)
+                emit_to_label::<_, _, _>(&window, window.label(), "notebook:frame", &frame_bytes)
             {
-                warn!("[notebook-sync] Failed to emit daemon:frame: {}", e);
+                warn!("[notebook-sync] Failed to emit notebook:frame: {}", e);
             }
         }
         warn!(

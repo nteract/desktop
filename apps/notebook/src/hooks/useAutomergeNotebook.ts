@@ -142,7 +142,7 @@ export function useAutomergeNotebook() {
    * Any IPC failures are logged and do not cause `bootstrap()` to reject.
    *
    * Loading state is set to `true` here and is cleared when the first
-   * `daemon:frame` sync message is received, regardless of its
+   * `notebook:frame` sync message is received, regardless of its
    * `changed` flag.
    */
   const bootstrap = useCallback(async () => {
@@ -216,10 +216,10 @@ export function useAutomergeNotebook() {
     // one event. The WASM handle.receive_frame() demuxes by the first byte,
     // applies sync internally, and returns typed FrameEvent JSON.
     //
-    // Broadcasts are re-emitted as "daemon:broadcast" for backward compat
+    // Broadcasts are re-emitted as "notebook:broadcast" for backward compat
     // with useDaemonKernel and useEnvProgress (they listen independently).
     const unlistenFrame = webview.listen<number[]>(
-      "daemon:frame",
+      "notebook:frame",
       async (event) => {
         if (cancelled) return;
         const handle = handleRef.current;
@@ -264,11 +264,11 @@ export function useAutomergeNotebook() {
                 break;
               }
               case "broadcast": {
-                // Re-emit as "daemon:broadcast" for useDaemonKernel/useEnvProgress
+                // Re-emit as "notebook:broadcast" for useDaemonKernel/useEnvProgress
                 // backward compat. They listen independently and expect JSON payloads.
                 if (frameEvent.payload) {
                   webview
-                    .emit("daemon:broadcast", frameEvent.payload)
+                    .emit("notebook:broadcast", frameEvent.payload)
                     .catch(() => {});
                 }
                 break;
@@ -277,7 +277,7 @@ export function useAutomergeNotebook() {
                 // Re-emit for usePresence hook
                 if (frameEvent.payload) {
                   webview
-                    .emit("daemon:presence", frameEvent.payload)
+                    .emit("notebook:presence", frameEvent.payload)
                     .catch(() => {});
                 }
                 break;

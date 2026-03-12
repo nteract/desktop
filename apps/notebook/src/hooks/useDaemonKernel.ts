@@ -146,7 +146,7 @@ export function useDaemonKernel({
     refreshBlobPort();
 
     const unlistenBroadcast = webview.listen<DaemonBroadcast>(
-      "daemon:broadcast",
+      "notebook:broadcast",
       (event) => {
         if (cancelled) return;
 
@@ -377,7 +377,7 @@ export function useDaemonKernel({
           }
 
           case "env_progress":
-            // Handled by useEnvProgress hook's own daemon:broadcast listener
+            // Handled by useEnvProgress hook's own notebook:broadcast listener
             break;
 
           case "env_sync_state": {

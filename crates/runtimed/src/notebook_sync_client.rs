@@ -815,7 +815,7 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
     /// When a `PipeChannel` is provided, incoming typed frames (AutomergeSync,
     /// Broadcast, Presence) from the daemon are forwarded as raw bytes through
     /// one channel, preserving daemon-sent order. The Tauri relay emits these
-    /// as `daemon:frame` events for the frontend WASM to demux.
+    /// as `notebook:frame` events for the frontend WASM to demux.
     pub async fn connect_split_with_pipe(
         socket_path: PathBuf,
         notebook_id: String,
