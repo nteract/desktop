@@ -31,7 +31,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  nteract-lint:
+  python-lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -42,17 +42,21 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Install dependencies
-        run: uv sync --dev
+      - name: Ruff check (nteract)
+        run: uvx ruff check src/
         working-directory: python/nteract
 
-      - name: Ruff check
-        run: uv run ruff check src/
+      - name: Ruff check (runtimed)
+        run: uvx ruff check src/ tests/
+        working-directory: python/runtimed
+
+      - name: Ruff format check (nteract)
+        run: uvx ruff format --check src/
         working-directory: python/nteract
 
-      - name: Ruff format check
-        run: uv run ruff format --check src/
-        working-directory: python/nteract
+      - name: Ruff format check (runtimed)
+        run: uvx ruff format --check src/ tests/
+        working-directory: python/runtimed
 
   nteract-test:
     runs-on: ubuntu-latest
@@ -66,7 +70,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --dev --no-sources
         working-directory: python/nteract
 
       - name: Run smoke tests
@@ -178,7 +182,7 @@ jobs:
         working-directory: python/nteract
 
       - name: Build
-        run: uv build
+        run: uv build --no-sources
         working-directory: python/nteract
 
       - name: Upload dist

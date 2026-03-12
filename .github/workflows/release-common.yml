@@ -672,7 +672,7 @@ jobs:
         working-directory: python/nteract
 
       - name: Build sdist + wheel
-        run: uv build
+        run: uv build --no-sources
         working-directory: python/nteract
 
       - name: Upload dist

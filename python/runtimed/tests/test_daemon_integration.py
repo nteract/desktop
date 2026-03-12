@@ -68,9 +68,7 @@ def wait_for_sync(check_fn, *, timeout=10.0, interval=0.1, description="sync"):
     raise AssertionError(f"Timed out waiting for {description} after {timeout}s")
 
 
-async def async_wait_for_sync(
-    check_fn, *, timeout=10.0, interval=0.1, description="sync"
-):
+async def async_wait_for_sync(check_fn, *, timeout=10.0, interval=0.1, description="sync"):
     """Async version of wait_for_sync — polls with asyncio.sleep.
 
     check_fn can be a regular callable or an async callable.
@@ -187,11 +185,7 @@ def _get_socket_path():
         return None  # Will be set by the daemon fixture
 
     # Otherwise, use default (assumes dev daemon is running)
-    return (
-        runtimed.default_socket_path()
-        if hasattr(runtimed, "default_socket_path")
-        else None
-    )
+    return runtimed.default_socket_path() if hasattr(runtimed, "default_socket_path") else None
 
 
 @pytest.fixture(scope="module")
@@ -211,9 +205,7 @@ def daemon_process():
             # Try the default
             import runtimed as rt
 
-            socket_path = (
-                rt.default_socket_path() if hasattr(rt, "default_socket_path") else None
-            )
+            socket_path = rt.default_socket_path() if hasattr(rt, "default_socket_path") else None
 
         if socket_path and not socket_path.exists():
             pytest.skip(
@@ -231,9 +223,7 @@ def daemon_process():
     # Create a temp directory for this test run
     # ignore_cleanup_errors=True prevents OSError when ipykernel leaves behind
     # directories like 'magics' that aren't empty during cleanup
-    with tempfile.TemporaryDirectory(
-        prefix="runtimed-test-", ignore_cleanup_errors=True
-    ) as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="runtimed-test-", ignore_cleanup_errors=True) as tmpdir:
         tmpdir = Path(tmpdir)
         socket_path = tmpdir / "runtimed.sock"
         cache_dir = tmpdir / "cache"
@@ -280,9 +270,7 @@ def daemon_process():
                 break
             if proc.poll() is not None:
                 # Daemon died - print logs and fail
-                print(
-                    f"[test] Daemon died with code {proc.returncode}", file=sys.stderr
-                )
+                print(f"[test] Daemon died with code {proc.returncode}", file=sys.stderr)
                 print(f"[test] Daemon logs:\n{log_file.read_text()}", file=sys.stderr)
                 pytest.fail("Daemon process died during startup")
             time.sleep(1)
@@ -310,9 +298,7 @@ def daemon_process():
                         match = uv_pattern.search(line)
                         if match and int(match.group(1)) > 0:
                             uv_ready = True
-                            print(
-                                f"[test] UV pool ready after {i + 1}s", file=sys.stderr
-                            )
+                            print(f"[test] UV pool ready after {i + 1}s", file=sys.stderr)
                             break
                 if not conda_ready:
                     for line in log_contents.splitlines():
@@ -339,7 +325,7 @@ def daemon_process():
             yield socket_path, proc
         finally:
             # Cleanup
-            print(f"\n[test] Stopping daemon...", file=sys.stderr)
+            print("\n[test] Stopping daemon...", file=sys.stderr)
             proc.terminate()
             try:
                 proc.wait(timeout=5)
@@ -609,9 +595,7 @@ class TestCellMetadata:
         cell_id = session.create_cell("x = 1")
 
         # Set nested metadata using path
-        result = session.update_cell_metadata_at(
-            cell_id, ["jupyter", "source_hidden"], "true"
-        )
+        result = session.update_cell_metadata_at(cell_id, ["jupyter", "source_hidden"], "true")
         assert result is True
 
         cell = session.get_cell(cell_id)
@@ -795,7 +779,7 @@ class TestKernelLifecycle:
         start_kernel_with_retry(session)
 
         # Start a long-running execution in background
-        cell_id = session.create_cell("import time; time.sleep(30)")
+        session.create_cell("import time; time.sleep(30)")
 
         # We can't easily test async interrupt without threading,
         # but we can at least verify the interrupt call doesn't error
@@ -1125,9 +1109,7 @@ class TestOutputHandling:
         """Test that both stdout and stderr are captured separately."""
         start_kernel_with_retry(session)
 
-        result = session.run(
-            'import sys\nprint("to stdout")\nsys.stderr.write("to stderr\\n")'
-        )
+        result = session.run('import sys\nprint("to stdout")\nsys.stderr.write("to stderr\\n")')
 
         assert result.success
         assert "to stdout" in result.stdout
@@ -1150,11 +1132,7 @@ class TestOutputHandling:
         start_kernel_with_retry(session)
 
         result = session.run(
-            "def inner():\n"
-            '    raise RuntimeError("deep error")\n'
-            "def outer():\n"
-            "    inner()\n"
-            "outer()"
+            'def inner():\n    raise RuntimeError("deep error")\ndef outer():\n    inner()\nouter()'
         )
 
         assert not result.success
@@ -1306,9 +1284,9 @@ class TestKernelLaunchMetadata:
         env_source = session.env_source
         assert env_source is not None
         # Should be one of the known env_source values
-        assert any(
-            env_source.startswith(prefix) for prefix in ("uv:", "conda:", "deno")
-        ), f"Unexpected env_source: {env_source}"
+        assert any(env_source.startswith(prefix) for prefix in ("uv:", "conda:", "deno")), (
+            f"Unexpected env_source: {env_source}"
+        )
 
     def test_metadata_visible_to_second_peer(self, two_sessions):
         """Metadata set by one peer is visible to another."""
@@ -1373,9 +1351,7 @@ class TestKernelLaunchMetadata:
 
     def test_kernel_prewarmed_env_source(self, session):
         """Default kernel launch uses prewarmed pool."""
-        start_kernel_with_retry(
-            session, kernel_type="python", env_source="uv:prewarmed"
-        )
+        start_kernel_with_retry(session, kernel_type="python", env_source="uv:prewarmed")
 
         assert session.env_source == "uv:prewarmed"
 
@@ -1600,11 +1576,7 @@ class TestCondaInlineDeps:
 
 # Fixture directory for project file tests
 FIXTURES_DIR = (
-    Path(__file__).parent.parent.parent.parent
-    / "crates"
-    / "notebook"
-    / "fixtures"
-    / "audit-test"
+    Path(__file__).parent.parent.parent.parent / "crates" / "notebook" / "fixtures" / "audit-test"
 )
 
 
@@ -1645,9 +1617,7 @@ class TestProjectFileDetection:
 
         # The fixture pyproject.toml declares httpx as a dependency
         result = session.run("import httpx; print(httpx.__version__)")
-        assert result.success, (
-            f"Failed to import httpx from pyproject env: {result.stderr}"
-        )
+        assert result.success, f"Failed to import httpx from pyproject env: {result.stderr}"
 
     def test_pixi_auto_detection(self, session):
         """notebook_path near pixi.toml auto-detects conda:pixi.
@@ -1684,9 +1654,7 @@ class TestProjectFileDetection:
         """
         import json
 
-        notebook_path = str(
-            FIXTURES_DIR / "conda-env-project" / "7-environment-yml.ipynb"
-        )
+        notebook_path = str(FIXTURES_DIR / "conda-env-project" / "7-environment-yml.ipynb")
 
         snapshot = _python_kernelspec_metadata()
         session.set_metadata(NOTEBOOK_METADATA_KEY, json.dumps(snapshot))
@@ -1882,7 +1850,6 @@ class TestAsyncDocumentFirstExecution:
     @pytest.mark.asyncio
     async def test_async_queue_cell_fires_execution(self, async_session):
         """queue_cell fires execution without waiting."""
-        import asyncio
 
         await async_start_kernel_with_retry(async_session)
 
@@ -1895,9 +1862,7 @@ class TestAsyncDocumentFirstExecution:
             cell = await async_session.get_cell(cell_id)
             return cell.execution_count is not None
 
-        await async_wait_for_sync(
-            queued_cell_executed, description="queued cell execution"
-        )
+        await async_wait_for_sync(queued_cell_executed, description="queued cell execution")
 
         # Verify it ran by executing another cell that uses the variable
         cell2 = await async_session.create_cell("print(async_queued_var)")
@@ -1911,9 +1876,7 @@ class TestAsyncDocumentFirstExecution:
         """Execution errors are captured in result."""
         await async_start_kernel_with_retry(async_session)
 
-        cell_id = await async_session.create_cell(
-            "raise ValueError('async test error')"
-        )
+        cell_id = await async_session.create_cell("raise ValueError('async test error')")
         result = await async_session.execute_cell(cell_id)
 
         assert not result.success
@@ -1954,7 +1917,6 @@ class TestAsyncMultiClientSync:
     @pytest.mark.asyncio
     async def test_async_cell_created_by_one_visible_to_other(self, two_async_sessions):
         """Cell created by session 1 is visible to session 2."""
-        import asyncio
 
         s1, s2 = two_async_sessions
 
@@ -1965,9 +1927,7 @@ class TestAsyncMultiClientSync:
             found = [c for c in cells if c.id == cell_id]
             return len(found) == 1 and found[0].source == "async_shared_var = 42"
 
-        await async_wait_for_sync(
-            cell_synced, description="cell with source sync to s2"
-        )
+        await async_wait_for_sync(cell_synced, description="cell with source sync to s2")
 
         cells = await s2.get_cells()
         found = [c for c in cells if c.id == cell_id]
@@ -1977,7 +1937,6 @@ class TestAsyncMultiClientSync:
     @pytest.mark.asyncio
     async def test_async_shared_kernel_execution(self, two_async_sessions):
         """Both sessions share the same kernel and execution state."""
-        import asyncio
 
         s1, s2 = two_async_sessions
 
@@ -2138,9 +2097,7 @@ class TestStreamExecute:
         """stream_execute() yields events as they arrive, not all at once."""
         await async_start_kernel_with_retry(async_session)
 
-        cell_id = await async_session.create_cell(
-            "for i in range(3): print(f'line {i}')"
-        )
+        cell_id = await async_session.create_cell("for i in range(3): print(f'line {i}')")
 
         events = []
         async for event in await async_session.stream_execute(cell_id):
@@ -2476,9 +2433,7 @@ class TestOpenNotebook:
                 {
                     "nbformat": 4,
                     "nbformat_minor": 5,
-                    "metadata": {
-                        "kernelspec": {"name": "python3", "display_name": "Python 3"}
-                    },
+                    "metadata": {"kernelspec": {"name": "python3", "display_name": "Python 3"}},
                     "cells": [
                         {
                             "id": "cell-1",
@@ -2503,10 +2458,7 @@ class TestOpenNotebook:
         assert session.is_connected
 
         # Verify daemon-derived notebook_id (should contain canonical path)
-        assert (
-            str(nb_path.resolve()) in session.notebook_id
-            or nb_path.name in session.notebook_id
-        )
+        assert str(nb_path.resolve()) in session.notebook_id or nb_path.name in session.notebook_id
 
         # Verify cells loaded
         cells = session.get_cells()
@@ -2514,9 +2466,7 @@ class TestOpenNotebook:
         assert cells[0].source == "x = 1"
         assert cells[1].cell_type == "markdown"
 
-    def test_open_notebook_returns_connection_info(
-        self, daemon_process, monkeypatch, tmp_path
-    ):
+    def test_open_notebook_returns_connection_info(self, daemon_process, monkeypatch, tmp_path):
         """NotebookConnectionInfo includes cell_count.
 
         With streaming load, cell_count is 0 in the handshake because
@@ -2572,9 +2522,7 @@ class TestOpenNotebook:
         assert info.cell_count == 0
         assert info.notebook_id == session.notebook_id
 
-    def test_open_nonexistent_file_creates_notebook(
-        self, daemon_process, monkeypatch, tmp_path
-    ):
+    def test_open_nonexistent_file_creates_notebook(self, daemon_process, monkeypatch, tmp_path):
         """Opening missing file creates a new notebook at that path."""
         socket_path, _ = daemon_process
         if socket_path is not None:
@@ -2592,9 +2540,7 @@ class TestOpenNotebook:
         finally:
             session.close()
 
-    def test_open_nonexistent_file_auto_appends_ipynb(
-        self, daemon_process, monkeypatch, tmp_path
-    ):
+    def test_open_nonexistent_file_auto_appends_ipynb(self, daemon_process, monkeypatch, tmp_path):
         """Opening missing file without .ipynb extension auto-appends it."""
         socket_path, _ = daemon_process
         if socket_path is not None:
@@ -2613,9 +2559,7 @@ class TestOpenNotebook:
         os.environ.get("RUNTIMED_INTEGRATION_TEST") == "1",
         reason="Flaky on CI: open_notebook full-peer sync unreliable under resource pressure",
     )
-    def test_open_notebook_second_client_joins_room(
-        self, daemon_process, monkeypatch, tmp_path
-    ):
+    def test_open_notebook_second_client_joins_room(self, daemon_process, monkeypatch, tmp_path):
         """Second client joining same notebook gets synced cells."""
         import json
 
@@ -2713,9 +2657,7 @@ class TestCreateNotebook:
         cells = session.get_cells()
         assert len(cells) == 1
 
-    def test_create_notebook_with_working_dir(
-        self, daemon_process, monkeypatch, tmp_path
-    ):
+    def test_create_notebook_with_working_dir(self, daemon_process, monkeypatch, tmp_path):
         """working_dir is used for project file detection."""
         socket_path, _ = daemon_process
         if socket_path is not None:
@@ -2724,9 +2666,7 @@ class TestCreateNotebook:
         # Create pyproject.toml in tmp_path
         (tmp_path / "pyproject.toml").write_text("[project]\nname = 'test'")
 
-        session = runtimed.Session.create_notebook(
-            runtime="python", working_dir=str(tmp_path)
-        )
+        session = runtimed.Session.create_notebook(runtime="python", working_dir=str(tmp_path))
 
         assert session.is_connected
 
@@ -2734,9 +2674,7 @@ class TestCreateNotebook:
 class TestTrustApproval:
     """Test trust approval flow for notebooks with inline dependencies."""
 
-    def test_untrusted_notebook_needs_approval(
-        self, daemon_process, monkeypatch, tmp_path
-    ):
+    def test_untrusted_notebook_needs_approval(self, daemon_process, monkeypatch, tmp_path):
         """Notebook with inline deps from unknown source needs trust."""
         import json
 
@@ -2775,9 +2713,7 @@ class TestTrustApproval:
         assert info is not None
         assert info.needs_trust_approval is True
 
-    def test_notebook_without_deps_does_not_need_trust(
-        self, daemon_process, monkeypatch, tmp_path
-    ):
+    def test_notebook_without_deps_does_not_need_trust(self, daemon_process, monkeypatch, tmp_path):
         """Notebook without inline deps doesn't need trust approval."""
         import json
 
@@ -2852,9 +2788,7 @@ class TestPresence:
         """Can send cursor then selection (multiple channels)."""
         cell_id = session.create_cell("x = 1")
         session.set_cursor(cell_id, line=0, column=3)
-        session.set_selection(
-            cell_id, anchor_line=0, anchor_col=0, head_line=0, head_col=5
-        )
+        session.set_selection(cell_id, anchor_line=0, anchor_col=0, head_line=0, head_col=5)
 
     def test_set_cursor_not_connected_raises(self):
         """set_cursor raises when not connected."""
@@ -2866,9 +2800,7 @@ class TestPresence:
         """set_selection raises when not connected."""
         sess = runtimed.Session()
         with pytest.raises(runtimed.RuntimedError):
-            sess.set_selection(
-                "fake-cell", anchor_line=0, anchor_col=0, head_line=0, head_col=0
-            )
+            sess.set_selection("fake-cell", anchor_line=0, anchor_col=0, head_line=0, head_col=0)
 
     def test_presence_with_two_peers(self, two_sessions):
         """Both peers can send presence without error."""

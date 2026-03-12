@@ -4,7 +4,6 @@ This file contains shared fixtures and configuration.
 """
 
 import os
-import sys
 
 
 def pytest_configure(config):

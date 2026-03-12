@@ -23,9 +23,10 @@ import re
 import sys
 from typing import Any
 
-import runtimed
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ImageContent, TextContent, ToolAnnotations
+
+import runtimed
 
 logger = logging.getLogger(__name__)
 
