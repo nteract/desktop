@@ -219,17 +219,16 @@ export const CodeMirrorEditor = forwardRef<
       autoFocus,
     });
 
-    // Store the editor view reference
+    // Store the editor view reference (kept for backwards compat with getEditor)
     useEffect(() => {
       editorViewRef.current = view || null;
     }, [view]);
 
-    // Expose methods via ref
+    // Expose methods via ref - depends on `view` so handle updates when view is ready
     useImperativeHandle(
       ref,
       () => ({
         focus: () => {
-          const view = editorViewRef.current;
           const hasDom = view?.dom?.isConnected;
           console.debug(
             `[cell-nav] CodeMirrorEditor.focus() called, view=${!!view}, domConnected=${hasDom}`,
@@ -246,20 +245,20 @@ export const CodeMirrorEditor = forwardRef<
         },
         setCursorPosition: (position: "start" | "end") => {
           console.debug(
-            `[cell-nav] CodeMirrorEditor.setCursorPosition(${position}) called, view=${!!editorViewRef.current}`,
+            `[cell-nav] CodeMirrorEditor.setCursorPosition(${position}) called, view=${!!view}`,
           );
-          if (editorViewRef.current) {
-            const doc = editorViewRef.current.state.doc;
+          if (view) {
+            const doc = view.state.doc;
             const pos = position === "start" ? 0 : doc.length;
-            editorViewRef.current.dispatch({
+            view.dispatch({
               selection: { anchor: pos, head: pos },
               scrollIntoView: true,
             });
           }
         },
-        getEditor: () => editorViewRef.current,
+        getEditor: () => view || null,
       }),
-      [],
+      [view],
     );
 
     useEffect(() => {
