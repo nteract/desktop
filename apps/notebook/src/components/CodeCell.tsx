@@ -1,4 +1,4 @@
-import type { KeyBinding } from "@codemirror/view";
+import type { EditorView, KeyBinding } from "@codemirror/view";
 import { Trash2, X } from "lucide-react";
 import {
   lazy,
@@ -17,11 +17,13 @@ import {
   type CodeMirrorEditorRef,
 } from "@/components/editor/codemirror-editor";
 import type { SupportedLanguage } from "@/components/editor/languages";
+import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
 import { AnsiOutput } from "@/components/outputs/ansi-output";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import type { CellPagePayload, MimeBundle } from "../App";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
+import { registerEditor, unregisterEditor } from "../lib/cursor-registry";
 import { kernelCompletionExtension } from "../lib/kernel-completion";
 import { openUrl } from "../lib/open-url";
 import { tabCompletionKeymap } from "../lib/tab-completion";
@@ -128,6 +130,31 @@ export function CodeCell({
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
 
+  // Register EditorView with the cursor registry for remote cursor rendering.
+  // We use a ref + polling approach because the EditorView is created async
+  // by useCodeMirror and isn't available on first render.
+  const registeredViewRef = useRef<EditorView | null>(null);
+  useEffect(() => {
+    // Check for the view becoming available (useCodeMirror creates it async)
+    const check = () => {
+      const view = editorRef.current?.getEditor() ?? null;
+      if (view && view !== registeredViewRef.current) {
+        registeredViewRef.current = view;
+        registerEditor(cell.id, view);
+      }
+    };
+    check();
+    // Re-check after a tick in case the view wasn't ready yet
+    const timer = setTimeout(check, 50);
+    return () => {
+      clearTimeout(timer);
+      if (registeredViewRef.current) {
+        unregisterEditor(cell.id);
+        registeredViewRef.current = null;
+      }
+    };
+  }, [cell.id]);
+
   // Handle Escape key to dismiss page payload
   useEffect(() => {
     if (!pagePayload || !isFocused) return;
@@ -202,14 +229,18 @@ export function CodeCell({
     [navigationKeyMap, historyKeyBinding],
   );
 
-  // CodeMirror extensions: kernel completion + tab completion + search highlighting
+  // Remote cursors extension (stable — no deps that change)
+  const remoteCursorsExt = useMemo(() => remoteCursorsExtension(), []);
+
+  // CodeMirror extensions: kernel completion + tab completion + search highlighting + remote cursors
   const editorExtensions = useMemo(
     () => [
       kernelCompletionExtension,
       tabCompletionKeymap,
       ...searchHighlight(searchQuery || "", searchActiveOffset),
+      ...remoteCursorsExt,
     ],
-    [searchQuery, searchActiveOffset],
+    [searchQuery, searchActiveOffset, remoteCursorsExt],
   );
 
   const handleExecute = useCallback(() => {

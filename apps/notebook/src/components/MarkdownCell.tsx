@@ -6,12 +6,14 @@ import {
   CodeMirrorEditor,
   type CodeMirrorEditorRef,
 } from "@/components/editor/codemirror-editor";
+import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
 import { IsolatedFrame, type IsolatedFrameHandle } from "@/components/isolated";
 import { isDarkMode as detectDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { useBlobPort } from "../hooks/useManifestResolver";
+import { registerEditor, unregisterEditor } from "../lib/cursor-registry";
 import { logger } from "../lib/logger";
 import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
 import { openUrl } from "../lib/open-url";
@@ -132,6 +134,35 @@ export function MarkdownCell({
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const viewRef = useRef<HTMLDivElement>(null);
 
+  // Register EditorView with the cursor registry when in edit mode.
+  const registeredViewRef = useRef<EditorView | null>(null);
+  useEffect(() => {
+    if (!editing) {
+      // Unregister when leaving edit mode
+      if (registeredViewRef.current) {
+        unregisterEditor(cell.id);
+        registeredViewRef.current = null;
+      }
+      return;
+    }
+    const check = () => {
+      const view = editorRef.current?.getEditor() ?? null;
+      if (view && view !== registeredViewRef.current) {
+        registeredViewRef.current = view;
+        registerEditor(cell.id, view);
+      }
+    };
+    check();
+    const timer = setTimeout(check, 50);
+    return () => {
+      clearTimeout(timer);
+      if (registeredViewRef.current) {
+        unregisterEditor(cell.id);
+        registeredViewRef.current = null;
+      }
+    };
+  }, [cell.id, editing]);
+
   // Track dark mode state for iframe theme sync
   const [darkMode, setDarkMode] = useState(() => detectDarkMode());
 
@@ -234,10 +265,13 @@ export function MarkdownCell({
     [cell.source, isLastCell, onFocusNext, onInsertCellAfter],
   );
 
-  // Search highlight extension for edit mode
+  // Remote cursors extension (stable — no deps that change)
+  const remoteCursorsExt = useMemo(() => remoteCursorsExtension(), []);
+
+  // Search highlight extension for edit mode + remote cursors
   const searchExtensions = useMemo(
-    () => searchHighlight(searchQuery || ""),
-    [searchQuery],
+    () => [...searchHighlight(searchQuery || ""), ...remoteCursorsExt],
+    [searchQuery, remoteCursorsExt],
   );
 
   // Get keyboard navigation bindings
