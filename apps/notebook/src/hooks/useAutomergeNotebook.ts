@@ -5,6 +5,7 @@ import {
   save as saveDialog,
 } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { frame_types } from "../lib/frame-types";
 import { logger } from "../lib/logger";
 import {
   type CellSnapshot,
@@ -100,8 +101,12 @@ export function useAutomergeNotebook() {
   const syncToRelay = useCallback((handle: NotebookHandle) => {
     const msg = handle.generate_sync_message();
     if (msg) {
-      invoke("send_automerge_sync", {
-        syncMessage: Array.from(msg),
+      // Prepend frame type byte for the unified send_frame command
+      const frameData = new Uint8Array(1 + msg.length);
+      frameData[0] = frame_types.AUTOMERGE_SYNC;
+      frameData.set(msg, 1);
+      invoke("send_frame", {
+        frameData: Array.from(frameData),
       }).catch((e: unknown) =>
         logger.warn("[automerge-notebook] sync to relay failed:", e),
       );
@@ -205,36 +210,82 @@ export function useAutomergeNotebook() {
       },
     );
 
-    // ── Incoming Automerge sync from daemon (via Tauri relay) ────────
-    const unlistenSync = webview.listen<number[]>(
-      "automerge:from-daemon",
+    // ── Incoming frames from daemon (unified pipe) ──────────────────
+    //
+    // All frame types (AutomergeSync, Broadcast, Presence) arrive through
+    // one event. The WASM handle.receive_frame() demuxes by the first byte,
+    // applies sync internally, and returns typed FrameEvent JSON.
+    //
+    // Broadcasts are re-emitted as "daemon:broadcast" for backward compat
+    // with useDaemonKernel and useEnvProgress (they listen independently).
+    const unlistenFrame = webview.listen<number[]>(
+      "daemon:frame",
       async (event) => {
         if (cancelled) return;
         const handle = handleRef.current;
         if (!handle) return;
         try {
           const bytes = new Uint8Array(event.payload);
-          const changed = handle.receive_sync_message(bytes);
-          if (awaitingInitialSyncRef.current) {
-            awaitingInitialSyncRef.current = false;
-            setIsLoading(false);
+          const resultJson = handle.receive_frame(bytes);
+          if (!resultJson) return;
+
+          const events: Array<{
+            type: string;
+            changed?: boolean;
+            reply?: number[];
+            payload?: unknown;
+          }> = JSON.parse(resultJson);
+
+          for (const frameEvent of events) {
+            switch (frameEvent.type) {
+              case "sync_applied": {
+                if (awaitingInitialSyncRef.current) {
+                  awaitingInitialSyncRef.current = false;
+                  setIsLoading(false);
+                }
+                if (frameEvent.changed) {
+                  await materializeCells(handle);
+                  notifyMetadataChanged();
+                }
+                break;
+              }
+              case "sync_reply": {
+                // WASM generated a sync response — send it back to the daemon
+                if (frameEvent.reply) {
+                  const replyData = new Uint8Array(1 + frameEvent.reply.length);
+                  replyData[0] = frame_types.AUTOMERGE_SYNC;
+                  replyData.set(new Uint8Array(frameEvent.reply), 1);
+                  invoke("send_frame", {
+                    frameData: Array.from(replyData),
+                  }).catch((e: unknown) =>
+                    logger.warn("[automerge-notebook] sync reply failed:", e),
+                  );
+                }
+                break;
+              }
+              case "broadcast": {
+                // Re-emit as "daemon:broadcast" for useDaemonKernel/useEnvProgress
+                // backward compat. They listen independently and expect JSON payloads.
+                if (frameEvent.payload) {
+                  webview
+                    .emit("daemon:broadcast", frameEvent.payload)
+                    .catch(() => {});
+                }
+                break;
+              }
+              case "presence": {
+                // Re-emit for usePresence hook
+                if (frameEvent.payload) {
+                  webview
+                    .emit("daemon:presence", frameEvent.payload)
+                    .catch(() => {});
+                }
+                break;
+              }
+            }
           }
-          if (changed) {
-            await materializeCells(handle);
-            // Notify metadata subscribers (useSyncExternalStore) that the
-            // doc changed. This covers metadata updates from the daemon
-            // (e.g. trust re-signing, dependency sync from other windows).
-            // Note: local cell mutations (add/delete/source) don't call
-            // notifyMetadataChanged() because they only touch cells, not
-            // the metadata key. If a future mutation affects metadata,
-            // add a notify call there.
-            notifyMetadataChanged();
-          }
-          // The sync protocol may need multiple roundtrips — always
-          // check whether we have something to send back.
-          syncToRelay(handle);
         } catch (e) {
-          logger.warn("[automerge-notebook] receive sync failed:", e);
+          logger.warn("[automerge-notebook] receive frame failed:", e);
         }
       },
     );
@@ -259,7 +310,7 @@ export function useAutomergeNotebook() {
       cancelled = true;
       unlistenReady.then((fn) => fn());
       unlistenFileOpened.then((fn) => fn());
-      unlistenSync.then((fn) => fn());
+      unlistenFrame.then((fn) => fn());
       unlistenClearOutputs.then((fn) => fn());
       // Free WASM handle.
       resetNotebookCells();
@@ -267,7 +318,7 @@ export function useAutomergeNotebook() {
       handleRef.current?.free();
       handleRef.current = null;
     };
-  }, [bootstrap, materializeCells, syncToRelay, refreshBlobPort]);
+  }, [bootstrap, materializeCells, refreshBlobPort]);
 
   // ── Cell mutations ─────────────────────────────────────────────────
 
