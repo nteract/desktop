@@ -808,12 +808,13 @@ impl NotebookSyncClient<tokio::net::UnixStream> {
         Ok(client.into_split())
     }
 
-    /// Connect and return split handle/receiver with raw sync relay support.
+    /// Connect and return split handle/receiver with unified frame pipe support.
     ///
-    /// When `raw_sync_tx` is provided, incoming Automerge sync messages from
-    /// the daemon are also forwarded as raw bytes to this channel. This enables
-    /// the Tauri process to relay sync messages to the frontend for Phase 2.
-    pub async fn connect_split_with_raw_sync(
+    /// When a `PipeChannel` is provided, incoming typed frames (AutomergeSync,
+    /// Broadcast, Presence) from the daemon are forwarded as raw bytes through
+    /// one channel, preserving daemon-sent order. The Tauri relay emits these
+    /// as `daemon:frame` events for the frontend WASM to demux.
+    pub async fn connect_split_with_pipe(
         socket_path: PathBuf,
         notebook_id: String,
         working_dir: Option<PathBuf>,
@@ -976,8 +977,12 @@ impl NotebookSyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
         Ok(client.into_split())
     }
 
-    /// Connect and return split handle/receiver with raw sync relay support.
-    pub async fn connect_split_with_raw_sync(
+    /// Connect and return split handle/receiver with unified frame pipe support.
+    ///
+    /// When a `PipeChannel` is provided, incoming typed frames (AutomergeSync,
+    /// Broadcast, Presence) from the daemon are forwarded as raw bytes through
+    /// one channel, preserving daemon-sent order.
+    pub async fn connect_split_with_pipe(
         socket_path: PathBuf,
         notebook_id: String,
         working_dir: Option<PathBuf>,
@@ -2302,12 +2307,14 @@ where
                         return Ok(response);
                     }
                     NotebookFrameType::AutomergeSync => {
-                        // Buffer the raw payload so run_sync_task can forward it
-                        // through raw_sync_tx in pipe mode. Without this, sync
-                        // frames arriving during request/response (e.g. run-all
-                        // sending 5x ClearOutputs) are consumed by the relay and
-                        // never reach the WASM, causing sync state divergence.
-                        self.pending_sync_frames.push(frame.payload.clone());
+                        // Buffer as typed frame bytes (type byte + payload) so
+                        // run_sync_task can forward them through the unified pipe.
+                        // Without this, frames arriving during request/response
+                        // (e.g. run-all sending 5x ClearOutputs) are consumed
+                        // by the relay and never reach the WASM.
+                        let mut typed = vec![NotebookFrameType::AutomergeSync as u8];
+                        typed.extend_from_slice(&frame.payload);
+                        self.pending_sync_frames.push(typed);
 
                         // Also merge into the relay's local doc (needed for
                         // non-pipe mode / runtimed-py, harmless in pipe mode).
@@ -2319,19 +2326,17 @@ where
                             .map_err(|e| NotebookSyncError::SyncError(format!("receive: {}", e)))?;
                         // Continue waiting for Response
                     }
-                    NotebookFrameType::Presence => {
-                        // Skip presence frames while waiting for response
-                    }
                     NotebookFrameType::Broadcast => {
-                        // Parse the broadcast
+                        // Buffer as typed frame bytes for the unified pipe.
+                        let mut typed = vec![NotebookFrameType::Broadcast as u8];
+                        typed.extend_from_slice(&frame.payload);
+                        self.pending_sync_frames.push(typed);
+
+                        // Also deliver via broadcast_tx for non-pipe consumers.
                         if let Ok(broadcast) =
                             serde_json::from_slice::<NotebookBroadcast>(&frame.payload)
                         {
-                            // If we have a broadcast sender, deliver immediately
-                            // Otherwise queue for later delivery
                             if let Some(tx) = broadcast_tx {
-                                // broadcast::Sender::send is synchronous
-                                // Only fails if there are no receivers, in which case queue it
                                 if tx.send(broadcast.clone()).is_err() {
                                     self.pending_broadcasts.push(broadcast);
                                 }
@@ -2340,6 +2345,12 @@ where
                             }
                         }
                         continue;
+                    }
+                    NotebookFrameType::Presence => {
+                        // Buffer as typed frame bytes for the unified pipe.
+                        let mut typed = vec![NotebookFrameType::Presence as u8];
+                        typed.extend_from_slice(&frame.payload);
+                        self.pending_sync_frames.push(typed);
                     }
                     NotebookFrameType::Request => {
                         // Unexpected - server shouldn't send requests
@@ -2898,64 +2909,62 @@ async fn run_sync_task<S>(
                                 }
                             }
                         }
-                        {
-                            match client.process_incoming_frame(frame).await {
-                                Ok(Some(ReceivedFrame::Changes(cells))) => {
-                                    publish_snapshot(&client, &snapshot_tx);
-                                    // Full peer mode: metadata diffing and SyncUpdate
-                                    let current_metadata =
-                                        client.get_metadata(NOTEBOOK_METADATA_KEY);
-                                    let metadata_changed = current_metadata != last_metadata;
-                                    if metadata_changed {
-                                        last_metadata = current_metadata.clone();
-                                    }
-                                    let update = SyncUpdate {
-                                        cells,
-                                        notebook_metadata: if metadata_changed {
-                                            current_metadata
-                                        } else {
-                                            None
-                                        },
-                                    };
-                                    match changes_tx.try_send(update) {
-                                        Ok(()) => {}
-                                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
-                                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                                            info!(
+                        match client.process_incoming_frame(frame).await {
+                            Ok(Some(ReceivedFrame::Changes(cells))) => {
+                                publish_snapshot(&client, &snapshot_tx);
+                                // Full peer mode: metadata diffing and SyncUpdate
+                                let current_metadata = client.get_metadata(NOTEBOOK_METADATA_KEY);
+                                let metadata_changed = current_metadata != last_metadata;
+                                if metadata_changed {
+                                    last_metadata = current_metadata.clone();
+                                }
+                                let update = SyncUpdate {
+                                    cells,
+                                    notebook_metadata: if metadata_changed {
+                                        current_metadata
+                                    } else {
+                                        None
+                                    },
+                                };
+                                match changes_tx.try_send(update) {
+                                    Ok(()) => {}
+                                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                        info!(
                                             "[notebook-sync-task] Changes receiver dropped for {}, loop_count={}",
                                             notebook_id, loop_count
                                         );
-                                            break;
-                                        }
+                                        break;
                                     }
                                 }
-                                Ok(Some(ReceivedFrame::Broadcast(broadcast))) => {
-                                    let send_result = broadcast_tx.send(broadcast);
-                                    if send_result.is_err() {
-                                        info!(
-                                            "[notebook-sync-task] No broadcast receivers for {}",
-                                            notebook_id
-                                        );
-                                    }
-                                }
-                                Ok(Some(ReceivedFrame::Response(_))) => {
-                                    warn!(
-                                        "[notebook-sync-task] Unexpected response frame for {}",
+                            }
+                            Ok(Some(ReceivedFrame::Broadcast(broadcast))) => {
+                                let send_result = broadcast_tx.send(broadcast);
+                                if send_result.is_err() {
+                                    info!(
+                                        "[notebook-sync-task] No broadcast receivers for {}",
                                         notebook_id
                                     );
                                 }
-                                Ok(None) => {
-                                    // Frame was handled internally (e.g., unexpected Request)
-                                }
-                                Err(e) => {
-                                    warn!(
+                            }
+                            Ok(Some(ReceivedFrame::Response(_))) => {
+                                warn!(
+                                    "[notebook-sync-task] Unexpected response frame for {}",
+                                    notebook_id
+                                );
+                            }
+                            Ok(None) => {
+                                // Frame was handled internally (e.g., unexpected Request)
+                            }
+                            Err(e) => {
+                                warn!(
                                     "[notebook-sync-task] Error processing frame for {}: {}, loop_count={}",
                                     notebook_id, e, loop_count
                                 );
-                                    break;
-                                }
+                                break;
                             }
-                        } // end else (non-pipe mode)
+                        }
+                        // end else (non-pipe mode)
                     }
                     Ok(None) => {
                         // Connection closed

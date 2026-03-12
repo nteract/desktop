@@ -627,11 +627,12 @@ async fn initialize_notebook_sync_create(
     .await
 }
 
-/// Store the sync handle and spawn relay tasks for an established daemon connection.
+/// Store the sync handle and spawn the unified frame relay for an established daemon connection.
 ///
 /// This is the common tail of `initialize_notebook_sync_open` and `_create`.
-/// It stores the handle, spawns the raw-sync and broadcast receiver tasks,
-/// and emits `daemon:ready` with the connection payload.
+/// It stores the handle, spawns a single relay task that forwards all typed
+/// frames (AutomergeSync, Broadcast, Presence) to the frontend via the
+/// `daemon:frame` event, and emits `daemon:ready` with the connection payload.
 ///
 /// Note: No SyncUpdate receiver task is spawned — in pipe mode the relay forwards
 /// raw Automerge bytes directly, and the frontend WASM drives metadata updates
