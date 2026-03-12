@@ -135,20 +135,10 @@ export function RawCell({
     cellId: cell.id,
   });
 
-  // Combine navigation with raw-cell-specific keys
+  // Use navigation key bindings directly (Shift+Enter already handled by useCellKeyboardNavigation)
   const keyMap: KeyBinding[] = useMemo(
-    () => [
-      ...navigationKeyMap,
-      // Shift+Enter: move to next cell (like execute for code cells)
-      {
-        key: "Shift-Enter",
-        run: () => {
-          handleFocusNextOrCreate("start");
-          return true;
-        },
-      },
-    ],
-    [navigationKeyMap, handleFocusNextOrCreate],
+    () => navigationKeyMap,
+    [navigationKeyMap],
   );
 
   // Focus editor when cell becomes focused

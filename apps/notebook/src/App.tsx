@@ -715,15 +715,20 @@ function AppContent() {
   // Cell menu: Insert cell
   useEffect(() => {
     const webview = getCurrentWebview();
+    const validCellTypes = ["code", "markdown", "raw"] as const;
     const unlistenPromise = webview.listen<string>(
       "menu:insert-cell",
       (event) => {
-        const cellType = event.payload as "code" | "markdown" | "raw";
-        handleAddCell(cellType, focusedCellId);
+        const payload = event.payload;
+        if (
+          validCellTypes.includes(payload as (typeof validCellTypes)[number])
+        ) {
+          handleAddCell(payload as "code" | "markdown" | "raw", focusedCellId);
+        }
       },
     );
     return () => {
-      unlistenPromise.then((unlisten) => unlisten());
+      unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
     };
   }, [handleAddCell, focusedCellId]);
 
