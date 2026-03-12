@@ -1534,6 +1534,7 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 });
 
             if json {
+                let base_dir = runt_workspace::daemon_base_dir();
                 let output = serde_json::json!({
                     "channel": runt_workspace::channel_display_name(),
                     "socket_path": socket_path,
@@ -1542,6 +1543,23 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                     "dev_mode": is_dev,
                     "daemon_info": daemon_info,
                     "pool_stats": stats,
+                    "paths": {
+                        "base_dir": base_dir,
+                        "log_path": base_dir.join("runtimed.log"),
+                        "envs_dir": base_dir.join("envs"),
+                        "blobs_dir": base_dir.join("blobs"),
+                        "notebooks_dir": runt_workspace::default_notebooks_dir().ok(),
+                    },
+                    "env": {
+                        "RUNTIMED_DEV": std::env::var("RUNTIMED_DEV").ok(),
+                        "RUNTIMED_WORKSPACE_PATH": std::env::var("RUNTIMED_WORKSPACE_PATH").ok(),
+                        "RUNTIMED_WORKSPACE_NAME": std::env::var("RUNTIMED_WORKSPACE_NAME").ok(),
+                        "RUNTIMED_VITE_PORT": std::env::var("RUNTIMED_VITE_PORT").ok(),
+                    },
+                    "blob_url": daemon_info.as_ref()
+                        .and_then(|i| i.blob_port.map(|p| format!("http://127.0.0.1:{}", p))),
+                    "worktree_hash": runt_workspace::get_workspace_path()
+                        .map(|p| runt_workspace::worktree_hash(&p)),
                 });
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {

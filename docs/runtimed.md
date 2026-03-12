@@ -138,6 +138,24 @@ runt daemon install    # Install as system service (system daemon only)
 runt daemon uninstall  # Uninstall system service (system daemon only)
 ```
 
+**Machine-readable output** (`--json`):
+
+```bash
+runt daemon status --json
+```
+
+Returns structured JSON with:
+- `socket_path` — Unix socket or named pipe path
+- `running` — boolean daemon status
+- `daemon_info` — PID, version, blob_port, worktree_path (when running)
+- `pool_stats` — environment pool counts including `uv_target`/`conda_target`
+- `paths` — computed dev paths (base_dir, log_path, envs_dir, blobs_dir)
+- `env` — environment variables (RUNTIMED_DEV, RUNTIMED_WORKSPACE_PATH, etc.)
+- `blob_url` — HTTP blob server URL (when running)
+- `worktree_hash` — 12-char hash for dev mode isolation
+
+Useful for scripts that need to discover daemon configuration without parsing human-readable output.
+
 Most commands work with both the system daemon and dev worktree daemons. The `install`/`uninstall` commands are system-only — don't run these in a worktree context.
 
 Auto-upgrade: the client detects version mismatches and replaces the binary.

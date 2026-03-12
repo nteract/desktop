@@ -161,6 +161,29 @@ Use `./target/debug/runt` to interact with the worktree daemon. When started via
 ./target/debug/runt daemon flush
 ```
 
+### Machine-Readable Status (`--json`)
+
+For scripts that need daemon configuration programmatically:
+
+```bash
+# Get socket path for RUNTIMED_SOCKET_PATH
+./target/debug/runt daemon status --json | jq -r .socket_path
+
+# Get blob server URL (when daemon is running)
+./target/debug/runt daemon status --json | jq -r .blob_url
+
+# Get all computed paths
+./target/debug/runt daemon status --json | jq '.paths'
+
+# Get environment variables
+./target/debug/runt daemon status --json | jq '.env'
+
+# Check if daemon is running
+./target/debug/runt daemon status --json | jq -r .running
+```
+
+The JSON output includes computed paths, environment variables, pool targets, and blob server URL — everything needed to configure dev scripts without manual computation.
+
 **Why `./target/debug/runt`?** The debug binary is built with `RUNTIMED_WORKSPACE_PATH` in its environment (via xtask), so it connects to the worktree daemon. A system-installed `runt` connects to the system daemon instead.
 
 **Where state lives in dev mode:**

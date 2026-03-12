@@ -94,8 +94,10 @@ pub struct PooledEnv {
 pub struct PoolStats {
     pub uv_available: usize,
     pub uv_warming: usize,
+    pub uv_target: usize,
     pub conda_available: usize,
     pub conda_warming: usize,
+    pub conda_target: usize,
     /// Error info for UV pool (if warming is failing).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uv_error: Option<PoolError>,

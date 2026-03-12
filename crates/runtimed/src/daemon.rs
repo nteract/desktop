@@ -1631,8 +1631,10 @@ impl Daemon {
                     stats: PoolStats {
                         uv_available,
                         uv_warming,
+                        uv_target: self.config.uv_pool_size,
                         conda_available,
                         conda_warming,
+                        conda_target: self.config.conda_pool_size,
                         uv_error,
                         conda_error,
                     },
