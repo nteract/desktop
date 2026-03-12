@@ -315,12 +315,7 @@ const remoteCursorsTheme = EditorView.theme({
     color: "white",
     whiteSpace: "nowrap",
     pointerEvents: "none",
-    opacity: "0",
-    transition: "opacity 0.15s ease",
     zIndex: "10",
-  },
-  ".cm-remote-cursor:hover .cm-remote-cursor-label": {
-    opacity: "1",
   },
   ".cm-remote-selection": {
     // Background color is set inline via decoration attributes
