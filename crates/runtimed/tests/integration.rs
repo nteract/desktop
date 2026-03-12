@@ -1235,6 +1235,12 @@ async fn test_pipe_mode_does_not_forward_response_frames() {
 }
 
 #[tokio::test]
+/// Note: Automerge sync is intentionally convergent under reordering, so this
+/// test cannot distinguish ordered delivery from shuffled delivery by inspecting
+/// application state alone. It verifies that frames arrive without duplication
+/// or coalescing and that the final state is correct — but a true ordering
+/// assertion would require transport-layer sequence numbers, which the pipe
+/// protocol doesn't currently carry. Tracked as a known limitation.
 async fn test_pipe_mode_preserves_frame_order() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);
