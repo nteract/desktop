@@ -308,10 +308,10 @@ export function useAutomergeNotebook() {
 
     return () => {
       cancelled = true;
-      unlistenReady.then((fn) => fn());
-      unlistenFileOpened.then((fn) => fn());
-      unlistenFrame.then((fn) => fn());
-      unlistenClearOutputs.then((fn) => fn());
+      unlistenReady.then((fn) => fn()).catch(() => {});
+      unlistenFileOpened.then((fn) => fn()).catch(() => {});
+      unlistenFrame.then((fn) => fn()).catch(() => {});
+      unlistenClearOutputs.then((fn) => fn()).catch(() => {});
       // Free WASM handle.
       resetNotebookCells();
       setNotebookHandle(null);
