@@ -162,7 +162,7 @@ export function RawCell({
     >
       <div className="flex items-center gap-1 py-1">
         <span className="text-xs text-muted-foreground font-mono">
-          {format === "plain" ? "raw" : format}
+          {format === "plain" ? "raw" : `raw (${format})`}
         </span>
         <div className="flex-1" />
         <div className="cell-controls opacity-0 group-hover:opacity-100 transition-opacity">
