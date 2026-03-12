@@ -128,9 +128,9 @@ graph TB
     UD -->|"invoke(detect_pyproject)"| DETP
     UCD -->|"invoke(detect_pixi_toml)"| DETP
 
-    %% Daemon broadcasts back to frontend
-    NSS -.->|"notebook:broadcast {KernelLaunched, env_source}"| UDK
-    KM -.->|"notebook:broadcast {KernelStatus, ExecutionStarted, ExecutionDone}"| UDK
+    %% Daemon → relay → frontend (notebook:frame, re-emitted as notebook:broadcast after WASM demux)
+    NSS -.->|"notebook:frame → notebook:broadcast {KernelLaunched, env_source}"| UDK
+    KM -.->|"notebook:frame → notebook:broadcast {KernelStatus, ExecutionStarted, ExecutionDone}"| UDK
     VNT -.->|trust status| UD
 
     %% Environment creation → external tools
@@ -210,7 +210,8 @@ sequenceDiagram
     KM-->>DM: Kernel ready
 
     DM-->>TC: KernelLaunched response
-    TC-->>FE: notebook:broadcast {KernelLaunched, env_source}
+    TC-->>FE: notebook:frame {type 0x03, KernelLaunched, env_source}
+    FE->>FE: notebook:broadcast {KernelLaunched, env_source} (after WASM receive_frame() demux)
 ```
 
 ### Daemon Pool Architecture

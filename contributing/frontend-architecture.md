@@ -148,7 +148,7 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
 3. **useDaemonKernel / useEnvProgress** — Consume `notebook:broadcast` events for kernel status, outputs, and environment progress
 4. **usePresence** — Consumes `notebook:presence` events for remote cursor/selection state
 
-Cell mutations (add, delete, edit) go through the WASM handle for instant response, then sync to the daemon via `invoke("send_frame")`. Execution requests go to the daemon via dedicated Tauri commands.
+Cell mutations (add, delete, edit) go through the WASM handle for instant response, then sync to the daemon via `invoke("send_frame", { frameData })` where `frameData` includes the type byte prefix. Execution requests go to the daemon via dedicated Tauri commands.
 
 ## Key Files
 

@@ -222,7 +222,7 @@ The **Tauri relay** (`NotebookSyncClient` in `crates/runtimed/src/notebook_sync_
 
 Cells are stored in an Automerge Map keyed by cell ID, with a `position` field (fractional index hex string) for ordering. `move_cell` updates only the position field — no delete/re-insert. `get_cells()` returns cells sorted by position with cell ID as tiebreaker.
 
-Mutation flow: React → WASM `handle.add_cell_after()` → `handle.generate_sync_message()` → prepend `0x00` type byte → `invoke("send_frame")` → relay pipe → daemon.
+Mutation flow: React → WASM `handle.add_cell_after()` → `handle.generate_sync_message()` → prepend `0x00` type byte → `invoke("send_frame", { frameData })` → relay pipe → daemon.
 
 Incoming sync: daemon → relay pipe → `notebook:frame` event → WASM `handle.receive_frame()` → demux by type byte → `materializeCells()` → React state. Broadcasts and presence are re-emitted as `notebook:broadcast` and `notebook:presence` webview events for downstream hooks.
 

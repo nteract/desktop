@@ -170,7 +170,7 @@ User types in cell
   → Frontend useAutomergeNotebook listener → WASM handle.receive_frame(bytes)
   → WASM demuxes by first byte, applies sync, returns FrameEvent[]
   → sync_applied event → materializeCells() updates React state if doc changed
-  → sync_reply event → prepend 0x00, invoke("send_frame") back to daemon
+  → sync_reply event → prepend 0x00, invoke("send_frame", { frameData }) back to daemon
 ```
 
 ## Request / Response
