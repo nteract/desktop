@@ -578,7 +578,7 @@ function AppContent() {
   );
 
   const handleAddCell = useCallback(
-    (type: "code" | "markdown", afterCellId?: string | null) => {
+    (type: "code" | "markdown" | "raw", afterCellId?: string | null) => {
       addCell(type, afterCellId);
     },
     [addCell],
@@ -711,6 +711,21 @@ function AppContent() {
       unlistenPromise.then((unlisten) => unlisten());
     };
   }, [cloneNotebook]);
+
+  // Cell menu: Insert cell
+  useEffect(() => {
+    const webview = getCurrentWebview();
+    const unlistenPromise = webview.listen<string>(
+      "menu:insert-cell",
+      (event) => {
+        const cellType = event.payload as "code" | "markdown" | "raw";
+        handleAddCell(cellType, focusedCellId);
+      },
+    );
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, [handleAddCell, focusedCellId]);
 
   // Kernel menu: Run All Cells
   useEffect(() => {
