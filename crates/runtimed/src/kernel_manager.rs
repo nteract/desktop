@@ -828,8 +828,8 @@ impl RoomKernel {
                                         let mut doc_guard = doc.write().await;
                                         if let Err(e) = doc_guard.clear_outputs(cid) {
                                             warn!(
-                                                "[kernel-manager] Failed to clear outputs in doc: {}",
-                                                e
+                                                "[kernel-manager] Failed to clear outputs in doc for cell {}: {}",
+                                                cid, e
                                             );
                                         }
                                         if let Err(e) = doc_guard
