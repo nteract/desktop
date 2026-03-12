@@ -60,7 +60,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --dev --no-sources --no-install-workspace
+        run: uv sync --dev --no-sources
         working-directory: python/nteract
 
       - name: Run smoke tests
@@ -168,7 +168,7 @@ jobs:
           echo "Setting nteract version to: ${DEV_VERSION}"
           sed -i "s/^version = .*/version = \"${DEV_VERSION}\"/" pyproject.toml
           # Pin runtimed dep to the same prerelease series
-          sed -i "s/runtimed>=2.0.1a0/runtimed>=${DEV_VERSION}/" pyproject.toml
+          sed -i "s/runtimed>=2.0.0/runtimed>=${DEV_VERSION}/" pyproject.toml
         working-directory: python/nteract
 
       - name: Build
