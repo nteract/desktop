@@ -11,7 +11,6 @@ import { IsolatedFrame, type IsolatedFrameHandle } from "@/components/isolated";
 import { isDarkMode as detectDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
-import { useEditorRegistry } from "../hooks/useEditorRegistry";
 import { useBlobPort } from "../hooks/useManifestResolver";
 import { logger } from "../lib/logger";
 import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
@@ -132,7 +131,6 @@ export function MarkdownCell({
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const viewRef = useRef<HTMLDivElement>(null);
-  const { registerEditor, unregisterEditor } = useEditorRegistry();
 
   // Track dark mode state for iframe theme sync
   const [darkMode, setDarkMode] = useState(() => detectDarkMode());
@@ -149,18 +147,6 @@ export function MarkdownCell({
   }, []);
 
   const blobPort = useBlobPort();
-
-  // Register editor with the registry for cross-cell navigation
-  useEffect(() => {
-    if (editing && editorRef.current) {
-      registerEditor(cell.id, {
-        focus: () => editorRef.current?.focus(),
-        setCursorPosition: (position) =>
-          editorRef.current?.setCursorPosition(position),
-      });
-    }
-    return () => unregisterEditor(cell.id);
-  }, [cell.id, editing, registerEditor, unregisterEditor]);
 
   const handleDoubleClick = useCallback(() => {
     setEditing(true);
