@@ -93,9 +93,7 @@ function AppContent() {
   const peerIdRef = useRef(crypto.randomUUID());
 
   // Remote cursor/selection presence (outgoing setCursor/setSelection wired in step 5)
-  const { setCursor: _setCursor, setSelection: _setSelection } = usePresence(
-    peerIdRef.current,
-  );
+  usePresence(peerIdRef.current);
 
   // Start dispatching presence events to CodeMirror EditorViews
   useEffect(() => {

@@ -5,7 +5,7 @@ Usage (from python/runtimed/, with dev daemon running):
     RUNTIMED_SOCKET_PATH=~/Library/Caches/runt-nightly/worktrees/<hash>/runtimed.sock \
         uv run python demos/presence_cursor.py [notebook_id]
 
-If no notebook_id is provided, lists open notebooks and exits.
+If no notebook_id is provided, prints usage and exits.
 """
 
 import os
@@ -36,7 +36,7 @@ def main():
 
     if not notebook_id:
         print(
-            "Usage: python demo_presence.py <notebook_id>\n"
+            "Usage: python presence_cursor.py <notebook_id>\n"
             "\n"
             "Find notebook IDs with:\n"
             "  RUNTIMED_DEV=1 ./target/debug/runt notebooks",

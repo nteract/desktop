@@ -138,24 +138,42 @@ export function MarkdownCell({
   const registeredViewRef = useRef<EditorView | null>(null);
   useEffect(() => {
     if (!editing) {
-      // Unregister when leaving edit mode
       if (registeredViewRef.current) {
         unregisterEditor(cell.id);
         registeredViewRef.current = null;
       }
       return;
     }
-    const check = () => {
+
+    const tryRegister = () => {
       const view = editorRef.current?.getEditor() ?? null;
       if (view && view !== registeredViewRef.current) {
         registeredViewRef.current = view;
         registerEditor(cell.id, view);
+        return true;
       }
+      return false;
     };
-    check();
-    const timer = setTimeout(check, 50);
+
+    if (!tryRegister()) {
+      let attempts = 0;
+      const intervalId = window.setInterval(() => {
+        attempts += 1;
+        if (tryRegister() || attempts >= 40) {
+          clearInterval(intervalId);
+        }
+      }, 50);
+
+      return () => {
+        clearInterval(intervalId);
+        if (registeredViewRef.current) {
+          unregisterEditor(cell.id);
+          registeredViewRef.current = null;
+        }
+      };
+    }
+
     return () => {
-      clearTimeout(timer);
       if (registeredViewRef.current) {
         unregisterEditor(cell.id);
         registeredViewRef.current = null;

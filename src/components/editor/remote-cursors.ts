@@ -118,7 +118,7 @@ class CursorWidget extends WidgetType {
     wrapper.style.borderLeftColor = this.color;
     wrapper.setAttribute("aria-label", this.label || "Remote cursor");
 
-    // Name label (shown on hover via CSS)
+    // Name label (always visible, positioned above the cursor bar)
     if (this.label) {
       const tag = document.createElement("span");
       tag.className = "cm-remote-cursor-label";
@@ -149,9 +149,10 @@ function buildCursorDecorations(
   for (const cursor of cursors) {
     // Clamp to document bounds
     const lineCount = doc.lines;
-    const lineNum = Math.min(cursor.line + 1, lineCount); // CM lines are 1-based
+    const safeLine = Math.max(0, cursor.line);
+    const lineNum = Math.min(safeLine + 1, lineCount);
     const line = doc.line(lineNum);
-    const col = Math.min(cursor.column, line.length);
+    const col = Math.min(Math.max(0, cursor.column), line.length);
     const pos = line.from + col;
 
     widgets.push(
@@ -181,14 +182,14 @@ function buildSelectionDecorations(
   const ranges: { from: number; to: number; color: string }[] = [];
 
   for (const sel of selections) {
-    const anchorLineNum = Math.min(sel.anchorLine + 1, lineCount);
+    const anchorLineNum = Math.max(1, Math.min(sel.anchorLine + 1, lineCount));
     const anchorLine = doc.line(anchorLineNum);
-    const anchorCol = Math.min(sel.anchorCol, anchorLine.length);
+    const anchorCol = Math.min(Math.max(0, sel.anchorCol), anchorLine.length);
     const anchorPos = anchorLine.from + anchorCol;
 
-    const headLineNum = Math.min(sel.headLine + 1, lineCount);
+    const headLineNum = Math.max(1, Math.min(sel.headLine + 1, lineCount));
     const headLine = doc.line(headLineNum);
-    const headCol = Math.min(sel.headCol, headLine.length);
+    const headCol = Math.min(Math.max(0, sel.headCol), headLine.length);
     const headPos = headLine.from + headCol;
 
     const from = Math.min(anchorPos, headPos);

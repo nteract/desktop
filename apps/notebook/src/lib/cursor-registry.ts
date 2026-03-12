@@ -283,5 +283,6 @@ export function startCursorDispatch(peerId: string): () => void {
         setRemoteSelections(view, []);
       }
     }
+    editors.clear();
   };
 }

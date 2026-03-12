@@ -14,14 +14,14 @@ uv run --reinstall-package runtimed maturin develop
 Set the dev daemon socket path:
 
 ```bash
-# Find your worktree hash
+# Find your worktree hash (run from repo root)
 RUNTIMED_DEV=1 ./target/debug/runt daemon status
 
 # Export the socket path (replace <hash> with yours)
 export RUNTIMED_SOCKET_PATH=~/Library/Caches/runt-nightly/worktrees/<hash>/runtimed.sock
 ```
 
-Find open notebook IDs:
+Find open notebook IDs (from repo root):
 
 ```bash
 RUNTIMED_DEV=1 ./target/debug/runt notebooks

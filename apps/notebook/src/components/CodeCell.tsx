@@ -135,19 +135,35 @@ export function CodeCell({
   // by useCodeMirror and isn't available on first render.
   const registeredViewRef = useRef<EditorView | null>(null);
   useEffect(() => {
-    // Check for the view becoming available (useCodeMirror creates it async)
-    const check = () => {
+    const tryRegister = () => {
       const view = editorRef.current?.getEditor() ?? null;
       if (view && view !== registeredViewRef.current) {
         registeredViewRef.current = view;
         registerEditor(cell.id, view);
+        return true;
       }
+      return false;
     };
-    check();
-    // Re-check after a tick in case the view wasn't ready yet
-    const timer = setTimeout(check, 50);
+
+    if (!tryRegister()) {
+      let attempts = 0;
+      const intervalId = window.setInterval(() => {
+        attempts += 1;
+        if (tryRegister() || attempts >= 40) {
+          clearInterval(intervalId);
+        }
+      }, 50);
+
+      return () => {
+        clearInterval(intervalId);
+        if (registeredViewRef.current) {
+          unregisterEditor(cell.id);
+          registeredViewRef.current = null;
+        }
+      };
+    }
+
     return () => {
-      clearTimeout(timer);
       if (registeredViewRef.current) {
         unregisterEditor(cell.id);
         registeredViewRef.current = null;
