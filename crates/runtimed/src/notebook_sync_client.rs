@@ -156,6 +156,11 @@ enum SyncCommand {
     ConfirmSync {
         reply: oneshot::Sender<Result<(), NotebookSyncError>>,
     },
+    /// Send a raw presence frame (type 0x04) to the daemon.
+    SendPresence {
+        data: Vec<u8>,
+        reply: oneshot::Sender<Result<(), NotebookSyncError>>,
+    },
 }
 
 /// Handle for sending commands to the notebook sync task.
@@ -492,6 +497,28 @@ impl NotebookSyncHandle {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(SyncCommand::ConfirmSync { reply: reply_tx })
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?;
+        reply_rx
+            .await
+            .map_err(|_| NotebookSyncError::ChannelClosed)?
+    }
+
+    /// Send a raw presence frame (type 0x04) to the daemon.
+    ///
+    /// The data should be encoded via `notebook_doc::presence::encode_*` functions.
+    /// The daemon will decode, update room state, and relay to other peers.
+    ///
+    /// Returns an error if the frame exceeds `MAX_PRESENCE_FRAME_SIZE` (4 KiB).
+    pub async fn send_presence(&self, data: Vec<u8>) -> Result<(), NotebookSyncError> {
+        notebook_doc::presence::validate_frame_size(&data)
+            .map_err(|e| NotebookSyncError::SyncError(e.to_string()))?;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(SyncCommand::SendPresence {
+                data,
+                reply: reply_tx,
+            })
             .await
             .map_err(|_| NotebookSyncError::ChannelClosed)?;
         reply_rx
@@ -1172,6 +1199,9 @@ where
                     NotebookFrameType::Response => {
                         warn!("[notebook-sync-client] Unexpected Response frame during init");
                     }
+                    NotebookFrameType::Presence => {
+                        // Presence frames are currently unsupported in this client; ignore during init.
+                    }
                     NotebookFrameType::Request => {
                         warn!("[notebook-sync-client] Unexpected Request frame during init");
                     }
@@ -1453,6 +1483,9 @@ where
                     }
                     NotebookFrameType::Response => {
                         warn!("[notebook-sync-client] Unexpected Response frame during init");
+                    }
+                    NotebookFrameType::Presence => {
+                        // Presence frames are currently unsupported in this client; ignore during initial sync.
                     }
                     NotebookFrameType::Request => {
                         warn!("[notebook-sync-client] Unexpected Request frame during init");
@@ -1967,6 +2000,10 @@ where
                     // Ignore broadcast frames - caller can handle separately
                     Ok(self.get_cells())
                 }
+                NotebookFrameType::Presence => {
+                    // Ignore presence frames in recv_changes
+                    Ok(self.get_cells())
+                }
                 _ => {
                     warn!(
                         "[notebook-sync-client] Unexpected frame type in recv_changes: {:?}",
@@ -2023,6 +2060,10 @@ where
                         NotebookSyncError::SyncError(format!("deserialize broadcast: {}", e))
                     })?;
                 Ok(Some(ReceivedFrame::Broadcast(broadcast)))
+            }
+            NotebookFrameType::Presence => {
+                // Skip presence frames in process_incoming_frame
+                Ok(None)
             }
             NotebookFrameType::Response => {
                 let response: NotebookResponse =
@@ -2266,6 +2307,9 @@ where
                             .receive_sync_message(&mut self.peer_state, message)
                             .map_err(|e| NotebookSyncError::SyncError(format!("receive: {}", e)))?;
                         // Continue waiting for Response
+                    }
+                    NotebookFrameType::Presence => {
+                        // Skip presence frames while waiting for response
                     }
                     NotebookFrameType::Broadcast => {
                         // Parse the broadcast
@@ -2769,6 +2813,16 @@ async fn run_sync_task<S>(
                     }
                     SyncCommand::ConfirmSync { reply } => {
                         let result = client.sync_to_daemon_confirmed().await;
+                        let _ = reply.send(result);
+                    }
+                    SyncCommand::SendPresence { data, reply } => {
+                        let result = connection::send_typed_frame(
+                            &mut client.stream,
+                            connection::NotebookFrameType::Presence,
+                            &data,
+                        )
+                        .await
+                        .map_err(|e| NotebookSyncError::SyncError(format!("send presence: {}", e)));
                         let _ = reply.send(result);
                     }
                     SyncCommand::ReceiveFrontendSyncMessage { message, reply } => {

@@ -6,6 +6,7 @@
 //! version mismatch issues that produce phantom cells.
 
 use automerge::sync;
+use notebook_doc::presence;
 use notebook_doc::{CellSnapshot, NotebookDoc};
 use wasm_bindgen::prelude::*;
 
@@ -376,5 +377,126 @@ impl NotebookHandle {
     /// Reset the sync state. Call this when reconnecting to a new daemon session.
     pub fn reset_sync_state(&mut self) {
         self.sync_state = sync::State::new();
+    }
+
+    // ── Presence ─────────────────────────────────────────────────────
+
+    /// Encode a cursor position as a presence frame payload (binary).
+    ///
+    /// The frontend should send these bytes as a frame type 0x04 via
+    /// the Tauri relay. The `peer_id` is a local identifier — the daemon
+    /// will replace it with the server-assigned peer ID before relaying.
+    pub fn encode_cursor_presence(peer_id: &str, cell_id: &str, line: u32, column: u32) -> Vec<u8> {
+        presence::encode_cursor_update(
+            peer_id,
+            &presence::CursorPosition {
+                cell_id: cell_id.to_string(),
+                line,
+                column,
+            },
+        )
+    }
+
+    /// Encode a selection range as a presence frame payload (binary).
+    pub fn encode_selection_presence(
+        peer_id: &str,
+        cell_id: &str,
+        anchor_line: u32,
+        anchor_col: u32,
+        head_line: u32,
+        head_col: u32,
+    ) -> Vec<u8> {
+        presence::encode_selection_update(
+            peer_id,
+            &presence::SelectionRange {
+                cell_id: cell_id.to_string(),
+                anchor_line,
+                anchor_col,
+                head_line,
+                head_col,
+            },
+        )
+    }
+
+    /// Decode a presence frame payload into a JSON string for the frontend.
+    ///
+    /// Returns a JSON object with the decoded presence message, or null
+    /// if decoding fails. The frontend can parse this to render remote
+    /// cursors, selections, and kernel state.
+    pub fn decode_presence_message(data: &[u8]) -> Option<String> {
+        let msg = presence::decode_message(data).ok()?;
+        let json = match msg {
+            presence::PresenceMessage::Update { peer_id, data } => {
+                let channel_str = match &data {
+                    presence::ChannelData::Cursor(_) => "cursor",
+                    presence::ChannelData::Selection(_) => "selection",
+                    presence::ChannelData::KernelState(_) => "kernel_state",
+                    presence::ChannelData::Custom(_) => "custom",
+                };
+                match data {
+                    presence::ChannelData::Cursor(c) => serde_json::json!({
+                        "type": "update",
+                        "peer_id": peer_id,
+                        "channel": channel_str,
+                        "cell_id": c.cell_id,
+                        "line": c.line,
+                        "column": c.column,
+                    }),
+                    presence::ChannelData::Selection(s) => serde_json::json!({
+                        "type": "update",
+                        "peer_id": peer_id,
+                        "channel": channel_str,
+                        "cell_id": s.cell_id,
+                        "anchor_line": s.anchor_line,
+                        "anchor_col": s.anchor_col,
+                        "head_line": s.head_line,
+                        "head_col": s.head_col,
+                    }),
+                    presence::ChannelData::KernelState(k) => serde_json::json!({
+                        "type": "update",
+                        "peer_id": peer_id,
+                        "channel": channel_str,
+                        "status": k.status.as_str(),
+                        "env_source": k.env_source,
+                    }),
+                    presence::ChannelData::Custom(bytes) => {
+                        // Emit raw bytes as a JSON array of numbers — lossless
+                        // without requiring a base64 dependency.
+                        serde_json::json!({
+                            "type": "update",
+                            "peer_id": peer_id,
+                            "channel": channel_str,
+                            "data": bytes,
+                        })
+                    }
+                }
+            }
+            presence::PresenceMessage::Snapshot { peer_id, peers } => {
+                let peer_list: Vec<serde_json::Value> = peers
+                    .iter()
+                    .map(|p| {
+                        serde_json::json!({
+                            "peer_id": p.peer_id,
+                            "peer_label": p.peer_label,
+                            "channel_count": p.channels.len(),
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "type": "snapshot",
+                    "peer_id": peer_id,
+                    "peers": peer_list,
+                })
+            }
+            presence::PresenceMessage::Left { peer_id } => serde_json::json!({
+                "type": "left",
+                "peer_id": peer_id,
+            }),
+            presence::PresenceMessage::Heartbeat { peer_id } => serde_json::json!({
+                "type": "heartbeat",
+                "peer_id": peer_id,
+            }),
+        };
+        serde_json::to_string(&json).ok()
     }
 }

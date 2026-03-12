@@ -2811,5 +2811,100 @@ class TestTrustApproval:
         assert info.needs_trust_approval is False
 
 
+# ============================================================================
+# Presence Tests
+# ============================================================================
+
+
+class TestPresence:
+    """Test presence functionality (cursor, selection).
+
+    These tests verify that presence frames can be sent without error.
+    They don't verify relay to other peers (that requires inspecting
+    frame-level traffic), but they confirm the encode → send → daemon
+    path works end-to-end without raising.
+    """
+
+    def test_set_cursor(self, session):
+        """Can send a cursor position as presence data."""
+        cell_id = session.create_cell("x = 1")
+        # Should not raise — the daemon receives and relays
+        session.set_cursor(cell_id, line=0, column=0)
+
+    def test_set_cursor_different_positions(self, session):
+        """Can send multiple cursor updates (simulates typing)."""
+        cell_id = session.create_cell("hello = 'world'")
+        for col in range(5):
+            session.set_cursor(cell_id, line=0, column=col)
+
+    def test_set_selection(self, session):
+        """Can send a selection range as presence data."""
+        cell_id = session.create_cell("line1\nline2\nline3")
+        session.set_selection(
+            cell_id,
+            anchor_line=0,
+            anchor_col=0,
+            head_line=2,
+            head_col=5,
+        )
+
+    def test_set_cursor_then_selection(self, session):
+        """Can send cursor then selection (multiple channels)."""
+        cell_id = session.create_cell("x = 1")
+        session.set_cursor(cell_id, line=0, column=3)
+        session.set_selection(
+            cell_id, anchor_line=0, anchor_col=0, head_line=0, head_col=5
+        )
+
+    def test_set_cursor_not_connected_raises(self):
+        """set_cursor raises when not connected."""
+        sess = runtimed.Session()
+        with pytest.raises(runtimed.RuntimedError):
+            sess.set_cursor("fake-cell", line=0, column=0)
+
+    def test_set_selection_not_connected_raises(self):
+        """set_selection raises when not connected."""
+        sess = runtimed.Session()
+        with pytest.raises(runtimed.RuntimedError):
+            sess.set_selection(
+                "fake-cell", anchor_line=0, anchor_col=0, head_line=0, head_col=0
+            )
+
+    def test_presence_with_two_peers(self, two_sessions):
+        """Both peers can send presence without error."""
+        s1, s2 = two_sessions
+        cell_id = s1.create_cell("shared cell")
+
+        # Wait for cell to sync to s2
+        wait_for_sync(
+            lambda: len(s2.get_cells()) > 0,
+            description="cell sync to s2",
+        )
+
+        # Both peers send cursor presence
+        s1.set_cursor(cell_id, line=0, column=0)
+        s2.set_cursor(cell_id, line=0, column=5)
+
+
+class TestAsyncPresence:
+    """Async versions of presence tests."""
+
+    async def test_async_set_cursor(self, async_session):
+        """Can send cursor presence via AsyncSession."""
+        cell_id = await async_session.create_cell("x = 1")
+        await async_session.set_cursor(cell_id, line=0, column=0)
+
+    async def test_async_set_selection(self, async_session):
+        """Can send selection presence via AsyncSession."""
+        cell_id = await async_session.create_cell("line1\nline2")
+        await async_session.set_selection(
+            cell_id,
+            anchor_line=0,
+            anchor_col=0,
+            head_line=1,
+            head_col=5,
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

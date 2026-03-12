@@ -585,6 +585,70 @@ impl Session {
         })
     }
 
+    /// Send a cursor position as presence data to other connected peers.
+    ///
+    /// The daemon relays this to all other peers in the notebook room.
+    /// Other peers' cursors are delivered via presence frames.
+    ///
+    /// Args:
+    ///     cell_id: The cell the cursor is in.
+    ///     line: Line number (0-based).
+    ///     column: Column number (0-based).
+    fn set_cursor(&self, cell_id: &str, line: u32, column: u32) -> PyResult<()> {
+        let data = notebook_doc::presence::encode_cursor_update(
+            "local",
+            &notebook_doc::presence::CursorPosition {
+                cell_id: cell_id.to_string(),
+                line,
+                column,
+            },
+        );
+        self.runtime.block_on(async {
+            let state = self.state.lock().await;
+            let handle = state
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+            handle.send_presence(data).await.map_err(to_py_err)
+        })
+    }
+
+    /// Send a selection range as presence data to other connected peers.
+    ///
+    /// Args:
+    ///     cell_id: The cell the selection is in.
+    ///     anchor_line: Selection anchor line (0-based).
+    ///     anchor_col: Selection anchor column (0-based).
+    ///     head_line: Selection head line (0-based).
+    ///     head_col: Selection head column (0-based).
+    fn set_selection(
+        &self,
+        cell_id: &str,
+        anchor_line: u32,
+        anchor_col: u32,
+        head_line: u32,
+        head_col: u32,
+    ) -> PyResult<()> {
+        let data = notebook_doc::presence::encode_selection_update(
+            "local",
+            &notebook_doc::presence::SelectionRange {
+                cell_id: cell_id.to_string(),
+                anchor_line,
+                anchor_col,
+                head_line,
+                head_col,
+            },
+        );
+        self.runtime.block_on(async {
+            let state = self.state.lock().await;
+            let handle = state
+                .handle
+                .as_ref()
+                .ok_or_else(|| to_py_err("Not connected"))?;
+            handle.send_presence(data).await.map_err(to_py_err)
+        })
+    }
+
     /// Save the notebook to a .ipynb file.
     ///
     /// Reads cells and metadata from the synced Automerge document, resolves

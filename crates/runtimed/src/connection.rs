@@ -229,6 +229,8 @@ pub enum NotebookFrameType {
     Response = 0x02,
     /// NotebookBroadcast (JSON).
     Broadcast = 0x03,
+    /// Presence (binary, see notebook_doc::presence).
+    Presence = 0x04,
 }
 
 impl TryFrom<u8> for NotebookFrameType {
@@ -240,6 +242,7 @@ impl TryFrom<u8> for NotebookFrameType {
             0x01 => Ok(Self::Request),
             0x02 => Ok(Self::Response),
             0x03 => Ok(Self::Broadcast),
+            0x04 => Ok(Self::Presence),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("unknown notebook frame type: 0x{:02x}", value),
