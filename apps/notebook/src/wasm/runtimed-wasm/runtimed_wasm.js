@@ -444,7 +444,8 @@ export class NotebookHandle {
      * Generate a sync message to send to the daemon (via the Tauri relay pipe).
      *
      * Returns the message as a byte array, or undefined if already in sync.
-     * The caller should send these bytes via `invoke("send_automerge_sync", { syncMessage })`.
+     * The caller should prepend the frame type byte (0x00 for AutomergeSync)
+     * and send via `invoke("send_frame", { frameData })`.
      * @returns {Uint8Array | undefined}
      */
     generate_sync_message() {
@@ -634,7 +635,7 @@ export class NotebookHandle {
     /**
      * Receive a typed frame from the daemon, demux by type byte, return events for the frontend.
      *
-     * The input is the raw frame bytes from the `daemon:frame` Tauri event:
+     * The input is the raw frame bytes from the `notebook:frame` Tauri event:
      * `[frame_type_byte, ...payload]`.
      *
      * Returns a JSON array of `FrameEvent` objects. Usually one event, but sync
