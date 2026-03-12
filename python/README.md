@@ -1,42 +1,43 @@
-# Python Workspace
+# Python Packages
 
-Development workspace for nteract Python packages. Uses [uv workspaces](https://docs.astral.sh/uv/concepts/workspaces/) so `nteract` resolves `runtimed` from the local Rust build instead of PyPI.
-
-## Packages
+Development home for nteract Python packages.
 
 | Package | Description |
 |---------|-------------|
 | `runtimed/` | Low-level Python bindings for the runtimed daemon (maturin/PyO3) |
 | `nteract/` | MCP server for AI agents — composes runtimed primitives |
 
-## Dev Setup
+## Dev Setup (local runtimed + nteract)
 
-From this directory (`python/`):
+To run the nteract MCP server against a locally-built runtimed (e.g., for testing presence, new protocol features):
 
 ```bash
-# 1. Build runtimed from Rust source into the workspace venv
-uv run maturin develop --manifest-path ../crates/runtimed-py/Cargo.toml
+cd runtimed
 
-# 2. Install nteract (editable) with its dependencies
-uv pip install -e nteract
+# 1. Build runtimed from Rust source
+uv run --reinstall-package runtimed maturin develop
 
-# 3. Verify both packages are local
+# 2. Install local nteract (editable, without re-resolving runtimed from PyPI)
+uv pip install --no-deps -e ../nteract
+
+# 3. Install nteract's other dependencies
+uv pip install "mcp>=1.26.0" "httpx>=0.27.0,<1.0"
+
+# 4. Verify both packages are local
 uv run python -c "import runtimed, nteract; print('ok')"
 ```
 
-After step 2, `nteract` uses the locally-built `runtimed` (with presence support, latest protocol changes, etc.) instead of the PyPI release.
+After this, the runtimed venv has both the local Rust build and the local nteract source.
 
 ## Running the MCP Server (Dev)
 
-Point at your dev daemon socket:
-
 ```bash
 # Find your dev daemon socket (from repo root)
-RUNTIMED_DEV=1 ../../target/debug/runt daemon status
+RUNTIMED_DEV=1 ./target/debug/runt daemon status
 
-# Run the MCP server
+# Run the MCP server (from python/runtimed/)
 RUNTIMED_SOCKET_PATH=~/Library/Caches/runt-nightly/worktrees/<hash>/runtimed.sock \
-    uv run nteract
+    uv run --no-sync nteract
 ```
 
 For Zed MCP config:
@@ -48,7 +49,7 @@ For Zed MCP config:
   "env": {
     "RUNTIMED_SOCKET_PATH": "/Users/<you>/Library/Caches/runt-nightly/worktrees/<hash>/runtimed.sock"
   },
-  "working_directory": "/path/to/desktop/python"
+  "working_directory": "/path/to/desktop/python/runtimed"
 }
 ```
 
@@ -57,16 +58,15 @@ The `--no-sync` flag prevents uv from re-resolving dependencies and overwriting 
 ## Running Demos
 
 ```bash
-# From this directory
-RUNTIMED_SOCKET_PATH=... uv run python runtimed/demos/presence_cursor.py <notebook_id>
+# From python/runtimed/
+RUNTIMED_SOCKET_PATH=... uv run python demos/presence_cursor.py <notebook_id>
 ```
 
 ## Rebuilding After Rust Changes
 
-If you change code in `crates/runtimed-py/` or `crates/runtimed/`, rebuild:
+If you change code in `crates/runtimed-py/` or `crates/runtimed/`:
 
 ```bash
-uv run maturin develop --manifest-path ../crates/runtimed-py/Cargo.toml
+cd python/runtimed
+uv run --reinstall-package runtimed maturin develop
 ```
-
-This recompiles the Rust code and reinstalls the Python package in the workspace venv.

@@ -893,6 +893,102 @@ async def set_cell_source(cell_id: str, source: str) -> dict[str, Any]:
     return {"cell_id": cell_id, "updated": True}
 
 
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+async def replace_match(
+    cell_id: str,
+    match: str,
+    content: str,
+    context_before: str = "",
+    context_after: str = "",
+) -> dict[str, Any]:
+    """Replace a matched text span in a cell.
+
+    Uses literal text matching (not regex) to find the edit target.
+    The match must resolve to exactly one location in the cell source.
+    Use context_before/context_after to disambiguate if the match text
+    appears multiple times.
+
+    The UI will animate the edit as cursor movement, selection, then typing.
+
+    Args:
+        cell_id: The cell to edit.
+        match: Literal text to find (must match exactly once).
+        content: Replacement text.
+        context_before: Text that must appear immediately before the match (for disambiguation).
+        context_after: Text that must appear immediately after the match (for disambiguation).
+
+    Returns:
+        Edit result with old text, new source, and the resolved span.
+    """
+    from nteract._editing import PatternError
+    from nteract._editing import replace_match as _replace_match
+
+    session = await _get_session()
+    cell = await session.get_cell(cell_id=cell_id)
+    source = cell.source
+
+    try:
+        result = _replace_match(source, match, content, context_before, context_after)
+    except PatternError as e:
+        return {"error": str(e), "match_count": e.match_count, "source_length": len(source)}
+
+    await session.set_source(cell_id=cell_id, source=result.new_source)
+
+    return {
+        "cell_id": cell_id,
+        "old_text": result.old_text,
+        "span_start": result.span.start,
+        "span_end": result.span.end,
+        "new_source_length": len(result.new_source),
+    }
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+async def replace_regex(
+    cell_id: str,
+    pattern: str,
+    content: str,
+) -> dict[str, Any]:
+    """Replace a regex-matched span in a cell.
+
+    Uses Python regex syntax to find the edit target. The pattern must
+    match exactly one location. Supports lookahead/lookbehind for
+    zero-width insertions.
+
+    Prefer replace_match for simple edits — this tool is for cases where
+    regex power is needed (e.g., matching patterns across multiple tokens).
+
+    Args:
+        cell_id: The cell to edit.
+        pattern: Regex pattern (must match exactly once). Compiled with re.MULTILINE.
+        content: Replacement text for the matched span.
+
+    Returns:
+        Edit result with old text, new source, and the resolved span.
+    """
+    from nteract._editing import PatternError
+    from nteract._editing import replace_regex as _replace_regex
+
+    session = await _get_session()
+    cell = await session.get_cell(cell_id=cell_id)
+    source = cell.source
+
+    try:
+        result = _replace_regex(source, pattern, content)
+    except PatternError as e:
+        return {"error": str(e), "match_count": e.match_count, "source_length": len(source)}
+
+    await session.set_source(cell_id=cell_id, source=result.new_source)
+
+    return {
+        "cell_id": cell_id,
+        "old_text": result.old_text,
+        "span_start": result.span.start,
+        "span_end": result.span.end,
+        "new_source_length": len(result.new_source),
+    }
+
+
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
 async def append_source(cell_id: str, text: str) -> dict[str, Any]:
     """Append text to a cell's source code.

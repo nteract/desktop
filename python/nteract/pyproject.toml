@@ -14,9 +14,6 @@ dependencies = [
     "runtimed>=2.0.1a0,<3.0",
 ]
 
-[tool.uv.sources]
-runtimed = { workspace = true }
-
 [project.scripts]
 nteract = "nteract._mcp_server:main"
 
