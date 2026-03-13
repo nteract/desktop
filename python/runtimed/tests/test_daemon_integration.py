@@ -1,4 +1,4 @@
-"""Integration tests for runtimed daemon client.
+"""Integration tests for runtimed daemon client.  # CI probe run 6
 
 These tests exercise the full daemon integration, including:
 - Document-first execution (automerge sync)
