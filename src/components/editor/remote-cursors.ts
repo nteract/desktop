@@ -3,17 +3,26 @@
  *
  * Architecture:
  * - `StateEffect<RemoteCursorState[]>` — dispatched from outside to update positions
- * - `StateField<RemoteCursorState[]>` — stores current cursors for this editor instance
- * - `ViewPlugin` — reads the StateField and produces Decoration widgets/marks
- * - `WidgetType` subclass — renders the colored cursor bar with peer name tooltip
+ * - `StateField<RemoteCursorState[]>` — stores current cursor state per peer
+ * - `layer()` — renders cursor markers as absolutely-positioned elements,
+ *   bypassing CM's content DOM reconciliation entirely (no ghost nodes)
+ * - `StateField<DecorationSet>` — selection highlights via Decoration.mark()
  *
- * The hot path (cursor position updates) is purely imperative — no React involvement.
+ * Cursors use CM6's `layer` API — the same mechanism behind `drawSelection`.
+ * Layer markers live in a container outside the content DOM, so CM6 manages
+ * their lifecycle via explicit draw/update/eq rather than decoration-set
+ * diffing. This eliminates the ghost widget accumulation that occurs with
+ * Decoration.widget under rapid position changes.
+ *
+ * Selections use Decoration.mark() range decorations which don't have the
+ * ghost DOM issue (they paint CSS backgrounds on existing content nodes).
+ *
+ * The hot path (cursor position updates) is purely imperative — no React.
  * Call `setRemoteCursors(view, cursors)` to push new positions into an EditorView.
  */
 
 import {
   type Extension,
-  type Range,
   RangeSetBuilder,
   StateEffect,
   StateField,
@@ -22,9 +31,8 @@ import {
   Decoration,
   type DecorationSet,
   EditorView,
-  ViewPlugin,
-  type ViewUpdate,
-  WidgetType,
+  type LayerMarker,
+  layer,
 } from "@codemirror/view";
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -76,7 +84,7 @@ export function peerColor(peerId: string): string {
 const setCursorsEffect = StateEffect.define<RemoteCursorState[]>();
 const setSelectionsEffect = StateEffect.define<RemoteSelectionState[]>();
 
-// ── State fields ─────────────────────────────────────────────────────
+// ── State fields (raw data) ──────────────────────────────────────────
 
 const cursorsField = StateField.define<RemoteCursorState[]>({
   create: () => [],
@@ -98,88 +106,156 @@ const selectionsField = StateField.define<RemoteSelectionState[]>({
   },
 });
 
-// ── Cursor widget ────────────────────────────────────────────────────
+// ── Position resolver ────────────────────────────────────────────────
 
-class CursorWidget extends WidgetType {
+/** Convert 0-based line:column to a document position, clamped to bounds. */
+function resolvePos(
+  doc: { lines: number; line: (n: number) => { from: number; length: number } },
+  cursor: { line: number; column: number },
+): number {
+  const lineCount = doc.lines;
+  const safeLine = Math.max(0, cursor.line);
+  const lineNum = Math.min(safeLine + 1, lineCount); // CM uses 1-based lines
+  const line = doc.line(lineNum);
+  const col = Math.min(Math.max(0, cursor.column), line.length);
+  return line.from + col;
+}
+
+// ── Cursor layer marker ──────────────────────────────────────────────
+
+/**
+ * A single remote cursor rendered as an absolutely-positioned element
+ * inside CM6's layer container. Implements LayerMarker so CM6 manages
+ * DOM lifecycle directly — no decoration diffing.
+ */
+class CursorMarker implements LayerMarker {
   constructor(
+    readonly left: number,
+    readonly top: number,
+    readonly height: number,
     readonly color: string,
     readonly label: string,
-  ) {
-    super();
+    readonly peerId: string,
+  ) {}
+
+  eq(other: LayerMarker): boolean {
+    if (!(other instanceof CursorMarker)) return false;
+    return (
+      this.left === other.left &&
+      this.top === other.top &&
+      this.height === other.height &&
+      this.color === other.color &&
+      this.label === other.label &&
+      this.peerId === other.peerId
+    );
   }
 
-  eq(other: CursorWidget): boolean {
-    return this.color === other.color && this.label === other.label;
-  }
+  draw(): HTMLElement {
+    const el = document.createElement("div");
+    el.className = "cm-remote-cursor";
+    el.style.left = `${this.left}px`;
+    el.style.top = `${this.top}px`;
+    el.style.height = `${this.height}px`;
+    el.setAttribute("aria-label", this.label || "Remote cursor");
 
-  toDOM(): HTMLElement {
-    const wrapper = document.createElement("span");
-    wrapper.className = "cm-remote-cursor";
-    wrapper.setAttribute("aria-label", this.label || "Remote cursor");
-
-    // Colored bar (full line height)
-    const bar = document.createElement("span");
+    const bar = document.createElement("div");
     bar.className = "cm-remote-cursor-bar";
     bar.style.backgroundColor = this.color;
-    wrapper.appendChild(bar);
+    el.appendChild(bar);
 
-    // Name flag (always visible, anchored to top of bar)
     if (this.label) {
-      const flag = document.createElement("span");
+      const flag = document.createElement("div");
       flag.className = "cm-remote-cursor-flag";
       flag.style.backgroundColor = this.color;
       flag.textContent = this.label;
-      wrapper.appendChild(flag);
+      el.appendChild(flag);
     }
 
-    return wrapper;
+    return el;
   }
 
-  ignoreEvent(): boolean {
+  update(dom: HTMLElement, prev: LayerMarker): boolean {
+    if (!(prev instanceof CursorMarker)) return false;
+    // Color or label changed → recreate DOM
+    if (this.color !== prev.color || this.label !== prev.label) return false;
+    // Reposition in-place (fast path for cursor movement)
+    dom.style.left = `${this.left}px`;
+    dom.style.top = `${this.top}px`;
+    dom.style.height = `${this.height}px`;
     return true;
   }
 }
 
-// ── Decoration builder ───────────────────────────────────────────────
+// ── Cursor layer ─────────────────────────────────────────────────────
+//
+// Uses CM6's layer API — the same mechanism behind drawSelection.
+// Markers are absolutely positioned in a container that scrolls with
+// the editor content. CM6 calls markers() to measure positions, then
+// diffs by array index using eq()/update()/draw().
 
-function buildCursorDecorations(
-  view: EditorView,
-  cursors: RemoteCursorState[],
-): DecorationSet {
-  if (cursors.length === 0) return Decoration.none;
+const remoteCursorLayer = layer({
+  above: true,
+  class: "cm-remote-cursors-layer",
 
-  const doc = view.state.doc;
-  const widgets: Range<Decoration>[] = [];
+  markers(view) {
+    const cursors = view.state.field(cursorsField);
+    if (cursors.length === 0) return [];
 
-  for (const cursor of cursors) {
-    // Clamp to document bounds
-    const lineCount = doc.lines;
-    const safeLine = Math.max(0, cursor.line);
-    const lineNum = Math.min(safeLine + 1, lineCount);
-    const line = doc.line(lineNum);
-    const col = Math.min(Math.max(0, cursor.column), line.length);
-    const pos = line.from + col;
+    const markers: CursorMarker[] = [];
+    const scrollRect = view.scrollDOM.getBoundingClientRect();
 
-    widgets.push(
-      Decoration.widget({
-        widget: new CursorWidget(cursor.color, cursor.peerLabel),
-        side: 1, // render after the character
-      }).range(pos),
+    for (const cursor of cursors) {
+      const pos = resolvePos(view.state.doc, cursor);
+      const coords = view.coordsAtPos(pos, 1);
+      if (!coords) continue;
+
+      // Convert viewport coords → content-space coords
+      // (layer container is absolutely positioned inside scrollDOM)
+      const left = coords.left - scrollRect.left + view.scrollDOM.scrollLeft;
+      const top = coords.top - scrollRect.top + view.scrollDOM.scrollTop;
+      const height = coords.bottom - coords.top;
+
+      markers.push(
+        new CursorMarker(
+          left,
+          top,
+          height,
+          cursor.color,
+          cursor.peerLabel,
+          cursor.peerId,
+        ),
+      );
+    }
+
+    // Stable ordering by peerId so CM6 matches old↔new markers by index,
+    // enabling in-place repositioning via update() instead of full recreate.
+    markers.sort((a, b) =>
+      a.peerId < b.peerId ? -1 : a.peerId > b.peerId ? 1 : 0,
     );
-  }
 
-  // Decorations must be sorted by position
-  widgets.sort((a, b) => a.from - b.from);
-  return Decoration.set(widgets);
-}
+    return markers;
+  },
+
+  update(update, _layerElement) {
+    // Remeasure when cursor state changes
+    for (const tr of update.transactions) {
+      for (const e of tr.effects) {
+        if (e.is(setCursorsEffect)) return true;
+      }
+    }
+    // Doc changes shift positions; geometry handled by updateOnDocViewUpdate (default: true)
+    return update.docChanged;
+  },
+});
+
+// ── Selection decorations ────────────────────────────────────────────
 
 function buildSelectionDecorations(
-  view: EditorView,
+  doc: { lines: number; line: (n: number) => { from: number; length: number } },
   selections: RemoteSelectionState[],
 ): DecorationSet {
   if (selections.length === 0) return Decoration.none;
 
-  const doc = view.state.doc;
   const builder = new RangeSetBuilder<Decoration>();
   const lineCount = doc.lines;
 
@@ -224,89 +300,29 @@ function buildSelectionDecorations(
   return builder.finish();
 }
 
-// ── View plugin ──────────────────────────────────────────────────────
-
-class RemoteCursorsPlugin {
-  cursorDecorations: DecorationSet;
-  selectionDecorations: DecorationSet;
-
-  constructor(view: EditorView) {
-    this.cursorDecorations = buildCursorDecorations(
-      view,
-      view.state.field(cursorsField),
-    );
-    this.selectionDecorations = buildSelectionDecorations(
-      view,
-      view.state.field(selectionsField),
-    );
-  }
-
-  update(update: ViewUpdate) {
-    // Rebuild decorations when cursor/selection state changes or document changes
-    // (document changes invalidate positions)
-    let cursorsChanged = update.docChanged;
-    let selectionsChanged = update.docChanged;
-
-    for (const e of update.transactions) {
-      for (const eff of e.effects) {
-        if (eff.is(setCursorsEffect)) cursorsChanged = true;
-        if (eff.is(setSelectionsEffect)) selectionsChanged = true;
+const selectionDecorationsField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(decos, tr) {
+    for (const e of tr.effects) {
+      if (e.is(setSelectionsEffect)) {
+        return buildSelectionDecorations(tr.state.doc, e.value);
       }
     }
-
-    if (cursorsChanged) {
-      this.cursorDecorations = buildCursorDecorations(
-        update.view,
-        update.state.field(cursorsField),
-      );
-    }
-    if (selectionsChanged) {
-      this.selectionDecorations = buildSelectionDecorations(
-        update.view,
-        update.state.field(selectionsField),
-      );
-    }
-  }
-}
-
-const cursorPlugin = ViewPlugin.fromClass(RemoteCursorsPlugin, {
-  decorations: (v) => v.cursorDecorations,
+    if (tr.docChanged) return decos.map(tr.changes);
+    return decos;
+  },
+  provide: (f) => EditorView.decorations.from(f),
 });
-
-const selectionPlugin = ViewPlugin.fromClass(
-  // Reuse the same class but expose selection decorations
-  // We need a separate plugin instance because CM6 only allows one
-  // decoration source per plugin. Use a thin wrapper.
-  class {
-    source: RemoteCursorsPlugin | null = null;
-
-    constructor(view: EditorView) {
-      // Access the sibling plugin — they share the same StateField
-      this.source = view.plugin(cursorPlugin);
-    }
-
-    get decorations(): DecorationSet {
-      return this.source?.selectionDecorations ?? Decoration.none;
-    }
-
-    update(update: ViewUpdate) {
-      // The source plugin handles rebuild; just re-read the reference
-      this.source = update.view.plugin(cursorPlugin);
-    }
-  },
-  {
-    decorations: (v) => v.decorations,
-  },
-);
 
 // ── Theme ────────────────────────────────────────────────────────────
 
 const remoteCursorsTheme = EditorView.theme({
-  ".cm-remote-cursor": {
-    position: "relative",
-    display: "inline",
+  ".cm-remote-cursors-layer": {
     pointerEvents: "none",
-    width: "0",
+  },
+  ".cm-remote-cursor": {
+    position: "absolute",
+    pointerEvents: "none",
   },
   ".cm-remote-cursor-bar": {
     position: "absolute",
@@ -315,7 +331,6 @@ const remoteCursorsTheme = EditorView.theme({
     left: "-1px",
     width: "2.5px",
     borderRadius: "1px",
-    zIndex: "10",
   },
   ".cm-remote-cursor-flag": {
     position: "absolute",
@@ -331,7 +346,6 @@ const remoteCursorsTheme = EditorView.theme({
     color: "white",
     whiteSpace: "nowrap",
     pointerEvents: "none",
-    zIndex: "11",
   },
   ".cm-remote-selection": {
     // Background color is set inline via decoration attributes
@@ -350,8 +364,8 @@ export function remoteCursorsExtension(): Extension[] {
   return [
     cursorsField,
     selectionsField,
-    cursorPlugin,
-    selectionPlugin,
+    remoteCursorLayer,
+    selectionDecorationsField,
     remoteCursorsTheme,
   ];
 }
@@ -359,8 +373,8 @@ export function remoteCursorsExtension(): Extension[] {
 /**
  * Push new remote cursor positions into an EditorView.
  *
- * This dispatches a StateEffect — the ViewPlugin will pick up the change
- * and rebuild decorations. Safe to call at high frequency.
+ * Dispatches a StateEffect that triggers the cursor layer to remeasure
+ * marker positions. Safe to call at high frequency (50+ updates/sec).
  */
 export function setRemoteCursors(
   view: EditorView,
