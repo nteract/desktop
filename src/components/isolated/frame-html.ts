@@ -63,6 +63,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
       line-height: 1.5;
       background: transparent;
       color: var(--text-primary);
+      overflow: hidden;
     }
 
     /* Output container */
