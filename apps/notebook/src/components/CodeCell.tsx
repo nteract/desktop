@@ -23,12 +23,15 @@ import { AnsiOutput } from "@/components/outputs/ansi-output";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
 import type { CellPagePayload, MimeBundle } from "../App";
+import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { registerEditor, unregisterEditor } from "../lib/cursor-registry";
 import { kernelCompletionExtension } from "../lib/kernel-completion";
 import { openUrl } from "../lib/open-url";
+import { presenceSenderExtension } from "../lib/presence-sender";
 import { tabCompletionKeymap } from "../lib/tab-completion";
 import type { CodeCell as CodeCellType } from "../types";
+import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 
 // Lazy load HistorySearchDialog - it pulls in react-syntax-highlighter (~800KB)
 // Only loaded when user opens history search (Ctrl+R)
@@ -136,6 +139,7 @@ export function CodeCell({
 }: CodeCellProps) {
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
+  const presence = usePresenceContext();
 
   // Check cell metadata for visibility (JupyterLab convention)
   const isSourceHidden =
@@ -267,15 +271,27 @@ export function CodeCell({
   // Remote cursors extension (stable — no deps that change)
   const remoteCursorsExt = useMemo(() => remoteCursorsExtension(), []);
 
-  // CodeMirror extensions: kernel completion + tab completion + search highlighting + remote cursors
+  // Presence sender extension — broadcasts local cursor/selection to other peers
+  const presenceSenderExt = useMemo(() => {
+    if (!presence) return [];
+    return [
+      presenceSenderExtension(cell.id, {
+        onCursor: presence.setCursor,
+        onSelection: presence.setSelection,
+      }),
+    ];
+  }, [cell.id, presence]);
+
+  // CodeMirror extensions: kernel completion + tab completion + search highlighting + remote cursors + presence sender
   const editorExtensions = useMemo(
     () => [
       kernelCompletionExtension,
       tabCompletionKeymap,
       ...searchHighlight(searchQuery || "", searchActiveOffset),
       ...remoteCursorsExt,
+      ...presenceSenderExt,
     ],
-    [searchQuery, searchActiveOffset, remoteCursorsExt],
+    [searchQuery, searchActiveOffset, remoteCursorsExt, presenceSenderExt],
   );
 
   const handleExecute = useCallback(() => {
@@ -333,6 +349,7 @@ export function CodeCell({
         onFocus={onFocus}
         gutterContent={gutterContent}
         rightGutterContent={rightGutterContent}
+        presenceIndicators={<CellPresenceIndicators cellId={cell.id} />}
         dragHandleProps={dragHandleProps}
         isDragging={isDragging}
         codeContent={

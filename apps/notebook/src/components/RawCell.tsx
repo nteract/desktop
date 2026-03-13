@@ -8,10 +8,13 @@ import {
 } from "@/components/editor/codemirror-editor";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
+import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { registerEditor, unregisterEditor } from "../lib/cursor-registry";
 import { detectRawFormat } from "../lib/detect-raw-format";
+import { presenceSenderExtension } from "../lib/presence-sender";
 import type { RawCell as RawCellType } from "../types";
+import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 
 interface RawCellProps {
   cell: RawCellType;
@@ -45,6 +48,7 @@ export function RawCell({
   isDragging,
 }: RawCellProps) {
   const editorRef = useRef<CodeMirrorEditorRef>(null);
+  const presence = usePresenceContext();
 
   // Register EditorView with the cursor registry for presence support
   const registeredViewRef = useRef<EditorView | null>(null);
@@ -120,10 +124,25 @@ export function RawCell({
   // Remote cursors extension (stable — no deps that change)
   const remoteCursorsExt = useMemo(() => remoteCursorsExtension(), []);
 
-  // Search highlight extension + remote cursors
+  // Presence sender extension — broadcasts local cursor/selection to other peers
+  const presenceSenderExt = useMemo(() => {
+    if (!presence) return [];
+    return [
+      presenceSenderExtension(cell.id, {
+        onCursor: presence.setCursor,
+        onSelection: presence.setSelection,
+      }),
+    ];
+  }, [cell.id, presence]);
+
+  // Search highlight extension + remote cursors + presence sender
   const searchExtensions = useMemo(
-    () => [...searchHighlight(searchQuery || ""), ...remoteCursorsExt],
-    [searchQuery, remoteCursorsExt],
+    () => [
+      ...searchHighlight(searchQuery || ""),
+      ...remoteCursorsExt,
+      ...presenceSenderExt,
+    ],
+    [searchQuery, remoteCursorsExt, presenceSenderExt],
   );
 
   // Get keyboard navigation bindings
@@ -157,6 +176,7 @@ export function RawCell({
       isFocused={isFocused}
       isPreviousCellFromFocused={isPreviousCellFromFocused}
       onFocus={onFocus}
+      presenceIndicators={<CellPresenceIndicators cellId={cell.id} />}
       dragHandleProps={dragHandleProps}
       isDragging={isDragging}
     >

@@ -24,6 +24,7 @@ import { NotebookToolbar } from "./components/NotebookToolbar";
 import { NotebookView } from "./components/NotebookView";
 import { TrustDialog } from "./components/TrustDialog";
 import { UntrustedBanner } from "./components/UntrustedBanner";
+import { PresenceProvider } from "./contexts/PresenceContext";
 import { useAutomergeNotebook } from "./hooks/useAutomergeNotebook";
 import { useCondaDependencies } from "./hooks/useCondaDependencies";
 import { useDaemonKernel } from "./hooks/useDaemonKernel";
@@ -900,218 +901,224 @@ function AppContent() {
   }, []);
 
   return (
-    <div className="flex h-full flex-col bg-background overflow-hidden">
-      {gitInfo && (
-        <DebugBanner
-          branch={gitInfo.branch}
-          commit={gitInfo.commit}
-          description={gitInfo.description}
-          daemonVersion={daemonInfo?.version}
-          socketPath={daemonInfo?.socket_path}
-          isDevMode={daemonInfo?.is_dev_mode}
-        />
-      )}
-      <DaemonStatusBanner
-        status={daemonStatus}
-        onDismiss={() => setDaemonStatus(null)}
-        onRetry={() => {
-          setDaemonStatus({ status: "checking" });
-          invoke("reconnect_to_daemon")
-            .then(() => {
-              // Success - daemon:ready event will clear the banner
-            })
-            .catch((e) => {
-              setDaemonStatus({
-                status: "failed",
-                error: `Reconnection failed: ${e}`,
+    <PresenceProvider peerId={peerIdRef.current}>
+      <div className="flex h-full flex-col bg-background overflow-hidden">
+        {gitInfo && (
+          <DebugBanner
+            branch={gitInfo.branch}
+            commit={gitInfo.commit}
+            description={gitInfo.description}
+            daemonVersion={daemonInfo?.version}
+            socketPath={daemonInfo?.socket_path}
+            isDevMode={daemonInfo?.is_dev_mode}
+          />
+        )}
+        <DaemonStatusBanner
+          status={daemonStatus}
+          onDismiss={() => setDaemonStatus(null)}
+          onRetry={() => {
+            setDaemonStatus({ status: "checking" });
+            invoke("reconnect_to_daemon")
+              .then(() => {
+                // Success - daemon:ready event will clear the banner
+              })
+              .catch((e) => {
+                setDaemonStatus({
+                  status: "failed",
+                  error: `Reconnection failed: ${e}`,
+                });
               });
-            });
-        }}
-      />
-      {needsApproval && kernelStatus === KERNEL_STATUS.NOT_STARTED && (
-        <UntrustedBanner
-          onReviewClick={() => {
-            pendingKernelStartRef.current = true;
-            setTrustDialogOpen(true);
           }}
         />
-      )}
-      <NotebookToolbar
-        kernelStatus={kernelStatus}
-        envSource={envSource}
-        envTypeHint={envTypeHint}
-        dirty={dirty}
-        envProgress={
-          envProgress.isActive || envProgress.error ? envProgress : null
-        }
-        runtime={runtime}
-        onSave={save}
-        onStartKernel={handleStartKernel}
-        onInterruptKernel={interruptKernel}
-        onRestartKernel={handleRestartKernel}
-        onRunAllCells={handleRunAllCells}
-        onRestartAndRunAll={handleRestartAndRunAll}
-        focusedCellId={focusedCellId}
-        lastCellId={cells.length > 0 ? cells[cells.length - 1].id : null}
-        onAddCell={handleAddCell}
-        onToggleDependencies={() => setDependencyHeaderOpen((prev) => !prev)}
-        isDepsOpen={dependencyHeaderOpen}
-        updateStatus={updateStatus}
-        updateVersion={updateVersion}
-        onRestartToUpdate={restartToUpdate}
-      />
-      {/* Dual-dependency choice: both UV and conda deps exist, let user pick */}
-      {dependencyHeaderOpen &&
-        runtime === "python" &&
-        hasUvDependencies &&
-        hasCondaDependencies && (
-          <div className="border-b bg-amber-50/50 dark:bg-amber-950/20 px-3 py-2">
-            <div className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400">
-              <span className="shrink-0">&#9888;</span>
-              <span className="font-medium">
-                This notebook has both uv and conda dependencies.
-              </span>
-              <div className="flex gap-1.5 ml-auto shrink-0">
-                <button
-                  disabled={clearingDeps}
-                  onClick={async () => {
-                    setClearingDeps(true);
-                    try {
-                      await clearAllCondaDeps();
-                    } finally {
-                      setClearingDeps(false);
-                    }
-                  }}
-                  className="px-2 py-0.5 text-xs font-medium rounded bg-fuchsia-100 dark:bg-fuchsia-900/40 hover:bg-fuchsia-200 dark:hover:bg-fuchsia-800/50 text-fuchsia-800 dark:text-fuchsia-300 border border-fuchsia-300 dark:border-fuchsia-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Use uv ({dependencies?.dependencies?.length ?? 0}{" "}
-                  {(dependencies?.dependencies?.length ?? 0) === 1
-                    ? "package"
-                    : "packages"}
-                  )
-                </button>
-                <button
-                  disabled={clearingDeps}
-                  onClick={async () => {
-                    setClearingDeps(true);
-                    try {
-                      await clearAllUvDeps();
-                    } finally {
-                      setClearingDeps(false);
-                    }
-                  }}
-                  className="px-2 py-0.5 text-xs font-medium rounded bg-emerald-100 dark:bg-emerald-900/40 hover:bg-emerald-200 dark:hover:bg-emerald-800/50 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Use conda ({condaDependencies?.dependencies?.length ?? 0}{" "}
-                  {(condaDependencies?.dependencies?.length ?? 0) === 1
-                    ? "package"
-                    : "packages"}
-                  )
-                </button>
+        {needsApproval && kernelStatus === KERNEL_STATUS.NOT_STARTED && (
+          <UntrustedBanner
+            onReviewClick={() => {
+              pendingKernelStartRef.current = true;
+              setTrustDialogOpen(true);
+            }}
+          />
+        )}
+        <NotebookToolbar
+          kernelStatus={kernelStatus}
+          envSource={envSource}
+          envTypeHint={envTypeHint}
+          dirty={dirty}
+          envProgress={
+            envProgress.isActive || envProgress.error ? envProgress : null
+          }
+          runtime={runtime}
+          onSave={save}
+          onStartKernel={handleStartKernel}
+          onInterruptKernel={interruptKernel}
+          onRestartKernel={handleRestartKernel}
+          onRunAllCells={handleRunAllCells}
+          onRestartAndRunAll={handleRestartAndRunAll}
+          focusedCellId={focusedCellId}
+          lastCellId={cells.length > 0 ? cells[cells.length - 1].id : null}
+          onAddCell={handleAddCell}
+          onToggleDependencies={() => setDependencyHeaderOpen((prev) => !prev)}
+          isDepsOpen={dependencyHeaderOpen}
+          updateStatus={updateStatus}
+          updateVersion={updateVersion}
+          onRestartToUpdate={restartToUpdate}
+        />
+        {/* Dual-dependency choice: both UV and conda deps exist, let user pick */}
+        {dependencyHeaderOpen &&
+          runtime === "python" &&
+          hasUvDependencies &&
+          hasCondaDependencies && (
+            <div className="border-b bg-amber-50/50 dark:bg-amber-950/20 px-3 py-2">
+              <div className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400">
+                <span className="shrink-0">&#9888;</span>
+                <span className="font-medium">
+                  This notebook has both uv and conda dependencies.
+                </span>
+                <div className="flex gap-1.5 ml-auto shrink-0">
+                  <button
+                    disabled={clearingDeps}
+                    onClick={async () => {
+                      setClearingDeps(true);
+                      try {
+                        await clearAllCondaDeps();
+                      } finally {
+                        setClearingDeps(false);
+                      }
+                    }}
+                    className="px-2 py-0.5 text-xs font-medium rounded bg-fuchsia-100 dark:bg-fuchsia-900/40 hover:bg-fuchsia-200 dark:hover:bg-fuchsia-800/50 text-fuchsia-800 dark:text-fuchsia-300 border border-fuchsia-300 dark:border-fuchsia-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Use uv ({dependencies?.dependencies?.length ?? 0}{" "}
+                    {(dependencies?.dependencies?.length ?? 0) === 1
+                      ? "package"
+                      : "packages"}
+                    )
+                  </button>
+                  <button
+                    disabled={clearingDeps}
+                    onClick={async () => {
+                      setClearingDeps(true);
+                      try {
+                        await clearAllUvDeps();
+                      } finally {
+                        setClearingDeps(false);
+                      }
+                    }}
+                    className="px-2 py-0.5 text-xs font-medium rounded bg-emerald-100 dark:bg-emerald-900/40 hover:bg-emerald-200 dark:hover:bg-emerald-800/50 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Use conda ({condaDependencies?.dependencies?.length ?? 0}{" "}
+                    {(condaDependencies?.dependencies?.length ?? 0) === 1
+                      ? "package"
+                      : "packages"}
+                    )
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
+          )}
+        {dependencyHeaderOpen && runtime === "deno" && (
+          <DenoDependencyHeader
+            denoAvailable={denoAvailable}
+            denoConfigInfo={denoConfigInfo}
+            flexibleNpmImports={flexibleNpmImports}
+            onSetFlexibleNpmImports={setFlexibleNpmImports}
+            syncState={denoDerivedSyncState}
+            syncing={kernelStatus === KERNEL_STATUS.STARTING}
+            onSyncNow={handleSyncDeps}
+            justSynced={justSynced}
+          />
         )}
-      {dependencyHeaderOpen && runtime === "deno" && (
-        <DenoDependencyHeader
-          denoAvailable={denoAvailable}
-          denoConfigInfo={denoConfigInfo}
-          flexibleNpmImports={flexibleNpmImports}
-          onSetFlexibleNpmImports={setFlexibleNpmImports}
-          syncState={denoDerivedSyncState}
-          syncing={kernelStatus === KERNEL_STATUS.STARTING}
-          onSyncNow={handleSyncDeps}
-          justSynced={justSynced}
+        {dependencyHeaderOpen &&
+          runtime === "python" &&
+          envType === "conda" && (
+            <CondaDependencyHeader
+              dependencies={condaDependencies?.dependencies ?? []}
+              channels={condaDependencies?.channels ?? []}
+              python={condaDependencies?.python ?? null}
+              loading={condaDepsLoading}
+              syncing={condaSyncing}
+              syncState={condaDerivedSyncState ?? condaSyncState}
+              syncedWhileRunning={condaSyncedWhileRunning}
+              needsKernelRestart={condaNeedsKernelRestart}
+              onAdd={addCondaDependency}
+              onRemove={removeCondaDependency}
+              onSetChannels={setCondaChannels}
+              onSetPython={setCondaPython}
+              onSyncNow={condaDerivedSyncState ? handleSyncDeps : syncCondaNow}
+              envProgress={envProgress.envType === "conda" ? envProgress : null}
+              onResetProgress={envProgress.reset}
+              environmentYmlInfo={environmentYmlInfo}
+              environmentYmlDeps={environmentYmlDeps}
+              pixiInfo={pixiInfo}
+              onImportFromPixi={importFromPixi}
+              justSynced={justSynced}
+            />
+          )}
+        {dependencyHeaderOpen &&
+          runtime === "python" &&
+          envType !== "conda" && (
+            <DependencyHeader
+              dependencies={dependencies?.dependencies ?? []}
+              requiresPython={dependencies?.requires_python ?? null}
+              uvAvailable={uvAvailable}
+              loading={depsLoading}
+              syncedWhileRunning={syncedWhileRunning}
+              needsKernelRestart={needsKernelRestart}
+              onAdd={addDependency}
+              onRemove={removeDependency}
+              syncState={uvDerivedSyncState ?? syncState}
+              onSyncNow={uvDerivedSyncState ? handleSyncDeps : syncNow}
+              pyprojectInfo={pyprojectInfo}
+              pyprojectDeps={pyprojectDeps}
+              onImportFromPyproject={importFromPyproject}
+              onUseProjectEnv={handleStartKernelWithPyproject}
+              isUsingProjectEnv={envSource === "uv:pyproject"}
+              justSynced={justSynced}
+            />
+          )}
+        {globalFind.isOpen && (
+          <GlobalFindBar
+            query={globalFind.query}
+            matchCount={globalFind.matches.length}
+            currentMatchIndex={globalFind.currentMatchIndex}
+            onQueryChange={globalFind.setQuery}
+            onNextMatch={globalFind.nextMatch}
+            onPrevMatch={globalFind.prevMatch}
+            onClose={globalFind.close}
+          />
+        )}
+        {showIsolationTest && <IsolationTest />}
+        <TrustDialog
+          open={trustDialogOpen}
+          onOpenChange={setTrustDialogOpen}
+          trustInfo={trustInfo}
+          typosquatWarnings={typosquatWarnings}
+          onApprove={handleTrustApprove}
+          onDecline={handleTrustDecline}
+          loading={trustLoading}
+          daemonMode={true}
         />
-      )}
-      {dependencyHeaderOpen && runtime === "python" && envType === "conda" && (
-        <CondaDependencyHeader
-          dependencies={condaDependencies?.dependencies ?? []}
-          channels={condaDependencies?.channels ?? []}
-          python={condaDependencies?.python ?? null}
-          loading={condaDepsLoading}
-          syncing={condaSyncing}
-          syncState={condaDerivedSyncState ?? condaSyncState}
-          syncedWhileRunning={condaSyncedWhileRunning}
-          needsKernelRestart={condaNeedsKernelRestart}
-          onAdd={addCondaDependency}
-          onRemove={removeCondaDependency}
-          onSetChannels={setCondaChannels}
-          onSetPython={setCondaPython}
-          onSyncNow={condaDerivedSyncState ? handleSyncDeps : syncCondaNow}
-          envProgress={envProgress.envType === "conda" ? envProgress : null}
-          onResetProgress={envProgress.reset}
-          environmentYmlInfo={environmentYmlInfo}
-          environmentYmlDeps={environmentYmlDeps}
-          pixiInfo={pixiInfo}
-          onImportFromPixi={importFromPixi}
-          justSynced={justSynced}
+        <NotebookView
+          cells={cells}
+          isLoading={isLoading}
+          focusedCellId={focusedCellId}
+          executingCellIds={executingCellIds}
+          pagePayloads={pagePayloads}
+          runtime={runtime}
+          searchQuery={globalFind.query}
+          searchCurrentMatch={globalFind.currentMatch}
+          onFocusCell={setFocusedCellId}
+          onUpdateCellSource={updateCellSource}
+          onExecuteCell={handleExecuteCell}
+          onInterruptKernel={interruptKernel}
+          onDeleteCell={deleteCell}
+          onAddCell={handleAddCell}
+          onMoveCell={moveCell}
+          onClearPagePayload={clearPagePayload}
+          onReportOutputMatchCount={globalFind.reportOutputMatchCount}
+          onSetCellSourceHidden={setCellSourceHidden}
+          onSetCellOutputsHidden={setCellOutputsHidden}
         />
-      )}
-      {dependencyHeaderOpen && runtime === "python" && envType !== "conda" && (
-        <DependencyHeader
-          dependencies={dependencies?.dependencies ?? []}
-          requiresPython={dependencies?.requires_python ?? null}
-          uvAvailable={uvAvailable}
-          loading={depsLoading}
-          syncedWhileRunning={syncedWhileRunning}
-          needsKernelRestart={needsKernelRestart}
-          onAdd={addDependency}
-          onRemove={removeDependency}
-          syncState={uvDerivedSyncState ?? syncState}
-          onSyncNow={uvDerivedSyncState ? handleSyncDeps : syncNow}
-          pyprojectInfo={pyprojectInfo}
-          pyprojectDeps={pyprojectDeps}
-          onImportFromPyproject={importFromPyproject}
-          onUseProjectEnv={handleStartKernelWithPyproject}
-          isUsingProjectEnv={envSource === "uv:pyproject"}
-          justSynced={justSynced}
-        />
-      )}
-      {globalFind.isOpen && (
-        <GlobalFindBar
-          query={globalFind.query}
-          matchCount={globalFind.matches.length}
-          currentMatchIndex={globalFind.currentMatchIndex}
-          onQueryChange={globalFind.setQuery}
-          onNextMatch={globalFind.nextMatch}
-          onPrevMatch={globalFind.prevMatch}
-          onClose={globalFind.close}
-        />
-      )}
-      {showIsolationTest && <IsolationTest />}
-      <TrustDialog
-        open={trustDialogOpen}
-        onOpenChange={setTrustDialogOpen}
-        trustInfo={trustInfo}
-        typosquatWarnings={typosquatWarnings}
-        onApprove={handleTrustApprove}
-        onDecline={handleTrustDecline}
-        loading={trustLoading}
-        daemonMode={true}
-      />
-      <NotebookView
-        cells={cells}
-        isLoading={isLoading}
-        focusedCellId={focusedCellId}
-        executingCellIds={executingCellIds}
-        pagePayloads={pagePayloads}
-        runtime={runtime}
-        searchQuery={globalFind.query}
-        searchCurrentMatch={globalFind.currentMatch}
-        onFocusCell={setFocusedCellId}
-        onUpdateCellSource={updateCellSource}
-        onExecuteCell={handleExecuteCell}
-        onInterruptKernel={interruptKernel}
-        onDeleteCell={deleteCell}
-        onAddCell={handleAddCell}
-        onMoveCell={moveCell}
-        onClearPagePayload={clearPagePayload}
-        onReportOutputMatchCount={globalFind.reportOutputMatchCount}
-        onSetCellSourceHidden={setCellSourceHidden}
-        onSetCellOutputsHidden={setCellOutputsHidden}
-      />
-    </div>
+      </div>
+    </PresenceProvider>
   );
 }
 
