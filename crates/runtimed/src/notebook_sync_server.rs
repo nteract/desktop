@@ -969,40 +969,48 @@ where
 /// - Falls back to "peer" if empty/missing
 fn sanitize_peer_label(raw: Option<&str>) -> String {
     const MAX_LABEL_CHARS: usize = 64;
+
+    fn is_allowed(c: char) -> bool {
+        !c.is_control()
+            && !matches!(
+                c,
+                '\u{200B}' // zero-width space
+                | '\u{200C}' // zero-width non-joiner
+                | '\u{200D}' // zero-width joiner
+                | '\u{200E}' // left-to-right mark
+                | '\u{200F}' // right-to-left mark
+                | '\u{2060}' // word joiner
+                | '\u{FEFF}' // BOM / zero-width no-break space
+                | '\u{00AD}' // soft hyphen
+                | '\u{034F}' // combining grapheme joiner
+                | '\u{061C}' // arabic letter mark
+                | '\u{115F}' // hangul choseong filler
+                | '\u{1160}' // hangul jungseong filler
+                | '\u{17B4}' // khmer vowel inherent aq
+                | '\u{17B5}' // khmer vowel inherent aa
+                | '\u{180E}' // mongolian vowel separator
+            )
+            && !('\u{2066}'..='\u{2069}').contains(&c) // bidi isolates
+            && !('\u{202A}'..='\u{202E}').contains(&c) // bidi overrides
+            && !('\u{FE00}'..='\u{FE0F}').contains(&c) // variation selectors
+            && !('\u{E0100}'..='\u{E01EF}').contains(&c) // variation selectors supplement
+    }
+
     match raw {
         Some(s) => {
-            // Strip control chars and zero-width characters that could spoof labels
+            // Filter and take at most MAX_LABEL_CHARS in one pass — avoids
+            // allocating proportional to attacker-controlled input size.
             let cleaned: String = s
+                .trim()
                 .chars()
-                .filter(|c| {
-                    !c.is_control()
-                        && !matches!(
-                            *c,
-                            '\u{200B}' // zero-width space
-                            | '\u{200C}' // zero-width non-joiner
-                            | '\u{200D}' // zero-width joiner
-                            | '\u{2060}' // word joiner
-                            | '\u{FEFF}' // BOM / zero-width no-break space
-                            | '\u{00AD}' // soft hyphen
-                            | '\u{034F}' // combining grapheme joiner
-                            | '\u{061C}' // arabic letter mark
-                            | '\u{115F}' // hangul choseong filler
-                            | '\u{1160}' // hangul jungseong filler
-                            | '\u{17B4}' // khmer vowel inherent aq
-                            | '\u{17B5}' // khmer vowel inherent aa
-                            | '\u{180E}' // mongolian vowel separator
-                        )
-                        && !('\u{2066}'..='\u{2069}').contains(c) // bidi isolates
-                        && !('\u{202A}'..='\u{202E}').contains(c) // bidi overrides
-                        && !('\u{FE00}'..='\u{FE0F}').contains(c) // variation selectors
-                        && !('\u{E0100}'..='\u{E01EF}').contains(c) // variation selectors supplement
-                })
+                .filter(|c| is_allowed(*c))
+                .take(MAX_LABEL_CHARS)
                 .collect();
             let trimmed = cleaned.trim();
             if trimmed.is_empty() {
                 "peer".to_string()
             } else {
-                trimmed.chars().take(MAX_LABEL_CHARS).collect()
+                trimmed.to_string()
             }
         }
         None => "peer".to_string(),
@@ -4740,6 +4748,13 @@ mod tests {
     fn test_sanitize_peer_label_strips_bidi_overrides() {
         // RTL override + LTR override
         assert_eq!(sanitize_peer_label(Some("\u{202E}Agent\u{202C}")), "Agent");
+    }
+
+    #[test]
+    fn test_sanitize_peer_label_strips_bidi_marks() {
+        // LRM and RLM
+        assert_eq!(sanitize_peer_label(Some("\u{200E}Agent\u{200F}")), "Agent");
+        assert_eq!(sanitize_peer_label(Some("\u{200E}\u{200F}")), "peer");
     }
 
     /// Create a test blob store in the given temp directory.
