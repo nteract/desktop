@@ -3,4 +3,4 @@
 /**
  * Default packages for conda environments.
  */
-export type CondaDefaults = { default_packages: Array<string> };
+export type CondaDefaults = { default_packages: Array<string>, };
