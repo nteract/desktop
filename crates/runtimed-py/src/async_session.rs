@@ -1182,43 +1182,44 @@ impl AsyncSession {
                 }
             }
 
-            let state_guard = state.lock().await;
-
-            let handle = state_guard
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            let blob_base_url = state_guard.blob_base_url.clone();
-            let blob_store_path = state_guard.blob_store_path.clone();
-
-            // Confirm the daemon has merged our latest changes before executing.
-            // The daemon reads cell source from its own Automerge doc, so it must
-            // have the cell before we can reference it by ID.
-            handle.confirm_sync().await.map_err(to_py_err)?;
-
-            // Execute cell (daemon reads source from automerge doc)
-            let response = handle
-                .send_request(NotebookRequest::ExecuteCell {
-                    cell_id: cell_id.clone(),
-                })
-                .await
-                .map_err(to_py_err)?;
-
-            match response {
-                NotebookResponse::CellQueued { .. } => {}
-                NotebookResponse::Error { error } => return Err(to_py_err(error)),
-                other => return Err(to_py_err(format!("Unexpected response: {:?}", other))),
-            }
-
-            drop(state_guard); // Release lock before waiting for broadcasts
-
-            // Wait for outputs
+            // Wrap the entire execution lifecycle in a single timeout.
+            // Previously only collect_outputs was bounded, which meant
+            // confirm_sync() or send_request() could hang indefinitely.
             let timeout = std::time::Duration::from_secs_f64(timeout_secs);
-            let result = tokio::time::timeout(
-                timeout,
-                collect_outputs_async(&state, &cell_id, blob_base_url, blob_store_path),
-            )
+            let result = tokio::time::timeout(timeout, async {
+                let state_guard = state.lock().await;
+
+                let handle = state_guard
+                    .handle
+                    .as_ref()
+                    .ok_or_else(|| to_py_err("Not connected"))?;
+
+                let blob_base_url = state_guard.blob_base_url.clone();
+                let blob_store_path = state_guard.blob_store_path.clone();
+
+                // Confirm the daemon has merged our latest changes before executing.
+                // The daemon reads cell source from its own Automerge doc, so it must
+                // have the cell before we can reference it by ID.
+                handle.confirm_sync().await.map_err(to_py_err)?;
+
+                // Execute cell (daemon reads source from automerge doc)
+                let response = handle
+                    .send_request(NotebookRequest::ExecuteCell {
+                        cell_id: cell_id.clone(),
+                    })
+                    .await
+                    .map_err(to_py_err)?;
+
+                match response {
+                    NotebookResponse::CellQueued { .. } => {}
+                    NotebookResponse::Error { error } => return Err(to_py_err(error)),
+                    other => return Err(to_py_err(format!("Unexpected response: {:?}", other))),
+                }
+
+                drop(state_guard); // Release lock before waiting for broadcasts
+
+                collect_outputs_async(&state, &cell_id, blob_base_url, blob_store_path).await
+            })
             .await;
 
             match result {
