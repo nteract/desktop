@@ -227,15 +227,15 @@ export function useAutomergeNotebook() {
         if (!handle) return;
         try {
           const bytes = new Uint8Array(event.payload);
-          const resultJson = handle.receive_frame(bytes);
-          if (!resultJson) return;
+          const result = handle.receive_frame(bytes);
+          if (!result || !Array.isArray(result)) return;
 
-          const events: Array<{
+          const events = result as Array<{
             type: string;
             changed?: boolean;
-            reply?: number[];
+            reply?: Uint8Array;
             payload?: unknown;
-          }> = JSON.parse(resultJson);
+          }>;
 
           for (const frameEvent of events) {
             switch (frameEvent.type) {
@@ -253,9 +253,10 @@ export function useAutomergeNotebook() {
               case "sync_reply": {
                 // WASM generated a sync response — send it back to the daemon
                 if (frameEvent.reply) {
-                  const replyData = new Uint8Array(1 + frameEvent.reply.length);
+                  const reply = frameEvent.reply;
+                  const replyData = new Uint8Array(1 + reply.length);
                   replyData[0] = frame_types.AUTOMERGE_SYNC;
-                  replyData.set(new Uint8Array(frameEvent.reply), 1);
+                  replyData.set(reply, 1);
                   invoke("send_frame", {
                     frameData: Array.from(replyData),
                   }).catch((e: unknown) =>

@@ -638,9 +638,10 @@ export class NotebookHandle {
      * The input is the raw frame bytes from the `notebook:frame` Tauri event:
      * `[frame_type_byte, ...payload]`.
      *
-     * Returns a JSON array of `FrameEvent` objects. Usually one event, but sync
-     * frames may produce both a `sync_applied` and a `sync_reply` if the local
-     * doc needs to send a response.
+     * Returns a JS array of `FrameEvent` objects directly via `serde-wasm-bindgen`
+     * (no JSON string intermediate). Usually one event, but sync frames may produce
+     * both a `sync_applied` and a `sync_reply` if the local doc needs to send a
+     * response.
      *
      * When a `SyncReply` event is returned, its `reply` field contains raw
      * Automerge sync bytes (no frame type prefix). The frontend must prepend
@@ -649,25 +650,13 @@ export class NotebookHandle {
      *
      * Returns `undefined` if the frame is empty or cannot be processed.
      * @param {Uint8Array} frame_bytes
-     * @returns {string | undefined}
+     * @returns {any}
      */
     receive_frame(frame_bytes) {
-        try {
-            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-            const ptr0 = passArray8ToWasm0(frame_bytes, wasm.__wbindgen_export2);
-            const len0 = WASM_VECTOR_LEN;
-            wasm.notebookhandle_receive_frame(retptr, this.__wbg_ptr, ptr0, len0);
-            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-            let v2;
-            if (r0 !== 0) {
-                v2 = getStringFromWasm0(r0, r1).slice();
-                wasm.__wbindgen_export4(r0, r1 * 1, 1);
-            }
-            return v2;
-        } finally {
-            wasm.__wbindgen_add_to_stack_pointer(16);
-        }
+        const ptr0 = passArray8ToWasm0(frame_bytes, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.notebookhandle_receive_frame(this.__wbg_ptr, ptr0, len0);
+        return takeObject(ret);
     }
     /**
      * Receive and apply a sync message from the daemon (via the Tauri relay pipe).
@@ -1076,6 +1065,10 @@ function __wbg_get_imports() {
             const ret = Error(getStringFromWasm0(arg0, arg1));
             return addHeapObject(ret);
         },
+        __wbg___wbindgen_is_string_7debe47dc1e045c2: function(arg0) {
+            const ret = typeof(getObject(arg0)) === 'string';
+            return ret;
+        },
         __wbg___wbindgen_throw_39bc967c0e5a9b58: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
@@ -1084,6 +1077,52 @@ function __wbg_get_imports() {
         }, arguments); },
         __wbg_jscell_new: function(arg0) {
             const ret = JsCell.__wrap(arg0);
+            return addHeapObject(ret);
+        },
+        __wbg_new_92df58a8ec3bfb6b: function() {
+            const ret = new Map();
+            return addHeapObject(ret);
+        },
+        __wbg_new_cbee8c0d5c479eac: function() {
+            const ret = new Array();
+            return addHeapObject(ret);
+        },
+        __wbg_new_ed69e637b553a997: function() {
+            const ret = new Object();
+            return addHeapObject(ret);
+        },
+        __wbg_set_4c81cfb5dc3a333c: function(arg0, arg1, arg2) {
+            getObject(arg0)[arg1 >>> 0] = takeObject(arg2);
+        },
+        __wbg_set_6be42768c690e380: function(arg0, arg1, arg2) {
+            getObject(arg0)[takeObject(arg1)] = takeObject(arg2);
+        },
+        __wbg_set_cfc6de03f990decf: function(arg0, arg1, arg2) {
+            const ret = getObject(arg0).set(getObject(arg1), getObject(arg2));
+            return addHeapObject(ret);
+        },
+        __wbindgen_cast_0000000000000001: function(arg0) {
+            // Cast intrinsic for `F64 -> Externref`.
+            const ret = arg0;
+            return addHeapObject(ret);
+        },
+        __wbindgen_cast_0000000000000002: function(arg0) {
+            // Cast intrinsic for `I64 -> Externref`.
+            const ret = arg0;
+            return addHeapObject(ret);
+        },
+        __wbindgen_cast_0000000000000003: function(arg0, arg1) {
+            // Cast intrinsic for `Ref(String) -> Externref`.
+            const ret = getStringFromWasm0(arg0, arg1);
+            return addHeapObject(ret);
+        },
+        __wbindgen_cast_0000000000000004: function(arg0) {
+            // Cast intrinsic for `U64 -> Externref`.
+            const ret = BigInt.asUintN(64, arg0);
+            return addHeapObject(ret);
+        },
+        __wbindgen_object_clone_ref: function(arg0) {
+            const ret = getObject(arg0);
             return addHeapObject(ret);
         },
         __wbindgen_object_drop_ref: function(arg0) {

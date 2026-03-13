@@ -10,12 +10,14 @@ use notebook_doc::presence;
 use notebook_doc::{CellSnapshot, NotebookDoc};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsValue;
 
 use notebook_doc::frame_types;
 
 /// Event returned from `receive_frame()` for the frontend to handle.
 ///
-/// Serialized as JSON via serde — the frontend parses the `type` tag
+/// Converted directly to a JS object via `serde-wasm-bindgen` — no JSON
+/// string serialization round-trip. The frontend reads the `type` field
 /// to dispatch to the appropriate handler.
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -32,12 +34,12 @@ pub enum FrameEvent {
     },
     /// Broadcast event from the daemon (kernel status, output, etc.)
     Broadcast {
-        /// The broadcast payload as a JSON value (parsed from the frame).
+        /// The broadcast payload (parsed from JSON frame, passed through as-is).
         payload: serde_json::Value,
     },
     /// Presence update from a remote peer.
     Presence {
-        /// The decoded presence message as a JSON value.
+        /// The decoded presence message (decoded from CBOR, passed through as-is).
         payload: serde_json::Value,
     },
     /// Unknown frame type — frontend can log and ignore.
@@ -497,9 +499,10 @@ impl NotebookHandle {
     /// The input is the raw frame bytes from the `notebook:frame` Tauri event:
     /// `[frame_type_byte, ...payload]`.
     ///
-    /// Returns a JSON array of `FrameEvent` objects. Usually one event, but sync
-    /// frames may produce both a `sync_applied` and a `sync_reply` if the local
-    /// doc needs to send a response.
+    /// Returns a JS array of `FrameEvent` objects directly via `serde-wasm-bindgen`
+    /// (no JSON string intermediate). Usually one event, but sync frames may produce
+    /// both a `sync_applied` and a `sync_reply` if the local doc needs to send a
+    /// response.
     ///
     /// When a `SyncReply` event is returned, its `reply` field contains raw
     /// Automerge sync bytes (no frame type prefix). The frontend must prepend
@@ -507,9 +510,9 @@ impl NotebookHandle {
     /// frame, then send it back via `invoke("send_frame", { frameData })`.
     ///
     /// Returns `undefined` if the frame is empty or cannot be processed.
-    pub fn receive_frame(&mut self, frame_bytes: &[u8]) -> Option<String> {
+    pub fn receive_frame(&mut self, frame_bytes: &[u8]) -> JsValue {
         if frame_bytes.is_empty() {
-            return None;
+            return JsValue::UNDEFINED;
         }
 
         let frame_type = frame_bytes[0];
@@ -520,11 +523,17 @@ impl NotebookHandle {
         match frame_type {
             frame_types::AUTOMERGE_SYNC => {
                 // Decode and apply the sync message to our local doc
-                let msg = sync::Message::decode(payload).ok()?;
+                let Ok(msg) = sync::Message::decode(payload) else {
+                    return JsValue::UNDEFINED;
+                };
                 let heads_before = self.doc.doc_mut().get_heads();
-                self.doc
+                if self
+                    .doc
                     .receive_sync_message(&mut self.sync_state, msg)
-                    .ok()?;
+                    .is_err()
+                {
+                    return JsValue::UNDEFINED;
+                }
                 let heads_after = self.doc.doc_mut().get_heads();
                 let changed = heads_before != heads_after;
 
@@ -539,13 +548,19 @@ impl NotebookHandle {
             }
             frame_types::BROADCAST => {
                 // Parse JSON broadcast payload
-                let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
+                let Ok(value) = serde_json::from_slice::<serde_json::Value>(payload) else {
+                    return JsValue::UNDEFINED;
+                };
                 events.push(FrameEvent::Broadcast { payload: value });
             }
             frame_types::PRESENCE => {
-                // Decode CBOR presence into a JSON value for the frontend
-                let msg = presence::decode_message(payload).ok()?;
-                let value = serde_json::to_value(&msg).ok()?;
+                // Decode CBOR presence and convert to JSON value for the frontend
+                let Ok(msg) = presence::decode_message(payload) else {
+                    return JsValue::UNDEFINED;
+                };
+                let Ok(value) = serde_json::to_value(&msg) else {
+                    return JsValue::UNDEFINED;
+                };
                 events.push(FrameEvent::Presence { payload: value });
             }
             _ => {
@@ -553,7 +568,7 @@ impl NotebookHandle {
             }
         }
 
-        serde_json::to_string(&events).ok()
+        serde_wasm_bindgen::to_value(&events).unwrap_or(JsValue::UNDEFINED)
     }
 }
 

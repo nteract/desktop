@@ -157,9 +157,10 @@ export class NotebookHandle {
      * The input is the raw frame bytes from the `notebook:frame` Tauri event:
      * `[frame_type_byte, ...payload]`.
      *
-     * Returns a JSON array of `FrameEvent` objects. Usually one event, but sync
-     * frames may produce both a `sync_applied` and a `sync_reply` if the local
-     * doc needs to send a response.
+     * Returns a JS array of `FrameEvent` objects directly via `serde-wasm-bindgen`
+     * (no JSON string intermediate). Usually one event, but sync frames may produce
+     * both a `sync_applied` and a `sync_reply` if the local doc needs to send a
+     * response.
      *
      * When a `SyncReply` event is returned, its `reply` field contains raw
      * Automerge sync bytes (no frame type prefix). The frontend must prepend
@@ -168,7 +169,7 @@ export class NotebookHandle {
      *
      * Returns `undefined` if the frame is empty or cannot be processed.
      */
-    receive_frame(frame_bytes: Uint8Array): string | undefined;
+    receive_frame(frame_bytes: Uint8Array): any;
     /**
      * Receive and apply a sync message from the daemon (via the Tauri relay pipe).
      *
@@ -317,7 +318,7 @@ export interface InitOutput {
     readonly notebookhandle_receive_sync_message: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_save: (a: number, b: number) => void;
     readonly notebookhandle_reset_sync_state: (a: number) => void;
-    readonly notebookhandle_receive_frame: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_receive_frame: (a: number, b: number, c: number) => number;
     readonly encode_cursor_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly encode_selection_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
     readonly __wbindgen_export: (a: number) => void;
