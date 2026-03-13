@@ -721,7 +721,7 @@ async fn setup_sync_receivers(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::next_available_sample_path;
+    use super::{next_available_sample_path, reopen_action, ReopenAction};
     use tempfile::TempDir;
 
     #[test]
@@ -740,6 +740,21 @@ mod tests {
         let path = next_available_sample_path(temp_dir.path(), "example.ipynb");
 
         assert_eq!(path, temp_dir.path().join("example-2.ipynb"));
+    }
+
+    #[test]
+    fn reopen_action_restores_hidden_windows_before_spawning() {
+        assert_eq!(reopen_action(false, 1), Some(ReopenAction::RestoreWindow));
+    }
+
+    #[test]
+    fn reopen_action_spawns_when_all_windows_are_closed() {
+        assert_eq!(reopen_action(false, 0), Some(ReopenAction::SpawnNotebook));
+    }
+
+    #[test]
+    fn reopen_action_ignores_reopen_events_when_a_window_is_visible() {
+        assert_eq!(reopen_action(true, 1), None);
     }
 }
 
@@ -3054,6 +3069,24 @@ fn focused_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
         .find(|window| window.is_focused().ok() == Some(true))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReopenAction {
+    RestoreWindow,
+    SpawnNotebook,
+}
+
+fn reopen_action(has_visible_windows: bool, open_window_count: usize) -> Option<ReopenAction> {
+    if has_visible_windows {
+        return None;
+    }
+
+    if open_window_count == 0 {
+        Some(ReopenAction::SpawnNotebook)
+    } else {
+        Some(ReopenAction::RestoreWindow)
+    }
+}
+
 fn window_menu_display_name(
     app: &tauri::AppHandle,
     registry: &WindowNotebookRegistry,
@@ -4234,6 +4267,56 @@ pub fn run(
                 } else if let Err(e) = open_notebook_window(app_handle, &registry_for_open, &path) {
                     log::error!("Failed to open notebook in new window: {}", e);
                 }
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } = &event
+        {
+            match reopen_action(*has_visible_windows, app_handle.webview_windows().len()) {
+                Some(ReopenAction::RestoreWindow) => {
+                    let window = app_handle
+                        .get_webview_window("main")
+                        .or_else(|| app_handle.webview_windows().into_values().next());
+
+                    if let Some(window) = window {
+                        if let Err(error) = window.show() {
+                            warn!(
+                                "[app] Failed to show reopened window '{}': {}",
+                                window.label(),
+                                error
+                            );
+                        }
+                        if let Err(error) = window.unminimize() {
+                            warn!(
+                                "[app] Failed to unminimize reopened window '{}': {}",
+                                window.label(),
+                                error
+                            );
+                        }
+                        if let Err(error) = window.set_focus() {
+                            warn!(
+                                "[app] Failed to focus reopened window '{}': {}",
+                                window.label(),
+                                error
+                            );
+                        }
+                    }
+                }
+                Some(ReopenAction::SpawnNotebook) => {
+                    let runtime = settings::load_settings().default_runtime;
+                    if let Err(error) = spawn_new_notebook(app_handle, &registry_for_open, runtime)
+                    {
+                        warn!(
+                            "[app] Failed to create notebook window on reopen: {}",
+                            error
+                        );
+                    }
+                }
+                None => {}
             }
         }
     });
