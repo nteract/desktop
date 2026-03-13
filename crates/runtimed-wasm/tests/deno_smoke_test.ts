@@ -782,6 +782,35 @@ Deno.test("Cell metadata: set_cell_metadata (full replacement)", () => {
   handle.free();
 });
 
+Deno.test("Cell metadata: set_cell_metadata rejects non-object", () => {
+  const handle = new NotebookHandle("metadata-test");
+  handle.add_cell(0, "cell-1", "code");
+
+  // Try to set metadata to an array (not an object)
+  let threw = false;
+  try {
+    handle.set_cell_metadata("cell-1", '["not", "an", "object"]');
+  } catch (e) {
+    threw = true;
+    assert(
+      String(e).includes("must be a JSON object"),
+      `Expected error about JSON object, got: ${e}`,
+    );
+  }
+  assertEquals(threw, true, "should throw for non-object metadata");
+
+  // Try to set metadata to a string
+  threw = false;
+  try {
+    handle.set_cell_metadata("cell-1", '"just a string"');
+  } catch (e) {
+    threw = true;
+  }
+  assertEquals(threw, true, "should throw for string metadata");
+
+  handle.free();
+});
+
 Deno.test("Cell metadata: returns false for non-existent cell", () => {
   const handle = new NotebookHandle("metadata-test");
   handle.add_cell(0, "cell-1", "code");

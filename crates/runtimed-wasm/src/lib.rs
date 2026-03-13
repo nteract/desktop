@@ -364,6 +364,9 @@ impl NotebookHandle {
     ) -> Result<bool, JsError> {
         let metadata: serde_json::Value = serde_json::from_str(metadata_json)
             .map_err(|e| JsError::new(&format!("invalid metadata JSON: {}", e)))?;
+        if !metadata.is_object() {
+            return Err(JsError::new("metadata must be a JSON object"));
+        }
         self.doc
             .set_cell_metadata(cell_id, &metadata)
             .map_err(|e| JsError::new(&format!("set_cell_metadata failed: {}", e)))
