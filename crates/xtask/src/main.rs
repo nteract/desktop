@@ -337,7 +337,7 @@ fn cmd_install_daemon() {
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|| "501".to_string());
-        let domain = format!("gui/{uid}/io.nteract.runtimed");
+        let domain = format!("gui/{uid}/{}", runt_workspace::daemon_launchd_label());
 
         // Stop (ignore errors — may not be running)
         let _ = Command::new("launchctl")
@@ -350,8 +350,9 @@ fn cmd_install_daemon() {
 
     #[cfg(target_os = "linux")]
     {
+        let service = format!("{}.service", runt_workspace::daemon_service_basename());
         let _ = Command::new("systemctl")
-            .args(["--user", "stop", "runtimed.service"])
+            .args(["--user", "stop", &service])
             .status();
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
@@ -359,13 +360,14 @@ fn cmd_install_daemon() {
     // Determine install path (matches runtimed::service::default_binary_path)
     let install_dir = dirs::data_local_dir()
         .expect("Could not determine data directory")
-        .join("runt")
+        .join(runt_workspace::cache_namespace())
         .join("bin");
 
+    let binary_name = runt_workspace::daemon_binary_basename();
     let install_path = if cfg!(windows) {
-        install_dir.join("runtimed.exe")
+        install_dir.join(format!("{binary_name}.exe"))
     } else {
-        install_dir.join("runtimed")
+        install_dir.join(binary_name)
     };
 
     if !install_path.exists() {
@@ -398,9 +400,10 @@ fn cmd_install_daemon() {
     // Restart the service
     #[cfg(target_os = "macos")]
     {
-        let plist = dirs::home_dir()
-            .expect("No home dir")
-            .join("Library/LaunchAgents/io.nteract.runtimed.plist");
+        let plist = dirs::home_dir().expect("No home dir").join(format!(
+            "Library/LaunchAgents/{}.plist",
+            runt_workspace::daemon_launchd_label()
+        ));
         if plist.exists() {
             let uid = Command::new("id")
                 .args(["-u"])
@@ -422,14 +425,15 @@ fn cmd_install_daemon() {
 
     #[cfg(target_os = "linux")]
     {
-        run_cmd("systemctl", &["--user", "start", "runtimed.service"]);
+        let service = format!("{}.service", runt_workspace::daemon_service_basename());
+        run_cmd("systemctl", &["--user", "start", &service]);
     }
 
     // Wait briefly and verify
     std::thread::sleep(std::time::Duration::from_secs(2));
     let daemon_json = dirs::cache_dir()
         .unwrap_or_else(|| Path::new("/tmp").to_path_buf())
-        .join("runt")
+        .join(runt_workspace::cache_namespace())
         .join("daemon.json");
 
     if daemon_json.exists() {
@@ -478,7 +482,7 @@ fn cmd_dev_daemon(release: bool) {
 
     let cache_base = dirs::cache_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join("runt")
+        .join(runt_workspace::cache_namespace())
         .join("worktrees");
 
     let state_dir = match runt_workspace::get_workspace_path() {

@@ -86,6 +86,10 @@ impl WindowNotebookRegistry {
 /// Newtype wrapper for reconnect-in-progress flag (distinguishes from other AtomicBool states).
 struct ReconnectInProgress(Arc<AtomicBool>);
 
+/// Newtype wrapper for daemon-restart-in-progress flag.
+/// Prevents multiple windows from attempting to restart the daemon simultaneously.
+struct DaemonRestartInProgress(Arc<AtomicBool>);
+
 /// Tracks the last daemon progress status for UI queries.
 /// This allows the frontend to check status on mount (in case events were missed).
 struct DaemonStatusState(Arc<Mutex<Option<runtimed::client::DaemonProgress>>>);
@@ -2259,14 +2263,28 @@ async fn complete_via_daemon(
     }
 }
 
+/// Check if an error indicates the daemon is dead (socket missing or connection refused).
+fn is_daemon_dead_error(error: &str) -> bool {
+    error.contains("No such file or directory")
+        || error.contains("Connection refused")
+        || error.contains("os error 2")
+        || error.contains("os error 111")
+}
+
 /// Reconnect to the daemon after a disconnection.
+///
+/// If the socket doesn't exist (daemon dead), this will attempt to restart the daemon
+/// using `ensure_daemon_via_sidecar()` before retrying the connection.
+/// In dev mode, returns a helpful error instead of auto-restarting.
 ///
 /// Called by the frontend after receiving daemon:disconnected event.
 #[tauri::command]
 async fn reconnect_to_daemon(
     window: tauri::Window,
+    app: tauri::AppHandle,
     registry: tauri::State<'_, WindowNotebookRegistry>,
     reconnect_in_progress: tauri::State<'_, ReconnectInProgress>,
+    restart_in_progress: tauri::State<'_, DaemonRestartInProgress>,
 ) -> Result<(), String> {
     info!("[daemon-kernel] reconnect_to_daemon");
 
@@ -2310,21 +2328,21 @@ async fn reconnect_to_daemon(
         .get_webview_window(window.label())
         .ok_or_else(|| "Current webview window not found".to_string())?;
 
-    // For saved notebooks, use daemon-owned open (daemon reloads from disk).
-    // For untitled notebooks, use CreateNotebook with the notebook_id hint
-    // so the daemon can find the persisted Automerge doc from the previous session.
     let context = registry.get(window.label())?;
-    let result = if let Some(p) = path {
+    let runtime = context.runtime.to_string();
+
+    // First attempt: try to connect (daemon might have restarted)
+    let result = if let Some(ref p) = path {
         info!(
             "[daemon-kernel] Reconnecting via OpenNotebook: {}",
             p.display()
         );
         initialize_notebook_sync_open(
-            webview_window,
-            p,
-            notebook_sync,
-            sync_generation,
-            context_notebook_id,
+            webview_window.clone(),
+            p.clone(),
+            notebook_sync.clone(),
+            sync_generation.clone(),
+            context_notebook_id.clone(),
         )
         .await
     } else {
@@ -2333,19 +2351,98 @@ async fn reconnect_to_daemon(
             notebook_id
         );
         initialize_notebook_sync_create(
-            webview_window,
-            context.runtime.to_string(),
-            working_dir,
-            Some(notebook_id),
-            notebook_sync,
-            sync_generation,
-            context_notebook_id,
+            webview_window.clone(),
+            runtime.clone(),
+            working_dir.clone(),
+            Some(notebook_id.clone()),
+            notebook_sync.clone(),
+            sync_generation.clone(),
+            context_notebook_id.clone(),
         )
         .await
     };
 
-    reset_flag();
-    result
+    match result {
+        Ok(()) => {
+            reset_flag();
+            return Ok(());
+        }
+        Err(ref e) if is_daemon_dead_error(e) => {
+            info!("[daemon-kernel] Daemon appears dead: {}", e);
+
+            // In dev mode, don't auto-restart - show helpful guidance
+            if runtimed::is_dev_mode() {
+                reset_flag();
+                return Err(
+                    "Dev daemon not running. Start it with: cargo xtask dev-daemon".to_string(),
+                );
+            }
+
+            // Try to acquire the restart flag (only one window should restart)
+            if restart_in_progress
+                .0
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                info!("[daemon-kernel] Attempting to restart daemon...");
+
+                // Attempt daemon restart
+                let restart_result = ensure_daemon_via_sidecar(&app, |progress| {
+                    info!("[daemon-kernel] Daemon restart progress: {:?}", progress);
+                })
+                .await;
+
+                restart_in_progress.0.store(false, Ordering::SeqCst);
+
+                if let Err(restart_err) = restart_result {
+                    reset_flag();
+                    return Err(format!("Failed to restart daemon: {}", restart_err));
+                }
+
+                info!("[daemon-kernel] Daemon restarted, retrying connection...");
+            } else {
+                // Another window is restarting, wait for it
+                info!("[daemon-kernel] Another window is restarting daemon, waiting...");
+                for _ in 0..20 {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    if !restart_in_progress.0.load(Ordering::SeqCst) {
+                        break;
+                    }
+                }
+            }
+
+            // Retry connection after restart
+            let retry_result = if let Some(p) = path {
+                initialize_notebook_sync_open(
+                    webview_window,
+                    p,
+                    notebook_sync,
+                    sync_generation,
+                    context_notebook_id,
+                )
+                .await
+            } else {
+                initialize_notebook_sync_create(
+                    webview_window,
+                    runtime,
+                    working_dir,
+                    Some(notebook_id),
+                    notebook_sync,
+                    sync_generation,
+                    context_notebook_id,
+                )
+                .await
+            };
+
+            reset_flag();
+            retry_result
+        }
+        Err(e) => {
+            // Non-daemon-dead error, return as-is
+            reset_flag();
+            Err(e)
+        }
+    }
 }
 
 /// Export the local Automerge document as raw bytes.
@@ -3394,6 +3491,9 @@ pub fn run(
     // Guard against concurrent reconnect attempts
     let reconnect_in_progress = ReconnectInProgress(Arc::new(AtomicBool::new(false)));
 
+    // Guard against multiple windows trying to restart daemon simultaneously
+    let restart_in_progress = DaemonRestartInProgress(Arc::new(AtomicBool::new(false)));
+
     // Track last daemon progress status for UI queries (handles race conditions)
     let daemon_status_state = DaemonStatusState(Arc::new(Mutex::new(None)));
     let daemon_status_for_startup = daemon_status_state.0.clone();
@@ -3424,6 +3524,7 @@ pub fn run(
         )
         .manage(window_registry.clone())
         .manage(reconnect_in_progress)
+        .manage(restart_in_progress)
         .manage(daemon_status_state)
         .invoke_handler(tauri::generate_handler![
             // Notebook file operations
