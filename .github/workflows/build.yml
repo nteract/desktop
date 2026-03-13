@@ -121,7 +121,7 @@ jobs:
           pnpm --dir apps/notebook build
 
       - name: Upload UI build artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: ui-build-dist
           path: |
@@ -138,7 +138,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Download UI build artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: ui-build-dist
           path: apps
@@ -212,7 +212,7 @@ jobs:
           fi
 
       - name: Upload Linux Rust binaries
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: linux-rust-binaries
           path: |
@@ -239,7 +239,7 @@ jobs:
           cp ~/.cargo/bin/tauri-driver target/release/binaries/tauri-driver
 
       - name: Upload E2E app
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: e2e-app-linux
           path: |
@@ -297,7 +297,7 @@ jobs:
 
       - name: Download UI build artifacts
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: ui-build-dist
           path: apps
@@ -389,7 +389,7 @@ jobs:
         run: pnpm install
 
       - name: Download E2E artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: e2e-app-linux
           path: ./target/release
@@ -482,7 +482,7 @@ jobs:
 
       - name: Upload failure screenshots
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: e2e-screenshots
           path: e2e-screenshots/failures/
@@ -490,7 +490,7 @@ jobs:
 
       - name: Upload daemon logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: e2e-daemon-logs
           path: e2e-logs/
@@ -538,7 +538,7 @@ jobs:
         run: pnpm install
 
       - name: Download E2E artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: e2e-app-linux
           path: ./target/release
@@ -699,7 +699,7 @@ jobs:
 
       - name: Upload failure screenshots
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: e2e-fixture-screenshots
           path: e2e-screenshots/failures/
@@ -707,7 +707,7 @@ jobs:
 
       - name: Upload test logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: e2e-fixture-logs
           path: e2e-logs/
@@ -735,7 +735,7 @@ jobs:
           shared-key: ubuntu-latest
 
       - name: Download Linux Rust binaries
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: linux-rust-binaries
           path: .
@@ -774,7 +774,7 @@ jobs:
 
       - name: Upload test logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: runtimed-py-integration-logs
           path: python/runtimed/integration-logs/
