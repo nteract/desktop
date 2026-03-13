@@ -4,6 +4,7 @@ import os
 from unittest.mock import patch
 
 import pytest
+
 from runtimed._binary import BinaryNotFoundError, find_binary
 
 

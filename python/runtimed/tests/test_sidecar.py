@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from runtimed._sidecar import BridgedSidecar, Sidecar, sidecar
 
 

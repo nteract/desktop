@@ -5,6 +5,7 @@ import time
 from unittest.mock import MagicMock
 
 import zmq
+
 from runtimed._ipython_bridge import (
     IPythonBridge,
     _rewrite_widget_data,
