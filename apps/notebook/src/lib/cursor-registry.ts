@@ -122,7 +122,10 @@ export function unregisterEditor(cellId: string): void {
 /** Collect all remote cursors for a cell and dispatch to its EditorView. */
 function dispatchToCell(cellId: string): void {
   const view = editors.get(cellId);
-  if (!view) return;
+  if (!view) {
+    console.log(`[cursor-registry] dispatchToCell: no view for ${cellId}`);
+    return;
+  }
 
   const cursors: RemoteCursorState[] = [];
   const selections: RemoteSelectionState[] = [];
@@ -153,6 +156,9 @@ function dispatchToCell(cellId: string): void {
     }
   }
 
+  console.log(
+    `[cursor-registry] dispatchToCell ${cellId}: ${cursors.length} cursors, ${selections.length} selections`,
+  );
   setRemoteCursors(view, cursors);
   setRemoteSelections(view, selections);
 }
