@@ -103,7 +103,8 @@ export function DependencyHeader({
             <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
             <span>
               Dependencies synced to environment. New packages can be imported
-              now. Restart kernel if you updated existing packages.
+              now. Re-initialize the environment if you updated existing
+              packages.
             </span>
           </div>
         )}
@@ -113,8 +114,8 @@ export function DependencyHeader({
           <div className="mb-3 flex items-start gap-2 rounded bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
             <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
             <span>
-              Restart kernel to use these dependencies. The current kernel
-              wasn&apos;t started with dependency management.
+              Re-initialize the environment to use these dependencies. The
+              current kernel wasn&apos;t started with dependency management.
             </span>
           </div>
         )}
@@ -125,7 +126,7 @@ export function DependencyHeader({
             <div className="flex items-center gap-2">
               <Info className="h-3.5 w-3.5 shrink-0" />
               <span>
-                Restart kernel to use{" "}
+                Re-initialize the environment to use{" "}
                 {syncState.added.length > 0 && (
                   <span>
                     {syncState.added.length} new package
@@ -153,7 +154,7 @@ export function DependencyHeader({
               <RefreshCw
                 className={`h-3 w-3 ${loading ? "animate-spin" : ""}`}
               />
-              Restart
+              Re-initialize
             </button>
           </div>
         )}
@@ -262,7 +263,7 @@ export function DependencyHeader({
               <code className="rounded bg-muted px-1">
                 {pyprojectInfo?.relative_path ?? "pyproject.toml"}
               </code>{" "}
-              — restart kernel to pick up dependency changes.
+              — re-initialize the environment to pick up dependency changes.
             </span>
           </div>
         )}
