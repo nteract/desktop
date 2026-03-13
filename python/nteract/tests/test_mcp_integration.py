@@ -118,22 +118,32 @@ async def test_list_tools(mcp_client: ClientSession):
 
     # Core tools should be present
     assert "connect_notebook" in tool_names
-    assert "disconnect_notebook" in tool_names
-    assert "list_notebooks" in tool_names
-    assert "start_kernel" in tool_names
-    assert "shutdown_kernel" in tool_names
+    assert "open_notebook" in tool_names
+    assert "create_notebook" in tool_names
+    assert "save_notebook" in tool_names
     assert "interrupt_kernel" in tool_names
-    assert "get_kernel_status" in tool_names
+    assert "restart_kernel" in tool_names
     assert "create_cell" in tool_names
     assert "set_cell_source" in tool_names
+    assert "replace_match" in tool_names
+    assert "replace_regex" in tool_names
     assert "append_source" in tool_names
     assert "get_cell" in tool_names
     assert "get_all_cells" in tool_names
     assert "delete_cell" in tool_names
     assert "move_cell" in tool_names
     assert "execute_cell" in tool_names
+    assert "run_all_cells" in tool_names
 
-    # run_code should be removed
+    # Removed tools should not be present
+    assert "disconnect_notebook" not in tool_names
+    assert "start_kernel" not in tool_names
+    assert "shutdown_kernel" not in tool_names
+    assert "get_kernel_status" not in tool_names
+    assert "complete_code" not in tool_names
+    assert "get_queue_state" not in tool_names
+    assert "get_history" not in tool_names
+    assert "list_notebooks" not in tool_names
     assert "run_code" not in tool_names
 
 
@@ -193,9 +203,8 @@ async def test_append_source(mcp_client: ClientSession):
 @pytest.mark.asyncio
 async def test_execute_cell_basic(mcp_client: ClientSession):
     """Test basic cell execution."""
-    # Connect and start kernel
+    # Connect (daemon auto-launches kernel)
     await mcp_client.call_tool("connect_notebook", {})
-    await mcp_client.call_tool("start_kernel", {})
 
     # Create and execute cell
     result = await mcp_client.call_tool(
@@ -216,9 +225,8 @@ async def test_execute_cell_basic(mcp_client: ClientSession):
 @pytest.mark.asyncio
 async def test_execute_cell_partial_results(mcp_client: ClientSession):
     """Execute long-running code, verify partial results returned."""
-    # Connect and start kernel
+    # Connect (daemon auto-launches kernel)
     await mcp_client.call_tool("connect_notebook", {})
-    await mcp_client.call_tool("start_kernel", {})
 
     # Create cell with slow code - print immediately, then sleep
     result = await mcp_client.call_tool(
@@ -239,9 +247,8 @@ async def test_execute_cell_partial_results(mcp_client: ClientSession):
 @pytest.mark.asyncio
 async def test_poll_for_outputs(mcp_client: ClientSession):
     """Create cell, execute, poll get_cell for updated outputs."""
-    # Connect and start kernel
+    # Connect (daemon auto-launches kernel)
     await mcp_client.call_tool("connect_notebook", {})
-    await mcp_client.call_tool("start_kernel", {})
 
     # Create cell with short delay
     result = await mcp_client.call_tool(
@@ -271,9 +278,8 @@ async def test_poll_for_outputs(mcp_client: ClientSession):
 @pytest.mark.asyncio
 async def test_output_ordering(mcp_client: ClientSession):
     """Verify interleaved outputs maintain order."""
-    # Connect and start kernel
+    # Connect (daemon auto-launches kernel)
     await mcp_client.call_tool("connect_notebook", {})
-    await mcp_client.call_tool("start_kernel", {})
 
     # Code that produces interleaved outputs
     code = """
@@ -305,26 +311,6 @@ print('c', flush=True)
     assert pos_a < pos_b < pos_c, (
         f"Outputs should be in order a, b, c. Got positions: a={pos_a}, b={pos_b}, c={pos_c}"
     )
-
-
-@pytest.mark.asyncio
-async def test_get_kernel_status(mcp_client: ClientSession):
-    """Test kernel status reporting."""
-    # Connect
-    await mcp_client.call_tool("connect_notebook", {})
-
-    # Check status before starting kernel
-    result = await mcp_client.call_tool("get_kernel_status", {})
-    data = _parse_json(result)
-    assert data.get("kernel_started") is False
-
-    # Start kernel
-    await mcp_client.call_tool("start_kernel", {})
-
-    # Check status after starting
-    result = await mcp_client.call_tool("get_kernel_status", {})
-    data = _parse_json(result)
-    assert data.get("kernel_started") is True
 
 
 @pytest.mark.asyncio
