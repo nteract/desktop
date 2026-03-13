@@ -115,16 +115,21 @@ class CursorWidget extends WidgetType {
   toDOM(): HTMLElement {
     const wrapper = document.createElement("span");
     wrapper.className = "cm-remote-cursor";
-    wrapper.style.borderLeftColor = this.color;
     wrapper.setAttribute("aria-label", this.label || "Remote cursor");
 
-    // Name label (always visible, positioned above the cursor bar)
+    // Colored bar (full line height)
+    const bar = document.createElement("span");
+    bar.className = "cm-remote-cursor-bar";
+    bar.style.backgroundColor = this.color;
+    wrapper.appendChild(bar);
+
+    // Name flag (always visible, anchored to top of bar)
     if (this.label) {
-      const tag = document.createElement("span");
-      tag.className = "cm-remote-cursor-label";
-      tag.style.backgroundColor = this.color;
-      tag.textContent = this.label;
-      wrapper.appendChild(tag);
+      const flag = document.createElement("span");
+      flag.className = "cm-remote-cursor-flag";
+      flag.style.backgroundColor = this.color;
+      flag.textContent = this.label;
+      wrapper.appendChild(flag);
     }
 
     return wrapper;
@@ -299,24 +304,34 @@ const selectionPlugin = ViewPlugin.fromClass(
 const remoteCursorsTheme = EditorView.theme({
   ".cm-remote-cursor": {
     position: "relative",
-    borderLeft: "2px solid",
-    marginLeft: "-1px",
-    marginRight: "-1px",
+    display: "inline",
     pointerEvents: "none",
+    width: "0",
   },
-  ".cm-remote-cursor-label": {
+  ".cm-remote-cursor-bar": {
+    position: "absolute",
+    top: "0",
+    bottom: "0",
+    left: "-1px",
+    width: "2.5px",
+    borderRadius: "1px",
+    zIndex: "10",
+  },
+  ".cm-remote-cursor-flag": {
     position: "absolute",
     bottom: "100%",
     left: "-1px",
-    padding: "1px 4px",
-    borderRadius: "3px 3px 3px 0",
+    marginBottom: "1px",
+    padding: "2px 6px",
+    borderRadius: "4px 4px 4px 0",
     fontSize: "11px",
-    lineHeight: "14px",
-    fontFamily: "system-ui, sans-serif",
+    lineHeight: "1.2",
+    fontWeight: "500",
+    fontFamily: "system-ui, -apple-system, sans-serif",
     color: "white",
     whiteSpace: "nowrap",
     pointerEvents: "none",
-    zIndex: "10",
+    zIndex: "11",
   },
   ".cm-remote-selection": {
     // Background color is set inline via decoration attributes
