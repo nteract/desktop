@@ -21,11 +21,12 @@ import json
 import logging
 import re
 import sys
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import runtimed
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ImageContent, TextContent, ToolAnnotations
+from pydantic import Field
 
 logger = logging.getLogger(__name__)
 
@@ -557,11 +558,15 @@ async def sync_environment() -> dict[str, Any]:
 async def create_cell(
     source: str = "",
     cell_type: Literal["code", "markdown", "raw"] = "code",
-    index: int | None = None,
-    and_run: bool = False,
-    timeout_secs: float = 5.0,
+    index: Annotated[
+        int | None, Field(description="Position to insert. None appends at end")
+    ] = None,
+    and_run: Annotated[
+        bool, Field(description="Execute the cell immediately after creation")
+    ] = False,
+    timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 5.0,
 ) -> list[ContentItem]:
-    """Create a cell, optionally executing it. Use and_run=True to execute immediately."""
+    """Create a cell, optionally executing it."""
     session = await _get_session()
     cell_id = await session.create_cell(
         source=source,
@@ -576,7 +581,10 @@ async def create_cell(
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def set_cell_source(cell_id: str, source: str) -> dict[str, Any]:
+async def set_cell_source(
+    cell_id: str,
+    source: Annotated[str, Field(description="Complete new source code for the cell")],
+) -> dict[str, Any]:
     """Replace a cell's entire source. Prefer replace_match for targeted edits."""
     session = await _get_session()
     await session.set_source(cell_id=cell_id, source=source)
@@ -600,19 +608,20 @@ async def _send_edit_cursor(
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def replace_match(
     cell_id: str,
-    match: str,
-    content: str,
-    context_before: str = "",
-    context_after: str = "",
+    match: Annotated[str, Field(description="Literal text to find (must match exactly once)")],
+    content: Annotated[
+        str, Field(description="Literal replacement text — real newlines, no escapes")
+    ],
+    context_before: Annotated[
+        str, Field(description="Text that must appear before the match")
+    ] = "",
+    context_after: Annotated[str, Field(description="Text that must appear after the match")] = "",
 ) -> dict[str, Any]:
     """Replace matched text in a cell. Prefer this for simple, targeted edits.
 
-    `match` must resolve to exactly one location. Use context_before/context_after
-    to disambiguate. `content` is literal text — real newlines, no escapes.
-
-    Examples: match="a + b", context_before="return ", content="a * b"
-    Fails if match is ambiguous (reports count + offsets for disambiguation).
-    For zero-width insertions or regex patterns, use replace_regex instead.
+    Use context_before/context_after to disambiguate when match appears multiple times.
+    Fails if 0 or >1 matches (reports count + offsets). Use replace_regex for
+    zero-width insertions or structural patterns.
     """
     from nteract._editing import PatternError
     from nteract._editing import replace_match as _replace_match
@@ -647,14 +656,20 @@ async def replace_match(
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def replace_regex(
     cell_id: str,
-    pattern: str,
-    content: str,
+    pattern: Annotated[
+        str,
+        Field(
+            description="Python regex, must match exactly once. "
+            "re.MULTILINE enabled. Use \\Z for end-of-cell, (?=...) for insertions"
+        ),
+    ],
+    content: Annotated[
+        str, Field(description="Literal replacement text — not re.sub syntax, no backreferences")
+    ],
 ) -> dict[str, Any]:
     """Replace a regex-matched span. Use for anchors, lookarounds, or zero-width insertions.
 
-    Pattern must match exactly once (re.MULTILINE). `content` is literal text, not re.sub.
-    Use \\Z for end-of-cell (not $). Use (?=...) or (?<=...) for insertions.
-    Fails if 0 or >1 matches (reports count + offsets).
+    Fails if 0 or >1 matches (reports count + offsets for disambiguation).
     """
     from nteract._editing import PatternError
     from nteract._editing import replace_regex as _replace_regex
@@ -687,7 +702,10 @@ async def replace_regex(
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
-async def append_source(cell_id: str, text: str) -> dict[str, Any]:
+async def append_source(
+    cell_id: str,
+    text: Annotated[str, Field(description="Text to append to the cell source")],
+) -> dict[str, Any]:
     """Append text to a cell's source. Ideal for streaming tokens."""
     session = await _get_session()
     await session.append_source(cell_id=cell_id, text=text)
@@ -696,7 +714,9 @@ async def append_source(cell_id: str, text: str) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def get_cell(cell_id: str) -> list[ContentItem]:
+async def get_cell(
+    cell_id: str,
+) -> list[ContentItem]:
     """Get a cell's source and outputs by ID."""
     session = await _get_session()
     cell = await session.get_cell(cell_id=cell_id)
@@ -724,8 +744,13 @@ async def delete_cell(cell_id: str) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def move_cell(cell_id: str, after_cell_id: str | None = None) -> dict[str, Any]:
-    """Move a cell after another cell. Use after_cell_id=None to move to the start."""
+async def move_cell(
+    cell_id: str,
+    after_cell_id: Annotated[
+        str | None, Field(description="Move after this cell, or null for start")
+    ] = None,
+) -> dict[str, Any]:
+    """Move a cell to a new position."""
     session = await _get_session()
     new_position = await session.move_cell(cell_id=cell_id, after_cell_id=after_cell_id)
     return {
@@ -788,9 +813,11 @@ async def _execute_cell_internal(
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def execute_cell(
     cell_id: str,
-    timeout_secs: float = 5.0,
+    timeout_secs: Annotated[
+        float, Field(description="Max seconds to wait; returns partial results if exceeded")
+    ] = 5.0,
 ) -> list[ContentItem]:
-    """Execute a cell. Returns partial results after timeout_secs if still running."""
+    """Execute a cell. Returns partial results if timeout exceeded."""
     return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
 
 
