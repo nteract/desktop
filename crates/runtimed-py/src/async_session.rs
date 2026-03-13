@@ -2216,34 +2216,43 @@ async fn collect_outputs_async(
         }
     }
 
-    // Phase 2: Read canonical cell state from the Automerge doc.
-    // The daemon writes outputs to the doc as they arrive from the kernel,
-    // so by the time ExecutionDone fires, all outputs are persisted.
-    let state_guard = state.lock().await;
-    let handle = state_guard
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
-
-    let cells = handle.get_cells();
-    let snapshot = cells.into_iter().find(|c| c.id == cell_id).ok_or_else(|| {
-        to_py_err(format!(
-            "Cell not found in doc after execution: {}",
-            cell_id
-        ))
-    })?;
-
-    let execution_count = snapshot.execution_count.parse::<i64>().ok();
-
     // KernelError means the kernel/daemon died — return immediately
+    // without trying to read from the doc (handle may be gone).
     if let Some(error) = kernel_error {
         return Ok(ExecutionResult {
             cell_id: cell_id.to_string(),
             outputs: vec![Output::error("KernelError", &error, vec![])],
             success: false,
-            execution_count,
+            execution_count: None,
         });
     }
+
+    // Phase 2: Read canonical cell state from the Automerge doc.
+    // The daemon writes outputs to the doc as they arrive from the kernel,
+    // but ExecutionDone can arrive via broadcast before the final Automerge
+    // sync frame. A confirm_sync round-trip ensures our local doc replica
+    // has all the outputs before we read.
+    let (snapshot, blob_base_url, blob_store_path) = {
+        let state_guard = state.lock().await;
+        let handle = state_guard
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
+
+        handle.confirm_sync().await.map_err(to_py_err)?;
+
+        let cells = handle.get_cells();
+        let snapshot = cells.into_iter().find(|c| c.id == cell_id).ok_or_else(|| {
+            to_py_err(format!(
+                "Cell not found in doc after execution: {}",
+                cell_id
+            ))
+        })?;
+
+        (snapshot, blob_base_url, blob_store_path)
+    }; // state lock dropped before async I/O
+
+    let execution_count = snapshot.execution_count.parse::<i64>().ok();
 
     // Resolve outputs from doc snapshot (blob hashes → Output objects)
     let outputs =
