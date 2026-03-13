@@ -43,10 +43,10 @@ jobs:
         run: uv python install 3.12
 
       - name: Ruff check
-        run: uvx ruff check --config python/pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/
+        run: uvx ruff@0.11.6 check --config python/pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/
 
       - name: Ruff format check
-        run: uvx ruff format --check --config python/pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/
+        run: uvx ruff@0.11.6 format --check --config python/pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/
 
   nteract-test:
     runs-on: ubuntu-latest
