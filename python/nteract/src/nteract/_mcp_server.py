@@ -449,26 +449,6 @@ async def save_notebook(path: str | None = None) -> dict[str, Any]:
 # =============================================================================
 
 
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
-async def start_kernel(
-    kernel_type: str = "python",
-    env_source: str = "auto",
-) -> dict[str, Any]:
-    """Start a kernel. Reuses existing kernel if one is already running.
-
-    env_source: "auto" (default), "uv:prewarmed", "conda:prewarmed",
-    "uv:inline", or "conda:inline".
-    """
-    session = await _get_session()
-    await session.start_kernel(kernel_type=kernel_type, env_source=env_source)
-
-    return {
-        "kernel_type": kernel_type,
-        "env_source": await session.env_source(),
-        "started": True,
-    }
-
-
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def interrupt_kernel() -> dict[str, Any]:
     """Interrupt the currently executing cell."""
