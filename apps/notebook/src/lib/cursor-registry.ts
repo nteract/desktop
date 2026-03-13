@@ -173,7 +173,7 @@ function handlePresence(payload: unknown): void {
 
       const existing = peers.get(msg.peer_id);
       const peer: PeerCursorInfo = existing ?? {
-        peerLabel: "",
+        peerLabel: "Peer",
         color: peerColor(msg.peer_id),
       };
 
