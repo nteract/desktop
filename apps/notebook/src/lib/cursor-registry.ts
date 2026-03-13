@@ -46,6 +46,7 @@ interface ChannelEntry {
 interface PresenceUpdate {
   type: "update";
   peer_id: string;
+  peer_label?: string;
   channel: string;
   data: unknown;
 }
@@ -173,9 +174,14 @@ function handlePresence(payload: unknown): void {
 
       const existing = peers.get(msg.peer_id);
       const peer: PeerCursorInfo = existing ?? {
-        peerLabel: "Peer",
+        peerLabel: msg.peer_label || "Peer",
         color: peerColor(msg.peer_id),
       };
+
+      // Update label if the message carries one (e.g. "Agent" from MCP)
+      if (msg.peer_label) {
+        peer.peerLabel = msg.peer_label;
+      }
 
       const affectedCells = new Set<string>();
 
