@@ -27,6 +27,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -114,7 +115,7 @@ def start_kernel_with_retry(session, *, retries=5, delay=1.0, **kwargs):
     Passes all kwargs through to session.start_kernel() (kernel_type,
     env_source, notebook_path, etc.).
     """
-    last_err = None
+    last_err: Exception = Exception("max retries exceeded")
     for attempt in range(retries):
         try:
             session.start_kernel(**kwargs)
@@ -128,7 +129,7 @@ def start_kernel_with_retry(session, *, retries=5, delay=1.0, **kwargs):
 
 async def async_start_kernel_with_retry(session, *, retries=5, delay=1.0, **kwargs):
     """Async retry wrapper for start_kernel (tolerates connection timeouts on CI)."""
-    last_err = None
+    last_err: Exception = Exception("max retries exceeded")
     for attempt in range(retries):
         try:
             await session.start_kernel(**kwargs)
@@ -1156,7 +1157,7 @@ def _python_kernelspec_metadata(
     *, with_uv_deps=None, with_conda_deps=None, with_conda_channels=None
 ):
     """Build a NotebookMetadataSnapshot JSON dict with a Python kernelspec."""
-    snapshot = {
+    snapshot: dict[str, Any] = {
         "kernelspec": {
             "name": "python3",
             "display_name": "Python 3",
@@ -1181,7 +1182,7 @@ def _deno_kernelspec_metadata(*, flexible_npm_imports=None):
     Args:
         flexible_npm_imports: If set, include deno.flexible_npm_imports in runt metadata.
     """
-    snapshot = {
+    snapshot: dict[str, Any] = {
         "kernelspec": {
             "name": "deno",
             "display_name": "Deno",

@@ -38,7 +38,22 @@ known-first-party = ["runtimed", "nteract"]
 [dependency-groups]
 dev = [
     "ruff>=0.15",
+    "ty>=0.0.22",
+    "pytest>=8.0",
+    "pyzmq>=26.0",
 ]
+
+[tool.ty.rules]
+# runtimed.runtimed is a native PyO3 module — ty can't resolve it
+unresolved-import = "warn"
+
+# Tests patch builtins.get_ipython which ty can't model
+[[tool.ty.overrides]]
+include = ["**/tests/**"]
+[tool.ty.overrides.rules]
+unresolved-attribute = "ignore"
+invalid-assignment = "ignore"
+
 
 [tool.ruff.format]
 quote-style = "double"

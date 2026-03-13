@@ -356,7 +356,7 @@ def install_bridge(ip: Any) -> IPythonBridge:
         finally:
             bridge._in_displayhook = False
 
-    ip.displayhook.__call__ = _displayhook_wrapper  # type: ignore[method-assign]
+    ip.displayhook.__call__ = _displayhook_wrapper
 
     # --- post_run_cell: publish execute_result or error ---
     def post_run_cell(result: Any) -> None:
@@ -387,8 +387,8 @@ def install_bridge(ip: Any) -> IPythonBridge:
     ip.events.register("post_run_cell", post_run_cell)
 
     # --- Wrap stdout/stderr ---
-    sys.stdout = _TeeStream(sys.stdout, "stdout", bridge)  # type: ignore[assignment]
-    sys.stderr = _TeeStream(sys.stderr, "stderr", bridge)  # type: ignore[assignment]
+    sys.stdout = _TeeStream(sys.stdout, "stdout", bridge)
+    sys.stderr = _TeeStream(sys.stderr, "stderr", bridge)
 
     # --- Wrap display publisher ---
     original_publish = ip.display_pub.publish

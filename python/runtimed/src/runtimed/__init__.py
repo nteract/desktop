@@ -2,9 +2,6 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
-# Existing sidecar functionality
-from runtimed._sidecar import BridgedSidecar, Sidecar, sidecar
-
 # Native daemon client (PyO3 bindings)
 from runtimed.runtimed import (
     AsyncSession,
@@ -23,10 +20,6 @@ from runtimed.runtimed import (
 )
 
 __all__ = [
-    # Existing
-    "BridgedSidecar",
-    "Sidecar",
-    "sidecar",
     # Daemon client API - sync
     "DaemonClient",
     "Session",

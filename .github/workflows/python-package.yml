@@ -51,6 +51,9 @@ jobs:
       - name: Ruff format check
         run: uv run --project python ruff format --check --config python/pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/
 
+      - name: Type check
+        run: uv run --project python ty check --project python
+
   nteract-test:
     runs-on: ubuntu-latest
     steps:
