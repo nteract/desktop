@@ -164,7 +164,12 @@ impl AsyncSession {
     /// Raises:
     ///     RuntimedError: If the file cannot be opened or parsed.
     #[staticmethod]
-    fn open_notebook(py: Python<'_>, path: String) -> PyResult<Bound<'_, PyAny>> {
+    #[pyo3(signature = (path, peer_label=None))]
+    fn open_notebook(
+        py: Python<'_>,
+        path: String,
+        peer_label: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
         future_into_py(py, async move {
             let path_buf = PathBuf::from(&path);
             let socket_path = get_socket_path();
@@ -198,7 +203,7 @@ impl AsyncSession {
             Ok(AsyncSession {
                 state: Arc::new(Mutex::new(state)),
                 notebook_id,
-                peer_label: None,
+                peer_label,
             })
         })
     }
@@ -215,11 +220,12 @@ impl AsyncSession {
     /// Returns:
     ///     A coroutine that resolves to a new AsyncSession connected to the created notebook.
     #[staticmethod]
-    #[pyo3(signature = (runtime="python", working_dir=None))]
+    #[pyo3(signature = (runtime="python", working_dir=None, peer_label=None))]
     fn create_notebook<'py>(
         py: Python<'py>,
         runtime: &str,
         working_dir: Option<String>,
+        peer_label: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         // Validate working_dir if provided
         if let Some(ref wd) = working_dir {
@@ -279,7 +285,7 @@ impl AsyncSession {
             Ok(AsyncSession {
                 state: Arc::new(Mutex::new(state)),
                 notebook_id,
-                peer_label: None,
+                peer_label,
             })
         })
     }

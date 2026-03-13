@@ -44,7 +44,7 @@ def main():
         notebook_id = rooms[0]["notebook_id"]
         print(f"Auto-detected notebook: {notebook_id}")
 
-    session = runtimed.Session(notebook_id=notebook_id)
+    session = runtimed.Session(notebook_id=notebook_id, peer_label="🦾")
     session.connect()
 
     cells = session.get_cells()
