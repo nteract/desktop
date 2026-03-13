@@ -688,8 +688,10 @@ mod tests {
         let stats = PoolStats {
             uv_available: 3,
             uv_warming: 1,
+            uv_target: 4,
             conda_available: 2,
             conda_warming: 0,
+            conda_target: 2,
             uv_error: None,
             conda_error: None,
         };

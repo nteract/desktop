@@ -632,12 +632,15 @@ impl NotebookRoom {
         let (kernel_broadcast_tx, _) = broadcast::channel(64);
         let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
         spawn_persist_debouncer(persist_rx, persist_path.clone());
+        let (presence_tx, _) = broadcast::channel(64);
         let notebook_path = PathBuf::from(notebook_id);
         let trust_state = verify_trust_from_file(&notebook_path);
         Self {
             doc: Arc::new(RwLock::new(doc)),
             changed_tx,
             kernel_broadcast_tx,
+            presence_tx,
+            presence: Arc::new(RwLock::new(PresenceState::new())),
             persist_tx,
             persist_path,
             active_peers: AtomicUsize::new(0),
@@ -958,33 +961,58 @@ where
     result
 }
 
-/// Typed frames sync loop with first-byte type indicator.
+/// Sanitize a peer label from the wire.
 ///
-/// Handles both Automerge sync messages and NotebookRequest messages.
-/// This protocol supports daemon-owned kernel execution (Phase 8).
-/// Sanitize a peer label from the wire: trim, clamp to 64 chars, fall back to "peer".
+/// - Strips zero-width and control characters (ZWJ, ZWNJ, ZWSP, etc.)
+/// - Trims whitespace
+/// - Clamps to 64 Unicode scalar values
+/// - Falls back to "peer" if empty/missing
 fn sanitize_peer_label(raw: Option<&str>) -> String {
-    const MAX_LABEL_LEN: usize = 64;
+    const MAX_LABEL_CHARS: usize = 64;
     match raw {
         Some(s) => {
-            let trimmed = s.trim();
+            // Strip control chars and zero-width characters that could spoof labels
+            let cleaned: String = s
+                .chars()
+                .filter(|c| {
+                    !c.is_control()
+                        && !matches!(
+                            *c,
+                            '\u{200B}' // zero-width space
+                            | '\u{200C}' // zero-width non-joiner
+                            | '\u{200D}' // zero-width joiner
+                            | '\u{2060}' // word joiner
+                            | '\u{FEFF}' // BOM / zero-width no-break space
+                            | '\u{00AD}' // soft hyphen
+                            | '\u{034F}' // combining grapheme joiner
+                            | '\u{061C}' // arabic letter mark
+                            | '\u{115F}' // hangul choseong filler
+                            | '\u{1160}' // hangul jungseong filler
+                            | '\u{17B4}' // khmer vowel inherent aq
+                            | '\u{17B5}' // khmer vowel inherent aa
+                            | '\u{180E}' // mongolian vowel separator
+                        )
+                        && !('\u{2066}'..='\u{2069}').contains(c) // bidi isolates
+                        && !('\u{202A}'..='\u{202E}').contains(c) // bidi overrides
+                        && !('\u{FE00}'..='\u{FE0F}').contains(c) // variation selectors
+                        && !('\u{E0100}'..='\u{E01EF}').contains(c) // variation selectors supplement
+                })
+                .collect();
+            let trimmed = cleaned.trim();
             if trimmed.is_empty() {
                 "peer".to_string()
-            } else if trimmed.len() > MAX_LABEL_LEN {
-                // Truncate at a char boundary
-                let mut end = MAX_LABEL_LEN;
-                while !trimmed.is_char_boundary(end) {
-                    end -= 1;
-                }
-                trimmed[..end].to_string()
             } else {
-                trimmed.to_string()
+                trimmed.chars().take(MAX_LABEL_CHARS).collect()
             }
         }
         None => "peer".to_string(),
     }
 }
 
+/// Typed frames sync loop with first-byte type indicator.
+///
+/// Handles both Automerge sync messages and NotebookRequest messages.
+/// This protocol supports daemon-owned kernel execution (Phase 8).
 async fn run_sync_loop_v2<R, W>(
     reader: &mut R,
     writer: &mut W,
@@ -4667,6 +4695,52 @@ pub(crate) fn spawn_notebook_file_watcher(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sanitize_peer_label_basic() {
+        assert_eq!(sanitize_peer_label(None), "peer");
+        assert_eq!(sanitize_peer_label(Some("")), "peer");
+        assert_eq!(sanitize_peer_label(Some("  ")), "peer");
+        assert_eq!(sanitize_peer_label(Some("Codex")), "Codex");
+        assert_eq!(sanitize_peer_label(Some("  Claude  ")), "Claude");
+    }
+
+    #[test]
+    fn test_sanitize_peer_label_clamps_length() {
+        let long = "a".repeat(100);
+        assert_eq!(sanitize_peer_label(Some(&long)).len(), 64);
+    }
+
+    #[test]
+    fn test_sanitize_peer_label_clamps_unicode() {
+        // 70 emoji = 70 chars but 280 bytes
+        let emoji_label: String = std::iter::repeat('🦾').take(70).collect();
+        let result = sanitize_peer_label(Some(&emoji_label));
+        assert_eq!(result.chars().count(), 64);
+    }
+
+    #[test]
+    fn test_sanitize_peer_label_strips_zero_width() {
+        // ZWJ, ZWSP, ZWNJ scattered in a label
+        assert_eq!(sanitize_peer_label(Some("Co\u{200B}d\u{200D}ex")), "Codex");
+        // Only zero-width chars → falls back to "peer"
+        assert_eq!(
+            sanitize_peer_label(Some("\u{200B}\u{200C}\u{200D}")),
+            "peer"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_peer_label_strips_control_chars() {
+        assert_eq!(sanitize_peer_label(Some("Claude\x00\x1F")), "Claude");
+        assert_eq!(sanitize_peer_label(Some("\x07")), "peer");
+    }
+
+    #[test]
+    fn test_sanitize_peer_label_strips_bidi_overrides() {
+        // RTL override + LTR override
+        assert_eq!(sanitize_peer_label(Some("\u{202E}Agent\u{202C}")), "Agent");
+    }
 
     /// Create a test blob store in the given temp directory.
     fn test_blob_store(tmp: &tempfile::TempDir) -> Arc<BlobStore> {
