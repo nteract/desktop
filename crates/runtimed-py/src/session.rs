@@ -1734,22 +1734,22 @@ impl Session {
 }
 
 impl Session {
-    /// Collect outputs for a cell until ExecutionDone is received.
+    /// Wait for execution to complete, then read outputs from the Automerge doc.
     ///
-    /// Note: Due to the Jupyter shell/iopub race condition, error outputs
-    /// may arrive AFTER ExecutionDone. We continue draining for a short
-    /// time after ExecutionDone to catch straggling outputs.
+    /// Uses the broadcast stream only as a signal for when execution is done.
+    /// The Automerge document is the source of truth for cell outputs — this
+    /// sidesteps the Jupyter shell/iopub race condition entirely since the
+    /// daemon writes all outputs to the doc before signaling ExecutionDone.
     async fn collect_outputs(
         &self,
         cell_id: &str,
         blob_base_url: Option<String>,
         blob_store_path: Option<PathBuf>,
     ) -> PyResult<ExecutionResult> {
-        let mut outputs = Vec::new();
-        let mut execution_count = None;
-        let mut success = true;
-        let mut done_received = false;
+        let mut kernel_error: Option<String> = None;
 
+        // Phase 1: Wait for ExecutionDone or KernelError signal via broadcast.
+        // We don't accumulate outputs here — the Automerge doc is the source of truth.
         loop {
             let mut state = self.state.lock().await;
 
@@ -1758,110 +1758,80 @@ impl Session {
                 .as_mut()
                 .ok_or_else(|| to_py_err("Not connected"))?;
 
-            // Use a short timeout - shorter after done to drain quickly
-            let timeout_ms = if done_received { 50 } else { 100 };
-            let broadcast = tokio::time::timeout(
-                std::time::Duration::from_millis(timeout_ms),
-                broadcast_rx.recv(),
-            )
-            .await;
+            let broadcast =
+                tokio::time::timeout(std::time::Duration::from_millis(100), broadcast_rx.recv())
+                    .await;
 
             match broadcast {
                 Ok(Some(msg)) => {
-                    drop(state); // Release lock while processing
-                    log::debug!("[session] Received broadcast: {:?}", msg);
+                    drop(state);
 
                     match msg {
-                        NotebookBroadcast::ExecutionStarted {
-                            cell_id: msg_cell_id,
-                            execution_count: count,
-                        } => {
-                            if msg_cell_id == cell_id {
-                                execution_count = Some(count);
-                            }
-                        }
-                        NotebookBroadcast::Output {
-                            cell_id: msg_cell_id,
-                            output_type,
-                            output_json,
-                            output_index,
-                        } => {
-                            log::debug!(
-                                "[session] Output broadcast: type={}, cell_id={}, output_index={:?}",
-                                output_type,
-                                msg_cell_id,
-                                output_index
-                            );
-                            if msg_cell_id == cell_id {
-                                if let Some(output) = output_resolver::resolve_output_with_type(
-                                    &output_type,
-                                    &output_json,
-                                    &blob_base_url,
-                                    &blob_store_path,
-                                )
-                                .await
-                                {
-                                    log::debug!(
-                                        "[session] Parsed output: type={}",
-                                        output.output_type
-                                    );
-                                    if output.output_type == "error" {
-                                        success = false;
-                                    }
-                                    // If output_index is provided, update in place; otherwise append
-                                    if let Some(idx) = output_index {
-                                        if idx < outputs.len() {
-                                            outputs[idx] = output;
-                                        } else {
-                                            outputs.push(output);
-                                        }
-                                    } else {
-                                        outputs.push(output);
-                                    }
-                                } else {
-                                    log::debug!("[session] Failed to parse output");
-                                }
-                            }
-                        }
                         NotebookBroadcast::ExecutionDone {
                             cell_id: msg_cell_id,
                         } => {
                             if msg_cell_id == cell_id {
-                                // Don't break immediately - drain for a bit to catch
-                                // straggling outputs due to shell/iopub race condition
-                                log::debug!(
-                                    "[session] ExecutionDone received, starting drain phase"
-                                );
-                                done_received = true;
+                                log::debug!("[session] ExecutionDone received for {}", cell_id);
+                                break;
                             }
                         }
                         NotebookBroadcast::KernelError { error } => {
-                            success = false;
-                            outputs.push(Output::error("KernelError", &error, vec![]));
-                            done_received = true;
+                            log::debug!("[session] KernelError: {}", error);
+                            kernel_error = Some(error);
+                            break;
                         }
                         _ => {
-                            // Ignore other broadcasts (KernelStatus, QueueChanged, etc.)
+                            // Ignore all other broadcasts — doc has the data
                         }
                     }
                 }
                 Ok(None) => {
-                    // Channel closed
                     return Err(to_py_err("Broadcast channel closed"));
                 }
                 Err(_) => {
-                    // Timeout - if we've seen ExecutionDone, we're done draining
-                    if done_received {
-                        log::debug!(
-                            "[session] Drain timeout, finishing with {} outputs",
-                            outputs.len()
-                        );
-                        break;
-                    }
-                    // Otherwise continue waiting
+                    // Poll timeout — keep waiting for signal
                 }
             }
         }
+
+        // Phase 2: Read canonical cell state from the Automerge doc.
+        // The daemon writes outputs to the doc as they arrive from the kernel,
+        // so by the time ExecutionDone fires, all outputs are persisted.
+        let state = self.state.lock().await;
+        let handle = state
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
+
+        let cells = handle.get_cells();
+        let snapshot = cells.into_iter().find(|c| c.id == cell_id).ok_or_else(|| {
+            to_py_err(format!(
+                "Cell not found in doc after execution: {}",
+                cell_id
+            ))
+        })?;
+
+        let execution_count = snapshot.execution_count.parse::<i64>().ok();
+
+        // KernelError means the kernel/daemon died — return immediately
+        if let Some(error) = kernel_error {
+            return Ok(ExecutionResult {
+                cell_id: cell_id.to_string(),
+                outputs: vec![Output::error("KernelError", &error, vec![])],
+                success: false,
+                execution_count,
+            });
+        }
+
+        // Resolve outputs from doc snapshot (blob hashes → Output objects)
+        let outputs = output_resolver::resolve_cell_outputs(
+            &snapshot.outputs,
+            &blob_base_url,
+            &blob_store_path,
+        )
+        .await;
+
+        let success = !outputs.iter().any(|o| o.output_type == "error");
 
         Ok(ExecutionResult {
             cell_id: cell_id.to_string(),
