@@ -502,16 +502,9 @@ impl AsyncSession {
             let insert_index = index.unwrap_or(cells.len());
 
             handle
-                .add_cell(insert_index, &cell_id, &cell_type)
+                .add_cell_with_source(insert_index, &cell_id, &cell_type, &source)
                 .await
                 .map_err(to_py_err)?;
-
-            if !source.is_empty() {
-                handle
-                    .update_source(&cell_id, &source)
-                    .await
-                    .map_err(to_py_err)?;
-            }
 
             Ok(cell_id)
         })
@@ -1153,7 +1146,7 @@ impl AsyncSession {
                     let response = handle
                         .send_request(NotebookRequest::LaunchKernel {
                             kernel_type: "python".to_string(),
-                            env_source: "uv:prewarmed".to_string(),
+                            env_source: "auto".to_string(),
                             notebook_path: None,
                         })
                         .await
@@ -1340,7 +1333,7 @@ impl AsyncSession {
                     let response = handle
                         .send_request(NotebookRequest::LaunchKernel {
                             kernel_type: "python".to_string(),
-                            env_source: "uv:prewarmed".to_string(),
+                            env_source: "auto".to_string(),
                             notebook_path: None,
                         })
                         .await
@@ -1707,7 +1700,6 @@ impl AsyncSession {
         wait_for_ready: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
-        let notebook_id = self.notebook_id.clone();
 
         future_into_py(py, async move {
             // TODO: Consider adding NotebookRequest::RestartKernel to the daemon
@@ -1746,7 +1738,7 @@ impl AsyncSession {
                     .send_request(NotebookRequest::LaunchKernel {
                         kernel_type: "python".to_string(),
                         env_source: "auto".to_string(),
-                        notebook_path: Some(notebook_id.clone()),
+                        notebook_path: None,
                     })
                     .await
                     .map_err(to_py_err)?;
