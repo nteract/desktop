@@ -140,13 +140,11 @@ class CursorMarker implements LayerMarker {
 
   eq(other: LayerMarker): boolean {
     if (!(other instanceof CursorMarker)) return false;
+    // Compare identity only — position changes are handled by update()
     return (
-      this.left === other.left &&
-      this.top === other.top &&
-      this.height === other.height &&
+      this.peerId === other.peerId &&
       this.color === other.color &&
-      this.label === other.label &&
-      this.peerId === other.peerId
+      this.label === other.label
     );
   }
 
