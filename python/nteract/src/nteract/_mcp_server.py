@@ -368,18 +368,7 @@ def _execution_result_to_content(
 async def connect_notebook(
     notebook_id: str | None = None,
 ) -> dict[str, Any]:
-    """Connect to a notebook session.
-
-    Creates or connects to a notebook session in the daemon. Multiple calls
-    with the same notebook_id will share the same kernel.
-
-    Args:
-        notebook_id: Optional ID for the notebook. If not provided, generates
-            a unique ID. Use the same ID to reconnect to an existing session.
-
-    Returns:
-        Session info including the notebook_id.
-    """
+    """Connect to a notebook by ID. Omit notebook_id to create a new session."""
     global _session
 
     # Close existing session if any
@@ -397,39 +386,9 @@ async def connect_notebook(
     }
 
 
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def disconnect_notebook() -> dict[str, Any]:
-    """Disconnect from the current notebook session.
-
-    Closes the connection but does not shutdown the kernel (other clients
-    may still be using it).
-
-    Returns:
-        Confirmation of disconnection.
-    """
-    global _session
-
-    if _session is not None:
-        with contextlib.suppress(Exception):
-            await _session.close()
-        _session = None
-
-    return {"disconnected": True}
-
-
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
 async def open_notebook(path: str) -> dict[str, Any]:
-    """Open an existing .ipynb notebook file from disk.
-
-    Use this to open a notebook that already exists on the filesystem.
-    For creating a new notebook, use create_notebook() instead.
-
-    Args:
-        path: Absolute or relative path to the .ipynb file.
-
-    Returns:
-        Connection info including notebook_id and trust status.
-    """
+    """Open an existing .ipynb file. Use create_notebook() for new notebooks."""
     global _session
 
     if _session is not None:
@@ -451,21 +410,7 @@ async def create_notebook(
     runtime: str = "python",
     working_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Create a new empty notebook in memory.
-
-    Creates an empty notebook with one code cell via the daemon. The notebook
-    exists only in memory until saved with save_notebook(path).
-
-    NOTE: This tool does NOT accept a path parameter. To save the notebook
-    to disk, call save_notebook(path) after creating it.
-
-    Args:
-        runtime: Kernel runtime type ("python" or "deno").
-        working_dir: Optional working directory for project detection.
-
-    Returns:
-        Connection info including notebook_id (a session identifier, not a file path).
-    """
+    """Create a new empty notebook in memory. Call save_notebook(path) to persist to disk."""
     global _session
 
     if _session is not None:
@@ -483,18 +428,7 @@ async def create_notebook(
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
 async def save_notebook(path: str | None = None) -> dict[str, Any]:
-    """Save the current notebook to disk as a .ipynb file.
-
-    Persists the current notebook state including cells, outputs, and metadata.
-
-    Args:
-        path: File path to save to. REQUIRED for notebooks created with
-            create_notebook(). Can be omitted for notebooks opened with
-            open_notebook() to save to the original location.
-
-    Returns:
-        The absolute path where the file was saved.
-    """
+    """Save notebook to disk. Path is required for create_notebook() notebooks."""
     session = await _get_session()
     try:
         saved_path = await session.save(path)
@@ -510,44 +444,6 @@ async def save_notebook(path: str | None = None) -> dict[str, Any]:
         raise
 
 
-def _format_notebook_list(rooms: list[dict[str, Any]]) -> str:
-    """Format notebook rooms for terminal display."""
-    if not rooms:
-        return "No active notebooks"
-
-    lines = [f"Notebooks ({len(rooms)}):"]
-    for room in rooms:
-        notebook_id = room.get("notebook_id", "unknown")
-        peers = room.get("active_peers", 0)
-        has_kernel = room.get("has_kernel", False)
-
-        # Build kernel info
-        if has_kernel:
-            kernel_type = room.get("kernel_type", "unknown")
-            kernel_status = room.get("kernel_status", "unknown")
-            env_source = room.get("env_source", "unknown")
-            kernel_info = f"{kernel_type} ({kernel_status}) | env: {env_source}"
-        else:
-            kernel_info = "no kernel"
-
-        lines.append(f"\n• {notebook_id}")
-        lines.append(f"  {kernel_info} | peers: {peers}")
-
-    return "\n".join(lines)
-
-
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def list_notebooks() -> list[ContentItem]:
-    """List all active notebook rooms in the daemon.
-
-    Returns:
-        List of notebook rooms with their status.
-    """
-    client = _get_daemon_client()
-    rooms = client.list_rooms()
-    return [TextContent(type="text", text=_format_notebook_list([dict(room) for room in rooms]))]
-
-
 # =============================================================================
 # Kernel Management Tools
 # =============================================================================
@@ -558,23 +454,10 @@ async def start_kernel(
     kernel_type: str = "python",
     env_source: str = "auto",
 ) -> dict[str, Any]:
-    """Start a kernel for the current session.
+    """Start a kernel. Reuses existing kernel if one is already running.
 
-    If a kernel is already running for this notebook_id (from any client),
-    it will be reused.
-
-    Args:
-        kernel_type: Type of kernel - "python" or "deno".
-        env_source: Environment source. Options:
-            - "auto" (default) - Auto-detect from notebook metadata/project files
-            - "uv:prewarmed" - Fast startup from UV pool
-            - "conda:prewarmed" - Conda environment from pool
-            - "uv:inline" - Use notebook's inline UV dependencies
-            - "conda:inline" - Use notebook's inline conda dependencies
-            For Deno kernels, this is ignored (always uses "deno").
-
-    Returns:
-        Kernel info including the actual env_source used.
+    env_source: "auto" (default), "uv:prewarmed", "conda:prewarmed",
+    "uv:inline", or "conda:inline".
     """
     session = await _get_session()
     await session.start_kernel(kernel_type=kernel_type, env_source=env_source)
@@ -587,27 +470,8 @@ async def start_kernel(
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def shutdown_kernel() -> dict[str, Any]:
-    """Shutdown the kernel for the current session.
-
-    Returns:
-        Confirmation of shutdown.
-    """
-    session = await _get_session()
-    await session.shutdown_kernel()
-
-    return {"shutdown": True}
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def interrupt_kernel() -> dict[str, Any]:
-    """Interrupt the currently executing cell.
-
-    Use this to stop long-running or infinite loops.
-
-    Returns:
-        Confirmation of interrupt.
-    """
+    """Interrupt the currently executing cell."""
     session = await _get_session()
     await session.interrupt()
 
@@ -616,97 +480,10 @@ async def interrupt_kernel() -> dict[str, Any]:
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def restart_kernel() -> dict[str, Any]:
-    """Restart the kernel with updated dependencies.
-
-    Clears all kernel state and reloads dependencies from notebook metadata.
-    Use this after adding/removing dependencies when sync_environment()
-    isn't sufficient.
-
-    Returns:
-        Confirmation of restart with the new env_source.
-    """
+    """Restart kernel, clearing all state. Use after dependency changes."""
     session = await _get_session()
     await session.restart_kernel(wait_for_ready=True)
     return {"restarted": True, "env_source": await session.env_source()}
-
-
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def get_kernel_status() -> dict[str, Any]:
-    """Get the kernel status for the current session.
-
-    Returns:
-        Kernel status including whether it's running and the env_source.
-    """
-    session = await _get_session()
-
-    return {
-        "connected": await session.is_connected(),
-        "kernel_started": await session.kernel_started(),
-        "env_source": await session.env_source(),
-    }
-
-
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def complete_code(code: str, cursor_pos: int) -> dict[str, Any]:
-    """Get code completions from the kernel.
-
-    Uses the kernel's introspection to provide context-aware completions.
-    Requires a running kernel.
-
-    Args:
-        code: The code to complete.
-        cursor_pos: Cursor position in the code (0-indexed byte offset).
-
-    Returns:
-        Completions including cursor_start, cursor_end, and items list.
-    """
-    session = await _get_session()
-    result = await session.complete(code, cursor_pos)
-    return {
-        "cursor_start": result.cursor_start,
-        "cursor_end": result.cursor_end,
-        "items": [
-            {"label": item.label, "kind": item.kind, "detail": item.detail} for item in result.items
-        ],
-    }
-
-
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def get_queue_state() -> dict[str, Any]:
-    """Get the current execution queue state.
-
-    Shows which cell is currently executing and which cells are queued.
-
-    Returns:
-        executing: Cell ID currently running (or null if idle).
-        queued: List of cell IDs waiting to run.
-    """
-    session = await _get_session()
-    state = await session.get_queue_state()
-    return {"executing": state.executing, "queued": state.queued}
-
-
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def get_history(
-    pattern: str | None = None,
-    n: int = 100,
-) -> dict[str, Any]:
-    """Search kernel execution history.
-
-    Returns previously executed code from this kernel session.
-
-    Args:
-        pattern: Optional glob pattern to filter results (e.g., "*import*").
-        n: Maximum entries to return (default 100).
-
-    Returns:
-        entries: List of history entries with session, line, and source.
-    """
-    session = await _get_session()
-    entries = await session.get_history(pattern=pattern, n=n, unique=True)
-    return {
-        "entries": [{"session": e.session, "line": e.line, "source": e.source} for e in entries]
-    }
 
 
 # =============================================================================
@@ -740,21 +517,7 @@ async def _get_package_manager(session: runtimed.AsyncSession) -> str:
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def add_dependency(package: str) -> dict[str, Any]:
-    """Add a Python package dependency to the notebook.
-
-    Automatically uses the notebook's configured package manager (UV or Conda)
-    based on env_source. The package is added to the notebook's inline
-    dependency metadata.
-
-    Use sync_environment() to install without restart, or restart_kernel()
-    for a clean environment with the new dependency.
-
-    Args:
-        package: Package specifier (e.g., "pandas>=2.0", "requests").
-
-    Returns:
-        Updated list of dependencies and which package manager was used.
-    """
+    """Add a package dependency (e.g. "pandas>=2.0"). Call sync_environment() to install."""
     session = await _get_session()
     pm = await _get_package_manager(session)
     if pm == "conda":
@@ -768,17 +531,7 @@ async def add_dependency(package: str) -> dict[str, Any]:
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def remove_dependency(package: str) -> dict[str, Any]:
-    """Remove a dependency from the notebook.
-
-    Automatically uses the notebook's configured package manager (UV or Conda)
-    based on env_source. Requires kernel restart to take effect.
-
-    Args:
-        package: Exact dependency string to remove.
-
-    Returns:
-        Updated list of dependencies and which package manager was used.
-    """
+    """Remove a package dependency. Requires restart_kernel() to take effect."""
     session = await _get_session()
     pm = await _get_package_manager(session)
     if pm == "conda":
@@ -792,14 +545,7 @@ async def remove_dependency(package: str) -> dict[str, Any]:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def get_dependencies() -> dict[str, Any]:
-    """Get the notebook's current dependencies.
-
-    Returns dependencies from the notebook's configured package manager
-    (UV or Conda) based on env_source.
-
-    Returns:
-        List of dependency specifiers and which package manager is active.
-    """
+    """Get the notebook's current package dependencies."""
     session = await _get_session()
     pm = await _get_package_manager(session)
     if pm == "conda":
@@ -811,16 +557,7 @@ async def get_dependencies() -> dict[str, Any]:
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def sync_environment() -> dict[str, Any]:
-    """Hot-install new dependencies without restarting the kernel.
-
-    Only works for UV dependencies and only for additions.
-    If removals are needed or sync fails, use restart_kernel() instead.
-
-    Returns:
-        success: Whether sync completed.
-        synced_packages: Packages that were installed (if success).
-        needs_restart: If true, must restart kernel instead.
-    """
+    """Hot-install new dependencies without restarting. Use restart_kernel() if this fails."""
     session = await _get_session()
     result = await session.sync_environment()
     return {
@@ -844,23 +581,7 @@ async def create_cell(
     and_run: bool = False,
     timeout_secs: float = 5.0,
 ) -> list[ContentItem]:
-    """Create a new cell in the notebook, optionally executing it.
-
-    The cell is added to the shared document and synced to all connected
-    clients (including nteract if open with the same notebook).
-
-    Args:
-        source: Initial source code for the cell.
-        cell_type: Cell type - "code", "markdown", or "raw".
-        index: Position to insert the cell. None appends at the end.
-        and_run: If True, execute the cell after creating it.
-        timeout_secs: Max time to wait for execution (default 5s). If execution
-            takes longer, returns partial results with complete=False.
-
-    Returns:
-        If and_run=False: The cell_id.
-        If and_run=True: Cell with execution status and outputs.
-    """
+    """Create a cell, optionally executing it. Use and_run=True to execute immediately."""
     session = await _get_session()
     cell_id = await session.create_cell(
         source=source,
@@ -876,17 +597,7 @@ async def create_cell(
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def set_cell_source(cell_id: str, source: str) -> dict[str, Any]:
-    """Update a cell's source code.
-
-    The change is synced to all connected clients.
-
-    Args:
-        cell_id: The cell ID to update.
-        source: The new source code.
-
-    Returns:
-        Confirmation of update.
-    """
+    """Replace a cell's entire source. Prefer replace_match for targeted edits."""
     session = await _get_session()
     await session.set_source(cell_id=cell_id, source=source)
 
@@ -914,41 +625,14 @@ async def replace_match(
     context_before: str = "",
     context_after: str = "",
 ) -> dict[str, Any]:
-    """Replace a matched text span in a cell using literal text matching.
+    """Replace matched text in a cell. Prefer this for simple, targeted edits.
 
-    Prefer this over replace_regex for simple edits. Prefer the smallest
-    possible edit — don't rewrite a whole cell when changing one expression.
+    `match` must resolve to exactly one location. Use context_before/context_after
+    to disambiguate. `content` is literal text — real newlines, no escapes.
 
-    The match must resolve to exactly one location in the cell. If it appears
-    multiple times, use context_before/context_after to disambiguate. These
-    are literal strings that must appear immediately before/after the match.
-
-    `content` is literal replacement text. What you write is what appears in the
-    cell — real newlines, real indentation, no escape interpretation.
-
-    Good examples:
-        match="a + b", context_before="return ", content="a * b"
-        match="draft", context_before='label = "', context_after='"', content="final"
-
-    Bad examples:
-        match="x" (too broad — will match everywhere)
-        match="1" without context (ambiguous in most code)
-
-    For zero-width insertions, line boundaries, or structural patterns, use
-    replace_regex instead.
-
-    Args:
-        cell_id: The cell to edit.
-        match: Literal text to find (must match exactly once in the cell).
-        content: Literal replacement text. Real newlines, no escape expansion.
-        context_before: Literal text that must appear immediately before the match.
-        context_after: Literal text that must appear immediately after the match.
-
-    Returns:
-        Dict with cell_id, old_text, span_start, span_end, new_source_length.
-
-    Raises:
-        RuntimeError: If 0 or >1 matches found (includes match count and offsets).
+    Examples: match="a + b", context_before="return ", content="a * b"
+    Fails if match is ambiguous (reports count + offsets for disambiguation).
+    For zero-width insertions or regex patterns, use replace_regex instead.
     """
     from nteract._editing import PatternError
     from nteract._editing import replace_match as _replace_match
@@ -986,41 +670,11 @@ async def replace_regex(
     pattern: str,
     content: str,
 ) -> dict[str, Any]:
-    """Replace a regex-matched span in a cell using Python regex.
+    """Replace a regex-matched span. Use for anchors, lookarounds, or zero-width insertions.
 
-    Use when you need anchors, lookarounds, line boundaries, or zero-width
-    insertions. Prefer replace_match for simple literal edits.
-
-    The pattern must match exactly one location in the cell. Compiled with
-    re.MULTILINE (^ and $ match line boundaries). `content` is literal
-    replacement text — not re.sub syntax, no backreferences.
-
-    Recommended patterns:
-        (?m)^print\\(x\\)$           — match an entire line
-        (?<=return )a \\+ b          — match after a keyword
-        (?=def calculate\\()         — zero-width insertion before a function
-        (?<=import math\\n)          — zero-width insertion after a line
-        \\Z                          — append to end of cell (NOT $ which matches every line end)
-
-    Anti-patterns:
-        print\\(x\\)                 — may match inside strings or comments; anchor with ^...$
-        $                            — matches every line end; use \\Z for end-of-cell
-        .* without (?s)              — dot doesn't match newlines by default
-        Broad tokens like 1, x, return without anchoring context
-
-    Args:
-        cell_id: The cell to edit.
-        pattern: Python regex (must match exactly once). Use (?m) for multiline,
-                 (?s) for dotall. Anchor tightly to avoid ambiguous matches.
-        content: Literal replacement text. Real newlines, no escape expansion,
-                 no regex backreferences.
-
-    Returns:
-        Dict with cell_id, old_text, span_start, span_end, new_source_length.
-
-    Raises:
-        RuntimeError: If pattern is invalid, or 0 or >1 matches found
-                      (includes match count and offsets for disambiguation).
+    Pattern must match exactly once (re.MULTILINE). `content` is literal text, not re.sub.
+    Use \\Z for end-of-cell (not $). Use (?=...) or (?<=...) for insertions.
+    Fails if 0 or >1 matches (reports count + offsets).
     """
     from nteract._editing import PatternError
     from nteract._editing import replace_regex as _replace_regex
@@ -1054,18 +708,7 @@ async def replace_regex(
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
 async def append_source(cell_id: str, text: str) -> dict[str, Any]:
-    """Append text to a cell's source code.
-
-    Uses direct CRDT insertion (no diff) - ideal for streaming LLM tokens.
-    Changes sync to all connected clients in real-time.
-
-    Args:
-        cell_id: The cell ID to append to.
-        text: The text to append.
-
-    Returns:
-        Confirmation of append.
-    """
+    """Append text to a cell's source. Ideal for streaming tokens."""
     session = await _get_session()
     await session.append_source(cell_id=cell_id, text=text)
 
@@ -1074,17 +717,7 @@ async def append_source(cell_id: str, text: str) -> dict[str, Any]:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def get_cell(cell_id: str) -> list[ContentItem]:
-    """Get a cell by ID, including outputs if available.
-
-    Outputs are resolved from the Automerge document, so you can see
-    outputs from cells executed by other clients.
-
-    Args:
-        cell_id: The cell ID.
-
-    Returns:
-        Cell with source code and outputs (images returned as ImageContent).
-    """
+    """Get a cell's source and outputs by ID."""
     session = await _get_session()
     cell = await session.get_cell(cell_id=cell_id)
     return _cell_to_content(cell)
@@ -1092,14 +725,7 @@ async def get_cell(cell_id: str) -> list[ContentItem]:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def get_all_cells() -> list[ContentItem]:
-    """Get all cells in the current notebook, including outputs.
-
-    Outputs are resolved from the Automerge document, so you can see
-    outputs from cells executed by other clients.
-
-    Returns:
-        All cells with source code and outputs (images returned as ImageContent).
-    """
+    """Get all cells with source and outputs."""
     session = await _get_session()
     cells = await session.get_cells()
     items: list[ContentItem] = []
@@ -1110,16 +736,7 @@ async def get_all_cells() -> list[ContentItem]:
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def delete_cell(cell_id: str) -> dict[str, Any]:
-    """Delete a cell from the notebook.
-
-    The change is synced to all connected clients.
-
-    Args:
-        cell_id: The cell ID to delete.
-
-    Returns:
-        Confirmation of deletion.
-    """
+    """Delete a cell by ID."""
     session = await _get_session()
     await session.delete_cell(cell_id=cell_id)
 
@@ -1128,17 +745,7 @@ async def delete_cell(cell_id: str) -> dict[str, Any]:
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def move_cell(cell_id: str, after_cell_id: str | None = None) -> dict[str, Any]:
-    """Move a cell to a new position in the notebook.
-
-    Reorders the shared document and syncs the change to all connected clients.
-
-    Args:
-        cell_id: The cell to move.
-        after_cell_id: Move after this cell. Use None to move to the start.
-
-    Returns:
-        Confirmation of the move, including the new internal position token.
-    """
+    """Move a cell after another cell. Use after_cell_id=None to move to the start."""
     session = await _get_session()
     new_position = await session.move_cell(cell_id=cell_id, after_cell_id=after_cell_id)
     return {
@@ -1151,17 +758,7 @@ async def move_cell(cell_id: str, after_cell_id: str | None = None) -> dict[str,
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def clear_outputs(cell_id: str) -> dict[str, Any]:
-    """Clear a cell's outputs.
-
-    Removes all outputs from the cell. Useful before re-running a cell
-    to get a clean slate.
-
-    Args:
-        cell_id: The cell ID to clear outputs from.
-
-    Returns:
-        Confirmation of clearing.
-    """
+    """Clear a cell's outputs."""
     session = await _get_session()
     await session.clear_outputs(cell_id)
     return {"cell_id": cell_id, "cleared": True}
@@ -1213,31 +810,13 @@ async def execute_cell(
     cell_id: str,
     timeout_secs: float = 5.0,
 ) -> list[ContentItem]:
-    """Execute a cell by ID.
-
-    Returns partial results after timeout_secs if still running.
-    If status shows "running", use get_cell() to poll for more outputs.
-
-    Args:
-        cell_id: The cell ID to execute.
-        timeout_secs: Maximum time to wait for execution (default: 5s).
-
-    Returns:
-        Cell with execution status and outputs (images returned as ImageContent).
-    """
+    """Execute a cell. Returns partial results after timeout_secs if still running."""
     return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def run_all_cells() -> dict[str, Any]:
-    """Queue all code cells for execution.
-
-    Queues all code cells in document order. Does not wait for completion.
-    Use get_queue_state() to monitor progress or get_all_cells() to see results.
-
-    Returns:
-        count: Number of cells queued for execution.
-    """
+    """Queue all code cells for execution. Use get_all_cells() to see results."""
     session = await _get_session()
     count = await session.run_all_cells()
     return {"status": "queued", "count": count}
