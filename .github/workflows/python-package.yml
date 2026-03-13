@@ -42,8 +42,8 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Install dependencies
-        run: uv sync --project python
+      - name: Install dev tools
+        run: uv sync --project python --only-group dev
 
       - name: Ruff check
         run: uv run --project python ruff check --config python/pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/
