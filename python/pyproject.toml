@@ -32,5 +32,10 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["SIM105", "SIM117"]
 
+[dependency-groups]
+dev = [
+    "ruff>=0.15",
+]
+
 [tool.ruff.format]
 quote-style = "double"

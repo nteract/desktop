@@ -24,10 +24,11 @@ import re
 import sys
 from typing import Annotated, Any, Literal
 
-import runtimed
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ImageContent, TextContent, ToolAnnotations
 from pydantic import Field
+
+import runtimed
 
 logger = logging.getLogger(__name__)
 
