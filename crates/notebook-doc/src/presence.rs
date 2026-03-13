@@ -147,6 +147,8 @@ impl ChannelData {
 pub enum PresenceMessage {
     Update {
         peer_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peer_label: Option<String>,
         #[serde(flatten)]
         data: ChannelData,
     },
@@ -204,9 +206,19 @@ pub fn decode_message(data: &[u8]) -> Result<PresenceMessage, PresenceError> {
 
 /// Encode a cursor update message.
 pub fn encode_cursor_update(peer_id: &str, pos: &CursorPosition) -> Vec<u8> {
+    encode_cursor_update_labeled(peer_id, None, pos)
+}
+
+/// Encode a cursor update with an optional peer label.
+pub fn encode_cursor_update_labeled(
+    peer_id: &str,
+    peer_label: Option<&str>,
+    pos: &CursorPosition,
+) -> Vec<u8> {
     // Cursor encoding is infallible for valid types — unwrap is safe here.
     encode_message(&PresenceMessage::Update {
         peer_id: peer_id.to_string(),
+        peer_label: peer_label.map(|s| s.to_string()),
         data: ChannelData::Cursor(pos.clone()),
     })
     .expect("CBOR encoding of cursor should not fail")
@@ -214,8 +226,18 @@ pub fn encode_cursor_update(peer_id: &str, pos: &CursorPosition) -> Vec<u8> {
 
 /// Encode a selection update message.
 pub fn encode_selection_update(peer_id: &str, sel: &SelectionRange) -> Vec<u8> {
+    encode_selection_update_labeled(peer_id, None, sel)
+}
+
+/// Encode a selection update with an optional peer label.
+pub fn encode_selection_update_labeled(
+    peer_id: &str,
+    peer_label: Option<&str>,
+    sel: &SelectionRange,
+) -> Vec<u8> {
     encode_message(&PresenceMessage::Update {
         peer_id: peer_id.to_string(),
+        peer_label: peer_label.map(|s| s.to_string()),
         data: ChannelData::Selection(sel.clone()),
     })
     .expect("CBOR encoding of selection should not fail")
@@ -225,6 +247,7 @@ pub fn encode_selection_update(peer_id: &str, sel: &SelectionRange) -> Vec<u8> {
 pub fn encode_kernel_state_update(peer_id: &str, state: &KernelStateData) -> Vec<u8> {
     encode_message(&PresenceMessage::Update {
         peer_id: peer_id.to_string(),
+        peer_label: None,
         data: ChannelData::KernelState(state.clone()),
     })
     .expect("CBOR encoding of kernel state should not fail")
@@ -236,6 +259,7 @@ pub fn encode_kernel_state_update(peer_id: &str, state: &KernelStateData) -> Vec
 pub fn encode_custom_update(peer_id: &str, data: &[u8]) -> Result<Vec<u8>, PresenceError> {
     encode_message(&PresenceMessage::Update {
         peer_id: peer_id.to_string(),
+        peer_label: None,
         data: ChannelData::Custom(data.to_vec()),
     })
 }
@@ -488,7 +512,7 @@ mod tests {
         let encoded = encode_cursor_update("peer-1", &pos);
         let msg = decode_message(&encoded).unwrap();
         match msg {
-            PresenceMessage::Update { peer_id, data } => {
+            PresenceMessage::Update { peer_id, data, .. } => {
                 assert_eq!(peer_id, "peer-1");
                 assert_eq!(data, ChannelData::Cursor(pos));
             }
@@ -508,7 +532,7 @@ mod tests {
         let encoded = encode_selection_update("editor-2", &sel);
         let msg = decode_message(&encoded).unwrap();
         match msg {
-            PresenceMessage::Update { peer_id, data } => {
+            PresenceMessage::Update { peer_id, data, .. } => {
                 assert_eq!(peer_id, "editor-2");
                 assert_eq!(data, ChannelData::Selection(sel));
             }
@@ -525,7 +549,7 @@ mod tests {
         let encoded = encode_kernel_state_update("daemon", &ks);
         let msg = decode_message(&encoded).unwrap();
         match msg {
-            PresenceMessage::Update { peer_id, data } => {
+            PresenceMessage::Update { peer_id, data, .. } => {
                 assert_eq!(peer_id, "daemon");
                 assert_eq!(data, ChannelData::KernelState(ks));
             }
@@ -597,7 +621,7 @@ mod tests {
         let encoded = encode_custom_update("agent-x", custom).unwrap();
         let msg = decode_message(&encoded).unwrap();
         match msg {
-            PresenceMessage::Update { peer_id, data } => {
+            PresenceMessage::Update { peer_id, data, .. } => {
                 assert_eq!(peer_id, "agent-x");
                 assert_eq!(data, ChannelData::Custom(custom.to_vec()));
             }

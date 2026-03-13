@@ -379,7 +379,7 @@ async def connect_notebook(
             await _session.close()
 
     # Create new session
-    _session = runtimed.AsyncSession(notebook_id=notebook_id)
+    _session = runtimed.AsyncSession(notebook_id=notebook_id, peer_label="Agent")
     await _session.connect()
 
     return {

@@ -1159,18 +1159,21 @@ where
                                     .as_millis() as u64;
 
                                 match presence::decode_message(&frame.payload) {
-                                    Ok(presence::PresenceMessage::Update { data, .. }) => {
+                                    Ok(presence::PresenceMessage::Update { data, peer_label, .. }) => {
                                         // Reject daemon-owned channels before updating shared state.
                                         // This prevents clients from spoofing kernel status.
                                         if matches!(data, presence::ChannelData::KernelState(_)) {
                                             warn!("[notebook-sync] Client tried to publish KernelState presence, ignoring");
                                         } else {
                                             let data_for_relay = data.clone();
+                                            // Use peer_label from the message if provided,
+                                            // otherwise fall back to "peer".
+                                            let label = peer_label.as_deref().unwrap_or("peer");
                                             // Update the room's presence state (using our known peer_id,
                                             // not the one in the frame — clients don't know their peer_id).
                                             let is_new = room.presence.write().await.update_peer(
                                                 peer_id,
-                                                "peer",
+                                                label,
                                                 data,
                                                 now_ms,
                                             );
@@ -1206,6 +1209,7 @@ where
                                             if let Ok(bytes) = presence::encode_message(
                                                 &presence::PresenceMessage::Update {
                                                     peer_id: peer_id.to_string(),
+                                                    peer_label: peer_label.clone(),
                                                     data: data_for_relay,
                                                 },
                                             ) {

@@ -40,6 +40,7 @@ use notebook_doc::metadata::NotebookMetadataSnapshot;
 pub struct AsyncSession {
     state: Arc<Mutex<AsyncSessionState>>,
     notebook_id: String,
+    peer_label: Option<String>,
 }
 
 struct AsyncSessionState {
@@ -86,14 +87,15 @@ impl AsyncSession {
     ///                  Multiple AsyncSession objects with the same notebook_id
     ///                  will share the same kernel.
     #[new]
-    #[pyo3(signature = (notebook_id=None))]
-    fn new(notebook_id: Option<String>) -> PyResult<Self> {
+    #[pyo3(signature = (notebook_id=None, peer_label=None))]
+    fn new(notebook_id: Option<String>, peer_label: Option<String>) -> PyResult<Self> {
         let notebook_id =
             notebook_id.unwrap_or_else(|| format!("agent-session-{}", uuid::Uuid::new_v4()));
 
         Ok(Self {
             state: Arc::new(Mutex::new(AsyncSessionState::new())),
             notebook_id,
+            peer_label,
         })
     }
 
@@ -196,6 +198,7 @@ impl AsyncSession {
             Ok(AsyncSession {
                 state: Arc::new(Mutex::new(state)),
                 notebook_id,
+                peer_label: None,
             })
         })
     }
@@ -276,6 +279,7 @@ impl AsyncSession {
             Ok(AsyncSession {
                 state: Arc::new(Mutex::new(state)),
                 notebook_id,
+                peer_label: None,
             })
         })
     }
@@ -735,8 +739,9 @@ impl AsyncSession {
         column: u32,
     ) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
-        let data = notebook_doc::presence::encode_cursor_update(
+        let data = notebook_doc::presence::encode_cursor_update_labeled(
             "local",
+            self.peer_label.as_deref(),
             &notebook_doc::presence::CursorPosition {
                 cell_id: cell_id.to_string(),
                 line,
@@ -774,8 +779,9 @@ impl AsyncSession {
         head_col: u32,
     ) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
-        let data = notebook_doc::presence::encode_selection_update(
+        let data = notebook_doc::presence::encode_selection_update_labeled(
             "local",
+            self.peer_label.as_deref(),
             &notebook_doc::presence::SelectionRange {
                 cell_id: cell_id.to_string(),
                 anchor_line,
