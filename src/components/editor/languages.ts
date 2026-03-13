@@ -5,8 +5,9 @@ import { markdown } from "@codemirror/lang-markdown";
 import { python } from "@codemirror/lang-python";
 import { sql } from "@codemirror/lang-sql";
 import { yaml } from "@codemirror/lang-yaml";
-import { indentUnit } from "@codemirror/language";
+import { indentUnit, LanguageSupport, LRLanguage } from "@codemirror/language";
 import type { Extension } from "@codemirror/state";
+import { parser as tomlParser } from "lezer-toml";
 
 import {
   CELL_MAGIC_LANGUAGES,
@@ -39,6 +40,16 @@ export type SupportedLanguage =
 // PEP 8 specifies 4-space indentation for Python
 const pythonIndent = indentUnit.of("    ");
 
+// TOML language support using lezer-toml
+const tomlLanguage = LRLanguage.define({
+  name: "toml",
+  parser: tomlParser,
+});
+
+function toml() {
+  return new LanguageSupport(tomlLanguage);
+}
+
 export function getLanguageExtension(language: SupportedLanguage): Extension {
   switch (language) {
     case "python":
@@ -66,7 +77,7 @@ export function getLanguageExtension(language: SupportedLanguage): Extension {
     case "yaml":
       return yaml();
     case "toml":
-      return []; // plain text fallback - no official CodeMirror package
+      return toml();
     default:
       return [];
   }
