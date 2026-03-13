@@ -2401,13 +2401,25 @@ async fn reconnect_to_daemon(
 
                 info!("[daemon-kernel] Daemon restarted, retrying connection...");
             } else {
-                // Another window is restarting, wait for it
+                // Another window is restarting, wait for it (up to 30s)
                 info!("[daemon-kernel] Another window is restarting daemon, waiting...");
-                for _ in 0..20 {
+                for _ in 0..60 {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     if !restart_in_progress.0.load(Ordering::SeqCst) {
                         break;
                     }
+                }
+            }
+
+            // Wait for daemon to be ready before retrying connection
+            let client = runtimed::client::PoolClient::default();
+            for attempt in 1..=20 {
+                if client.ping().await.is_ok() {
+                    info!("[daemon-kernel] Daemon ready after {} ping attempts", attempt);
+                    break;
+                }
+                if attempt < 20 {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
             }
 
