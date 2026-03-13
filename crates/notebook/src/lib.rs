@@ -2365,7 +2365,7 @@ async fn reconnect_to_daemon(
     match result {
         Ok(()) => {
             reset_flag();
-            return Ok(());
+            Ok(())
         }
         Err(ref e) if is_daemon_dead_error(e) => {
             info!("[daemon-kernel] Daemon appears dead: {}", e);
