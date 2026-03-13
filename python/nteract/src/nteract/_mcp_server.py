@@ -914,27 +914,41 @@ async def replace_match(
     context_before: str = "",
     context_after: str = "",
 ) -> dict[str, Any]:
-    """Replace a matched text span in a cell.
+    """Replace a matched text span in a cell using literal text matching.
 
-    Uses literal text matching (not regex) to find the edit target.
-    The match must resolve to exactly one location in the cell source.
-    Use context_before/context_after to disambiguate if the match text
-    appears multiple times.
+    Prefer this over replace_regex for simple edits. Prefer the smallest
+    possible edit — don't rewrite a whole cell when changing one expression.
 
-    The agent's cursor will appear at the edit location in the UI.
+    The match must resolve to exactly one location in the cell. If it appears
+    multiple times, use context_before/context_after to disambiguate. These
+    are literal strings that must appear immediately before/after the match.
+
+    `content` is literal replacement text. What you write is what appears in the
+    cell — real newlines, real indentation, no escape interpretation.
+
+    Good examples:
+        match="a + b", context_before="return ", content="a * b"
+        match="draft", context_before='label = "', context_after='"', content="final"
+
+    Bad examples:
+        match="x" (too broad — will match everywhere)
+        match="1" without context (ambiguous in most code)
+
+    For zero-width insertions, line boundaries, or structural patterns, use
+    replace_regex instead.
 
     Args:
         cell_id: The cell to edit.
-        match: Literal text to find (must match exactly once).
-        content: Replacement text.
-        context_before: Text that must appear immediately before the match (for disambiguation).
-        context_after: Text that must appear immediately after the match (for disambiguation).
+        match: Literal text to find (must match exactly once in the cell).
+        content: Literal replacement text. Real newlines, no escape expansion.
+        context_before: Literal text that must appear immediately before the match.
+        context_after: Literal text that must appear immediately after the match.
 
     Returns:
-        Edit result with old_text, span offsets, and new_source_length.
+        Dict with cell_id, old_text, span_start, span_end, new_source_length.
 
     Raises:
-        RuntimeError: If the match is empty, not found, or ambiguous.
+        RuntimeError: If 0 or >1 matches found (includes match count and offsets).
     """
     from nteract._editing import PatternError
     from nteract._editing import replace_match as _replace_match
@@ -972,27 +986,41 @@ async def replace_regex(
     pattern: str,
     content: str,
 ) -> dict[str, Any]:
-    """Replace a regex-matched span in a cell.
+    """Replace a regex-matched span in a cell using Python regex.
 
-    Uses Python regex syntax to find the edit target. The pattern must
-    match exactly one location. Supports lookahead/lookbehind for
-    zero-width insertions.
+    Use when you need anchors, lookarounds, line boundaries, or zero-width
+    insertions. Prefer replace_match for simple literal edits.
 
-    Prefer replace_match for simple edits — this tool is for cases where
-    regex power is needed (e.g., matching patterns across multiple tokens).
+    The pattern must match exactly one location in the cell. Compiled with
+    re.MULTILINE (^ and $ match line boundaries). `content` is literal
+    replacement text — not re.sub syntax, no backreferences.
 
-    The agent's cursor will appear at the edit location in the UI.
+    Recommended patterns:
+        (?m)^print\\(x\\)$           — match an entire line
+        (?<=return )a \\+ b          — match after a keyword
+        (?=def calculate\\()         — zero-width insertion before a function
+        (?<=import math\\n)          — zero-width insertion after a line
+        \\Z                          — append to end of cell (NOT $ which matches every line end)
+
+    Anti-patterns:
+        print\\(x\\)                 — may match inside strings or comments; anchor with ^...$
+        $                            — matches every line end; use \\Z for end-of-cell
+        .* without (?s)              — dot doesn't match newlines by default
+        Broad tokens like 1, x, return without anchoring context
 
     Args:
         cell_id: The cell to edit.
-        pattern: Regex pattern (must match exactly once). Compiled with re.MULTILINE.
-        content: Replacement text for the matched span.
+        pattern: Python regex (must match exactly once). Use (?m) for multiline,
+                 (?s) for dotall. Anchor tightly to avoid ambiguous matches.
+        content: Literal replacement text. Real newlines, no escape expansion,
+                 no regex backreferences.
 
     Returns:
-        Edit result with old_text, span offsets, and new_source_length.
+        Dict with cell_id, old_text, span_start, span_end, new_source_length.
 
     Raises:
-        RuntimeError: If the pattern is invalid, not found, or ambiguous.
+        RuntimeError: If pattern is invalid, or 0 or >1 matches found
+                      (includes match count and offsets for disambiguation).
     """
     from nteract._editing import PatternError
     from nteract._editing import replace_regex as _replace_regex
