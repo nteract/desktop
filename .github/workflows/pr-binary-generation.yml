@@ -274,7 +274,7 @@ jobs:
 
       - name: Upload runnable binary artifact
         id: upload-artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ needs.resolve-pr.outputs.artifact_prefix }}-${{ inputs.target_os == 'linux' && 'linux-x64' || inputs.target_os == 'macos' && 'macos' || 'windows-x64' }}
           path: pr-binary/

@@ -132,7 +132,7 @@ jobs:
           chmod +x runt-linux-x64
 
       - name: Upload Linux executables
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: runt-linux-executables
           path: |
@@ -198,7 +198,7 @@ jobs:
           chmod +x runt-darwin-arm64
 
       - name: Upload macOS executables
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: runt-macos-executables
           path: |
@@ -375,7 +375,7 @@ jobs:
           cp "${TAR_GZ_SIG_BINARIES[0]}" "artifacts/nteract-${CHANNEL}-darwin-arm64.app.tar.gz.sig"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: nteract-macos-arm64
           path: artifacts/
@@ -514,7 +514,7 @@ jobs:
           fi
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: nteract-windows-x64
           path: artifacts/
@@ -638,7 +638,7 @@ jobs:
           cp "$DEB_PATH" "artifacts/nteract-${CHANNEL}-linux-x64.deb"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: nteract-linux-x64
           path: artifacts/
@@ -676,7 +676,7 @@ jobs:
         working-directory: python/nteract
 
       - name: Upload dist
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: nteract-dist
           path: python/nteract/dist
@@ -759,7 +759,7 @@ jobs:
           maturin-version: "v1.11.5"
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.platform.target }}
           path: python/runtimed/dist
@@ -808,31 +808,31 @@ jobs:
           echo "$CHANGELOG" > changelog-section.md
 
       - name: Download Linux executables
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: runt-linux-executables
           path: ./executables
 
       - name: Download macOS executables
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: runt-macos-executables
           path: ./executables
 
       - name: Download macOS ARM64 notebook
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: nteract-macos-arm64
           path: ./notebook-macos-arm64
 
       - name: Download Windows x64 notebook
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: nteract-windows-x64
           path: ./notebook-windows-x64
 
       - name: Download Linux x64 notebook
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: nteract-linux-x64
           path: ./notebook-linux-x64
@@ -921,14 +921,14 @@ jobs:
           cat release-assets/latest.json
 
       - name: Download Python wheels
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           pattern: wheels-*
           path: ./wheels
           merge-multiple: true
 
       - name: Download nteract dist
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: nteract-dist
           path: ./nteract-dist
