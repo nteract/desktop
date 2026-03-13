@@ -1,6 +1,8 @@
-//! Session for code execution.
+//! Synchronous Session for code execution.
 //!
-//! Provides a high-level interface for executing code via the daemon's kernel.
+//! Thin wrapper around `session_core` async functions, using
+//! `runtime.block_on()` to provide a synchronous Python API.
+//! All business logic lives in `session_core.rs`.
 
 use pyo3::prelude::*;
 use std::path::PathBuf;
@@ -8,19 +10,14 @@ use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
-use runtimed::notebook_sync_client::{
-    NotebookBroadcastReceiver, NotebookSyncClient, NotebookSyncHandle, NotebookSyncReceiver,
-};
 use runtimed::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 
-use crate::daemon_paths::{get_blob_paths_sync, get_socket_path};
+use crate::daemon_paths::get_socket_path;
 use crate::error::to_py_err;
 use crate::event_stream::ExecutionEventIterator;
-use crate::output::{Cell, ExecutionResult, NotebookConnectionInfo, Output, SyncEnvironmentResult};
-use crate::output_resolver;
+use crate::output::{Cell, ExecutionResult, NotebookConnectionInfo, SyncEnvironmentResult};
+use crate::session_core::{self, SessionState};
 use crate::subscription::EventIteratorSubscription;
-
-use notebook_doc::metadata::NotebookMetadataSnapshot;
 
 /// A session for executing code via the runtimed daemon.
 ///
@@ -40,40 +37,6 @@ pub struct Session {
     state: Arc<Mutex<SessionState>>,
     notebook_id: String,
     peer_label: Option<String>,
-}
-
-struct SessionState {
-    handle: Option<NotebookSyncHandle>,
-    /// Keep the sync receiver alive so the sync task doesn't exit
-    #[allow(dead_code)]
-    sync_rx: Option<NotebookSyncReceiver>,
-    broadcast_rx: Option<NotebookBroadcastReceiver>,
-    kernel_started: bool,
-    env_source: Option<String>,
-    /// Base URL for blob server (for resolving blob hashes)
-    blob_base_url: Option<String>,
-    /// Path to blob store directory (fallback for direct disk access)
-    blob_store_path: Option<PathBuf>,
-    /// Connection info from daemon (for open_notebook/create_notebook)
-    connection_info: Option<NotebookConnectionInfo>,
-    /// Notebook path (for project file detection during kernel launch)
-    notebook_path: Option<String>,
-}
-
-impl SessionState {
-    fn new() -> Self {
-        Self {
-            handle: None,
-            sync_rx: None,
-            broadcast_rx: None,
-            kernel_started: false,
-            env_source: None,
-            blob_base_url: None,
-            blob_store_path: None,
-            connection_info: None,
-            notebook_path: None,
-        }
-    }
 }
 
 #[pymethods]
@@ -100,20 +63,20 @@ impl Session {
         })
     }
 
-    /// Get the notebook ID for this session.
+    /// The notebook ID for this session.
     #[getter]
     fn notebook_id(&self) -> &str {
         &self.notebook_id
     }
 
-    /// Check if the session is connected to the daemon.
+    /// Whether the session is connected to the daemon.
     #[getter]
     fn is_connected(&self) -> bool {
         let state = self.runtime.block_on(self.state.lock());
         state.handle.is_some()
     }
 
-    /// Check if a kernel has been started.
+    /// Whether a kernel has been started in this session.
     #[getter]
     fn kernel_started(&self) -> bool {
         let state = self.runtime.block_on(self.state.lock());
@@ -127,25 +90,23 @@ impl Session {
         state.env_source.clone()
     }
 
-    /// Get the connection info from daemon (for open_notebook/create_notebook).
-    ///
-    /// Returns None if not connected via open_notebook() or create_notebook().
+    /// Get connection info (from open_notebook/create_notebook).
     #[getter]
     fn connection_info(&self) -> Option<NotebookConnectionInfo> {
         let state = self.runtime.block_on(self.state.lock());
         state.connection_info.clone()
     }
 
-    /// Open an existing notebook file via the daemon.
+    // =========================================================================
+    // Connection (static constructors and connect)
+    // =========================================================================
+
+    /// Open an existing notebook file.
     ///
-    /// The daemon loads the file, derives the notebook_id from the canonical path,
-    /// and returns connection info including trust status.
+    /// Returns a new Session connected to the notebook at the given path.
     ///
     /// Args:
     ///     path: Path to the .ipynb file.
-    ///
-    /// Returns:
-    ///     A new Session connected to the opened notebook.
     ///
     /// Raises:
     ///     RuntimedError: If the file cannot be opened or parsed.
@@ -153,40 +114,10 @@ impl Session {
     #[pyo3(signature = (path, peer_label=None))]
     fn open_notebook(path: &str, peer_label: Option<String>) -> PyResult<Self> {
         let runtime = Runtime::new().map_err(to_py_err)?;
-        let path_buf = PathBuf::from(path);
-        let path_str = path.to_string();
+        let socket_path = get_socket_path();
 
-        let (notebook_id, state) = runtime.block_on(async {
-            let socket_path = get_socket_path();
-
-            let (handle, sync_rx, broadcast_rx, _cells, _metadata, info) =
-                NotebookSyncClient::connect_open_split(socket_path.clone(), path_buf, None)
-                    .await
-                    .map_err(to_py_err)?;
-
-            // Check for error in response
-            if let Some(error) = info.error {
-                return Err(to_py_err(error));
-            }
-
-            let notebook_id = info.notebook_id.clone();
-            let connection_info = NotebookConnectionInfo::from_protocol(info);
-            let (blob_base_url, blob_store_path) = get_blob_paths_sync(&socket_path);
-
-            let state = SessionState {
-                handle: Some(handle),
-                sync_rx: Some(sync_rx),
-                broadcast_rx: Some(broadcast_rx),
-                kernel_started: false,
-                env_source: None,
-                blob_base_url,
-                blob_store_path,
-                connection_info: Some(connection_info),
-                notebook_path: Some(path_str),
-            };
-
-            Ok((notebook_id, state))
-        })?;
+        let (notebook_id, state, _info) =
+            runtime.block_on(session_core::connect_open(socket_path, path))?;
 
         Ok(Self {
             runtime,
@@ -196,14 +127,13 @@ impl Session {
         })
     }
 
-    /// Create a new notebook via the daemon.
+    /// Create a new notebook.
     ///
-    /// The daemon creates an empty notebook with one code cell and returns
-    /// connection info with a generated UUID as the notebook_id.
+    /// Returns a new Session connected to a fresh notebook.
     ///
     /// Args:
-    ///     runtime: The kernel runtime type ("python" or "deno"). Defaults to "python".
-    ///     working_dir: Optional working directory for project file detection.
+    ///     runtime: Kernel runtime type (default: "python").
+    ///     working_dir: Optional working directory for the notebook.
     ///
     /// Returns:
     ///     A new Session connected to the created notebook.
@@ -214,65 +144,15 @@ impl Session {
         working_dir: Option<&str>,
         peer_label: Option<String>,
     ) -> PyResult<Self> {
-        // Validate working_dir if provided
-        if let Some(wd) = working_dir {
-            let path = std::path::Path::new(wd);
-            if !path.exists() {
-                return Err(pyo3::exceptions::PyFileNotFoundError::new_err(format!(
-                    "working_dir does not exist: {}",
-                    wd
-                )));
-            }
-            if !path.is_dir() {
-                return Err(pyo3::exceptions::PyNotADirectoryError::new_err(format!(
-                    "working_dir is not a directory: {}",
-                    wd
-                )));
-            }
-        }
-
         let rt = Runtime::new().map_err(to_py_err)?;
-        let runtime_str = runtime.to_string();
-        let working_dir_str = working_dir.map(|s| s.to_string());
+        let socket_path = get_socket_path();
         let working_dir_buf = working_dir.map(PathBuf::from);
 
-        let (notebook_id, state) = rt.block_on(async {
-            let socket_path = get_socket_path();
-
-            let (handle, sync_rx, broadcast_rx, _cells, _metadata, info) =
-                NotebookSyncClient::connect_create_split(
-                    socket_path.clone(),
-                    runtime_str,
-                    working_dir_buf,
-                    None,
-                    None,
-                )
-                .await
-                .map_err(to_py_err)?;
-
-            // Check for error in response
-            if let Some(error) = info.error {
-                return Err(to_py_err(error));
-            }
-
-            let notebook_id = info.notebook_id.clone();
-            let connection_info = NotebookConnectionInfo::from_protocol(info);
-            let (blob_base_url, blob_store_path) = get_blob_paths_sync(&socket_path);
-
-            let state = SessionState {
-                handle: Some(handle),
-                sync_rx: Some(sync_rx),
-                broadcast_rx: Some(broadcast_rx),
-                kernel_started: false,
-                env_source: None,
-                blob_base_url,
-                blob_store_path,
-                connection_info: Some(connection_info),
-                notebook_path: working_dir_str,
-            };
-
-            Ok((notebook_id, state))
-        })?;
+        let (notebook_id, state, _info) = rt.block_on(session_core::connect_create(
+            socket_path,
+            runtime,
+            working_dir_buf,
+        ))?;
 
         Ok(Self {
             runtime: rt,
@@ -283,49 +163,24 @@ impl Session {
     }
 
     /// Connect to the daemon.
-    ///
-    /// This is called automatically by start_kernel() if not already connected.
-    /// Respects the RUNTIMED_SOCKET_PATH environment variable if set.
     fn connect(&self) -> PyResult<()> {
-        self.runtime.block_on(async {
-            let mut state = self.state.lock().await;
-            if state.handle.is_some() {
-                return Ok(()); // Already connected
-            }
-
-            let socket_path = get_socket_path();
-
-            let (handle, sync_rx, broadcast_rx, _cells, _notebook_path) =
-                NotebookSyncClient::connect_split(socket_path.clone(), self.notebook_id.clone())
-                    .await
-                    .map_err(to_py_err)?;
-
-            let (blob_base_url, blob_store_path) = get_blob_paths_sync(&socket_path);
-
-            state.handle = Some(handle);
-            state.sync_rx = Some(sync_rx); // Keep alive so sync task doesn't exit
-            state.broadcast_rx = Some(broadcast_rx);
-            state.blob_base_url = blob_base_url;
-            state.blob_store_path = blob_store_path;
-
-            Ok(())
-        })
+        self.runtime
+            .block_on(session_core::connect(&self.state, &self.notebook_id))
     }
 
-    /// Start a kernel for this session.
+    // =========================================================================
+    // Kernel lifecycle
+    // =========================================================================
+
+    /// Start a kernel in the daemon.
     ///
     /// Args:
-    ///     kernel_type: Type of kernel ("python" or "deno"). Defaults to "python".
-    ///     env_source: Environment source. Defaults to "auto" (auto-detect from
-    ///         inline deps or project files). For Deno kernels, this is ignored
-    ///         and always uses "deno".
-    ///     notebook_path: Optional path to the notebook file on disk.
-    ///         Used for project file detection (pyproject.toml, pixi.toml,
-    ///         environment.yml) when env_source is "auto". If not provided,
-    ///         uses the path from open_notebook() if available.
+    ///     kernel_type: Type of kernel to start (default: "python").
+    ///     env_source: Environment source (default: "auto").
+    ///     notebook_path: Optional path for project file detection.
     ///
-    /// If a kernel is already running for this session's notebook_id,
-    /// this returns immediately without starting a new one.
+    /// Raises:
+    ///     RuntimedError: If not connected or kernel launch fails.
     #[pyo3(signature = (kernel_type="python", env_source="auto", notebook_path=None))]
     fn start_kernel(
         &self,
@@ -333,304 +188,118 @@ impl Session {
         env_source: &str,
         notebook_path: Option<&str>,
     ) -> PyResult<()> {
-        // Ensure connected first
         self.connect()?;
+        self.runtime.block_on(session_core::start_kernel(
+            &self.state,
+            kernel_type,
+            env_source,
+            notebook_path,
+        ))
+    }
 
-        self.runtime.block_on(async {
-            let mut state = self.state.lock().await;
+    /// Shutdown the kernel.
+    fn shutdown_kernel(&self) -> PyResult<()> {
+        self.runtime
+            .block_on(session_core::shutdown_kernel(&self.state))
+    }
 
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
+    /// Restart the kernel with auto environment detection.
+    ///
+    /// Args:
+    ///     wait_for_ready: If True, wait for kernel to report idle (default: True).
+    #[pyo3(signature = (wait_for_ready=true))]
+    fn restart_kernel(&self, wait_for_ready: bool) -> PyResult<()> {
+        self.runtime
+            .block_on(session_core::restart_kernel(&self.state, wait_for_ready))
+    }
 
-            // Use provided notebook_path or fall back to stored path from open_notebook()
-            let resolved_path = notebook_path
-                .map(|p| p.to_string())
-                .or_else(|| state.notebook_path.clone());
-
-            let response = handle
-                .send_request(NotebookRequest::LaunchKernel {
-                    kernel_type: kernel_type.to_string(),
-                    env_source: env_source.to_string(),
-                    notebook_path: resolved_path,
-                })
-                .await
-                .map_err(to_py_err)?;
-
-            match response {
-                NotebookResponse::KernelLaunched {
-                    env_source: actual_env,
-                    ..
-                } => {
-                    state.kernel_started = true;
-                    state.env_source = Some(actual_env);
-                    Ok(())
-                }
-                NotebookResponse::KernelAlreadyRunning {
-                    env_source: actual_env,
-                    ..
-                } => {
-                    state.kernel_started = true;
-                    state.env_source = Some(actual_env);
-                    Ok(())
-                }
-                NotebookResponse::Error { error } => Err(to_py_err(error)),
-                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
-            }
-        })
+    /// Interrupt the currently executing cell.
+    fn interrupt(&self) -> PyResult<()> {
+        self.runtime.block_on(session_core::interrupt(&self.state))
     }
 
     // =========================================================================
-    // Document Operations (write to automerge doc, synced to all clients)
+    // Cell operations
     // =========================================================================
 
-    /// Create a new cell in the automerge document.
-    ///
-    /// The cell is written to the shared document and synced to all connected
-    /// clients. Use execute_cell() to execute it.
+    /// Create a new cell in the document (atomic: source set in same transaction).
     ///
     /// Args:
-    ///     source: The cell source code (default: empty string).
-    ///     cell_type: Cell type - "code", "markdown", or "raw" (default: "code").
-    ///     index: Position to insert the cell (default: append at end).
+    ///     source: Cell source code (default: "").
+    ///     cell_type: Cell type (default: "code").
+    ///     index: Position to insert (default: end).
     ///
     /// Returns:
     ///     The cell ID (str).
     #[pyo3(signature = (source="", cell_type="code", index=None))]
     fn create_cell(&self, source: &str, cell_type: &str, index: Option<usize>) -> PyResult<String> {
         self.connect()?;
-
-        let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
-
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            // Get current cell count to determine index
-            let cells = handle.get_cells();
-            let insert_index = index.unwrap_or(cells.len());
-
-            // Create cell with source atomically — a single Automerge transaction
-            // and one sync round-trip. This prevents remote peers from seeing the
-            // cell structure before its source content arrives.
-            handle
-                .add_cell_with_source(insert_index, &cell_id, cell_type, source)
-                .await
-                .map_err(to_py_err)?;
-
-            Ok(cell_id)
-        })
+        self.runtime.block_on(session_core::create_cell(
+            &self.state,
+            source,
+            cell_type,
+            index,
+        ))
     }
 
     /// Update a cell's source in the automerge document.
-    ///
-    /// The change is synced to all connected clients.
-    ///
-    /// Args:
-    ///     cell_id: The cell ID.
-    ///     source: The new source code.
     fn set_source(&self, cell_id: &str, source: &str) -> PyResult<()> {
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            handle
-                .update_source(cell_id, source)
-                .await
-                .map_err(to_py_err)
-        })
+        self.runtime
+            .block_on(session_core::set_source(&self.state, cell_id, source))
     }
 
-    /// Append text to a cell's source in the automerge document.
-    ///
-    /// Unlike set_source() which replaces the entire text (using Myers diff
-    /// internally), this directly inserts characters at the end of the source
-    /// Text CRDT. This is ideal for streaming/agentic use cases where an
-    /// external process is appending tokens incrementally — each append is
-    /// a minimal CRDT operation that syncs efficiently to all connected clients.
-    ///
-    /// Args:
-    ///     cell_id: The cell ID.
-    ///     text: The text to append to the cell's source.
+    /// Append text to a cell's source (efficient for streaming tokens).
     fn append_source(&self, cell_id: &str, text: &str) -> PyResult<()> {
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            handle.append_source(cell_id, text).await.map_err(to_py_err)
-        })
+        self.runtime
+            .block_on(session_core::append_source(&self.state, cell_id, text))
     }
 
-    /// Get a cell from the automerge document.
-    ///
-    /// Args:
-    ///     cell_id: The cell ID.
-    ///
-    /// Returns:
-    ///     Cell object with id, cell_type, source, and execution_count.
-    ///
-    /// Raises:
-    ///     RuntimedError: If cell not found.
+    /// Get a cell by ID with resolved outputs.
     fn get_cell(&self, cell_id: &str) -> PyResult<Cell> {
-        self.runtime.block_on(async {
-            // Get snapshot and blob config while holding lock
-            let (snapshot, blob_base_url, blob_store_path) = {
-                let state = self.state.lock().await;
-                let handle = state
-                    .handle
-                    .as_ref()
-                    .ok_or_else(|| to_py_err("Not connected"))?;
-
-                let blob_base_url = state.blob_base_url.clone();
-                let blob_store_path = state.blob_store_path.clone();
-
-                let cells = handle.get_cells();
-                let snapshot = cells
-                    .into_iter()
-                    .find(|c| c.id == cell_id)
-                    .ok_or_else(|| to_py_err(format!("Cell not found: {}", cell_id)))?;
-
-                (snapshot, blob_base_url, blob_store_path)
-            }; // Lock released here
-
-            // Resolve outputs outside the lock
-            let outputs = output_resolver::resolve_cell_outputs(
-                &snapshot.outputs,
-                &blob_base_url,
-                &blob_store_path,
-            )
-            .await;
-
-            Ok(Cell::from_snapshot_with_outputs(snapshot, outputs))
-        })
+        self.runtime
+            .block_on(session_core::get_cell(&self.state, cell_id))
     }
 
-    /// Get all cells from the automerge document.
-    ///
-    /// Returns:
-    ///     List of Cell objects.
+    /// Get all cells with resolved outputs.
     fn get_cells(&self) -> PyResult<Vec<Cell>> {
-        self.runtime.block_on(async {
-            // Get snapshots and blob config while holding lock
-            let (snapshots, blob_base_url, blob_store_path) = {
-                let state = self.state.lock().await;
-                let handle = state
-                    .handle
-                    .as_ref()
-                    .ok_or_else(|| to_py_err("Not connected"))?;
-
-                let blob_base_url = state.blob_base_url.clone();
-                let blob_store_path = state.blob_store_path.clone();
-
-                let snapshots = handle.get_cells();
-                (snapshots, blob_base_url, blob_store_path)
-            }; // Lock released here
-
-            // Resolve outputs for all cells outside the lock
-            let mut cells = Vec::with_capacity(snapshots.len());
-            for snapshot in snapshots {
-                let outputs = output_resolver::resolve_cell_outputs(
-                    &snapshot.outputs,
-                    &blob_base_url,
-                    &blob_store_path,
-                )
-                .await;
-                cells.push(Cell::from_snapshot_with_outputs(snapshot, outputs));
-            }
-            Ok(cells)
-        })
+        self.runtime.block_on(session_core::get_cells(&self.state))
     }
 
-    /// Delete a cell from the automerge document.
-    ///
-    /// Args:
-    ///     cell_id: The cell ID to delete.
+    /// Delete a cell from the document.
     fn delete_cell(&self, cell_id: &str) -> PyResult<()> {
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            handle.delete_cell(cell_id).await.map_err(to_py_err)
-        })
+        self.runtime
+            .block_on(session_core::delete_cell(&self.state, cell_id))
     }
 
-    /// Move a cell to a new position in the notebook.
-    ///
-    /// Updates the cell's fractional index position field. No delete/re-insert —
-    /// the cell object is preserved in the Automerge document.
-    ///
-    /// Args:
-    ///     cell_id: The cell ID to move.
-    ///     after_cell_id: Place the cell after this cell ID. None means move to the start.
-    ///
-    /// Returns:
-    ///     The new fractional position string.
+    /// Move a cell to after another cell (or to the beginning if None).
     #[pyo3(signature = (cell_id, after_cell_id=None))]
     fn move_cell(&self, cell_id: &str, after_cell_id: Option<&str>) -> PyResult<String> {
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            handle
-                .move_cell(cell_id, after_cell_id)
-                .await
-                .map_err(to_py_err)
-        })
+        self.runtime
+            .block_on(session_core::move_cell(&self.state, cell_id, after_cell_id))
     }
 
-    /// Send a cursor position as presence data to other connected peers.
-    ///
-    /// The daemon relays this to all other peers in the notebook room.
-    /// Other peers' cursors are delivered via presence frames.
-    ///
-    /// Args:
-    ///     cell_id: The cell the cursor is in.
-    ///     line: Line number (0-based).
-    ///     column: Column number (0-based).
+    /// Clear a cell's outputs.
+    fn clear_outputs(&self, cell_id: &str) -> PyResult<()> {
+        self.runtime
+            .block_on(session_core::clear_outputs(&self.state, cell_id))
+    }
+
+    // =========================================================================
+    // Presence
+    // =========================================================================
+
+    /// Set cursor position for collaborative presence.
     fn set_cursor(&self, cell_id: &str, line: u32, column: u32) -> PyResult<()> {
-        let data = notebook_doc::presence::encode_cursor_update_labeled(
-            "local",
+        self.runtime.block_on(session_core::set_cursor(
+            &self.state,
             self.peer_label.as_deref(),
-            &notebook_doc::presence::CursorPosition {
-                cell_id: cell_id.to_string(),
-                line,
-                column,
-            },
-        );
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-            handle.send_presence(data).await.map_err(to_py_err)
-        })
+            cell_id,
+            line,
+            column,
+        ))
     }
 
-    /// Send a selection range as presence data to other connected peers.
-    ///
-    /// Args:
-    ///     cell_id: The cell the selection is in.
-    ///     anchor_line: Selection anchor line (0-based).
-    ///     anchor_col: Selection anchor column (0-based).
-    ///     head_line: Selection head line (0-based).
-    ///     head_col: Selection head column (0-based).
+    /// Set selection range for collaborative presence.
     fn set_selection(
         &self,
         cell_id: &str,
@@ -639,276 +308,112 @@ impl Session {
         head_line: u32,
         head_col: u32,
     ) -> PyResult<()> {
-        let data = notebook_doc::presence::encode_selection_update_labeled(
-            "local",
+        self.runtime.block_on(session_core::set_selection(
+            &self.state,
             self.peer_label.as_deref(),
-            &notebook_doc::presence::SelectionRange {
-                cell_id: cell_id.to_string(),
-                anchor_line,
-                anchor_col,
-                head_line,
-                head_col,
-            },
-        );
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-            handle.send_presence(data).await.map_err(to_py_err)
-        })
+            cell_id,
+            anchor_line,
+            anchor_col,
+            head_line,
+            head_col,
+        ))
     }
 
-    /// Save the notebook to a .ipynb file.
-    ///
-    /// Reads cells and metadata from the synced Automerge document, resolves
-    /// output manifests from the blob store, and writes standard nbformat v4 JSON.
+    // =========================================================================
+    // Save / Metadata
+    // =========================================================================
+
+    /// Save the notebook to disk.
     ///
     /// Args:
-    ///     path: Optional target path for the notebook file. If it doesn't end
-    ///           with .ipynb, the extension will be appended. If None, saves to
-    ///           the notebook's original file path (the notebook_id).
+    ///     path: Optional path override. If not provided, saves to original path.
     ///
     /// Returns:
-    ///     The absolute path where the file was written.
-    ///
-    /// Raises:
-    ///     RuntimedError: If not connected or write fails.
+    ///     The path the notebook was saved to.
     #[pyo3(signature = (path=None))]
     fn save(&self, path: Option<&str>) -> PyResult<String> {
         self.connect()?;
-
-        let path = path.map(|s| s.to_string());
-
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            let response = handle
-                .send_request(NotebookRequest::SaveNotebook {
-                    format_cells: false,
-                    path,
-                })
-                .await
-                .map_err(to_py_err)?;
-
-            match response {
-                NotebookResponse::NotebookSaved { path } => Ok(path),
-                NotebookResponse::Error { error } => Err(to_py_err(error)),
-                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
-            }
-        })
+        self.runtime.block_on(session_core::save(&self.state, path))
     }
 
-    // =========================================================================
-    // Metadata Operations (synced via automerge doc)
-    // =========================================================================
-
-    /// Set a metadata value in the automerge document.
-    ///
-    /// The value is synced to the daemon and all connected clients.
-    /// Use the key "notebook_metadata" to set the NotebookMetadataSnapshot
-    /// (JSON-encoded kernelspec, language_info, and runt config).
-    ///
-    /// Args:
-    ///     key: The metadata key.
-    ///     value: The metadata value (typically JSON).
+    /// Set a notebook metadata key.
     fn set_metadata(&self, key: &str, value: &str) -> PyResult<()> {
         self.connect()?;
-
-        let key = key.to_string();
-        let value = value.to_string();
-
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            handle.set_metadata(&key, &value).await.map_err(to_py_err)
-        })
+        self.runtime
+            .block_on(session_core::set_metadata(&self.state, key, value))
     }
 
-    /// Get a metadata value from the automerge document.
-    ///
-    /// Reads from the local replica of the automerge doc.
-    ///
-    /// Args:
-    ///     key: The metadata key.
-    ///
-    /// Returns:
-    ///     The metadata value (str) or None if not set.
+    /// Get a notebook metadata key.
     fn get_metadata(&self, key: &str) -> PyResult<Option<String>> {
-        self.connect()?;
-
-        let key = key.to_string();
-
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            handle.get_metadata(&key).await.map_err(to_py_err)
-        })
+        self.runtime
+            .block_on(session_core::get_metadata(&self.state, key))
     }
 
     // =========================================================================
-    // Cell Metadata (per-cell metadata in automerge document)
+    // Cell metadata
     // =========================================================================
 
     /// Get cell metadata as a JSON string.
-    ///
-    /// Args:
-    ///     cell_id: The cell ID.
-    ///
-    /// Returns:
-    ///     JSON string of the cell's metadata, or None if cell not found.
     fn get_cell_metadata(&self, cell_id: &str) -> PyResult<Option<String>> {
-        self.connect()?;
-
-        let state = self.state.blocking_lock();
-        let handle = state
-            .handle
-            .as_ref()
-            .ok_or_else(|| to_py_err("Not connected"))?;
-
-        Ok(handle
-            .get_cell_metadata(cell_id)
-            .map(|m| serde_json::to_string(&m).unwrap_or_else(|_| "{}".to_string())))
+        self.runtime
+            .block_on(session_core::get_cell_metadata(&self.state, cell_id))
     }
 
-    /// Set cell metadata from a JSON string.
-    ///
-    /// Args:
-    ///     cell_id: The cell ID.
-    ///     metadata_json: JSON string of the metadata to set.
-    ///
-    /// Returns:
-    ///     True if the cell was found and updated, False if cell not found.
+    /// Set cell metadata from a JSON string. Returns True on success.
     fn set_cell_metadata(&self, cell_id: &str, metadata_json: &str) -> PyResult<bool> {
-        self.connect()?;
-
-        let metadata: serde_json::Value = serde_json::from_str(metadata_json)
-            .map_err(|e| to_py_err(format!("Invalid JSON: {}", e)))?;
-
-        let cell_id = cell_id.to_string();
-
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            handle
-                .set_cell_metadata(&cell_id, &metadata)
-                .await
-                .map_err(to_py_err)
-        })
+        self.runtime.block_on(session_core::set_cell_metadata(
+            &self.state,
+            cell_id,
+            metadata_json,
+        ))
     }
 
-    /// Update cell metadata at a specific path.
-    ///
-    /// Args:
-    ///     cell_id: The cell ID.
-    ///     path: List of keys forming the path (e.g., ["jupyter", "source_hidden"]).
-    ///     value_json: JSON string of the value to set.
-    ///
-    /// Returns:
-    ///     True if the cell was found and updated, False if cell not found.
+    /// Update cell metadata at a specific path. Returns True on success.
     fn update_cell_metadata_at(
         &self,
         cell_id: &str,
         path: Vec<String>,
         value_json: &str,
     ) -> PyResult<bool> {
-        self.connect()?;
-
-        let value: serde_json::Value = serde_json::from_str(value_json)
-            .map_err(|e| to_py_err(format!("Invalid JSON: {}", e)))?;
-
-        let cell_id = cell_id.to_string();
-
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            let path_refs: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
-            handle
-                .update_cell_metadata_at(&cell_id, &path_refs, value)
-                .await
-                .map_err(to_py_err)
-        })
+        self.runtime.block_on(session_core::update_cell_metadata_at(
+            &self.state,
+            cell_id,
+            path,
+            value_json,
+        ))
     }
 
-    /// Set whether a cell's source should be hidden (JupyterLab convention).
-    ///
-    /// Args:
-    ///     cell_id: The cell ID.
-    ///     hidden: Whether the source should be hidden.
-    ///
-    /// Returns:
-    ///     True if the cell was found and updated, False if cell not found.
+    /// Set whether a cell's source is hidden.
     fn set_cell_source_hidden(&self, cell_id: &str, hidden: bool) -> PyResult<bool> {
-        self.update_cell_metadata_at(
-            cell_id,
-            vec!["jupyter".to_string(), "source_hidden".to_string()],
-            &serde_json::to_string(&hidden).unwrap(),
-        )
+        let val = if hidden { "true" } else { "false" };
+        self.update_cell_metadata_at(cell_id, vec!["jupyter".into(), "source_hidden".into()], val)
     }
 
-    /// Set whether a cell's outputs should be hidden (JupyterLab convention).
-    ///
-    /// Args:
-    ///     cell_id: The cell ID.
-    ///     hidden: Whether the outputs should be hidden.
-    ///
-    /// Returns:
-    ///     True if the cell was found and updated, False if cell not found.
+    /// Set whether a cell's outputs are hidden.
     fn set_cell_outputs_hidden(&self, cell_id: &str, hidden: bool) -> PyResult<bool> {
+        let val = if hidden { "true" } else { "false" };
         self.update_cell_metadata_at(
             cell_id,
-            vec!["jupyter".to_string(), "outputs_hidden".to_string()],
-            &serde_json::to_string(&hidden).unwrap(),
+            vec!["jupyter".into(), "outputs_hidden".into()],
+            val,
         )
     }
 
     /// Set cell tags.
-    ///
-    /// Args:
-    ///     cell_id: The cell ID.
-    ///     tags: List of tag strings.
-    ///
-    /// Returns:
-    ///     True if the cell was found and updated, False if cell not found.
     fn set_cell_tags(&self, cell_id: &str, tags: Vec<String>) -> PyResult<bool> {
-        self.update_cell_metadata_at(
-            cell_id,
-            vec!["tags".to_string()],
-            &serde_json::to_string(&tags).unwrap(),
-        )
+        let val = serde_json::to_string(&tags).map_err(|e| to_py_err(format!("JSON: {}", e)))?;
+        self.update_cell_metadata_at(cell_id, vec!["tags".into()], &val)
     }
 
     // =========================================================================
-    // Dependency Management (convenience methods for notebook_metadata)
+    // Dependencies (uv / conda)
     // =========================================================================
 
     /// Get current UV dependencies.
-    ///
-    /// Returns:
-    ///     List of UV dependency specifiers (e.g., ["pandas>=2.0", "numpy"]).
     fn get_uv_dependencies(&self) -> PyResult<Vec<String>> {
-        let snapshot = self.get_notebook_metadata()?;
+        let snapshot = self
+            .runtime
+            .block_on(session_core::get_notebook_metadata(&self.state))?;
         Ok(snapshot
             .runt
             .uv
@@ -916,44 +421,34 @@ impl Session {
             .unwrap_or_default())
     }
 
-    /// Add a UV dependency to the notebook. Deduplicates by package name
-    /// (case-insensitive): if the package already exists, its specifier is
-    /// replaced rather than appended.
-    ///
-    /// Args:
-    ///     package: PEP 508 dependency specifier (e.g., "pandas>=2.0", "requests").
-    ///
-    /// Returns:
-    ///     None. Use `get_uv_dependencies()` to read the current state.
+    /// Add a UV dependency (deduplicates by package name).
     fn add_uv_dependency(&self, package: &str) -> PyResult<()> {
-        let mut snapshot = self.get_notebook_metadata()?;
+        let mut snapshot = self
+            .runtime
+            .block_on(session_core::get_notebook_metadata(&self.state))?;
         snapshot.add_uv_dependency(package);
-        self.set_notebook_metadata(&snapshot)
+        self.runtime
+            .block_on(session_core::set_notebook_metadata(&self.state, &snapshot))
     }
 
-    /// Remove a UV dependency by package name (case-insensitive, version-agnostic).
-    ///
-    /// Args:
-    ///     package: Package name to remove (e.g., "requests"). Version specifiers
-    ///         are ignored — any entry matching the package name is removed.
-    ///
-    /// Returns:
-    ///     bool: True if a dependency was removed, False if not found.
+    /// Remove a UV dependency by package name. Returns True if removed.
     fn remove_uv_dependency(&self, package: &str) -> PyResult<bool> {
-        let mut snapshot = self.get_notebook_metadata()?;
+        let mut snapshot = self
+            .runtime
+            .block_on(session_core::get_notebook_metadata(&self.state))?;
         let removed = snapshot.remove_uv_dependency(package);
         if removed {
-            self.set_notebook_metadata(&snapshot)?;
+            self.runtime
+                .block_on(session_core::set_notebook_metadata(&self.state, &snapshot))?;
         }
         Ok(removed)
     }
 
     /// Get current Conda dependencies.
-    ///
-    /// Returns:
-    ///     List of Conda package names.
     fn get_conda_dependencies(&self) -> PyResult<Vec<String>> {
-        let snapshot = self.get_notebook_metadata()?;
+        let snapshot = self
+            .runtime
+            .block_on(session_core::get_notebook_metadata(&self.state))?;
         Ok(snapshot
             .runt
             .conda
@@ -961,50 +456,37 @@ impl Session {
             .unwrap_or_default())
     }
 
-    /// Add a Conda dependency to the notebook. Deduplicates by package name
-    /// (case-insensitive): if the package already exists, its specifier is
-    /// replaced rather than appended.
-    ///
-    /// Args:
-    ///     package: Conda package specifier (e.g., "numpy", "scipy>=1.0").
-    ///
-    /// Returns:
-    ///     None. Use `get_conda_dependencies()` to read the current state.
+    /// Add a Conda dependency (deduplicates by package name).
     fn add_conda_dependency(&self, package: &str) -> PyResult<()> {
-        let mut snapshot = self.get_notebook_metadata()?;
+        let mut snapshot = self
+            .runtime
+            .block_on(session_core::get_notebook_metadata(&self.state))?;
         snapshot.add_conda_dependency(package);
-        self.set_notebook_metadata(&snapshot)
+        self.runtime
+            .block_on(session_core::set_notebook_metadata(&self.state, &snapshot))
     }
 
-    /// Remove a Conda dependency by package name (case-insensitive, version-agnostic).
-    ///
-    /// Args:
-    ///     package: Package name to remove (e.g., "numpy"). Version specifiers
-    ///         are ignored — any entry matching the package name is removed.
-    ///
-    /// Returns:
-    ///     bool: True if a dependency was removed, False if not found.
+    /// Remove a Conda dependency by package name. Returns True if removed.
     fn remove_conda_dependency(&self, package: &str) -> PyResult<bool> {
-        let mut snapshot = self.get_notebook_metadata()?;
+        let mut snapshot = self
+            .runtime
+            .block_on(session_core::get_notebook_metadata(&self.state))?;
         let removed = snapshot.remove_conda_dependency(package);
         if removed {
-            self.set_notebook_metadata(&snapshot)?;
+            self.runtime
+                .block_on(session_core::set_notebook_metadata(&self.state, &snapshot))?;
         }
         Ok(removed)
     }
 
     // =========================================================================
-    // Execution (document-first: reads source from automerge doc)
+    // Execution
     // =========================================================================
 
     /// Execute a cell by ID.
     ///
-    /// The daemon reads the cell's source from the automerge document and
-    /// executes it. This ensures all clients see the same code being executed.
-    ///
-    /// If a kernel isn't running yet, this will start one automatically.
-    /// If a kernel is already running in the daemon (e.g., started by another
-    /// client), it will reuse that kernel.
+    /// The entire lifecycle (confirm_sync, send_request, collect_outputs)
+    /// is wrapped in a single timeout.
     ///
     /// Args:
     ///     cell_id: The cell ID to execute.
@@ -1017,68 +499,38 @@ impl Session {
     ///     RuntimedError: If not connected, cell not found, or timeout.
     #[pyo3(signature = (cell_id, timeout_secs=60.0))]
     fn execute_cell(&self, cell_id: &str, timeout_secs: f64) -> PyResult<ExecutionResult> {
-        let cell_id = cell_id.to_string();
+        self.runtime.block_on(session_core::execute_cell(
+            &self.state,
+            &self.notebook_id,
+            cell_id,
+            timeout_secs,
+        ))
+    }
 
-        // Auto-start kernel if not running (will reuse existing kernel if one is running)
-        {
-            let state = self.runtime.block_on(self.state.lock());
-            if !state.kernel_started {
-                drop(state);
-                self.start_kernel("python", "auto", None)?;
-            }
-        }
+    /// Create a cell, execute it, and return the result.
+    ///
+    /// Convenience method that combines create_cell + execute_cell.
+    ///
+    /// Args:
+    ///     code: The code to execute.
+    ///     timeout_secs: Maximum time to wait (default: 60).
+    ///
+    /// Returns:
+    ///     ExecutionResult with outputs, success status, and execution count.
+    #[pyo3(signature = (code, timeout_secs=60.0))]
+    fn run(&self, code: &str, timeout_secs: f64) -> PyResult<ExecutionResult> {
+        self.runtime.block_on(session_core::run(
+            &self.state,
+            &self.notebook_id,
+            code,
+            timeout_secs,
+        ))
+    }
 
-        self.runtime.block_on(async {
-            // Wrap the entire execution lifecycle in a single timeout.
-            // Previously only collect_outputs was bounded, which meant
-            // confirm_sync() or send_request() could hang indefinitely.
-            let timeout = std::time::Duration::from_secs_f64(timeout_secs);
-            let result = tokio::time::timeout(timeout, async {
-                let state = self.state.lock().await;
-
-                let handle = state
-                    .handle
-                    .as_ref()
-                    .ok_or_else(|| to_py_err("Not connected"))?;
-
-                let blob_base_url = state.blob_base_url.clone();
-                let blob_store_path = state.blob_store_path.clone();
-
-                // Confirm the daemon has merged our latest changes before executing.
-                // The daemon reads cell source from its own Automerge doc, so it must
-                // have the cell before we can reference it by ID.
-                handle.confirm_sync().await.map_err(to_py_err)?;
-
-                // Execute cell (daemon reads source from automerge doc)
-                let response = handle
-                    .send_request(NotebookRequest::ExecuteCell {
-                        cell_id: cell_id.clone(),
-                    })
-                    .await
-                    .map_err(to_py_err)?;
-
-                match response {
-                    NotebookResponse::CellQueued { .. } => {}
-                    NotebookResponse::Error { error } => return Err(to_py_err(error)),
-                    other => return Err(to_py_err(format!("Unexpected response: {:?}", other))),
-                }
-
-                drop(state); // Release lock before waiting for broadcasts
-
-                self.collect_outputs(&cell_id, blob_base_url, blob_store_path)
-                    .await
-            })
-            .await;
-
-            match result {
-                Ok(Ok(exec_result)) => Ok(exec_result),
-                Ok(Err(e)) => Err(e),
-                Err(_) => Err(to_py_err(format!(
-                    "Execution timed out after {} seconds",
-                    timeout_secs
-                ))),
-            }
-        })
+    /// Queue a cell for execution without waiting for the result.
+    fn queue_cell(&self, cell_id: &str) -> PyResult<()> {
+        self.runtime
+            .block_on(session_core::queue_cell(&self.state, cell_id))
     }
 
     /// Stream execution events for a cell as an iterator.
@@ -1086,13 +538,6 @@ impl Session {
     /// Unlike execute_cell() which blocks until completion and returns all
     /// outputs at once, this returns an iterator that yields ExecutionEvent
     /// objects as they arrive from the kernel, enabling real-time processing.
-    ///
-    /// Example:
-    ///     ```python
-    ///     for event in session.stream_execute(cell_id):
-    ///         if event.event_type == "output":
-    ///             print(event.output.text)  # Process output immediately
-    ///     ```
     ///
     /// Args:
     ///     cell_id: The cell ID to execute.
@@ -1128,10 +573,8 @@ impl Session {
                 .as_ref()
                 .ok_or_else(|| to_py_err("Not connected"))?;
 
-            // Confirm the daemon has merged our latest changes before executing.
             handle.confirm_sync().await.map_err(to_py_err)?;
 
-            // Queue the cell for execution
             let response = handle
                 .send_request(NotebookRequest::ExecuteCell {
                     cell_id: cell_id.clone(),
@@ -1145,7 +588,7 @@ impl Session {
                 other => return Err(to_py_err(format!("Unexpected response: {:?}", other))),
             }
 
-            // Get a resubscribed broadcast receiver for this stream
+            // Resubscribe for this stream — needs direct state access
             let stream_broadcast_rx = state
                 .broadcast_rx
                 .as_ref()
@@ -1157,7 +600,6 @@ impl Session {
 
             drop(state);
 
-            // Return the sync iterator
             ExecutionEventIterator::new(
                 stream_broadcast_rx,
                 cell_id,
@@ -1169,37 +611,20 @@ impl Session {
         })
     }
 
-    /// Subscribe to notebook broadcast events independently of execution.
+    /// Subscribe to execution events for specific cells or event types.
     ///
-    /// Returns an iterator that yields all broadcast events from the
-    /// notebook, optionally filtered by cell IDs and event types. This
-    /// enables reactive patterns for agents that want to respond to any
-    /// document activity (including executions from other clients).
-    ///
-    /// Example:
-    ///     ```python
-    ///     # Subscribe to all events
-    ///     for event in session.subscribe():
-    ///         print(f"Got: {event.event_type}")
-    ///
-    ///     # Subscribe with filters
-    ///     for event in session.subscribe(event_types=["output", "done"]):
-    ///         if event.event_type == "output":
-    ///             print(event.output.text)
-    ///     ```
+    /// Returns a sync iterator subscription that yields events as they arrive.
     ///
     /// Args:
-    ///     cell_ids: Optional list of cell IDs to filter events.
-    ///     event_types: Optional list of event types to filter. Valid types:
-    ///         "execution_started", "output", "done", "error", "kernel_status".
-    ///
-    /// Returns an EventIteratorSubscription iterator.
+    ///     cell_ids: Optional list of cell IDs to filter (None = all cells).
+    ///     event_types: Optional list of event types to filter (None = all types).
     #[pyo3(signature = (cell_ids=None, event_types=None))]
     fn subscribe(
         &self,
         cell_ids: Option<Vec<String>>,
         event_types: Option<Vec<String>>,
     ) -> PyResult<EventIteratorSubscription> {
+        // Needs direct state access for resubscribe
         let state = self.runtime.block_on(self.state.lock());
 
         let broadcast_rx = state
@@ -1222,188 +647,17 @@ impl Session {
         )
     }
 
-    /// Convenience method: create a cell, execute it, and return the result.
-    ///
-    /// This is a shortcut that combines create_cell() and execute_cell().
-    /// The cell is written to the automerge document before execution,
-    /// so other connected clients will see it.
-    ///
-    /// Args:
-    ///     code: The code to execute.
-    ///     timeout_secs: Maximum time to wait for execution (default: 60).
-    ///
-    /// Returns:
-    ///     ExecutionResult with outputs, success status, and execution count.
-    ///
-    /// Raises:
-    ///     RuntimedError: If not connected, kernel not started, or timeout.
-    #[pyo3(signature = (code, timeout_secs=60.0))]
-    fn run(&self, code: &str, timeout_secs: f64) -> PyResult<ExecutionResult> {
-        // Create cell in document first
-        let cell_id = self.create_cell(code, "code", None)?;
+    // =========================================================================
+    // Environment sync
+    // =========================================================================
 
-        // Then execute by ID (daemon reads from doc)
-        self.execute_cell(&cell_id, timeout_secs)
-    }
-
-    /// Queue a cell for execution without waiting for the result.
-    ///
-    /// The daemon reads the cell's source from the automerge document and
-    /// queues it for execution. Use get_cell() to poll for results.
-    ///
-    /// Args:
-    ///     cell_id: The cell ID to execute.
-    ///
-    /// Raises:
-    ///     RuntimedError: If not connected or cell not found.
-    fn queue_cell(&self, cell_id: &str) -> PyResult<()> {
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            // Confirm the daemon has merged our latest changes before executing.
-            handle.confirm_sync().await.map_err(to_py_err)?;
-
-            // Queue cell execution (daemon reads source from automerge doc)
-            let response = handle
-                .send_request(NotebookRequest::ExecuteCell {
-                    cell_id: cell_id.to_string(),
-                })
-                .await
-                .map_err(to_py_err)?;
-
-            match response {
-                NotebookResponse::CellQueued { .. } => Ok(()),
-                NotebookResponse::Error { error } => Err(to_py_err(error)),
-                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
-            }
-        })
-    }
-
-    /// Interrupt the currently executing cell.
-    fn interrupt(&self) -> PyResult<()> {
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            let response = handle
-                .send_request(NotebookRequest::InterruptExecution {})
-                .await
-                .map_err(to_py_err)?;
-
-            match response {
-                NotebookResponse::InterruptSent {} => Ok(()),
-                NotebookResponse::NoKernel {} => Err(to_py_err("No kernel running")),
-                NotebookResponse::Error { error } => Err(to_py_err(error)),
-                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
-            }
-        })
-    }
-
-    /// Shutdown the kernel.
-    fn shutdown_kernel(&self) -> PyResult<()> {
-        self.runtime.block_on(async {
-            let mut state = self.state.lock().await;
-
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            let response = handle
-                .send_request(NotebookRequest::ShutdownKernel {})
-                .await
-                .map_err(to_py_err)?;
-
-            match response {
-                NotebookResponse::KernelShuttingDown {} => {
-                    state.kernel_started = false;
-                    state.env_source = None;
-                    Ok(())
-                }
-                NotebookResponse::NoKernel {} => {
-                    state.kernel_started = false;
-                    state.env_source = None;
-                    Ok(())
-                }
-                NotebookResponse::Error { error } => Err(to_py_err(error)),
-                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
-            }
-        })
-    }
-
-    /// Restart the kernel.
-    ///
-    /// Shuts down the current kernel and starts a new one. This is useful after
-    /// modifying dependencies to apply the changes.
-    ///
-    /// The new kernel will use env_source="auto" to pick up any inline
-    /// dependencies from the notebook metadata.
-    ///
-    /// Args:
-    ///     wait_for_ready: If True (default), wait for kernel to be idle.
-    ///
-    /// Note: This currently does shutdown + start. A daemon-side RestartKernel
-    /// command would be cleaner but doesn't exist yet.
-    #[pyo3(signature = (wait_for_ready=true))]
-    fn restart_kernel(&self, wait_for_ready: bool) -> PyResult<()> {
-        // TODO: Consider adding NotebookRequest::RestartKernel to the daemon
-        // Shutdown existing kernel
-        self.shutdown_kernel()?;
-
-        // Start new kernel with auto env detection
-        self.start_kernel("python", "auto", None)?;
-
-        if wait_for_ready {
-            // Wait briefly for kernel to become ready
-            // The kernel reports idle status via broadcasts after startup
-            self.runtime.block_on(async {
-                let mut state = self.state.lock().await;
-                let broadcast_rx = state.broadcast_rx.as_mut();
-                if let Some(rx) = broadcast_rx {
-                    // Wait up to 30 seconds for kernel ready
-                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-                    while std::time::Instant::now() < deadline {
-                        match tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
-                            .await
-                        {
-                            Ok(Some(NotebookBroadcast::KernelStatus { status, .. }))
-                                if status == "idle" =>
-                            {
-                                return Ok(());
-                            }
-                            Ok(Some(_)) => continue, // Other broadcasts, keep waiting
-                            Ok(None) => return Err(to_py_err("Broadcast channel closed")),
-                            Err(_) => continue, // Timeout, keep waiting
-                        }
-                    }
-                }
-                Ok(()) // Timeout waiting for ready, but kernel was launched
-            })
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Sync environment with current metadata (hot-install new packages).
-    ///
-    /// This attempts to install new packages without restarting the kernel.
-    /// Only supported for UV inline dependencies with additions only.
-    ///
-    /// For removals, conda dependencies, or other cases, this will return
-    /// an error with needs_restart=True indicating a kernel restart is required.
+    /// Sync environment with current notebook metadata.
     ///
     /// Returns:
     ///     SyncEnvironmentResult with success status and installed packages.
     fn sync_environment(&self) -> PyResult<SyncEnvironmentResult> {
+        // sync_environment is complex — waits for follow-up broadcasts.
+        // Kept inline rather than in session_core due to broadcast polling.
         self.runtime.block_on(async {
             let state = self.state.lock().await;
 
@@ -1417,11 +671,11 @@ impl Session {
                 .await
                 .map_err(to_py_err)?;
 
-            drop(state); // Release lock before waiting for follow-up responses
+            drop(state);
 
             match response {
                 NotebookResponse::SyncEnvironmentStarted { packages } => {
-                    // Wait for completion
+                    // Wait for completion via broadcast
                     let mut state = self.state.lock().await;
                     let broadcast_rx = state.broadcast_rx.as_mut();
                     if let Some(rx) = broadcast_rx {
@@ -1447,7 +701,6 @@ impl Session {
                             }
                         }
                     }
-                    // Assume success if we got SyncEnvironmentStarted
                     Ok(SyncEnvironmentResult {
                         success: true,
                         synced_packages: packages,
@@ -1490,176 +743,32 @@ impl Session {
     }
 
     // =========================================================================
-    // Kernel Introspection (completion, history, queue state)
+    // Completion, history, queue
     // =========================================================================
 
-    /// Get code completions at a cursor position.
-    ///
-    /// The kernel provides completions based on the current code context,
-    /// including DataFrame columns, object methods, variable names, etc.
+    /// Get code completions at the given cursor position.
     ///
     /// Args:
-    ///     code: The code to complete.
-    ///     cursor_pos: Cursor position in the code (byte offset).
+    ///     code: The code buffer to complete in.
+    ///     cursor_pos: Cursor position (byte offset) in the code.
     ///
     /// Returns:
     ///     CompletionResult with items, cursor_start, and cursor_end.
-    ///
-    /// Raises:
-    ///     RuntimedError: If no kernel is running or request times out.
-    #[pyo3(signature = (code, cursor_pos))]
     fn complete(
         &self,
         code: String,
         cursor_pos: usize,
     ) -> PyResult<crate::output::CompletionResult> {
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            let response = handle
-                .send_request(NotebookRequest::Complete { code, cursor_pos })
-                .await
-                .map_err(to_py_err)?;
-
-            match response {
-                NotebookResponse::CompletionResult {
-                    items,
-                    cursor_start,
-                    cursor_end,
-                } => Ok(crate::output::CompletionResult {
-                    items: items
-                        .into_iter()
-                        .map(crate::output::CompletionItem::from_protocol)
-                        .collect(),
-                    cursor_start,
-                    cursor_end,
-                }),
-                NotebookResponse::NoKernel {} => Err(to_py_err("No kernel running")),
-                NotebookResponse::Error { error } => Err(to_py_err(error)),
-                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
-            }
-        })
+        self.runtime
+            .block_on(session_core::complete(&self.state, &code, cursor_pos))
     }
 
-    /// Get the current execution queue state.
-    ///
-    /// Returns which cell is currently executing (if any) and which cells
-    /// are queued for execution.
-    ///
-    /// Returns:
-    ///     QueueState with executing (cell_id or None) and queued (list of cell_ids).
-    fn get_queue_state(&self) -> PyResult<crate::output::QueueState> {
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            let response = handle
-                .send_request(NotebookRequest::GetQueueState {})
-                .await
-                .map_err(to_py_err)?;
-
-            match response {
-                NotebookResponse::QueueState { executing, queued } => {
-                    Ok(crate::output::QueueState { executing, queued })
-                }
-                NotebookResponse::Error { error } => Err(to_py_err(error)),
-                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
-            }
-        })
-    }
-
-    /// Clear outputs for a cell.
-    ///
-    /// Removes all outputs and resets the execution count. Useful before
-    /// re-executing a cell for a fresh run.
+    /// Get execution history from the kernel.
     ///
     /// Args:
-    ///     cell_id: The cell ID to clear outputs for.
-    fn clear_outputs(&self, cell_id: String) -> PyResult<()> {
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            let response = handle
-                .send_request(NotebookRequest::ClearOutputs { cell_id })
-                .await
-                .map_err(to_py_err)?;
-
-            match response {
-                NotebookResponse::OutputsCleared { .. } => Ok(()),
-                NotebookResponse::Error { error } => Err(to_py_err(error)),
-                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
-            }
-        })
-    }
-
-    /// Run all code cells in the notebook.
-    ///
-    /// Queues all code cells (in document order) for execution. The daemon
-    /// reads cell sources from the automerge document and executes them
-    /// sequentially.
-    ///
-    /// Returns:
-    ///     The number of cells queued for execution.
-    fn run_all_cells(&self) -> PyResult<usize> {
-        // Auto-start kernel if not running
-        {
-            let state = self.runtime.block_on(self.state.lock());
-            if !state.kernel_started {
-                drop(state);
-                self.start_kernel("python", "auto", None)?;
-            }
-        }
-
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            let response = handle
-                .send_request(NotebookRequest::RunAllCells {})
-                .await
-                .map_err(to_py_err)?;
-
-            match response {
-                NotebookResponse::AllCellsQueued { count } => Ok(count),
-                NotebookResponse::Error { error } => Err(to_py_err(error)),
-                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
-            }
-        })
-    }
-
-    /// Search the kernel's input history.
-    ///
-    /// Returns executed code from the kernel's history, optionally filtered
-    /// by a glob pattern.
-    ///
-    /// Args:
-    ///     pattern: Optional glob pattern to filter history (e.g., "*pandas*").
+    ///     pattern: Optional glob pattern to filter history entries.
     ///     n: Maximum number of entries to return (default: 100).
     ///     unique: If True, deduplicate entries (default: True).
-    ///
-    /// Returns:
-    ///     List of HistoryEntry objects with session, line, and source.
-    ///
-    /// Raises:
-    ///     RuntimedError: If no kernel is running or request times out.
     #[pyo3(signature = (pattern=None, n=100, unique=true))]
     fn get_history(
         &self,
@@ -1667,30 +776,29 @@ impl Session {
         n: i32,
         unique: bool,
     ) -> PyResult<Vec<crate::output::HistoryEntry>> {
-        self.runtime.block_on(async {
-            let state = self.state.lock().await;
-
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            let response = handle
-                .send_request(NotebookRequest::GetHistory { pattern, n, unique })
-                .await
-                .map_err(to_py_err)?;
-
-            match response {
-                NotebookResponse::HistoryResult { entries } => Ok(entries
-                    .into_iter()
-                    .map(crate::output::HistoryEntry::from_protocol)
-                    .collect()),
-                NotebookResponse::NoKernel {} => Err(to_py_err("No kernel running")),
-                NotebookResponse::Error { error } => Err(to_py_err(error)),
-                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
-            }
-        })
+        self.runtime.block_on(session_core::get_history(
+            &self.state,
+            pattern.as_deref(),
+            n,
+            unique,
+        ))
     }
+
+    /// Get the current execution queue state.
+    fn get_queue_state(&self) -> PyResult<crate::output::QueueState> {
+        self.runtime
+            .block_on(session_core::get_queue_state(&self.state))
+    }
+
+    /// Execute all code cells in document order. Returns number of cells queued.
+    fn run_all_cells(&self) -> PyResult<usize> {
+        self.runtime
+            .block_on(session_core::run_all_cells(&self.state, &self.notebook_id))
+    }
+
+    // =========================================================================
+    // Repr, context manager, close
+    // =========================================================================
 
     fn __repr__(&self) -> String {
         let state = self.runtime.block_on(self.state.lock());
@@ -1708,12 +816,6 @@ impl Session {
         slf
     }
 
-    /// Context manager exit.
-    ///
-    /// Does NOT shutdown the kernel - the daemon handles kernel lifecycle
-    /// based on peer count. When all peers disconnect, the daemon will
-    /// clean up the kernel. This prevents killing kernels that desktop
-    /// app users may still be using.
     #[pyo3(signature = (_exc_type=None, _exc_val=None, _exc_tb=None))]
     fn __exit__(
         &self,
@@ -1721,6 +823,10 @@ impl Session {
         _exc_val: Option<&Bound<'_, PyAny>>,
         _exc_tb: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<bool> {
+        // Shutdown kernel if running
+        if self.runtime.block_on(self.state.lock()).kernel_started {
+            let _ = self.shutdown_kernel();
+        }
         Ok(false) // Don't suppress exceptions
     }
 
@@ -1732,148 +838,5 @@ impl Session {
     /// to stop the kernel.
     fn close(&self) -> PyResult<()> {
         Ok(())
-    }
-}
-
-impl Session {
-    /// Wait for execution to complete, then read outputs from the Automerge doc.
-    ///
-    /// Uses the broadcast stream only as a signal for when execution is done.
-    /// The Automerge document is the source of truth for cell outputs — this
-    /// sidesteps the Jupyter shell/iopub race condition entirely since the
-    /// daemon writes all outputs to the doc before signaling ExecutionDone.
-    async fn collect_outputs(
-        &self,
-        cell_id: &str,
-        blob_base_url: Option<String>,
-        blob_store_path: Option<PathBuf>,
-    ) -> PyResult<ExecutionResult> {
-        let mut kernel_error: Option<String> = None;
-
-        // Phase 1: Wait for ExecutionDone or KernelError signal via broadcast.
-        // We don't accumulate outputs here — the Automerge doc is the source of truth.
-        loop {
-            let mut state = self.state.lock().await;
-
-            let broadcast_rx = state
-                .broadcast_rx
-                .as_mut()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            let broadcast =
-                tokio::time::timeout(std::time::Duration::from_millis(100), broadcast_rx.recv())
-                    .await;
-
-            match broadcast {
-                Ok(Some(msg)) => {
-                    drop(state);
-
-                    match msg {
-                        NotebookBroadcast::ExecutionDone {
-                            cell_id: msg_cell_id,
-                        } => {
-                            if msg_cell_id == cell_id {
-                                log::debug!("[session] ExecutionDone received for {}", cell_id);
-                                break;
-                            }
-                        }
-                        NotebookBroadcast::KernelError { error } => {
-                            log::debug!("[session] KernelError: {}", error);
-                            kernel_error = Some(error);
-                            break;
-                        }
-                        _ => {
-                            // Ignore all other broadcasts — doc has the data
-                        }
-                    }
-                }
-                Ok(None) => {
-                    return Err(to_py_err("Broadcast channel closed"));
-                }
-                Err(_) => {
-                    // Poll timeout — keep waiting for signal
-                }
-            }
-        }
-
-        // KernelError means the kernel/daemon died — return immediately
-        // without trying to read from the doc (handle may be gone).
-        if let Some(error) = kernel_error {
-            return Ok(ExecutionResult {
-                cell_id: cell_id.to_string(),
-                outputs: vec![Output::error("KernelError", &error, vec![])],
-                success: false,
-                execution_count: None,
-            });
-        }
-
-        // Phase 2: Read canonical cell state from the Automerge doc.
-        // The daemon writes outputs to the doc as they arrive from the kernel,
-        // but ExecutionDone can arrive via broadcast before the final Automerge
-        // sync frame. A confirm_sync round-trip ensures our local doc replica
-        // has all the outputs before we read.
-        let (snapshot, blob_base_url, blob_store_path) = {
-            let state = self.state.lock().await;
-            let handle = state
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            handle.confirm_sync().await.map_err(to_py_err)?;
-
-            let cells = handle.get_cells();
-            let snapshot = cells.into_iter().find(|c| c.id == cell_id).ok_or_else(|| {
-                to_py_err(format!(
-                    "Cell not found in doc after execution: {}",
-                    cell_id
-                ))
-            })?;
-
-            (snapshot, blob_base_url, blob_store_path)
-        }; // state lock dropped before async I/O
-
-        let execution_count = snapshot.execution_count.parse::<i64>().ok();
-
-        // Resolve outputs from doc snapshot (blob hashes → Output objects)
-        let outputs = output_resolver::resolve_cell_outputs(
-            &snapshot.outputs,
-            &blob_base_url,
-            &blob_store_path,
-        )
-        .await;
-
-        let success = !outputs.iter().any(|o| o.output_type == "error");
-
-        Ok(ExecutionResult {
-            cell_id: cell_id.to_string(),
-            outputs,
-            success,
-            execution_count,
-        })
-    }
-}
-
-// =========================================================================
-// Internal helper methods (not exposed to Python)
-// =========================================================================
-
-impl Session {
-    /// Get the current notebook metadata snapshot.
-    fn get_notebook_metadata(&self) -> PyResult<NotebookMetadataSnapshot> {
-        self.connect()?;
-        let state = self.state.blocking_lock();
-        let handle = state
-            .handle
-            .as_ref()
-            .ok_or_else(|| to_py_err("Not connected"))?;
-
-        Ok(handle.get_notebook_metadata().unwrap_or_default())
-    }
-
-    /// Set the notebook metadata snapshot.
-    fn set_notebook_metadata(&self, snapshot: &NotebookMetadataSnapshot) -> PyResult<()> {
-        let json_str = serde_json::to_string(snapshot)
-            .map_err(|e| to_py_err(format!("Failed to serialize metadata: {}", e)))?;
-        self.set_metadata("notebook_metadata", &json_str)
     }
 }
