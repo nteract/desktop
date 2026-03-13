@@ -21,7 +21,7 @@ import json
 import logging
 import re
 import sys
-from typing import Any
+from typing import Any, Literal
 
 import runtimed
 from mcp.server.fastmcp import FastMCP
@@ -407,7 +407,7 @@ async def open_notebook(path: str) -> dict[str, Any]:
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
 async def create_notebook(
-    runtime: str = "python",
+    runtime: Literal["python", "deno"] = "python",
     working_dir: str | None = None,
 ) -> dict[str, Any]:
     """Create a new empty notebook in memory. Call save_notebook(path) to persist to disk."""
@@ -556,7 +556,7 @@ async def sync_environment() -> dict[str, Any]:
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
 async def create_cell(
     source: str = "",
-    cell_type: str = "code",
+    cell_type: Literal["code", "markdown", "raw"] = "code",
     index: int | None = None,
     and_run: bool = False,
     timeout_secs: float = 5.0,
