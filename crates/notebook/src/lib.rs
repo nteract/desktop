@@ -2275,7 +2275,7 @@ fn is_daemon_dead_error(error: &str) -> bool {
 ///
 /// If the socket doesn't exist (daemon dead), this will attempt to restart the daemon
 /// using `ensure_daemon_via_sidecar()` before retrying the connection.
-/// In dev mode, returns a helpful error instead of auto-restarting.
+/// In dev mode, returns a helpful error instead of attempting recovery.
 ///
 /// Called by the frontend after receiving daemon:disconnected event.
 #[tauri::command]
@@ -2370,7 +2370,7 @@ async fn reconnect_to_daemon(
         Err(ref e) if is_daemon_dead_error(e) => {
             info!("[daemon-kernel] Daemon appears dead: {}", e);
 
-            // In dev mode, don't auto-restart - show helpful guidance
+            // In dev mode, don't attempt recovery - show helpful guidance
             if runtimed::is_dev_mode() {
                 reset_flag();
                 return Err(
