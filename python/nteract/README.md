@@ -172,8 +172,8 @@ This enables workflows like:
 
 ```bash
 # Clone
-git clone https://github.com/nteract/nteract
-cd nteract
+git clone https://github.com/nteract/desktop
+cd desktop/python/nteract
 
 # Install dependencies
 uv sync

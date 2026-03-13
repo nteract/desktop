@@ -118,7 +118,7 @@ RUNTIMED_DEV=1 cargo xtask dev
 RUNTIMED_DEV=1 runt daemon status
 ```
 
-Per-worktree state is stored in `~/.cache/runt/worktrees/{hash}/`.
+Per-worktree state is stored in `~/.cache/runt-nightly/worktrees/{hash}/`.
 
 ### Do NOT Use pkill or killall
 
@@ -134,7 +134,7 @@ When working in a Conductor workspace developing nteract/desktop, the xtask comm
 
 | Conductor Variable | Translated To | Purpose |
 |-------------------|---------------|---------|
-| `CONDUCTOR_WORKSPACE_PATH` | `RUNTIMED_WORKSPACE_PATH` | Daemon state isolated to `~/.cache/runt/worktrees/{hash}/` |
+| `CONDUCTOR_WORKSPACE_PATH` | `RUNTIMED_WORKSPACE_PATH` | Daemon state isolated to `~/.cache/runt-nightly/worktrees/{hash}/` |
 | `CONDUCTOR_WORKSPACE_NAME` | `RUNTIMED_WORKSPACE_NAME` | Human-readable workspace name for display |
 | `CONDUCTOR_PORT` | (used directly) | Vite dev server port (avoids conflicts between workspaces) |
 
@@ -188,7 +188,7 @@ The JSON output includes computed paths, environment variables, pool targets, an
 
 **Where state lives in dev mode:**
 ```
-~/.cache/runt/worktrees/{hash}/
+~/.cache/runt-nightly/worktrees/{hash}/
 ├── runtimed.sock      # Unix socket for IPC
 ├── runtimed.log       # Daemon logs
 ├── daemon.json        # PID, version, endpoint info
@@ -221,7 +221,7 @@ The daemon logs to:
 ~/.cache/runt/runtimed.log          (Linux)
 ```
 
-In dev mode, logs are at `~/.cache/runt/worktrees/{hash}/runtimed.log`.
+In dev mode, logs are at `~/.cache/runt-nightly/worktrees/{hash}/runtimed.log`.
 
 To check daemon logs:
 ```bash
@@ -321,7 +321,7 @@ Follow the pattern established by `environment_yml.rs` and `pixi.rs`:
 
 ### Trust System
 
-Dependencies are signed with HMAC-SHA256 using a per-machine key at `~/.config/runt/trust-key`. The signature covers `metadata.uv` and `metadata.conda` only (not cell contents or outputs). Shared notebooks are always untrusted on a new machine because the key is machine-specific. If you change the dependency metadata structure, you must update `crates/notebook/src/trust.rs`.
+Dependencies are signed with HMAC-SHA256 using a per-machine key at `~/.config/runt/trust-key`. The signature covers `metadata.uv` and `metadata.conda` only (not cell contents or outputs). Shared notebooks are always untrusted on a new machine because the key is machine-specific. If you change the dependency metadata structure, you must update the `crates/runt-trust/` crate (the `crates/notebook/src/trust.rs` file just re-exports from it).
 
 ### Key Files
 

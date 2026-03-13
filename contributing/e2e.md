@@ -102,6 +102,7 @@ Use a regular test when:
 |----------|------|---------------|
 | `1-vanilla.ipynb` | `prewarmed-uv.spec.js` | UV prewarmed environment pool |
 | `2-uv-inline.ipynb` | `uv-inline.spec.js` | UV inline dependency resolution |
+| `2-uv-inline.ipynb` | `trust-dialog-dismiss.spec.js` | Trust dialog dismiss flow |
 | `3-conda-inline.ipynb` | `conda-inline.spec.js` | Conda inline dependency resolution |
 | `10-deno.ipynb` | `deno.spec.js` | Deno kernel start + TypeScript execution |
 | `pyproject-project/5-pyproject.ipynb` | `uv-pyproject.spec.js` | pyproject.toml environment detection |
@@ -109,6 +110,7 @@ Use a regular test when:
 **Regular specs** (run against default app, not fixtures):
 - `smoke.spec.js` — Basic cell execution and output
 - `tab-completion.spec.js` — Tab completion in code cells
+- `cell-visibility.spec.js` — Source/output visibility toggles
 - `untitled-pyproject.spec.js` — Untitled notebook in pyproject.toml directory
 
 Multiple specs can reuse the same fixture notebook — each gets its own fresh app instance.

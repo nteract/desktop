@@ -8,7 +8,7 @@ This guide covers ipywidgets and anywidget support in nteract Desktop.
 
 | Category | Examples | Status |
 |----------|----------|--------|
-| **ipywidgets core** | IntSlider, Button, VBox, Dropdown | ✅ 49 widget types |
+| **ipywidgets core** | IntSlider, Button, VBox, Dropdown | ✅ 54+ widget types |
 | **anywidget** | quak, drawdata, tqdm | ✅ Full AFM support |
 | **ipycanvas** | Canvas, MultiCanvas | ✅ Custom implementation (tested with 0.14.3) |
 | **Display outputs** | Plotly, Vega-Lite, HTML, images | ✅ Via display |
