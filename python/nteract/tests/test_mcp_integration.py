@@ -191,8 +191,8 @@ async def test_append_source(mcp_client: ClientSession):
             "append_source",
             {"cell_id": cell_id, "text": token},
         )
-        data = _parse_json(result)
-        assert data["appended"] is True
+        text = _get_text(result)
+        assert "Appended to cell" in text
 
     # Verify final source
     result = await mcp_client.call_tool("get_cell", {"cell_id": cell_id})

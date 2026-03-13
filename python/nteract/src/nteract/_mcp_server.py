@@ -17,16 +17,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import difflib
 import json
 import logging
 import re
 import sys
 from typing import Annotated, Any, Literal
 
-import runtimed
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ImageContent, TextContent, ToolAnnotations
 from pydantic import Field
+
+import runtimed
 
 logger = logging.getLogger(__name__)
 
@@ -584,12 +586,17 @@ async def create_cell(
 async def set_cell_source(
     cell_id: str,
     source: Annotated[str, Field(description="Complete new source code for the cell")],
-) -> dict[str, Any]:
+    and_run: Annotated[bool, Field(description="Execute the cell immediately after edit")] = False,
+    timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 5.0,
+) -> ContentItem | list[ContentItem]:
     """Replace a cell's entire source. Prefer replace_match for targeted edits."""
     session = await _get_session()
     await session.set_source(cell_id=cell_id, source=source)
 
-    return {"cell_id": cell_id, "updated": True}
+    if and_run:
+        return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
+
+    return TextContent(type="text", text=f'Cell "{cell_id}" updated')
 
 
 async def _send_edit_cursor(
@@ -605,6 +612,16 @@ async def _send_edit_cursor(
         pass  # Presence is best-effort — don't fail the edit
 
 
+def _format_edit_diff(cell_id: str, old_text: str, new_text: str) -> str:
+    """Format a unified diff for an edit operation."""
+    # splitlines(keepends=False) + manual newlines ensures consistent output
+    old_lines = [line + "\n" for line in old_text.splitlines()]
+    new_lines = [line + "\n" for line in new_text.splitlines()]
+    diff = difflib.unified_diff(old_lines, new_lines, fromfile="before", tofile="after")
+    diff_text = "".join(diff)
+    return f'Edited cell "{cell_id}":\n{diff_text}'
+
+
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def replace_match(
     cell_id: str,
@@ -616,7 +633,9 @@ async def replace_match(
         str, Field(description="Text that must appear before the match")
     ] = "",
     context_after: Annotated[str, Field(description="Text that must appear after the match")] = "",
-) -> dict[str, Any]:
+    and_run: Annotated[bool, Field(description="Execute the cell immediately after edit")] = False,
+    timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 5.0,
+) -> ContentItem | list[ContentItem]:
     """Replace matched text in a cell. Prefer this for simple, targeted edits.
 
     Use context_before/context_after to disambiguate when match appears multiple times.
@@ -644,13 +663,11 @@ async def replace_match(
     end_offset = result.span.start + len(content)
     await _send_edit_cursor(session, cell_id, result.new_source, end_offset)
 
-    return {
-        "cell_id": cell_id,
-        "old_text": result.old_text,
-        "span_start": result.span.start,
-        "span_end": result.span.end,
-        "new_source_length": len(result.new_source),
-    }
+    if and_run:
+        return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
+
+    diff = _format_edit_diff(cell_id, result.old_text, content)
+    return TextContent(type="text", text=diff)
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
@@ -666,7 +683,9 @@ async def replace_regex(
     content: Annotated[
         str, Field(description="Literal replacement text — not re.sub syntax, no backreferences")
     ],
-) -> dict[str, Any]:
+    and_run: Annotated[bool, Field(description="Execute the cell immediately after edit")] = False,
+    timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 5.0,
+) -> ContentItem | list[ContentItem]:
     """Replace a regex-matched span. Use for anchors, lookarounds, or zero-width insertions.
 
     Fails if 0 or >1 matches (reports count + offsets for disambiguation).
@@ -692,25 +711,28 @@ async def replace_regex(
     end_offset = result.span.start + len(content)
     await _send_edit_cursor(session, cell_id, result.new_source, end_offset)
 
-    return {
-        "cell_id": cell_id,
-        "old_text": result.old_text,
-        "span_start": result.span.start,
-        "span_end": result.span.end,
-        "new_source_length": len(result.new_source),
-    }
+    if and_run:
+        return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
+
+    diff = _format_edit_diff(cell_id, result.old_text, content)
+    return TextContent(type="text", text=diff)
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
 async def append_source(
     cell_id: str,
     text: Annotated[str, Field(description="Text to append to the cell source")],
-) -> dict[str, Any]:
+    and_run: Annotated[bool, Field(description="Execute the cell immediately after edit")] = False,
+    timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 5.0,
+) -> ContentItem | list[ContentItem]:
     """Append text to a cell's source. Ideal for streaming tokens."""
     session = await _get_session()
     await session.append_source(cell_id=cell_id, text=text)
 
-    return {"cell_id": cell_id, "appended": True}
+    if and_run:
+        return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
+
+    return TextContent(type="text", text=f'Appended to cell "{cell_id}"')
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
