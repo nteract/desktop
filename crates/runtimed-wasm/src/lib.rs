@@ -10,7 +10,6 @@ use notebook_doc::presence;
 use notebook_doc::{CellSnapshot, NotebookDoc};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsValue;
 
 use notebook_doc::frame_types;
 
@@ -568,7 +567,8 @@ impl NotebookHandle {
             }
         }
 
-        serde_wasm_bindgen::to_value(&events).unwrap_or(JsValue::UNDEFINED)
+        let serializer = serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true);
+        events.serialize(&serializer).unwrap_or(JsValue::UNDEFINED)
     }
 }
 
