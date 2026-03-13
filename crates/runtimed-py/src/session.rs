@@ -144,6 +144,23 @@ impl Session {
         working_dir: Option<&str>,
         peer_label: Option<String>,
     ) -> PyResult<Self> {
+        // Validate working_dir if provided
+        if let Some(wd) = working_dir {
+            let path = std::path::Path::new(wd);
+            if !path.exists() {
+                return Err(pyo3::exceptions::PyFileNotFoundError::new_err(format!(
+                    "working_dir does not exist: {}",
+                    wd
+                )));
+            }
+            if !path.is_dir() {
+                return Err(pyo3::exceptions::PyNotADirectoryError::new_err(format!(
+                    "working_dir is not a directory: {}",
+                    wd
+                )));
+            }
+        }
+
         let rt = Runtime::new().map_err(to_py_err)?;
         let socket_path = get_socket_path();
         let working_dir_buf = working_dir.map(PathBuf::from);
