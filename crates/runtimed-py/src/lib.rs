@@ -19,6 +19,7 @@ mod event_stream;
 mod output;
 mod output_resolver;
 mod session;
+mod session_core;
 mod subscription;
 
 use async_session::AsyncSession;
