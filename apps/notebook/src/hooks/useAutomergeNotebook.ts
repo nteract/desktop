@@ -558,6 +558,48 @@ export function useAutomergeNotebook() {
     );
   }, []);
 
+  // ── Cell visibility ─────────────────────────────────────────────────
+
+  const setCellSourceHidden = useCallback(
+    (cellId: string, hidden: boolean) => {
+      const handle = handleRef.current;
+      if (!handle || awaitingInitialSyncRef.current) return;
+
+      // Mutate WASM (instant, local-first)
+      const updated = handle.set_cell_source_hidden(cellId, hidden);
+      if (!updated) return;
+
+      // Re-read from WASM (single source of truth)
+      rematerializeCellsSync(handle);
+
+      // Sync to daemon (fire-and-forget)
+      syncToRelay(handle);
+
+      setDirty(true);
+    },
+    [rematerializeCellsSync, syncToRelay],
+  );
+
+  const setCellOutputsHidden = useCallback(
+    (cellId: string, hidden: boolean) => {
+      const handle = handleRef.current;
+      if (!handle || awaitingInitialSyncRef.current) return;
+
+      // Mutate WASM (instant, local-first)
+      const updated = handle.set_cell_outputs_hidden(cellId, hidden);
+      if (!updated) return;
+
+      // Re-read from WASM (single source of truth)
+      rematerializeCellsSync(handle);
+
+      // Sync to daemon (fire-and-forget)
+      syncToRelay(handle);
+
+      setDirty(true);
+    },
+    [rematerializeCellsSync, syncToRelay],
+  );
+
   // ── Public interface ───────────────────────────────────────────────
 
   return {
@@ -576,5 +618,7 @@ export function useAutomergeNotebook() {
     dirty,
     updateOutputByDisplayId,
     setExecutionCount,
+    setCellSourceHidden,
+    setCellOutputsHidden,
   };
 }

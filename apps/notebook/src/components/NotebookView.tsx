@@ -53,6 +53,8 @@ interface NotebookViewProps {
   onMoveCell: (cellId: string, afterCellId?: string | null) => void;
   onClearPagePayload: (cellId: string) => void;
   onReportOutputMatchCount?: (cellId: string, count: number) => void;
+  onSetCellSourceHidden?: (cellId: string, hidden: boolean) => void;
+  onSetCellOutputsHidden?: (cellId: string, hidden: boolean) => void;
 }
 
 function AddCellButtons({
@@ -274,6 +276,8 @@ function NotebookViewContent({
   onMoveCell,
   onClearPagePayload,
   onReportOutputMatchCount,
+  onSetCellSourceHidden,
+  onSetCellOutputsHidden,
 }: NotebookViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { focusCell } = useEditorRegistry();
@@ -442,6 +446,16 @@ function NotebookViewContent({
             isLastCell={index === cells.length - 1}
             dragHandleProps={dragHandleProps}
             isDragging={isDragging}
+            onToggleSourceHidden={
+              onSetCellSourceHidden
+                ? (hidden: boolean) => onSetCellSourceHidden(cell.id, hidden)
+                : undefined
+            }
+            onToggleOutputsHidden={
+              onSetCellOutputsHidden
+                ? (hidden: boolean) => onSetCellOutputsHidden(cell.id, hidden)
+                : undefined
+            }
           />
         );
       }
@@ -505,6 +519,8 @@ function NotebookViewContent({
       onAddCell,
       onClearPagePayload,
       onReportOutputMatchCount,
+      onSetCellSourceHidden,
+      onSetCellOutputsHidden,
       focusCell,
     ],
   );

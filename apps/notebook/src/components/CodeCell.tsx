@@ -1,5 +1,5 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import { Trash2, X } from "lucide-react";
+import { ChevronRight, Code2, EyeOff, Trash2, X } from "lucide-react";
 import {
   lazy,
   Suspense,
@@ -21,6 +21,7 @@ import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
 import { AnsiOutput } from "@/components/outputs/ansi-output";
 import { ErrorBoundary } from "@/lib/error-boundary";
+import { cn } from "@/lib/utils";
 import type { CellPagePayload, MimeBundle } from "../App";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { registerEditor, unregisterEditor } from "../lib/cursor-registry";
@@ -102,6 +103,10 @@ interface CodeCellProps {
   dragHandleProps?: Record<string, unknown>;
   /** Whether this cell is currently being dragged */
   isDragging?: boolean;
+  /** Callback to toggle source visibility (JupyterLab convention) */
+  onToggleSourceHidden?: (hidden: boolean) => void;
+  /** Callback to toggle outputs visibility (JupyterLab convention) */
+  onToggleOutputsHidden?: (hidden: boolean) => void;
 }
 
 export function CodeCell({
@@ -126,9 +131,23 @@ export function CodeCell({
   isPreviousCellFromFocused,
   dragHandleProps,
   isDragging,
+  onToggleSourceHidden,
+  onToggleOutputsHidden,
 }: CodeCellProps) {
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
+
+  // Check cell metadata for visibility (JupyterLab convention)
+  const isSourceHidden =
+    (cell.metadata?.jupyter as { source_hidden?: boolean })?.source_hidden ===
+    true;
+  const isOutputsHidden =
+    (cell.metadata?.jupyter as { outputs_hidden?: boolean })?.outputs_hidden ===
+    true;
+
+  // When both are hidden, show a compact single-row layout with both badges side by side
+  const bothHidden =
+    isSourceHidden && isOutputsHidden && cell.outputs.length > 0;
 
   // Register EditorView with the cursor registry for remote cursor rendering.
   // We use a ref + polling approach because the EditorView is created async
@@ -273,15 +292,35 @@ export function CodeCell({
   );
 
   const rightGutterContent = (
-    <button
-      type="button"
-      tabIndex={-1}
-      onClick={onDelete}
-      className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-destructive"
-      title="Delete cell"
-    >
-      <Trash2 className="h-3.5 w-3.5" />
-    </button>
+    <div className="flex flex-col gap-0.5">
+      {/* Toggle source visibility (not shown when both hidden - badges handle it) */}
+      {onToggleSourceHidden && !bothHidden && (
+        <button
+          type="button"
+          tabIndex={-1}
+          onClick={() => onToggleSourceHidden(!isSourceHidden)}
+          className={cn(
+            "flex items-center justify-center rounded p-1 transition-colors hover:text-foreground",
+            isSourceHidden
+              ? "text-muted-foreground/70"
+              : "text-muted-foreground/40",
+          )}
+          title={isSourceHidden ? "Show source" : "Hide source"}
+        >
+          <Code2 className="h-3.5 w-3.5" />
+        </button>
+      )}
+      {/* Delete button */}
+      <button
+        type="button"
+        tabIndex={-1}
+        onClick={onDelete}
+        className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-destructive"
+        title="Delete cell"
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
+    </div>
   );
 
   return (
@@ -298,8 +337,51 @@ export function CodeCell({
         isDragging={isDragging}
         codeContent={
           <>
-            {/* Editor */}
-            <div>
+            {/* Source visibility toggle + Editor */}
+            {bothHidden ? (
+              /* Compact layout: both badges side by side when both hidden */
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => onToggleSourceHidden?.(false)}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
+                  title="Show source"
+                >
+                  <Code2 className="h-3 w-3" />
+                  <span className="font-mono truncate max-w-32">
+                    {cell.source.split("\n")[0] || "source"}
+                  </span>
+                  <ChevronRight className="h-3 w-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onToggleOutputsHidden?.(false)}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
+                  title="Show outputs"
+                >
+                  <span>
+                    {cell.outputs.length} output
+                    {cell.outputs.length !== 1 ? "s" : ""}
+                  </span>
+                  <ChevronRight className="h-3 w-3" />
+                </button>
+              </div>
+            ) : isSourceHidden ? (
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => onToggleSourceHidden?.(false)}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
+                  title="Show source"
+                >
+                  <Code2 className="h-3 w-3" />
+                  <span className="font-mono truncate max-w-48">
+                    {cell.source.split("\n")[0] || "source"}
+                  </span>
+                  <ChevronRight className="h-3 w-3" />
+                </button>
+              </div>
+            ) : (
               <CodeMirrorEditor
                 ref={editorRef}
                 value={cell.source}
@@ -311,7 +393,7 @@ export function CodeCell({
                 className="min-h-[2rem]"
                 autoFocus={isFocused}
               />
-            </div>
+            )}
 
             {/* Page Payload (documentation from ? or ??) */}
             {pagePayload && (
@@ -334,15 +416,47 @@ export function CodeCell({
           </>
         }
         outputContent={
-          <OutputArea
-            outputs={cell.outputs}
-            preloadIframe
-            searchQuery={searchQuery}
-            onSearchMatchCount={onSearchMatchCount}
-            onLinkClick={(url) => openUrl(url)}
-          />
+          isOutputsHidden && cell.outputs.length > 0 ? (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => onToggleOutputsHidden?.(false)}
+                className="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
+                title="Show outputs"
+              >
+                <span>
+                  {cell.outputs.length} output
+                  {cell.outputs.length !== 1 ? "s" : ""}
+                </span>
+                <ChevronRight className="h-3 w-3" />
+              </button>
+            </div>
+          ) : (
+            <OutputArea
+              outputs={cell.outputs}
+              preloadIframe
+              searchQuery={searchQuery}
+              onSearchMatchCount={onSearchMatchCount}
+              onLinkClick={(url) => openUrl(url)}
+            />
+          )
         }
-        hideOutput={cell.outputs.length === 0}
+        outputRightGutterContent={
+          onToggleOutputsHidden &&
+          cell.outputs.length > 0 &&
+          !isOutputsHidden ? (
+            <button
+              type="button"
+              tabIndex={-1}
+              onClick={() => onToggleOutputsHidden(true)}
+              className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-foreground"
+              title="Hide outputs"
+            >
+              <EyeOff className="h-3.5 w-3.5" />
+            </button>
+          ) : undefined
+        }
+        hideOutput={cell.outputs.length === 0 || bothHidden}
       />
 
       {/* History Search Dialog (Ctrl+R) - lazy loaded */}

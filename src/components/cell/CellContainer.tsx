@@ -17,8 +17,10 @@ interface CellContainerProps {
   children?: ReactNode;
   /** Content to render in the left gutter action area (e.g., play button, execution count) */
   gutterContent?: ReactNode;
-  /** Content to render in the right margin (e.g., cell controls, kebab menu) */
+  /** Content to render in the right margin aligned with code row (e.g., cell controls) */
   rightGutterContent?: ReactNode;
+  /** Content to render in the right margin aligned with output row (e.g., output controls) */
+  outputRightGutterContent?: ReactNode;
   /** Custom color configuration for cell types not in defaults */
   customGutterColors?: Record<string, GutterColorConfig>;
   /** Whether this cell is immediately before the focused cell (keeps output bright) */
@@ -43,6 +45,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
       children,
       gutterContent,
       rightGutterContent,
+      outputRightGutterContent,
       customGutterColors,
       isPreviousCellFromFocused = false,
       dragHandleProps,
@@ -86,7 +89,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         {/* Cell content with ribbon */}
         {useSegmentedRibbon ? (
           <div className="flex min-w-0 flex-1 flex-col">
-            {/* Code row - ribbon + content together so heights match */}
+            {/* Code row - ribbon + content + right gutter */}
             <div className="flex">
               <div
                 {...dragHandleProps}
@@ -99,8 +102,21 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 )}
               />
               <div className="min-w-0 flex-1 py-3 pl-6 pr-3">{codeContent}</div>
+              {/* Code row right gutter */}
+              {rightGutterContent && (
+                <div
+                  className={cn(
+                    "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none",
+                    "opacity-100 transition-opacity duration-150",
+                    "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
+                    isFocused && "sm:opacity-100",
+                  )}
+                >
+                  {rightGutterContent}
+                </div>
+              )}
             </div>
-            {/* Output row - ribbon + content together */}
+            {/* Output row - ribbon + content + right gutter */}
             {hasOutput && (
               <div className={cn("flex", hideOutput && "hidden")}>
                 <div
@@ -117,37 +133,52 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 >
                   {outputContent}
                 </div>
+                {/* Output row right gutter */}
+                {outputRightGutterContent && (
+                  <div
+                    className={cn(
+                      "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none",
+                      "opacity-100 transition-opacity duration-150",
+                      "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
+                      isFocused && "sm:opacity-100",
+                    )}
+                  >
+                    {outputRightGutterContent}
+                  </div>
+                )}
               </div>
             )}
           </div>
         ) : (
-          /* Legacy layout - ribbon + content side by side */
-          <div className="flex min-w-0 flex-1">
-            <div
-              {...dragHandleProps}
-              className={cn(
-                "w-1 self-stretch transition-colors duration-150",
-                ribbonColor,
-                dragHandleProps &&
-                  "cursor-grab hover:brightness-125 touch-none",
-                isDragging && "cursor-grabbing",
-              )}
-            />
-            <div className="min-w-0 flex-1 py-3 pl-6 pr-3">{children}</div>
-          </div>
-        )}
-        {/* Right margin - pt-3 aligns with left gutter, appears on hover/focus */}
-        {rightGutterContent && (
-          <div
-            className={cn(
-              "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-3 select-none",
-              "opacity-100 transition-opacity duration-150",
-              "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
-              isFocused && "sm:opacity-100",
+          <>
+            {/* Legacy layout - ribbon + content side by side */}
+            <div className="flex min-w-0 flex-1">
+              <div
+                {...dragHandleProps}
+                className={cn(
+                  "w-1 self-stretch transition-colors duration-150",
+                  ribbonColor,
+                  dragHandleProps &&
+                    "cursor-grab hover:brightness-125 touch-none",
+                  isDragging && "cursor-grabbing",
+                )}
+              />
+              <div className="min-w-0 flex-1 py-3 pl-6 pr-3">{children}</div>
+            </div>
+            {/* Right margin for legacy layout */}
+            {rightGutterContent && (
+              <div
+                className={cn(
+                  "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-3 select-none",
+                  "opacity-100 transition-opacity duration-150",
+                  "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
+                  isFocused && "sm:opacity-100",
+                )}
+              >
+                {rightGutterContent}
+              </div>
             )}
-          >
-            {rightGutterContent}
-          </div>
+          </>
         )}
       </div>
     );
