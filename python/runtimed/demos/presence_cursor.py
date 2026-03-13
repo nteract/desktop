@@ -5,7 +5,7 @@ Usage (from python/runtimed/, with dev daemon running):
     RUNTIMED_SOCKET_PATH=~/Library/Caches/runt-nightly/worktrees/<hash>/runtimed.sock \
         uv run python demos/presence_cursor.py [notebook_id]
 
-If no notebook_id is provided, prints usage and exits.
+If no notebook_id is provided, auto-detects the first open notebook.
 """
 
 import os
@@ -35,14 +35,14 @@ def main():
     notebook_id = sys.argv[1] if len(sys.argv) > 1 else None
 
     if not notebook_id:
-        print(
-            "Usage: python presence_cursor.py <notebook_id>\n"
-            "\n"
-            "Find notebook IDs with:\n"
-            "  RUNTIMED_DEV=1 ./target/debug/runt notebooks",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        # Auto-detect: pick the first open notebook
+        client = runtimed.DaemonClient()
+        rooms = client.list_rooms()
+        if not rooms:
+            print("No open notebooks found. Open a notebook in nteract first.", file=sys.stderr)
+            sys.exit(1)
+        notebook_id = rooms[0]["notebook_id"]
+        print(f"Auto-detected notebook: {notebook_id}")
 
     session = runtimed.Session(notebook_id=notebook_id)
     session.connect()
