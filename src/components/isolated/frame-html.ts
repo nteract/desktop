@@ -32,6 +32,8 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
     additionalScript = "",
   } = options;
 
+  // Start with transparent backgrounds to prevent flash while theme loads
+  // Parent will send theme message immediately after iframe is ready
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -40,8 +42,8 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
   <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data:; script-src 'unsafe-inline' 'unsafe-eval' blob: https:; style-src 'unsafe-inline'; img-src * data: blob:; font-src * data:; connect-src *;">
   <style>
     :root {
-      --bg-primary: ${darkMode ? "#0a0a0a" : "#ffffff"};
-      --bg-secondary: ${darkMode ? "#1a1a1a" : "#f5f5f5"};
+      --bg-primary: transparent;
+      --bg-secondary: transparent;
       --text-primary: ${darkMode ? "#e0e0e0" : "#1a1a1a"};
       --text-secondary: ${darkMode ? "#a0a0a0" : "#666666"};
       --border-color: ${darkMode ? "#333333" : "#e0e0e0"};
@@ -360,6 +362,19 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
         const rootEl = document.documentElement;
 
         if (isDark !== undefined) {
+          // Set class for Tailwind dark: variant and CSS selectors
+          if (isDark) {
+            rootEl.classList.add('dark');
+            rootEl.classList.remove('light');
+          } else {
+            rootEl.classList.add('light');
+            rootEl.classList.remove('dark');
+          }
+          // Set data-theme for components that check this attribute
+          rootEl.setAttribute('data-theme', isDark ? 'dark' : 'light');
+          // Set color-scheme for prefers-color-scheme media queries
+          rootEl.style.colorScheme = isDark ? 'dark' : 'light';
+          // Set CSS variables
           rootEl.style.setProperty('--bg-primary', isDark ? '#0a0a0a' : '#ffffff');
           rootEl.style.setProperty('--bg-secondary', isDark ? '#1a1a1a' : '#f5f5f5');
           rootEl.style.setProperty('--text-primary', isDark ? '#e0e0e0' : '#1a1a1a');

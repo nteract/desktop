@@ -248,15 +248,16 @@ export const IsolatedFrame = forwardRef<
     };
   }, []);
 
-  // Forward theme changes to iframe (without recreating the blob)
+  // Send theme as soon as iframe is ready (before renderer bootstrap)
+  // This prevents flash of wrong theme while React initializes
   useEffect(() => {
-    if (isReady && iframeRef.current?.contentWindow) {
+    if (isIframeReady && iframeRef.current?.contentWindow) {
       iframeRef.current.contentWindow.postMessage(
         { type: "theme", payload: { isDark: darkMode } },
         "*",
       );
     }
-  }, [darkMode, isReady]);
+  }, [darkMode, isIframeReady]);
 
   // Keep ref in sync with state (ref avoids stale closures in callbacks)
   useEffect(() => {
@@ -532,6 +533,8 @@ export const IsolatedFrame = forwardRef<
         height: `${height}px`,
         border: "none",
         display: "block",
+        background: "transparent",
+        colorScheme: darkMode ? "dark" : "light",
       }}
       title="Isolated output frame"
     />

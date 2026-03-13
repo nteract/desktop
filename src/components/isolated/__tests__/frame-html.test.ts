@@ -64,18 +64,23 @@ describe("generateFrameHtml", () => {
   });
 
   describe("dark mode", () => {
-    it("uses dark CSS variables when darkMode is true", () => {
+    it("uses transparent background to prevent flash", () => {
+      // Background is transparent initially; theme is applied via postMessage
       const darkHtml = generateFrameHtml({ darkMode: true });
-      // Dark mode uses #0a0a0a for background
-      expect(darkHtml).toContain("--bg-primary: #0a0a0a");
-      expect(darkHtml).toContain("--text-primary: #e0e0e0");
+      expect(darkHtml).toContain("--bg-primary: transparent");
+      expect(darkHtml).toContain("--bg-secondary: transparent");
     });
 
-    it("uses light CSS variables when darkMode is false", () => {
+    it("uses dark text colors when darkMode is true", () => {
+      const darkHtml = generateFrameHtml({ darkMode: true });
+      expect(darkHtml).toContain("--text-primary: #e0e0e0");
+      expect(darkHtml).toContain("--border-color: #333333");
+    });
+
+    it("uses light text colors when darkMode is false", () => {
       const lightHtml = generateFrameHtml({ darkMode: false });
-      // Light mode uses #ffffff for background
-      expect(lightHtml).toContain("--bg-primary: #ffffff");
       expect(lightHtml).toContain("--text-primary: #1a1a1a");
+      expect(lightHtml).toContain("--border-color: #e0e0e0");
     });
   });
 });

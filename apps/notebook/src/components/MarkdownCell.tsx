@@ -436,7 +436,8 @@ export function MarkdownCell({
         onDoubleClick={handleDoubleClick}
         onKeyDown={handleViewKeyDown}
       >
-        {cell.source ? (
+        {/* Always render IsolatedFrame to preload it (hidden when no content) */}
+        <div className={cell.source ? undefined : "hidden"}>
           <IsolatedFrame
             ref={frameRef}
             darkMode={darkMode}
@@ -448,7 +449,8 @@ export function MarkdownCell({
             onError={(err) => logger.error("[MarkdownCell] iframe error:", err)}
             className="w-full"
           />
-        ) : (
+        </div>
+        {!cell.source && (
           <p className="text-muted-foreground italic">Double-click to edit</p>
         )}
         <button

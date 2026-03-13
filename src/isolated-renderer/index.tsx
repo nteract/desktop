@@ -314,8 +314,8 @@ export function init() {
   // Set up message listener
   setupMessageListener();
 
-  // Initialize theme to dark (default) - will be updated by parent if needed
-  updateDocumentTheme(true);
+  // Theme is controlled by parent's theme message (sent when iframe is ready)
+  // Don't set a default here to avoid flash when parent sends different theme
 
   // Create root element if needed
   let rootEl = document.getElementById("root");
