@@ -962,6 +962,29 @@ where
 ///
 /// Handles both Automerge sync messages and NotebookRequest messages.
 /// This protocol supports daemon-owned kernel execution (Phase 8).
+/// Sanitize a peer label from the wire: trim, clamp to 64 chars, fall back to "peer".
+fn sanitize_peer_label(raw: Option<&str>) -> String {
+    const MAX_LABEL_LEN: usize = 64;
+    match raw {
+        Some(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                "peer".to_string()
+            } else if trimmed.len() > MAX_LABEL_LEN {
+                // Truncate at a char boundary
+                let mut end = MAX_LABEL_LEN;
+                while !trimmed.is_char_boundary(end) {
+                    end -= 1;
+                }
+                trimmed[..end].to_string()
+            } else {
+                trimmed.to_string()
+            }
+        }
+        None => "peer".to_string(),
+    }
+}
+
 async fn run_sync_loop_v2<R, W>(
     reader: &mut R,
     writer: &mut W,
@@ -1166,14 +1189,16 @@ where
                                             warn!("[notebook-sync] Client tried to publish KernelState presence, ignoring");
                                         } else {
                                             let data_for_relay = data.clone();
-                                            // Use peer_label from the message if provided,
-                                            // otherwise fall back to "peer".
-                                            let label = peer_label.as_deref().unwrap_or("peer");
+                                            // Sanitize peer_label: trim whitespace, clamp length,
+                                            // treat empty as fallback. Prevents UI/memory issues
+                                            // from malicious or buggy clients.
+                                            let label = sanitize_peer_label(peer_label.as_deref());
+                                            let sanitized_label = Some(label.clone());
                                             // Update the room's presence state (using our known peer_id,
                                             // not the one in the frame — clients don't know their peer_id).
                                             let is_new = room.presence.write().await.update_peer(
                                                 peer_id,
-                                                label,
+                                                &label,
                                                 data,
                                                 now_ms,
                                             );
@@ -1205,11 +1230,11 @@ where
                                                 }
                                             }
 
-                                            // Re-encode with server-assigned peer_id and relay
+                                            // Re-encode with server-assigned peer_id and sanitized label
                                             if let Ok(bytes) = presence::encode_message(
                                                 &presence::PresenceMessage::Update {
                                                     peer_id: peer_id.to_string(),
-                                                    peer_label: peer_label.clone(),
+                                                    peer_label: sanitized_label,
                                                     data: data_for_relay,
                                                 },
                                             ) {

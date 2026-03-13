@@ -512,9 +512,62 @@ mod tests {
         let encoded = encode_cursor_update("peer-1", &pos);
         let msg = decode_message(&encoded).unwrap();
         match msg {
-            PresenceMessage::Update { peer_id, data, .. } => {
+            PresenceMessage::Update {
+                peer_id,
+                peer_label,
+                data,
+            } => {
                 assert_eq!(peer_id, "peer-1");
+                assert_eq!(peer_label, None);
                 assert_eq!(data, ChannelData::Cursor(pos));
+            }
+            _ => panic!("expected Update"),
+        }
+    }
+
+    #[test]
+    fn test_cursor_labeled_roundtrip() {
+        let pos = CursorPosition {
+            cell_id: "cell-abc".into(),
+            line: 10,
+            column: 3,
+        };
+        let encoded = encode_cursor_update_labeled("peer-1", Some("Codex"), &pos);
+        let msg = decode_message(&encoded).unwrap();
+        match msg {
+            PresenceMessage::Update {
+                peer_id,
+                peer_label,
+                data,
+            } => {
+                assert_eq!(peer_id, "peer-1");
+                assert_eq!(peer_label, Some("Codex".to_string()));
+                assert_eq!(data, ChannelData::Cursor(pos));
+            }
+            _ => panic!("expected Update"),
+        }
+    }
+
+    #[test]
+    fn test_selection_labeled_roundtrip() {
+        let sel = SelectionRange {
+            cell_id: "cell-xyz".into(),
+            anchor_line: 0,
+            anchor_col: 0,
+            head_line: 3,
+            head_col: 10,
+        };
+        let encoded = encode_selection_update_labeled("agent-1", Some("Claude"), &sel);
+        let msg = decode_message(&encoded).unwrap();
+        match msg {
+            PresenceMessage::Update {
+                peer_id,
+                peer_label,
+                data,
+            } => {
+                assert_eq!(peer_id, "agent-1");
+                assert_eq!(peer_label, Some("Claude".to_string()));
+                assert_eq!(data, ChannelData::Selection(sel));
             }
             _ => panic!("expected Update"),
         }
@@ -532,8 +585,13 @@ mod tests {
         let encoded = encode_selection_update("editor-2", &sel);
         let msg = decode_message(&encoded).unwrap();
         match msg {
-            PresenceMessage::Update { peer_id, data, .. } => {
+            PresenceMessage::Update {
+                peer_id,
+                peer_label,
+                data,
+            } => {
                 assert_eq!(peer_id, "editor-2");
+                assert_eq!(peer_label, None);
                 assert_eq!(data, ChannelData::Selection(sel));
             }
             _ => panic!("expected Update"),
