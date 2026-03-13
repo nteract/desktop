@@ -3,12 +3,16 @@ name = "nteract-workspace"
 version = "0.0.0"
 description = "Development workspace for nteract Python packages"
 requires-python = ">=3.10"
+dependencies = [
+    "nteract",
+]
 
 [tool.uv.workspace]
 members = ["runtimed", "nteract"]
 
 [tool.uv.sources]
 runtimed = { workspace = true }
+nteract = { workspace = true }
 
 [tool.ruff]
 line-length = 100

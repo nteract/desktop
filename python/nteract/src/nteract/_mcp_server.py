@@ -24,7 +24,7 @@ import re
 import sys
 from typing import Annotated, Any, Literal
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ImageContent, TextContent, ToolAnnotations
 from pydantic import Field
 
@@ -40,11 +40,30 @@ mcp = FastMCP("nteract")
 
 
 # ── Peer label for remote cursors ─────────────────────────────────────
+# The MCP initialize handshake includes clientInfo with `name` and
+# `title` fields. We prefer `title` ("Codex") over `name`
+# ("codex-mcp-client") for the cursor flag.
+
+_client_name: str | None = None
+
+
+def _sniff_client_name(ctx: Context) -> None:
+    """Extract clientInfo from the MCP session. Lazy, first call only."""
+    global _client_name
+    if _client_name is not None:
+        return
+    try:
+        params = ctx.request_context.session.client_params
+        if params and params.clientInfo:
+            info = params.clientInfo
+            _client_name = getattr(info, "title", None) or info.name
+    except Exception:
+        pass
 
 
 def _peer_label() -> str:
     """Return a label for the cursor flag. Falls back to 'Agent'."""
-    return "Agent"
+    return _client_name or "Agent"
 
 
 # Session state - single active session at a time
@@ -379,9 +398,12 @@ def _execution_result_to_content(
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
 async def connect_notebook(
     notebook_id: str | None = None,
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Connect to a notebook by ID. Omit notebook_id to create a new session."""
     global _session
+    if ctx:
+        _sniff_client_name(ctx)
 
     # Close existing session if any
     if _session is not None:
@@ -399,9 +421,11 @@ async def connect_notebook(
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
-async def open_notebook(path: str) -> dict[str, Any]:
+async def open_notebook(path: str, ctx: Context | None = None) -> dict[str, Any]:
     """Open an existing .ipynb file. Use create_notebook() for new notebooks."""
     global _session
+    if ctx:
+        _sniff_client_name(ctx)
 
     if _session is not None:
         with contextlib.suppress(Exception):
@@ -421,9 +445,12 @@ async def open_notebook(path: str) -> dict[str, Any]:
 async def create_notebook(
     runtime: Literal["python", "deno"] = "python",
     working_dir: str | None = None,
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Create a new empty notebook in memory. Call save_notebook(path) to persist to disk."""
     global _session
+    if ctx:
+        _sniff_client_name(ctx)
 
     if _session is not None:
         with contextlib.suppress(Exception):
