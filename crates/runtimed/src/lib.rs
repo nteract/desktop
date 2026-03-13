@@ -127,6 +127,22 @@ pub struct PoolError {
 /// On Windows, this returns a named pipe path (e.g., \\.\pipe\runtimed).
 #[cfg(unix)]
 pub fn default_socket_path() -> PathBuf {
+    if let Ok(p) = std::env::var("RUNTIMED_SOCKET_PATH") {
+        let p = p.trim();
+        if !p.is_empty() {
+            let path = PathBuf::from(p);
+            // Validate parent directory exists (socket file may not exist yet)
+            if let Some(parent) = path.parent() {
+                if parent.exists() {
+                    return path;
+                }
+                panic!(
+                    "RUNTIMED_SOCKET_PATH directory does not exist: {}",
+                    parent.display()
+                );
+            }
+        }
+    }
     daemon_base_dir().join("runtimed.sock")
 }
 
@@ -137,6 +153,22 @@ pub fn default_socket_path() -> PathBuf {
 /// In dev mode on Windows, appends the worktree hash to the pipe name.
 #[cfg(windows)]
 pub fn default_socket_path() -> PathBuf {
+    if let Ok(p) = std::env::var("RUNTIMED_SOCKET_PATH") {
+        let p = p.trim();
+        if !p.is_empty() {
+            let path = PathBuf::from(p);
+            // Validate parent directory exists (socket file may not exist yet)
+            if let Some(parent) = path.parent() {
+                if parent.exists() {
+                    return path;
+                }
+                panic!(
+                    "RUNTIMED_SOCKET_PATH directory does not exist: {}",
+                    parent.display()
+                );
+            }
+        }
+    }
     let pipe_name = daemon_binary_basename();
     // Windows named pipes use the \\.\pipe\name format
     if is_dev_mode() {
