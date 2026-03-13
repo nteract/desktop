@@ -443,6 +443,7 @@ export function MarkdownCell({
             darkMode={darkMode}
             minHeight={24}
             autoHeight
+            revealOnRender
             onReady={handleFrameReady}
             onLinkClick={handleLinkClick}
             onDoubleClick={handleDoubleClick}
