@@ -21,6 +21,8 @@ interface CellContainerProps {
   rightGutterContent?: ReactNode;
   /** Content to render in the right margin aligned with output row (e.g., output controls) */
   outputRightGutterContent?: ReactNode;
+  /** Remote peer presence indicators (colored dots showing who's on this cell) */
+  presenceIndicators?: ReactNode;
   /** Custom color configuration for cell types not in defaults */
   customGutterColors?: Record<string, GutterColorConfig>;
   /** Whether this cell is immediately before the focused cell (keeps output bright) */
@@ -46,6 +48,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
       gutterContent,
       rightGutterContent,
       outputRightGutterContent,
+      presenceIndicators,
       customGutterColors,
       isPreviousCellFromFocused = false,
       dragHandleProps,
@@ -85,6 +88,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         {/* Gutter area - action content only (ribbon moves to content rows for segmented) */}
         <div className="flex w-10 flex-shrink-0 flex-col items-end justify-start gap-0.5 pr-1 pt-3 select-none">
           {gutterContent}
+          {presenceIndicators}
         </div>
         {/* Cell content with ribbon */}
         {useSegmentedRibbon ? (

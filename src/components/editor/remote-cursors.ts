@@ -381,6 +381,11 @@ export function setRemoteCursors(
   cursors: RemoteCursorState[],
 ): void {
   view.dispatch({ effects: setCursorsEffect.of(cursors) });
+  // Force layer remeasure when clearing cursors - CM6 layer may not redraw
+  // with an empty markers() return without an explicit measure request
+  if (cursors.length === 0) {
+    view.requestMeasure();
+  }
 }
 
 /**

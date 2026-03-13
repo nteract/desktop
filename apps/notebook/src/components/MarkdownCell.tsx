@@ -11,13 +11,16 @@ import { searchHighlight } from "@/components/editor/search-highlight";
 import { IsolatedFrame, type IsolatedFrameHandle } from "@/components/isolated";
 import { isDarkMode as detectDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
+import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { useBlobPort } from "../hooks/useManifestResolver";
 import { registerEditor, unregisterEditor } from "../lib/cursor-registry";
 import { logger } from "../lib/logger";
 import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
 import { openUrl } from "../lib/open-url";
+import { presenceSenderExtension } from "../lib/presence-sender";
 import type { MarkdownCell as MarkdownCellType } from "../types";
+import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 
 interface MarkdownCellProps {
   cell: MarkdownCellType;
@@ -131,6 +134,7 @@ export function MarkdownCell({
 
   const [editing, setEditing] = useState(cell.source === "");
   const editorRef = useRef<CodeMirrorEditorRef>(null);
+  const presence = usePresenceContext();
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const viewRef = useRef<HTMLDivElement>(null);
 
@@ -286,10 +290,25 @@ export function MarkdownCell({
   // Remote cursors extension (stable — no deps that change)
   const remoteCursorsExt = useMemo(() => remoteCursorsExtension(), []);
 
-  // Search highlight extension for edit mode + remote cursors
+  // Presence sender extension — broadcasts local cursor/selection to other peers
+  const presenceSenderExt = useMemo(() => {
+    if (!presence) return [];
+    return [
+      presenceSenderExtension(cell.id, {
+        onCursor: presence.setCursor,
+        onSelection: presence.setSelection,
+      }),
+    ];
+  }, [cell.id, presence]);
+
+  // Search highlight extension for edit mode + remote cursors + presence sender
   const searchExtensions = useMemo(
-    () => [...searchHighlight(searchQuery || ""), ...remoteCursorsExt],
-    [searchQuery, remoteCursorsExt],
+    () => [
+      ...searchHighlight(searchQuery || ""),
+      ...remoteCursorsExt,
+      ...presenceSenderExt,
+    ],
+    [searchQuery, remoteCursorsExt, presenceSenderExt],
   );
 
   // Get keyboard navigation bindings
@@ -385,6 +404,7 @@ export function MarkdownCell({
       isFocused={isFocused}
       isPreviousCellFromFocused={isPreviousCellFromFocused}
       onFocus={onFocus}
+      presenceIndicators={<CellPresenceIndicators cellId={cell.id} />}
       dragHandleProps={dragHandleProps}
       isDragging={isDragging}
     >

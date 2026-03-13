@@ -79,7 +79,8 @@ type PresenceMessage =
 
 // ── Peer state ───────────────────────────────────────────────────────
 
-interface PeerCursorInfo {
+export interface PeerCursorInfo {
+  peerId: string;
   peerLabel: string;
   color: string;
   cursor?: CursorData;
@@ -121,7 +122,10 @@ export function unregisterEditor(cellId: string): void {
 /** Collect all remote cursors for a cell and dispatch to its EditorView. */
 function dispatchToCell(cellId: string): void {
   const view = editors.get(cellId);
-  if (!view) return;
+  if (!view) {
+    console.log(`[cursor-registry] dispatchToCell: no view for ${cellId}`);
+    return;
+  }
 
   const cursors: RemoteCursorState[] = [];
   const selections: RemoteSelectionState[] = [];
@@ -152,6 +156,9 @@ function dispatchToCell(cellId: string): void {
     }
   }
 
+  console.log(
+    `[cursor-registry] dispatchToCell ${cellId}: ${cursors.length} cursors, ${selections.length} selections`,
+  );
   setRemoteCursors(view, cursors);
   setRemoteSelections(view, selections);
 }
@@ -161,6 +168,8 @@ function dispatchToAffectedCells(affectedCellIds: Set<string>): void {
   for (const cellId of affectedCellIds) {
     dispatchToCell(cellId);
   }
+  // Also notify any cell-level subscribers
+  notifyCellSubscribers(affectedCellIds);
 }
 
 // ── Presence event handler ───────────────────────────────────────────
@@ -174,6 +183,7 @@ function handlePresence(payload: unknown): void {
 
       const existing = peers.get(msg.peer_id);
       const peer: PeerCursorInfo = existing ?? {
+        peerId: msg.peer_id,
         peerLabel: msg.peer_label || "Peer",
         color: peerColor(msg.peer_id),
       };
@@ -223,6 +233,7 @@ function handlePresence(payload: unknown): void {
         if (snap.peer_id === localPeerId) continue;
 
         const peer: PeerCursorInfo = {
+          peerId: snap.peer_id,
           peerLabel: snap.peer_label,
           color: peerColor(snap.peer_id),
         };
@@ -290,5 +301,63 @@ export function startCursorDispatch(peerId: string): () => void {
       }
     }
     editors.clear();
+    // Clear cell subscriptions
+    cellSubscribers.clear();
   };
+}
+
+// ── Cell-level presence queries ───────────────────────────────────────
+
+/** Map of cellId → Set of subscriber callbacks */
+const cellSubscribers = new Map<string, Set<() => void>>();
+
+/**
+ * Get all remote peers that have a cursor in the given cell.
+ * Returns peer info for UI rendering (colored dots, labels, etc.)
+ */
+export function getPeersForCell(cellId: string): PeerCursorInfo[] {
+  const result: PeerCursorInfo[] = [];
+  for (const peer of peers.values()) {
+    if (peer.peerId === localPeerId) continue;
+    if (peer.cursor?.cell_id === cellId) {
+      result.push(peer);
+    }
+  }
+  return result;
+}
+
+/**
+ * Subscribe to presence changes for a specific cell.
+ * The callback is invoked whenever peers enter or leave the cell.
+ * Returns an unsubscribe function.
+ */
+export function subscribeToCell(
+  cellId: string,
+  callback: () => void,
+): () => void {
+  let subs = cellSubscribers.get(cellId);
+  if (!subs) {
+    subs = new Set();
+    cellSubscribers.set(cellId, subs);
+  }
+  subs.add(callback);
+
+  return () => {
+    subs?.delete(callback);
+    if (subs?.size === 0) {
+      cellSubscribers.delete(cellId);
+    }
+  };
+}
+
+/** Notify cell subscribers when presence changes. */
+function notifyCellSubscribers(cellIds: Set<string>): void {
+  for (const cellId of cellIds) {
+    const subs = cellSubscribers.get(cellId);
+    if (subs) {
+      for (const cb of subs) {
+        cb();
+      }
+    }
+  }
 }
