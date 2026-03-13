@@ -280,9 +280,8 @@ Process outputs incrementally as they arrive from the kernel:
 
 ```python
 cell_id = await session.create_cell("for i in range(5): print(i)")
-events = await session.stream_execute(cell_id)
 
-for event in events:
+async for event in await session.stream_execute(cell_id):
     if event.event_type == "execution_started":
         print(f"Started, count={event.execution_count}")
     elif event.event_type == "output":

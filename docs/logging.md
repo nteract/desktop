@@ -12,7 +12,8 @@ The daemon (`runtimed`) logs to a file that persists across sessions.
 |----------|------|
 | macOS | `~/Library/Caches/runt/runtimed.log` |
 | Linux | `~/.cache/runt/runtimed.log` |
-| Dev mode | `~/.cache/runt/worktrees/{hash}/runtimed.log` |
+| Dev mode (macOS) | `~/Library/Caches/runt-nightly/worktrees/{hash}/runtimed.log` |
+| Dev mode (Linux) | `~/.cache/runt-nightly/worktrees/{hash}/runtimed.log` |
 
 ### Viewing Logs
 

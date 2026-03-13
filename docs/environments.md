@@ -107,6 +107,7 @@ nteract Desktop caches environments so notebooks with the same dependencies shar
 |------|----------|
 | UV environments | `~/.cache/runt/envs/` |
 | Conda environments | `~/.cache/runt/conda-envs/` |
+| Inline dependency envs | `~/.cache/runt/inline-envs/` |
 | Tools (uv, deno) | `~/.cache/runt/tools/` |
 | Trust key | `~/.config/runt/trust-key` |
 
