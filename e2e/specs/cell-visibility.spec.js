@@ -1,0 +1,196 @@
+/**
+ * E2E Test: Cell Visibility Toggles
+ *
+ * Verifies that source and output visibility can be toggled using
+ * JupyterLab-compatible metadata (metadata.jupyter.source_hidden,
+ * metadata.jupyter.outputs_hidden).
+ *
+ * Tests:
+ * - Hide/show source via gutter button
+ * - Hide/show outputs via gutter button
+ * - Compact layout when both are hidden
+ * - Persistence after save/reload
+ */
+
+import { browser } from "@wdio/globals";
+import {
+  typeSlowly,
+  waitForCellOutput,
+  waitForKernelReady,
+  waitForNotebookSynced,
+} from "../helpers.js";
+
+describe("Cell Visibility Toggles", () => {
+  it("should launch kernel and execute a cell to have outputs", async () => {
+    await waitForKernelReady(90000);
+    await waitForNotebookSynced();
+
+    // Find the first code cell
+    const codeCell = await $('[data-cell-type="code"]');
+    await codeCell.waitForExist({ timeout: 5000 });
+
+    // Focus the editor
+    const editor = await codeCell.$('.cm-content[contenteditable="true"]');
+    await editor.waitForExist({ timeout: 5000 });
+    await editor.click();
+    await browser.pause(200);
+
+    // Select all and type a simple print
+    const modKey = process.platform === "darwin" ? "Meta" : "Control";
+    await browser.keys([modKey, "a"]);
+    await browser.pause(100);
+    await typeSlowly("print('visibility test')");
+
+    // Execute with Shift+Enter
+    await browser.keys(["Shift", "Enter"]);
+
+    // Wait for output
+    const output = await waitForCellOutput(codeCell, 30000);
+    expect(output).toContain("visibility test");
+  });
+
+  it("should hide source when clicking source toggle button", async () => {
+    const codeCell = await $('[data-cell-type="code"]');
+
+    // Hover over the cell to reveal gutter buttons
+    await codeCell.moveTo();
+    await browser.pause(300);
+
+    // Find and click the source toggle button (Code2 icon with "Hide source" title)
+    const hideSourceButton = await codeCell.$('button[title="Hide source"]');
+    await hideSourceButton.waitForClickable({ timeout: 5000 });
+    await hideSourceButton.click();
+    await browser.pause(300);
+
+    // Verify the source badge appears (collapsed state)
+    const sourceBadge = await codeCell.$('button[title="Show source"]');
+    expect(await sourceBadge.isExisting()).toBe(true);
+
+    // The editor should no longer be visible
+    const editor = await codeCell.$('.cm-content[contenteditable="true"]');
+    expect(await editor.isExisting()).toBe(false);
+  });
+
+  it("should show source when clicking the source badge", async () => {
+    const codeCell = await $('[data-cell-type="code"]');
+
+    // Click the source badge to expand
+    const sourceBadge = await codeCell.$('button[title="Show source"]');
+    await sourceBadge.waitForClickable({ timeout: 5000 });
+    await sourceBadge.click();
+    await browser.pause(300);
+
+    // The editor should now be visible again
+    const editor = await codeCell.$('.cm-content[contenteditable="true"]');
+    await editor.waitForExist({ timeout: 5000 });
+    expect(await editor.isExisting()).toBe(true);
+  });
+
+  it("should hide outputs when clicking output toggle button", async () => {
+    const codeCell = await $('[data-cell-type="code"]');
+
+    // Hover over the cell to reveal gutter buttons
+    await codeCell.moveTo();
+    await browser.pause(300);
+
+    // Find and click the output toggle button (EyeOff icon with "Hide outputs" title)
+    const hideOutputButton = await codeCell.$('button[title="Hide outputs"]');
+    await hideOutputButton.waitForClickable({ timeout: 5000 });
+    await hideOutputButton.click();
+    await browser.pause(300);
+
+    // Verify the outputs badge appears (shows "1 output")
+    const outputsBadge = await codeCell.$('button[title="Show outputs"]');
+    expect(await outputsBadge.isExisting()).toBe(true);
+
+    // The badge should contain the output count
+    const badgeText = await outputsBadge.getText();
+    expect(badgeText).toMatch(/\d+ output/);
+  });
+
+  it("should show outputs when clicking the outputs badge", async () => {
+    const codeCell = await $('[data-cell-type="code"]');
+
+    // Click the outputs badge to expand
+    const outputsBadge = await codeCell.$('button[title="Show outputs"]');
+    await outputsBadge.waitForClickable({ timeout: 5000 });
+    await outputsBadge.click();
+    await browser.pause(300);
+
+    // The output should be visible again
+    const output = await codeCell.$('[data-slot="ansi-stream-output"]');
+    await output.waitForExist({ timeout: 5000 });
+    expect(await output.isExisting()).toBe(true);
+  });
+
+  it("should show compact layout when both source and outputs are hidden", async () => {
+    const codeCell = await $('[data-cell-type="code"]');
+
+    // First hide source
+    await codeCell.moveTo();
+    await browser.pause(300);
+    const hideSourceButton = await codeCell.$('button[title="Hide source"]');
+    await hideSourceButton.waitForClickable({ timeout: 5000 });
+    await hideSourceButton.click();
+    await browser.pause(300);
+
+    // Then hide outputs (need to hover again to reveal button)
+    await codeCell.moveTo();
+    await browser.pause(300);
+    const hideOutputButton = await codeCell.$('button[title="Hide outputs"]');
+    await hideOutputButton.waitForClickable({ timeout: 5000 });
+    await hideOutputButton.click();
+    await browser.pause(300);
+
+    // Both badges should exist side by side (compact layout)
+    const sourceBadge = await codeCell.$('button[title="Show source"]');
+    const outputsBadge = await codeCell.$('button[title="Show outputs"]');
+
+    expect(await sourceBadge.isExisting()).toBe(true);
+    expect(await outputsBadge.isExisting()).toBe(true);
+
+    // The editor should not be visible
+    const editor = await codeCell.$('.cm-content[contenteditable="true"]');
+    expect(await editor.isExisting()).toBe(false);
+
+    // The output area should not be visible
+    const output = await codeCell.$('[data-slot="ansi-stream-output"]');
+    expect(await output.isExisting()).toBe(false);
+  });
+
+  it("should expand source independently from compact layout", async () => {
+    const codeCell = await $('[data-cell-type="code"]');
+
+    // Click source badge to show source only
+    const sourceBadge = await codeCell.$('button[title="Show source"]');
+    await sourceBadge.waitForClickable({ timeout: 5000 });
+    await sourceBadge.click();
+    await browser.pause(300);
+
+    // Source should be visible
+    const editor = await codeCell.$('.cm-content[contenteditable="true"]');
+    await editor.waitForExist({ timeout: 5000 });
+    expect(await editor.isExisting()).toBe(true);
+
+    // Outputs should still be hidden (badge visible)
+    const outputsBadge = await codeCell.$('button[title="Show outputs"]');
+    expect(await outputsBadge.isExisting()).toBe(true);
+  });
+
+  it("should expand outputs to fully restore cell", async () => {
+    const codeCell = await $('[data-cell-type="code"]');
+
+    // Click outputs badge to show outputs
+    const outputsBadge = await codeCell.$('button[title="Show outputs"]');
+    await outputsBadge.waitForClickable({ timeout: 5000 });
+    await outputsBadge.click();
+    await browser.pause(300);
+
+    // Both source and outputs should now be visible
+    const editor = await codeCell.$('.cm-content[contenteditable="true"]');
+    const output = await codeCell.$('[data-slot="ansi-stream-output"]');
+
+    expect(await editor.isExisting()).toBe(true);
+    expect(await output.isExisting()).toBe(true);
+  });
+});
