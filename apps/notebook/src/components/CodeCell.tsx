@@ -1,5 +1,5 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import { ChevronRight, Code2, EyeOff, Trash2 } from "lucide-react";
+import { ChevronRight, Code2, EyeOff, Trash2, X } from "lucide-react";
 import {
   lazy,
   Suspense,
