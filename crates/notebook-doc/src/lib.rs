@@ -689,8 +689,7 @@ impl NotebookDoc {
         self.doc.put_object(&cell_map, "source", ObjType::Text)?;
         self.doc.put(&cell_map, "execution_count", "null")?;
         self.doc.put_object(&cell_map, "outputs", ObjType::List)?;
-        self.doc
-            .put_object(&cell_map, "metadata", ObjType::Map)?;
+        self.doc.put_object(&cell_map, "metadata", ObjType::Map)?;
         self.doc
             .put_object(&cell_map, "resolved_assets", ObjType::Map)?;
 
@@ -755,17 +754,14 @@ impl NotebookDoc {
 
         // Store metadata as native Automerge map
         if metadata.is_object() && !metadata.as_object().map_or(true, |m| m.is_empty()) {
-            let meta_id = self
-                .doc
-                .put_object(&cell_map, "metadata", ObjType::Map)?;
+            let meta_id = self.doc.put_object(&cell_map, "metadata", ObjType::Map)?;
             if let serde_json::Value::Object(map) = metadata {
                 for (k, v) in map {
                     self.put_json_value(&meta_id, k, v)?;
                 }
             }
         } else {
-            self.doc
-                .put_object(&cell_map, "metadata", ObjType::Map)?;
+            self.doc.put_object(&cell_map, "metadata", ObjType::Map)?;
         }
 
         self.doc
@@ -1217,9 +1213,7 @@ impl NotebookDoc {
         };
 
         // Write as native Automerge Map
-        let meta_id = self
-            .doc
-            .put_object(&cell_obj, "metadata", ObjType::Map)?;
+        let meta_id = self.doc.put_object(&cell_obj, "metadata", ObjType::Map)?;
         if let serde_json::Value::Object(map) = metadata {
             for (k, v) in map {
                 self.put_json_value(&meta_id, k, v)?;
@@ -1258,9 +1252,7 @@ impl NotebookDoc {
         // Get or create the metadata Map
         let meta_id = match self.map_id(&cell_obj, "metadata") {
             Some(id) => id,
-            None => self
-                .doc
-                .put_object(&cell_obj, "metadata", ObjType::Map)?,
+            None => self.doc.put_object(&cell_obj, "metadata", ObjType::Map)?,
         };
 
         // Navigate to the parent, creating intermediate Maps as needed
@@ -1268,9 +1260,7 @@ impl NotebookDoc {
         for key in &path[..path.len() - 1] {
             current_id = match self.map_id(&current_id, key) {
                 Some(id) => id,
-                None => self
-                    .doc
-                    .put_object(&current_id, *key, ObjType::Map)?,
+                None => self.doc.put_object(&current_id, *key, ObjType::Map)?,
             };
         }
 
@@ -1862,8 +1852,8 @@ pub fn get_metadata_snapshot_from_doc(
         .and_then(|v| serde_json::from_value(v).ok());
     let language_info = get_json_value_from_doc(doc, &meta_id, "language_info")
         .and_then(|v| serde_json::from_value(v).ok());
-    let runt: Option<metadata::RuntMetadata> = get_json_value_from_doc(doc, &meta_id, "runt")
-        .and_then(|v| serde_json::from_value(v).ok());
+    let runt: Option<metadata::RuntMetadata> =
+        get_json_value_from_doc(doc, &meta_id, "runt").and_then(|v| serde_json::from_value(v).ok());
 
     if kernelspec.is_some() || language_info.is_some() || runt.is_some() {
         return Some(metadata::NotebookMetadataSnapshot {
@@ -1889,9 +1879,7 @@ fn get_json_value_from_doc(
     use automerge::Value;
     match doc.get(parent, key).ok()?? {
         (Value::Object(ObjType::Map), map_id) => Some(read_map_as_json_from_doc(doc, &map_id)),
-        (Value::Object(ObjType::List), list_id) => {
-            Some(read_list_as_json_from_doc(doc, &list_id))
-        }
+        (Value::Object(ObjType::List), list_id) => Some(read_list_as_json_from_doc(doc, &list_id)),
         (Value::Scalar(s), _) => Some(scalar_to_json(&s)),
         _ => None,
     }
