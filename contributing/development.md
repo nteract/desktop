@@ -156,7 +156,7 @@ RUNTIMED_DEV=1 cargo xtask dev
 ./target/debug/runt daemon logs -f          # Tail logs (uses correct log path in dev mode)
 ```
 
-Per-worktree state is stored in `~/.cache/runt-nightly/worktrees/{hash}/`.
+Per-worktree state is stored in `<cache>/runt-nightly/worktrees/{hash}/` (macOS: `~/Library/Caches/`, Linux: `~/.cache/`).
 
 **For AI agents:** Use `./target/debug/runt` directly to interact with the daemon. See the "Agent Access to Dev Daemon" section in CLAUDE.md. When using a raw terminal (not Zed tasks), set the env vars manually:
 
