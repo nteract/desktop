@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
 import { CondaDependencyHeader } from "../CondaDependencyHeader";
 import { DependencyHeader } from "../DependencyHeader";
 
@@ -24,14 +25,16 @@ describe("dependency panel copy", () => {
     );
 
     expect(
-      screen.getByText(/re-initialize the environment to use these dependencies/i),
-    ).toBeInTheDocument();
+      screen.getByText(
+        /re-initialize the environment to use these dependencies/i,
+      ),
+    ).toBeTruthy();
     expect(
-      screen.getByText(/re-initialize the environment if you updated existing packages/i),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /re-initialize/i }),
-    ).toBeInTheDocument();
+      screen.getByText(
+        /re-initialize the environment if you updated existing packages/i,
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: /re-initialize/i })).toBeTruthy();
   });
 
   it("uses re-initialize language for conda dependency changes", () => {
@@ -56,10 +59,10 @@ describe("dependency panel copy", () => {
     );
 
     expect(
-      screen.getByText(/dependencies changed — re-initialize environment to apply/i),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /re-initialize/i }),
-    ).toBeInTheDocument();
+      screen.getByText(
+        /dependencies changed — re-initialize environment to apply/i,
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: /re-initialize/i })).toBeTruthy();
   });
 });
