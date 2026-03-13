@@ -679,7 +679,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nteract-dist
-          path: python/nteract/dist
+          path: python/dist
+          if-no-files-found: error
 
   build-python-wheels:
     name: Build Python Wheels (${{ matrix.platform.target }})
