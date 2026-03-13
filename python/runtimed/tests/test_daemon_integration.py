@@ -1034,6 +1034,10 @@ class TestErrorHandling:
         """Syntax errors are captured."""
         start_kernel_with_retry(session)
 
+        warmup_cell = session.create_cell("warmup = 1")
+        warmup_result = session.execute_cell(warmup_cell)
+        assert warmup_result.success
+
         cell_id = session.create_cell("if True print('broken')")
         result = session.execute_cell(cell_id)
 
@@ -2040,6 +2044,10 @@ class TestAsyncErrorHandling:
     async def test_async_syntax_error(self, async_session):
         """Syntax errors are captured."""
         await async_start_kernel_with_retry(async_session)
+
+        warmup_cell = await async_session.create_cell("warmup = 1")
+        warmup_result = await async_session.execute_cell(warmup_cell)
+        assert warmup_result.success
 
         cell_id = await async_session.create_cell("if True print('broken')")
         result = await async_session.execute_cell(cell_id)
