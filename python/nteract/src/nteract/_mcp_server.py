@@ -24,8 +24,7 @@ import re
 import sys
 from typing import Annotated, Any, Literal
 
-from fastmcp import FastMCP
-from fastmcp.server.middleware import Middleware, MiddlewareContext
+from mcp.server.fastmcp import FastMCP
 from mcp.types import ImageContent, TextContent, ToolAnnotations
 from pydantic import Field
 
@@ -40,23 +39,13 @@ ContentItem = TextContent | ImageContent
 mcp = FastMCP("nteract")
 
 
-# ── MCP client name capture ──────────────────────────────────────────
-# The MCP initialize handshake includes clientInfo.name (e.g. "Claude",
-# "Cursor", "Codex"). We capture it and use it as the peer_label so
-# the remote cursor flag in the notebook shows who's driving.
-
-_client_name: str | None = None
+# ── Peer label for remote cursors ─────────────────────────────────────
 
 
-class CaptureClientName(Middleware):
-    async def on_initialize(self, context: MiddlewareContext, call_next):
-        global _client_name
-        client_info = context.message.params.get("clientInfo", {})
-        _client_name = client_info.get("name") or None
-        await call_next(context)
+def _peer_label() -> str:
+    """Return a label for the cursor flag. Falls back to 'Agent'."""
+    return "Agent"
 
-
-mcp.add_middleware(CaptureClientName())
 
 # Session state - single active session at a time
 _session: runtimed.AsyncSession | None = None
@@ -400,7 +389,7 @@ async def connect_notebook(
             await _session.close()
 
     # Create new session
-    _session = runtimed.AsyncSession(notebook_id=notebook_id, peer_label=_client_name or "Agent")
+    _session = runtimed.AsyncSession(notebook_id=notebook_id, peer_label=_peer_label())
     await _session.connect()
 
     return {
@@ -418,7 +407,7 @@ async def open_notebook(path: str) -> dict[str, Any]:
         with contextlib.suppress(Exception):
             await _session.close()
 
-    _session = await runtimed.AsyncSession.open_notebook(path, peer_label=_client_name or "Agent")
+    _session = await runtimed.AsyncSession.open_notebook(path, peer_label=_peer_label())
     info = await _session.connection_info()
     return {
         "notebook_id": _session.notebook_id,
@@ -441,7 +430,7 @@ async def create_notebook(
             await _session.close()
 
     _session = await runtimed.AsyncSession.create_notebook(
-        runtime=runtime, working_dir=working_dir, peer_label=_client_name or "Agent"
+        runtime=runtime, working_dir=working_dir, peer_label=_peer_label()
     )
     info = await _session.connection_info()
     return {
