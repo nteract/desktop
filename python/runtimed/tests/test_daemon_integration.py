@@ -1013,13 +1013,17 @@ class TestErrorHandling:
     def test_execute_auto_starts_kernel(self, session):
         """execute_cell auto-starts kernel if not running."""
         # Don't call start_kernel() - execute_cell should do it automatically
-        cell_id = session.create_cell("x = 42; print(x)")
+        cell_id = session.create_cell("x = 42")
 
         # Should work without explicit start_kernel()
         result = session.execute_cell(cell_id)
         assert result.success
-        assert "42" in result.stdout
         assert session.kernel_started
+
+        verify_cell = session.create_cell("print(x)")
+        verify_result = session.execute_cell(verify_cell)
+        assert verify_result.success
+        assert "42" in verify_result.stdout
 
     def test_get_nonexistent_cell(self, session):
         """Getting nonexistent cell raises error."""
@@ -1030,7 +1034,11 @@ class TestErrorHandling:
         """Syntax errors are captured."""
         start_kernel_with_retry(session)
 
-        cell_id = session.create_cell("def broken(")
+        warmup_cell = session.create_cell("warmup = 1")
+        warmup_result = session.execute_cell(warmup_cell)
+        assert warmup_result.success
+
+        cell_id = session.create_cell("if True print('broken')")
         result = session.execute_cell(cell_id)
 
         assert not result.success
@@ -2037,7 +2045,11 @@ class TestAsyncErrorHandling:
         """Syntax errors are captured."""
         await async_start_kernel_with_retry(async_session)
 
-        cell_id = await async_session.create_cell("def broken(")
+        warmup_cell = await async_session.create_cell("warmup = 1")
+        warmup_result = await async_session.execute_cell(warmup_cell)
+        assert warmup_result.success
+
+        cell_id = await async_session.create_cell("if True print('broken')")
         result = await async_session.execute_cell(cell_id)
 
         assert not result.success

@@ -198,7 +198,8 @@ export function CondaDependencyHeader({
             <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
             <span>
               Dependencies synced to environment. New packages can be imported
-              now. Restart kernel if you updated existing packages.
+              now. Re-initialize the environment if you updated existing
+              packages.
             </span>
           </div>
         )}
@@ -208,8 +209,8 @@ export function CondaDependencyHeader({
           <div className="mb-3 flex items-start gap-2 rounded bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
             <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
             <span>
-              Restart kernel to use these dependencies. Conda environments
-              require a kernel restart after changes.
+              Re-initialize the environment to use these dependencies. Conda
+              environments need a fresh environment after changes.
             </span>
           </div>
         )}
@@ -270,7 +271,9 @@ export function CondaDependencyHeader({
           <div className="mb-3 flex items-center justify-between rounded bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
             <div className="flex items-center gap-2">
               <Info className="h-3.5 w-3.5 shrink-0" />
-              <span>Dependencies changed — restart kernel to apply</span>
+              <span>
+                Dependencies changed — re-initialize environment to apply
+              </span>
             </div>
             <button
               type="button"
@@ -282,7 +285,7 @@ export function CondaDependencyHeader({
               <RefreshCw
                 className={`h-3 w-3 ${syncing ? "animate-spin" : ""}`}
               />
-              Restart
+              Re-initialize
             </button>
           </div>
         )}
