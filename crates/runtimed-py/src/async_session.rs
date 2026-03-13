@@ -2155,7 +2155,10 @@ async fn collect_outputs_async(
     let mut outputs = Vec::new();
     let mut execution_count = None;
     let mut success = true;
-    let mut done_received = false;
+    // Drain deadline: set when ExecutionDone arrives. We keep draining
+    // broadcasts until this deadline to catch straggling iopub messages
+    // that arrive after the shell reply (classic Jupyter race).
+    let mut drain_deadline: Option<tokio::time::Instant> = None;
 
     loop {
         let mut state_guard = state.lock().await;
@@ -2165,7 +2168,10 @@ async fn collect_outputs_async(
             .as_mut()
             .ok_or_else(|| to_py_err("Not connected"))?;
 
-        let timeout_ms = if done_received { 50 } else { 100 };
+        // Before ExecutionDone: 100ms poll interval.
+        // After ExecutionDone: 50ms polls but keep going until the
+        // drain deadline (500ms after done) expires.
+        let timeout_ms = if drain_deadline.is_some() { 50 } else { 100 };
         let broadcast = tokio::time::timeout(
             std::time::Duration::from_millis(timeout_ms),
             broadcast_rx.recv(),
@@ -2221,16 +2227,24 @@ async fn collect_outputs_async(
                         cell_id: msg_cell_id,
                     } => {
                         if msg_cell_id == cell_id {
+                            // Don't break immediately - set a drain deadline to catch
+                            // straggling outputs due to shell/iopub race condition.
+                            // 500ms is generous enough to catch late iopub messages
+                            // while not noticeably slowing down normal execution.
                             log::debug!(
-                                "[async_session] ExecutionDone received, starting drain phase"
+                                "[async_session] ExecutionDone received, draining for 500ms"
                             );
-                            done_received = true;
+                            drain_deadline = Some(
+                                tokio::time::Instant::now() + std::time::Duration::from_millis(500),
+                            );
                         }
                     }
                     NotebookBroadcast::KernelError { error } => {
                         success = false;
                         outputs.push(Output::error("KernelError", &error, vec![]));
-                        done_received = true;
+                        drain_deadline = Some(
+                            tokio::time::Instant::now() + std::time::Duration::from_millis(500),
+                        );
                     }
                     _ => {}
                 }
@@ -2239,13 +2253,18 @@ async fn collect_outputs_async(
                 return Err(to_py_err("Broadcast channel closed"));
             }
             Err(_) => {
-                if done_received {
-                    log::debug!(
-                        "[async_session] Drain timeout, finishing with {} outputs",
-                        outputs.len()
-                    );
-                    break;
+                // Timeout - if drain deadline has passed, we're done
+                if let Some(deadline) = drain_deadline {
+                    if tokio::time::Instant::now() >= deadline {
+                        log::debug!(
+                            "[async_session] Drain deadline reached, finishing with {} outputs",
+                            outputs.len()
+                        );
+                        break;
+                    }
+                    // Deadline not yet reached - keep draining
                 }
+                // Otherwise continue waiting for ExecutionDone
             }
         }
     }
