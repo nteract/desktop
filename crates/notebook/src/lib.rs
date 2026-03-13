@@ -2415,7 +2415,10 @@ async fn reconnect_to_daemon(
             let client = runtimed::client::PoolClient::default();
             for attempt in 1..=20 {
                 if client.ping().await.is_ok() {
-                    info!("[daemon-kernel] Daemon ready after {} ping attempts", attempt);
+                    info!(
+                        "[daemon-kernel] Daemon ready after {} ping attempts",
+                        attempt
+                    );
                     break;
                 }
                 if attempt < 20 {
