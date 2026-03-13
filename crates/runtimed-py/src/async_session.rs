@@ -822,8 +822,8 @@ impl AsyncSession {
     ) -> PyResult<EventSubscription> {
         // Needs direct state access for resubscribe — use a temporary block_on
         // since this returns a sync object (the subscription) not a coroutine.
-        let rt = tokio::runtime::Handle::try_current()
-            .map_err(|_| to_py_err("No tokio runtime available"))?;
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| to_py_err(format!("Failed to create runtime: {}", e)))?;
 
         let state = rt.block_on(self.state.lock());
 
@@ -1006,8 +1006,8 @@ impl AsyncSession {
         format!("AsyncSession(id={})", self.notebook_id)
     }
 
-    fn __aenter__<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, Self>> {
-        Ok(slf)
+    fn __aenter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+        future_into_py(py, async move { Ok(slf) })
     }
 
     #[pyo3(signature = (_exc_type=None, _exc_val=None, _exc_tb=None))]
@@ -1018,14 +1018,6 @@ impl AsyncSession {
         _exc_val: Option<&Bound<'_, PyAny>>,
         _exc_tb: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let state = Arc::clone(&self.state);
-        future_into_py(py, async move {
-            let st = state.lock().await;
-            if st.kernel_started {
-                drop(st);
-                let _ = session_core::shutdown_kernel(&state).await;
-            }
-            Ok(false) // Don't suppress exceptions
-        })
+        future_into_py(py, async move { Ok(false) })
     }
 }

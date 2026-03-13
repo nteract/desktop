@@ -362,6 +362,7 @@ impl Session {
 
     /// Get a notebook metadata key.
     fn get_metadata(&self, key: &str) -> PyResult<Option<String>> {
+        self.connect()?;
         self.runtime
             .block_on(session_core::get_metadata(&self.state, key))
     }
@@ -840,11 +841,7 @@ impl Session {
         _exc_val: Option<&Bound<'_, PyAny>>,
         _exc_tb: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<bool> {
-        // Shutdown kernel if running
-        if self.runtime.block_on(self.state.lock()).kernel_started {
-            let _ = self.shutdown_kernel();
-        }
-        Ok(false) // Don't suppress exceptions
+        Ok(false)
     }
 
     /// Close the session.

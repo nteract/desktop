@@ -530,7 +530,18 @@ pub(crate) async fn clear_outputs(state: &Arc<Mutex<SessionState>>, cell_id: &st
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
-    handle.clear_outputs(cell_id).await.map_err(to_py_err)
+    let response = handle
+        .send_request(NotebookRequest::ClearOutputs {
+            cell_id: cell_id.to_string(),
+        })
+        .await
+        .map_err(to_py_err)?;
+
+    match response {
+        NotebookResponse::OutputsCleared { .. } => Ok(()),
+        NotebookResponse::Error { error } => Err(to_py_err(error)),
+        other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
+    }
 }
 
 // =========================================================================
@@ -759,32 +770,21 @@ pub(crate) async fn run_all_cells(
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
-    let cells = handle.get_cells();
-    let code_cells: Vec<_> = cells
-        .iter()
-        .filter(|c| c.cell_type == "code" && !c.source.trim().is_empty())
-        .collect();
+    handle.confirm_sync().await.map_err(to_py_err)?;
 
-    let count = code_cells.len();
+    let response = handle
+        .send_request(NotebookRequest::RunAllCells {})
+        .await
+        .map_err(to_py_err)?;
 
-    for cell in code_cells {
-        handle.confirm_sync().await.map_err(to_py_err)?;
+    drop(st);
 
-        let response = handle
-            .send_request(NotebookRequest::ExecuteCell {
-                cell_id: cell.id.clone(),
-            })
-            .await
-            .map_err(to_py_err)?;
-
-        match response {
-            NotebookResponse::CellQueued { .. } => {}
-            NotebookResponse::Error { error } => return Err(to_py_err(error)),
-            other => return Err(to_py_err(format!("Unexpected response: {:?}", other))),
-        }
+    match response {
+        NotebookResponse::AllCellsQueued { count } => Ok(count),
+        NotebookResponse::NoKernel {} => Err(to_py_err("No kernel running")),
+        NotebookResponse::Error { error } => Err(to_py_err(error)),
+        other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
     }
-
-    Ok(count)
 }
 
 // =========================================================================
@@ -929,7 +929,8 @@ pub(crate) async fn get_cell_metadata(
 
     match cell {
         Some(c) => Ok(Some(
-            serde_json::to_string(&c.metadata).unwrap_or_else(|_| "{}".to_string()),
+            serde_json::to_string(&c.metadata)
+                .map_err(|e| to_py_err(format!("Serialize: {}", e)))?,
         )),
         None => Ok(None),
     }
@@ -950,12 +951,12 @@ pub(crate) async fn set_cell_metadata(
     let metadata: serde_json::Value = serde_json::from_str(metadata_json)
         .map_err(|e| to_py_err(format!("Invalid JSON: {}", e)))?;
 
-    handle
+    let result = handle
         .set_cell_metadata(cell_id, &metadata)
         .await
         .map_err(to_py_err)?;
 
-    Ok(true)
+    Ok(result)
 }
 
 /// Update cell metadata at a specific path.
@@ -976,12 +977,12 @@ pub(crate) async fn update_cell_metadata_at(
 
     let path_refs: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
 
-    handle
+    let result = handle
         .update_cell_metadata_at(cell_id, &path_refs, value)
         .await
         .map_err(to_py_err)?;
 
-    Ok(true)
+    Ok(result)
 }
 
 // =========================================================================
@@ -998,12 +999,7 @@ pub(crate) async fn get_notebook_metadata(
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
-    let meta_json = handle.get_metadata("nteract").await.map_err(to_py_err)?;
-    let snapshot = if let Some(json_str) = meta_json {
-        serde_json::from_str(&json_str).unwrap_or_default()
-    } else {
-        NotebookMetadataSnapshot::default()
-    };
+    let snapshot = handle.get_notebook_metadata().unwrap_or_default();
 
     Ok(snapshot)
 }
@@ -1023,12 +1019,17 @@ pub(crate) async fn set_notebook_metadata(
         serde_json::to_string(snapshot).map_err(|e| to_py_err(format!("Serialize: {}", e)))?;
 
     handle
-        .set_metadata("nteract", &json_str)
+        .set_metadata("notebook_metadata", &json_str)
         .await
         .map_err(to_py_err)
 }
 
 /// Sync environment with current metadata.
+///
+/// NOTE: This simplified version returns immediately on `SyncEnvironmentStarted`
+/// without waiting for completion. The real implementations that poll the broadcast
+/// stream for completion live inline in `session.rs` and `async_session.rs`.
+#[allow(dead_code)]
 pub(crate) async fn sync_environment(
     state: &Arc<Mutex<SessionState>>,
 ) -> PyResult<SyncEnvironmentResult> {
