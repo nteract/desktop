@@ -42,6 +42,9 @@ const pythonIndent = indentUnit.of("    ");
 
 // TOML language support using lezer-toml
 const tomlLanguage = LRLanguage.define({
+  languageData: {
+    commentTokens: { line: "#" },
+  },
   name: "toml",
   parser: tomlParser,
 });

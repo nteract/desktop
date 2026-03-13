@@ -147,8 +147,7 @@ export const CodeMirrorEditor = forwardRef<
       if (language === "ipython") {
         return getIPythonExtension(value).extension;
       }
-      const ext = getLanguageExtension(language);
-      return ext;
+      return getLanguageExtension(language);
     }, [language, value]);
 
     // Determine which theme to use
