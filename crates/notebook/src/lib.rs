@@ -3069,12 +3069,14 @@ fn focused_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
         .find(|window| window.is_focused().ok() == Some(true))
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReopenAction {
     RestoreWindow,
     SpawnNotebook,
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn reopen_action(has_visible_windows: bool, open_window_count: usize) -> Option<ReopenAction> {
     if has_visible_windows {
         return None;
