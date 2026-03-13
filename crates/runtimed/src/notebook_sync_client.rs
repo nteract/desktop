@@ -2465,7 +2465,7 @@ where
         Option<String>,
     ) {
         let initial_cells = self.get_cells();
-        let initial_metadata = self.get_metadata(NOTEBOOK_METADATA_KEY);
+        let initial_metadata = self.get_metadata(NOTEBOOK_METADATA_KEY); // Legacy string for handshake compat
         let notebook_id = self.notebook_id.clone();
         let pending_broadcasts = self.pending_broadcasts.clone();
 
@@ -2600,7 +2600,8 @@ async fn run_sync_task<S>(
 
     let mut loop_count = 0u64;
     // Track last metadata to only send updates when it actually changes
-    let mut last_metadata: Option<String> = client.get_metadata(NOTEBOOK_METADATA_KEY);
+    let mut last_metadata: Option<NotebookMetadataSnapshot> =
+        get_metadata_snapshot_from_doc(&client.doc);
 
     loop {
         loop_count += 1;
@@ -2915,7 +2916,7 @@ async fn run_sync_task<S>(
                             Ok(Some(ReceivedFrame::Changes(cells))) => {
                                 publish_snapshot(&client, &snapshot_tx);
                                 // Full peer mode: metadata diffing and SyncUpdate
-                                let current_metadata = client.get_metadata(NOTEBOOK_METADATA_KEY);
+                                let current_metadata = get_metadata_snapshot_from_doc(&client.doc);
                                 let metadata_changed = current_metadata != last_metadata;
                                 if metadata_changed {
                                     last_metadata = current_metadata.clone();
@@ -2924,6 +2925,8 @@ async fn run_sync_task<S>(
                                     cells,
                                     notebook_metadata: if metadata_changed {
                                         current_metadata
+                                            .as_ref()
+                                            .and_then(|m| serde_json::to_string(m).ok())
                                     } else {
                                         None
                                     },
