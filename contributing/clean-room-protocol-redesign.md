@@ -69,10 +69,16 @@ The protocol must support all of these. Think about which should be document sta
 - Preserve unknown metadata keys through round-trips
 - Inline dependency trust (HMAC-SHA256 per-machine signing)
 
+### Settings
+- Settings are synced across all windows and the daemon via a **separate Automerge document** (not the notebook doc). The daemon holds the canonical copy and persists to disk.
+- Settings include: theme, default_runtime, default_python_env, default UV/Conda packages, keep_alive_secs, onboarding state.
+- Any window can write a setting; all other windows receive the change via Automerge sync.
+- The settings sync uses the same Unix socket transport as notebook sync, differentiated by the handshake (`"SettingsSync"` vs `"NotebookSync"`).
+- Frontend falls back to a local `settings.json` if the daemon is unavailable.
+
 ### Other
 - Code completions from the kernel
 - Kernel input history search
-- Settings sync between daemon and all clients
 - Notebook metadata read/write
 
 ## Current Architecture Summary (for context)
