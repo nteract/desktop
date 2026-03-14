@@ -732,6 +732,68 @@ fn dev_daemon_running() -> bool {
         .get("running")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
+        || fallback_dev_daemon_running()
+}
+
+fn fallback_dev_daemon_running() -> bool {
+    let Some(workspace) = runt_workspace::get_workspace_path() else {
+        return false;
+    };
+
+    for namespace in ["runt", "runt-nightly"] {
+        let daemon_json = dirs::cache_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+            .join(namespace)
+            .join("worktrees")
+            .join(runt_workspace::worktree_hash(&workspace))
+            .join("daemon.json");
+
+        if daemon_state_is_running(&daemon_json) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn daemon_state_is_running(path: &Path) -> bool {
+    let Ok(contents) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(info) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return false;
+    };
+
+    let pid_running = info
+        .get("pid")
+        .and_then(serde_json::Value::as_u64)
+        .map(process_is_running)
+        .unwrap_or(false);
+    if pid_running {
+        return true;
+    }
+
+    info.get("endpoint")
+        .and_then(serde_json::Value::as_str)
+        .map(Path::new)
+        .is_some_and(Path::exists)
+}
+
+fn process_is_running(pid: u64) -> bool {
+    #[cfg(unix)]
+    {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
 }
 
 fn dev_daemon_binary(release: bool) -> &'static str {
