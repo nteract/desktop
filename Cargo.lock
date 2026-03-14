@@ -3447,6 +3447,7 @@ dependencies = [
  "log",
  "nbformat",
  "nix",
+ "notebook-sync",
  "pathdiff",
  "petname",
  "pyproject-toml",

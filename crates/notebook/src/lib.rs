@@ -21,7 +21,7 @@ pub mod webdriver;
 
 pub use runtime::Runtime;
 
-use runtimed::notebook_sync_client::{NotebookSyncClient, NotebookSyncHandle};
+use notebook_sync::DocHandle;
 use runtimed::protocol::{CompletionItem, HistoryEntry, NotebookRequest, NotebookResponse};
 
 use log::{debug, info, warn};
@@ -32,7 +32,7 @@ use std::ffi::OsStr;
 /// Shared notebook sync handle for cross-window state synchronization.
 /// The Option allows graceful fallback when daemon is unavailable.
 /// Uses the split handle pattern - the handle is clonable and doesn't block.
-type SharedNotebookSync = Arc<tokio::sync::Mutex<Option<NotebookSyncHandle>>>;
+type SharedNotebookSync = Arc<tokio::sync::Mutex<Option<DocHandle>>>;
 
 #[derive(Clone)]
 struct WindowNotebookContext {
@@ -244,7 +244,7 @@ where
 /// Read the notebook metadata from the daemon's canonical Automerge doc.
 /// Returns the deserialized NotebookMetadataSnapshot, or None if not available.
 async fn get_metadata_snapshot(
-    handle: &NotebookSyncHandle,
+    handle: &DocHandle,
 ) -> Option<runtimed::notebook_metadata::NotebookMetadataSnapshot> {
     match handle
         .send_request(NotebookRequest::GetMetadataSnapshot {})
@@ -259,7 +259,7 @@ async fn get_metadata_snapshot(
 
 /// Write a NotebookMetadataSnapshot to the daemon's canonical Automerge doc.
 async fn set_metadata_snapshot(
-    handle: &NotebookSyncHandle,
+    handle: &DocHandle,
     snapshot: &runtimed::notebook_metadata::NotebookMetadataSnapshot,
 ) -> Result<(), String> {
     let snapshot_json =
@@ -280,7 +280,7 @@ async fn set_metadata_snapshot(
 /// Read the metadata `additional` fields from the daemon's Automerge doc.
 /// Returns a HashMap with the `runt` field as a JSON value for trust verification.
 async fn get_raw_metadata_additional(
-    handle: &NotebookSyncHandle,
+    handle: &DocHandle,
 ) -> Option<HashMap<String, serde_json::Value>> {
     let snapshot = get_metadata_snapshot(handle).await?;
     let runt_value = serde_json::to_value(&snapshot.runt).ok()?;
@@ -291,7 +291,7 @@ async fn get_raw_metadata_additional(
 
 /// Write trust fields into the daemon's metadata.
 async fn set_raw_trust_in_metadata(
-    handle: &NotebookSyncHandle,
+    handle: &DocHandle,
     signature: &str,
     timestamp: &str,
 ) -> Result<(), String> {
@@ -472,12 +472,13 @@ async fn initialize_notebook_sync_open(
     );
 
     let (frame_tx, raw_frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    let pipe_channel = runtimed::notebook_sync_client::PipeChannel { frame_tx };
 
-    let (handle, receiver, _broadcast_receiver, _cells, _metadata, info) =
-        NotebookSyncClient::connect_open_split(socket_path, path, Some(pipe_channel))
-            .await
-            .map_err(|e| format!("sync connect (open): {}", e))?;
+    let result = notebook_sync::connect::connect_open_with_pipe(socket_path, path, frame_tx)
+        .await
+        .map_err(|e| format!("sync connect (open): {}", e))?;
+
+    let handle = result.handle;
+    let info = result.info;
 
     info!(
         "[notebook-sync] Daemon opened notebook: id={}, cells={}, trust_approval={}",
@@ -494,10 +495,6 @@ async fn initialize_notebook_sync_open(
         cell_count: info.cell_count,
         needs_trust_approval: info.needs_trust_approval,
     };
-
-    // Drop the SyncUpdate receiver — in pipe mode the relay never sends metadata
-    // diffs through changes_tx, and no frontend code listens for notebook:metadata_updated.
-    drop(receiver);
 
     setup_sync_receivers(
         window,
@@ -537,18 +534,19 @@ async fn initialize_notebook_sync_create(
     );
 
     let (frame_tx, raw_frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    let pipe_channel = runtimed::notebook_sync_client::PipeChannel { frame_tx };
 
-    let (handle, receiver, _broadcast_receiver, _cells, _metadata, info) =
-        NotebookSyncClient::connect_create_split(
-            socket_path,
-            runtime,
-            working_dir,
-            notebook_id_hint,
-            Some(pipe_channel),
-        )
-        .await
-        .map_err(|e| format!("sync connect (create): {}", e))?;
+    let result = notebook_sync::connect::connect_create_with_pipe(
+        socket_path,
+        &runtime,
+        working_dir,
+        notebook_id_hint,
+        frame_tx,
+    )
+    .await
+    .map_err(|e| format!("sync connect (create): {}", e))?;
+
+    let handle = result.handle;
+    let info = result.info;
 
     info!(
         "[notebook-sync] Daemon created notebook: id={}, cells={}",
@@ -565,8 +563,6 @@ async fn initialize_notebook_sync_create(
         cell_count: info.cell_count,
         needs_trust_approval: info.needs_trust_approval,
     };
-
-    drop(receiver);
 
     setup_sync_receivers(
         window,
@@ -595,7 +591,7 @@ async fn initialize_notebook_sync_create(
 async fn setup_sync_receivers(
     window: tauri::WebviewWindow,
     notebook_id: String,
-    handle: NotebookSyncHandle,
+    handle: DocHandle,
     mut raw_frame_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
     notebook_sync: SharedNotebookSync,
     sync_generation: Arc<AtomicU64>,

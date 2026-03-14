@@ -176,6 +176,7 @@ pub async fn connect_with_options(
         pending_broadcasts,
         reader,
         writer,
+        None,
     )
     .map(|(handle, broadcast_rx)| ConnectResult {
         handle,
@@ -187,6 +188,27 @@ pub async fn connect_with_options(
 
 /// Connect and open an existing notebook file.
 pub async fn connect_open(socket_path: PathBuf, path: PathBuf) -> Result<OpenResult, SyncError> {
+    connect_open_impl(socket_path, path, None).await
+}
+
+/// Open a notebook with pipe frame forwarding for Tauri relay mode.
+///
+/// Same as `connect_open` but forwards raw daemon frames to the given
+/// channel before processing them locally. Used by the Tauri webview
+/// to relay frames to the WASM frontend.
+pub async fn connect_open_with_pipe(
+    socket_path: PathBuf,
+    path: PathBuf,
+    pipe_frame_tx: mpsc::UnboundedSender<Vec<u8>>,
+) -> Result<OpenResult, SyncError> {
+    connect_open_impl(socket_path, path, Some(pipe_frame_tx)).await
+}
+
+async fn connect_open_impl(
+    socket_path: PathBuf,
+    path: PathBuf,
+    pipe_frame_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+) -> Result<OpenResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
     let mut reader = tokio::io::BufReader::new(reader);
@@ -244,6 +266,7 @@ pub async fn connect_open(socket_path: PathBuf, path: PathBuf) -> Result<OpenRes
         pending_broadcasts,
         reader,
         writer,
+        pipe_frame_tx,
     )
     .map(|(handle, broadcast_rx)| OpenResult {
         handle,
@@ -262,6 +285,38 @@ pub async fn connect_create(
     runtime: &str,
     working_dir: Option<PathBuf>,
 ) -> Result<CreateResult, SyncError> {
+    connect_create_impl(socket_path, runtime, working_dir, None, None).await
+}
+
+/// Create a notebook with pipe frame forwarding for Tauri relay mode.
+///
+/// Same as `connect_create` but forwards raw daemon frames to the given
+/// channel before processing them locally. Used by the Tauri webview
+/// to relay frames to the WASM frontend.
+pub async fn connect_create_with_pipe(
+    socket_path: PathBuf,
+    runtime: &str,
+    working_dir: Option<PathBuf>,
+    notebook_id: Option<String>,
+    pipe_frame_tx: mpsc::UnboundedSender<Vec<u8>>,
+) -> Result<CreateResult, SyncError> {
+    connect_create_impl(
+        socket_path,
+        runtime,
+        working_dir,
+        notebook_id,
+        Some(pipe_frame_tx),
+    )
+    .await
+}
+
+async fn connect_create_impl(
+    socket_path: PathBuf,
+    runtime: &str,
+    working_dir: Option<PathBuf>,
+    notebook_id: Option<String>,
+    pipe_frame_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+) -> Result<CreateResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
     let mut reader = tokio::io::BufReader::new(reader);
@@ -276,7 +331,7 @@ pub async fn connect_create(
         working_dir: working_dir
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
-        notebook_id: None,
+        notebook_id,
     };
     connection::send_json_frame(&mut writer, &handshake)
         .await
@@ -323,6 +378,7 @@ pub async fn connect_create(
         pending_broadcasts,
         reader,
         writer,
+        pipe_frame_tx,
     )
     .map(|(handle, broadcast_rx)| CreateResult {
         handle,
@@ -347,6 +403,7 @@ fn build_and_spawn<R, W>(
     pending_broadcasts: Vec<NotebookBroadcast>,
     reader: R,
     writer: W,
+    pipe_frame_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
 ) -> Result<(DocHandle, crate::BroadcastReceiver), SyncError>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -387,6 +444,7 @@ where
         cmd_rx,
         snapshot_tx: Arc::clone(&snapshot_tx),
         broadcast_tx,
+        pipe_frame_tx,
     };
 
     let notebook_id_for_task = notebook_id;

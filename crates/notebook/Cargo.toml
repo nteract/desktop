@@ -37,6 +37,7 @@ jupyter-protocol = { workspace = true }
 runtimelib = { workspace = true, features = ["tokio-runtime", "aws-lc-rs"] }
 tauri-jupyter = { path = "../tauri-jupyter" }
 runtimed = { path = "../runtimed" }
+notebook-sync = { path = "../notebook-sync" }
 runt-trust = { path = "../runt-trust" }
 runt-workspace = { path = "../runt-workspace" }
 kernel-launch = { path = "../kernel-launch" }
