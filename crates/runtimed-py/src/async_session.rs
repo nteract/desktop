@@ -10,12 +10,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use notebook_protocol::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
-
 use crate::daemon_paths::get_socket_path;
 use crate::error::to_py_err;
 use crate::event_stream::ExecutionEventStream;
-use crate::output::SyncEnvironmentResult;
 use crate::session_core::{self, SessionState};
 use crate::subscription::EventSubscription;
 
@@ -768,52 +765,11 @@ impl AsyncSession {
         let cell_id = cell_id.to_string();
 
         future_into_py(py, async move {
-            // Auto-start kernel if needed
-            {
-                let st = state.lock().await;
-                if !st.kernel_started {
-                    drop(st);
-                    session_core::connect(&state, &notebook_id).await?;
-                    session_core::start_kernel(&state, "python", "auto", None).await?;
-                }
-            }
-
-            let st = state.lock().await;
-
-            let handle = st
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            handle.confirm_sync().await.map_err(to_py_err)?;
-
-            let response = handle
-                .send_request(NotebookRequest::ExecuteCell {
-                    cell_id: cell_id.clone(),
-                })
-                .await
-                .map_err(to_py_err)?;
-
-            match response {
-                NotebookResponse::CellQueued { .. } => {}
-                NotebookResponse::Error { error } => return Err(to_py_err(error)),
-                other => return Err(to_py_err(format!("Unexpected response: {:?}", other))),
-            }
-
-            // Resubscribe for this stream — needs direct state access
-            let stream_broadcast_rx = st
-                .broadcast_rx
-                .as_ref()
-                .ok_or_else(|| to_py_err("No broadcast receiver"))?
-                .resubscribe();
-
-            let blob_base_url = st.blob_base_url.clone();
-            let blob_store_path = st.blob_store_path.clone();
-
-            drop(st);
+            let (broadcast_rx, blob_base_url, blob_store_path) =
+                session_core::prepare_stream_execute(&state, &notebook_id, &cell_id).await?;
 
             Ok(ExecutionEventStream::new(
-                stream_broadcast_rx,
+                broadcast_rx,
                 cell_id,
                 timeout_secs,
                 blob_base_url,
@@ -836,23 +792,13 @@ impl AsyncSession {
         cell_ids: Option<Vec<String>>,
         event_types: Option<Vec<String>>,
     ) -> PyResult<EventSubscription> {
-        // Needs direct state access for resubscribe — use a temporary block_on
-        // since this returns a sync object (the subscription) not a coroutine.
+        // Use a temporary runtime since this returns a sync object (the subscription)
+        // not a coroutine.
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| to_py_err(format!("Failed to create runtime: {}", e)))?;
 
-        let state = rt.block_on(self.state.lock());
-
-        let broadcast_rx = state
-            .broadcast_rx
-            .as_ref()
-            .ok_or_else(|| to_py_err("Not connected - call connect() or start_kernel() first"))?
-            .resubscribe();
-
-        let blob_base_url = state.blob_base_url.clone();
-        let blob_store_path = state.blob_store_path.clone();
-
-        drop(state);
+        let (broadcast_rx, blob_base_url, blob_store_path) =
+            rt.block_on(session_core::prepare_subscribe(&self.state))?;
 
         Ok(EventSubscription::new(
             broadcast_rx,
@@ -871,91 +817,10 @@ impl AsyncSession {
     ///
     /// Returns a coroutine that resolves to SyncEnvironmentResult.
     fn sync_environment<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        // sync_environment is complex — waits for follow-up broadcasts.
-        // Kept inline rather than in session_core due to broadcast polling.
         let state = Arc::clone(&self.state);
 
         future_into_py(py, async move {
-            let st = state.lock().await;
-
-            let handle = st
-                .handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?;
-
-            let response = handle
-                .send_request(NotebookRequest::SyncEnvironment {})
-                .await
-                .map_err(to_py_err)?;
-
-            drop(st);
-
-            match response {
-                NotebookResponse::SyncEnvironmentStarted { packages } => {
-                    // Wait for completion via broadcast
-                    let mut st = state.lock().await;
-                    let broadcast_rx = st.broadcast_rx.as_mut();
-                    if let Some(rx) = broadcast_rx {
-                        let deadline =
-                            std::time::Instant::now() + std::time::Duration::from_secs(300);
-                        while std::time::Instant::now() < deadline {
-                            match tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-                                .await
-                            {
-                                Ok(Some(NotebookBroadcast::EnvSyncState {
-                                    in_sync: true, ..
-                                })) => {
-                                    return Ok(SyncEnvironmentResult {
-                                        success: true,
-                                        synced_packages: packages,
-                                        error: None,
-                                        needs_restart: false,
-                                    });
-                                }
-                                Ok(Some(_)) => continue,
-                                Ok(None) => break,
-                                Err(_) => continue,
-                            }
-                        }
-                    }
-                    Ok(SyncEnvironmentResult {
-                        success: true,
-                        synced_packages: packages,
-                        error: None,
-                        needs_restart: false,
-                    })
-                }
-                NotebookResponse::SyncEnvironmentComplete { synced_packages } => {
-                    Ok(SyncEnvironmentResult {
-                        success: true,
-                        synced_packages,
-                        error: None,
-                        needs_restart: false,
-                    })
-                }
-                NotebookResponse::SyncEnvironmentFailed {
-                    error,
-                    needs_restart,
-                } => Ok(SyncEnvironmentResult {
-                    success: false,
-                    synced_packages: vec![],
-                    error: Some(error),
-                    needs_restart,
-                }),
-                NotebookResponse::NoKernel {} => Ok(SyncEnvironmentResult {
-                    success: false,
-                    synced_packages: vec![],
-                    error: Some("No kernel running".to_string()),
-                    needs_restart: true,
-                }),
-                NotebookResponse::Error { error } => Ok(SyncEnvironmentResult {
-                    success: false,
-                    synced_packages: vec![],
-                    error: Some(error),
-                    needs_restart: true,
-                }),
-                other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
-            }
+            session_core::sync_environment_impl(&state).await
         })
     }
 

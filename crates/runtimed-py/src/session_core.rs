@@ -1020,33 +1020,130 @@ pub(crate) async fn set_notebook_metadata(
     Ok(())
 }
 
-/// Sync environment with current metadata.
+// =========================================================================
+// Streaming helpers
+// =========================================================================
+
+/// Prepare for streaming execution: auto-start kernel, confirm sync,
+/// queue the cell, and return a resubscribed broadcast receiver.
 ///
-/// NOTE: This simplified version returns immediately on `SyncEnvironmentStarted`
-/// without waiting for completion. The real implementations that poll the broadcast
-/// stream for completion live inline in `session.rs` and `async_session.rs`.
-#[allow(dead_code)]
-pub(crate) async fn sync_environment(
+/// The caller wraps the receiver in the appropriate iterator type
+/// (ExecutionEventIterator for sync, ExecutionEventStream for async).
+pub(crate) async fn prepare_stream_execute(
     state: &Arc<Mutex<SessionState>>,
-) -> PyResult<SyncEnvironmentResult> {
+    notebook_id: &str,
+    cell_id: &str,
+) -> PyResult<(BroadcastReceiver, Option<String>, Option<PathBuf>)> {
+    // Auto-start kernel if needed
+    {
+        let st = state.lock().await;
+        if !st.kernel_started {
+            drop(st);
+            ensure_kernel_started(state, notebook_id).await?;
+        }
+    }
+
     let st = state.lock().await;
     let handle = st
         .handle
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
+    handle.confirm_sync().await.map_err(to_py_err)?;
+
     let response = handle
-        .send_request(NotebookRequest::SyncEnvironment {})
+        .send_request(NotebookRequest::ExecuteCell {
+            cell_id: cell_id.to_string(),
+        })
         .await
         .map_err(to_py_err)?;
 
     match response {
-        NotebookResponse::SyncEnvironmentStarted { packages } => Ok(SyncEnvironmentResult {
-            success: true,
-            synced_packages: packages,
-            error: None,
-            needs_restart: false,
-        }),
+        NotebookResponse::CellQueued { .. } => {}
+        NotebookResponse::Error { error } => return Err(to_py_err(error)),
+        other => return Err(to_py_err(format!("Unexpected response: {:?}", other))),
+    }
+
+    // Resubscribe for this stream
+    let stream_broadcast_rx = st
+        .broadcast_rx
+        .as_ref()
+        .ok_or_else(|| to_py_err("No broadcast receiver"))?
+        .resubscribe();
+
+    let blob_base_url = st.blob_base_url.clone();
+    let blob_store_path = st.blob_store_path.clone();
+
+    Ok((stream_broadcast_rx, blob_base_url, blob_store_path))
+}
+
+/// Prepare a broadcast subscription with optional filters.
+///
+/// Returns a resubscribed broadcast receiver and blob config.
+pub(crate) async fn prepare_subscribe(
+    state: &Arc<Mutex<SessionState>>,
+) -> PyResult<(BroadcastReceiver, Option<String>, Option<PathBuf>)> {
+    let st = state.lock().await;
+
+    let broadcast_rx = st
+        .broadcast_rx
+        .as_ref()
+        .ok_or_else(|| to_py_err("Not connected - call connect() or start_kernel() first"))?
+        .resubscribe();
+
+    let blob_base_url = st.blob_base_url.clone();
+    let blob_store_path = st.blob_store_path.clone();
+
+    Ok((broadcast_rx, blob_base_url, blob_store_path))
+}
+
+/// Sync environment with current metadata and poll for completion.
+pub(crate) async fn sync_environment_impl(
+    state: &Arc<Mutex<SessionState>>,
+) -> PyResult<SyncEnvironmentResult> {
+    let response = {
+        let st = state.lock().await;
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
+
+        handle
+            .send_request(NotebookRequest::SyncEnvironment {})
+            .await
+            .map_err(to_py_err)?
+    };
+
+    match response {
+        NotebookResponse::SyncEnvironmentStarted { packages } => {
+            // Wait for completion via broadcast
+            let mut st = state.lock().await;
+            let broadcast_rx = st.broadcast_rx.as_mut();
+            if let Some(rx) = broadcast_rx {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+                while std::time::Instant::now() < deadline {
+                    match tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await {
+                        Ok(Some(NotebookBroadcast::EnvSyncState { in_sync: true, .. })) => {
+                            return Ok(SyncEnvironmentResult {
+                                success: true,
+                                synced_packages: packages,
+                                error: None,
+                                needs_restart: false,
+                            });
+                        }
+                        Ok(Some(_)) => continue,
+                        Ok(None) => break,
+                        Err(_) => continue,
+                    }
+                }
+            }
+            Ok(SyncEnvironmentResult {
+                success: true,
+                synced_packages: packages,
+                error: None,
+                needs_restart: false,
+            })
+        }
         NotebookResponse::SyncEnvironmentComplete { synced_packages } => {
             Ok(SyncEnvironmentResult {
                 success: true,
