@@ -867,7 +867,7 @@ def _output_to_dict(output: runtimed.Output) -> dict[str, Any]:
 async def get_all_cells(
     format: Annotated[
         Literal["markdown", "json"],
-        Field(description="Output format: 'markdown' for visual display, 'json' for structured data"),
+        Field(description="'markdown' for visual display, 'json' for structured data"),
     ] = "markdown",
 ) -> list[ContentItem] | list[dict[str, Any]]:
     """Get all cells with source and outputs.
