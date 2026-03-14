@@ -4012,6 +4012,12 @@ pub fn run(
                         let _ = emit_to_label::<_, _, _>(&window, window.label(), "menu:clone", ());
                     }
                 }
+                crate::menu::MENU_SELECT_ALL => {
+                    if let Some(window) = focused_window(app) {
+                        let _ =
+                            emit_to_label::<_, _, _>(&window, window.label(), "menu:select-all", ());
+                    }
+                }
                 crate::menu::MENU_ZOOM_IN => {
                     if let Some(window) = focused_window(app) {
                         let _ = emit_to_label::<_, _, _>(&window, window.label(), "menu:zoom-in", ());

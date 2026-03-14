@@ -40,6 +40,7 @@ import { startCursorDispatch } from "./lib/cursor-registry";
 import { KERNEL_STATUS } from "./lib/kernel-status";
 import { logger } from "./lib/logger";
 import { useDetectRuntime } from "./lib/notebook-metadata";
+import { selectAllInActiveElement } from "./lib/select-all";
 import type { JupyterMessage } from "./types";
 
 /** MIME bundle type for page payloads */
@@ -714,6 +715,18 @@ function AppContent() {
       unlistenPromise.then((unlisten) => unlisten());
     };
   }, [cloneNotebook]);
+
+  // Edit menu: Select all
+  useEffect(() => {
+    const webview = getCurrentWebview();
+    const unlistenPromise = webview.listen("menu:select-all", () => {
+      selectAllInActiveElement();
+    });
+
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
+    };
+  }, []);
 
   // Cell menu: Insert cell
   useEffect(() => {

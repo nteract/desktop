@@ -19,6 +19,7 @@ pub const MENU_OPEN: &str = "open";
 pub const MENU_OPEN_SAMPLE_PREFIX: &str = "open_sample:";
 pub const MENU_SAVE: &str = "save";
 pub const MENU_CLONE_NOTEBOOK: &str = "clone_notebook";
+pub const MENU_SELECT_ALL: &str = "select_all";
 pub const MENU_WINDOW_FOCUS_PREFIX: &str = "focus_window:";
 
 // Menu item IDs for zoom
@@ -232,7 +233,13 @@ pub fn create_menu(
     edit_menu.append(&PredefinedMenuItem::cut(app, None)?)?;
     edit_menu.append(&PredefinedMenuItem::copy(app, None)?)?;
     edit_menu.append(&PredefinedMenuItem::paste(app, None)?)?;
-    edit_menu.append(&PredefinedMenuItem::select_all(app, None)?)?;
+    edit_menu.append(&MenuItem::with_id(
+        app,
+        MENU_SELECT_ALL,
+        "Select All",
+        true,
+        Some("CmdOrCtrl+A"),
+    )?)?;
     menu.append(&edit_menu)?;
 
     // Cell menu
