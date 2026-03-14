@@ -261,7 +261,7 @@ def _format_cell_summary(
 
     Example output:
     0 | markdown | id=cell-1be2a179-... | # Crate Download Analysis
-    1 | code | id=cell-e18fcc2a-... | exec=4 | import requests...[+45 chars]
+    1 | code | id=cell-e18fcc2a-... | exec=4 | import requests…[+45 chars]
     """
     parts = [str(index), cell.cell_type, f"id={cell.id}"]
 
@@ -274,7 +274,7 @@ def _format_cell_summary(
         source_line = " ".join(cell.source.split())
         if len(source_line) > preview_chars:
             remaining = len(source_line) - preview_chars
-            source_line = f"{source_line[:preview_chars]}[+{remaining} chars]"
+            source_line = f"{source_line[:preview_chars]}…[+{remaining} chars]"
         parts.append(source_line)
 
     line = " | ".join(parts)
@@ -287,7 +287,7 @@ def _format_cell_summary(
             output_line = " ".join(output_text.split())
             if len(output_line) > preview_chars:
                 remaining = len(output_line) - preview_chars
-                output_line = f"{output_line[:preview_chars]}[+{remaining} chars]"
+                output_line = f"{output_line[:preview_chars]}…[+{remaining} chars]"
             line += f"\n  └─ {output_line}"
 
     return line
@@ -935,6 +935,14 @@ async def get_all_cells(
         include_outputs: Include output previews in summary format.
         preview_chars: Max characters for source/output preview in summary format.
     """
+    # Validate pagination params
+    if start < 0:
+        raise ValueError(f"start must be >= 0, got {start}")
+    if count is not None and count < 0:
+        raise ValueError(f"count must be >= 0 or None, got {count}")
+    if preview_chars < 1:
+        raise ValueError(f"preview_chars must be >= 1, got {preview_chars}")
+
     session = await _get_session()
     cells = await session.get_cells()
 

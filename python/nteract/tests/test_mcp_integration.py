@@ -426,11 +426,17 @@ async def test_get_all_cells_summary_format(mcp_client: ClientSession):
     assert "# Title" in text
     assert "x = 1" in text
 
-    # Test json format still works
+    # Test json format - verify structure
     result = await mcp_client.call_tool("get_all_cells", {"format": "json"})
-    # For JSON, we get a list not text
     assert hasattr(result, "content") and result.content
-    # JSON returns as a structured list (not text)
+    # JSON format returns each cell as separate content item
+    assert len(result.content) >= 2  # at least md_id and code_id cells
+    for item in result.content:
+        cell = json.loads(item.text)
+        assert "cell_id" in cell
+        assert "cell_type" in cell
+        assert "source" in cell
+        assert "outputs" in cell
 
 
 @pytest.mark.asyncio
