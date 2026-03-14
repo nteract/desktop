@@ -20,6 +20,7 @@ import contextlib
 import difflib
 import json
 import logging
+import os
 import re
 import sys
 from typing import Annotated, Any, Literal
@@ -522,7 +523,7 @@ async def save_notebook(path: str | None = None) -> dict[str, Any]:
 
     # If notebook_id was UUID-based (ephemeral) and we saved to a path,
     # reconnect to the path-based room so we're in sync with users who open the file
-    is_ephemeral = not old_notebook_id.startswith("/")
+    is_ephemeral = not os.path.isabs(old_notebook_id)
     if is_ephemeral and saved_path:
         with contextlib.suppress(Exception):
             await session.close()
