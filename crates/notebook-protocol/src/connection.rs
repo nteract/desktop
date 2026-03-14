@@ -120,6 +120,10 @@ pub const PREAMBLE_LEN: usize = 5;
 /// Must be called once at the start of every connection, before
 /// the handshake frame.
 pub async fn send_preamble<W: AsyncWrite + Unpin>(writer: &mut W) -> std::io::Result<()> {
+    const _: () = assert!(
+        PROTOCOL_VERSION <= u8::MAX as u32,
+        "PROTOCOL_VERSION must fit in a single byte for the wire preamble"
+    );
     let mut buf = [0u8; PREAMBLE_LEN];
     buf[..4].copy_from_slice(&MAGIC);
     buf[4] = PROTOCOL_VERSION as u8;
