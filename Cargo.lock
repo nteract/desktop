@@ -3526,6 +3526,7 @@ dependencies = [
  "log",
  "notebook-doc",
  "notebook-protocol",
+ "runtimed",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

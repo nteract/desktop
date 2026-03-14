@@ -20,3 +20,6 @@ thiserror = { workspace = true }
 
 uuid = { workspace = true }
 log = "0.4"
+
+[dev-dependencies]
+runtimed = { path = "../runtimed" }

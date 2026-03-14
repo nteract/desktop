@@ -391,7 +391,9 @@ impl DocHandle {
     pub async fn send_request_with_broadcast(
         &self,
         request: NotebookRequest,
-        broadcast_tx: tokio::sync::broadcast::Sender<notebook_protocol::protocol::NotebookBroadcast>,
+        broadcast_tx: tokio::sync::broadcast::Sender<
+            notebook_protocol::protocol::NotebookBroadcast,
+        >,
     ) -> Result<NotebookResponse, SyncError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.cmd_tx
