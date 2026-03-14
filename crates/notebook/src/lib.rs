@@ -405,6 +405,7 @@ fn default_metadata_snapshot() -> runtimed::notebook_metadata::NotebookMetadataS
             deno: None,
             trust_signature: None,
             trust_timestamp: None,
+            extra: std::collections::HashMap::new(),
         },
     }
 }
@@ -453,6 +454,7 @@ fn snapshot_from_nbformat(
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
+                extra: std::collections::HashMap::new(),
             });
 
         if runt_meta.deno.is_none() {
@@ -491,6 +493,7 @@ fn snapshot_from_nbformat(
             deno,
             trust_signature: None,
             trust_timestamp: None,
+            extra: std::collections::HashMap::new(),
         }
     };
 

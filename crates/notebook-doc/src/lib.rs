@@ -1634,7 +1634,7 @@ impl NotebookDoc {
             Some(list_id) => {
                 let len = self.doc.length(&list_id);
                 (0..len)
-                    .filter_map(|i| read_str(&self.doc, &list_id, i))
+                    .map(|i| read_str(&self.doc, &list_id, i).unwrap_or_default())
                     .collect()
             }
             None => vec![],
@@ -1985,7 +1985,7 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
                 Some((automerge::Value::Object(ObjType::List), list_id)) => {
                     let len = doc.length(&list_id);
                     (0..len)
-                        .filter_map(|j| read_str(doc, &list_id, j))
+                        .map(|j| read_str(doc, &list_id, j).unwrap_or_default())
                         .collect()
                 }
                 _ => vec![],

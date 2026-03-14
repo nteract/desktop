@@ -53,6 +53,12 @@ pub struct RuntMetadata {
     /// Timestamp when the notebook was last trusted (RFC 3339 format).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust_timestamp: Option<String>,
+
+    /// Catch-all for unknown/third-party runt keys.
+    /// Preserves fields we don't model (e.g. from newer schema versions or extensions)
+    /// through deserialization → serialization round-trips.
+    #[serde(flatten)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 /// UV inline dependency metadata (`metadata.runt.uv`).
@@ -192,6 +198,7 @@ impl NotebookMetadataSnapshot {
                     deno: None,
                     trust_signature: None,
                     trust_timestamp: None,
+                    extra: std::collections::HashMap::new(),
                 }
             });
 
@@ -205,18 +212,20 @@ impl NotebookMetadataSnapshot {
     /// Merge this snapshot into a mutable JSON object representing the full
     /// notebook metadata. Replaces `kernelspec`, `language_info`, and `runt`
     /// while preserving all other keys.
-    pub fn merge_into_metadata_value(&self, metadata: &mut serde_json::Value) {
+    pub fn merge_into_metadata_value(
+        &self,
+        metadata: &mut serde_json::Value,
+    ) -> Result<(), serde_json::Error> {
         let obj = match metadata.as_object_mut() {
             Some(o) => o,
-            None => return,
+            None => return Ok(()),
         };
 
         // Replace kernelspec
         match &self.kernelspec {
             Some(ks) => {
-                if let Ok(v) = serde_json::to_value(ks) {
-                    obj.insert("kernelspec".to_string(), v);
-                }
+                let v = serde_json::to_value(ks)?;
+                obj.insert("kernelspec".to_string(), v);
             }
             None => {
                 obj.remove("kernelspec");
@@ -226,19 +235,18 @@ impl NotebookMetadataSnapshot {
         // Merge language_info (preserve fields we don't track, like codemirror_mode)
         match &self.language_info {
             Some(li) => {
-                if let Ok(v) = serde_json::to_value(li) {
-                    if let Some(existing) = obj.get_mut("language_info") {
-                        // Deep-merge: update tracked fields, keep the rest
-                        if let Some(existing_obj) = existing.as_object_mut() {
-                            if let Some(new_obj) = v.as_object() {
-                                for (k, val) in new_obj {
-                                    existing_obj.insert(k.clone(), val.clone());
-                                }
+                let v = serde_json::to_value(li)?;
+                if let Some(existing) = obj.get_mut("language_info") {
+                    // Deep-merge: update tracked fields, keep the rest
+                    if let Some(existing_obj) = existing.as_object_mut() {
+                        if let Some(new_obj) = v.as_object() {
+                            for (k, val) in new_obj {
+                                existing_obj.insert(k.clone(), val.clone());
                             }
                         }
-                    } else {
-                        obj.insert("language_info".to_string(), v);
                     }
+                } else {
+                    obj.insert("language_info".to_string(), v);
                 }
             }
             None => {
@@ -247,22 +255,23 @@ impl NotebookMetadataSnapshot {
         }
 
         // Deep-merge runt namespace to preserve unknown fields (e.g. trust_signature)
-        if let Ok(mut new_runt) = serde_json::to_value(&self.runt) {
-            if let Some(existing_runt) = obj.get("runt") {
-                // Merge: start with new snapshot, preserve existing keys not in snapshot
-                if let (Some(existing_obj), Some(new_obj)) =
-                    (existing_runt.as_object(), new_runt.as_object_mut())
-                {
-                    for (k, v) in existing_obj {
-                        // Only keep existing keys that aren't in the new snapshot
-                        if !new_obj.contains_key(k) {
-                            new_obj.insert(k.clone(), v.clone());
-                        }
+        let mut new_runt = serde_json::to_value(&self.runt)?;
+        if let Some(existing_runt) = obj.get("runt") {
+            // Merge: start with new snapshot, preserve existing keys not in snapshot
+            if let (Some(existing_obj), Some(new_obj)) =
+                (existing_runt.as_object(), new_runt.as_object_mut())
+            {
+                for (k, v) in existing_obj {
+                    // Only keep existing keys that aren't in the new snapshot
+                    if !new_obj.contains_key(k) {
+                        new_obj.insert(k.clone(), v.clone());
                     }
                 }
             }
-            obj.insert("runt".to_string(), new_runt);
         }
+        obj.insert("runt".to_string(), new_runt);
+
+        Ok(())
     }
 
     // ── Runtime detection ────────────────────────────────────────────
@@ -449,6 +458,7 @@ impl RuntMetadata {
             deno: None,
             trust_signature: None,
             trust_timestamp: None,
+            extra: std::collections::HashMap::new(),
         }
     }
 
@@ -466,6 +476,7 @@ impl RuntMetadata {
             deno: None,
             trust_signature: None,
             trust_timestamp: None,
+            extra: std::collections::HashMap::new(),
         }
     }
 
@@ -484,6 +495,7 @@ impl RuntMetadata {
             }),
             trust_signature: None,
             trust_timestamp: None,
+            extra: std::collections::HashMap::new(),
         }
     }
 }
@@ -500,6 +512,7 @@ impl Default for RuntMetadata {
             deno: None,
             trust_signature: None,
             trust_timestamp: None,
+            extra: std::collections::HashMap::new(),
         }
     }
 }
@@ -588,6 +601,7 @@ mod tests {
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
+                extra: std::collections::HashMap::new(),
             },
         };
 
@@ -671,7 +685,7 @@ mod tests {
             runt: RuntMetadata::new_uv("env-1".to_string()),
         };
 
-        snapshot.merge_into_metadata_value(&mut metadata);
+        snapshot.merge_into_metadata_value(&mut metadata).unwrap();
 
         // Kernelspec was replaced
         assert_eq!(metadata["kernelspec"]["name"], "python3");
@@ -694,6 +708,7 @@ mod tests {
             deno: None,
             trust_signature: None,
             trust_timestamp: None,
+            extra: std::collections::HashMap::new(),
         };
         let json = serde_json::to_value(&meta).unwrap();
         // None fields should not appear in JSON

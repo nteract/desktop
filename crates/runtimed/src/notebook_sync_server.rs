@@ -3196,7 +3196,7 @@ async fn save_notebook_to_disk(
         if let Ok(snapshot) =
             serde_json::from_str::<crate::notebook_metadata::NotebookMetadataSnapshot>(meta_json)
         {
-            snapshot.merge_into_metadata_value(&mut metadata);
+            snapshot.merge_into_metadata_value(&mut metadata).ok();
         }
     }
 
@@ -3340,7 +3340,7 @@ async fn clone_notebook_to_disk(room: &NotebookRoom, target_path: &str) -> Resul
             snapshot.runt.trust_signature = None;
             snapshot.runt.trust_timestamp = None;
 
-            snapshot.merge_into_metadata_value(&mut metadata);
+            snapshot.merge_into_metadata_value(&mut metadata).ok();
         }
     }
 
@@ -4251,6 +4251,7 @@ fn build_new_notebook_metadata(
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
+                extra: std::collections::HashMap::new(),
             },
         ),
         _ => {
@@ -4294,6 +4295,7 @@ fn build_new_notebook_metadata(
                     deno: None,
                     trust_signature: None,
                     trust_timestamp: None,
+                    extra: std::collections::HashMap::new(),
                 },
             )
         }
@@ -4977,6 +4979,7 @@ mod tests {
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
+                extra: std::collections::HashMap::new(),
             },
         }
     }
@@ -4998,6 +5001,7 @@ mod tests {
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
+                extra: std::collections::HashMap::new(),
             },
         }
     }
@@ -5015,6 +5019,7 @@ mod tests {
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
+                extra: std::collections::HashMap::new(),
             },
         }
     }
@@ -5068,6 +5073,7 @@ mod tests {
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
+                extra: std::collections::HashMap::new(),
             },
         };
         assert_eq!(check_inline_deps(&snapshot), Some("uv:inline".to_string()));
@@ -5095,6 +5101,7 @@ mod tests {
                 }),
                 trust_signature: None,
                 trust_timestamp: None,
+                extra: std::collections::HashMap::new(),
             },
         };
         assert_eq!(check_inline_deps(&snapshot), Some("deno".to_string()));
