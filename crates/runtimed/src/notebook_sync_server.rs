@@ -1375,7 +1375,7 @@ where
                         // the outputs, causing clients to read empty outputs.
                         if matches!(&broadcast, NotebookBroadcast::ExecutionDone { .. }) {
                             send_doc_sync(
-                                &room,
+                                room,
                                 &mut peer_state,
                                 writer,
                             )
@@ -1398,7 +1398,7 @@ where
                         // The Automerge doc contains the persisted state, so send a
                         // sync message to catch the peer up on any missed output data.
                         send_doc_sync(
-                            &room,
+                            room,
                             &mut peer_state,
                             writer,
                         )
