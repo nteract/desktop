@@ -26,6 +26,12 @@ interface IsolatedRendererPluginOptions {
    * @default false
    */
   minify?: boolean;
+  /**
+   * Source map mode for the embedded renderer bundle.
+   * Use inline source maps when the bundle is in-memory or injected.
+   * @default false
+   */
+  sourcemap?: false | "inline";
 }
 
 export function isolatedRendererPlugin(
@@ -34,6 +40,7 @@ export function isolatedRendererPlugin(
   const {
     entry = path.resolve(__dirname, "../../src/isolated-renderer/index.tsx"),
     minify = false,
+    sourcemap = false,
   } = options;
 
   let rendererCode = "";
@@ -111,7 +118,7 @@ export function isolatedRendererPlugin(
           },
         },
         minify,
-        sourcemap: false, // No source maps for embedded bundle
+        sourcemap,
       },
       define: {
         "process.env.NODE_ENV": JSON.stringify("production"),

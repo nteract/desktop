@@ -1,7 +1,13 @@
-import { StrictMode } from "react";
-import { createRoot } from "react-dom/client";
-import App from "./App";
 import "./index.css";
+if (import.meta.env.DEV) {
+  await import("../src/lib/connect-react-devtools");
+}
+
+const [{ StrictMode }, { createRoot }, { default: App }] = await Promise.all([
+  import("react"),
+  import("react-dom/client"),
+  import("./App"),
+]);
 
 createRoot(document.getElementById("root") as HTMLElement).render(
   <StrictMode>
