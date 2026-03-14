@@ -357,7 +357,7 @@ export function CodeCell({
             {/* Source visibility toggle + Editor */}
             {bothHidden ? (
               /* Compact layout: both badges side by side when both hidden */
-              <div className="flex justify-end gap-2">
+              <div className="flex justify-start gap-2">
                 <button
                   type="button"
                   onClick={() => onToggleSourceHidden?.(false)}
@@ -384,7 +384,7 @@ export function CodeCell({
                 </button>
               </div>
             ) : isSourceHidden ? (
-              <div className="flex justify-end">
+              <div className="flex justify-start">
                 <button
                   type="button"
                   onClick={() => onToggleSourceHidden?.(false)}
@@ -434,7 +434,7 @@ export function CodeCell({
         }
         outputContent={
           isOutputsHidden && cell.outputs.length > 0 ? (
-            <div className="flex justify-end">
+            <div className="flex justify-start">
               <button
                 type="button"
                 onClick={() => onToggleOutputsHidden?.(false)}
