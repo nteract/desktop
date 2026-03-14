@@ -1,0 +1,87 @@
+# Auto-label PRs based on changed file paths.
+# Used by the actions/labeler workflow in .github/workflows/labeler.yml
+#
+# Docs: https://github.com/actions/labeler
+
+frontend:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'apps/notebook/**'
+      - 'src/components/**'
+      - 'src/bindings/**'
+
+daemon:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'crates/runtimed/**'
+      - 'crates/notebook-protocol/**'
+      - 'crates/notebook-sync/**'
+      - 'crates/kernel-env/**'
+      - 'crates/kernel-launch/**'
+      - 'crates/runt/**'
+      - 'crates/runt-trust/**'
+      - 'crates/runt-workspace/**'
+
+editor:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'src/components/editor/**'
+      - 'apps/notebook/src/lib/cursor-registry*'
+      - 'apps/notebook/src/lib/presence-sender*'
+
+ipywidgets:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'src/components/widgets/**'
+      - 'crates/runtimed/src/comm_state*'
+
+mcp:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'python/nteract/**'
+
+presence:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'crates/notebook-doc/src/presence*'
+      - 'apps/notebook/src/lib/cursor-registry*'
+      - 'apps/notebook/src/lib/presence-sender*'
+      - 'apps/notebook/src/hooks/usePresence*'
+      - 'apps/notebook/src/contexts/PresenceContext*'
+      - 'apps/notebook/src/components/cell/CellPresenceIndicators*'
+      - 'src/components/editor/remote-cursors*'
+
+documentation:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'docs/**'
+      - 'contributing/**'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - 'README.md'
+
+test:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'e2e/**'
+      - 'crates/runtimed/tests/**'
+      - 'crates/notebook-sync/src/tests*'
+      - 'python/runtimed/tests/**'
+      - 'python/nteract/tests/**'
+      - 'apps/notebook/src/lib/__tests__/**'
+
+sync:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'crates/notebook-sync/**'
+      - 'crates/notebook-doc/src/frame_types*'
+      - 'crates/runtimed/src/notebook_sync_server*'
+      - 'crates/runtimed/src/notebook_sync_client*'
+      - 'crates/runtimed-wasm/**'
+
+notebook-dependencies:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'crates/kernel-env/**'
+      - 'crates/notebook-doc/src/pep723*'
+      - 'crates/notebook-doc/src/metadata*'
