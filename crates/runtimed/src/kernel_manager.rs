@@ -1604,27 +1604,9 @@ impl RoomKernel {
                                     }
                                 }
 
-                                // Broadcast execution done for error status
-                                if reply.status != jupyter_protocol::ReplyStatus::Ok {
-                                    if let Some(ref cid) = cell_id {
-                                        // #region agent log
-                                        agent_debug_log(
-                                            "A",
-                                            "crates/runtimed/src/kernel_manager.rs:1571",
-                                            "broadcasting execution done for error reply",
-                                            serde_json::json!({
-                                                "cellId": cid,
-                                                "replyStatus": format!("{:?}", reply.status),
-                                            }),
-                                        );
-                                        // #endregion
-                                        let _ = shell_broadcast_tx.send(
-                                            NotebookBroadcast::ExecutionDone {
-                                                cell_id: cid.clone(),
-                                            },
-                                        );
-                                    }
-                                }
+                                // Do not broadcast ExecutionDone from execute_reply error status.
+                                // The authoritative completion signal comes from the iopub idle
+                                // path, which preserves ordering with the final error output.
 
                                 // Note: cell_id_map cleanup happens on cell re-execution, not here.
                                 // Both shell and iopub channels need the mapping, and they race.
