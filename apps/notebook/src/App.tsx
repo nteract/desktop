@@ -22,6 +22,7 @@ import { DependencyHeader } from "./components/DependencyHeader";
 import { GlobalFindBar } from "./components/GlobalFindBar";
 import { NotebookToolbar } from "./components/NotebookToolbar";
 import { NotebookView } from "./components/NotebookView";
+import { PoolErrorBanner } from "./components/PoolErrorBanner";
 import { TrustDialog } from "./components/TrustDialog";
 import { UntrustedBanner } from "./components/UntrustedBanner";
 import { PresenceProvider } from "./contexts/PresenceContext";
@@ -33,6 +34,7 @@ import { type EnvSyncState, useDependencies } from "./hooks/useDependencies";
 import { useEnvProgress } from "./hooks/useEnvProgress";
 import { useDaemonInfo, useGitInfo } from "./hooks/useGitInfo";
 import { useGlobalFind } from "./hooks/useGlobalFind";
+import { usePoolState } from "./hooks/usePoolState";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
 import { startCursorDispatch } from "./lib/cursor-registry";
@@ -132,6 +134,14 @@ function AppContent() {
   const [daemonStatus, setDaemonStatus] = useState<DaemonStatus>(null);
   // Track ready timeout so we can cancel it if status changes
   const readyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Pool state - prewarm pool errors from daemon (typo'd default packages, etc.)
+  const {
+    uvError: poolUvError,
+    condaError: poolCondaError,
+    dismissUvError: dismissPoolUvError,
+    dismissCondaError: dismissPoolCondaError,
+  } = usePoolState();
 
   // Trust verification for notebook dependencies
   const {
@@ -926,6 +936,12 @@ function AppContent() {
                 });
               });
           }}
+        />
+        <PoolErrorBanner
+          uvError={poolUvError}
+          condaError={poolCondaError}
+          onDismissUv={dismissPoolUvError}
+          onDismissConda={dismissPoolCondaError}
         />
         {needsApproval && kernelStatus === KERNEL_STATUS.NOT_STARTED && (
           <UntrustedBanner

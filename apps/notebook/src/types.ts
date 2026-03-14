@@ -259,3 +259,28 @@ export type DaemonNotebookResponse =
       error: string;
       needs_restart: boolean;
     };
+
+// =============================================================================
+// Pool State Types (Prewarm pool error reporting)
+// =============================================================================
+
+/** Error information for a pool that is failing to warm environments. */
+export interface PoolError {
+  /** Human-readable error message. */
+  message: string;
+  /** Package that failed to install (if identified). */
+  failed_package?: string;
+  /** Number of consecutive failures. */
+  consecutive_failures: number;
+  /** Seconds until next retry (0 if retry is imminent). */
+  retry_in_secs: number;
+}
+
+/** Pool state broadcast from daemon. */
+export interface PoolStateEvent {
+  event: "pool_state";
+  /** Error info for UV pool (null if healthy). */
+  uv_error: PoolError | null;
+  /** Error info for Conda pool (null if healthy). */
+  conda_error: PoolError | null;
+}
