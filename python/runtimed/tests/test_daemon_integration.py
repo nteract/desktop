@@ -27,7 +27,6 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any
 
 import pytest
 
