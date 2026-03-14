@@ -15,7 +15,7 @@ use notebook_protocol::protocol::{NotebookBroadcast, NotebookRequest, NotebookRe
 use crate::daemon_paths::get_socket_path;
 use crate::error::to_py_err;
 use crate::event_stream::ExecutionEventStream;
-use crate::output::{Cell, ExecutionResult, NotebookConnectionInfo, SyncEnvironmentResult};
+use crate::output::SyncEnvironmentResult;
 use crate::session_core::{self, SessionState};
 use crate::subscription::EventSubscription;
 

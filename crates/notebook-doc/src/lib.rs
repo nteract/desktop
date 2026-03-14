@@ -3413,11 +3413,11 @@ mod tests {
         );
 
         // Float
-        doc.put_json_value(&meta_id, "float_val", &serde_json::json!(3.14))
+        doc.put_json_value(&meta_id, "float_val", &serde_json::json!(3.15))
             .unwrap();
         assert_eq!(
             doc.get_json_value(&meta_id, "float_val"),
-            Some(serde_json::json!(3.14))
+            Some(serde_json::json!(3.15))
         );
 
         // String

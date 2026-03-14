@@ -1334,6 +1334,7 @@ async fn execute_code(id: &str, code: Option<&str>) -> Result<()> {
 // Pool daemon commands
 // =============================================================================
 
+#[allow(clippy::unwrap_used, clippy::expect_used)] // CLI binary; panics with context are acceptable
 async fn pool_command(command: PoolCommands) -> Result<()> {
     use runtimed::client::PoolClient;
     use runtimed::EnvType;
@@ -1488,6 +1489,7 @@ async fn pool_command(command: PoolCommands) -> Result<()> {
 // Daemon management commands
 // =============================================================================
 
+#[allow(clippy::unwrap_used, clippy::expect_used)] // CLI binary; panics with context are acceptable
 async fn daemon_command(command: DaemonCommands) -> Result<()> {
     use runtimed::client::PoolClient;
     use runtimed::service::ServiceManager;
@@ -2161,10 +2163,13 @@ async fn doctor_command(
             .map(|c| c.status == "quarantined")
             .unwrap_or(false);
         #[cfg(not(target_os = "macos"))]
+        #[allow(unused_variables)]
         let launchd_not_loaded = false;
         #[cfg(not(target_os = "macos"))]
+        #[allow(unused_variables)]
         let launchd_error = false;
         #[cfg(not(target_os = "macos"))]
+        #[allow(unused_variables)]
         let is_quarantined = false;
 
         // Determine diagnosis
@@ -2243,6 +2248,7 @@ async fn doctor_command(
         false
     };
     #[cfg(not(target_os = "macos"))]
+    #[allow(unused_variables)]
     let launchd_not_loaded = false;
 
     // On macOS, check if binary has quarantine xattr
@@ -2258,6 +2264,7 @@ async fn doctor_command(
         false
     };
     #[cfg(not(target_os = "macos"))]
+    #[allow(unused_variables)]
     let is_quarantined = false;
 
     // Check daemon state for fix operations

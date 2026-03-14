@@ -14,6 +14,7 @@ pub fn get_socket_path() -> PathBuf {
 /// Resolve blob server URL and blob store path from the daemon directory (sync).
 ///
 /// Returns (blob_base_url, blob_store_path).
+#[allow(dead_code)] // Public API surface — not yet called from Python bindings
 pub fn get_blob_paths_sync(socket_path: &Path) -> (Option<String>, Option<PathBuf>) {
     let Some(parent) = socket_path.parent() else {
         return (None, None);
@@ -43,6 +44,7 @@ pub fn get_blob_paths_sync(socket_path: &Path) -> (Option<String>, Option<PathBu
 /// Resolve blob server URL and blob store path from the daemon directory (async).
 ///
 /// Returns (blob_base_url, blob_store_path).
+#[allow(dead_code)] // Public API surface — not yet called from Python bindings
 pub async fn get_blob_paths_async(socket_path: &Path) -> (Option<String>, Option<PathBuf>) {
     let Some(parent) = socket_path.parent() else {
         return (None, None);
