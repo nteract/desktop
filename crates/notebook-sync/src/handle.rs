@@ -10,11 +10,14 @@
 use std::sync::{Arc, Mutex};
 
 use automerge::AutoCommit;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
+
+use runtimed::protocol::{NotebookRequest, NotebookResponse};
 
 use crate::error::SyncError;
 use crate::shared::SharedDocState;
 use crate::snapshot::NotebookSnapshot;
+use crate::sync_task::SyncCommand;
 
 /// A handle to a synced notebook document.
 ///
@@ -48,6 +51,9 @@ pub struct DocHandle {
     /// The sync task will generate and send a sync message to the daemon.
     changed_tx: mpsc::UnboundedSender<()>,
 
+    /// Command channel for async operations (request/response, confirm_sync, presence).
+    cmd_tx: mpsc::Sender<SyncCommand>,
+
     /// Watch channel for publishing snapshots after mutations.
     /// The handle publishes; readers (Python API, frontend) subscribe.
     snapshot_tx: Arc<watch::Sender<NotebookSnapshot>>,
@@ -74,6 +80,7 @@ impl DocHandle {
     pub(crate) fn new(
         doc: Arc<Mutex<SharedDocState>>,
         changed_tx: mpsc::UnboundedSender<()>,
+        cmd_tx: mpsc::Sender<SyncCommand>,
         snapshot_tx: Arc<watch::Sender<NotebookSnapshot>>,
         snapshot_rx: watch::Receiver<NotebookSnapshot>,
         notebook_id: String,
@@ -81,6 +88,7 @@ impl DocHandle {
         Self {
             doc,
             changed_tx,
+            cmd_tx,
             snapshot_tx,
             snapshot_rx,
             notebook_id,
@@ -153,6 +161,91 @@ impl DocHandle {
         let _ = self.changed_tx.send(());
 
         Ok(result)
+    }
+
+    // =====================================================================
+    // Async operations — need socket I/O via the sync task
+    // =====================================================================
+
+    /// Send a request to the daemon and wait for a response.
+    ///
+    /// This is async because it involves socket I/O. The request is sent
+    /// to the daemon via the sync task, which handles the wire protocol.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let response = handle.send_request(NotebookRequest::LaunchKernel {
+    ///     kernel_type: "python".into(),
+    ///     env_source: "auto".into(),
+    ///     notebook_path: None,
+    /// }).await?;
+    /// ```
+    pub async fn send_request(
+        &self,
+        request: NotebookRequest,
+    ) -> Result<NotebookResponse, SyncError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SyncCommand::SendRequest {
+                request,
+                reply: reply_tx,
+                broadcast_tx: None,
+            })
+            .await
+            .map_err(|_| SyncError::Disconnected)?;
+        reply_rx.await.map_err(|_| SyncError::Disconnected)?
+    }
+
+    /// Send a request with a broadcast channel for real-time progress updates.
+    ///
+    /// Used for long-running requests like `LaunchKernel` where the daemon
+    /// sends progress broadcasts (env creation, package installs) while
+    /// the request is in flight.
+    pub async fn send_request_with_broadcast(
+        &self,
+        request: NotebookRequest,
+        broadcast_tx: tokio::sync::broadcast::Sender<runtimed::protocol::NotebookBroadcast>,
+    ) -> Result<NotebookResponse, SyncError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SyncCommand::SendRequest {
+                request,
+                reply: reply_tx,
+                broadcast_tx: Some(broadcast_tx),
+            })
+            .await
+            .map_err(|_| SyncError::Disconnected)?;
+        reply_rx.await.map_err(|_| SyncError::Disconnected)?
+    }
+
+    /// Confirm that the daemon has merged all our local changes.
+    ///
+    /// Performs up to 5 sync round-trips, checking that the daemon's
+    /// shared_heads include our local heads. Call this before executing
+    /// a cell to ensure the daemon has the cell's source.
+    pub async fn confirm_sync(&self) -> Result<(), SyncError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SyncCommand::ConfirmSync { reply: reply_tx })
+            .await
+            .map_err(|_| SyncError::Disconnected)?;
+        reply_rx.await.map_err(|_| SyncError::Disconnected)?
+    }
+
+    /// Send a raw presence frame to the daemon.
+    ///
+    /// The daemon relays this to all other peers in the notebook room.
+    pub async fn send_presence(&self, data: Vec<u8>) -> Result<(), SyncError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SyncCommand::SendPresence {
+                data,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SyncError::Disconnected)?;
+        reply_rx.await.map_err(|_| SyncError::Disconnected)?
     }
 
     // =====================================================================

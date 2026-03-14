@@ -27,6 +27,7 @@
 //! Document mutations (`with_doc`) are synchronous and microsecond-fast.
 //! Only daemon protocol operations (`send_request`, `confirm_sync`) are async.
 
+pub mod connect;
 pub mod error;
 pub mod handle;
 mod shared;
