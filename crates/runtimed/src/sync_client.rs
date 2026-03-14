@@ -183,6 +183,14 @@ where
         get_all_from_doc(&self.doc)
     }
 
+    /// Consume the client and return the local Automerge document.
+    ///
+    /// This is useful when you want to keep the synced settings doc
+    /// without maintaining the network connection.
+    pub fn into_doc(self) -> AutoCommit {
+        self.doc
+    }
+
     /// Get a single scalar setting value.
     pub fn get(&self, key: &str) -> Option<String> {
         self.doc
@@ -348,7 +356,7 @@ where
 ///
 /// Reads nested maps/lists first, falling back to old flat keys for
 /// backward compatibility during upgrades.
-fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
+pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
     let defaults = SyncedSettings::default();
 
     let get_str = |key: &str| -> Option<String> {

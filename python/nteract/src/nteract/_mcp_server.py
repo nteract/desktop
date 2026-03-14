@@ -566,8 +566,9 @@ async def _get_package_manager(session: runtimed.AsyncSession) -> str:
 
     Detection order:
     1. If kernel is running, check env_source (most reliable)
-    2. Otherwise, check stored metadata for existing dependencies
-    3. Default to "uv" if no signal
+    2. Check notebook metadata structure (conda vs uv)
+    3. Check session's settings replica for default_python_env
+    4. Default to "uv" if no signal
     """
     # First check env_source if kernel is running
     env = await session.env_source()
@@ -576,11 +577,15 @@ async def _get_package_manager(session: runtimed.AsyncSession) -> str:
             return "conda"
         return "uv"
 
-    # No kernel running - check stored metadata
-    # If notebook has conda deps, it's a conda notebook
-    conda_deps = await session.get_conda_dependencies()
-    if conda_deps:
-        return "conda"
+    # Check metadata structure (not just non-empty deps)
+    env_type = await session.get_metadata_env_type()
+    if env_type:
+        return env_type
+
+    # Check settings from session's local replica (no round-trip)
+    settings = session.get_settings()
+    if settings:
+        return settings.get("default_python_env", "uv")
 
     return "uv"
 

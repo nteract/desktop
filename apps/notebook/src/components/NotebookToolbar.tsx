@@ -9,6 +9,11 @@ import {
   Square,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
 import type { EnvProgressState } from "../hooks/useEnvProgress";
 import type { UpdateStatus } from "../hooks/useUpdater";
@@ -105,6 +110,20 @@ export function NotebookToolbar({
   const isKernelNotStarted =
     kernelStatus === KERNEL_STATUS.NOT_STARTED ||
     kernelStatus === KERNEL_STATUS.SHUTDOWN;
+  const envErrorMessage = envProgress?.error ?? null;
+  const envStatusText = envProgress?.statusText ?? kernelStatusText;
+  const kernelStatusDescription = envProgress?.isActive
+    ? envStatusText
+    : envErrorMessage
+      ? envStatusText
+      : kernelStatus === KERNEL_STATUS.ERROR && kernelErrorMessage
+        ? `Error \u2014 ${kernelErrorMessage}`
+        : kernelStatusText;
+  const kernelStatusTooltip = envProgress?.isActive
+    ? envStatusText
+    : kernelStatus === KERNEL_STATUS.ERROR && kernelErrorMessage
+      ? `Error \u2014 ${kernelErrorMessage}`
+      : kernelStatusText;
 
   // Derive env manager label for the runtime pill (e.g. "uv", "conda", "pixi")
   const envManager: EnvBadgeVariant | null =
@@ -303,24 +322,8 @@ export function NotebookToolbar({
         <div
           className="flex items-center gap-1.5 whitespace-nowrap"
           role="status"
-          aria-label={`Kernel: ${
-            envProgress?.isActive
-              ? envProgress.statusText
-              : envProgress?.error
-                ? envProgress.statusText
-                : kernelStatus === KERNEL_STATUS.ERROR && kernelErrorMessage
-                  ? `Error \u2014 ${kernelErrorMessage}`
-                  : kernelStatusText
-          }`}
-          title={
-            envProgress?.isActive
-              ? envProgress.statusText
-              : envProgress?.error
-                ? envProgress.error
-                : kernelStatus === KERNEL_STATUS.ERROR && kernelErrorMessage
-                  ? `Error \u2014 ${kernelErrorMessage}`
-                  : kernelStatusText
-          }
+          aria-label={`Kernel: ${kernelStatusDescription}`}
+          title={envErrorMessage ? undefined : kernelStatusTooltip}
         >
           <div
             className={cn(
@@ -330,16 +333,34 @@ export function NotebookToolbar({
               kernelStatus === KERNEL_STATUS.STARTING &&
                 "bg-blue-500 animate-pulse",
               isKernelNotStarted && "bg-gray-400 dark:bg-gray-500",
-              kernelStatus === KERNEL_STATUS.ERROR && "bg-red-500",
+              (kernelStatus === KERNEL_STATUS.ERROR || envErrorMessage) &&
+                "bg-red-500",
             )}
           />
           <span className="text-xs text-muted-foreground whitespace-nowrap">
             {envProgress?.isActive ? (
-              envProgress.statusText
-            ) : envProgress?.error ? (
-              <span className="text-red-600 dark:text-red-400">
-                {envProgress.statusText}
-              </span>
+              envStatusText
+            ) : envErrorMessage ? (
+              <HoverCard openDelay={150} closeDelay={100}>
+                <HoverCardTrigger asChild>
+                  <span className="cursor-help text-red-600 underline decoration-dotted underline-offset-2 dark:text-red-400">
+                    {envStatusText}
+                  </span>
+                </HoverCardTrigger>
+                <HoverCardContent
+                  align="end"
+                  className="w-80 max-w-[calc(100vw-2rem)] p-3"
+                >
+                  <div className="space-y-1">
+                    <p className="text-xs font-medium text-red-600 dark:text-red-400">
+                      Environment error
+                    </p>
+                    <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-muted-foreground">
+                      {envErrorMessage}
+                    </pre>
+                  </div>
+                </HoverCardContent>
+              </HoverCard>
             ) : (
               <span
                 className={cn(
