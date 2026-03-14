@@ -312,6 +312,150 @@ pub async fn connect_open(socket_path: PathBuf, path: PathBuf) -> Result<OpenRes
     })
 }
 
+/// Result of creating a new notebook.
+pub struct CreateResult {
+    /// Handle for document mutations and reads.
+    pub handle: DocHandle,
+
+    /// Receiver for kernel/execution broadcasts from the daemon.
+    pub broadcast_rx: tokio::sync::broadcast::Receiver<NotebookBroadcast>,
+
+    /// Connection info from the daemon (notebook_id, trust status, etc).
+    pub info: NotebookConnectionInfo,
+
+    /// Initial cells in the document after sync.
+    pub cells: Vec<notebook_doc::CellSnapshot>,
+}
+
+/// Connect and create a new notebook.
+///
+/// The daemon creates an empty notebook room with one code cell and
+/// returns connection info with a generated UUID as the notebook_id.
+pub async fn connect_create(
+    socket_path: PathBuf,
+    runtime: &str,
+    working_dir: Option<PathBuf>,
+) -> Result<CreateResult, SyncError> {
+    let stream = tokio::net::UnixStream::connect(&socket_path)
+        .await
+        .map_err(SyncError::Io)?;
+
+    let (reader, writer) = tokio::io::split(stream);
+    let mut reader = tokio::io::BufReader::new(reader);
+    let mut writer = tokio::io::BufWriter::new(writer);
+
+    // Send preamble
+    connection::send_preamble(&mut writer).await?;
+
+    // Send create handshake
+    let handshake = Handshake::CreateNotebook {
+        runtime: runtime.to_string(),
+        working_dir: working_dir
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
+        notebook_id: None,
+    };
+    connection::send_json_frame(&mut writer, &handshake)
+        .await
+        .map_err(|e| SyncError::Protocol(format!("Send handshake: {}", e)))?;
+
+    // Receive connection info
+    let info_data = connection::recv_frame(&mut reader)
+        .await?
+        .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))?;
+    let info: NotebookConnectionInfo = serde_json::from_slice(&info_data)?;
+
+    if let Some(ref error) = info.error {
+        return Err(SyncError::Protocol(error.clone()));
+    }
+
+    let notebook_id = info.notebook_id.clone();
+
+    // Initial Automerge sync exchange
+    let mut doc = AutoCommit::new();
+    let mut peer_state = sync::State::new();
+    let mut pending_broadcasts = Vec::new();
+
+    do_initial_sync(
+        &mut reader,
+        &mut writer,
+        &mut doc,
+        &mut peer_state,
+        &mut pending_broadcasts,
+    )
+    .await?;
+
+    info!(
+        "[notebook-sync] Created notebook {} ({} cells)",
+        notebook_id,
+        notebook_doc::get_cells_from_doc(&doc).len()
+    );
+
+    let cells = notebook_doc::get_cells_from_doc(&doc);
+
+    // Build shared state and channels
+    let shared = Arc::new(Mutex::new(SharedDocState::new(doc, notebook_id.clone())));
+    {
+        let mut state = shared.lock().map_err(|_| SyncError::LockPoisoned)?;
+        state.peer_state = peer_state;
+    }
+
+    let initial_snapshot = {
+        let state = shared.lock().map_err(|_| SyncError::LockPoisoned)?;
+        NotebookSnapshot::from_doc(&state.doc)
+    };
+
+    let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
+    let snapshot_tx = Arc::new(snapshot_tx);
+    let (changed_tx, changed_rx) = mpsc::unbounded_channel();
+    let (cmd_tx, cmd_rx) = mpsc::channel::<sync_task::SyncCommand>(32);
+    let (broadcast_tx, broadcast_rx) = tokio::sync::broadcast::channel::<NotebookBroadcast>(64);
+    let cmd_tx_for_handle = cmd_tx.clone();
+
+    for bc in pending_broadcasts {
+        let _ = broadcast_tx.send(bc);
+    }
+
+    let handle = DocHandle::new(
+        Arc::clone(&shared),
+        changed_tx,
+        cmd_tx_for_handle,
+        Arc::clone(&snapshot_tx),
+        snapshot_rx,
+        notebook_id.clone(),
+    );
+
+    let stream = reader.into_inner().unsplit(writer.into_inner());
+
+    let task_config = sync_task::SyncTaskConfig {
+        doc: Arc::clone(&shared),
+        changed_rx,
+        cmd_rx,
+        snapshot_tx: Arc::clone(&snapshot_tx),
+        broadcast_tx,
+    };
+
+    let notebook_id_for_task = notebook_id.clone();
+    tokio::spawn(async move {
+        info!(
+            "[notebook-sync] Sync task started for {}",
+            notebook_id_for_task
+        );
+        sync_task::run(task_config, stream).await;
+        info!(
+            "[notebook-sync] Sync task stopped for {}",
+            notebook_id_for_task
+        );
+    });
+
+    Ok(CreateResult {
+        handle,
+        broadcast_rx,
+        info,
+        cells,
+    })
+}
+
 /// Perform the initial Automerge sync exchange after handshake.
 ///
 /// Exchanges sync messages with the daemon until the local document is

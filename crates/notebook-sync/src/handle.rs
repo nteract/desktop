@@ -6,6 +6,27 @@
 //!
 //! Document mutations are synchronous and microsecond-fast. Only daemon
 //! protocol operations (`send_request`, `confirm_sync`) are async.
+//!
+//! ## Convenience methods vs `with_doc`
+//!
+//! For single operations, use the convenience methods (`add_cell`, `set_source`,
+//! `set_metadata_value`, etc.). For compound operations that should be atomic
+//! (one lock, one snapshot, one sync), use `with_doc` directly:
+//!
+//! ```ignore
+//! // Single operation — convenience method
+//! handle.add_cell(0, "cell-1", "code")?;
+//!
+//! // Compound operation — with_doc for atomicity
+//! handle.with_doc(|doc| {
+//!     let mut nd = NotebookDoc::wrap(std::mem::take(doc));
+//!     nd.add_cell(0, "cell-1", "code")?;
+//!     nd.update_source("cell-1", "print('hello')")?;
+//!     nd.set_cell_source_hidden("cell-1", true)?;
+//!     *doc = nd.into_inner();
+//!     Ok(())
+//! })?;
+//! ```
 
 use std::sync::{Arc, Mutex};
 
@@ -161,6 +182,155 @@ impl DocHandle {
         let _ = self.changed_tx.send(());
 
         Ok(result)
+    }
+
+    // =====================================================================
+    // Convenience methods — single-operation wrappers around with_doc
+    // =====================================================================
+
+    // Helper: run a closure on a NotebookDoc wrapper, handling the
+    // wrap/unwrap dance and error type conversion.
+    fn with_notebook_doc<F, T>(&self, f: F) -> Result<T, SyncError>
+    where
+        F: FnOnce(&mut notebook_doc::NotebookDoc) -> Result<T, automerge::AutomergeError>,
+    {
+        self.with_doc(|doc| {
+            let mut nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
+            let result = f(&mut nd);
+            *doc = nd.into_inner();
+            result.map_err(SyncError::Automerge)
+        })?
+    }
+
+    /// Add a new cell at the given index.
+    pub fn add_cell(&self, index: usize, cell_id: &str, cell_type: &str) -> Result<(), SyncError> {
+        self.with_notebook_doc(|nd| nd.add_cell(index, cell_id, cell_type))
+    }
+
+    /// Add a new cell with source in a single atomic transaction.
+    ///
+    /// Prevents peers from seeing an empty cell before the source arrives.
+    /// Uses `add_cell` + `update_source` in one `with_doc` lock.
+    pub fn add_cell_with_source(
+        &self,
+        index: usize,
+        cell_id: &str,
+        cell_type: &str,
+        source: &str,
+    ) -> Result<(), SyncError> {
+        self.with_notebook_doc(|nd| {
+            nd.add_cell(index, cell_id, cell_type)?;
+            nd.update_source(cell_id, source)?;
+            Ok(())
+        })
+    }
+
+    /// Delete a cell by ID. Returns true if found and deleted.
+    pub fn delete_cell(&self, cell_id: &str) -> Result<bool, SyncError> {
+        self.with_notebook_doc(|nd| nd.delete_cell(cell_id))
+    }
+
+    /// Move a cell to after another cell (or to the beginning if `None`).
+    /// Returns the new position string.
+    pub fn move_cell(
+        &self,
+        cell_id: &str,
+        after_cell_id: Option<&str>,
+    ) -> Result<String, SyncError> {
+        self.with_notebook_doc(|nd| nd.move_cell(cell_id, after_cell_id))
+    }
+
+    /// Update a cell's source text. Returns true if cell was found.
+    pub fn update_source(&self, cell_id: &str, source: &str) -> Result<bool, SyncError> {
+        self.with_notebook_doc(|nd| nd.update_source(cell_id, source))
+    }
+
+    /// Append text to a cell's source (efficient for streaming tokens). Returns true if cell was found.
+    pub fn append_source(&self, cell_id: &str, text: &str) -> Result<bool, SyncError> {
+        self.with_notebook_doc(|nd| nd.append_source(cell_id, text))
+    }
+
+    /// Set the full notebook metadata snapshot (kernelspec + language_info + runt).
+    pub fn set_metadata_snapshot(
+        &self,
+        snapshot: &notebook_doc::metadata::NotebookMetadataSnapshot,
+    ) -> Result<(), SyncError> {
+        self.with_notebook_doc(|nd| nd.set_metadata_snapshot(snapshot))
+    }
+
+    /// Set cell metadata from a JSON value. Returns true if cell found.
+    pub fn set_cell_metadata(
+        &self,
+        cell_id: &str,
+        metadata: &serde_json::Value,
+    ) -> Result<bool, SyncError> {
+        self.with_notebook_doc(|nd| nd.set_cell_metadata(cell_id, metadata))
+    }
+
+    /// Update cell metadata at a specific path. Returns true if cell found.
+    pub fn update_cell_metadata_at(
+        &self,
+        cell_id: &str,
+        path: &[&str],
+        value: serde_json::Value,
+    ) -> Result<bool, SyncError> {
+        self.with_notebook_doc(|nd| nd.update_cell_metadata_at(cell_id, path, value))
+    }
+
+    /// Set whether a cell's source should be hidden.
+    pub fn set_cell_source_hidden(&self, cell_id: &str, hidden: bool) -> Result<bool, SyncError> {
+        self.with_notebook_doc(|nd| nd.set_cell_source_hidden(cell_id, hidden))
+    }
+
+    /// Set whether a cell's outputs should be hidden.
+    pub fn set_cell_outputs_hidden(&self, cell_id: &str, hidden: bool) -> Result<bool, SyncError> {
+        self.with_notebook_doc(|nd| nd.set_cell_outputs_hidden(cell_id, hidden))
+    }
+
+    /// Set cell tags.
+    pub fn set_cell_tags(&self, cell_id: &str, tags: &[&str]) -> Result<bool, SyncError> {
+        let tags_value: Vec<serde_json::Value> = tags
+            .iter()
+            .map(|t| serde_json::Value::String(t.to_string()))
+            .collect();
+        self.update_cell_metadata_at(cell_id, &["tags"], serde_json::Value::Array(tags_value))
+    }
+
+    /// Set a string metadata value.
+    pub fn set_metadata_string(&self, key: &str, value: &str) -> Result<(), SyncError> {
+        self.with_notebook_doc(|nd| nd.set_metadata(key, value))
+    }
+
+    /// Get a string metadata value.
+    pub fn get_metadata_string(&self, key: &str) -> Option<String> {
+        self.with_doc(|doc| {
+            let nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
+            let result = nd.get_metadata(key);
+            *doc = nd.into_inner();
+            result
+        })
+        .ok()
+        .flatten()
+    }
+
+    /// Add a UV dependency, deduplicating by package name.
+    pub fn add_uv_dependency(&self, pkg: &str) -> Result<(), SyncError> {
+        self.with_notebook_doc(|nd| nd.add_uv_dependency(pkg))
+    }
+
+    /// Remove a UV dependency by package name. Returns true if removed.
+    pub fn remove_uv_dependency(&self, pkg: &str) -> Result<bool, SyncError> {
+        self.with_notebook_doc(|nd| nd.remove_uv_dependency(pkg))
+    }
+
+    /// Add a Conda dependency, deduplicating by package name.
+    pub fn add_conda_dependency(&self, pkg: &str) -> Result<(), SyncError> {
+        self.with_notebook_doc(|nd| nd.add_conda_dependency(pkg))
+    }
+
+    /// Remove a Conda dependency by package name. Returns true if removed.
+    pub fn remove_conda_dependency(&self, pkg: &str) -> Result<bool, SyncError> {
+        self.with_notebook_doc(|nd| nd.remove_conda_dependency(pkg))
     }
 
     // =====================================================================
