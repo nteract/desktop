@@ -3267,7 +3267,7 @@ async fn run_settings_sync(app: tauri::AppHandle) {
 /// Background task that subscribes to pool state changes from the runtimed daemon
 /// and emits Tauri events to all windows when pool errors occur or clear.
 ///
-/// Reconnects automatically with backoff if the connection drops.
+/// Reconnects automatically after 5s if the connection drops.
 async fn run_pool_state_sync(app: tauri::AppHandle) {
     use tauri::Emitter;
 
@@ -3292,7 +3292,7 @@ async fn run_pool_state_sync(app: tauri::AppHandle) {
             }
         }
 
-        // Backoff before reconnecting
+        // Wait before reconnecting
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }

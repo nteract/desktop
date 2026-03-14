@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { PoolError, PoolStateEvent } from "../types";
 
 /** PoolError with timestamp for countdown calculation */
@@ -11,6 +11,21 @@ export interface PoolErrorWithTimestamp extends PoolError {
 export interface PoolState {
   uvError: PoolErrorWithTimestamp | null;
   condaError: PoolErrorWithTimestamp | null;
+}
+
+/** Compare two pool errors for equality (all fields except receivedAt) */
+function errorsEqual(
+  a: PoolError | null | undefined,
+  b: PoolError | null | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.message === b.message &&
+    a.failed_package === b.failed_package &&
+    a.consecutive_failures === b.consecutive_failures &&
+    a.retry_in_secs === b.retry_in_secs
+  );
 }
 
 /**
@@ -29,6 +44,9 @@ export function usePoolState() {
   const [dismissedUv, setDismissedUv] = useState(false);
   const [dismissedConda, setDismissedConda] = useState(false);
 
+  // Track previous errors to detect changes outside of setState
+  const prevStateRef = useRef<PoolState>(state);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -38,24 +56,26 @@ export function usePoolState() {
       const now = Date.now();
       const payload = event.payload;
 
-      setState((prev) => {
-        const uvError = payload.uv_error
-          ? { ...payload.uv_error, receivedAt: now }
-          : null;
-        const condaError = payload.conda_error
-          ? { ...payload.conda_error, receivedAt: now }
-          : null;
+      const uvError = payload.uv_error
+        ? { ...payload.uv_error, receivedAt: now }
+        : null;
+      const condaError = payload.conda_error
+        ? { ...payload.conda_error, receivedAt: now }
+        : null;
 
-        // Reset dismissed state if error changed (new error or cleared)
-        if (uvError?.message !== prev.uvError?.message) {
-          setDismissedUv(false);
-        }
-        if (condaError?.message !== prev.condaError?.message) {
-          setDismissedConda(false);
-        }
+      // Check if errors changed (compare all fields, not just message)
+      const prev = prevStateRef.current;
+      if (!errorsEqual(uvError, prev.uvError)) {
+        setDismissedUv(false);
+      }
+      if (!errorsEqual(condaError, prev.condaError)) {
+        setDismissedConda(false);
+      }
 
-        return { uvError, condaError };
-      });
+      // Update state and ref
+      const newState = { uvError, condaError };
+      prevStateRef.current = newState;
+      setState(newState);
     });
 
     return () => {

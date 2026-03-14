@@ -16,9 +16,22 @@ function PoolErrorItem({ envType, error, onDismiss }: PoolErrorItemProps) {
   });
 
   useEffect(() => {
+    // Don't start interval if already at 0
+    const elapsed = Math.floor((Date.now() - error.receivedAt) / 1000);
+    const remaining = Math.max(0, error.retry_in_secs - elapsed);
+    setSecondsRemaining(remaining);
+
+    if (remaining === 0) return;
+
     const interval = setInterval(() => {
       const elapsed = Math.floor((Date.now() - error.receivedAt) / 1000);
-      setSecondsRemaining(Math.max(0, error.retry_in_secs - elapsed));
+      const remaining = Math.max(0, error.retry_in_secs - elapsed);
+      setSecondsRemaining(remaining);
+
+      // Clear interval once countdown hits 0
+      if (remaining === 0) {
+        clearInterval(interval);
+      }
     }, 1000);
 
     return () => clearInterval(interval);
