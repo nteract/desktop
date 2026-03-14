@@ -16,17 +16,17 @@ fn main() {
 
     match args[0].as_str() {
         "dev" => {
+            let options = parse_dev_options(&args);
+            cmd_dev(options.notebook, options.skip_install, options.skip_build);
+        }
+        "notebook" => {
             let attach = args.iter().any(|a| a == "--attach");
             let notebook = args
                 .iter()
                 .skip(1)
                 .find(|a| !a.starts_with('-'))
                 .map(String::as_str);
-            cmd_dev(notebook, attach);
-        }
-        "notebook" => {
-            let options = parse_notebook_options(&args);
-            cmd_notebook(options.notebook, options.skip_install, options.skip_build);
+            cmd_notebook(notebook, attach);
         }
         "vite" => cmd_vite(),
         "build" => {
@@ -68,11 +68,11 @@ fn print_help() {
         "Usage: cargo xtask <COMMAND>
 
 Development:
-  notebook [notebook.ipynb]    Setup once, start dev daemon + notebook app
-  notebook --skip-build        Reuse existing build artifacts before launch
-  notebook --skip-install      Reuse existing pnpm install before launch
-  dev [notebook.ipynb]       Start hot-reload dev server (Vite + Tauri)
-  dev --attach [notebook]    Attach Tauri to existing Vite server
+  dev [notebook.ipynb]         Setup once, start dev daemon + notebook app
+  dev --skip-build             Reuse existing build artifacts before launch
+  dev --skip-install           Reuse existing pnpm install before launch
+  notebook [notebook.ipynb]    Start hot-reload dev server (Vite + Tauri)
+  notebook --attach [notebook] Attach Tauri to existing Vite server
   vite                       Start Vite server standalone
   build                      Full debug build (frontend + rust)
   build --rust-only          Rebuild rust only, reuse existing frontend
@@ -99,14 +99,14 @@ Other:
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct NotebookOptions<'a> {
+struct DevOptions<'a> {
     notebook: Option<&'a str>,
     skip_install: bool,
     skip_build: bool,
 }
 
-fn parse_notebook_options(args: &[String]) -> NotebookOptions<'_> {
-    NotebookOptions {
+fn parse_dev_options(args: &[String]) -> DevOptions<'_> {
+    DevOptions {
         notebook: args
             .iter()
             .skip(1)
@@ -117,12 +117,7 @@ fn parse_notebook_options(args: &[String]) -> NotebookOptions<'_> {
     }
 }
 
-fn cmd_dev(notebook: Option<&str>, attach: bool) {
-    let status = run_notebook_dev_app(notebook, attach, false);
-    exit_on_failed_status("cargo tauri dev", status);
-}
-
-fn cmd_notebook(notebook: Option<&str>, skip_install: bool, skip_build: bool) {
+fn cmd_dev(notebook: Option<&str>, skip_install: bool, skip_build: bool) {
     if skip_install {
         println!("Skipping pnpm install (--skip-install)");
     } else {
@@ -158,6 +153,11 @@ fn cmd_notebook(notebook: Option<&str>, skip_install: bool, skip_build: bool) {
     if let Some(ref mut child) = daemon {
         stop_child(child, "development daemon");
     }
+    exit_on_failed_status("cargo tauri dev", status);
+}
+
+fn cmd_notebook(notebook: Option<&str>, attach: bool) {
+    let status = run_notebook_dev_app(notebook, attach, false);
     exit_on_failed_status("cargo tauri dev", status);
 }
 
@@ -220,7 +220,7 @@ fn run_notebook_dev_app(notebook: Option<&str>, attach: bool, force_dev_mode: bo
 fn cmd_vite() {
     println!("Starting Vite dev server...");
     println!("This server will keep running independently of Tauri.");
-    println!("Use `cargo xtask dev --attach` in another terminal to connect.");
+    println!("Use `cargo xtask notebook --attach` in another terminal to connect.");
     println!();
 
     // Check for port override: RUNTIMED_VITE_PORT > CONDUCTOR_PORT
@@ -1141,18 +1141,18 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn parse_notebook_options_reads_flags_and_path() {
+    fn parse_dev_options_reads_flags_and_path() {
         let args = vec![
-            "notebook".to_string(),
+            "dev".to_string(),
             "--skip-install".to_string(),
             "notebooks/demo.ipynb".to_string(),
             "--skip-build".to_string(),
         ];
 
-        let options = parse_notebook_options(&args);
+        let options = parse_dev_options(&args);
         assert_eq!(
             options,
-            NotebookOptions {
+            DevOptions {
                 notebook: Some("notebooks/demo.ipynb"),
                 skip_install: true,
                 skip_build: true,

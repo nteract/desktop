@@ -108,26 +108,26 @@ sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
 ### Quick start
 
 ```bash
-cargo xtask notebook
+cargo xtask dev
 ```
 
 ### Development workflows
 
 | Workflow | Command | Use when |
 |----------|---------|----------|
-| One-shot setup + dev | `cargo xtask notebook` | First-time setup plus daemon + app in one command |
-| Hot reload | `cargo xtask dev` | Iterating on React UI |
+| One-shot setup + dev | `cargo xtask dev` | First-time setup plus daemon + app in one command |
+| Hot reload | `cargo xtask notebook` | Iterating on React UI |
 | Standalone Vite | `cargo xtask vite` | Multi-window testing (Vite survives window closes) |
-| Attach to Vite | `cargo xtask dev --attach` | Connect Tauri to already-running Vite |
+| Attach to Vite | `cargo xtask notebook --attach` | Connect Tauri to already-running Vite |
 | Debug build | `cargo xtask build` | Full debug build (frontend + rust) |
 | Rust-only build | `cargo xtask build --rust-only` | Rebuild rust, reuse existing frontend |
 | Run bundled | `cargo xtask run notebook.ipynb` | Run standalone binary |
 | Release .app | `cargo xtask build-app` | Testing app bundle locally |
 | Release DMG | `cargo xtask build-dmg` | Distribution (usually CI) |
 
-`cargo xtask notebook` runs the first-time bootstrap (`pnpm install` + `cargo xtask build`),
+`cargo xtask dev` runs the first-time bootstrap (`pnpm install` + `cargo xtask build`),
 starts the per-worktree dev daemon, waits for it to be ready, and then launches the
-notebook app. For repeat launches, use `cargo xtask notebook --skip-install --skip-build`.
+notebook app. For repeat launches, use `cargo xtask dev --skip-install --skip-build`.
 
 ### Build order
 

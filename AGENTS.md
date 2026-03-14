@@ -102,7 +102,9 @@ Each git worktree can run its own isolated daemon during development, preventing
 cargo xtask dev-daemon
 
 # Terminal 2: Run the notebook app
-cargo xtask dev              # Notebook connects to workspace daemon
+cargo xtask notebook         # Notebook connects to workspace daemon
+# or
+cargo xtask dev              # One-shot setup + daemon + app
 runt daemon status           # Shows workspace info
 runt daemon list-worktrees   # See all workspace daemons
 ```
@@ -114,7 +116,7 @@ runt daemon list-worktrees   # See all workspace daemons
 RUNTIMED_DEV=1 cargo xtask dev-daemon
 
 # Terminal 2
-RUNTIMED_DEV=1 cargo xtask dev
+RUNTIMED_DEV=1 cargo xtask notebook
 RUNTIMED_DEV=1 runt daemon status
 ```
 
@@ -140,7 +142,7 @@ When working in a Conductor workspace developing nteract/desktop, the xtask comm
 | `CONDUCTOR_WORKSPACE_NAME` | `RUNTIMED_WORKSPACE_NAME` | Human-readable workspace name for display |
 | `CONDUCTOR_PORT` | (used directly) | Vite dev server port (avoids conflicts between workspaces) |
 
-**Important:** The translation only happens when running `cargo xtask dev` or `cargo xtask dev-daemon`. This allows using Conductor for unrelated projects without interfering with the system daemon.
+**Important:** The translation only happens when running `cargo xtask dev`, `cargo xtask notebook`, or `cargo xtask dev-daemon`. This allows using Conductor for unrelated projects without interfering with the system daemon.
 
 **Interacting with the daemon:**
 
@@ -209,7 +211,7 @@ For production use, install the daemon as a system service:
 cargo xtask install-daemon
 ```
 
-`cargo xtask dev` and `cargo xtask build` do **not** reinstall the daemon. If you're changing daemon code (settings, sync, environments), you must run `cargo xtask install-daemon` separately to test your changes.
+`cargo xtask dev`, `cargo xtask notebook`, and `cargo xtask build` do **not** reinstall the daemon. If you're changing daemon code (settings, sync, environments), you must run `cargo xtask install-daemon` separately to test your changes.
 
 For faster iteration when only changing Rust code, use `cargo xtask build --rust-only` to skip frontend rebuild (requires an initial `cargo xtask build` first).
 

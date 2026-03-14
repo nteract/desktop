@@ -15,7 +15,7 @@
   },
   {
     "label": "Dev App",
-    "command": "export RUNTIMED_VITE_PORT=$((5100 + $(echo -n \"$ZED_WORKTREE_ROOT\" | cksum | cut -d' ' -f1) % 4900)); echo \"Vite port: $RUNTIMED_VITE_PORT\"; cargo xtask dev",
+    "command": "export RUNTIMED_VITE_PORT=$((5100 + $(echo -n \"$ZED_WORKTREE_ROOT\" | cksum | cut -d' ' -f1) % 4900)); echo \"Vite port: $RUNTIMED_VITE_PORT\"; cargo xtask notebook",
     "env": {
       "RUNTIMED_DEV": "1",
       "RUST_LOG": "debug",
