@@ -1334,6 +1334,7 @@ async fn execute_code(id: &str, code: Option<&str>) -> Result<()> {
 // Pool daemon commands
 // =============================================================================
 
+#[allow(clippy::unwrap_used, clippy::expect_used)] // CLI binary; panics with context are acceptable
 async fn pool_command(command: PoolCommands) -> Result<()> {
     use runtimed::client::PoolClient;
     use runtimed::EnvType;
@@ -1488,6 +1489,7 @@ async fn pool_command(command: PoolCommands) -> Result<()> {
 // Daemon management commands
 // =============================================================================
 
+#[allow(clippy::unwrap_used, clippy::expect_used)] // CLI binary; panics with context are acceptable
 async fn daemon_command(command: DaemonCommands) -> Result<()> {
     use runtimed::client::PoolClient;
     use runtimed::service::ServiceManager;

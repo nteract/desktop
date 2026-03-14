@@ -6,7 +6,7 @@
 //! `future_into_py()`. This eliminates the duplication that previously
 //! existed between session.rs and async_session.rs.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -1120,7 +1120,7 @@ pub(crate) async fn get_history(
     let response = handle
         .send_request(NotebookRequest::GetHistory {
             pattern: pattern.map(|s| s.to_string()),
-            n: n as i32,
+            n,
             unique,
         })
         .await
@@ -1179,7 +1179,7 @@ async fn ensure_kernel_started(
 }
 
 /// Resolve blob server URL and store path from daemon info.
-async fn resolve_blob_paths(socket_path: &PathBuf) -> (Option<String>, Option<PathBuf>) {
+async fn resolve_blob_paths(socket_path: &Path) -> (Option<String>, Option<PathBuf>) {
     if let Some(parent) = socket_path.parent() {
         let daemon_json = parent.join("daemon.json");
         let base_url = if daemon_json.exists() {

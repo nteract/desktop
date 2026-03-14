@@ -50,6 +50,7 @@ pub struct KernelClient {
 }
 
 impl KernelClient {
+    #[allow(clippy::expect_used)] // petname only returns None when word count is 0
     pub async fn start_from_kernelspec(kernelspec: KernelspecDir) -> Result<Self> {
         let kernel_id = petname(2, "-").expect("failed to generate petname");
         let session_id = Uuid::new_v4().to_string();
@@ -96,6 +97,7 @@ impl KernelClient {
     ///
     /// The command is split on whitespace and `{connection_file}` is replaced
     /// with the path to the generated connection file.
+    #[allow(clippy::expect_used)] // petname only returns None when word count is 0
     pub async fn start_from_command(cmd: &str) -> Result<Self> {
         let kernel_id = petname(2, "-").expect("failed to generate petname");
         let session_id = Uuid::new_v4().to_string();

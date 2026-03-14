@@ -1062,11 +1062,10 @@ async fn test_pipe_mode_forwards_sync_frames() {
 
     // Drain frames from the pipe
     let mut frames = Vec::new();
-    loop {
-        match tokio::time::timeout(Duration::from_millis(500), frame_rx.recv()).await {
-            Ok(Some(frame)) => frames.push(frame),
-            _ => break,
-        }
+    while let Ok(Some(frame)) =
+        tokio::time::timeout(Duration::from_millis(500), frame_rx.recv()).await
+    {
+        frames.push(frame);
     }
 
     assert!(!frames.is_empty(), "pipe should receive at least one frame");
@@ -1130,11 +1129,10 @@ async fn test_pipe_mode_only_pipes_allowed_frame_types() {
 
     // Drain all frames
     let mut frames = Vec::new();
-    loop {
-        match tokio::time::timeout(Duration::from_millis(500), frame_rx.recv()).await {
-            Ok(Some(frame)) => frames.push(frame),
-            _ => break,
-        }
+    while let Ok(Some(frame)) =
+        tokio::time::timeout(Duration::from_millis(500), frame_rx.recv()).await
+    {
+        frames.push(frame);
     }
 
     assert!(
@@ -1212,11 +1210,10 @@ async fn test_pipe_mode_does_not_forward_response_frames() {
 
     // Drain all frames from the pipe
     let mut frames = Vec::new();
-    loop {
-        match tokio::time::timeout(Duration::from_millis(500), frame_rx.recv()).await {
-            Ok(Some(frame)) => frames.push(frame),
-            _ => break,
-        }
+    while let Ok(Some(frame)) =
+        tokio::time::timeout(Duration::from_millis(500), frame_rx.recv()).await
+    {
+        frames.push(frame);
     }
 
     // None of the piped frames should be Response frames
@@ -1285,11 +1282,10 @@ async fn test_pipe_mode_preserves_frame_order() {
 
     // Collect all frames
     let mut frames = Vec::new();
-    loop {
-        match tokio::time::timeout(Duration::from_millis(500), frame_rx.recv()).await {
-            Ok(Some(frame)) => frames.push(frame),
-            _ => break,
-        }
+    while let Ok(Some(frame)) =
+        tokio::time::timeout(Duration::from_millis(500), frame_rx.recv()).await
+    {
+        frames.push(frame);
     }
 
     // Filter to sync frames only

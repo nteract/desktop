@@ -306,6 +306,7 @@ fn build_with_bundle(bundle: &str) {
 /// 2. Stop the running service
 /// 3. Copy the new binary over the installed one
 /// 4. Restart the service
+#[allow(clippy::expect_used)] // xtask is a dev tool; panics with context are fine here
 fn cmd_install_daemon() {
     println!("Building runtimed (release)...");
     run_cmd("cargo", &["build", "--release", "-p", "runtimed"]);
@@ -583,6 +584,7 @@ fn build_external_binary(package: &str, binary_name: &str, release: bool) {
 }
 
 /// Get the host target triple (e.g., aarch64-apple-darwin).
+#[allow(clippy::expect_used)] // xtask is a dev tool; rustc must be available
 fn get_host_target() -> String {
     let output = Command::new("rustc")
         .args(["--print", "host-tuple"])

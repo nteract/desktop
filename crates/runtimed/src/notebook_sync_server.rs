@@ -4722,7 +4722,7 @@ mod tests {
     #[test]
     fn test_sanitize_peer_label_clamps_unicode() {
         // 70 emoji = 70 chars but 280 bytes
-        let emoji_label: String = std::iter::repeat('🦾').take(70).collect();
+        let emoji_label: String = "🦾".repeat(70);
         let result = sanitize_peer_label(Some(&emoji_label));
         assert_eq!(result.chars().count(), 64);
     }
