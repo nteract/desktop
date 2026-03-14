@@ -10,9 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use runtimed::notebook_sync_client::{
-    NotebookBroadcastReceiver, NotebookSyncClient, NotebookSyncHandle, NotebookSyncReceiver,
-};
+use notebook_sync::{BroadcastReceiver, DocHandle};
 use runtimed::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 
 use notebook_doc::metadata::NotebookMetadataSnapshot;
@@ -36,11 +34,10 @@ use pyo3::prelude::*;
 /// Both wrappers hold `Arc<Mutex<SessionState>>` and delegate all
 /// async operations to the free functions in this module.
 pub(crate) struct SessionState {
-    pub handle: Option<NotebookSyncHandle>,
-    /// Keep the sync receiver alive so the sync task doesn't exit
-    #[allow(dead_code)]
-    pub sync_rx: Option<NotebookSyncReceiver>,
-    pub broadcast_rx: Option<NotebookBroadcastReceiver>,
+    /// DocHandle for direct document access and daemon protocol operations.
+    pub handle: Option<DocHandle>,
+    /// Broadcast receiver for kernel/execution events from the daemon.
+    pub broadcast_rx: Option<BroadcastReceiver>,
     pub kernel_started: bool,
     pub env_source: Option<String>,
     /// Base URL for blob server (for resolving blob hashes)
@@ -57,7 +54,6 @@ impl SessionState {
     pub fn new() -> Self {
         Self {
             handle: None,
-            sync_rx: None,
             broadcast_rx: None,
             kernel_started: false,
             env_source: None,
@@ -75,7 +71,7 @@ impl SessionState {
 
 /// Connect to the daemon if not already connected.
 ///
-/// Populates the state with handle, sync_rx, broadcast_rx, and blob paths.
+/// Populates the state with handle, broadcast_rx, and blob paths.
 pub(crate) async fn connect(state: &Arc<Mutex<SessionState>>, notebook_id: &str) -> PyResult<()> {
     let mut st = state.lock().await;
     if st.handle.is_some() {
@@ -84,17 +80,15 @@ pub(crate) async fn connect(state: &Arc<Mutex<SessionState>>, notebook_id: &str)
 
     let socket_path = get_socket_path();
 
-    let (handle, sync_rx, broadcast_rx, _cells, _notebook_path) =
-        NotebookSyncClient::connect_split(socket_path.clone(), notebook_id.to_string())
-            .await
-            .map_err(to_py_err)?;
+    let result = notebook_sync::connect::connect(socket_path.clone(), notebook_id.to_string())
+        .await
+        .map_err(to_py_err)?;
 
     // Resolve blob paths from daemon info
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
 
-    st.handle = Some(handle);
-    st.sync_rx = Some(sync_rx);
-    st.broadcast_rx = Some(broadcast_rx);
+    st.handle = Some(result.handle);
+    st.broadcast_rx = Some(result.broadcast_rx);
     st.blob_base_url = blob_base_url;
     st.blob_store_path = blob_store_path;
 
@@ -108,27 +102,17 @@ pub(crate) async fn connect_open(
     socket_path: PathBuf,
     path: &str,
 ) -> PyResult<(String, SessionState, NotebookConnectionInfo)> {
-    let (handle, sync_rx, broadcast_rx, _cells, _metadata, info) =
-        NotebookSyncClient::connect_open_split(
-            socket_path.clone(),
-            PathBuf::from(path),
-            None, // pipe_channel
-        )
+    let result = notebook_sync::connect::connect_open(socket_path.clone(), PathBuf::from(path))
         .await
         .map_err(to_py_err)?;
 
-    if let Some(ref error) = info.error {
-        return Err(to_py_err(error));
-    }
-
-    let notebook_id = info.notebook_id.clone();
+    let notebook_id = result.info.notebook_id.clone();
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
-    let connection_info = NotebookConnectionInfo::from_protocol(info);
+    let connection_info = NotebookConnectionInfo::from_protocol(result.info);
 
     let state = SessionState {
-        handle: Some(handle),
-        sync_rx: Some(sync_rx),
-        broadcast_rx: Some(broadcast_rx),
+        handle: Some(result.handle),
+        broadcast_rx: Some(result.broadcast_rx),
         kernel_started: false,
         env_source: None,
         blob_base_url,
@@ -148,29 +132,18 @@ pub(crate) async fn connect_create(
     runtime: &str,
     working_dir: Option<PathBuf>,
 ) -> PyResult<(String, SessionState, NotebookConnectionInfo)> {
-    let (handle, sync_rx, broadcast_rx, _cells, _metadata, info) =
-        NotebookSyncClient::connect_create_split(
-            socket_path.clone(),
-            runtime.to_string(),
-            working_dir.clone(),
-            None, // pipe_channel
-            None, // initial_metadata
-        )
-        .await
-        .map_err(to_py_err)?;
+    let result =
+        notebook_sync::connect::connect_create(socket_path.clone(), runtime, working_dir.clone())
+            .await
+            .map_err(to_py_err)?;
 
-    if let Some(ref error) = info.error {
-        return Err(to_py_err(error));
-    }
-
-    let notebook_id = info.notebook_id.clone();
+    let notebook_id = result.info.notebook_id.clone();
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
-    let connection_info = NotebookConnectionInfo::from_protocol(info);
+    let connection_info = NotebookConnectionInfo::from_protocol(result.info);
 
     let state = SessionState {
-        handle: Some(handle),
-        sync_rx: Some(sync_rx),
-        broadcast_rx: Some(broadcast_rx),
+        handle: Some(result.handle),
+        broadcast_rx: Some(result.broadcast_rx),
         kernel_started: false,
         env_source: None,
         blob_base_url,
@@ -389,12 +362,18 @@ pub(crate) async fn create_cell(
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
-    let cells = handle.get_cells();
-    let insert_index = index.unwrap_or(cells.len());
+    // Determine after_cell_id from index
+    let after_cell_id = index.and_then(|i| {
+        if i == 0 {
+            None
+        } else {
+            let cells = handle.get_cells();
+            cells.get(i.saturating_sub(1)).map(|c| c.id.clone())
+        }
+    });
 
     handle
-        .add_cell_with_source(insert_index, &cell_id, cell_type, source)
-        .await
+        .add_cell_with_source(&cell_id, cell_type, after_cell_id.as_deref(), source)
         .map_err(to_py_err)?;
 
     Ok(cell_id)
@@ -412,10 +391,9 @@ pub(crate) async fn set_source(
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
-    handle
-        .update_source(cell_id, source)
-        .await
-        .map_err(to_py_err)
+    // Synchronous — direct doc mutation via DocHandle
+    handle.update_source(cell_id, source).map_err(to_py_err)?;
+    Ok(())
 }
 
 /// Append text to a cell's source.
@@ -430,7 +408,9 @@ pub(crate) async fn append_source(
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
-    handle.append_source(cell_id, text).await.map_err(to_py_err)
+    // Synchronous — direct doc mutation via DocHandle
+    handle.append_source(cell_id, text).map_err(to_py_err)?;
+    Ok(())
 }
 
 /// Get a single cell by ID, with resolved outputs.
@@ -499,7 +479,9 @@ pub(crate) async fn delete_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str)
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
-    handle.delete_cell(cell_id).await.map_err(to_py_err)
+    // Synchronous — direct doc mutation via DocHandle
+    handle.delete_cell(cell_id).map_err(to_py_err)?;
+    Ok(())
 }
 
 /// Move a cell to a new position.
@@ -514,11 +496,10 @@ pub(crate) async fn move_cell(
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
+    // Synchronous — direct doc mutation via DocHandle
     handle
         .move_cell(cell_id, after_cell_id)
-        .await
         .map_err(to_py_err)?;
-
     Ok(cell_id.to_string())
 }
 
@@ -530,6 +511,7 @@ pub(crate) async fn clear_outputs(state: &Arc<Mutex<SessionState>>, cell_id: &st
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
+    // clear_outputs still goes through send_request (daemon clears kernel state too)
     let response = handle
         .send_request(NotebookRequest::ClearOutputs {
             cell_id: cell_id.to_string(),
@@ -863,7 +845,9 @@ pub(crate) async fn set_metadata(
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
-    handle.set_metadata(key, value).await.map_err(to_py_err)
+    // Synchronous — direct doc mutation via DocHandle
+    handle.set_metadata_string(key, value).map_err(to_py_err)?;
+    Ok(())
 }
 
 /// Get a notebook metadata key.
@@ -877,7 +861,8 @@ pub(crate) async fn get_metadata(
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
-    handle.get_metadata(key).await.map_err(to_py_err)
+    // Synchronous — read from doc via DocHandle
+    Ok(handle.get_metadata_string(key))
 }
 
 /// Save the notebook to disk.
@@ -924,6 +909,7 @@ pub(crate) async fn get_cell_metadata(
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
+    // Synchronous — read from watch snapshot via DocHandle
     let cells = handle.get_cells();
     let cell = cells.into_iter().find(|c| c.id == cell_id);
 
@@ -951,12 +937,10 @@ pub(crate) async fn set_cell_metadata(
     let metadata: serde_json::Value = serde_json::from_str(metadata_json)
         .map_err(|e| to_py_err(format!("Invalid JSON: {}", e)))?;
 
-    let result = handle
+    // Synchronous — direct doc mutation via DocHandle
+    handle
         .set_cell_metadata(cell_id, &metadata)
-        .await
-        .map_err(to_py_err)?;
-
-    Ok(result)
+        .map_err(to_py_err)
 }
 
 /// Update cell metadata at a specific path.
@@ -977,12 +961,10 @@ pub(crate) async fn update_cell_metadata_at(
 
     let path_refs: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
 
-    let result = handle
+    // Synchronous — direct doc mutation via DocHandle
+    handle
         .update_cell_metadata_at(cell_id, &path_refs, value)
-        .await
-        .map_err(to_py_err)?;
-
-    Ok(result)
+        .map_err(to_py_err)
 }
 
 // =========================================================================
@@ -999,9 +981,8 @@ pub(crate) async fn get_notebook_metadata(
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
-    let snapshot = handle.get_notebook_metadata().unwrap_or_default();
-
-    Ok(snapshot)
+    // Synchronous — read from watch snapshot via DocHandle
+    Ok(handle.get_notebook_metadata().unwrap_or_default())
 }
 
 /// Set the notebook metadata snapshot.
@@ -1015,13 +996,9 @@ pub(crate) async fn set_notebook_metadata(
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
-    let json_str =
-        serde_json::to_string(snapshot).map_err(|e| to_py_err(format!("Serialize: {}", e)))?;
-
-    handle
-        .set_metadata("notebook_metadata", &json_str)
-        .await
-        .map_err(to_py_err)
+    // Synchronous — direct doc mutation via DocHandle
+    handle.set_metadata_snapshot(snapshot).map_err(to_py_err)?;
+    Ok(())
 }
 
 /// Sync environment with current metadata.

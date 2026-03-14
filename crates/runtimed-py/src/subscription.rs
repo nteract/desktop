@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use runtimed::notebook_sync_client::NotebookBroadcastReceiver;
+use notebook_sync::BroadcastReceiver;
 use runtimed::protocol::NotebookBroadcast;
 
 use crate::error::to_py_err;
@@ -40,7 +40,7 @@ pub struct EventSubscription {
 }
 
 struct SubscriptionState {
-    broadcast_rx: NotebookBroadcastReceiver,
+    broadcast_rx: BroadcastReceiver,
     /// Filter to specific cell IDs (empty = all cells)
     cell_ids: HashSet<String>,
     /// Filter to specific event types (empty = all types)
@@ -54,7 +54,7 @@ struct SubscriptionState {
 
 impl EventSubscription {
     pub fn new(
-        broadcast_rx: NotebookBroadcastReceiver,
+        broadcast_rx: BroadcastReceiver,
         cell_ids: Option<Vec<String>>,
         event_types: Option<Vec<String>>,
         blob_base_url: Option<String>,
@@ -148,7 +148,7 @@ pub struct EventIteratorSubscription {
 
 impl EventIteratorSubscription {
     pub fn new(
-        broadcast_rx: NotebookBroadcastReceiver,
+        broadcast_rx: BroadcastReceiver,
         cell_ids: Option<Vec<String>>,
         event_types: Option<Vec<String>>,
         blob_base_url: Option<String>,
