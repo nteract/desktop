@@ -309,6 +309,22 @@ impl AsyncSession {
         })
     }
 
+    /// Set a cell's type (code, markdown, or raw).
+    fn set_cell_type<'py>(
+        &self,
+        py: Python<'py>,
+        cell_id: &str,
+        cell_type: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let cell_id = cell_id.to_string();
+        let cell_type = cell_type.to_string();
+
+        future_into_py(py, async move {
+            session_core::set_cell_type(&state, &cell_id, &cell_type).await
+        })
+    }
+
     /// Get a cell by ID with resolved outputs.
     fn get_cell<'py>(&self, py: Python<'py>, cell_id: &str) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);

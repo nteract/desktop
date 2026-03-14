@@ -252,16 +252,20 @@ def _outputs_to_content(outputs: list[runtimed.Output]) -> list[ContentItem]:
 
 def _format_header(
     cell_id: str,
+    cell_type: str | None = None,
     status: str | None = None,
     execution_count: int | None = None,
 ) -> str:
     """Format a cell header line for terminal display.
 
-    Example: ━━━ cell-abc12345 ✓ idle [3] ━━━
+    Example: ━━━ cell-abc12345 (code) ✓ idle [3] ━━━
     """
     icons = {"idle": "✓", "error": "✗", "running": "◐"}
 
     parts = [f"━━━ {cell_id}"]
+
+    if cell_type:
+        parts.append(f"({cell_type})")
 
     if status:
         icon = icons.get(status, "?")
@@ -279,7 +283,9 @@ def _format_cell(cell: runtimed.Cell) -> str:
 
     Used by get_cell to show full cell state.
     """
-    header = _format_header(cell.id, execution_count=cell.execution_count)
+    header = _format_header(
+        cell.id, cell_type=cell.cell_type, execution_count=cell.execution_count
+    )
     output_text = _format_outputs_text(cell.outputs)
 
     if cell.source and output_text:
@@ -297,7 +303,9 @@ def _cell_to_content(cell: runtimed.Cell) -> list[ContentItem]:
 
     Returns a header as TextContent, then each output as its richest type.
     """
-    header = _format_header(cell.id, execution_count=cell.execution_count)
+    header = _format_header(
+        cell.id, cell_type=cell.cell_type, execution_count=cell.execution_count
+    )
     items: list[ContentItem] = []
 
     if cell.source:
@@ -395,12 +403,37 @@ def _execution_result_to_content(
 # =============================================================================
 
 
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+async def list_notebooks() -> list[dict[str, Any]]:
+    """List all open notebook sessions.
+
+    Returns notebooks currently open by users or other agents.
+    Use join_notebook(notebook_id) to connect to one.
+    """
+    client = _get_daemon_client()
+    rooms = client.list_rooms()
+    return [
+        {
+            "notebook_id": room["notebook_id"],
+            "active_peers": room["active_peers"],
+            "has_kernel": room["has_kernel"],
+            "kernel_type": room.get("kernel_type"),
+            "kernel_status": room.get("kernel_status"),
+        }
+        for room in rooms
+    ]
+
+
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
-async def connect_notebook(
-    notebook_id: str | None = None,
+async def join_notebook(
+    notebook_id: str,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Connect to a notebook by ID. Omit notebook_id to create a new session."""
+    """Join an existing notebook session by ID.
+
+    Use list_notebooks() to see available sessions. To open a file from disk,
+    use open_notebook(path). To create a new notebook, use create_notebook().
+    """
     global _session
     if ctx:
         _sniff_client_name(ctx)
@@ -410,7 +443,7 @@ async def connect_notebook(
         with contextlib.suppress(Exception):
             await _session.close()
 
-    # Create new session
+    # Join existing session
     _session = runtimed.AsyncSession(notebook_id=notebook_id, peer_label=_peer_label())
     await _session.connect()
 
@@ -469,11 +502,14 @@ async def create_notebook(
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
 async def save_notebook(path: str | None = None) -> dict[str, Any]:
-    """Save notebook to disk. Path is required for create_notebook() notebooks."""
+    """Save notebook to disk. Automatically reconnects to the saved file's session."""
+    global _session
     session = await _get_session()
+
+    old_notebook_id = session.notebook_id
+
     try:
         saved_path = await session.save(path)
-        return {"path": saved_path}
     except Exception as e:
         error_msg = str(e)
         is_write_error = "Read-only" in error_msg or "Failed to write" in error_msg
@@ -483,6 +519,24 @@ async def save_notebook(path: str | None = None) -> dict[str, Any]:
                 "you must provide a path (e.g., save_notebook('/path/to/file.ipynb'))"
             ) from e
         raise
+
+    # If notebook_id was UUID-based (ephemeral) and we saved to a path,
+    # reconnect to the path-based room so we're in sync with users who open the file
+    is_ephemeral = not old_notebook_id.startswith("/")
+    if is_ephemeral and saved_path:
+        with contextlib.suppress(Exception):
+            await session.close()
+
+        _session = await runtimed.AsyncSession.open_notebook(
+            saved_path, peer_label=_peer_label()
+        )
+        return {
+            "path": saved_path,
+            "reconnected": True,
+            "notebook_id": _session.notebook_id,
+        }
+
+    return {"path": saved_path}
 
 
 # =============================================================================
@@ -783,11 +837,59 @@ async def get_cell(
     return _cell_to_content(cell)
 
 
+def _output_to_dict(output: runtimed.Output) -> dict[str, Any]:
+    """Convert an output to a dictionary for JSON serialization."""
+    result: dict[str, Any] = {"output_type": output.output_type}
+
+    if output.output_type == "stream":
+        result["name"] = output.name
+        result["text"] = _strip_ansi(output.text) if output.text else ""
+    elif output.output_type == "error":
+        result["ename"] = output.ename or ""
+        result["evalue"] = output.evalue or ""
+        result["traceback"] = output.traceback or []
+    elif output.output_type in ("display_data", "execute_result"):
+        # Include text-based data, skip large binary data
+        result["data"] = {}
+        if output.data:
+            for mime in _TEXT_MIME_PRIORITY:
+                if mime in output.data:
+                    result["data"][mime] = output.data[mime]
+                    break
+        if output.output_type == "execute_result" and output.execution_count is not None:
+            result["execution_count"] = output.execution_count
+
+    return result
+
+
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def get_all_cells() -> list[ContentItem]:
-    """Get all cells with source and outputs."""
+async def get_all_cells(
+    format: Annotated[
+        Literal["markdown", "json"],
+        Field(description="Output format: 'markdown' for visual display, 'json' for structured data"),
+    ] = "markdown",
+) -> list[ContentItem] | list[dict[str, Any]]:
+    """Get all cells with source and outputs.
+
+    Args:
+        format: "markdown" for visual display (default), "json" for structured data.
+    """
     session = await _get_session()
     cells = await session.get_cells()
+
+    if format == "json":
+        return [
+            {
+                "cell_id": cell.id,
+                "cell_type": cell.cell_type,
+                "execution_count": cell.execution_count,
+                "source": cell.source,
+                "outputs": [_output_to_dict(o) for o in cell.outputs],
+            }
+            for cell in cells
+        ]
+
+    # Default markdown format
     items: list[ContentItem] = []
     for cell in cells:
         items.extend(_cell_to_content(cell))
@@ -827,6 +929,17 @@ async def clear_outputs(cell_id: str) -> dict[str, Any]:
     session = await _get_session()
     await session.clear_outputs(cell_id)
     return {"cell_id": cell_id, "cleared": True}
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+async def set_cell_type(
+    cell_id: str,
+    cell_type: Literal["code", "markdown", "raw"],
+) -> dict[str, Any]:
+    """Change a cell's type (code, markdown, or raw)."""
+    session = await _get_session()
+    await session.set_cell_type(cell_id=cell_id, cell_type=cell_type)
+    return {"cell_id": cell_id, "cell_type": cell_type}
 
 
 # =============================================================================

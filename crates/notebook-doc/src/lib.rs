@@ -1113,6 +1113,27 @@ impl NotebookDoc {
         Ok(true)
     }
 
+    // ── Cell type ───────────────────────────────────────────────────
+
+    /// Set the cell type for a cell. Valid values: "code", "markdown", "raw".
+    pub fn set_cell_type(
+        &mut self,
+        cell_id: &str,
+        cell_type: &str,
+    ) -> Result<bool, AutomergeError> {
+        let cells_id = match self.cells_map_id() {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
+            Some(o) => o,
+            None => return Ok(false),
+        };
+
+        self.doc.put(&cell_obj, "cell_type", cell_type)?;
+        Ok(true)
+    }
+
     // ── Cell metadata ──────────────────────────────────────────────
 
     /// Get the raw metadata Value for a cell.

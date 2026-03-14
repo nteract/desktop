@@ -413,6 +413,25 @@ pub(crate) async fn append_source(
     Ok(())
 }
 
+/// Set a cell's type.
+pub(crate) async fn set_cell_type(
+    state: &Arc<Mutex<SessionState>>,
+    cell_id: &str,
+    cell_type: &str,
+) -> PyResult<()> {
+    let st = state.lock().await;
+    let handle = st
+        .handle
+        .as_ref()
+        .ok_or_else(|| to_py_err("Not connected"))?;
+
+    // Synchronous — direct doc mutation via DocHandle
+    handle
+        .set_cell_type(cell_id, cell_type)
+        .map_err(to_py_err)?;
+    Ok(())
+}
+
 /// Get a single cell by ID, with resolved outputs.
 pub(crate) async fn get_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) -> PyResult<Cell> {
     let (snapshot, blob_base_url, blob_store_path) = {

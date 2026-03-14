@@ -271,6 +271,12 @@ impl Session {
             .block_on(session_core::append_source(&self.state, cell_id, text))
     }
 
+    /// Set a cell's type (code, markdown, or raw).
+    fn set_cell_type(&self, cell_id: &str, cell_type: &str) -> PyResult<()> {
+        self.runtime
+            .block_on(session_core::set_cell_type(&self.state, cell_id, cell_type))
+    }
+
     /// Get a cell by ID with resolved outputs.
     fn get_cell(&self, cell_id: &str) -> PyResult<Cell> {
         self.runtime

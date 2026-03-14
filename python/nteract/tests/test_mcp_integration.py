@@ -117,7 +117,8 @@ async def test_list_tools(mcp_client: ClientSession):
     tool_names = {t.name for t in tools.tools}
 
     # Core tools should be present
-    assert "connect_notebook" in tool_names
+    assert "list_notebooks" in tool_names
+    assert "join_notebook" in tool_names
     assert "open_notebook" in tool_names
     assert "create_notebook" in tool_names
     assert "save_notebook" in tool_names
@@ -132,10 +133,13 @@ async def test_list_tools(mcp_client: ClientSession):
     assert "get_all_cells" in tool_names
     assert "delete_cell" in tool_names
     assert "move_cell" in tool_names
+    assert "clear_outputs" in tool_names
+    assert "set_cell_type" in tool_names
     assert "execute_cell" in tool_names
     assert "run_all_cells" in tool_names
 
     # Removed tools should not be present
+    assert "connect_notebook" not in tool_names  # replaced by join_notebook
     assert "disconnect_notebook" not in tool_names
     assert "start_kernel" not in tool_names
     assert "shutdown_kernel" not in tool_names
@@ -143,18 +147,17 @@ async def test_list_tools(mcp_client: ClientSession):
     assert "complete_code" not in tool_names
     assert "get_queue_state" not in tool_names
     assert "get_history" not in tool_names
-    assert "list_notebooks" not in tool_names
     assert "run_code" not in tool_names
 
 
 @pytest.mark.asyncio
-async def test_connect_and_create_cell(mcp_client: ClientSession):
-    """Connect to notebook and create a cell."""
-    # Connect
-    result = await mcp_client.call_tool("connect_notebook", {})
+async def test_create_notebook_and_cell(mcp_client: ClientSession):
+    """Create a notebook and add a cell."""
+    # Create notebook
+    result = await mcp_client.call_tool("create_notebook", {})
     data = _parse_json(result)
-    assert data["connected"] is True
     assert "notebook_id" in data
+    assert data["runtime"] == "python"
 
     # Create cell (returns plain text)
     result = await mcp_client.call_tool(
@@ -176,7 +179,7 @@ async def test_connect_and_create_cell(mcp_client: ClientSession):
 async def test_append_source(mcp_client: ClientSession):
     """Test streaming tokens into a cell."""
     # Connect
-    await mcp_client.call_tool("connect_notebook", {})
+    await mcp_client.call_tool("create_notebook", {})
 
     # Create empty cell
     result = await mcp_client.call_tool("create_cell", {"source": ""})
@@ -204,7 +207,7 @@ async def test_append_source(mcp_client: ClientSession):
 async def test_execute_cell_basic(mcp_client: ClientSession):
     """Test basic cell execution."""
     # Connect (daemon auto-launches kernel)
-    await mcp_client.call_tool("connect_notebook", {})
+    await mcp_client.call_tool("create_notebook", {})
 
     # Create and execute cell
     result = await mcp_client.call_tool(
@@ -226,7 +229,7 @@ async def test_execute_cell_basic(mcp_client: ClientSession):
 async def test_execute_cell_partial_results(mcp_client: ClientSession):
     """Execute long-running code, verify partial results returned."""
     # Connect (daemon auto-launches kernel)
-    await mcp_client.call_tool("connect_notebook", {})
+    await mcp_client.call_tool("create_notebook", {})
 
     # Create cell with slow code - print immediately, then sleep
     result = await mcp_client.call_tool(
@@ -248,7 +251,7 @@ async def test_execute_cell_partial_results(mcp_client: ClientSession):
 async def test_poll_for_outputs(mcp_client: ClientSession):
     """Create cell, execute, poll get_cell for updated outputs."""
     # Connect (daemon auto-launches kernel)
-    await mcp_client.call_tool("connect_notebook", {})
+    await mcp_client.call_tool("create_notebook", {})
 
     # Create cell with short delay
     result = await mcp_client.call_tool(
@@ -279,7 +282,7 @@ async def test_poll_for_outputs(mcp_client: ClientSession):
 async def test_output_ordering(mcp_client: ClientSession):
     """Verify interleaved outputs maintain order."""
     # Connect (daemon auto-launches kernel)
-    await mcp_client.call_tool("connect_notebook", {})
+    await mcp_client.call_tool("create_notebook", {})
 
     # Code that produces interleaved outputs
     code = """
@@ -317,7 +320,7 @@ print('c', flush=True)
 async def test_delete_cell(mcp_client: ClientSession):
     """Test cell deletion."""
     # Connect
-    await mcp_client.call_tool("connect_notebook", {})
+    await mcp_client.call_tool("create_notebook", {})
 
     # Create cell
     result = await mcp_client.call_tool("create_cell", {"source": "x = 1"})
@@ -340,7 +343,7 @@ async def test_delete_cell(mcp_client: ClientSession):
 @pytest.mark.asyncio
 async def test_move_cell(mcp_client: ClientSession):
     """Test cell reordering."""
-    await mcp_client.call_tool("connect_notebook", {})
+    await mcp_client.call_tool("create_notebook", {})
 
     result = await mcp_client.call_tool("create_cell", {"source": "first"})
     first_id = _extract_cell_id(_get_text(result))

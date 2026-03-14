@@ -268,6 +268,11 @@ impl DocHandle {
         self.with_notebook_doc(|nd| nd.append_source(cell_id, text))
     }
 
+    /// Set a cell's type. Valid values: "code", "markdown", "raw". Returns true if cell was found.
+    pub fn set_cell_type(&self, cell_id: &str, cell_type: &str) -> Result<bool, SyncError> {
+        self.with_notebook_doc(|nd| nd.set_cell_type(cell_id, cell_type))
+    }
+
     /// Set the full notebook metadata snapshot (kernelspec + language_info + runt).
     pub fn set_metadata_snapshot(
         &self,
