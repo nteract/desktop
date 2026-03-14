@@ -29,9 +29,7 @@ const _subscribers = new Set<() => void>();
 export function notifyMetadataChanged(): void {
   const raw = _handle?.get_metadata_snapshot();
   _snapshotCache =
-    raw && typeof raw === "object"
-      ? (raw as NotebookMetadataSnapshot)
-      : null;
+    raw && typeof raw === "object" ? (raw as NotebookMetadataSnapshot) : null;
   for (const cb of _subscribers) cb();
 }
 
@@ -64,9 +62,7 @@ function getSnapshot(): NotebookMetadataSnapshot | null {
   if (_snapshotCache === null) {
     const raw = _handle?.get_metadata_snapshot();
     _snapshotCache =
-      raw && typeof raw === "object"
-        ? (raw as NotebookMetadataSnapshot)
-        : null;
+      raw && typeof raw === "object" ? (raw as NotebookMetadataSnapshot) : null;
   }
   return _snapshotCache;
 }
