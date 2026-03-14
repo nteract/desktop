@@ -104,7 +104,7 @@ The daemon responds with a `NotebookConnectionInfo`:
 }
 ```
 
-The `protocol_version` and `daemon_version` fields are `Option` types with `skip_serializing_if = "Option::is_none"`, so they are only present when the daemon populates them (e.g., for version negotiation). A minimal response omits them entirely.
+The `protocol_version`, `daemon_version`, and `error` fields are `Option` types with `skip_serializing_if = "Option::is_none"`, so they are only present when the daemon populates them. `protocol_version` and `daemon_version` appear for version negotiation; `error` appears only in failure cases. A minimal successful response omits all three.
 
 ### 3. Initial Automerge sync
 

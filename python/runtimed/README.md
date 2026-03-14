@@ -5,12 +5,10 @@ Python toolkit for Jupyter runtimes, powered by runtimed Rust binaries. Execute 
 ## Installation
 
 ```bash
-# Stable (1.x)
 pip install runtimed
-
-# Pre-release (2.x — matches nteract desktop nightly)
-pip install --pre runtimed
 ```
+
+> **Note:** The 2.0 release is currently in pre-release. Use `pip install --pre runtimed` (or `uv pip install --prerelease allow runtimed`) to get the latest 2.x build matching the nteract desktop nightly.
 
 ## Quick Start
 

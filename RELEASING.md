@@ -16,7 +16,7 @@ The desktop app, `runt` CLI, and `runtimed` daemon are all built and released to
 
 Stable releases run when a `v*` tag is pushed (or manually), and nightly pre-releases run every 24 hours. Both can also be triggered manually.
 
-> **Note:** Desktop releases also build and publish the `runtimed` and `nteract` Python packages to PyPI via trusted publishing. This means every stable and nightly release pushes new Python wheels — the separate `python-v*` tag workflow is only needed for Python-specific patches that don't warrant a full desktop release.
+> **Note:** Desktop releases also build Python wheels and attempt to publish the `runtimed` and `nteract` packages to PyPI via trusted publishing (`continue-on-error: true`, so publishing is best-effort and will silently skip if the version already exists). This means every stable and nightly release builds and attempts to push new Python wheels — the separate `python-v*` tag workflow is only needed for Python-specific patches that don't warrant a full desktop release.
 
 ### Artifacts
 
