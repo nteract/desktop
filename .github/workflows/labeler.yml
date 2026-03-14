@@ -31,3 +31,19 @@ jobs:
                 labels: ['quill']
               });
             }
+
+      # Request Copilot review for Quill Agent PRs
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+            const author = context.payload.pull_request.user.login;
+            if ((author === 'rgbkrk' || author === 'quillaid') &&
+                (body.includes('agent Quill') || body.includes('agent, Quill'))) {
+              await github.rest.pulls.requestReviewers({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                reviewers: ['copilot']
+              });
+            }
