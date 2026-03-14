@@ -17,7 +17,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 /// A snapshot of a comm channel's state.

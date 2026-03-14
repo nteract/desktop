@@ -26,7 +26,7 @@ use jupyter_protocol::{
     JupyterMessage, JupyterMessageContent, KernelInfoRequest, ShutdownRequest,
 };
 use log::{debug, error, info, warn};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::sync::{broadcast, mpsc, oneshot, watch, RwLock};
 use uuid::Uuid;
 
@@ -44,10 +44,6 @@ use crate::{EnvType, PooledEnv};
 /// Re-export environment config types from the shared protocol crate.
 /// The canonical definitions live in `notebook_protocol::protocol`.
 pub use notebook_protocol::protocol::{DenoLaunchedConfig, LaunchedEnvConfig};
-
-fn default_flexible_npm() -> bool {
-    true
-}
 
 // ── Output Conversion ───────────────────────────────────────────────────────
 
