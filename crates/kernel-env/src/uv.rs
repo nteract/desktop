@@ -74,13 +74,14 @@ pub fn compute_env_hash(deps: &UvDependencies, env_id: Option<&str>) -> String {
     if let Some(ref py) = deps.requires_python {
         hasher.update(b"requires-python:");
         hasher.update(py.as_bytes());
-        hasher.update(b"\n");
+        // NOTE: No trailing newline here to maintain backward-compatible hashes
+        // for existing environments that don't have prerelease set.
     }
 
     if let Some(ref prerelease) = deps.prerelease {
-        hasher.update(b"prerelease:");
+        // Add separator before prerelease to distinguish from requires-python value
+        hasher.update(b"\nprerelease:");
         hasher.update(prerelease.as_bytes());
-        hasher.update(b"\n");
     }
 
     let hash = hasher.finalize();
@@ -192,7 +193,15 @@ pub async fn prepare_environment_in(
         return Err(anyhow!(error_msg));
     }
 
-    // Install packages
+    // Build list of packages to install (for progress reporting)
+    let mut packages = vec![
+        "ipykernel".to_string(),
+        "ipywidgets".to_string(),
+        "uv".to_string(), // For %uv magic in notebooks
+    ];
+    packages.extend(deps.dependencies.iter().cloned());
+
+    // Build install command args
     let mut install_args = vec![
         "pip".to_string(),
         "install".to_string(),
@@ -206,21 +215,11 @@ pub async fn prepare_environment_in(
         install_args.push(prerelease.clone());
     }
 
-    install_args.extend([
-        "ipykernel".to_string(),
-        "ipywidgets".to_string(),
-        "uv".to_string(), // For %uv magic in notebooks
-    ]);
-
-    for dep in &deps.dependencies {
-        install_args.push(dep.clone());
-    }
+    install_args.extend(packages.iter().cloned());
 
     handler.on_progress(
         "uv",
-        EnvProgressPhase::InstallingPackages {
-            packages: install_args[4..].to_vec(),
-        },
+        EnvProgressPhase::InstallingPackages { packages },
     );
 
     let install_output = tokio::process::Command::new(&uv_path)
