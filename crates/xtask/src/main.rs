@@ -736,20 +736,14 @@ fn fallback_dev_daemon_running() -> bool {
         return false;
     };
 
-    for namespace in ["runt", "runt-nightly"] {
-        let daemon_json = dirs::cache_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-            .join(namespace)
-            .join("worktrees")
-            .join(runt_workspace::worktree_hash(&workspace))
-            .join("daemon.json");
+    let daemon_json = dirs::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join(runt_workspace::cache_namespace())
+        .join("worktrees")
+        .join(runt_workspace::worktree_hash(&workspace))
+        .join("daemon.json");
 
-        if daemon_state_is_running(&daemon_json) {
-            return true;
-        }
-    }
-
-    false
+    daemon_state_is_running(&daemon_json)
 }
 
 fn daemon_state_is_running(path: &Path) -> bool {
