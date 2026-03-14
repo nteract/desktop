@@ -217,10 +217,7 @@ pub async fn prepare_environment_in(
 
     install_args.extend(packages.iter().cloned());
 
-    handler.on_progress(
-        "uv",
-        EnvProgressPhase::InstallingPackages { packages },
-    );
+    handler.on_progress("uv", EnvProgressPhase::InstallingPackages { packages });
 
     let install_output = tokio::process::Command::new(&uv_path)
         .args(&install_args)
