@@ -81,6 +81,13 @@ impl Session {
         state.kernel_started
     }
 
+    /// Get the kernel type (e.g., "python", "deno") if kernel is running.
+    #[getter]
+    fn kernel_type(&self) -> Option<String> {
+        let state = self.runtime.block_on(self.state.lock());
+        state.kernel_type.clone()
+    }
+
     /// Get the environment source (e.g., "uv:prewarmed") if kernel is running.
     #[getter]
     fn env_source(&self) -> Option<String> {

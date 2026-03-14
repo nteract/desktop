@@ -39,6 +39,7 @@ pub(crate) struct SessionState {
     /// Broadcast receiver for kernel/execution events from the daemon.
     pub broadcast_rx: Option<BroadcastReceiver>,
     pub kernel_started: bool,
+    pub kernel_type: Option<String>,
     pub env_source: Option<String>,
     /// Base URL for blob server (for resolving blob hashes)
     pub blob_base_url: Option<String>,
@@ -56,6 +57,7 @@ impl SessionState {
             handle: None,
             broadcast_rx: None,
             kernel_started: false,
+            kernel_type: None,
             env_source: None,
             blob_base_url: None,
             blob_store_path: None,
@@ -114,6 +116,7 @@ pub(crate) async fn connect_open(
         handle: Some(result.handle),
         broadcast_rx: Some(result.broadcast_rx),
         kernel_started: false,
+        kernel_type: None,
         env_source: None,
         blob_base_url,
         blob_store_path,
@@ -145,6 +148,7 @@ pub(crate) async fn connect_create(
         handle: Some(result.handle),
         broadcast_rx: Some(result.broadcast_rx),
         kernel_started: false,
+        kernel_type: None,
         env_source: None,
         blob_base_url,
         blob_store_path,
@@ -189,18 +193,22 @@ pub(crate) async fn start_kernel(
 
     match response {
         NotebookResponse::KernelLaunched {
+            kernel_type: actual_type,
             env_source: actual_env,
             ..
         } => {
             st.kernel_started = true;
+            st.kernel_type = Some(actual_type);
             st.env_source = Some(actual_env);
             Ok(())
         }
         NotebookResponse::KernelAlreadyRunning {
+            kernel_type: actual_type,
             env_source: actual_env,
             ..
         } => {
             st.kernel_started = true;
+            st.kernel_type = Some(actual_type);
             st.env_source = Some(actual_env);
             Ok(())
         }
@@ -226,6 +234,7 @@ pub(crate) async fn shutdown_kernel(state: &Arc<Mutex<SessionState>>) -> PyResul
     match response {
         NotebookResponse::KernelShuttingDown {} | NotebookResponse::NoKernel {} => {
             st.kernel_started = false;
+            st.kernel_type = None;
             st.env_source = None;
             Ok(())
         }
@@ -255,6 +264,7 @@ pub(crate) async fn restart_kernel(
         match response {
             NotebookResponse::KernelShuttingDown {} | NotebookResponse::NoKernel {} => {
                 st.kernel_started = false;
+                st.kernel_type = None;
                 st.env_source = None;
             }
             NotebookResponse::Error { error } => return Err(to_py_err(error)),
@@ -283,14 +293,17 @@ pub(crate) async fn restart_kernel(
 
         match response {
             NotebookResponse::KernelLaunched {
+                kernel_type: actual_type,
                 env_source: actual_env,
                 ..
             }
             | NotebookResponse::KernelAlreadyRunning {
+                kernel_type: actual_type,
                 env_source: actual_env,
                 ..
             } => {
                 st.kernel_started = true;
+                st.kernel_type = Some(actual_type);
                 st.env_source = Some(actual_env);
             }
             NotebookResponse::Error { error } => return Err(to_py_err(error)),

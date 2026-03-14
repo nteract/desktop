@@ -80,6 +80,15 @@ impl AsyncSession {
         })
     }
 
+    /// Get the kernel type (e.g., "python", "deno") if kernel is running.
+    fn kernel_type<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future_into_py(py, async move {
+            let st = state.lock().await;
+            Ok(st.kernel_type.clone())
+        })
+    }
+
     /// Get the environment source if kernel is running.
     fn env_source<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
