@@ -821,9 +821,7 @@ impl NotebookDoc {
         }
 
         // Store metadata as native Automerge map
-        let meta_map = self
-            .doc
-            .put_object(&cell_map, "metadata", ObjType::Map)?;
+        let meta_map = self.doc.put_object(&cell_map, "metadata", ObjType::Map)?;
         if let Some(obj) = metadata.as_object() {
             for (k, v) in obj {
                 put_json_at_key(&mut self.doc, &meta_map, k, v)?;
@@ -1268,9 +1266,7 @@ impl NotebookDoc {
             None => return Ok(false),
         };
 
-        let meta_map = self
-            .doc
-            .put_object(&cell_obj, "metadata", ObjType::Map)?;
+        let meta_map = self.doc.put_object(&cell_obj, "metadata", ObjType::Map)?;
         if let Some(obj) = metadata.as_object() {
             for (k, v) in obj {
                 put_json_at_key(&mut self.doc, &meta_map, k, v)?;
@@ -3442,8 +3438,7 @@ mod tests {
             "d": null,
             "e": "string"
         });
-        doc.put_json_value(&meta_id, "nested_val", &nested)
-            .unwrap();
+        doc.put_json_value(&meta_id, "nested_val", &nested).unwrap();
         assert_eq!(doc.get_json_value(&meta_id, "nested_val"), Some(nested));
 
         // Empty object and array
