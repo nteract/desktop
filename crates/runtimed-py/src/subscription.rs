@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use notebook_protocol::protocol::NotebookBroadcast;
 use notebook_sync::BroadcastReceiver;
-use runtimed::protocol::NotebookBroadcast;
 
 use crate::error::to_py_err;
 use crate::output::ExecutionEvent;

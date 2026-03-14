@@ -423,7 +423,7 @@ impl CompletionItem {
 }
 
 impl CompletionItem {
-    pub fn from_protocol(item: runtimed::protocol::CompletionItem) -> Self {
+    pub fn from_protocol(item: notebook_protocol::protocol::CompletionItem) -> Self {
         Self {
             label: item.label,
             kind: item.kind,
@@ -506,7 +506,7 @@ impl HistoryEntry {
 }
 
 impl HistoryEntry {
-    pub fn from_protocol(entry: runtimed::protocol::HistoryEntry) -> Self {
+    pub fn from_protocol(entry: notebook_protocol::protocol::HistoryEntry) -> Self {
         Self {
             session: entry.session,
             line: entry.line,
@@ -582,7 +582,7 @@ impl NotebookConnectionInfo {
 
 impl NotebookConnectionInfo {
     /// Create from the Rust NotebookConnectionInfo type.
-    pub fn from_protocol(info: runtimed::connection::NotebookConnectionInfo) -> Self {
+    pub fn from_protocol(info: notebook_protocol::connection::NotebookConnectionInfo) -> Self {
         Self {
             protocol: info.protocol,
             protocol_version: info.protocol_version,

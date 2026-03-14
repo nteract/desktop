@@ -16,6 +16,7 @@ pyo3 = { version = "0.28", features = ["extension-module", "abi3-py39"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 runtimed = { path = "../runtimed" }
 notebook-doc = { path = "../notebook-doc" }
+notebook-protocol = { path = "../notebook-protocol" }
 notebook-sync = { path = "../notebook-sync" }
 tokio = { version = "1", features = ["full"] }
 serde_json = { workspace = true }
