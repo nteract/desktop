@@ -444,7 +444,7 @@ where
         cmd_rx,
         snapshot_tx: Arc::clone(&snapshot_tx),
         broadcast_tx,
-        pipe_frame_tx,
+        pipe_forwarder: sync_task::FrameForwarder::new(pipe_frame_tx),
     };
 
     let notebook_id_for_task = notebook_id;

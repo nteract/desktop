@@ -69,6 +69,37 @@ pub enum SyncCommand {
     },
 }
 
+/// Optionally forwards selected frame types to a pipe consumer (e.g. Tauri webview).
+///
+/// Sync, broadcast, and presence frames are forwarded. Request/response frames
+/// are internal to the protocol and are never piped.
+pub struct FrameForwarder {
+    tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+}
+
+impl FrameForwarder {
+    /// Create a new forwarder. Pass `None` to disable forwarding.
+    pub fn new(tx: Option<mpsc::UnboundedSender<Vec<u8>>>) -> Self {
+        Self { tx }
+    }
+
+    /// Forward sync, broadcast, and presence frames. Skips request/response.
+    pub fn forward(&self, frame: &connection::TypedNotebookFrame) {
+        if let Some(ref tx) = self.tx {
+            match frame.frame_type {
+                NotebookFrameType::AutomergeSync
+                | NotebookFrameType::Broadcast
+                | NotebookFrameType::Presence => {
+                    let mut bytes = vec![frame.frame_type as u8];
+                    bytes.extend_from_slice(&frame.payload);
+                    let _ = tx.send(bytes);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Configuration for the sync task.
 pub struct SyncTaskConfig {
     /// Shared document state (same Arc as DocHandle).
@@ -86,10 +117,9 @@ pub struct SyncTaskConfig {
     /// Broadcast sender for kernel/execution events from the daemon.
     pub broadcast_tx: broadcast::Sender<NotebookBroadcast>,
 
-    /// Optional channel for forwarding raw daemon frames to a pipe consumer
-    /// (e.g. Tauri relay to WASM frontend). When `Some`, incoming frames are
-    /// cloned to this sender before local processing.
-    pub pipe_frame_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    /// Forwards selected daemon frames to a pipe consumer (e.g. Tauri relay
+    /// to WASM frontend).
+    pub pipe_forwarder: FrameForwarder,
 }
 
 /// Run the sync task.
@@ -194,7 +224,7 @@ where
                             &config.snapshot_tx,
                             &config.broadcast_tx,
                             &notebook_id,
-                            &config.pipe_frame_tx,
+                            &config.pipe_forwarder,
                         )
                         .await;
                     }
@@ -238,7 +268,7 @@ where
                             req_broadcast_tx.as_ref(),
                             &request,
                             &notebook_id,
-                            &config.pipe_frame_tx,
+                            &config.pipe_forwarder,
                         )
                         .await;
                         let _ = reply.send(result);
@@ -252,7 +282,7 @@ where
                             &config.snapshot_tx,
                             &config.broadcast_tx,
                             &notebook_id,
-                            &config.pipe_frame_tx,
+                            &config.pipe_forwarder,
                         )
                         .await;
                         let _ = reply.send(result);
@@ -311,7 +341,7 @@ where
                         &config.snapshot_tx,
                         &config.broadcast_tx,
                         &notebook_id,
-                        &config.pipe_frame_tx,
+                        &config.pipe_forwarder,
                     )
                     .await;
                 }
@@ -351,23 +381,12 @@ async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
     snapshot_tx: &Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
     broadcast_tx: &broadcast::Sender<NotebookBroadcast>,
     notebook_id: &str,
-    pipe_frame_tx: &Option<mpsc::UnboundedSender<Vec<u8>>>,
+    pipe_forwarder: &FrameForwarder,
 ) {
     // Forward sync/broadcast/presence frames to pipe consumer before local
     // processing. Response and Request frames are internal to the protocol
     // and must not be piped to the WASM frontend.
-    if let Some(ref pipe_tx) = pipe_frame_tx {
-        match frame.frame_type {
-            NotebookFrameType::AutomergeSync
-            | NotebookFrameType::Broadcast
-            | NotebookFrameType::Presence => {
-                let mut bytes = vec![frame.frame_type as u8];
-                bytes.extend_from_slice(&frame.payload);
-                let _ = pipe_tx.send(bytes);
-            }
-            _ => {}
-        }
-    }
+    pipe_forwarder.forward(frame);
 
     match frame.frame_type {
         NotebookFrameType::AutomergeSync => {
@@ -466,7 +485,7 @@ async fn send_request_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     req_broadcast_tx: Option<&broadcast::Sender<NotebookBroadcast>>,
     request: &NotebookRequest,
     notebook_id: &str,
-    pipe_frame_tx: &Option<mpsc::UnboundedSender<Vec<u8>>>,
+    pipe_forwarder: &FrameForwarder,
 ) -> Result<NotebookResponse, SyncError> {
     // Serialize and send the request
     let payload =
@@ -493,7 +512,7 @@ async fn send_request_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             broadcast_tx,
             req_broadcast_tx,
             notebook_id,
-            pipe_frame_tx,
+            pipe_forwarder,
         ),
     )
     .await;
@@ -515,7 +534,7 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     broadcast_tx: &broadcast::Sender<NotebookBroadcast>,
     req_broadcast_tx: Option<&broadcast::Sender<NotebookBroadcast>>,
     notebook_id: &str,
-    pipe_frame_tx: &Option<mpsc::UnboundedSender<Vec<u8>>>,
+    pipe_forwarder: &FrameForwarder,
 ) -> Result<NotebookResponse, SyncError> {
     loop {
         let frame = connection::recv_typed_frame(reader)
@@ -527,18 +546,7 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         // waiting for a response. Without this, daemon frames received
         // during a request/response cycle would be consumed locally but
         // never reach the WASM frontend, causing it to desync.
-        if let Some(ref pipe_tx) = pipe_frame_tx {
-            match frame.frame_type {
-                NotebookFrameType::AutomergeSync
-                | NotebookFrameType::Broadcast
-                | NotebookFrameType::Presence => {
-                    let mut bytes = vec![frame.frame_type as u8];
-                    bytes.extend_from_slice(&frame.payload);
-                    let _ = pipe_tx.send(bytes);
-                }
-                _ => {}
-            }
-        }
+        pipe_forwarder.forward(&frame);
 
         match frame.frame_type {
             NotebookFrameType::Response => {
@@ -603,7 +611,7 @@ async fn confirm_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     snapshot_tx: &Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
     broadcast_tx: &broadcast::Sender<NotebookBroadcast>,
     notebook_id: &str,
-    pipe_frame_tx: &Option<mpsc::UnboundedSender<Vec<u8>>>,
+    pipe_forwarder: &FrameForwarder,
 ) -> Result<(), SyncError> {
     for round in 0..5 {
         // Generate and send sync message
@@ -646,7 +654,7 @@ async fn confirm_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                     snapshot_tx,
                     broadcast_tx,
                     notebook_id,
-                    pipe_frame_tx,
+                    pipe_forwarder,
                 )
                 .await;
             }
