@@ -19,7 +19,10 @@ Configuration: `vitest.config.ts`
 ```ts
 test: {
   environment: "jsdom",
-  include: ["src/**/__tests__/**/*.test.{ts,tsx}"],
+  include: [
+    "src/**/__tests__/**/*.test.{ts,tsx}",
+    "apps/notebook/src/**/__tests__/**/*.test.{ts,tsx}",
+  ],
   globals: true,
   setupFiles: ["./src/test-setup.ts"],
 }
@@ -41,7 +44,7 @@ import { AnsiOutput } from "../ansi-output";
 
 describe("AnsiOutput", () => {
   it("renders plain text", () => {
-    const { container } = render(<AnsiOutput text="hello" />);
+    const { container } = render(<AnsiOutput>{"hello"}</AnsiOutput>);
     expect(container.textContent).toBe("hello");
   });
 
@@ -49,8 +52,8 @@ describe("AnsiOutput", () => {
     ["red", "\x1b[31mred\x1b[0m"],
     ["green", "\x1b[32mgreen\x1b[0m"],
   ])("renders %s ANSI color", (_, text) => {
-    const { container } = render(<AnsiOutput text={text} />);
-    expect(container.querySelector(".ansi-red")).toBeTruthy();
+    const { container } = render(<AnsiOutput>{text}</AnsiOutput>);
+    expect(container.querySelector(".ansi-red-fg")).toBeTruthy();
   });
 });
 ```
@@ -72,7 +75,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_runtime_serialization() {
+    fn test_runtime_serde() {
         let runtime = Runtime::Python;
         let json = serde_json::to_string(&runtime).unwrap();
         assert_eq!(json, "\"python\"");
@@ -163,7 +166,6 @@ Configuration in `conftest.py` defines markers and daemon detection.
 | `test_session_unit.py` | Unit | No |
 | `test_daemon_integration.py` | Integration | Yes |
 | `test_ipython_bridge.py` | Integration | Yes |
-| `test_sidecar.py` | Integration | Yes |
 | `test_binary.py` | Binary/CLI | No |
 
 **Running tests:**

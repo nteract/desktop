@@ -28,6 +28,7 @@ The doctor checks:
 - **Installed binary** - Is the daemon binary present?
 - **Quarantine** (macOS) - Is Gatekeeper blocking the binary?
 - **Service config** - Is the launchd/systemd service configured?
+- **Plist HOME env** (macOS) - Does the launchd plist set the HOME environment variable?
 - **Socket file** - Can the app communicate with the daemon?
 - **Daemon state** - Is the daemon actually running?
 
@@ -35,6 +36,12 @@ If issues are found, run with `--fix` to attempt automatic repair:
 
 ```bash
 /Applications/nteract.app/Contents/MacOS/runt doctor --fix
+```
+
+For machine-readable output, use `--json`:
+
+```bash
+runt doctor --json
 ```
 
 ## Common Issues

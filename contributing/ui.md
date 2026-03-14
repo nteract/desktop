@@ -23,11 +23,10 @@ pnpm dlx shadcn@latest add dialog -yo
 │   ├── components/ui/       # 23 shared shadcn components
 │   └── lib/utils.ts         # cn() utility
 └── apps/
-    ├── notebook/            # Uses @/components/ui/* via path alias
-    └── sidecar/             # Uses @/components/ui/* via path alias
+    └── notebook/            # Uses @/components/ui/* via path alias
 ```
 
-Both apps access shared components via the `@/` path alias, which resolves to `../../src/` in their tsconfig.json files.
+The notebook app accesses shared components via the `@/` path alias, which resolves to `../../src/` in its tsconfig.json.
 
 ## Key Points
 

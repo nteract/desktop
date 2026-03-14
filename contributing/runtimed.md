@@ -63,8 +63,7 @@ The daemon provides a single coordinating entity that prewarms environments in t
 The notebook app automatically tries to connect to or start the daemon on launch. If it's not running, the app falls back to in-process prewarming. You don't need to do anything special.
 
 ```rust
-// crates/notebook/src/lib.rs:2408
-runtimed::client::ensure_daemon_running(None).await
+runtimed::client::ensure_daemon_via_sidecar().await
 ```
 
 ### Install daemon from source
@@ -121,7 +120,7 @@ crates/runtimed/
 │   ├── main.rs                  # CLI entry point (run, install, status, etc.)
 │   ├── daemon.rs                # Daemon state, pool management, connection routing
 │   ├── connection.rs            # Unified framing, Handshake enum, send/recv helpers
-│   ├── protocol.rs              # Request/Response enums, BlobRequest/BlobResponse
+│   ├── protocol.rs              # Request/Response enums, BlobRequest/BlobResponse (re-exported from notebook-protocol crate)
 │   ├── client.rs                # PoolClient for pool operations
 │   ├── singleton.rs             # File-based locking for single instance
 │   ├── service.rs               # Cross-platform service installation
@@ -139,6 +138,7 @@ crates/runtimed/
 │   ├── project_file.rs          # Project file detection (pyproject.toml, pixi.toml, etc.)
 │   ├── comm_state.rs            # Comm message state for ipywidgets
 │   ├── output_store.rs          # Output persistence and retrieval
+│   ├── markdown_assets.rs       # Markdown image/asset resolution and rewriting
 │   ├── (metadata via notebook_doc) # `notebook_doc::metadata` re-exported as `notebook_metadata`
 │   ├── stream_terminal.rs       # Stream terminal output handling
 │   └── terminal_size.rs         # Terminal size tracking

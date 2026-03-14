@@ -110,7 +110,8 @@ claude mcp add nteract -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-ni
 
 | Tool | Description |
 |------|-------------|
-| `connect_notebook` | Connect to a notebook by ID |
+| `list_notebooks` | List all open notebook sessions |
+| `join_notebook` | Join an existing notebook session by ID |
 | `open_notebook` | Open an existing .ipynb file |
 | `create_notebook` | Create a new notebook |
 | `save_notebook` | Save notebook to disk as .ipynb file |
@@ -120,16 +121,15 @@ claude mcp add nteract -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-ni
 | `append_source` | Stream tokens into a cell (ideal for LLM output) |
 | `get_cell` | Get a cell by ID with outputs |
 | `get_all_cells` | View all cells in the notebook |
-| `set_cell_source` | Update a cell's source code |
+| `set_cell_source` | Replace a cell's entire source code |
+| `replace_match` | Targeted literal text find-and-replace in a cell |
+| `replace_regex` | Regex-based find-and-replace in a cell |
+| `set_cell_type` | Change a cell's type (code, markdown, or raw) |
 | `move_cell` | Reorder a cell within the notebook |
 | `clear_outputs` | Clear a cell's outputs |
 | `delete_cell` | Remove a cell from the notebook |
-| `start_kernel` | Start a Python kernel |
+| `interrupt_kernel` | Interrupt the currently executing cell |
 | `restart_kernel` | Restart kernel with updated dependencies |
-| `get_kernel_status` | Check kernel state |
-| `get_queue_state` | See what's executing and what's queued |
-| `complete_code` | Get code completions from the kernel |
-| `get_history` | Search kernel execution history |
 | `add_dependency` | Add a Python package dependency |
 | `remove_dependency` | Remove a dependency |
 | `get_dependencies` | List current dependencies |

@@ -33,7 +33,7 @@ Blob URLs have a unique **opaque origin** (displayed as `"null"`). Because the o
 The iframe uses restricted sandbox attributes:
 
 ```tsx
-// src/components/isolated/isolated-frame.tsx:137
+// src/components/isolated/isolated-frame.tsx
 const SANDBOX_ATTRS = [
   "allow-scripts",          // Required for widgets
   "allow-downloads",        // Allow file downloads
@@ -69,7 +69,7 @@ it("sandbox does NOT include allow-same-origin", () => {
 The iframe's message handler validates that messages come from the parent window:
 
 ```javascript
-// src/components/isolated/frame-html.ts:161
+// src/components/isolated/frame-html.ts
 window.addEventListener('message', function(event) {
   if (event.source !== window.parent) {
     return;  // Reject messages from other windows
@@ -95,7 +95,7 @@ This prevents other windows/iframes from injecting messages.
 ┌─────────────────────────────────────────────────────────────────┐
 │                     ISOLATED IFRAME (blob:)                      │
 │                                                                  │
-│  CommBridgeClient ←→ IframeWidgetStore ←→ WidgetView/AnyWidget  │
+│  WidgetBridgeClient ←→ WidgetStore ←→ WidgetView/AnyWidget      │
 │                                                                  │
 │  ❌ window.__TAURI__ = undefined                                 │
 │  ❌ window.parent.document → cross-origin error                  │
@@ -109,7 +109,7 @@ This prevents other windows/iframes from injecting messages.
 |-----------|----------|---------|
 | `IsolatedFrame` | `src/components/isolated/isolated-frame.tsx` | React component that manages blob URL lifecycle |
 | `CommBridgeManager` | `src/components/isolated/comm-bridge-manager.ts` | Parent-side: syncs widget state to iframe |
-| `CommBridgeClient` | `src/isolated-renderer/widget-bridge-client.ts` | Iframe-side: receives comm messages |
+| `WidgetBridgeClient` | `src/isolated-renderer/widget-bridge-client.ts` | Iframe-side: receives comm messages (via `createWidgetBridgeClient`) |
 | `frame-html.ts` | `src/components/isolated/frame-html.ts` | Generates bootstrap HTML for iframe |
 | `frame-bridge.ts` | `src/components/isolated/frame-bridge.ts` | Message type definitions |
 
@@ -134,6 +134,10 @@ All communication uses structured `postMessage` calls.
 | `comm_close` | Forward widget destruction |
 | `comm_sync` | Bulk sync all existing models on ready |
 | `bridge_ready` | Signal parent bridge is initialized |
+| `widget_state` | Send widget state to iframe |
+| `ping` | Liveness check |
+| `search` | Trigger in-iframe text search |
+| `search_navigate` | Navigate between search matches |
 
 ### Iframe → Parent
 
@@ -147,6 +151,12 @@ All communication uses structured `postMessage` calls.
 | `link_click` | User clicked a link |
 | `widget_comm_msg` | Widget state update (forward to kernel) |
 | `widget_comm_close` | Widget close request |
+| `pong` | Response to `ping` |
+| `eval_result` | Result of eval'd script |
+| `render_complete` | Content finished rendering |
+| `dblclick` | Double-click event (for cell editing) |
+| `widget_update` | Widget display update |
+| `search_results` | Search match count/position info |
 
 ### Widget Sync Flow
 
@@ -167,12 +177,12 @@ All communication uses structured `postMessage` calls.
 These are security-sensitive and should be reviewed carefully:
 
 ### 1. Sandbox Configuration
-**File:** `src/components/isolated/isolated-frame.tsx:137`
+**File:** `src/components/isolated/isolated-frame.tsx` — `SANDBOX_ATTRS`
 
 The `SANDBOX_ATTRS` constant defines what the iframe can do. Changes here can compromise security.
 
 ### 2. Source Validation
-**File:** `src/components/isolated/frame-html.ts:161`
+**File:** `src/components/isolated/frame-html.ts` — `event.source` check
 
 The `event.source !== window.parent` check prevents message spoofing. This must remain intact.
 
@@ -182,7 +192,7 @@ The `event.source !== window.parent` check prevents message spoofing. This must 
 The `subscribeToModelCustomMessages` method was added to support anywidgets like quak that use custom messages. Without it, widgets would appear to load but not receive kernel data.
 
 ### 4. Type Guard Whitelist
-**File:** `src/components/isolated/frame-bridge.ts:368`
+**File:** `src/components/isolated/frame-bridge.ts` — `isIframeMessage`
 
 The `isIframeMessage` function whitelists valid message types. New message types must be added here.
 
@@ -215,13 +225,10 @@ Tests verify:
 
 Use the test notebook to verify isolation:
 
-```bash
-# Open notebooks/test-isolation.ipynb
-# Run all cells to verify:
-# - window.__TAURI__ is undefined
-# - Parent DOM access throws error
-# - localStorage access throws error
-```
+Open any notebook (e.g. `crates/notebook/fixtures/audit-test/1-vanilla.ipynb`), add a code cell with JavaScript output, and verify:
+- `window.__TAURI__` is undefined in the iframe
+- Parent DOM access throws a cross-origin error
+- `localStorage` access throws a cross-origin error
 
 ### Dev Tools Toggle
 

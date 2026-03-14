@@ -33,7 +33,7 @@ The simplest way to manage packages. Dependencies are stored directly in the not
 
 **Adding packages**: Use the dependency panel in the sidebar to add, remove, or sync packages. UV dependencies use pip-style package names (`pandas`, `numpy>=2.0`). Conda dependencies support conda channels.
 
-**How it's stored**: Dependencies live in the notebook's JSON metadata under `metadata.uv.dependencies` (for UV/pip packages) or `metadata.conda.dependencies` (for conda packages).
+**How it's stored**: Dependencies live in the notebook's JSON metadata under `metadata.runt.uv.dependencies` (for UV/pip packages) or `metadata.runt.conda.dependencies` (for conda packages). Legacy notebooks may use `metadata.uv` / `metadata.conda` directly — these are still read as fallbacks.
 
 ## Working with pyproject.toml
 
@@ -64,8 +64,9 @@ The dependency panel shows pixi dependencies and offers an "Import to notebook" 
 Deno notebooks use the Deno runtime for TypeScript/JavaScript. Unlike Python, Deno manages its own dependencies through import maps and URL imports, so there's no separate environment to create.
 
 **How Deno is obtained:**
-- nteract Desktop first checks if `deno` is on your PATH
-- If not found, nteract Desktop automatically installs Deno from conda-forge (stored in `~/.cache/runt/tools/`)
+- nteract Desktop first checks if a system `deno` 2.x+ is on your PATH
+- If not found, it downloads Deno from GitHub releases (primary method)
+- As a last resort, it falls back to installing Deno from conda-forge via rattler (stored in `~/.cache/runt/tools/`)
 
 This means Deno notebooks work out of the box — you don't need to install Deno manually.
 

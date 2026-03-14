@@ -114,6 +114,7 @@ Length-prefixed binary framing over a single Unix socket (Unix) or named pipe (W
 | `FlushPool` | `Flushed` | Drain and rebuild all envs |
 | `InspectNotebook { notebook_id }` | `NotebookState { ... }` | Debug notebook sync state |
 | `ListRooms` | `RoomsList { rooms }` | List active notebook sync rooms |
+| `ShutdownNotebook { notebook_id }` | `NotebookShutdown { found }` | Shutdown kernel and evict room |
 
 ### Settings.json file watcher
 
@@ -136,6 +137,10 @@ runt daemon restart    # Restart the daemon
 runt daemon logs -f    # Tail daemon logs
 runt daemon install    # Install as system service (system daemon only)
 runt daemon uninstall  # Uninstall system service (system daemon only)
+runt daemon doctor     # Diagnose installation issues (--fix to auto-repair)
+runt daemon flush      # Flush and rebuild all pooled environments
+runt daemon shutdown   # Request graceful daemon shutdown via IPC
+runt daemon ping       # Health-check the running daemon
 ```
 
 **Machine-readable output** (`--json`):
@@ -233,14 +238,20 @@ Cell ordering uses fractional indexing via the `position` field. Cells are sorte
 
 ### Room architecture
 
-```rust
-pub struct NotebookRoom {
-    pub doc: Arc<RwLock<NotebookDoc>>,
-    pub changed_tx: broadcast::Sender<()>,
-    pub persist_path: PathBuf,
-    pub active_peers: AtomicUsize,
-}
-```
+`NotebookRoom` (defined in `crates/runtimed/src/notebook_sync_server.rs`) has 20+ fields — key ones:
+
+| Field | Type | Role |
+|-------|------|------|
+| `doc` | `Arc<RwLock<NotebookDoc>>` | Canonical Automerge document |
+| `kernel` | `Arc<Mutex<Option<RoomKernel>>>` | Daemon-owned kernel process |
+| `blob_store` | `Arc<BlobStore>` | Content-addressed output storage |
+| `trust_state` | `Arc<RwLock<TrustState>>` | HMAC trust for auto-launch |
+| `notebook_path` | `PathBuf` | Notebook file path (= notebook_id) |
+| `comm_state` | `Arc<CommState>` | Active widget comm channels |
+| `presence` | `Arc<RwLock<PresenceState>>` | Cursor/selection peer state |
+| `persist_tx` | `watch::Sender<Option<Vec<u8>>>` | Debounced persistence channel |
+
+See source for full definition (includes `working_dir`, `nbformat_attachments`, `auto_launch_at`, `last_self_write`, file watcher shutdown, etc.).
 
 **Room lifecycle**:
 1. First window opens notebook -> daemon acquires room via `get_or_create_room()`, loading persisted doc from disk (or creating fresh)
@@ -378,8 +389,20 @@ Helpers: `send_frame()` / `recv_frame()` for raw binary, `send_json_frame()` / `
 pub enum Handshake {
     Pool,
     SettingsSync,
-    NotebookSync { notebook_id: String },
+    NotebookSync {
+        notebook_id: String,
+        protocol: Option<String>,        // version negotiation (v2 = typed frames)
+        working_dir: Option<String>,      // for untitled notebook project detection
+        initial_metadata: Option<String>, // kernelspec JSON for auto-launch
+    },
     Blob,
+    PoolStateSubscribe,                   // read-only pool error broadcasts
+    OpenNotebook { path: String },        // daemon loads from disk, returns NotebookConnectionInfo
+    CreateNotebook {                      // daemon creates empty room
+        runtime: String,                  // "python" or "deno"
+        working_dir: Option<String>,
+        notebook_id: Option<String>,      // restore hint for previous session
+    },
 }
 ```
 
@@ -391,6 +414,9 @@ The daemon's `route_connection()` validates the preamble first via `recv_preambl
 | `SettingsSync` | Automerge sync messages | Long-lived, bidirectional |
 | `NotebookSync` | Automerge sync messages, room-routed by `notebook_id` | Long-lived, bidirectional |
 | `Blob` | Binary blob writes | Short-lived |
+| `PoolStateSubscribe` | Server pushes `DaemonBroadcast` messages | Long-lived, read-only |
+| `OpenNotebook` | Returns `NotebookConnectionInfo`, then notebook sync | Long-lived |
+| `CreateNotebook` | Returns `NotebookConnectionInfo`, then notebook sync | Long-lived |
 
 ### Blob channel protocol
 
@@ -481,7 +507,7 @@ Outputs flow through the Automerge doc, not Tauri events:
 4. Frontend receives `notebook:frame` → WASM `receive_frame()` demuxes and merges into local doc
 5. `materialize-cells.ts` converts the updated doc into React cell state
 
-The `onOutput` callback in `App.tsx` is set to a no-op (`() => {}`) — outputs are rendered from Automerge sync, not broadcasts. The daemon still sends `Output` broadcasts and `useDaemonKernel.ts` still processes them (resolves blob manifests), but the resolved output is discarded by the no-op callback.
+The `onOutput` callback is omitted entirely from the `useDaemonKernel` call — when undefined, the hook skips Output broadcast processing (including blob resolution). Outputs are rendered from Automerge sync, not broadcasts.
 
 ### Save and format-on-save
 
@@ -742,14 +768,22 @@ runtimed (daemon)
 
 **Why both?** Automerge provides persistence and late-joiner sync. Broadcasts provide sub-50ms UI updates for kernel status during execution.
 
-Broadcast types:
-- `KernelStatus { status }` — idle/busy/starting
-- `Output { cell_id, output }` — daemon sends these and `useDaemonKernel.ts` processes them, but the `onOutput` rendering callback is a no-op; outputs are rendered from Automerge sync instead
+Broadcast types (see `NotebookBroadcast` in `crates/notebook-protocol/src/protocol.rs`):
+- `KernelStatus { status, cell_id }` — idle/busy/starting/error/shutdown, with optional triggering cell
 - `ExecutionStarted { cell_id, execution_count }` — clear outputs, show spinner
-- `ClearOutputs { cell_id }` — explicit clear request
-- `DisplayUpdate { cell_id, output }` — update_display_data (widget progress bars)
+- `Output { cell_id, output_type, output_json, output_index }` — streamed output; `output_index` distinguishes append vs update-in-place
+- `DisplayUpdate { display_id, data, metadata }` — update_display_data (widget progress bars); keyed by `display_id`, no `cell_id`
+- `ExecutionDone { cell_id }` — execution completed
+- `OutputsCleared { cell_id }` — outputs cleared for a cell
+- `QueueChanged { executing, queued }` — execution queue state
+- `KernelError { error }` — launch failure or crash
+- `Comm { msg_type, content, buffers }` — ipywidgets protocol (comm_open/msg/close)
+- `CommSync { comms }` — initial widget state for newly connected clients
+- `FileChanged { cells, metadata }` — external .ipynb edits merged into Automerge doc
+- `EnvProgress { env_type, phase }` — rich environment setup progress (repodata, solve, download, link)
+- `EnvSyncState { in_sync, diff }` — notebook metadata vs launched config drift
 
-> **Note:** `Output` broadcasts are still sent by the daemon and processed by `useDaemonKernel.ts` (blob resolution runs), but the `onOutput` rendering callback in `App.tsx` is a no-op to avoid duplicates with Automerge-synced outputs (no dedup IDs). All output **rendering** is driven by the Automerge sync channel (`notebook:frame` → WASM `receive_frame()` → `materializeCells`). Issue #557 was resolved by making sync the sole output rendering path.
+> **Note:** `Output` broadcasts are still sent by the daemon, but `onOutput` is omitted from the `useDaemonKernel` call so the hook skips broadcast processing entirely. All output **rendering** is driven by the Automerge sync channel (`notebook:frame` → WASM `receive_frame()` → `materializeCells`). Issue #557 was resolved by making sync the sole output rendering path.
 
 ### Project file auto-detection
 
@@ -855,9 +889,9 @@ For output manifests, the `output_type` field provides structural versioning. Ne
 
 ### Output Flow
 
-Output **rendering** is driven exclusively by Automerge sync: the daemon writes outputs to the notebook doc, produces a sync message, and the Tauri relay forwards raw bytes to the frontend WASM where `materialize-cells.ts` renders them. The daemon still sends `Output` broadcasts (and `useDaemonKernel.ts` processes them), but the `onOutput` rendering callback is a no-op.
+Output **rendering** is driven exclusively by Automerge sync: the daemon writes outputs to the notebook doc, produces a sync message, and the Tauri relay forwards raw bytes to the frontend WASM where `materialize-cells.ts` renders them. The `onOutput` callback is omitted from the `useDaemonKernel` call, so the hook skips Output broadcast processing entirely (including blob resolution).
 
-Output latency is bounded by the Automerge sync round-trip rather than direct broadcast delivery. Re-enabling `onOutput` for lower-latency streaming would require dedup IDs to prevent duplicates with sync-delivered outputs. Issue #557 was resolved by making sync the sole output rendering path.
+Output latency is bounded by the Automerge sync round-trip rather than direct broadcast delivery. Providing an `onOutput` callback would re-enable broadcast processing for lower-latency streaming, but would require dedup IDs to prevent duplicates with sync-delivered outputs. Issue #557 was resolved by making sync the sole output rendering path.
 
 ### Multi-Window Widget Sync (#276)
 
@@ -885,4 +919,4 @@ Widgets only render in the window that was active when the widget was created. S
 | **5** | Local-first Automerge notebook sync | Implemented — frontend owns local Automerge doc via `runtimed-wasm` WASM, cell mutations happen in WASM, sync to daemon via binary messages |
 | **6** | Output store (manifests, ContentRef, inlining) | Implemented (PR #237) |
 | **7** | ipynb round-tripping | Future (outputs already persist in nbformat) |
-| **8** | Daemon-owned kernels | Implemented (PRs #258, #259, #267, #271, #275) — widgets work single-window |
+| **8** | Daemon-owned kernels | Implemented (PRs #258, #259, #265, #267, #271) — widgets work single-window |

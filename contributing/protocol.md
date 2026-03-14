@@ -75,7 +75,7 @@ The **Tauri relay** is a transparent byte pipe for Automerge sync frames — it 
 
 ### 1. Opening a notebook
 
-The frontend invokes a Tauri command (`open_notebook_in_new_window` or `create_notebook`), which causes the relay to connect to the daemon's Unix socket and send a handshake frame.
+The frontend invokes a Tauri command (`open_notebook_in_new_window`), which causes the relay to connect to the daemon's Unix socket and send a handshake frame. New notebook creation goes through Rust menu events (`spawn_new_notebook()` → `create_notebook_window_for_daemon()`), not a frontend `invoke()`.
 
 ### 2. Handshake
 
@@ -108,7 +108,7 @@ The daemon responds with a `NotebookConnectionInfo`:
 
 ### 3. Initial Automerge sync
 
-After the handshake, both sides exchange Automerge sync messages until their documents converge. The frontend starts with an empty document — all notebook state comes from the daemon during this sync phase. A 2-second timeout guards against stalls.
+After the handshake, both sides exchange Automerge sync messages until their documents converge. The frontend starts with an empty document — all notebook state comes from the daemon during this sync phase. A 2-second timeout guards against the initial socket connection; the sync loop itself uses a 100ms per-frame timeout to drain incoming frames.
 
 ### 4. Steady state
 
@@ -189,8 +189,9 @@ Requests are one-shot JSON messages sent from the client to the daemon. Each req
 | `RunAllCells` | Execute all code cells in order |
 | `SaveNotebook` | Persist the Automerge doc to `.ipynb` on disk |
 | `SyncEnvironment` | Hot-install packages into the running kernel's environment |
+| `SendComm { message }` | Send a comm message to the kernel (widget interactions) |
 | `Complete { code, cursor_pos }` | Get code completions from the kernel |
-| `GetHistory { pattern, n }` | Search kernel input history |
+| `GetHistory { pattern, n, unique }` | Search kernel input history |
 | `GetKernelInfo` | Query current kernel status |
 | `GetQueueState` | Query the execution queue |
 
@@ -200,10 +201,9 @@ Requests are one-shot JSON messages sent from the client to the daemon. Each req
 |----------|---------|
 | `KernelLaunched { env_source, ... }` | Kernel started, includes environment origin label |
 | `CellQueued` | Cell added to execution queue |
-| `ExecutionDone` | Cell finished executing |
 | `NotebookSaved` | File written to disk |
-| `CompletionResult { matches, ... }` | Code completion results |
-| `Error { message }` | Something went wrong |
+| `CompletionResult { items, cursor_start, cursor_end }` | Code completion results (`items: Vec<CompletionItem>`) |
+| `Error { error }` | Something went wrong |
 
 ### Request flow through the stack
 
@@ -226,17 +226,17 @@ Broadcasts are daemon-initiated messages pushed to all connected clients for a n
 
 | Broadcast | Purpose |
 |-----------|---------|
-| `KernelStatus { status }` | Kernel state changed: `"starting"`, `"idle"`, `"busy"`, `"error"`, `"shutdown"` |
-| `ExecutionStarted { cell_id }` | A cell began executing |
-| `Output { cell_id, output }` | Cell produced output (stdout, display data, error) |
-| `DisplayUpdate { display_id, output }` | Update an existing output by display ID |
-| `ExecutionDone { cell_id, ... }` | Cell execution completed with timing and execution count |
-| `QueueChanged { queue }` | Execution queue state changed |
-| `KernelError { message }` | Kernel crashed or failed to launch |
+| `KernelStatus { status, cell_id }` | Kernel state changed: `"starting"`, `"idle"`, `"busy"`, `"error"`, `"shutdown"` |
+| `ExecutionStarted { cell_id, execution_count }` | A cell began executing |
+| `Output { cell_id, output_type, output_json, output_index }` | Cell produced output (stdout, display data, error) |
+| `DisplayUpdate { display_id, data, metadata }` | Update an existing output by display ID |
+| `ExecutionDone { cell_id }` | Cell execution completed |
+| `QueueChanged { executing, queued }` | Execution queue state changed |
+| `KernelError { error }` | Kernel crashed or failed to launch |
 | `Comm { msg_type, ... }` | Jupyter comm message (widget open/msg/close) |
 | `FileChanged` | External file change merged into the doc |
-| `EnvProgress { stage, message }` | Environment setup progress |
-| `EnvSyncState { diff }` | Notebook dependencies drifted from launched kernel config |
+| `EnvProgress { env_type, phase }` | Environment setup progress (`phase` is a flattened `EnvProgressPhase`) |
+| `EnvSyncState { in_sync, diff }` | Notebook dependencies drifted from launched kernel config |
 
 ### Broadcast flow
 
@@ -248,24 +248,35 @@ Kernel produces output
   → Frame type 0x03 sent to all connected clients
   → Relay receives, emits "notebook:frame" Tauri event
   → WASM handle.receive_frame() demuxes → Broadcast event
-  → useAutomergeNotebook re-emits as "notebook:broadcast" webview event
-  → useDaemonKernel hook processes the broadcast
+  → useAutomergeNotebook dispatches via emitBroadcast() (in-memory frame bus)
+  → useDaemonKernel subscribeBroadcast() callback processes the broadcast
   → UI updates
 ```
 
-## Tauri Event Bridge
+## Tauri Event Bridge & Frame Bus
 
-The relay and frontend use these Tauri events:
+The relay and frontend use these Tauri events for cross-process communication:
 
 | Event | Direction | Payload | Purpose |
 |-------|-----------|---------|---------|
 | `notebook:frame` | Relay → Frontend | `number[]` (typed frame bytes) | All daemon frames (sync, broadcast, presence) via unified pipe |
-| `notebook:broadcast` | Frontend → Frontend | JSON | Re-emitted by `useAutomergeNotebook` after WASM demux; consumed by `useDaemonKernel`, `useEnvProgress` |
-| `notebook:presence` | Frontend → Frontend | JSON | Re-emitted by `useAutomergeNotebook` after WASM CBOR decode; consumed by `usePresence` |
 | `daemon:ready` | Relay → Frontend | `DaemonReadyPayload` | Connection established, ready to bootstrap |
 | `daemon:disconnected` | Relay → Frontend | — | Connection to daemon lost |
 
 Outgoing frames from the frontend use `invoke("send_frame", { frameData })` where `frameData` is `number[]` with the first byte as the frame type. Only `0x00` (AutomergeSync) and `0x04` (Presence) are valid outgoing types.
+
+### In-memory frame bus
+
+After WASM `receive_frame()` demuxes typed frames, broadcast and presence payloads are dispatched via an in-memory pub/sub bus (`notebook-frame-bus.ts`) instead of Tauri webview events. This avoids an event loop round-trip:
+
+| Function | Purpose |
+|----------|---------|
+| `emitBroadcast(payload)` | Called by `useAutomergeNotebook` after WASM demux for type `0x03` frames |
+| `subscribeBroadcast(cb)` | Used by `useDaemonKernel`, `useEnvProgress` to receive kernel/env broadcasts |
+| `emitPresence(payload)` | Called by `useAutomergeNotebook` after WASM CBOR decode for type `0x04` frames |
+| `subscribePresence(cb)` | Used by `usePresence`, `cursor-registry` to receive remote cursor updates |
+
+All dispatch is synchronous and in-process — no serialization or Tauri event loop hop.
 
 ## Output Storage
 
@@ -281,7 +292,8 @@ Cell outputs use a blob manifest system rather than inline data. When the daemon
 | File | Role |
 |------|------|
 | `crates/runtimed/src/connection.rs` | Frame protocol implementation (length-prefixed, typed frames) |
-| `crates/runtimed/src/protocol.rs` | Message type definitions (Request, Response, Broadcast enums) |
+| `crates/notebook-protocol/src/protocol.rs` | Canonical message type definitions (Request, Response, Broadcast enums) — shared crate |
+| `crates/runtimed/src/protocol.rs` | Daemon-internal protocol types, plus re-exports from `notebook-protocol` |
 | `crates/runtimed/src/notebook_sync_client.rs` | Client-side connection, channels, sync handle |
 | `crates/runtimed/src/notebook_sync_server.rs` | Daemon-side room management, kernel dispatch, sync loop |
 | `crates/runtimed/src/kernel_manager.rs` | Kernel process lifecycle, execution queue, output interception |

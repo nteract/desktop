@@ -88,13 +88,12 @@ Mostly handled by CI for preview releases. Use locally only when testing:
 ## Build Order
 
 The UI must be built before Rust because:
-- `crates/sidecar` embeds assets from `apps/sidecar/dist/` at compile time via rust-embed
 - `crates/notebook` embeds assets from `apps/notebook/dist/` via Tauri
 
 The xtask commands handle this automatically. If building manually:
 
 ```bash
-pnpm build          # Build all UIs (sidecar, notebook — isolated-renderer built inline)
+pnpm build          # Build notebook UI (isolated-renderer built inline)
 cargo build         # Build Rust
 ```
 
@@ -104,11 +103,11 @@ cargo build         # Build Rust
 
 ## Test Notebooks
 
-The `notebooks/` directory has test files:
+Test notebooks live in `crates/notebook/fixtures/audit-test/` and sample notebooks in `crates/notebook/resources/sample-notebooks/`.
 
 ```bash
 cargo xtask build
-./target/debug/notebook notebooks/test-isolation.ipynb
+./target/debug/notebook crates/notebook/fixtures/audit-test/test-isolation.ipynb
 ```
 
 ## Daemon Development

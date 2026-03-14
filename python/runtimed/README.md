@@ -100,8 +100,8 @@ client.list_rooms()  # Active notebooks
 
 ## Requirements
 
-- runtimed daemon running (`runt daemon start`)
-- Python 3.9+
+- runtimed daemon running (see [CLAUDE.md](../../CLAUDE.md) — use `cargo xtask dev-daemon` for development or `cargo xtask install-daemon` for the system service)
+- Python 3.10+
 
 ## Documentation
 

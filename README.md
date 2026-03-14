@@ -8,12 +8,13 @@ Built on [runtimelib](https://crates.io/crates/runtimelib) and [jupyter-protocol
 
 Download the latest release from [GitHub Releases](https://github.com/nteract/desktop/releases).
 
-The desktop app bundles everything — `runt` CLI, `runtimed` daemon, and `sidecar`.
+The desktop app bundles everything — `runt` CLI and `runtimed` daemon.
 
-The Python bindings are available on PyPI:
+The Python bindings and MCP server are available on PyPI:
 
 ```bash
 pip install runtimed
+pip install nteract
 ```
 
 ## What's in here
@@ -23,7 +24,6 @@ pip install runtimed
 | `nteract` | Desktop notebook editor (Tauri + React) |
 | `runtimed` | Background daemon — environment pools, notebook sync, kernel execution |
 | `runt` | CLI for managing kernels, notebooks, and the daemon |
-| `sidecar` | Viewer for Jupyter kernel outputs |
 | `runtimed` (PyPI) | Python bindings for the daemon |
 
 ## MCP Server
@@ -70,8 +70,7 @@ nteract/desktop
 │   └── lib/
 │       └── utils.ts       # cn() and other utilities
 ├── apps/                   # App entry points
-│   ├── notebook/          # Notebook Tauri frontend
-│   └── sidecar/           # Sidecar WebView frontend
+│   └── notebook/          # Notebook Tauri frontend
 ├── crates/                 # Rust code
 │   ├── runt/              # CLI binary
 │   ├── runtimed/          # Background daemon
@@ -79,7 +78,8 @@ nteract/desktop
 │   ├── runtimed-wasm/     # WASM Automerge bindings for frontend (same automerge crate as daemon)
 │   ├── notebook/          # Notebook Tauri app
 │   ├── notebook-doc/      # Shared Automerge document operations (cells, metadata, sync)
-│   ├── sidecar/           # Sidecar wry/tao app
+│   ├── notebook-protocol/ # Notebook wire protocol types
+│   ├── notebook-sync/     # Notebook sync layer
 │   ├── tauri-jupyter/     # Shared Tauri/Jupyter utilities
 │   ├── kernel-launch/     # Shared kernel launching API
 │   ├── kernel-env/        # Environment progress reporting
@@ -127,14 +127,12 @@ cargo xtask build
 
 ### Build order
 
-The UI must be built before Rust because:
-- `crates/sidecar` embeds assets from `apps/sidecar/dist/` at compile time via [rust-embed](https://crates.io/crates/rust-embed)
-- `crates/notebook` embeds assets from `apps/notebook/dist/` via Tauri
+The UI must be built before Rust because `crates/notebook` embeds assets from `apps/notebook/dist/` via Tauri.
 
 ### Common commands
 
 ```bash
-pnpm build                          # Build all UIs
+pnpm build                          # Build notebook UI
 cargo test                          # Run Rust tests
 pnpm test:run                       # Run JS tests
 cargo fmt                           # Format Rust
