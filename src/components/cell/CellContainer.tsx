@@ -1,6 +1,13 @@
-import { forwardRef, type ReactNode } from "react";
+import {
+  forwardRef,
+  type ReactNode,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+} from "react";
 import { cn } from "@/lib/utils";
 import { type GutterColorConfig, getGutterColors } from "./gutter-colors";
+import { scrollElementIntoViewIfNeeded } from "./scroll-into-view-if-needed";
 
 interface CellContainerProps {
   id: string;
@@ -57,6 +64,34 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
     },
     ref,
   ) => {
+    const cellRef = useRef<HTMLDivElement | null>(null);
+    const previousFocusedRef = useRef<boolean | undefined>(undefined);
+
+    useImperativeHandle(ref, () => cellRef.current as HTMLDivElement, []);
+
+    useEffect(() => {
+      const previouslyFocused = previousFocusedRef.current;
+      previousFocusedRef.current = isFocused;
+
+      if (!isFocused || previouslyFocused === isFocused) {
+        return;
+      }
+
+      const cellElement = cellRef.current;
+      const hovered =
+        cellElement?.parentElement?.querySelector(":hover") === cellElement;
+
+      if (!cellElement || hovered) {
+        return;
+      }
+
+      const frameId = requestAnimationFrame(() => {
+        scrollElementIntoViewIfNeeded(cellElement);
+      });
+
+      return () => cancelAnimationFrame(frameId);
+    }, [isFocused]);
+
     const colors = getGutterColors(cellType, customGutterColors);
     const ribbonColor = isFocused
       ? colors.ribbon.focused
@@ -72,7 +107,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
 
     return (
       <div
-        ref={ref}
+        ref={cellRef}
         data-slot="cell-container"
         data-cell-id={id}
         data-cell-type={cellType}

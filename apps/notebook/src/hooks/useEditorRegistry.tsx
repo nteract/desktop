@@ -1,5 +1,6 @@
 import { EditorView } from "@codemirror/view";
 import { createContext, type ReactNode, useCallback, useContext } from "react";
+import { scrollElementIntoViewIfNeeded } from "@/components/cell/scroll-into-view-if-needed";
 import { logger } from "../lib/logger";
 
 interface EditorRegistryContextType {
@@ -51,8 +52,7 @@ export function EditorRegistryProvider({ children }: { children: ReactNode }) {
       });
       view.focus();
 
-      // Scroll cell into view
-      cellElement.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      scrollElementIntoViewIfNeeded(cellElement as HTMLElement);
     },
     [],
   );

@@ -294,6 +294,19 @@ export function CodeCell({
     [searchQuery, searchActiveOffset, remoteCursorsExt, presenceSenderExt],
   );
 
+  useEffect(() => {
+    if (!isFocused || isSourceHidden) return;
+
+    const frameId = requestAnimationFrame(() => {
+      const view = editorRef.current?.getEditor();
+      if (!view) return;
+
+      view.focus();
+    });
+
+    return () => cancelAnimationFrame(frameId);
+  }, [isFocused, isSourceHidden]);
+
   const handleExecute = useCallback(() => {
     handleExecuteWithClear();
   }, [handleExecuteWithClear]);
