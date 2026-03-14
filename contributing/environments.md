@@ -408,7 +408,8 @@ All walk-up functions (both unified and individual) stop at `.git` boundaries an
 
 Each per-format module provides:
 - A parse function to extract dependencies
-- Tauri commands for frontend detection (`detect_*`) and dependency listing (`get_*_dependencies`)
+- Tauri commands for frontend detection (`detect_*`)
+- Dependency listing (`get_*_dependencies`) for pyproject.toml and environment.yml (pixi does not have a `get_pixi_dependencies` command — only `detect_pixi_toml` and `import_pixi_dependencies`)
 - Import commands (`import_*_dependencies`) for pyproject.toml and pixi.toml (environment.yml does not have an import command)
 
 ## Notebook Metadata Schema
@@ -456,7 +457,7 @@ Dependencies are signed with HMAC-SHA256 to prevent untrusted code execution on 
 - **Signed content**: Canonical JSON of `metadata.uv` + `metadata.conda` (not cell contents or outputs)
 - **Signature format**: `"hmac-sha256:{hex_digest}"` stored in notebook metadata
 - **Machine-specific**: The key is per-machine, so every shared notebook is untrusted on the recipient's machine
-- **Verification**: `trust.rs:verify_signature()` returns `TrustStatus`: Trusted, Untrusted, SignatureInvalid, or NoDependencies
+- **Verification**: `trust.rs:verify_signature()` returns `bool`. The higher-level `verify_notebook_trust()` returns `TrustInfo` (containing a `TrustStatus`: Trusted, Untrusted, SignatureInvalid, or NoDependencies)
 
 Changes to the dependency metadata structure require updating the signing logic in `crates/notebook/src/trust.rs`.
 

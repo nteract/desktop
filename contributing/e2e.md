@@ -20,7 +20,7 @@ The `e2e/dev.sh` script handles everything:
 # Step by step:
 ./e2e/dev.sh build       # Build with WebDriver support (embeds frontend)
 ./e2e/dev.sh start       # Start app with WebDriver server (foreground)
-./e2e/dev.sh test        # Smoke test (notebook-execution only)
+./e2e/dev.sh test        # Smoke test (smoke.spec.js only)
 ./e2e/dev.sh test all    # All non-fixture specs
 ./e2e/dev.sh stop        # Stop the running app
 ```
@@ -35,7 +35,7 @@ Fixture tests open a specific notebook and get a fresh app instance per test:
 # Run a single fixture test
 ./e2e/dev.sh test-fixture \
   crates/notebook/fixtures/audit-test/1-vanilla.ipynb \
-  e2e/specs/vanilla-startup.spec.js
+  e2e/specs/prewarmed-uv.spec.js
 
 # Run all fixture tests (fresh app per test, exits 1 if any fail)
 ./e2e/dev.sh test-fixtures
@@ -50,11 +50,13 @@ Fixture tests open a specific notebook and get a fresh app instance per test:
 | `start` | Start app with WebDriver server (foreground) |
 | `stop` | Stop the running app |
 | `restart` | Stop + start |
-| `test [spec\|all]` | Run E2E tests (default: notebook-execution only) |
+| `test [spec\|all]` | Run E2E tests (default: smoke.spec.js only) |
 | `test-fixture <nb> <spec>` | Run a fixture test (fresh app per test) |
 | `test-fixtures` | Run all fixture tests |
+| `test-untitled-pyproject` | Test untitled notebook with pyproject.toml (CWD = fixture dir) |
 | `cycle` | Build + start + test in one shot |
 | `status` | Check if WebDriver server is running |
+| `daemon` | Check if E2E daemon is running |
 | `session` | Create a session and print ID |
 | `exec 'js'` | Execute JS in the app |
 
@@ -106,12 +108,12 @@ Use a regular test when:
 | `3-conda-inline.ipynb` | `conda-inline.spec.js` | Conda inline dependency resolution |
 | `10-deno.ipynb` | `deno.spec.js` | Deno kernel start + TypeScript execution |
 | `pyproject-project/5-pyproject.ipynb` | `uv-pyproject.spec.js` | pyproject.toml environment detection |
+| *(untitled)* | `untitled-pyproject.spec.js` | pyproject.toml detection from CWD (requires `test-untitled-pyproject`) |
 
 **Regular specs** (run against default app, not fixtures):
 - `smoke.spec.js` — Basic cell execution and output
 - `tab-completion.spec.js` — Tab completion in code cells
 - `cell-visibility.spec.js` — Source/output visibility toggles
-- `untitled-pyproject.spec.js` — Untitled notebook in pyproject.toml directory
 
 Multiple specs can reuse the same fixture notebook — each gets its own fresh app instance.
 
@@ -196,7 +198,7 @@ import {
 | Helper | What it does |
 |--------|-------------|
 | `waitForAppReady()` | Waits for the toolbar to appear (15s). Use in every `before()` hook. |
-| `waitForKernelReady()` | Waits for kernel to reach `idle` or `busy` (30s). Superset of `waitForAppReady()`. |
+| `waitForKernelReady()` | Waits for kernel to reach `idle` or `busy` (60s). Superset of `waitForAppReady()`. |
 | `executeFirstCell()` | Focuses the first code cell's editor and hits Shift+Enter. Returns the cell element. |
 | `waitForCellOutput(cell, timeout?)` | Waits for stream output to appear in a cell. Returns the text. |
 | `waitForOutputContaining(cell, text, timeout?)` | Waits for stream output containing specific text. Returns the full text. |
@@ -514,7 +516,7 @@ Configuration is in `e2e/wdio.conf.js`:
 | Operation | Timeout | Notes |
 |-----------|---------|-------|
 | App load (`waitForAppReady`) | 15s | Toolbar mounting |
-| Kernel startup (`waitForKernelReady`) | 30s | First kernel start can be slow |
+| Kernel startup (`waitForKernelReady`) | 60s | First kernel start can be slow |
 | Cell execution | 120s (default) | Environment creation on first run |
 | Element appear | 5s | DOM rendering |
 | Button clickable | 5s | React hydration |
@@ -579,7 +581,7 @@ Paths are relative to the project root. `dev.sh` will list available fixtures an
 
 ```bash
 # Correct:
-./e2e/dev.sh test-fixture crates/notebook/fixtures/audit-test/1-vanilla.ipynb e2e/specs/vanilla-startup.spec.js
+./e2e/dev.sh test-fixture crates/notebook/fixtures/audit-test/1-vanilla.ipynb e2e/specs/prewarmed-uv.spec.js
 
 # Wrong — don't use absolute paths or paths from other directories:
 ./e2e/dev.sh test-fixture /Users/me/runt/crates/notebook/fixtures/audit-test/1-vanilla.ipynb ...

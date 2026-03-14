@@ -20,9 +20,11 @@ Rust types use `#[derive(TS)]` and `#[ts(export)]` attributes:
 ```rust
 use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
 #[ts(export)]
 pub enum ThemeMode {
+    #[default]
     System,
     Light,
     Dark,
@@ -77,7 +79,7 @@ The ts-rs procedural macro exports types during test compilation. Generated file
 1. Add the `ts-rs` dependency to your crate's `Cargo.toml`:
    ```toml
    [dependencies]
-   ts-rs = { version = "10", features = ["serde-compat"] }
+   ts-rs = { version = "12", features = ["serde-compat"] }
    ```
 
 2. Annotate your type:

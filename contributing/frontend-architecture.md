@@ -11,7 +11,7 @@ This guide explains the frontend code organization and how shared components rel
 │   ├── components/
 │   │   ├── cell/                 ← Cell container, controls, execution count
 │   │   ├── editor/               ← CodeMirror wrappers, extensions, themes
-│   │   ├── isolated/             ← Iframe security isolation (IsolatedFrame, CommBridge)
+│   │   ├── isolated/             ← Iframe security isolation (IsolatedFrame, CommBridgeManager)
 │   │   ├── outputs/              ← Output renderers (MediaRouter, AnsiOutput, etc.)
 │   │   ├── widgets/              ← ipywidgets and anywidget implementations
 │   │   └── ui/                   ← shadcn components (Button, Dialog, etc.)
@@ -29,8 +29,7 @@ This guide explains the frontend code organization and how shared components rel
 │   │   ├── App.tsx               ← Root component
 │   │   └── types.ts              ← App types
 │   │
-│   └── sidecar/src/              ← Standalone output viewer for REPL use
-│                                   (embeds via rust-embed in crates/sidecar/)
+
 ```
 
 ## Path Aliases
@@ -52,7 +51,7 @@ import { useDaemonKernel } from "~/hooks/useDaemonKernel";  // app-specific
 
 **Put code in `src/` (shared) when:**
 - It's a pure UI component with no Tauri/daemon dependencies
-- It could be reused by sidecar or future apps
+- It could be reused by future apps
 - It's a generic utility (cn(), theme helpers)
 
 **Put code in `apps/notebook/src/` when:**
@@ -75,9 +74,9 @@ import { useDaemonKernel } from "~/hooks/useDaemonKernel";  // app-specific
 
 CodeMirror integration with Jupyter-specific extensions:
 - `codemirror-editor.tsx` — Main editor component
-- `extensions/` — Keybindings, line numbers, bracket matching
-- `languages/` — Python, Markdown, SQL syntax
-- `themes/` — Light and dark themes
+- `extensions.ts` — Keybindings, line numbers, bracket matching
+- `languages.ts` — Python, Markdown, SQL syntax
+- `themes.ts` — Light and dark themes
 
 ### Outputs (`src/components/outputs/`)
 
@@ -88,6 +87,7 @@ CodeMirror integration with Jupyter-specific extensions:
 | `ImageOutput` | `image/png`, `image/jpeg`, etc. |
 | `MarkdownOutput` | `text/markdown` |
 | `JsonOutput` | `application/json` |
+| `SvgOutput` | `image/svg+xml` |
 | `MediaRouter` | Dispatches to appropriate renderer |
 
 ### Widgets (`src/components/widgets/`)
@@ -123,8 +123,9 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
 │                          sync_applied ─┘          │         │   │
 │                          ▼                        │         │   │
 │                   ┌──────────────┐                │         │   │
-│                   │ materialize- │    "notebook:   │  "notebook: │
-│                   │ Cells()      │    broadcast"   │  presence"  │
+│                   │cellSnapshots-│    "notebook:   │  "notebook: │
+│                   │ToNotebook-   │    broadcast"   │  presence"  │
+│                   │Cells()       │                 │             │
 │                   └──────┬───────┘        │         │       │   │
 │                          │                ▼         │       │   │
 │                          │        ┌──────────────┐  │       │   │
@@ -144,7 +145,7 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
 ```
 
 1. **useAutomergeNotebook** — Single ingress point. Listens for `notebook:frame`, demuxes via WASM `receive_frame()`, applies sync locally, re-emits `notebook:broadcast` and `notebook:presence` for downstream hooks
-2. **materializeCells()** — Converts WASM cell snapshots to React-friendly objects on sync changes
+2. **cellSnapshotsToNotebookCells()** / **cellSnapshotsToNotebookCellsSync()** — Converts WASM cell snapshots to React-friendly objects on sync changes
 3. **useDaemonKernel / useEnvProgress** — Consume `notebook:broadcast` events for kernel status, outputs, and environment progress
 4. **usePresence** — Consumes `notebook:presence` events for remote cursor/selection state
 

@@ -4,13 +4,15 @@
 
 | Stream | Tag | Trigger | Destination |
 |--------|-----|---------|-------------|
-| **Stable** | `v{version}-stable.{sha}` | Tag push (`v*`) or manual | GitHub Releases |
-| **Nightly** | `v{version}-nightly.{sha}` | Cron (daily, 24h cadence) or manual | GitHub Pre-releases |
+| **Stable** | `v{version}-stable.{timestamp}` | Tag push (`v*`) or manual | GitHub Releases |
+| **Nightly** | `v{version}-nightly.{timestamp}` | Cron (daily, 24h cadence) or manual | GitHub Pre-releases |
 | **Python package** | `python-v{semver}` | Manual tag push | PyPI + GitHub Releases |
+
+Timestamps are UTC in `YYYYMMDDHHMM` format, e.g. `v2.0.0-stable.202507010900`.
 
 ## Desktop App (nteract)
 
-The desktop app, `runt` CLI, `runtimed` daemon, and `sidecar` are all built and released together via reusable workflow `.github/workflows/release-common.yml`, invoked by `.github/workflows/release-stable.yml` and `.github/workflows/release-nightly.yml`.
+The desktop app, `runt` CLI, and `runtimed` daemon are all built and released together via reusable workflow `.github/workflows/release-common.yml`, invoked by `.github/workflows/release-stable.yml` and `.github/workflows/release-nightly.yml`.
 
 Stable releases run when a `v*` tag is pushed (or manually), and nightly pre-releases run every 24 hours. Both can also be triggered manually.
 
@@ -18,27 +20,26 @@ Stable releases run when a `v*` tag is pushed (or manually), and nightly pre-rel
 
 | Platform | File |
 |----------|------|
-| macOS ARM64 (Apple Silicon) | `nteract-darwin-arm64.dmg` |
-| macOS x64 (Intel) | `nteract-darwin-x64.dmg` |
-| Windows x64 | `nteract-windows-x64.exe` |
-| Linux x64 | `nteract-linux-x64.AppImage` |
+| macOS ARM64 (Apple Silicon) | `nteract-{channel}-darwin-arm64.dmg` |
+| Windows x64 | `nteract-{channel}-windows-x64.exe` |
+| Linux x64 | `nteract-{channel}-linux-x64.AppImage` |
+| Linux x64 | `nteract-{channel}-linux-x64.deb` |
 | CLI (macOS ARM64) | `runt-darwin-arm64` |
-| CLI (macOS x64) | `runt-darwin-x64` |
 | CLI (Linux x64) | `runt-linux-x64` |
 
 macOS builds are signed and notarized. Windows builds are not code signed.
 
 ### Crate publishing
 
-`runt-cli` and `sidecar` are **not published to crates.io** (`publish = false`). Sidecar embeds UI assets from `apps/sidecar/dist/` via `rust-embed`, which requires files outside the crate directory.
+`runt-cli`, `runtimed-py`, and `xtask` are **not published to crates.io** (`publish = false`).
 
-## Python Package (runtimed)
+## Python Packages (runtimed, nteract)
 
-The `runtimed` Python package provides bindings for the daemon and is released separately.
+The `runtimed` and `nteract` Python packages are released separately.
 
 ### 1. Bump the version
 
-Edit `python/runtimed/pyproject.toml` and update the `version` field.
+Edit `python/runtimed/pyproject.toml` and `python/nteract/pyproject.toml` and update the `version` field in each.
 
 ### 2. Create a PR
 
@@ -52,9 +53,9 @@ git push origin python-v<version>
 ```
 
 The `python-package.yml` workflow triggers on `python-v*` tags and will:
-- Build wheels for macOS (arm64 + x64)
+- Build wheels for macOS arm64 and Linux x64
 - Publish to PyPI via trusted publishing (OIDC)
-- Create a GitHub release with wheels and `runt` binaries
+- Create a GitHub release with wheels and nteract-dist packages
 
 ## Development
 

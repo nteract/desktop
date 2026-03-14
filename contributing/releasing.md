@@ -12,7 +12,6 @@ All published artifacts share the same version and follow semver:
 | `runt` CLI | GitHub Releases | `crates/runt/Cargo.toml` |
 | `runtimed` daemon | Bundled in app + Python wheel | `crates/runtimed/Cargo.toml` |
 | `runtimed` Python package | PyPI | `python/runtimed/pyproject.toml` |
-| `sidecar` | Bundled in Python wheel | `crates/sidecar/Cargo.toml` |
 
 Standard semver rules apply:
 
@@ -31,7 +30,7 @@ These are just incrementing integers. They evolve independently from each other 
 
 ## Bumping Versions
 
-All five version sources must stay in sync. When preparing a release:
+All four version sources must stay in sync. When preparing a release:
 
 ```bash
 # Update all of these to the same version:
@@ -39,7 +38,6 @@ All five version sources must stay in sync. When preparing a release:
 #   crates/runt/Cargo.toml
 #   crates/notebook/Cargo.toml
 #   crates/notebook/tauri.conf.json
-#   crates/sidecar/Cargo.toml
 #   python/runtimed/pyproject.toml
 
 # Then let Cargo.lock catch up:

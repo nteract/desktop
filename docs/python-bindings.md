@@ -60,8 +60,10 @@ session = runtimed.Session(notebook_id="my-notebook")
 
 ```python
 session.connect()                    # Connect to daemon (auto-called by start_kernel)
-session.start_kernel()               # Launch Python kernel
+session.start_kernel()               # Launch Python kernel (env_source="auto", notebook_path=None)
 session.start_kernel(kernel_type="deno")  # Launch Deno kernel
+session.start_kernel(env_source="uv:prewarmed")  # Explicit env source
+session.start_kernel(notebook_path="/path/to/nb.ipynb")  # Hint for project file detection
 session.interrupt()                  # Interrupt running execution
 session.shutdown_kernel()            # Stop the kernel
 ```
@@ -174,7 +176,9 @@ with runtimed.Session() as session:
 | `notebook_id` | `str` | Unique identifier for this notebook |
 | `is_connected` | `bool` | Whether connected to daemon |
 | `kernel_started` | `bool` | Whether kernel is running |
+| `kernel_type` | `str \| None` | Current kernel type ("python", "deno", or None if not started) |
 | `env_source` | `str \| None` | Environment source (e.g., "uv:prewarmed") |
+| `connection_info` | `dict \| None` | Kernel connection info (ports, transport, key) when kernel is running |
 
 ## AsyncSession API
 
@@ -509,27 +513,4 @@ Common error scenarios:
 | `RUNTIMED_WORKSPACE_PATH` | Use dev daemon for this worktree |
 | `RUNTIMED_SOCKET_PATH` | Override daemon socket path |
 
-## Sidecar (Rich Output Viewer)
 
-The package also includes a sidecar launcher for rich output display:
-
-```python
-from runtimed import sidecar
-
-# In a Jupyter kernel - auto-detects connection file
-s = sidecar()
-
-# In terminal IPython - creates IOPub bridge
-s = sidecar()
-
-# Explicit connection file
-s = sidecar("/path/to/kernel-123.json")
-
-# Check status
-print(s.running)  # True if sidecar process is alive
-
-# Cleanup
-s.close()
-```
-
-The sidecar provides a GUI window that displays rich outputs (plots, HTML, images) from kernel execution.

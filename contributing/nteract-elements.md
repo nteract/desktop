@@ -138,7 +138,7 @@ If a component imports from a path that doesn't exist (e.g., `@/components/theme
 
 ### Build errors after update
 
-Run `pnpm run types:check` to catch TypeScript errors. Common issues:
+Run `tsc -b` (or `pnpm build`) to catch TypeScript errors. Common issues:
 - Missing imports (add the dependency)
 - Path mismatches (adjust imports)
 - Type mismatches (check component prop changes)

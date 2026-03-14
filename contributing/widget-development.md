@@ -61,6 +61,7 @@ interface WidgetStore {
   createModel(commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]): void;
   updateModel(commId: string, statePatch: Record<string, unknown>, buffers?: ArrayBuffer[]): void;
   deleteModel(commId: string): void;
+  wasModelClosed(commId: string): boolean;
 
   // Fine-grained subscriptions
   subscribeToKey(modelId: string, key: string, callback: (value: unknown) => void): () => void;
@@ -71,18 +72,16 @@ interface WidgetStore {
 }
 ```
 
-Usage in components:
+Usage in components via the `useWidgetModelValue` hook from `widget-store-context.tsx`:
 
 ```tsx
-import { useSyncExternalStore } from "react";
+import { useWidgetModelValue } from "../widget-store-context";
 
-function useWidgetValue(store: WidgetStore, modelId: string, key: string) {
-  return useSyncExternalStore(
-    (callback) => store.subscribeToKey(modelId, key, callback),
-    () => store.getModel(modelId)?.state[key]
-  );
-}
+// Inside a widget component
+const value = useWidgetModelValue(modelId, "value");
 ```
+
+Under the hood this calls `useSyncExternalStore` with `subscribeToKey` and `getModel`.
 
 ## Comm Bridge Protocol
 
@@ -107,11 +106,12 @@ The CommBridgeManager:
 ```tsx
 // src/components/widgets/controls/my-widget.tsx
 import type { WidgetComponentProps } from "../widget-registry";
+import { useWidgetModelValue, useWidgetStoreRequired } from "../widget-store-context";
 
 export function MyWidget({ modelId }: WidgetComponentProps) {
-  // Access widget store via context or props
-  const value = useWidgetValue(modelId, "value");
-  const description = useWidgetValue(modelId, "description");
+  const { sendUpdate } = useWidgetStoreRequired();
+  const value = useWidgetModelValue(modelId, "value");
+  const description = useWidgetModelValue(modelId, "description");
 
   const handleChange = (newValue: number) => {
     // Send update back to kernel
@@ -204,8 +204,9 @@ display(slider)
 Enable widget debug logging:
 
 ```typescript
-// In browser console
-localStorage.setItem("DEBUG", "widgets:*");
+// In browser console — enables all frontend debug logging
+localStorage.setItem("runt:debug", "true");
+// Reload the page for it to take effect
 ```
 
 Watch for comm messages in the daemon logs:
