@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex};
 use automerge::AutoCommit;
 use tokio::sync::{mpsc, oneshot, watch};
 
-use runtimed::protocol::{NotebookRequest, NotebookResponse};
+use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 
 use crate::error::SyncError;
 use crate::shared::SharedDocState;
@@ -391,7 +391,9 @@ impl DocHandle {
     pub async fn send_request_with_broadcast(
         &self,
         request: NotebookRequest,
-        broadcast_tx: tokio::sync::broadcast::Sender<runtimed::protocol::NotebookBroadcast>,
+        broadcast_tx: tokio::sync::broadcast::Sender<
+            notebook_protocol::protocol::NotebookBroadcast,
+        >,
     ) -> Result<NotebookResponse, SyncError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.cmd_tx

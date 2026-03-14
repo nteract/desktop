@@ -25,8 +25,8 @@ use log::{debug, info, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use runtimed::connection::{self, NotebookFrameType};
-use runtimed::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
+use notebook_protocol::connection::{self, NotebookFrameType};
+use notebook_protocol::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 
 use crate::error::SyncError;
 use crate::shared::SharedDocState;

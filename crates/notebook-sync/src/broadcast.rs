@@ -5,7 +5,7 @@
 //! logging and continuing, matching the behavior of the old
 //! `NotebookBroadcastReceiver` in `notebook_sync_client.rs`.
 
-use runtimed::protocol::NotebookBroadcast;
+use notebook_protocol::protocol::NotebookBroadcast;
 use tokio::sync::broadcast;
 
 /// A receiver for kernel/execution broadcasts from the daemon.

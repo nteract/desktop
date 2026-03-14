@@ -1,0 +1,18 @@
+[package]
+name = "notebook-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Shared wire protocol types for notebook sync (client and server)"
+repository = "https://github.com/nteract/desktop"
+license = "BSD-3-Clause"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+kernel-env = { path = "../kernel-env" }
+notebook-doc = { path = "../notebook-doc" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }

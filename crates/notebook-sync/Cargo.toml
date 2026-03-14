@@ -12,7 +12,7 @@ workspace = true
 [dependencies]
 automerge = "0.7"
 notebook-doc = { path = "../notebook-doc" }
-runtimed = { path = "../runtimed", default-features = false }
+notebook-protocol = { path = "../notebook-protocol" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -20,3 +20,6 @@ thiserror = { workspace = true }
 
 uuid = { workspace = true }
 log = "0.4"
+
+[dev-dependencies]
+runtimed = { path = "../runtimed" }

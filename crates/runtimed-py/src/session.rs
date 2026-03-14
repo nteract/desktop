@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
-use runtimed::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
+use notebook_protocol::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 
 use crate::daemon_paths::get_socket_path;
 use crate::error::to_py_err;

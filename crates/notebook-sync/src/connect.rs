@@ -13,10 +13,10 @@ use automerge::AutoCommit;
 use log::{debug, info};
 use tokio::sync::{mpsc, watch};
 
-use runtimed::connection::{
+use notebook_protocol::connection::{
     self, Handshake, NotebookConnectionInfo, NotebookFrameType, ProtocolCapabilities, PROTOCOL_V2,
 };
-use runtimed::protocol::NotebookBroadcast;
+use notebook_protocol::protocol::NotebookBroadcast;
 
 use crate::error::SyncError;
 use crate::handle::DocHandle;

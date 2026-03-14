@@ -3506,12 +3506,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "notebook-protocol"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "kernel-env",
+ "notebook-doc",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "notebook-sync"
 version = "0.1.0"
 dependencies = [
  "automerge",
  "log",
  "notebook-doc",
+ "notebook-protocol",
  "runtimed",
  "serde",
  "serde_json",
@@ -5634,6 +5647,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "notebook-doc",
+ "notebook-protocol",
  "notebook-sync",
  "pyo3",
  "pyo3-async-runtimes",
