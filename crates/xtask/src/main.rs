@@ -161,8 +161,8 @@ fn cmd_build(rust_only: bool) {
         }
         println!("Skipping frontend build (--rust-only), reusing existing assets");
     } else {
-        // pnpm build runs: isolated-renderer + sidecar + notebook
-        println!("Building frontend (isolated-renderer, sidecar, notebook)...");
+        // pnpm build runs: notebook UI
+        println!("Building frontend (notebook)...");
         run_cmd("pnpm", &["build"]);
     }
 
@@ -215,8 +215,8 @@ fn cmd_build_e2e() {
     // Build runtimed daemon binary for bundling (debug mode for faster builds)
     build_runtimed_daemon(false);
 
-    // pnpm build runs: isolated-renderer + sidecar + notebook
-    println!("Building frontend (isolated-renderer, sidecar, notebook)...");
+    // pnpm build runs: notebook UI
+    println!("Building frontend (notebook)...");
     run_cmd("pnpm", &["build"]);
 
     println!("Building debug binary with WebDriver server...");
@@ -524,17 +524,7 @@ fn cmd_dev_daemon(release: bool) {
 /// If `release` is false, builds in debug mode (faster for development).
 fn build_runtimed_daemon(release: bool) {
     build_external_binary("runtimed", "runtimed", release);
-    ensure_sidecar_ui();
     build_external_binary("runt-cli", "runt", release);
-}
-
-/// Ensure sidecar UI assets exist (required before building runt-cli).
-fn ensure_sidecar_ui() {
-    let sidecar_dist = Path::new("apps/sidecar/dist/index.html");
-    if !sidecar_dist.exists() {
-        println!("Building sidecar UI (required for runt-cli)...");
-        run_cmd("pnpm", &["--dir", "apps/sidecar", "build"]);
-    }
 }
 
 /// Build a binary and copy to binaries/ with target triple suffix for Tauri bundling.
