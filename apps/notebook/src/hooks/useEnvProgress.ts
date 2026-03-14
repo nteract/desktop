@@ -39,7 +39,7 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
-function getStatusText(event: EnvProgressEvent): string {
+export function getStatusText(event: EnvProgressEvent): string {
   const phase = event.phase;
   switch (phase) {
     case "starting":
@@ -103,10 +103,8 @@ function getStatusText(event: EnvProgressEvent): string {
     }
     case "ready":
       return "Environment ready";
-    case "error": {
-      const e = event as Extract<EnvProgressPhase, { phase: "error" }>;
-      return `Error: ${e.message}`;
-    }
+    case "error":
+      return "Environment error";
     default:
       return "Preparing...";
   }
