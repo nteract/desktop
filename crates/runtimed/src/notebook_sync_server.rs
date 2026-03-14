@@ -1367,6 +1367,28 @@ where
             result = kernel_broadcast_rx.recv() => {
                 match result {
                     Ok(broadcast) => {
+                        // For ExecutionDone, sync the Automerge doc to this peer
+                        // BEFORE forwarding the signal. This ensures the peer's
+                        // local doc has all cell outputs when it processes the
+                        // ExecutionDone event. Without this, there's a race where
+                        // the broadcast arrives before the sync frames carrying
+                        // the outputs, causing clients to read empty outputs.
+                        if matches!(broadcast, NotebookBroadcast::ExecutionDone { .. }) {
+                            let encoded = {
+                                let mut doc = room.doc.write().await;
+                                doc.generate_sync_message(&mut peer_state)
+                                    .map(|msg| msg.encode())
+                            };
+                            if let Some(encoded) = encoded {
+                                connection::send_typed_frame(
+                                    writer,
+                                    NotebookFrameType::AutomergeSync,
+                                    &encoded,
+                                )
+                                .await?;
+                            }
+                        }
+
                         connection::send_typed_json_frame(
                             writer,
                             NotebookFrameType::Broadcast,
