@@ -130,7 +130,7 @@ Test notebooks live in `crates/notebook/fixtures/audit-test/` and sample noteboo
 
 ```bash
 cargo xtask build
-./target/debug/notebook crates/notebook/fixtures/audit-test/test-isolation.ipynb
+./target/debug/notebook crates/notebook/fixtures/audit-test/1-vanilla.ipynb
 ```
 
 ## Daemon Development
@@ -178,7 +178,7 @@ RUNTIMED_DEV=1 cargo xtask notebook
 
 ```bash
 ./target/debug/runt daemon status           # Shows dev mode, worktree path, version
-./target/debug/runt daemon list-worktrees   # List all running dev daemons
+./target/debug/runt dev worktrees           # List all running dev daemons (requires RUNTIMED_DEV=1)
 ./target/debug/runt daemon logs -f          # Tail logs (uses correct log path in dev mode)
 ```
 

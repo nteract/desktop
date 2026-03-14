@@ -87,12 +87,14 @@ Under the hood this calls `useSyncExternalStore` with `subscribeToKey` and `getM
 
 Widget communication follows the Jupyter Comm protocol:
 
-| Message | When | Data |
-|---------|------|------|
+| Message | When | Jupyter Wire Format |
+|---------|------|---------------------|
 | `comm_open` | Widget created | `{ comm_id, target_name, data: { state } }` |
 | `comm_msg` | State update | `{ comm_id, data: { method: "update", state } }` |
 | `comm_msg` | Custom message | `{ comm_id, data: { method: "custom", content } }` |
 | `comm_close` | Widget destroyed | `{ comm_id }` |
+
+> **Note:** The table above shows the Jupyter wire protocol message shapes. The internal TypeScript types in `frame-bridge.ts` use camelCase (`commId`, `targetName`) and a flatter structure (e.g., `method` is a sibling of `data` in `CommMsgMessage`, not nested inside it). See `CommOpenMessage` and `CommMsgMessage` in `src/components/isolated/frame-bridge.ts` for the actual postMessage payload shapes.
 
 The CommBridgeManager:
 1. Subscribes to WidgetStore changes

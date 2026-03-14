@@ -115,7 +115,7 @@ This prevents other windows/iframes from injecting messages.
 
 ### Renderer Bundle
 
-The isolated renderer code is built inline during the notebook app build via the Vite plugin (`apps/notebook/vite-plugin-isolated-renderer.ts`). The bundle is embedded as a virtual module and passed to `IsolatedFrame` via `rendererCode` and `rendererCss` props—no separate build step or HTTP fetch required.
+The isolated renderer code is built inline during the notebook app build via the Vite plugin (`apps/notebook/vite-plugin-isolated-renderer.ts`). The bundle is embedded as a virtual module and provided to `IsolatedFrame` via the `IsolatedRendererProvider` context (accessed internally through the `useIsolatedRenderer()` hook)—no separate build step or HTTP fetch required.
 
 ## Message Protocol
 

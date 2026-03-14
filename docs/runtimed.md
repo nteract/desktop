@@ -796,14 +796,16 @@ When daemon receives `LaunchKernel { env_source: "auto" }`:
 Detection priority:
 | File | env_source |
 |------|------------|
-| `metadata.uv.dependencies` | `uv:inline` |
-| `metadata.conda.dependencies` | `conda:inline` |
+| `metadata.runt.uv.dependencies` | `uv:inline` |
+| `metadata.runt.conda.dependencies` | `conda:inline` |
 | `pyproject.toml` | `uv:pyproject` |
 | `pixi.toml` | `conda:pixi` |
 | `environment.yml` | `conda:env_yml` |
 | No match | `uv:prewarmed` (or `conda:prewarmed` per user pref) |
 
 Walk-up stops at `.git` boundary or home directory.
+
+> **Note:** The daemon also checks the legacy paths `metadata.uv.dependencies` and `metadata.conda.dependencies` as fallbacks for notebooks that haven't been migrated to the `metadata.runt.*` namespace.
 
 ### Widget support (partial)
 

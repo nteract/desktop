@@ -4,11 +4,11 @@
 
 If you're here looking for the Electron-based nteract desktop app, you can view the source [in this repo](https://github.com/nteract/archived-desktop-app). **That desktop app is not actively maintained.**
 
-We're actively developing the spritual successor to the nteract desktop app in the [nteract/desktop repo](https://github.com/nteract/desktop).
+We're actively developing the spiritual successor to the nteract desktop app in the [nteract/desktop repo](https://github.com/nteract/desktop).
 
 ### The New Desktop App
 
-We're actively developing the spritual successor to the nteract desktop app in the [nteract/desktop repo](https://github.com/nteract/desktop).
+We're actively developing the spiritual successor to the nteract desktop app in the [nteract/desktop repo](https://github.com/nteract/desktop).
 
 The new app is a native desktop app with instant startup and intelligent environment management.
 
@@ -16,7 +16,7 @@ The new app is a native desktop app with instant startup and intelligent environ
 
 ## Bringing Agents in the Loop
 
-We're in the prelimiary stages of hooking up the realtime system from nteract/desktop to any agent of your choice. Collaborate with agents in notebooks, render interactive elements, and explore data together.
+We're in the preliminary stages of hooking up the realtime system from nteract/desktop to any agent of your choice. Collaborate with agents in notebooks, render interactive elements, and explore data together.
 
 ### Quick Start
 
@@ -118,13 +118,11 @@ claude mcp add nteract -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-ni
 | `create_cell` | Add a cell to the notebook (use `and_run=True` to execute) |
 | `execute_cell` | Run a specific cell (returns partial results after timeout) |
 | `run_all_cells` | Queue all code cells for execution |
-| `append_source` | Stream tokens into a cell (ideal for LLM output) |
+| `set_cell` | Update a cell's source and/or type |
 | `get_cell` | Get a cell by ID with outputs |
 | `get_all_cells` | View all cells in the notebook |
-| `set_cell_source` | Replace a cell's entire source code |
 | `replace_match` | Targeted literal text find-and-replace in a cell |
 | `replace_regex` | Regex-based find-and-replace in a cell |
-| `set_cell_type` | Change a cell's type (code, markdown, or raw) |
 | `move_cell` | Reorder a cell within the notebook |
 | `clear_outputs` | Clear a cell's outputs |
 | `delete_cell` | Remove a cell from the notebook |

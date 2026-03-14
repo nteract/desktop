@@ -51,10 +51,10 @@ The daemon provides a single coordinating entity that prewarms environments in t
 
 | Component | Purpose | Location |
 |-----------|---------|----------|
-| Unix socket | IPC endpoint | `~/.cache/runt/runtimed.sock` |
-| Lock file | Singleton guarantee | `~/.cache/runt/daemon.lock` |
-| Info file | Discovery (PID, endpoint) | `~/.cache/runt/daemon.json` |
-| Environments | Prewarmed venvs | `~/.cache/runt/envs/` |
+| Unix socket | IPC endpoint | `~/.cache/runt/runtimed.sock` (Linux) / `~/Library/Caches/runt/runtimed.sock` (macOS) |
+| Lock file | Singleton guarantee | `~/.cache/runt/daemon.lock` (Linux) / `~/Library/Caches/runt/daemon.lock` (macOS) |
+| Info file | Discovery (PID, endpoint) | `~/.cache/runt/daemon.json` (Linux) / `~/Library/Caches/runt/daemon.json` (macOS) |
+| Environments | Prewarmed venvs | `~/.cache/runt/envs/` (Linux) / `~/Library/Caches/runt/envs/` (macOS) |
 
 ## Development Workflow
 
@@ -62,9 +62,7 @@ The daemon provides a single coordinating entity that prewarms environments in t
 
 The notebook app automatically tries to connect to or start the daemon on launch. If it's not running, the app falls back to in-process prewarming. You don't need to do anything special.
 
-```rust
-runtimed::client::ensure_daemon_via_sidecar().await
-```
+The notebook app calls `ensure_daemon_via_sidecar()` (a private function in `crates/notebook/src/lib.rs`) which takes a `tauri::AppHandle` and a progress callback to start and connect to the daemon.
 
 ### Install daemon from source
 
@@ -132,7 +130,7 @@ crates/runtimed/
 │   ├── notebook_sync_client.rs  # Notebook sync client library
 │   ├── blob_store.rs            # Content-addressed blob store with metadata sidecars
 │   ├── blob_server.rs           # HTTP read server for blobs (hyper 1.x)
-│   ├── runtime.rs               # Runtime detection (Python/Deno)
+│   ├── runtime.rs               # Runtime enum definition (Python/Deno/Other)
 │   ├── kernel_manager.rs        # Kernel lifecycle, ZMQ iopub watching, execution queue
 │   ├── inline_env.rs            # Inline dependency environment caching (UV/Conda)
 │   ├── project_file.rs          # Project file detection (pyproject.toml, pixi.toml, etc.)

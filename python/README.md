@@ -21,7 +21,7 @@ uv run --reinstall-package runtimed maturin develop
 uv pip install --no-deps -e ../nteract
 
 # 3. Install nteract's other dependencies
-uv pip install "mcp>=1.26.0" "httpx>=0.27.0,<1.0"
+uv pip install "mcp>=1.26.0" "httpx>=0.27.0,<1.0" "pydantic>=2.0"
 
 # 4. Verify both packages are local
 uv run python -c "import runtimed, nteract; print('ok')"

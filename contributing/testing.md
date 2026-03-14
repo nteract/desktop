@@ -9,7 +9,7 @@ This guide covers all test types in the codebase. For E2E tests specifically, se
 | E2E | `e2e/specs/` | `./e2e/dev.sh test` | WebdriverIO + Mocha |
 | Frontend unit | `src/**/__tests__/` | `pnpm test` | Vitest + jsdom |
 | Rust unit | inline `#[cfg(test)]` | `cargo test` | built-in |
-| CLI behavior | `crates/runt/tests/*.hone` | `cargo hone test` | Hone |
+| CLI behavior | `crates/runt/tests/*.hone` | `cargo hone test` | Hone (not yet published) |
 | Python | `python/runtimed/tests/` | `pytest` | pytest |
 
 ## Frontend Unit Tests (Vitest)
@@ -63,6 +63,9 @@ describe("AnsiOutput", () => {
 - `src/components/isolated/__tests__/` — Frame bridge, message protocol
 - `src/components/outputs/__tests__/` — Output renderers
 - `src/components/widgets/__tests__/` — Widget store, registry
+- `src/lib/__tests__/` — ErrorBoundary
+- `apps/notebook/src/hooks/__tests__/` — useEnvProgress
+- `apps/notebook/src/lib/__tests__/` — Cursor registry, manifest resolution, materialize cells, kernel status, markdown assets, and more
 
 ## Rust Unit Tests
 
@@ -147,6 +150,8 @@ ASSERT stdout matches /runt-cli \d+\.\d+\.\d+/
 | `stop_errors.hone` | Stop command edge cases |
 
 **Running Hone tests:**
+
+> **Note:** `cargo hone` is not yet published to crates.io. The `.hone` test files exist in the repo but the test runner is not currently installable. This section will be updated once `hone` is available.
 
 ```bash
 cargo hone test               # All hone tests

@@ -11,7 +11,7 @@ nteract Desktop settings control default behavior for new notebooks, appearance,
 | Default Python env | uv, conda | uv | Synced (Automerge) + settings file |
 | Default uv packages | list of strings | (empty) | Synced (Automerge) + settings file |
 | Default conda packages | list of strings | (empty) | Synced (Automerge) + settings file |
-| Keep alive secs | integer | 300 | Synced (Automerge) + settings file |
+| Keep alive secs | integer | 30 | Synced (Automerge) + settings file |
 | Onboarding completed | boolean | false | Synced (Automerge) + settings file |
 
 ## How Settings Sync Works
@@ -35,7 +35,7 @@ ROOT/
   theme: "system"
   default_runtime: "python"
   default_python_env: "uv"
-  keep_alive_secs: 300
+  keep_alive_secs: 30
   onboarding_completed: false
   uv/                                         ← nested Map
     default_packages: List["numpy", "pandas"] ← List of Str

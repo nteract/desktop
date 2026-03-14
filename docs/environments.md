@@ -20,7 +20,7 @@ This means Python and Deno notebooks can coexist in the same project directory �
 For Python notebooks, nteract Desktop looks for dependencies in this order:
 
 1. **Inline dependencies** stored in the notebook itself
-2. **Closest project file** — nteract Desktop walks up from the notebook's directory looking for `pyproject.toml`, `pixi.toml`, or `environment.yml`. The closest match wins, regardless of file type. If the same directory has multiple project files, the tiebreaker is: pyproject.toml > pixi.toml > environment.yml
+2. **Closest project file** — nteract Desktop walks up from the notebook's directory looking for `pyproject.toml`, `pixi.toml`, or `environment.yml`/`environment.yaml`. The closest match wins, regardless of file type. If the same directory has multiple project files, the tiebreaker is: pyproject.toml > pixi.toml > environment.yml > environment.yaml
 3. If none found, a **prewarmed environment** with just the basics
 
 The search stops at git repository boundaries and your home directory, so project files from unrelated repos won't interfere.
@@ -47,9 +47,9 @@ The dependency panel offers two actions:
 - **Use project environment** — run the kernel in the project's `.venv` (keeps deps in sync with the project)
 - **Copy to notebook** — snapshot the project's dependencies into the notebook metadata (makes the notebook portable but deps may drift from the project)
 
-## Working with environment.yml
+## Working with environment.yml / environment.yaml
 
-Conda `environment.yml` files are auto-detected. nteract Desktop parses the channels, conda dependencies, and pip dependencies from the file and creates a conda environment using rattler.
+Conda `environment.yml` (and `environment.yaml`) files are auto-detected. nteract Desktop parses the channels, conda dependencies, and pip dependencies from the file and creates a conda environment using rattler.
 
 The dependency panel shows the environment.yml dependencies and offers an "Import to notebook" action to copy them into the notebook's conda metadata for portability.
 
@@ -86,7 +86,7 @@ Choose which package manager to use for Python notebooks:
 - **UV** (default) — fast, pip-compatible package management
 - **Conda** — supports conda packages (useful for non-Python dependencies like CUDA libraries)
 
-This preference is used when no project files are detected and the notebook has no inline dependencies. When a project file is present, nteract Desktop picks the appropriate backend automatically (UV for pyproject.toml, Conda for environment.yml and pixi.toml).
+This preference is used when no project files are detected and the notebook has no inline dependencies. When a project file is present, nteract Desktop picks the appropriate backend automatically (UV for pyproject.toml, Conda for environment.yml/environment.yaml and pixi.toml).
 
 See [Settings](settings.md) for how to change these defaults.
 
@@ -118,7 +118,7 @@ To reclaim disk space, delete the environment cache directories. nteract Desktop
 
 **Packages aren't available after adding them**: Click "Sync Now" in the dependency panel to install pending changes, then restart the kernel.
 
-**Wrong environment**: If the kernel started with a prewarmed environment instead of your project's dependencies, check that your project file (pyproject.toml, environment.yml, pixi.toml) is in the notebook's directory or a parent directory within the same git repository.
+**Wrong environment**: If the kernel started with a prewarmed environment instead of your project's dependencies, check that your project file (pyproject.toml, environment.yml/environment.yaml, pixi.toml) is in the notebook's directory or a parent directory within the same git repository.
 
 **Slow first start**: The first time a notebook opens with dependencies, nteract Desktop needs to download and install packages. Subsequent opens with the same dependencies are instant due to caching.
 

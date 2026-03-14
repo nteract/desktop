@@ -16,6 +16,8 @@ The desktop app, `runt` CLI, and `runtimed` daemon are all built and released to
 
 Stable releases run when a `v*` tag is pushed (or manually), and nightly pre-releases run every 24 hours. Both can also be triggered manually.
 
+> **Note:** Desktop releases also build and publish the `runtimed` and `nteract` Python packages to PyPI via trusted publishing. This means every stable and nightly release pushes new Python wheels — the separate `python-v*` tag workflow is only needed for Python-specific patches that don't warrant a full desktop release.
+
 ### Artifacts
 
 | Platform | File |
@@ -53,7 +55,7 @@ git push origin python-v<version>
 ```
 
 The `python-package.yml` workflow triggers on `python-v*` tags and will:
-- Build wheels for macOS arm64 and Linux x64
+- Build wheels for macOS arm64, macOS x86_64, and Linux x64
 - Publish to PyPI via trusted publishing (OIDC)
 - Create a GitHub release with wheels and nteract-dist packages
 

@@ -25,6 +25,7 @@ pip install nteract
 | `runtimed` | Background daemon — environment pools, notebook sync, kernel execution |
 | `runt` | CLI for managing kernels, notebooks, and the daemon |
 | `runtimed` (PyPI) | Python bindings for the daemon |
+| `nteract` (PyPI) | MCP server for AI agent integration with notebooks |
 
 ## MCP Server
 
@@ -61,16 +62,21 @@ $ runt notebooks
 ```
 nteract/desktop
 ├── src/                    # Shared UI code (React components, hooks, utilities)
+│   ├── bindings/          # TypeScript types generated from Rust (ts-rs)
 │   ├── components/
 │   │   ├── ui/            # shadcn primitives (button, dialog, etc.)
 │   │   ├── cell/          # Notebook cell components
 │   │   ├── outputs/       # Output renderers (stream, error, display data)
 │   │   ├── editor/        # CodeMirror editor
+│   │   ├── isolated/      # Iframe security isolation (IsolatedFrame, CommBridgeManager)
 │   │   └── widgets/       # ipywidgets controls
-│   └── lib/
-│       └── utils.ts       # cn() and other utilities
+│   ├── hooks/             # Shared hooks (useSyncedSettings, useTheme)
+│   ├── isolated-renderer/ # Code that runs inside isolated iframes
+│   ├── lib/               # Shared utilities (cn(), dark-mode, error-boundary)
+│   └── styles/            # Global stylesheets
 ├── apps/                   # App entry points
-│   └── notebook/          # Notebook Tauri frontend
+│   ├── notebook/          # Notebook Tauri frontend
+│   └── sidecar/           # Sidecar app
 ├── crates/                 # Rust code
 │   ├── runt/              # CLI binary
 │   ├── runtimed/          # Background daemon
@@ -86,7 +92,7 @@ nteract/desktop
 │   ├── runt-trust/        # HMAC trust verification
 │   ├── runt-workspace/    # Workspace detection utilities
 │   └── xtask/             # Build automation tasks
-├── docs/                   # Architecture documentation
+├── docs/                   # User-facing documentation
 └── contributing/           # Developer guides
 ```
 
@@ -102,7 +108,8 @@ nteract/desktop
 
 **Linux only:** Install GTK/WebKit dev libraries:
 ```bash
-sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
+sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev \
+  libssl-dev libayatana-appindicator3-dev librsvg2-dev
 ```
 
 ### Quick start
@@ -120,10 +127,16 @@ cargo xtask dev
 | Standalone Vite | `cargo xtask vite` | Multi-window testing (Vite survives window closes) |
 | Attach to Vite | `cargo xtask notebook --attach` | Connect Tauri to already-running Vite |
 | Debug build | `cargo xtask build` | Full debug build (frontend + rust) |
+| E2E debug build | `cargo xtask build-e2e` | Debug build with built-in WebDriver server |
 | Rust-only build | `cargo xtask build --rust-only` | Rebuild rust, reuse existing frontend |
 | Run bundled | `cargo xtask run notebook.ipynb` | Run standalone binary |
+| Lint (check) | `cargo xtask lint` | Check formatting and linting across Rust, JS/TS, Python |
+| Lint (fix) | `cargo xtask lint --fix` | Auto-fix formatting and linting |
+| Dev daemon | `cargo xtask dev-daemon` | Run per-worktree dev daemon |
+| Install daemon | `cargo xtask install-daemon` | Install daemon into the running service |
 | Release .app | `cargo xtask build-app` | Testing app bundle locally |
 | Release DMG | `cargo xtask build-dmg` | Distribution (usually CI) |
+| Generate icons | `cargo xtask icons [source.png]` | Generate icon variants from source image |
 
 `cargo xtask dev` runs the first-time bootstrap (`pnpm install` + `cargo xtask build`),
 starts the per-worktree dev daemon, waits for it to be ready, and then launches the
@@ -140,7 +153,7 @@ pnpm build                          # Build notebook UI
 cargo test                          # Run Rust tests
 pnpm test:run                       # Run JS tests
 cargo fmt                           # Format Rust
-npx @biomejs/biome check --fix apps/notebook/src/ e2e/  # Format JS
+npx @biomejs/biome check --fix apps/notebook/src/ e2e/  # Lint + format JS/TS
 cargo clippy --all-targets -- -D warnings               # Lint Rust
 ```
 

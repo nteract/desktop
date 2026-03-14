@@ -363,7 +363,7 @@ When a user creates a new notebook (File → New), the kernel type is determined
 Environments are cached by a hash of their dependencies so notebooks with identical deps share a single environment.
 
 **UV** (`uv_env.rs`):
-- Hash = SHA256(sorted deps + requires_python + env_id), first 16 hex chars
+- Hash = SHA256(sorted deps + requires_python + prerelease + env_id), first 16 hex chars
 - Location: `~/.cache/runt/envs/{hash}/`
 - When deps are non-empty, env_id is excluded from hash (allows cross-notebook sharing)
 - When deps are empty, env_id is included (per-notebook isolation)
@@ -454,12 +454,12 @@ Note: The runtime type (Python vs Deno) is determined by `kernelspec.name`, not 
 Dependencies are signed with HMAC-SHA256 to prevent untrusted code execution on notebook open.
 
 - **Key**: 32 random bytes stored at `~/.config/runt/trust-key`, generated on first use
-- **Signed content**: Canonical JSON of `metadata.uv` + `metadata.conda` (not cell contents or outputs)
+- **Signed content**: Canonical JSON of `metadata.runt.uv` + `metadata.runt.conda` (with fallback to legacy `metadata.uv` + `metadata.conda`; not cell contents or outputs)
 - **Signature format**: `"hmac-sha256:{hex_digest}"` stored in notebook metadata
 - **Machine-specific**: The key is per-machine, so every shared notebook is untrusted on the recipient's machine
 - **Verification**: `trust.rs:verify_signature()` returns `bool`. The higher-level `verify_notebook_trust()` returns `TrustInfo` (containing a `TrustStatus`: Trusted, Untrusted, SignatureInvalid, or NoDependencies)
 
-Changes to the dependency metadata structure require updating the signing logic in `crates/notebook/src/trust.rs`.
+Changes to the dependency metadata structure require updating the signing logic in `crates/runt-trust/src/lib.rs` (re-exported by `crates/notebook/src/trust.rs`).
 
 ## Frontend Architecture
 
@@ -469,7 +469,7 @@ Three UI components manage dependencies for different runtimes:
 |-----------|------|---------|
 | `DependencyHeader.tsx` | `useDependencies.ts` | UV deps, pyproject.toml detection |
 | `CondaDependencyHeader.tsx` | `useCondaDependencies.ts` | Conda deps, environment.yml and pixi.toml detection |
-| `DenoDependencyHeader.tsx` | — | Deno configuration and deno.json detection |
+| `DenoDependencyHeader.tsx` | `useDenoDependencies.ts` | Deno configuration and deno.json detection |
 
 The kernel lifecycle is managed by `useDaemonKernel.ts`, which:
 - Listens for `notebook:broadcast` events (re-emitted by `useAutomergeNotebook` after WASM frame demux)
@@ -509,22 +509,22 @@ The kernel lifecycle is managed by `useDaemonKernel.ts`, which:
 | `crates/runtimed/src/daemon.rs` | Background daemon pool management, passes settings to handlers |
 | `crates/runtimed/src/notebook_sync_server.rs` | `auto_launch_kernel()` — runtime detection and environment resolution |
 | `crates/runtimed/src/kernel_manager.rs` | `RoomKernel::launch()` — spawns Python or Deno kernel processes |
+| `crates/runtimed/src/project_file.rs` | Unified closest-wins project file detection (pyproject.toml, pixi.toml, environment.yml/yaml) |
 
 ### Notebook Crate (Tauri Commands)
 
 | File | Role |
 |------|------|
-| `crates/notebook/src/lib.rs` | Tauri commands, `launch_kernel_via_daemon` |
+| `crates/notebook/src/lib.rs` | Tauri commands (save, format, kernel, env), sync pipe setup, `launch_kernel_via_daemon` |
 | `crates/notebook/src/project_file.rs` | Unified closest-wins project file detection |
-| `crates/notebook/src/uv_env.rs` | UV environment creation, dep hashing, caching |
-| `crates/notebook/src/conda_env.rs` | Conda environment creation via rattler |
+| `crates/notebook/src/uv_env.rs` | UV environment creation, dep hashing (delegates to `kernel-env`), caching |
+| `crates/notebook/src/conda_env.rs` | Conda environment creation via rattler (delegates to `kernel-env`) |
 | `crates/notebook/src/pyproject.rs` | pyproject.toml discovery and parsing |
 | `crates/notebook/src/pixi.rs` | pixi.toml discovery and parsing |
 | `crates/notebook/src/environment_yml.rs` | environment.yml discovery and parsing |
 | `crates/notebook/src/deno_env.rs` | Deno config detection |
-| `crates/notebook/src/lib.rs` | Tauri commands (save, format, kernel, env), sync pipe setup |
 | `crates/notebook/src/settings.rs` | User preferences (default runtime, env type) |
-| `crates/notebook/src/trust.rs` | HMAC trust verification |
+| `crates/notebook/src/trust.rs` | HMAC trust verification (re-exports from `runt-trust` crate) |
 
 ### Frontend
 

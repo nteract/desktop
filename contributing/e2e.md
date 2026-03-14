@@ -209,6 +209,12 @@ import {
 | `typeSlowly(text, delay?)` | Types character-by-character (30ms default). Use for CodeMirror input. |
 | `findButton(patterns[])` | Tries CSS selectors in order, returns first match or null. |
 | `setupCodeCell()` | Finds or creates a code cell, focuses editor, selects all. Returns the cell. |
+| `waitForNotebookSynced(timeout?)` | Waits for Automerge sync + cells rendered (`data-notebook-synced` attribute). |
+| `waitForCodeCells(expectedCount, timeout?)` | Waits for a specific number of code cells to load. |
+| `isUvManagedEnv(path)` | Checks if a Python path is from a UV-managed environment. |
+| `isCondaManagedEnv(path)` | Checks if a Python path is from a Conda-managed environment. |
+| `isSystemPythonEnv(path)` | Checks if a Python path is from system Python. |
+| `isManagedEnv(path)` | Checks if a Python path is from any runt-managed environment. |
 
 Platform note: `MOD_KEY` is `"Meta"` on macOS, `"Control"` on Linux. Used internally by `executeFirstCell()` and `setupCodeCell()`.
 

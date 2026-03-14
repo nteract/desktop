@@ -46,10 +46,10 @@ RUST_LOG=runtimed::notebook_sync_server=debug cargo xtask dev-daemon
 
 ## TypeScript Logging
 
-Use the `logger` utility from `lib/logger` instead of raw `console.*`. The codebase uses relative imports:
+Use the `logger` utility from `apps/notebook/src/lib/logger.ts` instead of raw `console.*`. The codebase uses relative imports from within the notebook app:
 
 ```typescript
-import { logger } from "../lib/logger";
+import { logger } from "~/lib/logger";
 
 logger.debug("[component] Internal detail");
 logger.info("[component] Significant event");

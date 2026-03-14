@@ -23,12 +23,17 @@ This guide explains the frontend code organization and how shared components rel
 ├── apps/
 │   ├── notebook/src/             ← Notebook app (path alias ~/)
 │   │   ├── components/           ← App-specific components (toolbar, banners)
+│   │   ├── contexts/             ← React contexts (PresenceContext)
 │   │   ├── hooks/                ← Notebook-specific hooks (useDaemonKernel, etc.)
 │   │   ├── lib/                  ← App-specific utilities (materialize-cells.ts)
 │   │   ├── wasm/                 ← WASM bindings (runtimed-wasm)
 │   │   ├── App.tsx               ← Root component
 │   │   └── types.ts              ← App types
-│   │
+│   ├── notebook/onboarding/      ← Onboarding sub-app (separate HTML entry point)
+│   ├── notebook/settings/        ← Settings sub-app
+│   ├── notebook/upgrade/         ← Upgrade sub-app
+│   └── sidecar/                  ← Sidecar app
+│
 
 ```
 
@@ -108,8 +113,15 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
 | `useEnvProgress` | Environment setup progress tracking |
 | `useDependencies` | UV dependency management |
 | `useCondaDependencies` | Conda dependency management |
+| `useDenoDependencies` | Deno dependency management |
 | `useManifestResolver` | Resolves blob hashes to output data |
 | `useCellKeyboardNavigation` | Arrow keys, enter/escape modes |
+| `useEditorRegistry` | CodeMirror editor instance registry |
+| `useGitInfo` | Git branch/status for the notebook file |
+| `useGlobalFind` | Global find-and-replace across cells |
+| `useHistorySearch` | Kernel input history search |
+| `useTrust` | Notebook trust verification state |
+| `useUpdater` | App update checking and installation |
 
 ## Data Flow
 
@@ -123,8 +135,8 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
 │                          sync_applied ─┘          │         │   │
 │                          ▼                        │         │   │
 │                   ┌──────────────┐                │         │   │
-│                   │cellSnapshots-│    "notebook:   │  "notebook: │
-│                   │ToNotebook-   │    broadcast"   │  presence"  │
+│                   │cellSnapshots-│  emitBroadcast  │ emitPresence│
+│                   │ToNotebook-   │  (frame bus)    │ (frame bus) │
 │                   │Cells()       │                 │             │
 │                   └──────┬───────┘        │         │       │   │
 │                          │                ▼         │       │   │
@@ -144,10 +156,10 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-1. **useAutomergeNotebook** — Single ingress point. Listens for `notebook:frame`, demuxes via WASM `receive_frame()`, applies sync locally, re-emits `notebook:broadcast` and `notebook:presence` for downstream hooks
+1. **useAutomergeNotebook** — Single ingress point. Listens for `notebook:frame`, demuxes via WASM `receive_frame()`, applies sync locally, dispatches to downstream hooks via the in-memory frame bus (`emitBroadcast()` and `emitPresence()` from `notebook-frame-bus.ts`)
 2. **cellSnapshotsToNotebookCells()** / **cellSnapshotsToNotebookCellsSync()** — Converts WASM cell snapshots to React-friendly objects on sync changes
-3. **useDaemonKernel / useEnvProgress** — Consume `notebook:broadcast` events for kernel status, outputs, and environment progress
-4. **usePresence** — Consumes `notebook:presence` events for remote cursor/selection state
+3. **useDaemonKernel / useEnvProgress** — Subscribe via `subscribeBroadcast()` from the frame bus for kernel status, outputs, and environment progress
+4. **usePresence** — Subscribes via `subscribePresence()` from the frame bus for remote cursor/selection state
 
 Cell mutations (add, delete, edit) go through the WASM handle for instant response, then sync to the daemon via `invoke("send_frame", { frameData })` where `frameData` includes the type byte prefix. Execution requests go to the daemon via dedicated Tauri commands.
 
@@ -159,6 +171,7 @@ Cell mutations (add, delete, edit) go through the WASM handle for instant respon
 | `apps/notebook/src/App.tsx` | Root component, provider setup |
 | `apps/notebook/src/hooks/useAutomergeNotebook.ts` | WASM notebook sync |
 | `apps/notebook/src/lib/materialize-cells.ts` | WASM → React conversion |
+| `apps/notebook/src/lib/notebook-frame-bus.ts` | In-memory pub/sub for broadcast and presence dispatch |
 | `apps/notebook/src/hooks/usePresence.ts` | Remote presence tracking |
 | `apps/notebook/src/lib/frame-types.ts` | Frame type constants (mirrors Rust) |
 | `src/components/outputs/media-router.tsx` | Output type dispatch |

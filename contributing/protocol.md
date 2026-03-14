@@ -83,28 +83,28 @@ The first frame is a JSON `Handshake` message:
 
 ```json
 {
-  "NotebookSync": {
-    "notebook_id": "/path/to/notebook.ipynb",
-    "protocol": "v2",
-    "working_dir": null,
-    "initial_metadata": "..."
-  }
+  "channel": "notebook_sync",
+  "notebook_id": "/path/to/notebook.ipynb",
+  "protocol": "v2"
 }
 ```
+
+The `Handshake` enum uses `#[serde(tag = "channel", rename_all = "snake_case")]`, so the wire format is flat with a `"channel"` discriminator field — not nested. Optional fields like `working_dir` and `initial_metadata` are omitted when `None` (via `skip_serializing_if`).
+
+Other handshake variants include `Pool`, `SettingsSync`, `Blob`, `PoolStateSubscribe`, `OpenNotebook { path }`, and `CreateNotebook { runtime, ... }`. The `OpenNotebook` and `CreateNotebook` variants are the primary paths for opening/creating notebooks from the desktop app, while `NotebookSync` is used by programmatic clients (e.g., Python bindings).
 
 The daemon responds with a `NotebookConnectionInfo`:
 
 ```json
 {
   "protocol": "v2",
-  "protocol_version": 2,
-  "daemon_version": "2.0.0+abc123",
   "notebook_id": "derived-id",
   "cell_count": 5,
-  "needs_trust_approval": false,
-  "error": null
+  "needs_trust_approval": false
 }
 ```
+
+The `protocol_version` and `daemon_version` fields are `Option` types with `skip_serializing_if = "Option::is_none"`, so they are only present when the daemon populates them (e.g., for version negotiation). A minimal response omits them entirely.
 
 ### 3. Initial Automerge sync
 

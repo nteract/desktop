@@ -1,11 +1,15 @@
 # runtimed
 
-Python bindings for the runtimed notebook daemon. Execute code, manage kernels, and interact with notebooks programmatically.
+Python toolkit for Jupyter runtimes, powered by runtimed Rust binaries. Execute code, manage kernels, and interact with notebooks programmatically.
 
 ## Installation
 
 ```bash
+# Stable (1.x)
 pip install runtimed
+
+# Pre-release (2.x — matches nteract desktop nightly)
+pip install --pre runtimed
 ```
 
 ## Quick Start
