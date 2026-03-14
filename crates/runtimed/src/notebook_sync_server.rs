@@ -1367,6 +1367,26 @@ where
             result = kernel_broadcast_rx.recv() => {
                 match result {
                     Ok(broadcast) => {
+                        if matches!(broadcast, NotebookBroadcast::ExecutionDone { .. }) {
+                            // Ensure the client sees the daemon's latest document state
+                            // before reacting to ExecutionDone. changed_rx and
+                            // kernel_broadcast_rx are independent channels, so without
+                            // this per-connection flush the done broadcast can overtake
+                            // the final AutomergeSync update on the wire.
+                            let encoded = {
+                                let mut doc = room.doc.write().await;
+                                doc.generate_sync_message(&mut peer_state)
+                                    .map(|msg| msg.encode())
+                            };
+                            if let Some(encoded) = encoded {
+                                connection::send_typed_frame(
+                                    writer,
+                                    NotebookFrameType::AutomergeSync,
+                                    &encoded,
+                                )
+                                .await?;
+                            }
+                        }
                         connection::send_typed_json_frame(
                             writer,
                             NotebookFrameType::Broadcast,
