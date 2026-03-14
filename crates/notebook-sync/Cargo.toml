@@ -1,0 +1,20 @@
+[package]
+name = "notebook-sync"
+version = "0.1.0"
+edition = "2021"
+description = "Automerge-based notebook sync client with direct document access"
+repository = "https://github.com/nteract/desktop"
+license = "BSD-3-Clause"
+
+[lints]
+workspace = true
+
+[dependencies]
+automerge = "0.7"
+notebook-doc = { path = "../notebook-doc" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+futures = { workspace = true }
+log = "0.4"

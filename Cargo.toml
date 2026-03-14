@@ -8,6 +8,7 @@ members = [
     "crates/kernel-env",
     "crates/notebook",
     "crates/notebook-doc",
+    "crates/notebook-sync",
     "crates/tauri-jupyter",
     "crates/xtask",
     "crates/runtimed",

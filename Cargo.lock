@@ -3669,6 +3669,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "notebook-sync"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "futures",
+ "log",
+ "notebook-doc",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "notify"
 version = "8.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
