@@ -25,6 +25,7 @@ from typing import Any
 import anyio
 import pytest
 from mcp import ClientSession
+
 from nteract._mcp_server import mcp
 
 
