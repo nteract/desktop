@@ -88,9 +88,8 @@ macro_rules! connect_stream {
         }
         #[cfg(windows)]
         {
-            let path_str = $socket_path.to_string_lossy();
             tokio::net::windows::named_pipe::ClientOptions::new()
-                .open(&*path_str)
+                .open($socket_path)
                 .map_err(SyncError::Io)?
         }
     }};
@@ -178,7 +177,6 @@ pub async fn connect_with_options(
         reader,
         writer,
     )
-    .await
     .map(|(handle, broadcast_rx)| ConnectResult {
         handle,
         broadcast_rx,
@@ -247,7 +245,6 @@ pub async fn connect_open(socket_path: PathBuf, path: PathBuf) -> Result<OpenRes
         reader,
         writer,
     )
-    .await
     .map(|(handle, broadcast_rx)| OpenResult {
         handle,
         broadcast_rx,
@@ -327,7 +324,6 @@ pub async fn connect_create(
         reader,
         writer,
     )
-    .await
     .map(|(handle, broadcast_rx)| CreateResult {
         handle,
         broadcast_rx,
@@ -344,7 +340,7 @@ pub async fn connect_create(
 ///
 /// This is the common setup after handshake + initial sync, shared by
 /// all connect variants.
-async fn build_and_spawn<R, W>(
+fn build_and_spawn<R, W>(
     doc: AutoCommit,
     peer_state: sync::State,
     notebook_id: String,
@@ -356,11 +352,9 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let shared = Arc::new(Mutex::new(SharedDocState::new(doc, notebook_id.clone())));
-    {
-        let mut state = shared.lock().map_err(|_| SyncError::LockPoisoned)?;
-        state.peer_state = peer_state;
-    }
+    let mut shared_state = SharedDocState::new(doc, notebook_id.clone());
+    shared_state.peer_state = peer_state;
+    let shared = Arc::new(Mutex::new(shared_state));
 
     let initial_snapshot = {
         let state = shared.lock().map_err(|_| SyncError::LockPoisoned)?;
