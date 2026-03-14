@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "crates/sidecar",
     "crates/runt",
     "crates/runt-trust",
     "crates/runt-workspace",
