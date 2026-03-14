@@ -2245,7 +2245,7 @@ async fn doctor_command(
         false
     };
     #[cfg(not(target_os = "macos"))]
-    let launchd_not_loaded = false;
+    let _launchd_not_loaded = false;
 
     // On macOS, check if binary has quarantine xattr
     #[cfg(target_os = "macos")]
@@ -2260,7 +2260,7 @@ async fn doctor_command(
         false
     };
     #[cfg(not(target_os = "macos"))]
-    let is_quarantined = false;
+    let _is_quarantined = false;
 
     // Check daemon state for fix operations
     let daemon_state_status = if let Some(info) = daemon_info {
