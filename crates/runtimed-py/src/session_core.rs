@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use notebook_protocol::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 use notebook_sync::{BroadcastReceiver, DocHandle};
-use runtimed::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 
 use notebook_doc::metadata::NotebookMetadataSnapshot;
 

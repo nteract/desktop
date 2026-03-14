@@ -5648,6 +5648,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "notebook-doc",
+ "notebook-protocol",
  "notebook-sync",
  "pyo3",
  "pyo3-async-runtimes",
