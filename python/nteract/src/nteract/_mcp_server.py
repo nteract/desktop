@@ -769,6 +769,14 @@ async def _send_edit_cursor(
         pass  # Presence is best-effort — don't fail the edit
 
 
+async def _send_cell_cursor(
+    session: runtimed.AsyncSession, cell_id: str, line: int = 0, column: int = 0
+) -> None:
+    """Send cursor presence on a cell (best-effort, non-blocking)."""
+    with contextlib.suppress(Exception):
+        await session.set_cursor(cell_id=cell_id, line=line, column=column)
+
+
 def _format_edit_diff(cell_id: str, old_text: str, new_text: str) -> str:
     """Format a unified diff for an edit operation."""
     # splitlines(keepends=False) + manual newlines ensures consistent output
@@ -881,6 +889,7 @@ async def get_cell(
 ) -> list[ContentItem]:
     """Get a cell's source and outputs by ID."""
     session = await _get_session()
+    await _send_cell_cursor(session, cell_id)
     cell = await session.get_cell(cell_id=cell_id)
     return _cell_to_content(cell)
 
@@ -1089,6 +1098,7 @@ async def resource_cell(cell_id: str) -> str:
         return "Error: No active session"
 
     try:
+        await _send_cell_cursor(_session, cell_id)
         cell = await _session.get_cell(cell_id=cell_id)
         return _format_cell(cell)
     except Exception as e:
@@ -1105,7 +1115,9 @@ async def resource_cell_by_index(index: int) -> str:
         cells = await _session.get_cells()
         if index < 0 or index >= len(cells):
             return f"Error: Index {index} out of range (notebook has {len(cells)} cells)"
-        return _format_cell(cells[index])
+        cell = cells[index]
+        await _send_cell_cursor(_session, cell.id)
+        return _format_cell(cell)
     except Exception as e:
         return f"Error: {e}"
 
@@ -1117,6 +1129,7 @@ async def resource_cell_outputs(cell_id: str) -> str:
         return "Error: No active session"
 
     try:
+        await _send_cell_cursor(_session, cell_id)
         cell = await _session.get_cell(cell_id=cell_id)
         output_text = _format_outputs_text(cell.outputs)
         if not output_text:

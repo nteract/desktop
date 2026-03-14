@@ -54,9 +54,12 @@ impl Session {
         let notebook_id =
             notebook_id.unwrap_or_else(|| format!("agent-session-{}", uuid::Uuid::new_v4()));
 
+        let mut state = SessionState::new();
+        state.peer_label = peer_label.clone();
+
         Ok(Self {
             runtime,
-            state: Arc::new(Mutex::new(SessionState::new())),
+            state: Arc::new(Mutex::new(state)),
             notebook_id,
             peer_label,
         })
@@ -122,8 +125,10 @@ impl Session {
         let runtime = Runtime::new().map_err(to_py_err)?;
         let socket_path = get_socket_path();
 
-        let (notebook_id, state, _info) =
+        let (notebook_id, mut state, _info) =
             runtime.block_on(session_core::connect_open(socket_path, path))?;
+
+        state.peer_label = peer_label.clone();
 
         Ok(Self {
             runtime,
@@ -171,11 +176,13 @@ impl Session {
         let socket_path = get_socket_path();
         let working_dir_buf = working_dir.map(PathBuf::from);
 
-        let (notebook_id, state, _info) = rt.block_on(session_core::connect_create(
+        let (notebook_id, mut state, _info) = rt.block_on(session_core::connect_create(
             socket_path,
             runtime,
             working_dir_buf,
         ))?;
+
+        state.peer_label = peer_label.clone();
 
         Ok(Self {
             runtime: rt,
