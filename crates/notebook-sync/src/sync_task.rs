@@ -94,11 +94,11 @@ pub struct SyncTaskConfig {
 ///
 /// The document mutex is held briefly for sync message generation/application.
 /// It is NEVER held across `.await` points (socket I/O).
-pub async fn run<S>(mut config: SyncTaskConfig, stream: S)
+pub async fn run<R, W>(mut config: SyncTaskConfig, reader: R, writer: W)
 where
-    S: AsyncRead + AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
 {
-    let (reader, writer) = tokio::io::split(stream);
     let mut reader = tokio::io::BufReader::new(reader);
     let mut writer = tokio::io::BufWriter::new(writer);
 

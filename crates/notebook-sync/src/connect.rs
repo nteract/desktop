@@ -387,11 +387,6 @@ where
         notebook_id.clone(),
     );
 
-    // Reunite reader + writer into a single stream for the sync task.
-    // We use a helper struct since tokio::io::split produces types that
-    // can't be unsplit across the generic boundary.
-    let stream = ReuniteStream { reader, writer };
-
     let task_config = sync_task::SyncTaskConfig {
         doc: Arc::clone(&shared),
         changed_rx,
@@ -406,7 +401,7 @@ where
             "[notebook-sync] Sync task started for {}",
             notebook_id_for_task
         );
-        sync_task::run(task_config, stream).await;
+        sync_task::run(task_config, reader, writer).await;
         info!(
             "[notebook-sync] Sync task stopped for {}",
             notebook_id_for_task
@@ -516,55 +511,4 @@ where
     }
 
     Ok(())
-}
-
-// =========================================================================
-// Helper: reunite split reader/writer into a single stream
-// =========================================================================
-
-/// A stream that wraps separate reader and writer halves.
-///
-/// Used to pass a split stream to the sync task which needs a single
-/// `AsyncRead + AsyncWrite` value.
-struct ReuniteStream<R, W> {
-    reader: R,
-    writer: W,
-}
-
-impl<R: AsyncRead + Unpin, W: Unpin> AsyncRead for ReuniteStream<R, W> {
-    fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        let this = self.get_mut();
-        std::pin::Pin::new(&mut this.reader).poll_read(cx, buf)
-    }
-}
-
-impl<R: Unpin, W: AsyncWrite + Unpin> AsyncWrite for ReuniteStream<R, W> {
-    fn poll_write(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        let this = self.get_mut();
-        std::pin::Pin::new(&mut this.writer).poll_write(cx, buf)
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        let this = self.get_mut();
-        std::pin::Pin::new(&mut this.writer).poll_flush(cx)
-    }
-
-    fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        let this = self.get_mut();
-        std::pin::Pin::new(&mut this.writer).poll_shutdown(cx)
-    }
 }
