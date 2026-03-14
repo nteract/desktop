@@ -39,6 +39,34 @@ use crate::stream_terminal::{StreamOutputState, StreamTerminals};
 use crate::terminal_size::{TERMINAL_COLUMNS_STR, TERMINAL_LINES_STR};
 use crate::{EnvType, PooledEnv};
 
+fn agent_debug_log(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
+    let _ = (|| -> std::io::Result<()> {
+        use std::io::Write as _;
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/opt/cursor/logs/debug.log")?
+            .write_all(
+                format!(
+                    "{}\n",
+                    serde_json::json!({
+                        "hypothesisId": hypothesis_id,
+                        "location": location,
+                        "message": message,
+                        "data": data,
+                        "timestamp": timestamp,
+                    })
+                )
+                .as_bytes(),
+            )?;
+        Ok(())
+    })();
+}
+
 // ── Launched Environment Config ─────────────────────────────────────────────
 
 /// Environment configuration captured at kernel launch time.
@@ -804,6 +832,17 @@ impl RoomKernel {
                                 if status.execution_state == jupyter_protocol::ExecutionState::Idle
                                 {
                                     if let Some(cid) = cell_id {
+                                        // #region agent log
+                                        agent_debug_log(
+                                            "A",
+                                            "crates/runtimed/src/kernel_manager.rs:806",
+                                            "queued execution done from idle status",
+                                            serde_json::json!({
+                                                "cellId": cid,
+                                                "msgType": message.header.msg_type,
+                                            }),
+                                        );
+                                        // #endregion
                                         let _ = iopub_cmd_tx
                                             .try_send(QueueCommand::ExecutionDone { cell_id: cid });
                                     }
@@ -911,6 +950,25 @@ impl RoomKernel {
                                         (text, state)
                                     };
 
+                                    // #region agent log
+                                    agent_debug_log(
+                                        "C",
+                                        "crates/runtimed/src/kernel_manager.rs:914",
+                                        "stream rendered before doc upsert",
+                                        serde_json::json!({
+                                            "cellId": cid,
+                                            "stream": stream_name,
+                                            "rawLen": stream.text.len(),
+                                            "rawHasCr": stream.text.contains('\r'),
+                                            "rawHasLf": stream.text.contains('\n'),
+                                            "rawHasAnsi": stream.text.contains("\u{1b}["),
+                                            "renderedLen": rendered_text.len(),
+                                            "renderedNonEmpty": !rendered_text.is_empty(),
+                                            "knownState": known_state.is_some(),
+                                        }),
+                                    );
+                                    // #endregion
+
                                     // Create nbformat JSON with rendered text
                                     let nbformat_value = serde_json::json!({
                                         "output_type": "stream",
@@ -953,7 +1011,7 @@ impl RoomKernel {
                                     };
 
                                     // Upsert stream output (update if validated, append if not)
-                                    let (persist_bytes, broadcast_output_index) = {
+                                    let (persist_bytes, broadcast_output_index, upsert_debug) = {
                                         let mut doc_guard = doc.write().await;
                                         let upsert_result = doc_guard.upsert_stream_output(
                                             cid,
@@ -961,7 +1019,7 @@ impl RoomKernel {
                                             &output_ref,
                                             known_state.as_ref(),
                                         );
-                                        let broadcast_idx = match &upsert_result {
+                                        let (broadcast_idx, upsert_debug) = match &upsert_result {
                                             Ok((updated, output_index)) => {
                                                 // Store new state (index + hash) for future validation
                                                 let mut terminals = stream_terminals.lock().await;
@@ -974,25 +1032,52 @@ impl RoomKernel {
                                                     },
                                                 );
                                                 // Include output_index in broadcast if this was an update
-                                                if *updated {
-                                                    Some(*output_index)
-                                                } else {
-                                                    None
-                                                }
+                                                (
+                                                    if *updated {
+                                                        Some(*output_index)
+                                                    } else {
+                                                        None
+                                                    },
+                                                    serde_json::json!({
+                                                        "ok": true,
+                                                        "updated": updated,
+                                                        "outputIndex": output_index,
+                                                    }),
+                                                )
                                             }
                                             Err(e) => {
                                                 warn!(
                                                     "[kernel-manager] Failed to upsert stream output: {}",
                                                     e
                                                 );
-                                                None
+                                                (
+                                                    None,
+                                                    serde_json::json!({
+                                                        "ok": false,
+                                                        "error": e.to_string(),
+                                                    }),
+                                                )
                                             }
                                         };
                                         let bytes = doc_guard.save();
                                         let _ = changed_tx.send(());
-                                        (bytes, broadcast_idx)
+                                        (bytes, broadcast_idx, upsert_debug)
                                     };
                                     let _ = persist_tx.send(Some(persist_bytes));
+
+                                    // #region agent log
+                                    agent_debug_log(
+                                        "D",
+                                        "crates/runtimed/src/kernel_manager.rs:1022",
+                                        "stream output upserted into daemon doc",
+                                        serde_json::json!({
+                                            "cellId": cid,
+                                            "stream": stream_name,
+                                            "broadcastOutputIndex": broadcast_output_index,
+                                            "upsert": upsert_debug,
+                                        }),
+                                    );
+                                    // #endregion
 
                                     let _ = broadcast_tx.send(NotebookBroadcast::Output {
                                         cell_id: cid.clone(),
@@ -1826,6 +1911,16 @@ impl RoomKernel {
             // to one entry per cell while avoiding the race condition.
 
             // Broadcast done
+            // #region agent log
+            agent_debug_log(
+                "A",
+                "crates/runtimed/src/kernel_manager.rs:1856",
+                "broadcasting execution done from kernel manager",
+                serde_json::json!({
+                    "cellId": cell_id,
+                }),
+            );
+            // #endregion
             let _ = self.broadcast_tx.send(NotebookBroadcast::ExecutionDone {
                 cell_id: cell_id.to_string(),
             });

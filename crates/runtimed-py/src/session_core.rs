@@ -27,6 +27,34 @@ use crate::output_resolver;
 
 use pyo3::prelude::*;
 
+fn agent_debug_log(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
+    let _ = (|| -> std::io::Result<()> {
+        use std::io::Write as _;
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/opt/cursor/logs/debug.log")?
+            .write_all(
+                format!(
+                    "{}\n",
+                    serde_json::json!({
+                        "hypothesisId": hypothesis_id,
+                        "location": location,
+                        "message": message,
+                        "data": data,
+                        "timestamp": timestamp,
+                    })
+                )
+                .as_bytes(),
+            )?;
+        Ok(())
+    })();
+}
+
 // =========================================================================
 // Shared state
 // =========================================================================
@@ -679,6 +707,16 @@ pub(crate) async fn collect_outputs(
                         cell_id: msg_cell_id,
                     } => {
                         if msg_cell_id == cell_id {
+                            // #region agent log
+                            agent_debug_log(
+                                "B",
+                                "crates/runtimed-py/src/session_core.rs:711",
+                                "execution done broadcast received by python session",
+                                serde_json::json!({
+                                    "cellId": cell_id,
+                                }),
+                            );
+                            // #endregion
                             log::debug!("[session_core] ExecutionDone received for {}", cell_id);
                             break;
                         }
@@ -730,6 +768,19 @@ pub(crate) async fn collect_outputs(
                 cell_id
             ))
         })?;
+
+        // #region agent log
+        agent_debug_log(
+            "B",
+            "crates/runtimed-py/src/session_core.rs:759",
+            "python snapshot read after confirm_sync",
+            serde_json::json!({
+                "cellId": cell_id,
+                "outputCount": snapshot.outputs.len(),
+                "executionCount": snapshot.execution_count,
+            }),
+        );
+        // #endregion
 
         (snapshot, blob_base_url, blob_store_path)
     };
