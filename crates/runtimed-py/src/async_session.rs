@@ -5,6 +5,7 @@
 //! All business logic lives in `session_core.rs`.
 
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -736,6 +737,51 @@ impl AsyncSession {
             }
             Ok(removed)
         })
+    }
+
+    /// Get the notebook's environment type from metadata structure.
+    ///
+    /// Returns "uv", "conda", or None if no env metadata exists.
+    /// This checks if the metadata structure exists, not whether deps are non-empty.
+    fn get_metadata_env_type<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future_into_py(py, async move {
+            let snapshot = session_core::get_notebook_metadata(&state).await?;
+            Ok(session_core::get_metadata_env_type(&snapshot))
+        })
+    }
+
+    /// Get user settings from local replica.
+    ///
+    /// Returns a dictionary with settings synced from daemon at connection time.
+    /// Returns None if settings sync failed during connection.
+    fn get_settings<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let state = self.state.blocking_lock();
+
+        match session_core::get_settings(&state) {
+            Some(settings) => {
+                let dict = PyDict::new(py);
+                dict.set_item("theme", settings.theme.to_string())?;
+                dict.set_item("default_runtime", settings.default_runtime.to_string())?;
+                dict.set_item(
+                    "default_python_env",
+                    settings.default_python_env.to_string(),
+                )?;
+                dict.set_item("keep_alive_secs", settings.keep_alive_secs)?;
+                dict.set_item("onboarding_completed", settings.onboarding_completed)?;
+
+                let uv_dict = PyDict::new(py);
+                uv_dict.set_item("default_packages", &settings.uv.default_packages)?;
+                dict.set_item("uv", uv_dict)?;
+
+                let conda_dict = PyDict::new(py);
+                conda_dict.set_item("default_packages", &settings.conda.default_packages)?;
+                dict.set_item("conda", conda_dict)?;
+
+                Ok(Some(dict))
+            }
+            None => Ok(None),
+        }
     }
 
     // =========================================================================

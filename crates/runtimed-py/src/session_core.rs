@@ -49,6 +49,8 @@ pub(crate) struct SessionState {
     pub connection_info: Option<NotebookConnectionInfo>,
     /// Notebook path (for project file detection during kernel launch)
     pub notebook_path: Option<String>,
+    /// User settings (synced from daemon at connection time)
+    pub settings: Option<runtimed::settings_doc::SyncedSettings>,
 }
 
 impl SessionState {
@@ -63,8 +65,48 @@ impl SessionState {
             blob_store_path: None,
             connection_info: None,
             notebook_path: None,
+            settings: None,
         }
     }
+}
+
+// =========================================================================
+// Settings
+// =========================================================================
+
+/// Sync settings from daemon and return the parsed settings.
+///
+/// This performs a one-shot Automerge sync with the daemon's settings document.
+/// Returns None if the connection fails (graceful degradation).
+pub(crate) async fn sync_settings(
+    socket_path: PathBuf,
+) -> Option<runtimed::settings_doc::SyncedSettings> {
+    match runtimed::sync_client::SyncClient::connect(socket_path).await {
+        Ok(client) => Some(client.get_all()),
+        Err(e) => {
+            log::warn!("[session-core] Settings sync failed: {}", e);
+            None
+        }
+    }
+}
+
+/// Get settings from session state.
+pub(crate) fn get_settings(state: &SessionState) -> Option<runtimed::settings_doc::SyncedSettings> {
+    state.settings.clone()
+}
+
+/// Get the notebook's environment type from metadata structure.
+///
+/// Returns "conda" if conda metadata exists, "uv" if uv metadata exists, None otherwise.
+/// This checks if the metadata structure exists, not whether deps are non-empty.
+pub(crate) fn get_metadata_env_type(snapshot: &NotebookMetadataSnapshot) -> Option<String> {
+    if snapshot.runt.conda.is_some() {
+        return Some("conda".to_string());
+    }
+    if snapshot.runt.uv.is_some() {
+        return Some("uv".to_string());
+    }
+    None
 }
 
 // =========================================================================
@@ -112,6 +154,9 @@ pub(crate) async fn connect_open(
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
     let connection_info = NotebookConnectionInfo::from_protocol(result.info);
 
+    // Sync settings from daemon (best-effort, don't fail if unavailable)
+    let settings = sync_settings(socket_path).await;
+
     let state = SessionState {
         handle: Some(result.handle),
         broadcast_rx: Some(result.broadcast_rx),
@@ -122,6 +167,7 @@ pub(crate) async fn connect_open(
         blob_store_path,
         connection_info: Some(connection_info.clone()),
         notebook_path: Some(path.to_string()),
+        settings,
     };
 
     Ok((notebook_id, state, connection_info))
@@ -144,6 +190,9 @@ pub(crate) async fn connect_create(
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
     let connection_info = NotebookConnectionInfo::from_protocol(result.info);
 
+    // Sync settings from daemon (best-effort, don't fail if unavailable)
+    let settings = sync_settings(socket_path).await;
+
     let state = SessionState {
         handle: Some(result.handle),
         broadcast_rx: Some(result.broadcast_rx),
@@ -154,6 +203,7 @@ pub(crate) async fn connect_create(
         blob_store_path,
         connection_info: Some(connection_info.clone()),
         notebook_path: working_dir.map(|p| p.to_string_lossy().to_string()),
+        settings,
     };
 
     Ok((notebook_id, state, connection_info))
