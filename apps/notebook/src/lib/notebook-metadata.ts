@@ -109,14 +109,16 @@ export function useDetectRuntime(): "python" | "deno" | null {
 export function useUvDependencies(): {
   dependencies: string[];
   requiresPython: string | null;
+  prerelease: string | null;
 } | null {
   const snapshot = useNotebookMetadata();
   const deps = snapshot?.runt?.uv?.dependencies;
   const requiresPython = snapshot?.runt?.uv?.["requires-python"] ?? null;
+  const prerelease = snapshot?.runt?.uv?.prerelease ?? null;
   return useMemo(() => {
     if (!deps) return null;
-    return { dependencies: deps, requiresPython };
-  }, [deps, requiresPython]);
+    return { dependencies: deps, requiresPython, prerelease };
+  }, [deps, requiresPython, prerelease]);
 }
 
 /**
@@ -166,6 +168,8 @@ export interface LanguageInfoSnapshot {
 export interface UvInlineMetadata {
   dependencies: string[];
   "requires-python"?: string;
+  /** UV prerelease strategy: "disallow" | "allow" | "if-necessary" | "explicit" | "if-necessary-or-explicit" */
+  prerelease?: string;
 }
 
 export interface CondaInlineMetadata {
@@ -293,6 +297,19 @@ export async function setUvRequiresPython(
 ): Promise<void> {
   if (!_handle) return;
   _handle.set_uv_requires_python(requiresPython ?? undefined);
+  await syncToRelay();
+  notifyMetadataChanged();
+}
+
+/**
+ * Set UV prerelease strategy.
+ * Pass "allow", "disallow", "if-necessary", "explicit", "if-necessary-or-explicit", or null to clear.
+ */
+export async function setUvPrerelease(
+  prerelease: string | null,
+): Promise<void> {
+  if (!_handle) return;
+  _handle.set_uv_prerelease(prerelease ?? undefined);
   await syncToRelay();
   notifyMetadataChanged();
 }

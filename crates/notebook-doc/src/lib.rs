@@ -346,6 +346,15 @@ impl NotebookDoc {
         self.set_metadata_snapshot(&snapshot)
     }
 
+    /// Set UV prerelease strategy, preserving deps and requires-python.
+    /// Creates the metadata snapshot and UV section if absent.
+    /// Pass "allow", "disallow", "if-necessary", "explicit", or "if-necessary-or-explicit".
+    pub fn set_uv_prerelease(&mut self, prerelease: Option<String>) -> Result<(), AutomergeError> {
+        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        snapshot.set_uv_prerelease(prerelease);
+        self.set_metadata_snapshot(&snapshot)
+    }
+
     // ── Conda dependency convenience methods ──────────────────────
 
     /// Add a Conda dependency, deduplicating by package name (case-insensitive).

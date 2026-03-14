@@ -1040,6 +1040,26 @@ export class NotebookHandle {
         }
     }
     /**
+     * Set UV prerelease strategy, preserving deps and requires-python.
+     * Pass "allow", "disallow", "if-necessary", "explicit", "if-necessary-or-explicit", or null to clear.
+     * @param {string | null} [prerelease]
+     */
+    set_uv_prerelease(prerelease) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            var ptr0 = isLikeNone(prerelease) ? 0 : passStringToWasm0(prerelease, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            var len0 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_set_uv_prerelease(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Set UV requires-python constraint, preserving deps.
      * Pass undefined/null to clear the constraint.
      * @param {string | null} [requires_python]

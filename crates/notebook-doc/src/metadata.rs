@@ -75,6 +75,11 @@ pub struct UvInlineMetadata {
         default
     )]
     pub requires_python: Option<String>,
+
+    /// UV prerelease strategy. When unset, UV uses its default (`if-necessary-or-explicit`).
+    /// Possible values: "disallow", "allow", "if-necessary", "explicit", "if-necessary-or-explicit"
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub prerelease: Option<String>,
 }
 
 /// Conda inline dependency metadata (`metadata.runt.conda`).
@@ -334,6 +339,7 @@ impl NotebookMetadataSnapshot {
         let uv = self.runt.uv.get_or_insert_with(|| UvInlineMetadata {
             dependencies: Vec::new(),
             requires_python: None,
+            prerelease: None,
         });
         let name = extract_package_name(pkg);
         uv.dependencies.retain(|d| extract_package_name(d) != name);
@@ -363,8 +369,21 @@ impl NotebookMetadataSnapshot {
         let uv = self.runt.uv.get_or_insert_with(|| UvInlineMetadata {
             dependencies: Vec::new(),
             requires_python: None,
+            prerelease: None,
         });
         uv.requires_python = requires_python;
+    }
+
+    /// Set UV prerelease strategy, preserving deps and requires-python.
+    /// Creates the UV section if it doesn't exist yet.
+    /// Pass "allow", "disallow", "if-necessary", "explicit", or "if-necessary-or-explicit".
+    pub fn set_uv_prerelease(&mut self, prerelease: Option<String>) {
+        let uv = self.runt.uv.get_or_insert_with(|| UvInlineMetadata {
+            dependencies: Vec::new(),
+            requires_python: None,
+            prerelease: None,
+        });
+        uv.prerelease = prerelease;
     }
 
     /// Get UV dependencies, or empty slice if no UV section.
@@ -453,6 +472,7 @@ impl RuntMetadata {
             uv: Some(UvInlineMetadata {
                 dependencies: Vec::new(),
                 requires_python: None,
+                prerelease: None,
             }),
             conda: None,
             deno: None,
@@ -590,6 +610,7 @@ mod tests {
                 uv: Some(UvInlineMetadata {
                     dependencies: vec!["pandas>=2.0".to_string(), "numpy".to_string()],
                     requires_python: Some(">=3.10".to_string()),
+                    prerelease: None,
                 }),
                 conda: None,
                 deno: None,
@@ -949,6 +970,7 @@ mod tests {
         s.runt.uv = Some(UvInlineMetadata {
             dependencies: vec!["numpy".to_string()],
             requires_python: Some(">=3.10".to_string()),
+            prerelease: None,
         });
 
         s.add_uv_dependency("pandas");

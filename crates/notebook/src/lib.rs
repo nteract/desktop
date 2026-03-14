@@ -2636,6 +2636,7 @@ async fn import_pyproject_dependencies(
     let deps = uv_env::NotebookDependencies {
         dependencies: all_deps.clone(),
         requires_python: config.requires_python,
+        prerelease: None,
     };
     uv_env::set_dependencies(&mut metadata, &deps);
     let new_snapshot = snapshot_from_nbformat(&metadata);

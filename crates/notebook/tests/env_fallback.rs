@@ -81,6 +81,7 @@ async fn test_uv_environment_creation_with_no_deps() {
     let deps = uv_env::NotebookDependencies {
         dependencies: vec![],
         requires_python: None,
+        prerelease: None,
     };
 
     let result = uv_env::prepare_environment(&deps, None).await;
@@ -124,6 +125,7 @@ async fn test_uv_environment_uses_cache_correctly() {
     let deps = uv_env::NotebookDependencies {
         dependencies: vec![],
         requires_python: Some(">=3.9".to_string()),
+        prerelease: None,
     };
 
     // Create environment twice

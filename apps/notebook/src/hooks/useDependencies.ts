@@ -5,6 +5,7 @@ import {
   addUvDependency,
   clearUvSection,
   removeUvDependency,
+  setUvPrerelease,
   setUvRequiresPython,
   useUvDependencies,
 } from "../lib/notebook-metadata";
@@ -12,6 +13,7 @@ import {
 export interface NotebookDependencies {
   dependencies: string[];
   requires_python: string | null;
+  prerelease: string | null;
 }
 
 /** Environment sync state from backend */
@@ -83,6 +85,7 @@ export function useDependencies() {
     ? {
         dependencies: uvDeps.dependencies,
         requires_python: uvDeps.requiresPython,
+        prerelease: uvDeps.prerelease,
       }
     : null;
 
@@ -190,6 +193,21 @@ export function useDependencies() {
     [resignTrust],
   );
 
+  const setPrerelease = useCallback(
+    async (prerelease: string | null) => {
+      setLoading(true);
+      try {
+        await setUvPrerelease(prerelease);
+        await resignTrust();
+      } catch (e) {
+        logger.error("Failed to set prerelease:", e);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [resignTrust],
+  );
+
   const hasDependencies =
     dependencies !== null && dependencies.dependencies.length > 0;
 
@@ -254,6 +272,7 @@ export function useDependencies() {
     removeDependency,
     clearAllDependencies,
     setRequiresPython,
+    setPrerelease,
     clearSyncNotice,
     // Environment sync state
     syncState,
