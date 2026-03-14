@@ -2163,11 +2163,11 @@ async fn doctor_command(
             .map(|c| c.status == "quarantined")
             .unwrap_or(false);
         #[cfg(not(target_os = "macos"))]
-        let launchd_not_loaded = false;
+        let _launchd_not_loaded = false;
         #[cfg(not(target_os = "macos"))]
         let launchd_error = false;
         #[cfg(not(target_os = "macos"))]
-        let is_quarantined = false;
+        let _is_quarantined = false;
 
         // Determine diagnosis
         let diagnosis = if daemon_running_result {
