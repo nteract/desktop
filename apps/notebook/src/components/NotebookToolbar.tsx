@@ -111,15 +111,16 @@ export function NotebookToolbar({
     kernelStatus === KERNEL_STATUS.NOT_STARTED ||
     kernelStatus === KERNEL_STATUS.SHUTDOWN;
   const envErrorMessage = envProgress?.error ?? null;
+  const envStatusText = envProgress?.statusText ?? kernelStatusText;
   const kernelStatusDescription = envProgress?.isActive
-    ? envProgress.statusText
+    ? envStatusText
     : envErrorMessage
-      ? envProgress.statusText
+      ? envStatusText
       : kernelStatus === KERNEL_STATUS.ERROR && kernelErrorMessage
         ? `Error \u2014 ${kernelErrorMessage}`
         : kernelStatusText;
   const kernelStatusTooltip = envProgress?.isActive
-    ? envProgress.statusText
+    ? envStatusText
     : kernelStatus === KERNEL_STATUS.ERROR && kernelErrorMessage
       ? `Error \u2014 ${kernelErrorMessage}`
       : kernelStatusText;
@@ -338,12 +339,12 @@ export function NotebookToolbar({
           />
           <span className="text-xs text-muted-foreground whitespace-nowrap">
             {envProgress?.isActive ? (
-              envProgress.statusText
+              envStatusText
             ) : envErrorMessage ? (
               <HoverCard openDelay={150} closeDelay={100}>
                 <HoverCardTrigger asChild>
                   <span className="cursor-help text-red-600 underline decoration-dotted underline-offset-2 dark:text-red-400">
-                    {envProgress.statusText}
+                    {envStatusText}
                   </span>
                 </HoverCardTrigger>
                 <HoverCardContent
