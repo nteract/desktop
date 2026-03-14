@@ -36,6 +36,7 @@ export interface RemotePeer {
 interface PresenceUpdate {
   type: "update";
   peer_id: string;
+  peer_label?: string;
   channel: "cursor" | "selection" | "kernel_state" | "custom";
   data: CursorPosition | SelectionRange | unknown;
 }
@@ -111,8 +112,13 @@ export function usePresence(peerId: string | null) {
           const existing = peersRef.current.get(msg.peer_id);
           const peer: RemotePeer = existing ?? {
             peerId: msg.peer_id,
-            peerLabel: "",
+            peerLabel: msg.peer_label ?? "",
           };
+
+          // Update peer_label if provided (may arrive with cursor/selection updates)
+          if (msg.peer_label && !peer.peerLabel) {
+            peer.peerLabel = msg.peer_label;
+          }
 
           if (msg.channel === "cursor") {
             peer.cursor = msg.data as CursorPosition;

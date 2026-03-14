@@ -50,8 +50,11 @@ impl AsyncSession {
         let notebook_id =
             notebook_id.unwrap_or_else(|| format!("agent-session-{}", uuid::Uuid::new_v4()));
 
+        let mut state = SessionState::new();
+        state.peer_label = peer_label.clone();
+
         Ok(Self {
-            state: Arc::new(Mutex::new(SessionState::new())),
+            state: Arc::new(Mutex::new(state)),
             notebook_id,
             peer_label,
         })
@@ -129,8 +132,10 @@ impl AsyncSession {
 
         future_into_py(py, async move {
             let socket_path = get_socket_path();
-            let (notebook_id, state, _info) =
+            let (notebook_id, mut state, _info) =
                 session_core::connect_open(socket_path, &path).await?;
+
+            state.peer_label = peer_label.clone();
 
             Ok(AsyncSession {
                 state: Arc::new(Mutex::new(state)),
@@ -177,8 +182,10 @@ impl AsyncSession {
 
         future_into_py(py, async move {
             let socket_path = get_socket_path();
-            let (notebook_id, state, _info) =
+            let (notebook_id, mut state, _info) =
                 session_core::connect_create(socket_path, &runtime, working_dir_buf).await?;
+
+            state.peer_label = peer_label.clone();
 
             Ok(AsyncSession {
                 state: Arc::new(Mutex::new(state)),

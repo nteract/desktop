@@ -51,6 +51,8 @@ pub(crate) struct SessionState {
     pub notebook_path: Option<String>,
     /// User settings (synced from daemon at connection time)
     pub settings: Option<runtimed::settings_doc::SyncedSettings>,
+    /// Peer label for presence (e.g., "Claude", "Agent")
+    pub peer_label: Option<String>,
 }
 
 impl SessionState {
@@ -66,6 +68,7 @@ impl SessionState {
             connection_info: None,
             notebook_path: None,
             settings: None,
+            peer_label: None,
         }
     }
 }
@@ -168,6 +171,7 @@ pub(crate) async fn connect_open(
         connection_info: Some(connection_info.clone()),
         notebook_path: Some(path.to_string()),
         settings,
+        peer_label: None, // Set by caller (Session/AsyncSession)
     };
 
     Ok((notebook_id, state, connection_info))
@@ -204,6 +208,7 @@ pub(crate) async fn connect_create(
         connection_info: Some(connection_info.clone()),
         notebook_path: working_dir.map(|p| p.to_string_lossy().to_string()),
         settings,
+        peer_label: None, // Set by caller (Session/AsyncSession)
     };
 
     Ok((notebook_id, state, connection_info))
@@ -419,25 +424,30 @@ pub(crate) async fn create_cell(
 ) -> PyResult<String> {
     let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
 
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    {
+        let st = state.lock().await;
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
 
-    // Determine after_cell_id from index
-    let after_cell_id = index.and_then(|i| {
-        if i == 0 {
-            None
-        } else {
-            let cells = handle.get_cells();
-            cells.get(i.saturating_sub(1)).map(|c| c.id.clone())
-        }
-    });
+        // Determine after_cell_id from index
+        let after_cell_id = index.and_then(|i| {
+            if i == 0 {
+                None
+            } else {
+                let cells = handle.get_cells();
+                cells.get(i.saturating_sub(1)).map(|c| c.id.clone())
+            }
+        });
 
-    handle
-        .add_cell_with_source(&cell_id, cell_type, after_cell_id.as_deref(), source)
-        .map_err(to_py_err)?;
+        handle
+            .add_cell_with_source(&cell_id, cell_type, after_cell_id.as_deref(), source)
+            .map_err(to_py_err)?;
+    }
+
+    // Emit presence on the new cell
+    emit_cursor_presence(state, &cell_id, 0, 0).await;
 
     Ok(cell_id)
 }
@@ -448,14 +458,26 @@ pub(crate) async fn set_source(
     cell_id: &str,
     source: &str,
 ) -> PyResult<()> {
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    {
+        let st = state.lock().await;
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
 
-    // Synchronous — direct doc mutation via DocHandle
-    handle.update_source(cell_id, source).map_err(to_py_err)?;
+        // Synchronous — direct doc mutation via DocHandle
+        handle.update_source(cell_id, source).map_err(to_py_err)?;
+    }
+
+    // Emit presence at end of new source (single pass, no allocation)
+    let (last_line, last_col) = source
+        .lines()
+        .enumerate()
+        .last()
+        .map(|(i, line)| (i as u32, line.len() as u32))
+        .unwrap_or((0, 0));
+    emit_cursor_presence(state, cell_id, last_line, last_col).await;
+
     Ok(())
 }
 
@@ -572,37 +594,49 @@ pub(crate) async fn move_cell(
     cell_id: &str,
     after_cell_id: Option<&str>,
 ) -> PyResult<String> {
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    {
+        let st = state.lock().await;
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
 
-    // Synchronous — direct doc mutation via DocHandle
-    handle
-        .move_cell(cell_id, after_cell_id)
-        .map_err(to_py_err)?;
+        // Synchronous — direct doc mutation via DocHandle
+        handle
+            .move_cell(cell_id, after_cell_id)
+            .map_err(to_py_err)?;
+    }
+
+    // Emit presence on the moved cell
+    emit_cursor_presence(state, cell_id, 0, 0).await;
+
     Ok(cell_id.to_string())
 }
 
 /// Clear a cell's outputs.
 pub(crate) async fn clear_outputs(state: &Arc<Mutex<SessionState>>, cell_id: &str) -> PyResult<()> {
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    let response = {
+        let st = state.lock().await;
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
 
-    // clear_outputs still goes through send_request (daemon clears kernel state too)
-    let response = handle
-        .send_request(NotebookRequest::ClearOutputs {
-            cell_id: cell_id.to_string(),
-        })
-        .await
-        .map_err(to_py_err)?;
+        // clear_outputs still goes through send_request (daemon clears kernel state too)
+        handle
+            .send_request(NotebookRequest::ClearOutputs {
+                cell_id: cell_id.to_string(),
+            })
+            .await
+            .map_err(to_py_err)?
+    };
 
     match response {
-        NotebookResponse::OutputsCleared { .. } => Ok(()),
+        NotebookResponse::OutputsCleared { .. } => {
+            // Emit presence on the cleared cell
+            emit_cursor_presence(state, cell_id, 0, 0).await;
+            Ok(())
+        }
         NotebookResponse::Error { error } => Err(to_py_err(error)),
         other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
     }
@@ -630,6 +664,9 @@ pub(crate) async fn execute_cell(
             ensure_kernel_started(state, notebook_id).await?;
         }
     }
+
+    // Emit presence on the cell being executed
+    emit_cursor_presence(state, cell_id, 0, 0).await;
 
     let timeout = std::time::Duration::from_secs_f64(timeout_secs);
     let result = tokio::time::timeout(timeout, async {
@@ -828,23 +865,39 @@ pub(crate) async fn run_all_cells(
         }
     }
 
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    let (response, last_code_cell_id) = {
+        let st = state.lock().await;
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
 
-    handle.confirm_sync().await.map_err(to_py_err)?;
+        // Get last code cell ID before queuing (for presence)
+        let cells = handle.get_cells();
+        let last_code_cell_id = cells
+            .iter()
+            .rev()
+            .find(|c| c.cell_type == "code")
+            .map(|c| c.id.clone());
 
-    let response = handle
-        .send_request(NotebookRequest::RunAllCells {})
-        .await
-        .map_err(to_py_err)?;
+        handle.confirm_sync().await.map_err(to_py_err)?;
 
-    drop(st);
+        let response = handle
+            .send_request(NotebookRequest::RunAllCells {})
+            .await
+            .map_err(to_py_err)?;
+
+        (response, last_code_cell_id)
+    };
 
     match response {
-        NotebookResponse::AllCellsQueued { count } => Ok(count),
+        NotebookResponse::AllCellsQueued { count } => {
+            // Emit presence on last code cell
+            if let Some(cell_id) = last_code_cell_id {
+                emit_cursor_presence(state, &cell_id, 0, 0).await;
+            }
+            Ok(count)
+        }
         NotebookResponse::NoKernel {} => Err(to_py_err("No kernel running")),
         NotebookResponse::Error { error } => Err(to_py_err(error)),
         other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
@@ -909,6 +962,45 @@ pub(crate) async fn set_selection(
         .ok_or_else(|| to_py_err("Not connected"))?;
 
     handle.send_presence(data).await.map_err(to_py_err)
+}
+
+/// Internal helper to emit cursor presence (best-effort).
+/// Reads peer_label from SessionState, so callers don't need to pass it.
+/// Errors are silently ignored since presence is non-critical.
+pub(crate) async fn emit_cursor_presence(
+    state: &Arc<Mutex<SessionState>>,
+    cell_id: &str,
+    line: u32,
+    column: u32,
+) {
+    // Best-effort: don't propagate errors
+    let _ = emit_cursor_presence_internal(state, cell_id, line, column).await;
+}
+
+async fn emit_cursor_presence_internal(
+    state: &Arc<Mutex<SessionState>>,
+    cell_id: &str,
+    line: u32,
+    column: u32,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Clone what we need and drop the lock before await to avoid contention
+    let (data, handle) = {
+        let st = state.lock().await;
+        let peer_label = st.peer_label.clone();
+        let data = notebook_doc::presence::encode_cursor_update_labeled(
+            "local",
+            peer_label.as_deref(),
+            &notebook_doc::presence::CursorPosition {
+                cell_id: cell_id.to_string(),
+                line,
+                column,
+            },
+        );
+        let handle = st.handle.clone().ok_or("Not connected")?;
+        (data, handle)
+    };
+    handle.send_presence(data).await?;
+    Ok(())
 }
 
 // =========================================================================
