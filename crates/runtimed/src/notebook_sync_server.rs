@@ -1373,20 +1373,13 @@ where
                         // ExecutionDone event. Without this, there's a race where
                         // the broadcast arrives before the sync frames carrying
                         // the outputs, causing clients to read empty outputs.
-                        if matches!(broadcast, NotebookBroadcast::ExecutionDone { .. }) {
-                            let encoded = {
-                                let mut doc = room.doc.write().await;
-                                doc.generate_sync_message(&mut peer_state)
-                                    .map(|msg| msg.encode())
-                            };
-                            if let Some(encoded) = encoded {
-                                connection::send_typed_frame(
-                                    writer,
-                                    NotebookFrameType::AutomergeSync,
-                                    &encoded,
-                                )
-                                .await?;
-                            }
+                        if matches!(&broadcast, NotebookBroadcast::ExecutionDone { .. }) {
+                            send_doc_sync(
+                                &room,
+                                &mut peer_state,
+                                writer,
+                            )
+                            .await?;
                         }
 
                         connection::send_typed_json_frame(
@@ -1404,20 +1397,12 @@ where
                         // The peer missed some broadcasts (outputs, status changes).
                         // The Automerge doc contains the persisted state, so send a
                         // sync message to catch the peer up on any missed output data.
-                        // Encode inside the lock, send outside it.
-                        let encoded = {
-                            let mut doc = room.doc.write().await;
-                            doc.generate_sync_message(&mut peer_state)
-                                .map(|msg| msg.encode())
-                        };
-                        if let Some(encoded) = encoded {
-                            connection::send_typed_frame(
-                                writer,
-                                NotebookFrameType::AutomergeSync,
-                                &encoded,
-                            )
-                            .await?;
-                        }
+                        send_doc_sync(
+                            &room,
+                            &mut peer_state,
+                            writer,
+                        )
+                        .await?;
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         // Broadcast channel closed — room is being evicted
@@ -1427,6 +1412,27 @@ where
             }
         }
     }
+}
+
+/// Send a doc sync message to a peer if there are pending changes.
+///
+/// Generates an Automerge sync message from the room's doc and sends it
+/// as a typed frame. Used before forwarding ExecutionDone (to ensure
+/// outputs are synced) and after broadcast lag recovery.
+async fn send_doc_sync<W: tokio::io::AsyncWrite + Unpin>(
+    room: &NotebookRoom,
+    peer_state: &mut automerge::sync::State,
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    let encoded = {
+        let mut doc = room.doc.write().await;
+        doc.generate_sync_message(peer_state)
+            .map(|msg| msg.encode())
+    };
+    if let Some(encoded) = encoded {
+        connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &encoded).await?;
+    }
+    Ok(())
 }
 
 /// Acquire a pooled environment from the appropriate pool based on env_source.
