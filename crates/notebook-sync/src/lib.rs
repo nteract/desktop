@@ -38,3 +38,6 @@ pub use error::SyncError;
 pub use handle::DocHandle;
 pub use shared::SharedDocState;
 pub use snapshot::NotebookSnapshot;
+
+#[cfg(test)]
+mod tests;
