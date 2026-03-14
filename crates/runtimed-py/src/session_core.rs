@@ -606,6 +606,11 @@ pub(crate) async fn execute_cell(
 
         let blob_base_url = st.blob_base_url.clone();
         let blob_store_path = st.blob_store_path.clone();
+        let execution_broadcast_rx = st
+            .broadcast_rx
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?
+            .resubscribe();
 
         // #region agent log
         agent_debug_log(
@@ -657,7 +662,14 @@ pub(crate) async fn execute_cell(
 
         drop(st);
 
-        collect_outputs(state, cell_id, blob_base_url, blob_store_path).await
+        collect_outputs(
+            cell_id,
+            execution_broadcast_rx,
+            blob_base_url,
+            blob_store_path,
+            state,
+        )
+        .await
     })
     .await;
 
@@ -712,10 +724,11 @@ pub(crate) async fn queue_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) 
 /// Uses the broadcast stream only as a signal for when execution is done.
 /// The Automerge document is the source of truth for cell outputs.
 pub(crate) async fn collect_outputs(
-    state: &Arc<Mutex<SessionState>>,
     cell_id: &str,
+    mut broadcast_rx: NotebookBroadcastReceiver,
     blob_base_url: Option<String>,
     blob_store_path: Option<PathBuf>,
+    state: &Arc<Mutex<SessionState>>,
 ) -> PyResult<ExecutionResult> {
     let mut kernel_error: Option<String> = None;
 
@@ -732,20 +745,11 @@ pub(crate) async fn collect_outputs(
 
     // Phase 1: Wait for ExecutionDone or KernelError signal via broadcast.
     loop {
-        let mut st = state.lock().await;
-
-        let broadcast_rx = st
-            .broadcast_rx
-            .as_mut()
-            .ok_or_else(|| to_py_err("Not connected"))?;
-
         let broadcast =
             tokio::time::timeout(std::time::Duration::from_millis(100), broadcast_rx.recv()).await;
 
         match broadcast {
             Ok(Some(msg)) => {
-                drop(st);
-
                 match msg {
                     NotebookBroadcast::ExecutionDone {
                         cell_id: msg_cell_id,
