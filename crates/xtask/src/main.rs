@@ -138,18 +138,26 @@ fn cmd_notebook(notebook: Option<&str>, skip_install: bool, skip_build: bool) {
     }
 
     println!();
-    println!("Starting development daemon for one-shot notebook workflow...");
-    let mut daemon = spawn_dev_daemon_process(false);
-    if let Err(error) = wait_for_dev_daemon(&mut daemon, Duration::from_secs(30)) {
-        stop_child(&mut daemon, "development daemon");
-        eprintln!("{error}");
-        exit(1);
+    let mut daemon = None;
+    if dev_daemon_running() {
+        println!("Reusing existing development daemon for this worktree.");
+    } else {
+        println!("Starting development daemon for one-shot notebook workflow...");
+        let mut child = spawn_dev_daemon_process(false);
+        if let Err(error) = wait_for_dev_daemon(&mut child, Duration::from_secs(30)) {
+            stop_child(&mut child, "development daemon");
+            eprintln!("{error}");
+            exit(1);
+        }
+        println!("Development daemon is ready.");
+        daemon = Some(child);
     }
-    println!("Development daemon is ready.");
     println!();
 
     let status = run_notebook_dev_app(notebook, false, true);
-    stop_child(&mut daemon, "development daemon");
+    if let Some(ref mut child) = daemon {
+        stop_child(child, "development daemon");
+    }
     exit_on_failed_status("cargo tauri dev", status);
 }
 
