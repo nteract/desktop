@@ -271,9 +271,10 @@ impl NotebookDoc {
         // Write native Automerge keys for per-field CRDT merging
         match &snapshot.kernelspec {
             Some(ks) => {
-                if let Ok(v) = serde_json::to_value(ks) {
-                    put_json_at_key(&mut self.doc, &meta_id, "kernelspec", &v)?;
-                }
+                let v = serde_json::to_value(ks).map_err(|e| {
+                    AutomergeError::InvalidObjId(format!("serialize kernelspec: {}", e))
+                })?;
+                put_json_at_key(&mut self.doc, &meta_id, "kernelspec", &v)?;
             }
             None => {
                 let _ = self.doc.delete(&meta_id, "kernelspec");
@@ -282,18 +283,19 @@ impl NotebookDoc {
 
         match &snapshot.language_info {
             Some(li) => {
-                if let Ok(v) = serde_json::to_value(li) {
-                    put_json_at_key(&mut self.doc, &meta_id, "language_info", &v)?;
-                }
+                let v = serde_json::to_value(li).map_err(|e| {
+                    AutomergeError::InvalidObjId(format!("serialize language_info: {}", e))
+                })?;
+                put_json_at_key(&mut self.doc, &meta_id, "language_info", &v)?;
             }
             None => {
                 let _ = self.doc.delete(&meta_id, "language_info");
             }
         }
 
-        if let Ok(v) = serde_json::to_value(&snapshot.runt) {
-            put_json_at_key(&mut self.doc, &meta_id, "runt", &v)?;
-        }
+        let runt_v = serde_json::to_value(&snapshot.runt)
+            .map_err(|e| AutomergeError::InvalidObjId(format!("serialize runt: {}", e)))?;
+        put_json_at_key(&mut self.doc, &meta_id, "runt", &runt_v)?;
 
         // Dual-write legacy JSON string for backward compatibility
         let json = serde_json::to_string(snapshot)
@@ -1711,7 +1713,7 @@ fn read_json_value<P: Into<automerge::Prop>>(
         automerge::Value::Object(ObjType::List) => {
             let len = doc.length(&obj_id);
             let arr: Vec<serde_json::Value> = (0..len)
-                .filter_map(|i| read_json_value(doc, &obj_id, i))
+                .map(|i| read_json_value(doc, &obj_id, i).unwrap_or(serde_json::Value::Null))
                 .collect();
             Some(serde_json::Value::Array(arr))
         }
