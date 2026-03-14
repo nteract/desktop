@@ -105,6 +105,12 @@ export function NotebookToolbar({
   const isKernelNotStarted =
     kernelStatus === KERNEL_STATUS.NOT_STARTED ||
     kernelStatus === KERNEL_STATUS.SHUTDOWN;
+  const toolbarButtonClassName =
+    "shrink-0 whitespace-nowrap flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors hover:bg-muted";
+  const toolbarMutedButtonClassName = cn(
+    toolbarButtonClassName,
+    "text-foreground/80 hover:text-foreground [&_svg]:text-slate-600 dark:[&_svg]:text-slate-300",
+  );
 
   // Derive env manager label for the runtime pill (e.g. "uv", "conda", "pixi")
   const envManager: EnvBadgeVariant | null =
@@ -131,8 +137,8 @@ export function NotebookToolbar({
           type="button"
           onClick={onSave}
           className={cn(
-            "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors hover:bg-muted",
-            dirty ? "text-foreground" : "text-muted-foreground",
+            toolbarMutedButtonClassName,
+            dirty && "text-foreground",
           )}
           title="Save (Cmd+S)"
           data-testid="save-button"
@@ -147,7 +153,7 @@ export function NotebookToolbar({
         <button
           type="button"
           onClick={() => onAddCell("code", focusedCellId ?? lastCellId)}
-          className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className={toolbarMutedButtonClassName}
           title="Add code cell"
           data-testid="add-code-cell-button"
         >
@@ -157,7 +163,7 @@ export function NotebookToolbar({
         <button
           type="button"
           onClick={() => onAddCell("markdown", focusedCellId ?? lastCellId)}
-          className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className={toolbarMutedButtonClassName}
           title="Add markdown cell"
           data-testid="add-markdown-cell-button"
         >
@@ -173,7 +179,7 @@ export function NotebookToolbar({
             type="button"
             onClick={handleStartKernel}
             disabled={listKernelspecs && kernelspecs.length === 0}
-            className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+            className={cn(toolbarMutedButtonClassName, "disabled:opacity-50")}
             title="Start kernel"
             data-testid="start-kernel-button"
           >
@@ -184,7 +190,7 @@ export function NotebookToolbar({
         <button
           type="button"
           onClick={onRunAllCells}
-          className="flex items-center gap-1 rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
+          className={toolbarMutedButtonClassName}
           title="Run all cells"
           data-testid="run-all-button"
         >
@@ -194,7 +200,7 @@ export function NotebookToolbar({
         <button
           type="button"
           onClick={onRestartKernel}
-          className="flex items-center gap-1 rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
+          className={toolbarMutedButtonClassName}
           title="Restart kernel"
           data-testid="restart-kernel-button"
         >
@@ -204,7 +210,7 @@ export function NotebookToolbar({
         <button
           type="button"
           onClick={onRestartAndRunAll}
-          className="flex items-center gap-1 rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
+          className={toolbarMutedButtonClassName}
           title="Restart kernel and run all cells"
           data-testid="restart-run-all-button"
         >
@@ -216,10 +222,10 @@ export function NotebookToolbar({
             type="button"
             onClick={onInterruptKernel}
             className={cn(
-              "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
+              toolbarButtonClassName,
               kernelStatus === KERNEL_STATUS.BUSY
                 ? "text-destructive hover:bg-destructive/10"
-                : "text-foreground hover:bg-muted",
+                : "text-foreground/80 hover:text-foreground [&_svg]:text-slate-600 dark:[&_svg]:text-slate-300",
             )}
             title="Interrupt kernel"
             data-testid="interrupt-kernel-button"
