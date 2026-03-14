@@ -2163,11 +2163,14 @@ async fn doctor_command(
             .map(|c| c.status == "quarantined")
             .unwrap_or(false);
         #[cfg(not(target_os = "macos"))]
-        let _launchd_not_loaded = false;
+        #[allow(unused_variables)]
+        let launchd_not_loaded = false;
         #[cfg(not(target_os = "macos"))]
+        #[allow(unused_variables)]
         let launchd_error = false;
         #[cfg(not(target_os = "macos"))]
-        let _is_quarantined = false;
+        #[allow(unused_variables)]
+        let is_quarantined = false;
 
         // Determine diagnosis
         let diagnosis = if daemon_running_result {
@@ -2245,7 +2248,8 @@ async fn doctor_command(
         false
     };
     #[cfg(not(target_os = "macos"))]
-    let _launchd_not_loaded = false;
+    #[allow(unused_variables)]
+    let launchd_not_loaded = false;
 
     // On macOS, check if binary has quarantine xattr
     #[cfg(target_os = "macos")]
@@ -2260,7 +2264,8 @@ async fn doctor_command(
         false
     };
     #[cfg(not(target_os = "macos"))]
-    let _is_quarantined = false;
+    #[allow(unused_variables)]
+    let is_quarantined = false;
 
     // Check daemon state for fix operations
     let daemon_state_status = if let Some(info) = daemon_info {
