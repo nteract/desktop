@@ -251,6 +251,48 @@ def _outputs_to_content(outputs: list[runtimed.Output]) -> list[ContentItem]:
     return items
 
 
+def _format_cell_summary(
+    index: int,
+    cell: runtimed.Cell,
+    preview_chars: int = 60,
+    include_outputs: bool = False,
+) -> str:
+    """Format a cell as a single summary line.
+
+    Example output:
+    0 | markdown | id=cell-1be2a179-... | # Crate Download Analysis
+    1 | code | id=cell-e18fcc2a-... | exec=4 | import requests...[+45 chars]
+    """
+    parts = [str(index), cell.cell_type, f"id={cell.id}"]
+
+    if cell.cell_type == "code" and cell.execution_count is not None:
+        parts.append(f"exec={cell.execution_count}")
+
+    # Source preview
+    if cell.source:
+        # Collapse to single line, strip leading/trailing whitespace
+        source_line = " ".join(cell.source.split())
+        if len(source_line) > preview_chars:
+            remaining = len(source_line) - preview_chars
+            source_line = f"{source_line[:preview_chars]}[+{remaining} chars]"
+        parts.append(source_line)
+
+    line = " | ".join(parts)
+
+    # Optional output preview
+    if include_outputs and cell.outputs:
+        output_text = _format_outputs_text(cell.outputs)
+        if output_text:
+            # Collapse to single line
+            output_line = " ".join(output_text.split())
+            if len(output_line) > preview_chars:
+                remaining = len(output_line) - preview_chars
+                output_line = f"{output_line[:preview_chars]}[+{remaining} chars]"
+            line += f"\n  └─ {output_line}"
+
+    return line
+
+
 def _format_header(
     cell_id: str,
     cell_type: str | None = None,
@@ -670,18 +712,41 @@ async def create_cell(
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def set_cell_source(
+async def set_cell(
     cell_id: str,
-    source: Annotated[str, Field(description="Complete new source code for the cell")],
-    and_run: Annotated[bool, Field(description="Execute the cell immediately after edit")] = False,
+    source: Annotated[
+        str | None, Field(description="New source code (None to leave unchanged)")
+    ] = None,
+    cell_type: Annotated[
+        Literal["code", "markdown", "raw"] | None,
+        Field(description="New cell type (None to leave unchanged)"),
+    ] = None,
+    and_run: Annotated[
+        bool, Field(description="Execute the cell after changes (code cells only)")
+    ] = False,
     timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 5.0,
 ) -> ContentItem | list[ContentItem]:
-    """Replace a cell's entire source. Prefer replace_match for targeted edits."""
+    """Update a cell's source and/or type. Use replace_match for targeted edits."""
     session = await _get_session()
-    await session.set_source(cell_id=cell_id, source=source)
+
+    # Update source if provided
+    if source is not None:
+        await session.set_source(cell_id=cell_id, source=source)
+
+    # Update cell type if provided
+    if cell_type is not None:
+        await session.set_cell_type(cell_id=cell_id, cell_type=cell_type)
+
+    # If nothing was changed, return current cell state
+    if source is None and cell_type is None:
+        cell = await session.get_cell(cell_id=cell_id)
+        return TextContent(type="text", text=f'Cell "{cell_id}" unchanged (no updates specified)')
 
     if and_run:
-        return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
+        # Re-fetch cell to check type after potential change
+        cell = await session.get_cell(cell_id=cell_id)
+        if cell.cell_type == "code":
+            return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
 
     return TextContent(type="text", text=f'Cell "{cell_id}" updated')
 
@@ -805,23 +870,6 @@ async def replace_regex(
     return TextContent(type="text", text=diff)
 
 
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
-async def append_source(
-    cell_id: str,
-    text: Annotated[str, Field(description="Text to append to the cell source")],
-    and_run: Annotated[bool, Field(description="Execute the cell immediately after edit")] = False,
-    timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 5.0,
-) -> ContentItem | list[ContentItem]:
-    """Append text to a cell's source. Ideal for streaming tokens."""
-    session = await _get_session()
-    await session.append_source(cell_id=cell_id, text=text)
-
-    if and_run:
-        return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
-
-    return TextContent(type="text", text=f'Appended to cell "{cell_id}"')
-
-
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def get_cell(
     cell_id: str,
@@ -860,17 +908,34 @@ def _output_to_dict(output: runtimed.Output) -> dict[str, Any]:
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def get_all_cells(
     format: Annotated[
-        Literal["markdown", "json"],
-        Field(description="'markdown' for visual display, 'json' for structured data"),
-    ] = "markdown",
-) -> list[ContentItem] | list[dict[str, Any]]:
-    """Get all cells with source and outputs.
+        Literal["summary", "json", "rich"],
+        Field(description="'summary' (default), 'json', or 'rich' for full content"),
+    ] = "summary",
+    start: Annotated[int, Field(description="Starting cell index (0-based)")] = 0,
+    count: Annotated[
+        int | None, Field(description="Number of cells to return (None = all)")
+    ] = None,
+    include_outputs: Annotated[
+        bool, Field(description="Include output previews in summary format")
+    ] = False,
+    preview_chars: Annotated[int, Field(description="Max chars for source preview")] = 60,
+) -> str | list[ContentItem] | list[dict[str, Any]]:
+    """Get all cells. Use summary (default) for discovery, get_cell() for details.
 
     Args:
-        format: "markdown" for visual display (default), "json" for structured data.
+        format: "summary" for compact overview, "json" for structured data,
+            "rich" for full content with images.
+        start: Starting cell index for pagination.
+        count: Number of cells to return (None = all remaining).
+        include_outputs: Include output previews in summary format.
+        preview_chars: Max characters for source/output preview in summary format.
     """
     session = await _get_session()
     cells = await session.get_cells()
+
+    # Apply pagination
+    end = start + count if count is not None else len(cells)
+    cells = cells[start:end]
 
     if format == "json":
         return [
@@ -884,11 +949,18 @@ async def get_all_cells(
             for cell in cells
         ]
 
-    # Default markdown format
-    items: list[ContentItem] = []
-    for cell in cells:
-        items.extend(_cell_to_content(cell))
-    return items
+    if format == "rich":
+        items: list[ContentItem] = []
+        for cell in cells:
+            items.extend(_cell_to_content(cell))
+        return items
+
+    # Default summary format - compact one-line-per-cell
+    lines = [
+        _format_cell_summary(start + i, cell, preview_chars, include_outputs)
+        for i, cell in enumerate(cells)
+    ]
+    return "\n".join(lines)
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
@@ -924,17 +996,6 @@ async def clear_outputs(cell_id: str) -> dict[str, Any]:
     session = await _get_session()
     await session.clear_outputs(cell_id)
     return {"cell_id": cell_id, "cleared": True}
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def set_cell_type(
-    cell_id: str,
-    cell_type: Literal["code", "markdown", "raw"],
-) -> dict[str, Any]:
-    """Change a cell's type (code, markdown, or raw)."""
-    session = await _get_session()
-    await session.set_cell_type(cell_id=cell_id, cell_type=cell_type)
-    return {"cell_id": cell_id, "cell_type": cell_type}
 
 
 # =============================================================================
@@ -1004,19 +1065,58 @@ async def run_all_cells() -> dict[str, Any]:
 
 @mcp.resource("notebook://cells")
 async def resource_cells() -> str:
-    """Get all cells in the current notebook."""
+    """Get all cells in the current notebook as a compact summary."""
     if _session is None:
         return "Error: No active session"
 
     try:
         cells = await _session.get_cells()
-        formatted = [
-            _format_cell(
-                cell,
-            )
-            for cell in cells
-        ]
-        return "\n\n".join(formatted)
+        lines = [_format_cell_summary(i, cell) for i, cell in enumerate(cells)]
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.resource("notebook://cell/{cell_id}")
+async def resource_cell(cell_id: str) -> str:
+    """Get a specific cell's source and outputs."""
+    if _session is None:
+        return "Error: No active session"
+
+    try:
+        cell = await _session.get_cell(cell_id=cell_id)
+        return _format_cell(cell)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.resource("notebook://cells/by-index/{index}")
+async def resource_cell_by_index(index: int) -> str:
+    """Get the cell at the specified position (0-based index)."""
+    if _session is None:
+        return "Error: No active session"
+
+    try:
+        cells = await _session.get_cells()
+        if index < 0 or index >= len(cells):
+            return f"Error: Index {index} out of range (notebook has {len(cells)} cells)"
+        return _format_cell(cells[index])
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.resource("notebook://cell/{cell_id}/outputs")
+async def resource_cell_outputs(cell_id: str) -> str:
+    """Get a specific cell's outputs only (text format)."""
+    if _session is None:
+        return "Error: No active session"
+
+    try:
+        cell = await _session.get_cell(cell_id=cell_id)
+        output_text = _format_outputs_text(cell.outputs)
+        if not output_text:
+            return "(no outputs)"
+        return output_text
     except Exception as e:
         return f"Error: {e}"
 

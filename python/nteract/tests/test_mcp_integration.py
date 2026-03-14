@@ -126,16 +126,14 @@ async def test_list_tools(mcp_client: ClientSession):
     assert "interrupt_kernel" in tool_names
     assert "restart_kernel" in tool_names
     assert "create_cell" in tool_names
-    assert "set_cell_source" in tool_names
+    assert "set_cell" in tool_names  # unified cell update tool
     assert "replace_match" in tool_names
     assert "replace_regex" in tool_names
-    assert "append_source" in tool_names
     assert "get_cell" in tool_names
     assert "get_all_cells" in tool_names
     assert "delete_cell" in tool_names
     assert "move_cell" in tool_names
     assert "clear_outputs" in tool_names
-    assert "set_cell_type" in tool_names
     assert "execute_cell" in tool_names
     assert "run_all_cells" in tool_names
 
@@ -149,6 +147,9 @@ async def test_list_tools(mcp_client: ClientSession):
     assert "get_queue_state" not in tool_names
     assert "get_history" not in tool_names
     assert "run_code" not in tool_names
+    assert "set_cell_source" not in tool_names  # replaced by set_cell
+    assert "set_cell_type" not in tool_names  # replaced by set_cell
+    assert "append_source" not in tool_names  # removed (use set_cell or replace_regex)
 
 
 @pytest.mark.asyncio
@@ -177,31 +178,45 @@ async def test_create_notebook_and_cell(mcp_client: ClientSession):
 
 
 @pytest.mark.asyncio
-async def test_append_source(mcp_client: ClientSession):
-    """Test streaming tokens into a cell."""
+async def test_set_cell(mcp_client: ClientSession):
+    """Test set_cell for updating source and/or type."""
     # Connect
     await mcp_client.call_tool("create_notebook", {})
 
-    # Create empty cell
-    result = await mcp_client.call_tool("create_cell", {"source": ""})
+    # Create a code cell
+    result = await mcp_client.call_tool("create_cell", {"source": "x = 1"})
     text = _get_text(result)
     cell_id = _extract_cell_id(text)
     assert cell_id is not None
 
-    # Stream tokens
-    tokens = ["print", "(", "'hello", " ", "world", "'", ")"]
-    for token in tokens:
-        result = await mcp_client.call_tool(
-            "append_source",
-            {"cell_id": cell_id, "text": token},
-        )
-        text = _get_text(result)
-        assert "Appended to cell" in text
+    # Update source only
+    result = await mcp_client.call_tool(
+        "set_cell",
+        {"cell_id": cell_id, "source": "y = 2"},
+    )
+    text = _get_text(result)
+    assert "updated" in text
 
-    # Verify final source
+    # Verify source changed
     result = await mcp_client.call_tool("get_cell", {"cell_id": cell_id})
     text = _get_text(result)
-    assert "print('hello world')" in text
+    assert "y = 2" in text
+
+    # Update type only (to markdown)
+    result = await mcp_client.call_tool(
+        "set_cell",
+        {"cell_id": cell_id, "cell_type": "markdown"},
+    )
+    text = _get_text(result)
+    assert "updated" in text
+
+    # No-op call (no source or type provided)
+    result = await mcp_client.call_tool(
+        "set_cell",
+        {"cell_id": cell_id},
+    )
+    text = _get_text(result)
+    assert "unchanged" in text
 
 
 @pytest.mark.asyncio
@@ -334,10 +349,10 @@ async def test_delete_cell(mcp_client: ClientSession):
     data = _parse_json(result)
     assert data["deleted"] is True
 
-    # Verify it's gone - get_all_cells returns formatted string
+    # Verify it's gone - get_all_cells returns summary format
     result = await mcp_client.call_tool("get_all_cells", {})
     text = _get_text(result)
-    # The full cell_id shouldn't appear (we only show first 8 chars in header)
+    # Cell ID shouldn't appear in the summary
     assert cell_id not in text
 
 
@@ -383,3 +398,59 @@ async def test_move_cell(mcp_client: ClientSession):
     result = await mcp_client.call_tool("get_all_cells", {})
     text = _get_text(result)
     assert text.index("second") < text.index("first") < text.index("third")
+
+
+@pytest.mark.asyncio
+async def test_get_all_cells_summary_format(mcp_client: ClientSession):
+    """Test get_all_cells default summary format."""
+    await mcp_client.call_tool("create_notebook", {})
+
+    # Create cells
+    result = await mcp_client.call_tool(
+        "create_cell", {"source": "# Title", "cell_type": "markdown"}
+    )
+    md_id = _extract_cell_id(_get_text(result))
+
+    result = await mcp_client.call_tool("create_cell", {"source": "x = 1"})
+    code_id = _extract_cell_id(_get_text(result))
+
+    # Default format should be summary (compact one-line-per-cell)
+    result = await mcp_client.call_tool("get_all_cells", {})
+    text = _get_text(result)
+
+    # Summary format: "0 | markdown | id=cell-xxx | # Title"
+    assert "| markdown |" in text
+    assert "| code |" in text
+    assert f"id={md_id}" in text  # Full cell ID in summary
+    assert f"id={code_id}" in text
+    assert "# Title" in text
+    assert "x = 1" in text
+
+    # Test json format still works
+    result = await mcp_client.call_tool("get_all_cells", {"format": "json"})
+    # For JSON, we get a list not text
+    assert hasattr(result, "content") and result.content
+    # JSON returns as a structured list (not text)
+
+
+@pytest.mark.asyncio
+async def test_get_all_cells_pagination(mcp_client: ClientSession):
+    """Test get_all_cells pagination with start/count."""
+    await mcp_client.call_tool("create_notebook", {})
+
+    # Create 3 cells
+    await mcp_client.call_tool("create_cell", {"source": "cell_a"})
+    await mcp_client.call_tool("create_cell", {"source": "cell_b"})
+    await mcp_client.call_tool("create_cell", {"source": "cell_c"})
+
+    # Get only second cell (index 1, count 1)
+    result = await mcp_client.call_tool("get_all_cells", {"start": 1, "count": 1})
+    text = _get_text(result)
+
+    # Should only have cell_b
+    assert "cell_b" in text
+    assert "cell_a" not in text
+    assert "cell_c" not in text
+
+    # Index should be 1 (the original index, not reset to 0)
+    assert text.startswith("1 |")
