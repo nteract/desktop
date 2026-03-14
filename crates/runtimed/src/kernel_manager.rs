@@ -41,59 +41,9 @@ use crate::{EnvType, PooledEnv};
 
 // ── Launched Environment Config ─────────────────────────────────────────────
 
-/// Environment configuration captured at kernel launch time.
-/// Used to detect when notebook metadata has drifted from the running kernel.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-pub struct LaunchedEnvConfig {
-    /// UV inline deps (if env_source is "uv:inline")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub uv_deps: Option<Vec<String>>,
-
-    /// Conda inline deps (if env_source is "conda:inline")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub conda_deps: Option<Vec<String>>,
-
-    /// Conda channels (if env_source is "conda:inline")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub conda_channels: Option<Vec<String>>,
-
-    /// Deno config (if kernel_type is "deno")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deno_config: Option<DenoLaunchedConfig>,
-
-    /// Path to the venv used by the kernel (for hot-sync into running env)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub venv_path: Option<PathBuf>,
-
-    /// Path to python executable (for hot-sync, avoids hardcoding bin/python vs Scripts/python.exe)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub python_path: Option<PathBuf>,
-
-    /// Unique identifier for this kernel launch session.
-    /// Used to detect if kernel was swapped during async operations (e.g., hot-sync).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub launch_id: Option<String>,
-}
-
-/// Deno configuration captured at kernel launch time.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-pub struct DenoLaunchedConfig {
-    /// Deno permission flags
-    #[serde(default)]
-    pub permissions: Vec<String>,
-
-    /// Path to import_map.json
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub import_map: Option<String>,
-
-    /// Path to deno.json config
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub config: Option<String>,
-
-    /// Whether npm: imports auto-install packages
-    #[serde(default = "default_flexible_npm")]
-    pub flexible_npm_imports: bool,
-}
+/// Re-export environment config types from the shared protocol crate.
+/// The canonical definitions live in `notebook_protocol::protocol`.
+pub use notebook_protocol::protocol::{DenoLaunchedConfig, LaunchedEnvConfig};
 
 fn default_flexible_npm() -> bool {
     true

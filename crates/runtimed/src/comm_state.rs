@@ -22,35 +22,9 @@ use tokio::sync::RwLock;
 
 /// A snapshot of a comm channel's state.
 ///
-/// This is stored in the daemon and sent to newly connected clients so they can
-/// reconstruct widget models that were created before they connected.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CommSnapshot {
-    /// The comm_id (unique identifier for this comm channel).
-    pub comm_id: String,
-
-    /// Target name (e.g., "jupyter.widget", "jupyter.widget.version").
-    pub target_name: String,
-
-    /// Current state snapshot (merged from all updates).
-    /// For widgets, this contains the full model state.
-    pub state: serde_json::Value,
-
-    /// Model module (e.g., "@jupyter-widgets/controls", "anywidget").
-    /// Extracted from `_model_module` in state for convenience.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_module: Option<String>,
-
-    /// Model name (e.g., "IntSliderModel", "AnyModel").
-    /// Extracted from `_model_name` in state for convenience.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_name: Option<String>,
-
-    /// Binary buffers associated with this comm (e.g., for images, arrays).
-    /// Stored inline for simplicity; large buffers could be moved to blob store.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub buffers: Vec<Vec<u8>>,
-}
+/// Re-export CommSnapshot from the shared protocol crate.
+/// The canonical definition lives in `notebook_protocol::protocol`.
+pub use notebook_protocol::protocol::CommSnapshot;
 
 /// Internal entry with sequence number for ordering.
 struct CommEntry {
