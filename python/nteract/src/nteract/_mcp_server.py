@@ -284,9 +284,7 @@ def _format_cell(cell: runtimed.Cell) -> str:
 
     Used by get_cell to show full cell state.
     """
-    header = _format_header(
-        cell.id, cell_type=cell.cell_type, execution_count=cell.execution_count
-    )
+    header = _format_header(cell.id, cell_type=cell.cell_type, execution_count=cell.execution_count)
     output_text = _format_outputs_text(cell.outputs)
 
     if cell.source and output_text:
@@ -304,9 +302,7 @@ def _cell_to_content(cell: runtimed.Cell) -> list[ContentItem]:
 
     Returns a header as TextContent, then each output as its richest type.
     """
-    header = _format_header(
-        cell.id, cell_type=cell.cell_type, execution_count=cell.execution_count
-    )
+    header = _format_header(cell.id, cell_type=cell.cell_type, execution_count=cell.execution_count)
     items: list[ContentItem] = []
 
     if cell.source:
@@ -528,9 +524,7 @@ async def save_notebook(path: str | None = None) -> dict[str, Any]:
         with contextlib.suppress(Exception):
             await session.close()
 
-        _session = await runtimed.AsyncSession.open_notebook(
-            saved_path, peer_label=_peer_label()
-        )
+        _session = await runtimed.AsyncSession.open_notebook(saved_path, peer_label=_peer_label())
         return {
             "path": saved_path,
             "reconnected": True,
