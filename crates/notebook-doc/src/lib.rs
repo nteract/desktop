@@ -24,11 +24,14 @@
 //!       execution_count: Str      ← JSON-encoded i32 or "null"
 //!       outputs/                  ← List of Str
 //!         [j]: Str                ← JSON-encoded Jupyter output (Phase 5: manifest hash)
-//!       metadata: Str             ← JSON-encoded cell metadata object
+//!       metadata/                 ← Map (native Automerge types, legacy: JSON string fallback)
 //!       resolved_assets/          ← Map of markdown asset ref -> blob hash
 //!   metadata/                     ← Map
 //!     runtime: Str
-//!     notebook_metadata: Str      ← JSON-encoded NotebookMetadataSnapshot
+//!     kernelspec/                 ← Map (native Automerge, per-field CRDT merge)
+//!     language_info/              ← Map (native Automerge, per-field CRDT merge)
+//!     runt/                       ← Map (native Automerge, per-field CRDT merge)
+//!     notebook_metadata: Str      ← Legacy JSON string (backward compat, dual-written)
 //! ```
 
 pub mod frame_types;
@@ -168,23 +171,137 @@ impl NotebookDoc {
     }
 }
 
+// ── Native Automerge JSON storage ───────────────────────────────────
+
+impl NotebookDoc {
+    /// Recursively write a JSON value as native Automerge types at a map key.
+    ///
+    /// - `Value::Object` → `ObjType::Map`
+    /// - `Value::Array`  → `ObjType::List`
+    /// - `Value::Null`   → `ScalarValue::Null`
+    /// - `Value::Bool`   → bool scalar
+    /// - `Value::Number` → i64, u64, or f64 (tried in that order)
+    /// - `Value::String` → string scalar
+    pub fn put_json_value(
+        &mut self,
+        parent: &ObjId,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), AutomergeError> {
+        put_json_at_key(&mut self.doc, parent, key, value)
+    }
+
+    /// Read an Automerge subtree back as a JSON value.
+    ///
+    /// Maps → `Value::Object`, Lists → `Value::Array`, Text → `Value::String`,
+    /// scalars → corresponding JSON types.
+    pub fn get_json_value(&self, parent: &ObjId, key: &str) -> Option<serde_json::Value> {
+        read_json_value(&self.doc, parent, key)
+    }
+
+    /// Write a top-level metadata key as native Automerge types.
+    pub fn set_metadata_value(
+        &mut self,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), AutomergeError> {
+        let meta_id = match self.metadata_map_id() {
+            Some(id) => id,
+            None => self
+                .doc
+                .put_object(automerge::ROOT, "metadata", ObjType::Map)?,
+        };
+        put_json_at_key(&mut self.doc, &meta_id, key, value)
+    }
+
+    /// Read a top-level metadata key as JSON.
+    pub fn get_metadata_value(&self, key: &str) -> Option<serde_json::Value> {
+        let meta_id = self.metadata_map_id()?;
+        read_json_value(&self.doc, &meta_id, key)
+    }
+}
+
 // ── Typed metadata helpers ──────────────────────────────────────────
 
 impl NotebookDoc {
     /// Read the notebook metadata as a typed snapshot.
+    ///
+    /// Reads native Automerge keys first (`kernelspec`, `language_info`, `runt`),
+    /// falling back to the legacy `notebook_metadata` JSON string.
     pub fn get_metadata_snapshot(&self) -> Option<metadata::NotebookMetadataSnapshot> {
-        let json = self.get_metadata(metadata::NOTEBOOK_METADATA_KEY)?;
+        let meta_id = self.metadata_map_id()?;
+
+        // Try native Automerge keys first
+        let kernelspec = read_json_value(&self.doc, &meta_id, "kernelspec")
+            .and_then(|v| serde_json::from_value::<metadata::KernelspecSnapshot>(v).ok());
+        let language_info = read_json_value(&self.doc, &meta_id, "language_info")
+            .and_then(|v| serde_json::from_value::<metadata::LanguageInfoSnapshot>(v).ok());
+        let runt = read_json_value(&self.doc, &meta_id, "runt")
+            .and_then(|v| serde_json::from_value::<metadata::RuntMetadata>(v).ok());
+
+        if kernelspec.is_some() || language_info.is_some() || runt.is_some() {
+            return Some(metadata::NotebookMetadataSnapshot {
+                kernelspec,
+                language_info,
+                runt: runt.unwrap_or_default(),
+            });
+        }
+
+        // Fallback to legacy JSON string
+        let json = read_str(&self.doc, &meta_id, metadata::NOTEBOOK_METADATA_KEY)?;
         serde_json::from_str(&json).ok()
     }
 
     /// Write a typed metadata snapshot to the document.
+    ///
+    /// Writes each top-level key (`kernelspec`, `language_info`, `runt`) as native
+    /// Automerge maps for per-field CRDT merging, and dual-writes the legacy
+    /// `notebook_metadata` JSON string for backward compatibility.
     pub fn set_metadata_snapshot(
         &mut self,
         snapshot: &metadata::NotebookMetadataSnapshot,
     ) -> Result<(), AutomergeError> {
+        let meta_id = match self.metadata_map_id() {
+            Some(id) => id,
+            None => self
+                .doc
+                .put_object(automerge::ROOT, "metadata", ObjType::Map)?,
+        };
+
+        // Write native Automerge keys for per-field CRDT merging
+        match &snapshot.kernelspec {
+            Some(ks) => {
+                if let Ok(v) = serde_json::to_value(ks) {
+                    put_json_at_key(&mut self.doc, &meta_id, "kernelspec", &v)?;
+                }
+            }
+            None => {
+                let _ = self.doc.delete(&meta_id, "kernelspec");
+            }
+        }
+
+        match &snapshot.language_info {
+            Some(li) => {
+                if let Ok(v) = serde_json::to_value(li) {
+                    put_json_at_key(&mut self.doc, &meta_id, "language_info", &v)?;
+                }
+            }
+            None => {
+                let _ = self.doc.delete(&meta_id, "language_info");
+            }
+        }
+
+        if let Ok(v) = serde_json::to_value(&snapshot.runt) {
+            put_json_at_key(&mut self.doc, &meta_id, "runt", &v)?;
+        }
+
+        // Dual-write legacy JSON string for backward compatibility
         let json = serde_json::to_string(snapshot)
             .map_err(|e| AutomergeError::InvalidObjId(format!("serialize metadata: {}", e)))?;
-        self.set_metadata(metadata::NOTEBOOK_METADATA_KEY, &json)
+        self.doc
+            .put(&meta_id, metadata::NOTEBOOK_METADATA_KEY, json.as_str())?;
+
+        Ok(())
     }
 
     /// Detect the notebook runtime from metadata (kernelspec + language_info).
@@ -640,7 +757,7 @@ impl NotebookDoc {
         self.doc.put_object(&cell_map, "source", ObjType::Text)?;
         self.doc.put(&cell_map, "execution_count", "null")?;
         self.doc.put_object(&cell_map, "outputs", ObjType::List)?;
-        self.doc.put(&cell_map, "metadata", "{}")?;
+        self.doc.put_object(&cell_map, "metadata", ObjType::Map)?;
         self.doc
             .put_object(&cell_map, "resolved_assets", ObjType::Map)?;
 
@@ -703,9 +820,15 @@ impl NotebookDoc {
             self.doc.insert(&outputs_id, i, output.as_str())?;
         }
 
-        // Store metadata as JSON string
-        let metadata_str = serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_string());
-        self.doc.put(&cell_map, "metadata", metadata_str)?;
+        // Store metadata as native Automerge map
+        let meta_map = self
+            .doc
+            .put_object(&cell_map, "metadata", ObjType::Map)?;
+        if let Some(obj) = metadata.as_object() {
+            for (k, v) in obj {
+                put_json_at_key(&mut self.doc, &meta_map, k, v)?;
+            }
+        }
 
         self.doc
             .put_object(&cell_map, "resolved_assets", ObjType::Map)?;
@@ -1117,24 +1240,19 @@ impl NotebookDoc {
 
     /// Get the raw metadata Value for a cell.
     ///
+    /// Reads native Automerge map first, falls back to legacy JSON string.
     /// Returns `None` if the cell doesn't exist.
     /// Returns `Some({})` if the cell exists but has no or invalid metadata.
     pub fn get_cell_metadata(&self, cell_id: &str) -> Option<serde_json::Value> {
         let cells_id = self.cells_map_id()?;
         let cell_obj = self.cell_obj_id(&cells_id, cell_id)?;
-
-        // Cell exists - return its metadata or empty object if missing/invalid
-        Some(
-            read_str(&self.doc, &cell_obj, "metadata")
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_else(|| serde_json::json!({})),
-        )
+        Some(read_cell_metadata(&self.doc, &cell_obj))
     }
 
-    /// Set the entire metadata object for a cell.
+    /// Set the entire metadata object for a cell as a native Automerge map.
     ///
-    /// Note: Metadata is stored as a JSON-encoded string, not as a CRDT structure.
-    /// Concurrent edits from multiple peers will result in last-write-wins semantics.
+    /// Metadata is stored as native Automerge types (maps, lists, scalars) for
+    /// per-field CRDT merging. Each call replaces the entire metadata map.
     /// Use `update_cell_metadata_at` for path-based updates when possible.
     pub fn set_cell_metadata(
         &mut self,
@@ -1150,8 +1268,14 @@ impl NotebookDoc {
             None => return Ok(false),
         };
 
-        let metadata_str = serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_string());
-        self.doc.put(&cell_obj, "metadata", metadata_str)?;
+        let meta_map = self
+            .doc
+            .put_object(&cell_obj, "metadata", ObjType::Map)?;
+        if let Some(obj) = metadata.as_object() {
+            for (k, v) in obj {
+                put_json_at_key(&mut self.doc, &meta_map, k, v)?;
+            }
+        }
         Ok(true)
     }
 
@@ -1497,10 +1621,8 @@ impl NotebookDoc {
             None => vec![],
         };
 
-        // Read metadata (JSON string -> Value)
-        let metadata = read_str(&self.doc, cell_obj, "metadata")
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| serde_json::json!({}));
+        // Read metadata (native Automerge map with legacy string fallback)
+        let metadata = read_cell_metadata(&self.doc, cell_obj);
 
         // Read resolved asset map
         let resolved_assets = match self.map_id(cell_obj, "resolved_assets") {
@@ -1552,6 +1674,168 @@ fn read_str<O: AsRef<automerge::ObjId>, P: Into<automerge::Prop>>(
         })
 }
 
+/// Convert an `automerge::ScalarValue` to a `serde_json::Value`.
+fn scalar_to_json(s: &automerge::ScalarValue) -> Option<serde_json::Value> {
+    match s {
+        automerge::ScalarValue::Null => Some(serde_json::Value::Null),
+        automerge::ScalarValue::Boolean(b) => Some(serde_json::Value::Bool(*b)),
+        automerge::ScalarValue::Int(i) => {
+            Some(serde_json::Value::Number(serde_json::Number::from(*i)))
+        }
+        automerge::ScalarValue::Uint(u) => {
+            Some(serde_json::Value::Number(serde_json::Number::from(*u)))
+        }
+        automerge::ScalarValue::F64(f) => Some(
+            serde_json::Number::from_f64(*f)
+                .map_or(serde_json::Value::Null, serde_json::Value::Number),
+        ),
+        automerge::ScalarValue::Str(s) => Some(serde_json::Value::String(s.to_string())),
+        _ => None, // Timestamp, Counter, Bytes — not used for JSON metadata
+    }
+}
+
+/// Recursively read an Automerge value (scalar, Map, List, or Text) as JSON.
+fn read_json_value<P: Into<automerge::Prop>>(
+    doc: &AutoCommit,
+    parent: &ObjId,
+    prop: P,
+) -> Option<serde_json::Value> {
+    let (value, obj_id) = doc.get(parent, prop).ok().flatten()?;
+    match value {
+        automerge::Value::Scalar(s) => scalar_to_json(s.as_ref()),
+        automerge::Value::Object(ObjType::Map) => {
+            let mut map = serde_json::Map::new();
+            for key in doc.keys(&obj_id) {
+                if let Some(v) = read_json_value(doc, &obj_id, key.as_str()) {
+                    map.insert(key, v);
+                }
+            }
+            Some(serde_json::Value::Object(map))
+        }
+        automerge::Value::Object(ObjType::List) => {
+            let len = doc.length(&obj_id);
+            let arr: Vec<serde_json::Value> = (0..len)
+                .filter_map(|i| read_json_value(doc, &obj_id, i))
+                .collect();
+            Some(serde_json::Value::Array(arr))
+        }
+        automerge::Value::Object(ObjType::Text) => {
+            doc.text(&obj_id).ok().map(serde_json::Value::String)
+        }
+        _ => None,
+    }
+}
+
+/// Recursively write a JSON value into an Automerge Map at a string key.
+fn put_json_at_key(
+    doc: &mut AutoCommit,
+    parent: &ObjId,
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<(), AutomergeError> {
+    match value {
+        serde_json::Value::Null => {
+            doc.put(parent, key, automerge::ScalarValue::Null)?;
+        }
+        serde_json::Value::Bool(b) => {
+            doc.put(parent, key, *b)?;
+        }
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                doc.put(parent, key, i)?;
+            } else if let Some(u) = n.as_u64() {
+                doc.put(parent, key, u)?;
+            } else if let Some(f) = n.as_f64() {
+                doc.put(parent, key, f)?;
+            }
+        }
+        serde_json::Value::String(s) => {
+            doc.put(parent, key, s.as_str())?;
+        }
+        serde_json::Value::Array(arr) => {
+            let list_id = doc.put_object(parent, key, ObjType::List)?;
+            for (i, item) in arr.iter().enumerate() {
+                insert_json_at_index(doc, &list_id, i, item)?;
+            }
+        }
+        serde_json::Value::Object(map) => {
+            let map_id = doc.put_object(parent, key, ObjType::Map)?;
+            for (k, v) in map {
+                put_json_at_key(doc, &map_id, k, v)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Recursively insert a JSON value into an Automerge List at a given index.
+fn insert_json_at_index(
+    doc: &mut AutoCommit,
+    parent: &ObjId,
+    index: usize,
+    value: &serde_json::Value,
+) -> Result<(), AutomergeError> {
+    match value {
+        serde_json::Value::Null => {
+            doc.insert(parent, index, automerge::ScalarValue::Null)?;
+        }
+        serde_json::Value::Bool(b) => {
+            doc.insert(parent, index, *b)?;
+        }
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                doc.insert(parent, index, i)?;
+            } else if let Some(u) = n.as_u64() {
+                doc.insert(parent, index, u)?;
+            } else if let Some(f) = n.as_f64() {
+                doc.insert(parent, index, f)?;
+            }
+        }
+        serde_json::Value::String(s) => {
+            doc.insert(parent, index, s.as_str())?;
+        }
+        serde_json::Value::Array(arr) => {
+            let list_id = doc.insert_object(parent, index, ObjType::List)?;
+            for (i, item) in arr.iter().enumerate() {
+                insert_json_at_index(doc, &list_id, i, item)?;
+            }
+        }
+        serde_json::Value::Object(map) => {
+            let map_id = doc.insert_object(parent, index, ObjType::Map)?;
+            for (k, v) in map {
+                put_json_at_key(doc, &map_id, k, v)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Read cell metadata with native Automerge map support and legacy string fallback.
+///
+/// Tries to read `metadata` as an `ObjType::Map` first (native storage),
+/// falls back to reading as a JSON-encoded string (legacy storage).
+fn read_cell_metadata(doc: &AutoCommit, cell_obj: &ObjId) -> serde_json::Value {
+    match doc.get(cell_obj, "metadata").ok().flatten() {
+        Some((automerge::Value::Object(ObjType::Map), map_id)) => {
+            let mut obj = serde_json::Map::new();
+            for key in doc.keys(&map_id) {
+                if let Some(v) = read_json_value(doc, &map_id, key.as_str()) {
+                    obj.insert(key, v);
+                }
+            }
+            serde_json::Value::Object(obj)
+        }
+        Some((automerge::Value::Scalar(s), _)) => {
+            if let automerge::ScalarValue::Str(s) = s.as_ref() {
+                serde_json::from_str(s).unwrap_or_else(|_| serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            }
+        }
+        _ => serde_json::json!({}),
+    }
+}
+
 /// Read a metadata value from a raw `AutoCommit` document.
 ///
 /// This is the free-function counterpart of `NotebookDoc::get_metadata`,
@@ -1577,7 +1861,33 @@ pub fn get_metadata_from_doc(doc: &AutoCommit, key: &str) -> Option<String> {
 pub fn get_metadata_snapshot_from_doc(
     doc: &AutoCommit,
 ) -> Option<metadata::NotebookMetadataSnapshot> {
-    let json = get_metadata_from_doc(doc, metadata::NOTEBOOK_METADATA_KEY)?;
+    let meta_id = doc
+        .get(automerge::ROOT, "metadata")
+        .ok()
+        .flatten()
+        .and_then(|(value, id)| match value {
+            automerge::Value::Object(ObjType::Map) => Some(id),
+            _ => None,
+        })?;
+
+    // Try native Automerge keys first
+    let kernelspec = read_json_value(doc, &meta_id, "kernelspec")
+        .and_then(|v| serde_json::from_value::<metadata::KernelspecSnapshot>(v).ok());
+    let language_info = read_json_value(doc, &meta_id, "language_info")
+        .and_then(|v| serde_json::from_value::<metadata::LanguageInfoSnapshot>(v).ok());
+    let runt = read_json_value(doc, &meta_id, "runt")
+        .and_then(|v| serde_json::from_value::<metadata::RuntMetadata>(v).ok());
+
+    if kernelspec.is_some() || language_info.is_some() || runt.is_some() {
+        return Some(metadata::NotebookMetadataSnapshot {
+            kernelspec,
+            language_info,
+            runt: runt.unwrap_or_default(),
+        });
+    }
+
+    // Fallback to legacy JSON string
+    let json = read_str(doc, &meta_id, metadata::NOTEBOOK_METADATA_KEY)?;
     serde_json::from_str(&json).ok()
 }
 
@@ -1662,10 +1972,8 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
                 _ => vec![],
             };
 
-            // Read metadata (JSON string -> Value)
-            let metadata = read_str(doc, &cell_obj, "metadata")
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_else(|| serde_json::json!({}));
+            // Read metadata (native Automerge map with legacy string fallback)
+            let metadata = read_cell_metadata(doc, &cell_obj);
 
             // Read resolved asset map
             let resolved_assets = match doc.get(&cell_obj, "resolved_assets").ok().flatten() {
@@ -3065,6 +3373,275 @@ mod tests {
 
         // Verify cells are unchanged.
         assert_eq!(cells_before, doc.get_cells());
+    }
+
+    // ── Native Automerge metadata tests ───────────────────────────────
+
+    #[test]
+    fn test_put_get_json_value_all_types() {
+        let mut doc = NotebookDoc::new("nb-json-types");
+        let meta_id = doc.metadata_map_id().unwrap();
+
+        // Null
+        doc.put_json_value(&meta_id, "null_val", &serde_json::Value::Null)
+            .unwrap();
+        assert_eq!(
+            doc.get_json_value(&meta_id, "null_val"),
+            Some(serde_json::Value::Null)
+        );
+
+        // Bool
+        doc.put_json_value(&meta_id, "bool_val", &serde_json::json!(true))
+            .unwrap();
+        assert_eq!(
+            doc.get_json_value(&meta_id, "bool_val"),
+            Some(serde_json::json!(true))
+        );
+
+        // Integer (i64)
+        doc.put_json_value(&meta_id, "int_val", &serde_json::json!(42))
+            .unwrap();
+        assert_eq!(
+            doc.get_json_value(&meta_id, "int_val"),
+            Some(serde_json::json!(42))
+        );
+
+        // Negative integer
+        doc.put_json_value(&meta_id, "neg_int", &serde_json::json!(-7))
+            .unwrap();
+        assert_eq!(
+            doc.get_json_value(&meta_id, "neg_int"),
+            Some(serde_json::json!(-7))
+        );
+
+        // Float
+        doc.put_json_value(&meta_id, "float_val", &serde_json::json!(3.14))
+            .unwrap();
+        assert_eq!(
+            doc.get_json_value(&meta_id, "float_val"),
+            Some(serde_json::json!(3.14))
+        );
+
+        // String
+        doc.put_json_value(&meta_id, "str_val", &serde_json::json!("hello"))
+            .unwrap();
+        assert_eq!(
+            doc.get_json_value(&meta_id, "str_val"),
+            Some(serde_json::json!("hello"))
+        );
+
+        // Array with mixed types
+        let arr = serde_json::json!([1, "two", null, true, 3.5]);
+        doc.put_json_value(&meta_id, "arr_val", &arr).unwrap();
+        assert_eq!(doc.get_json_value(&meta_id, "arr_val"), Some(arr));
+
+        // Nested object
+        let nested = serde_json::json!({
+            "a": 1,
+            "b": {"c": [true, false, null]},
+            "d": null,
+            "e": "string"
+        });
+        doc.put_json_value(&meta_id, "nested_val", &nested)
+            .unwrap();
+        assert_eq!(doc.get_json_value(&meta_id, "nested_val"), Some(nested));
+
+        // Empty object and array
+        doc.put_json_value(&meta_id, "empty_obj", &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(
+            doc.get_json_value(&meta_id, "empty_obj"),
+            Some(serde_json::json!({}))
+        );
+        doc.put_json_value(&meta_id, "empty_arr", &serde_json::json!([]))
+            .unwrap();
+        assert_eq!(
+            doc.get_json_value(&meta_id, "empty_arr"),
+            Some(serde_json::json!([]))
+        );
+
+        // Non-existent key returns None
+        assert_eq!(doc.get_json_value(&meta_id, "missing"), None);
+    }
+
+    #[test]
+    fn test_native_metadata_snapshot_round_trip() {
+        let mut doc = NotebookDoc::new("nb-native-snap");
+
+        let snapshot = metadata::NotebookMetadataSnapshot {
+            kernelspec: Some(metadata::KernelspecSnapshot {
+                name: "python3".to_string(),
+                display_name: "Python 3".to_string(),
+                language: Some("python".to_string()),
+            }),
+            language_info: Some(metadata::LanguageInfoSnapshot {
+                name: "python".to_string(),
+                version: Some("3.11.5".to_string()),
+            }),
+            runt: metadata::RuntMetadata::default(),
+        };
+
+        doc.set_metadata_snapshot(&snapshot).unwrap();
+        let read_back = doc.get_metadata_snapshot().unwrap();
+        assert_eq!(read_back, snapshot);
+    }
+
+    #[test]
+    fn test_native_metadata_legacy_fallback() {
+        let mut doc = NotebookDoc::new("nb-legacy-fb");
+
+        // Write ONLY the legacy JSON string (simulating an old peer)
+        let snapshot = metadata::NotebookMetadataSnapshot {
+            kernelspec: Some(metadata::KernelspecSnapshot {
+                name: "deno".to_string(),
+                display_name: "Deno".to_string(),
+                language: Some("typescript".to_string()),
+            }),
+            language_info: None,
+            runt: metadata::RuntMetadata::default(),
+        };
+        let json = serde_json::to_string(&snapshot).unwrap();
+        doc.set_metadata(metadata::NOTEBOOK_METADATA_KEY, &json)
+            .unwrap();
+
+        // Should read back via legacy fallback
+        let read_back = doc.get_metadata_snapshot().unwrap();
+        assert_eq!(read_back.kernelspec, snapshot.kernelspec);
+        assert_eq!(read_back.language_info, None);
+    }
+
+    #[test]
+    fn test_native_metadata_dual_write() {
+        let mut doc = NotebookDoc::new("nb-dual-write");
+
+        let snapshot = metadata::NotebookMetadataSnapshot {
+            kernelspec: Some(metadata::KernelspecSnapshot {
+                name: "python3".to_string(),
+                display_name: "Python 3".to_string(),
+                language: Some("python".to_string()),
+            }),
+            language_info: None,
+            runt: metadata::RuntMetadata::default(),
+        };
+
+        doc.set_metadata_snapshot(&snapshot).unwrap();
+
+        // Native keys should exist
+        let meta_id = doc.metadata_map_id().unwrap();
+        assert!(doc.get_json_value(&meta_id, "kernelspec").is_some());
+        assert!(doc.get_json_value(&meta_id, "runt").is_some());
+
+        // Legacy string should also exist
+        let legacy = doc.get_metadata(metadata::NOTEBOOK_METADATA_KEY);
+        assert!(legacy.is_some());
+        let legacy_parsed: metadata::NotebookMetadataSnapshot =
+            serde_json::from_str(&legacy.unwrap()).unwrap();
+        assert_eq!(legacy_parsed, snapshot);
+    }
+
+    #[test]
+    fn test_set_get_metadata_value() {
+        let mut doc = NotebookDoc::new("nb-meta-val");
+
+        let value = serde_json::json!({"name": "python3", "display_name": "Python 3"});
+        doc.set_metadata_value("my_key", &value).unwrap();
+
+        let read_back = doc.get_metadata_value("my_key");
+        assert_eq!(read_back, Some(value));
+
+        // Non-existent key
+        assert_eq!(doc.get_metadata_value("missing"), None);
+    }
+
+    #[test]
+    fn test_cell_metadata_native_round_trip() {
+        let mut doc = NotebookDoc::new("nb-cell-native-rt");
+        doc.add_cell(0, "cell1", "code").unwrap();
+
+        // New cell has empty native map metadata
+        let cell = doc.get_cell("cell1").unwrap();
+        assert_eq!(cell.metadata, serde_json::json!({}));
+
+        // Set complex nested metadata
+        let meta = serde_json::json!({
+            "jupyter": {"source_hidden": true, "outputs_hidden": false},
+            "tags": ["test", "example"],
+            "custom": {"nested": {"deep": 42}, "flag": null, "active": true}
+        });
+        doc.set_cell_metadata("cell1", &meta).unwrap();
+
+        let cell = doc.get_cell("cell1").unwrap();
+        assert_eq!(cell.metadata, meta);
+        assert!(cell.is_source_hidden());
+        assert!(!cell.is_outputs_hidden());
+        assert_eq!(cell.tags(), vec!["test", "example"]);
+    }
+
+    #[test]
+    fn test_cell_metadata_native_via_add_cell_full() {
+        let mut doc = NotebookDoc::new("nb-full-native");
+        let meta = serde_json::json!({
+            "jupyter": {"source_hidden": true},
+            "tags": ["hide-input"],
+            "count": 0,
+            "nullable": null
+        });
+        doc.add_cell_full("cell1", "code", "80", "x = 1", &[], "null", &meta)
+            .unwrap();
+
+        let cell = doc.get_cell("cell1").unwrap();
+        assert_eq!(cell.metadata, meta);
+        assert!(cell.is_source_hidden());
+        assert_eq!(cell.tags(), vec!["hide-input"]);
+    }
+
+    #[test]
+    fn test_cell_metadata_native_sync() {
+        use automerge::sync;
+
+        let mut daemon = NotebookDoc::new("nb-native-sync");
+        daemon.add_cell(0, "cell1", "code").unwrap();
+
+        let meta = serde_json::json!({
+            "jupyter": {"source_hidden": true},
+            "tags": ["synced"],
+            "custom_val": 99
+        });
+        daemon.set_cell_metadata("cell1", &meta).unwrap();
+
+        let mut client = NotebookDoc::empty();
+        let mut daemon_state = sync::State::new();
+        let mut client_state = sync::State::new();
+
+        for _ in 0..5 {
+            if let Some(msg) = daemon.generate_sync_message(&mut daemon_state) {
+                client.receive_sync_message(&mut client_state, msg).unwrap();
+            }
+            if let Some(msg) = client.generate_sync_message(&mut client_state) {
+                daemon.receive_sync_message(&mut daemon_state, msg).unwrap();
+            }
+        }
+
+        let cell = client.get_cell("cell1").unwrap();
+        assert_eq!(cell.metadata, meta);
+        assert!(cell.is_source_hidden());
+        assert_eq!(cell.tags(), vec!["synced"]);
+    }
+
+    #[test]
+    fn test_get_cells_from_doc_native_metadata() {
+        let mut doc = NotebookDoc::new("nb-free-fn");
+        let meta = serde_json::json!({
+            "jupyter": {"source_hidden": true},
+            "tags": ["from-doc"]
+        });
+        doc.add_cell_full("cell1", "code", "80", "x = 1", &[], "null", &meta)
+            .unwrap();
+
+        // Use the free function (as sync client would)
+        let cells = get_cells_from_doc(doc.doc());
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].metadata, meta);
     }
 
     #[test]
