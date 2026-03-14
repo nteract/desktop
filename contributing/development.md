@@ -13,6 +13,8 @@
 | Run with notebook | `cargo xtask run path/to/notebook.ipynb` |
 | Build release .app | `cargo xtask build-app` |
 | Build release DMG | `cargo xtask build-dmg` |
+| Lint (check mode) | `cargo xtask lint` |
+| Lint (auto-fix) | `cargo xtask lint --fix` |
 
 ## Choosing a Workflow
 
@@ -210,15 +212,13 @@ See [contributing/runtimed.md](./runtimed.md) for full daemon development docs.
 
 ## Before You Commit
 
-CI rejects PRs that fail formatting. Run these before every commit:
+CI rejects PRs that fail formatting. Run this before every commit:
 
 ```bash
-# Format Rust
-cargo fmt
-
-# Format and lint TypeScript/JavaScript
-npx @biomejs/biome check --fix apps/notebook/src/ e2e/
+cargo xtask lint --fix
 ```
+
+This formats Rust, lints/formats TypeScript/JavaScript with Biome, and lints/formats Python with ruff.
 
 Use [conventional commits](https://www.conventionalcommits.org/) for commit messages and PR titles:
 

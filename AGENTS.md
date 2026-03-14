@@ -4,17 +4,17 @@ This document provides guidance for AI agents working in this repository.
 
 ## Code Formatting (Required Before Committing)
 
-Run these commands before every commit. CI will reject PRs that fail formatting checks.
+Run this command before every commit. CI will reject PRs that fail formatting checks.
 
 ```bash
-# Format Rust code
-cargo fmt
-
-# Format and lint TypeScript/JavaScript (auto-fixes issues)
-npx @biomejs/biome check --fix apps/notebook/src/ e2e/
+cargo xtask lint --fix
 ```
 
-Do not skip these. There are no pre-commit hooks — you must run them manually.
+This formats Rust, lints/formats TypeScript/JavaScript with Biome, and lints/formats Python with ruff.
+
+For CI-style check-only mode: `cargo xtask lint`
+
+Do not skip this. There are no pre-commit hooks — you must run it manually.
 
 ## Commit and PR Title Standard (Required)
 

@@ -42,6 +42,10 @@ fn main() {
             let release = args.iter().any(|a| a == "--release");
             cmd_dev_daemon(release);
         }
+        "lint" => {
+            let fix = args.iter().any(|a| a == "--fix");
+            cmd_lint(fix);
+        }
         "--help" | "-h" | "help" => print_help(),
         cmd => {
             eprintln!("Unknown command: {cmd}");
@@ -72,6 +76,10 @@ Release:
 Daemon:
   install-daemon             Build and install runtimed into the running service
   dev-daemon [--release]     Build and run runtimed in per-worktree dev mode
+
+Linting:
+  lint                       Check formatting and linting (Rust, JS/TS, Python)
+  lint --fix                 Auto-fix formatting and linting issues
 
 Other:
   icons [source.png]         Generate icon variants
@@ -518,6 +526,137 @@ fn cmd_dev_daemon(release: bool) {
     if !status.success() {
         exit(status.code().unwrap_or(1));
     }
+}
+
+/// Run linting and formatting checks across all languages.
+///
+/// In check mode (default): exits non-zero if any issues are found.
+/// In fix mode (--fix): auto-fixes issues where possible.
+fn cmd_lint(fix: bool) {
+    let mode = if fix { "fix" } else { "check" };
+    println!("Running lint ({mode} mode)...");
+    println!();
+
+    // Track if any linter failed
+    let mut failed = false;
+
+    // Rust formatting
+    println!("=== Rust formatting ===");
+    if fix {
+        if !run_cmd_ok("cargo", &["fmt"]) {
+            failed = true;
+        }
+    } else if !run_cmd_ok("cargo", &["fmt", "--check"]) {
+        failed = true;
+    }
+    println!();
+
+    // Rust clippy (check-only, no auto-fix available)
+    if !fix {
+        println!("=== Rust clippy ===");
+        if !run_cmd_ok(
+            "cargo",
+            &[
+                "clippy",
+                "--workspace",
+                "--all-targets",
+                "--",
+                "-D",
+                "warnings",
+            ],
+        ) {
+            failed = true;
+        }
+        println!();
+    }
+
+    // JavaScript/TypeScript with Biome
+    println!("=== JavaScript/TypeScript (Biome) ===");
+    let biome_ok = if fix {
+        run_cmd_ok(
+            "npx",
+            &[
+                "@biomejs/biome",
+                "check",
+                "--fix",
+                "apps/notebook/src/",
+                "e2e/",
+            ],
+        )
+    } else {
+        run_cmd_ok(
+            "npx",
+            &["@biomejs/biome", "check", "apps/notebook/src/", "e2e/"],
+        )
+    };
+    if !biome_ok {
+        failed = true;
+    }
+    println!();
+
+    // Python with ruff (if uv is available)
+    let python_dir = Path::new("python");
+    if python_dir.exists() {
+        if Command::new("uv").arg("--version").output().is_ok() {
+            println!("=== Python (ruff) ===");
+
+            // ruff check
+            let check_args = if fix {
+                vec!["run", "ruff", "check", "--fix", "."]
+            } else {
+                vec!["run", "ruff", "check", "."]
+            };
+            let check_status = Command::new("uv")
+                .args(&check_args)
+                .current_dir(python_dir)
+                .status();
+            if !check_status.map(|s| s.success()).unwrap_or(false) {
+                failed = true;
+            }
+
+            // ruff format
+            let format_args = if fix {
+                vec!["run", "ruff", "format", "."]
+            } else {
+                vec!["run", "ruff", "format", "--check", "."]
+            };
+            let format_status = Command::new("uv")
+                .args(&format_args)
+                .current_dir(python_dir)
+                .status();
+            if !format_status.map(|s| s.success()).unwrap_or(false) {
+                failed = true;
+            }
+            println!();
+        } else {
+            println!("=== Python (ruff) ===");
+            println!("Skipping: uv not found in PATH");
+            println!();
+        }
+    }
+
+    if failed {
+        if fix {
+            eprintln!("Some issues could not be auto-fixed. See output above.");
+        } else {
+            eprintln!("Lint check failed. Run `cargo xtask lint --fix` to auto-fix.");
+        }
+        exit(1);
+    }
+
+    println!("All checks passed!");
+}
+
+/// Run a command and return true if it succeeded.
+fn run_cmd_ok(cmd: &str, args: &[&str]) -> bool {
+    Command::new(cmd)
+        .args(args)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to run {cmd}: {e}");
+            false
+        })
 }
 
 /// Build external binaries (runtimed daemon and runt CLI) for Tauri bundling.

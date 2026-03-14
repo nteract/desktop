@@ -50,7 +50,7 @@ def demo_cursor_animation(session, cell):
     """Demo 2: Animate cursor across a cell."""
     source = cell.source
     lines = source.split("\n")
-    print(f"\n✏️  Demo 2: Cursor Animation")
+    print("\n✏️  Demo 2: Cursor Animation")
     print(f"   Sweeping cursor across {len(lines)} lines...")
 
     # Sweep across each line
@@ -70,8 +70,8 @@ def demo_selection(session, cell):
     """Demo 3: Selection highlighting - grow selection across the cell."""
     source = cell.source
     lines = source.split("\n")
-    print(f"\n🎨 Demo 3: Selection Highlighting")
-    print(f"   Growing selection across the code...")
+    print("\n🎨 Demo 3: Selection Highlighting")
+    print("   Growing selection across the code...")
 
     # Start at beginning
     anchor_line, anchor_col = 0, 0

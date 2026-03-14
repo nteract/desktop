@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from nteract._editing import (
     MAX_REGEX_SOURCE_LEN,
     EditSpan,
