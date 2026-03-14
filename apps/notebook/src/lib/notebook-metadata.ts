@@ -214,8 +214,10 @@ export async function setMetadataSnapshot(
 ): Promise<boolean> {
   if (!_handle) return false;
   try {
-    const json = JSON.stringify(snapshot);
-    _handle.set_metadata("notebook_metadata", json);
+    // Use native WASM method that writes as native Automerge types
+    // (maps, lists, scalars) instead of a JSON string blob. This enables
+    // per-field CRDT merging for concurrent metadata edits.
+    _handle.set_metadata_snapshot_value(snapshot);
     await syncToRelay();
     notifyMetadataChanged();
     return true;

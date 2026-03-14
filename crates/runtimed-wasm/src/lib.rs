@@ -267,7 +267,7 @@ impl NotebookHandle {
             .map_err(|e| JsError::new(&format!("append_source failed: {}", e)))
     }
 
-    /// Get a metadata value by key.
+    /// Get a metadata value by key (legacy string API).
     pub fn get_metadata(&self, key: &str) -> Option<String> {
         self.doc.get_metadata(key)
     }
@@ -281,6 +281,28 @@ impl NotebookHandle {
         serde_json::to_string(&snapshot).ok()
     }
 
+    /// Get the full typed metadata as a native JS object.
+    ///
+    /// Returns the `NotebookMetadataSnapshot` as a JS object via serde-wasm-bindgen,
+    /// avoiding JSON string round-trips. Returns undefined if no metadata is set.
+    pub fn get_metadata_snapshot(&self) -> JsValue {
+        match self.doc.get_metadata_snapshot() {
+            Some(snapshot) => serde_wasm_bindgen::to_value(&snapshot).unwrap_or(JsValue::UNDEFINED),
+            None => JsValue::UNDEFINED,
+        }
+    }
+
+    /// Get a metadata value as a native JS value.
+    ///
+    /// Reads the Automerge metadata subtree and returns it as a JS object/array/scalar.
+    /// Returns undefined if the key doesn't exist.
+    pub fn get_metadata_value(&self, key: &str) -> JsValue {
+        match self.doc.get_metadata_value(key) {
+            Some(value) => serde_wasm_bindgen::to_value(&value).unwrap_or(JsValue::UNDEFINED),
+            None => JsValue::UNDEFINED,
+        }
+    }
+
     /// Detect the notebook runtime from kernelspec/language_info metadata.
     ///
     /// Returns "python", "deno", or undefined for unknown runtimes.
@@ -288,11 +310,38 @@ impl NotebookHandle {
         self.doc.detect_runtime()
     }
 
-    /// Set a metadata value.
+    /// Set a metadata value (legacy string API).
     pub fn set_metadata(&mut self, key: &str, value: &str) -> Result<(), JsError> {
         self.doc
             .set_metadata(key, value)
             .map_err(|e| JsError::new(&format!("set_metadata failed: {}", e)))
+    }
+
+    /// Set the full typed metadata snapshot from a JS object.
+    ///
+    /// Accepts a JS object matching the `NotebookMetadataSnapshot` shape and writes
+    /// it as native Automerge types (maps, lists, scalars). This enables per-field
+    /// CRDT merging instead of last-write-wins on a JSON string.
+    pub fn set_metadata_snapshot_value(&mut self, value: JsValue) -> Result<(), JsError> {
+        let snapshot: notebook_doc::metadata::NotebookMetadataSnapshot =
+            serde_wasm_bindgen::from_value(value)
+                .map_err(|e| JsError::new(&format!("invalid metadata snapshot: {}", e)))?;
+        self.doc
+            .set_metadata_snapshot(&snapshot)
+            .map_err(|e| JsError::new(&format!("set_metadata_snapshot failed: {}", e)))
+    }
+
+    /// Set a metadata value from a JS object (native Automerge types).
+    ///
+    /// Accepts any JS value and writes it as native Automerge types under the
+    /// given key in the metadata map. Objects become Maps, arrays become Lists,
+    /// and scalars become native scalars.
+    pub fn set_metadata_value(&mut self, key: &str, value: JsValue) -> Result<(), JsError> {
+        let json_value: serde_json::Value = serde_wasm_bindgen::from_value(value)
+            .map_err(|e| JsError::new(&format!("invalid metadata value: {}", e)))?;
+        self.doc
+            .set_metadata_value(key, &json_value)
+            .map_err(|e| JsError::new(&format!("set_metadata_value failed: {}", e)))
     }
 
     // ── Cell metadata operations ─────────────────────────────────
@@ -333,6 +382,17 @@ impl NotebookHandle {
             .map_err(|e| JsError::new(&format!("set_cell_tags failed: {}", e)))
     }
 
+    /// Set the cell tags from a JS array (native, no JSON string).
+    ///
+    /// Accepts a JS array of strings directly via serde-wasm-bindgen.
+    pub fn set_cell_tags_value(&mut self, cell_id: &str, tags: JsValue) -> Result<bool, JsError> {
+        let tags: Vec<String> = serde_wasm_bindgen::from_value(tags)
+            .map_err(|e| JsError::new(&format!("invalid tags value: {}", e)))?;
+        self.doc
+            .set_cell_tags(cell_id, tags)
+            .map_err(|e| JsError::new(&format!("set_cell_tags failed: {}", e)))
+    }
+
     /// Update cell metadata at a specific path (e.g., ["jupyter", "source_hidden"]).
     ///
     /// Creates intermediate objects if they don't exist.
@@ -354,6 +414,26 @@ impl NotebookHandle {
             .map_err(|e| JsError::new(&format!("update_cell_metadata_at failed: {}", e)))
     }
 
+    /// Update cell metadata at a specific path using native JS values.
+    ///
+    /// Path is a JS array of strings, value is any JS value.
+    /// No JSON string round-trips.
+    pub fn update_cell_metadata_at_value(
+        &mut self,
+        cell_id: &str,
+        path: JsValue,
+        value: JsValue,
+    ) -> Result<bool, JsError> {
+        let path: Vec<String> = serde_wasm_bindgen::from_value(path)
+            .map_err(|e| JsError::new(&format!("invalid path: {}", e)))?;
+        let value: serde_json::Value = serde_wasm_bindgen::from_value(value)
+            .map_err(|e| JsError::new(&format!("invalid value: {}", e)))?;
+        let path_refs: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
+        self.doc
+            .update_cell_metadata_at(cell_id, &path_refs, value)
+            .map_err(|e| JsError::new(&format!("update_cell_metadata_at failed: {}", e)))
+    }
+
     /// Replace entire cell metadata (last-write-wins).
     ///
     /// Accepts metadata as a JSON object string.
@@ -367,6 +447,22 @@ impl NotebookHandle {
             .map_err(|e| JsError::new(&format!("invalid metadata JSON: {}", e)))?;
         if !metadata.is_object() {
             return Err(JsError::new("metadata must be a JSON object"));
+        }
+        self.doc
+            .set_cell_metadata(cell_id, &metadata)
+            .map_err(|e| JsError::new(&format!("set_cell_metadata failed: {}", e)))
+    }
+
+    /// Replace entire cell metadata from a JS object (native, no JSON string).
+    pub fn set_cell_metadata_value(
+        &mut self,
+        cell_id: &str,
+        metadata: JsValue,
+    ) -> Result<bool, JsError> {
+        let metadata: serde_json::Value = serde_wasm_bindgen::from_value(metadata)
+            .map_err(|e| JsError::new(&format!("invalid metadata: {}", e)))?;
+        if !metadata.is_object() {
+            return Err(JsError::new("metadata must be an object"));
         }
         self.doc
             .set_cell_metadata(cell_id, &metadata)
