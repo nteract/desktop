@@ -1,7 +1,7 @@
-//! Unit tests for notebook-sync.
+//! Tests for notebook-sync.
 //!
-//! These tests verify the DocHandle pattern without a daemon connection.
-//! They exercise the shared state, snapshot publishing, and with_doc closure API.
+//! Unit tests verify the DocHandle pattern without a daemon connection.
+//! Integration tests (behind `#[ignore]`) connect to a running daemon.
 
 #[cfg(test)]
 mod tests {
@@ -104,7 +104,7 @@ mod tests {
                 doc.put(&cell_id, "id", "cell-1").unwrap();
                 doc.put(&cell_id, "cell_type", "code").unwrap();
                 doc.put(&cell_id, "position", "80").unwrap();
-                doc.put_object(&cell_id, "source", ObjType::Text).unwrap();
+                let _source_id = doc.put_object(&cell_id, "source", ObjType::Text).unwrap();
                 doc.put(&cell_id, "execution_count", "null").unwrap();
                 doc.put_object(&cell_id, "outputs", ObjType::List).unwrap();
                 doc.put_object(&cell_id, "metadata", ObjType::Map).unwrap();
@@ -128,7 +128,7 @@ mod tests {
         handle
             .with_doc(|doc| {
                 let mut nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
-                nd.add_cell(0, "cell-1", "code").unwrap();
+                nd.add_cell_after("cell-1", "code", None).unwrap();
                 nd.update_source("cell-1", "print('hello')").unwrap();
                 *doc = nd.into_inner();
             })
@@ -167,7 +167,7 @@ mod tests {
         handle
             .with_doc(|doc| {
                 let mut nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
-                nd.add_cell(0, "cell-1", "code").unwrap();
+                nd.add_cell_after("cell-1", "code", None).unwrap();
                 nd.update_source("cell-1", "x = 1").unwrap();
                 *doc = nd.into_inner();
             })
@@ -201,8 +201,9 @@ mod tests {
         handle
             .with_doc(|doc| {
                 let mut nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
-                nd.add_cell(0, "cell-a", "code").unwrap();
-                nd.add_cell(1, "cell-b", "markdown").unwrap();
+                nd.add_cell_after("cell-a", "code", None).unwrap();
+                nd.add_cell_after("cell-b", "markdown", Some("cell-a"))
+                    .unwrap();
                 *doc = nd.into_inner();
             })
             .unwrap();
@@ -223,7 +224,7 @@ mod tests {
         handle
             .with_doc(|doc| {
                 let mut nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
-                nd.add_cell(0, "cell-1", "code").unwrap();
+                nd.add_cell_after("cell-1", "code", None).unwrap();
                 *doc = nd.into_inner();
             })
             .unwrap();
@@ -242,7 +243,7 @@ mod tests {
         handle
             .with_doc(|doc| {
                 let mut nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
-                nd.add_cell(0, "cell-1", "code").unwrap();
+                nd.add_cell_after("cell-1", "code", None).unwrap();
                 *doc = nd.into_inner();
             })
             .unwrap();
@@ -294,7 +295,7 @@ mod tests {
         handle
             .with_doc(|doc| {
                 let mut nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
-                nd.add_cell(0, "cell-1", "code").unwrap();
+                nd.add_cell_after("cell-1", "code", None).unwrap();
                 nd.set_cell_source_hidden("cell-1", true).unwrap();
                 nd.set_cell_outputs_hidden("cell-1", true).unwrap();
                 *doc = nd.into_inner();
@@ -361,7 +362,7 @@ mod tests {
                     .with_doc(|doc| {
                         let mut nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
                         let cell_id = format!("thread1-cell-{}", i);
-                        nd.add_cell(0, &cell_id, "code").unwrap();
+                        nd.add_cell_after(&cell_id, "code", None).unwrap();
                         *doc = nd.into_inner();
                     })
                     .unwrap();
@@ -374,7 +375,7 @@ mod tests {
                     .with_doc(|doc| {
                         let mut nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
                         let cell_id = format!("thread2-cell-{}", i);
-                        nd.add_cell(0, &cell_id, "code").unwrap();
+                        nd.add_cell_after(&cell_id, "code", None).unwrap();
                         *doc = nd.into_inner();
                     })
                     .unwrap();
@@ -387,5 +388,429 @@ mod tests {
         // All 20 cells should be present
         let cells = handle.get_cells();
         assert_eq!(cells.len(), 20);
+    }
+
+    // =====================================================================
+    // Convenience method tests
+    // =====================================================================
+
+    #[test]
+    fn test_convenience_add_cell() {
+        let (handle, _changed_rx, _cmd_rx) = test_handle();
+
+        handle.add_cell_after("cell-1", "code", None).unwrap();
+
+        let cells = handle.get_cells();
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].id, "cell-1");
+        assert_eq!(cells[0].cell_type, "code");
+    }
+
+    #[test]
+    fn test_convenience_add_cell_with_source() {
+        let (handle, _changed_rx, _cmd_rx) = test_handle();
+
+        handle
+            .add_cell_with_source("cell-1", "code", None, "x = 42")
+            .unwrap();
+
+        let cell = handle.snapshot().get_cell("cell-1").unwrap().clone();
+        assert_eq!(cell.source, "x = 42");
+    }
+
+    #[test]
+    fn test_convenience_update_source() {
+        let (handle, _changed_rx, _cmd_rx) = test_handle();
+
+        handle.add_cell_after("cell-1", "code", None).unwrap();
+        handle.update_source("cell-1", "y = 100").unwrap();
+
+        let cell = handle.snapshot().get_cell("cell-1").unwrap().clone();
+        assert_eq!(cell.source, "y = 100");
+    }
+
+    #[test]
+    fn test_convenience_append_source() {
+        let (handle, _changed_rx, _cmd_rx) = test_handle();
+
+        handle
+            .add_cell_with_source("cell-1", "code", None, "x = 1")
+            .unwrap();
+        handle.append_source("cell-1", "\ny = 2").unwrap();
+
+        let cell = handle.snapshot().get_cell("cell-1").unwrap().clone();
+        assert_eq!(cell.source, "x = 1\ny = 2");
+    }
+
+    #[test]
+    fn test_convenience_delete_cell() {
+        let (handle, _changed_rx, _cmd_rx) = test_handle();
+
+        handle.add_cell_after("cell-1", "code", None).unwrap();
+        handle
+            .add_cell_after("cell-2", "code", Some("cell-1"))
+            .unwrap();
+        assert_eq!(handle.get_cells().len(), 2);
+
+        let deleted = handle.delete_cell("cell-1").unwrap();
+        assert!(deleted);
+        assert_eq!(handle.get_cells().len(), 1);
+        assert_eq!(handle.get_cells()[0].id, "cell-2");
+    }
+
+    #[test]
+    fn test_convenience_set_metadata_snapshot() {
+        let (handle, _changed_rx, _cmd_rx) = test_handle();
+
+        let snapshot = notebook_doc::metadata::NotebookMetadataSnapshot {
+            kernelspec: Some(notebook_doc::metadata::KernelspecSnapshot {
+                name: "deno".into(),
+                display_name: "Deno".into(),
+                language: Some("typescript".into()),
+            }),
+            language_info: None,
+            runt: notebook_doc::metadata::RuntMetadata::default(),
+        };
+
+        handle.set_metadata_snapshot(&snapshot).unwrap();
+
+        let meta = handle.get_notebook_metadata().unwrap();
+        assert_eq!(meta.kernelspec.unwrap().name, "deno");
+    }
+
+    #[test]
+    fn test_convenience_cell_visibility() {
+        let (handle, _changed_rx, _cmd_rx) = test_handle();
+
+        handle.add_cell_after("cell-1", "code", None).unwrap();
+
+        handle.set_cell_source_hidden("cell-1", true).unwrap();
+        assert!(handle
+            .snapshot()
+            .get_cell("cell-1")
+            .unwrap()
+            .is_source_hidden());
+
+        handle.set_cell_outputs_hidden("cell-1", true).unwrap();
+        assert!(handle
+            .snapshot()
+            .get_cell("cell-1")
+            .unwrap()
+            .is_outputs_hidden());
+    }
+
+    #[test]
+    fn test_convenience_uv_dependencies() {
+        let (handle, _changed_rx, _cmd_rx) = test_handle();
+
+        handle.add_uv_dependency("pandas>=2.0").unwrap();
+        handle.add_uv_dependency("requests").unwrap();
+
+        let meta = handle.get_notebook_metadata().unwrap();
+        let deps = meta.runt.uv.unwrap().dependencies;
+        assert_eq!(deps.len(), 2);
+        assert!(deps.contains(&"pandas>=2.0".to_string()));
+        assert!(deps.contains(&"requests".to_string()));
+
+        let removed = handle.remove_uv_dependency("pandas").unwrap();
+        assert!(removed);
+
+        let meta = handle.get_notebook_metadata().unwrap();
+        let deps = meta.runt.uv.unwrap().dependencies;
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0], "requests");
+    }
+
+    #[test]
+    fn test_atomic_compound_operation() {
+        let (handle, mut changed_rx, _cmd_rx) = test_handle();
+
+        // Drain any existing notifications
+        while changed_rx.try_recv().is_ok() {}
+
+        // Compound operation: add cell + set source + set metadata, all in one lock
+        handle
+            .with_doc(|doc| {
+                let mut nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
+                nd.add_cell_after("cell-1", "code", None).unwrap();
+                nd.update_source("cell-1", "print('atomic')").unwrap();
+                nd.set_cell_source_hidden("cell-1", true).unwrap();
+                *doc = nd.into_inner();
+            })
+            .unwrap();
+
+        // Only ONE change notification (atomic)
+        let mut count = 0;
+        while changed_rx.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(
+            count, 1,
+            "compound with_doc should produce exactly one notification"
+        );
+
+        // All mutations visible
+        let cell = handle.snapshot().get_cell("cell-1").unwrap().clone();
+        assert_eq!(cell.source, "print('atomic')");
+        assert!(cell.is_source_hidden());
+    }
+}
+
+// =========================================================================
+// Integration tests (require a running daemon)
+// =========================================================================
+
+#[cfg(test)]
+mod integration_tests {
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use runtimed::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
+
+    /// Get the daemon socket path for the current worktree.
+    fn daemon_socket_path() -> PathBuf {
+        // Use the same logic as the Python tests: check env vars first
+        if let Ok(path) = std::env::var("RUNTIMED_SOCKET_PATH") {
+            return PathBuf::from(path);
+        }
+        runtimed::default_socket_path()
+    }
+
+    /// Check if a daemon is running and available.
+    fn daemon_available() -> bool {
+        let path = daemon_socket_path();
+        path.exists()
+    }
+
+    #[tokio::test]
+    #[ignore] // Run with: cargo test -p notebook-sync -- --ignored
+    async fn test_connect_to_daemon() {
+        if !daemon_available() {
+            eprintln!("Skipping: no daemon running");
+            return;
+        }
+
+        let result = crate::connect::connect(daemon_socket_path(), "test-connect".into()).await;
+
+        assert!(result.is_ok(), "Failed to connect: {:?}", result.err());
+
+        let conn = result.unwrap();
+        assert_eq!(conn.handle.notebook_id(), "test-connect");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_create_cell_and_read_back() {
+        if !daemon_available() {
+            eprintln!("Skipping: no daemon running");
+            return;
+        }
+
+        let conn = crate::connect::connect(
+            daemon_socket_path(),
+            format!("test-cell-{}", uuid::Uuid::new_v4()),
+        )
+        .await
+        .expect("connect");
+
+        let handle = conn.handle;
+
+        // Create a cell with source
+        handle
+            .add_cell_with_source("cell-1", "code", None, "x = 42")
+            .expect("add_cell_with_source");
+
+        // Confirm the daemon has our changes
+        handle.confirm_sync().await.expect("confirm_sync");
+
+        // Read back via snapshot
+        let snap = handle.snapshot();
+        let cell = snap.get_cell("cell-1").expect("cell should exist");
+        assert_eq!(cell.source, "x = 42");
+        assert_eq!(cell.cell_type, "code");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_execute_cell_and_get_outputs() {
+        if !daemon_available() {
+            eprintln!("Skipping: no daemon running");
+            return;
+        }
+
+        let notebook_id = format!("test-exec-{}", uuid::Uuid::new_v4());
+        let conn = crate::connect::connect(daemon_socket_path(), notebook_id)
+            .await
+            .expect("connect");
+
+        let handle = conn.handle;
+        let mut broadcast_rx = conn.broadcast_rx;
+
+        // Start a kernel
+        let response = handle
+            .send_request(NotebookRequest::LaunchKernel {
+                kernel_type: "python".into(),
+                env_source: "auto".into(),
+                notebook_path: None,
+            })
+            .await
+            .expect("launch kernel");
+
+        match response {
+            NotebookResponse::KernelLaunched { .. }
+            | NotebookResponse::KernelAlreadyRunning { .. } => {}
+            other => panic!("Unexpected response: {:?}", other),
+        }
+
+        // Create a cell that prints something
+        handle
+            .add_cell_with_source(
+                "cell-exec",
+                "code",
+                None,
+                "print('hello from notebook-sync')",
+            )
+            .expect("add_cell");
+
+        // Confirm sync so daemon has the cell
+        handle.confirm_sync().await.expect("confirm_sync");
+
+        // Execute
+        let response = handle
+            .send_request(NotebookRequest::ExecuteCell {
+                cell_id: "cell-exec".into(),
+            })
+            .await
+            .expect("execute");
+
+        match response {
+            NotebookResponse::CellQueued { .. } => {}
+            other => panic!("Expected CellQueued, got: {:?}", other),
+        }
+
+        // Wait for ExecutionDone via broadcast
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut got_done = false;
+
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(500), broadcast_rx.recv()).await {
+                Ok(Ok(NotebookBroadcast::ExecutionDone { cell_id })) if cell_id == "cell-exec" => {
+                    got_done = true;
+                    break;
+                }
+                Ok(Ok(_)) => continue, // other broadcasts
+                Ok(Err(_)) => break,   // channel lagged or closed
+                Err(_) => continue,    // timeout, keep waiting
+            }
+        }
+
+        assert!(got_done, "Did not receive ExecutionDone within 30s");
+
+        // Confirm sync to ensure outputs are in our doc
+        handle
+            .confirm_sync()
+            .await
+            .expect("confirm_sync after exec");
+
+        // Read outputs from the Automerge doc (source of truth)
+        // Outputs are stored as manifest hashes (blob references) or raw JSON —
+        // the important thing is that they exist after execution.
+        let snap = handle.snapshot();
+        let cell = snap.get_cell("cell-exec").expect("cell should exist");
+
+        assert!(
+            !cell.outputs.is_empty(),
+            "Cell should have outputs after execution"
+        );
+
+        // Verify execution_count was set (proves the cell actually ran)
+        assert_ne!(
+            cell.execution_count, "null",
+            "execution_count should be set after execution, got: {}",
+            cell.execution_count
+        );
+
+        // Shutdown kernel
+        let _ = handle
+            .send_request(NotebookRequest::ShutdownKernel {})
+            .await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_two_handles_share_state() {
+        if !daemon_available() {
+            eprintln!("Skipping: no daemon running");
+            return;
+        }
+
+        let notebook_id = format!("test-share-{}", uuid::Uuid::new_v4());
+
+        // First handle connects and creates a cell
+        let conn1 = crate::connect::connect(daemon_socket_path(), notebook_id.clone())
+            .await
+            .expect("connect 1");
+
+        conn1
+            .handle
+            .add_cell_with_source("shared-cell", "code", None, "shared = True")
+            .expect("add_cell");
+
+        conn1.handle.confirm_sync().await.expect("confirm_sync 1");
+
+        // Second handle connects to the same notebook
+        let conn2 = crate::connect::connect(daemon_socket_path(), notebook_id)
+            .await
+            .expect("connect 2");
+
+        // Second handle should see the cell created by the first
+        let snap = conn2.handle.snapshot();
+        let cell = snap.get_cell("shared-cell");
+        assert!(
+            cell.is_some(),
+            "Second handle should see cell created by first"
+        );
+        assert_eq!(cell.unwrap().source, "shared = True");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_metadata_round_trip_via_daemon() {
+        if !daemon_available() {
+            eprintln!("Skipping: no daemon running");
+            return;
+        }
+
+        let notebook_id = format!("test-meta-{}", uuid::Uuid::new_v4());
+        let conn = crate::connect::connect(daemon_socket_path(), notebook_id)
+            .await
+            .expect("connect");
+
+        let handle = conn.handle;
+
+        // Set metadata
+        let snapshot = notebook_doc::metadata::NotebookMetadataSnapshot {
+            kernelspec: Some(notebook_doc::metadata::KernelspecSnapshot {
+                name: "python3".into(),
+                display_name: "Python 3".into(),
+                language: Some("python".into()),
+            }),
+            language_info: None,
+            runt: notebook_doc::metadata::RuntMetadata::default(),
+        };
+
+        handle
+            .set_metadata_snapshot(&snapshot)
+            .expect("set_metadata_snapshot");
+
+        handle.confirm_sync().await.expect("confirm_sync");
+
+        // Read back
+        let meta = handle
+            .get_notebook_metadata()
+            .expect("should have metadata");
+        let ks = meta.kernelspec.expect("should have kernelspec");
+        assert_eq!(ks.name, "python3");
+        assert_eq!(ks.display_name, "Python 3");
     }
 }

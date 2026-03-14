@@ -202,26 +202,34 @@ impl DocHandle {
         })?
     }
 
-    /// Add a new cell at the given index.
-    pub fn add_cell(&self, index: usize, cell_id: &str, cell_type: &str) -> Result<(), SyncError> {
-        self.with_notebook_doc(|nd| nd.add_cell(index, cell_id, cell_type))
+    /// Add a new cell after the given cell (or at the beginning if `None`).
+    ///
+    /// Returns the fractional position string assigned to the cell.
+    pub fn add_cell_after(
+        &self,
+        cell_id: &str,
+        cell_type: &str,
+        after_cell_id: Option<&str>,
+    ) -> Result<String, SyncError> {
+        self.with_notebook_doc(|nd| nd.add_cell_after(cell_id, cell_type, after_cell_id))
     }
 
     /// Add a new cell with source in a single atomic transaction.
     ///
     /// Prevents peers from seeing an empty cell before the source arrives.
-    /// Uses `add_cell` + `update_source` in one `with_doc` lock.
+    /// Both the cell structure and source are written in one lock acquisition,
+    /// one snapshot publish, and one sync notification.
     pub fn add_cell_with_source(
         &self,
-        index: usize,
         cell_id: &str,
         cell_type: &str,
+        after_cell_id: Option<&str>,
         source: &str,
-    ) -> Result<(), SyncError> {
+    ) -> Result<String, SyncError> {
         self.with_notebook_doc(|nd| {
-            nd.add_cell(index, cell_id, cell_type)?;
+            let position = nd.add_cell_after(cell_id, cell_type, after_cell_id)?;
             nd.update_source(cell_id, source)?;
-            Ok(())
+            Ok(position)
         })
     }
 
