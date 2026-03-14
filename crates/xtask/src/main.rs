@@ -284,7 +284,7 @@ fn cmd_build(rust_only: bool) {
     } else {
         // pnpm build runs: notebook UI
         println!("Building frontend (notebook)...");
-        run_cmd("pnpm", &["build"]);
+        run_frontend_build(true);
     }
 
     println!("Building debug binary (no bundle)...");
@@ -338,7 +338,7 @@ fn cmd_build_e2e() {
 
     // pnpm build runs: notebook UI
     println!("Building frontend (notebook)...");
-    run_cmd("pnpm", &["build"]);
+    run_frontend_build(true);
 
     println!("Building debug binary with WebDriver server...");
     run_cmd(
@@ -401,7 +401,7 @@ fn build_with_bundle(bundle: &str) {
 
     // Build frontend
     println!("Building frontend...");
-    run_cmd("pnpm", &["build"]);
+    run_frontend_build(false);
 
     // Build Tauri app
     println!("Building Tauri app ({bundle} bundle)...");
@@ -1090,6 +1090,24 @@ fn run_cmd(cmd: &str, args: &[&str]) {
 
     if !status.success() {
         eprintln!("Command failed: {cmd} {}", args.join(" "));
+        exit(status.code().unwrap_or(1));
+    }
+}
+
+fn run_frontend_build(debug_bundle: bool) {
+    let mut command = Command::new("pnpm");
+    command.arg("build");
+    if debug_bundle {
+        command.env("RUNT_NOTEBOOK_DEBUG_BUILD", "1");
+    }
+
+    let status = command.status().unwrap_or_else(|e| {
+        eprintln!("Failed to run pnpm build: {e}");
+        exit(1);
+    });
+
+    if !status.success() {
+        eprintln!("Command failed: pnpm build");
         exit(status.code().unwrap_or(1));
     }
 }
