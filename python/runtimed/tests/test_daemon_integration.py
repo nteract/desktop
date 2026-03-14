@@ -1248,18 +1248,45 @@ class TestKernelLaunchMetadata:
         )
 
     def test_metadata_visible_to_second_peer(self, two_sessions):
-        """Metadata set by one peer is visible to another."""
+        """Metadata set by one peer is visible to another via typed API."""
         s1, s2 = two_sessions
 
-        # Session 1 sets kernelspec
+        # Session 1 sets kernelspec via typed API
         s1.set_kernelspec("python3", "Python 3", "python")
 
-        # Small delay for sync propagation
-        time.sleep(0.5)
+        # Poll until session 2 sees the kernelspec (sync propagation)
+        for _ in range(20):
+            ks = s2.get_kernelspec()
+            if ks and ks.get("name") == "python3":
+                break
+            time.sleep(0.25)
 
-        # Session 2 should see the same kernel type after starting
-        start_kernel_with_retry(s2, kernel_type="python")
-        assert s2.kernel_type == "python"
+        # Verify the kernelspec arrived at session 2
+        ks = s2.get_kernelspec()
+        assert ks is not None, "Kernelspec should have synced to session 2"
+        assert ks["name"] == "python3"
+        assert ks["display_name"] == "Python 3"
+        assert ks.get("language") == "python"
+
+    def test_kernelspec_round_trip(self, session):
+        """Set a kernelspec, read it back, verify fields match."""
+        session.set_kernelspec("test-kernel", "Test Kernel Display", "test-lang")
+
+        ks = session.get_kernelspec()
+        assert ks is not None, "Kernelspec should be readable after set"
+        assert ks["name"] == "test-kernel"
+        assert ks["display_name"] == "Test Kernel Display"
+        assert ks.get("language") == "test-lang"
+
+    def test_kernelspec_round_trip_without_language(self, session):
+        """Set a kernelspec without language, verify it round-trips."""
+        session.set_kernelspec("minimal-kernel", "Minimal Kernel")
+
+        ks = session.get_kernelspec()
+        assert ks is not None
+        assert ks["name"] == "minimal-kernel"
+        assert ks["display_name"] == "Minimal Kernel"
+        assert "language" not in ks  # Should not be present when not set
 
     @pytest.mark.timeout(120)
     def test_uv_inline_deps_trusted(self, session):
@@ -1347,6 +1374,13 @@ class TestDenoKernel:
     def test_deno_kernelspec_via_typed_api(self, session):
         """Deno kernelspec set via typed API enables Deno kernel."""
         _set_deno_kernelspec(session)
+
+        # Verify kernelspec round-trips correctly before launching
+        ks = session.get_kernelspec()
+        assert ks is not None, "Deno kernelspec should be readable"
+        assert ks["name"] == "deno"
+        assert ks["display_name"] == "Deno"
+        assert ks.get("language") == "typescript"
 
         start_kernel_with_retry(session, kernel_type="deno", env_source="deno")
 

@@ -512,6 +512,29 @@ impl AsyncSession {
         })
     }
 
+    /// Get the notebook kernelspec.
+    ///
+    /// Returns a dict with 'name', 'display_name', and optionally 'language',
+    /// or None if no kernelspec is set.
+    fn get_kernelspec<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let notebook_id = self.notebook_id.clone();
+
+        future_into_py(py, async move {
+            session_core::connect(&state, &notebook_id).await?;
+            let snapshot = session_core::get_notebook_metadata(&state).await?;
+            Ok(snapshot.kernelspec.map(|ks| {
+                let mut map = std::collections::HashMap::<String, String>::new();
+                map.insert("name".to_string(), ks.name);
+                map.insert("display_name".to_string(), ks.display_name);
+                if let Some(lang) = ks.language {
+                    map.insert("language".to_string(), lang);
+                }
+                map
+            }))
+        })
+    }
+
     // =========================================================================
     // Cell metadata
     // =========================================================================

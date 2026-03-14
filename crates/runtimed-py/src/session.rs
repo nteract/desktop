@@ -399,6 +399,26 @@ impl Session {
             .block_on(session_core::set_notebook_metadata(&self.state, &snapshot))
     }
 
+    /// Get the notebook kernelspec.
+    ///
+    /// Returns a dict with 'name', 'display_name', and optionally 'language',
+    /// or None if no kernelspec is set.
+    fn get_kernelspec(&self) -> PyResult<Option<std::collections::HashMap<String, String>>> {
+        self.connect()?;
+        let snapshot = self
+            .runtime
+            .block_on(session_core::get_notebook_metadata(&self.state))?;
+        Ok(snapshot.kernelspec.map(|ks| {
+            let mut map = std::collections::HashMap::new();
+            map.insert("name".to_string(), ks.name);
+            map.insert("display_name".to_string(), ks.display_name);
+            if let Some(lang) = ks.language {
+                map.insert("language".to_string(), lang);
+            }
+            map
+        }))
+    }
+
     // =========================================================================
     // Cell metadata
     // =========================================================================
