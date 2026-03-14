@@ -30,7 +30,7 @@ export interface AnyWidgetModel {
   /**
    * Subscribe to model events.
    * - "change:key" callbacks receive no arguments (use model.get() to read values)
-   * - "change" callbacks receive no arguments
+   * - "change" callbacks receive no arguments (fired alongside change:key events)
    * - "msg:custom" callbacks receive (content, buffers)
    */
   on(event: string, callback: (...args: unknown[]) => void): void;
