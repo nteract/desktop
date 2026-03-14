@@ -181,7 +181,7 @@ case "${1:-help}" in
 
   test)
     # Run E2E tests: ./e2e/dev.sh test [spec|all]
-    #   no args  → notebook-execution only (quick smoke test)
+    #   no args  → smoke test only (quick smoke test)
     #   all      → all non-fixture specs
     #   <path>   → specific spec file
     require_running
@@ -191,7 +191,7 @@ case "${1:-help}" in
     elif [ -n "$2" ]; then
       E2E_SPEC="$2" WEBDRIVER_PORT="$PORT" pnpm exec wdio run e2e/wdio.conf.js
     else
-      E2E_SPEC=e2e/specs/notebook-execution.spec.js WEBDRIVER_PORT="$PORT" pnpm exec wdio run e2e/wdio.conf.js
+      E2E_SPEC=e2e/specs/smoke.spec.js WEBDRIVER_PORT="$PORT" pnpm exec wdio run e2e/wdio.conf.js
     fi
     ;;
 

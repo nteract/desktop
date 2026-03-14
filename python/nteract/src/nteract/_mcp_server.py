@@ -83,7 +83,7 @@ def _get_daemon_client() -> runtimed.DaemonClient:
 async def _get_session() -> runtimed.AsyncSession:
     """Get the current session, raising error if not connected."""
     if _session is None:
-        raise RuntimeError("No active notebook session. Call connect_notebook first.")
+        raise RuntimeError("No active notebook session. Call join_notebook first.")
     return _session
 
 
