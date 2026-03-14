@@ -763,20 +763,28 @@ where
     // Seed initial metadata into the Automerge doc if provided and doc has no metadata yet.
     // This ensures the kernelspec is available before auto-launch decides which kernel to use.
     if let Some(ref metadata_json) = initial_metadata {
-        if let Ok(snapshot) = serde_json::from_str::<NotebookMetadataSnapshot>(metadata_json) {
-            let mut doc = room.doc.write().await;
-            if doc.get_metadata_snapshot().is_none() {
-                match doc.set_metadata_snapshot(&snapshot) {
-                    Ok(()) => {
-                        info!(
-                            "[notebook-sync] Seeded initial metadata from handshake for {}",
-                            notebook_id
-                        );
-                    }
-                    Err(e) => {
-                        warn!("[notebook-sync] Failed to seed initial metadata: {}", e);
+        match serde_json::from_str::<NotebookMetadataSnapshot>(metadata_json) {
+            Ok(snapshot) => {
+                let mut doc = room.doc.write().await;
+                if doc.get_metadata_snapshot().is_none() {
+                    match doc.set_metadata_snapshot(&snapshot) {
+                        Ok(()) => {
+                            info!(
+                                "[notebook-sync] Seeded initial metadata from handshake for {}",
+                                notebook_id
+                            );
+                        }
+                        Err(e) => {
+                            warn!("[notebook-sync] Failed to seed initial metadata: {}", e);
+                        }
                     }
                 }
+            }
+            Err(e) => {
+                warn!(
+                    "[notebook-sync] Failed to parse initial metadata JSON for {}: {}",
+                    notebook_id, e
+                );
             }
         }
     }
