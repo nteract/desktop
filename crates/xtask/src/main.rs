@@ -205,6 +205,7 @@ fn run_notebook_dev_app(notebook: Option<&str>, attach: bool, force_dev_mode: bo
     }
 
     apply_rust_log_env(&mut command);
+    apply_build_channel_env(&mut command);
     apply_worktree_env(&mut command, force_dev_mode);
     if let Some(ref port) = vite_port {
         command.env("RUNTIMED_VITE_PORT", port);
@@ -641,11 +642,6 @@ fn cmd_dev_daemon(release: bool) {
 }
 
 fn ensure_dev_daemon_binaries() {
-    if Path::new(dev_daemon_binary(false)).exists() && Path::new(dev_runt_cli_binary()).exists() {
-        println!("Reusing existing runtimed/runt debug binaries.");
-        return;
-    }
-
     println!("Building runtimed + runt binaries for dev daemon...");
     build_runtimed_daemon(false);
 }
@@ -997,14 +993,16 @@ fn cmd_lint(fix: bool) {
 
 /// Run a command and return true if it succeeded.
 fn run_cmd_ok(cmd: &str, args: &[&str]) -> bool {
-    Command::new(cmd)
-        .args(args)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to run {cmd}: {e}");
-            false
-        })
+    let mut command = Command::new(cmd);
+    command.args(args);
+    if cmd == "cargo" {
+        apply_build_channel_env(&mut command);
+    }
+
+    command.status().map(|s| s.success()).unwrap_or_else(|e| {
+        eprintln!("Failed to run {cmd}: {e}");
+        false
+    })
 }
 
 /// Build external binaries (runtimed daemon and runt CLI) for Tauri bundling.
@@ -1085,7 +1083,13 @@ fn get_host_target() -> String {
 }
 
 fn run_cmd(cmd: &str, args: &[&str]) {
-    let status = Command::new(cmd).args(args).status().unwrap_or_else(|e| {
+    let mut command = Command::new(cmd);
+    command.args(args);
+    if cmd == "cargo" {
+        apply_build_channel_env(&mut command);
+    }
+
+    let status = command.status().unwrap_or_else(|e| {
         eprintln!("Failed to run {cmd}: {e}");
         exit(1);
     });
@@ -1099,6 +1103,12 @@ fn run_cmd(cmd: &str, args: &[&str]) {
 fn apply_rust_log_env(command: &mut Command) {
     let rust_log = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
     command.env("RUST_LOG", rust_log);
+}
+
+fn apply_build_channel_env(command: &mut Command) {
+    let build_channel = env::var("RUNT_BUILD_CHANNEL")
+        .unwrap_or_else(|_| runt_workspace::channel_display_name().to_string());
+    command.env("RUNT_BUILD_CHANNEL", build_channel);
 }
 
 fn apply_worktree_env(command: &mut Command, force_dev_mode: bool) {
