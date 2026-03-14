@@ -33,7 +33,6 @@ import { type EnvSyncState, useDependencies } from "./hooks/useDependencies";
 import { useEnvProgress } from "./hooks/useEnvProgress";
 import { useDaemonInfo, useGitInfo } from "./hooks/useGitInfo";
 import { useGlobalFind } from "./hooks/useGlobalFind";
-import { usePresence } from "./hooks/usePresence";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
 import { startCursorDispatch } from "./lib/cursor-registry";
@@ -92,9 +91,6 @@ function AppContent() {
 
   // Stable peer ID for presence (generated once per window lifetime)
   const peerIdRef = useRef(crypto.randomUUID());
-
-  // Remote cursor/selection presence (outgoing setCursor/setSelection wired in step 5)
-  usePresence(peerIdRef.current);
 
   // Start dispatching presence events to CodeMirror EditorViews
   useEffect(() => {
