@@ -20,7 +20,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use automerge::sync::{self, SyncDoc};
+use automerge::sync;
 use log::{debug, info, warn};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -110,7 +110,7 @@ where
     let mut loop_count: u64 = 0;
 
     // Track last metadata for change detection (used for SyncUpdate-like behavior)
-    let mut last_metadata: Option<notebook_doc::metadata::NotebookMetadataSnapshot> = {
+    let mut _last_metadata: Option<notebook_doc::metadata::NotebookMetadataSnapshot> = {
         let state = config.doc.lock().unwrap_or_else(|e| e.into_inner());
         notebook_doc::get_metadata_snapshot_from_doc(&state.doc)
     };
@@ -262,14 +262,23 @@ where
                     }
 
                     SyncCommand::ReceiveFrontendSyncMessage { message, reply } => {
-                        // Apply the frontend's sync message to our doc
+                        // Decode and apply the frontend's sync message to our doc.
+                        // Reject invalid bytes early — never forward garbage to the daemon.
+                        let msg = match sync::Message::decode(&message) {
+                            Ok(msg) => msg,
+                            Err(e) => {
+                                let _ = reply
+                                    .send(Err(SyncError::Protocol(format!("decode sync: {}", e))));
+                                continue;
+                            }
+                        };
+
                         {
                             let mut state = config.doc.lock().unwrap_or_else(|e| e.into_inner());
-                            if let Ok(msg) = sync::Message::decode(&message) {
-                                let _ = state.receive_sync_message(msg);
-                            }
+                            let _ = state.receive_sync_message(msg);
                         }
-                        // Forward to daemon
+
+                        // Forward valid message to daemon
                         let result = connection::send_typed_frame(
                             &mut writer,
                             NotebookFrameType::AutomergeSync,
@@ -421,6 +430,7 @@ async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
 ///
 /// While waiting, also processes AutomergeSync and Broadcast frames that arrive
 /// interleaved with the response.
+#[allow(clippy::too_many_arguments)]
 async fn send_request_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     doc: &Arc<Mutex<SharedDocState>>,
     reader: &mut R,

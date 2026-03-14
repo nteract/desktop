@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use automerge::sync::{self, SyncDoc};
 use automerge::AutoCommit;
-use log::{debug, info, warn};
+use log::{debug, info};
 use tokio::sync::{mpsc, watch};
 
 use runtimed::connection::{
@@ -54,11 +54,14 @@ pub struct OpenResult {
     pub cells: Vec<notebook_doc::CellSnapshot>,
 }
 
+// TODO: Windows support — use named pipes instead of Unix domain sockets.
+
 /// Connect to a notebook room by ID.
 ///
 /// Performs the protocol handshake and initial Automerge sync. Returns a
 /// `DocHandle` for direct document access and a broadcast receiver for
 /// kernel events.
+#[cfg(unix)]
 pub async fn connect(
     socket_path: PathBuf,
     notebook_id: String,
@@ -67,6 +70,7 @@ pub async fn connect(
 }
 
 /// Connect to a notebook room with options.
+#[cfg(unix)]
 pub async fn connect_with_options(
     socket_path: PathBuf,
     notebook_id: String,
@@ -195,6 +199,7 @@ pub async fn connect_with_options(
 }
 
 /// Connect and open an existing notebook file.
+#[cfg(unix)]
 pub async fn connect_open(socket_path: PathBuf, path: PathBuf) -> Result<OpenResult, SyncError> {
     let stream = tokio::net::UnixStream::connect(&socket_path)
         .await
@@ -331,6 +336,7 @@ pub struct CreateResult {
 ///
 /// The daemon creates an empty notebook room with one code cell and
 /// returns connection info with a generated UUID as the notebook_id.
+#[cfg(unix)]
 pub async fn connect_create(
     socket_path: PathBuf,
     runtime: &str,

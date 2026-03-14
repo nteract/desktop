@@ -9,18 +9,19 @@
 //!
 //! ## Convenience methods vs `with_doc`
 //!
-//! For single operations, use the convenience methods (`add_cell`, `set_source`,
-//! `set_metadata_value`, etc.). For compound operations that should be atomic
-//! (one lock, one snapshot, one sync), use `with_doc` directly:
+//! For single operations, use the convenience methods (`add_cell_after`,
+//! `update_source`, `set_metadata_string`, etc.). For compound operations
+//! that should be atomic (one lock, one snapshot, one sync), use `with_doc`
+//! directly:
 //!
 //! ```ignore
 //! // Single operation — convenience method
-//! handle.add_cell(0, "cell-1", "code")?;
+//! handle.add_cell_after("cell-1", "code", None)?;
 //!
 //! // Compound operation — with_doc for atomicity
 //! handle.with_doc(|doc| {
 //!     let mut nd = NotebookDoc::wrap(std::mem::take(doc));
-//!     nd.add_cell(0, "cell-1", "code")?;
+//!     nd.add_cell_after("cell-1", "code", None)?;
 //!     nd.update_source("cell-1", "print('hello')")?;
 //!     nd.set_cell_source_hidden("cell-1", true)?;
 //!     *doc = nd.into_inner();
@@ -50,11 +51,8 @@ use crate::sync_task::SyncCommand;
 ///
 /// ```ignore
 /// // Synchronous — no .await needed for document mutations
-/// handle.with_doc(|doc| {
-///     doc.add_cell(0, "cell-1", "code")?;
-///     doc.update_source("cell-1", "print('hello')")?;
-///     Ok(())
-/// })?;
+/// handle.add_cell_after("cell-1", "code", None)?;
+/// handle.update_source("cell-1", "print('hello')")?;
 ///
 /// // Read the latest snapshot (no lock, no .await)
 /// let cells = handle.snapshot().cells();
@@ -128,7 +126,7 @@ impl DocHandle {
     /// Mutate the document directly via a closure.
     ///
     /// This is the primary mutation API. The closure receives a mutable
-    /// `NotebookDoc` reference and can perform any document operations.
+    /// `&mut AutoCommit` reference and can perform any document operations.
     /// After the closure returns:
     ///
     /// 1. A new snapshot is published (readers see updated state immediately)
@@ -159,7 +157,7 @@ impl DocHandle {
     /// ```
     ///
     /// For convenience, prefer the typed methods on `DocHandle` (e.g.,
-    /// `add_cell`, `set_metadata_value`) which handle the wrap/unwrap
+    /// `add_cell_after`, `set_metadata_string`) which handle the wrap/unwrap
     /// internally. Use `with_doc` for custom or compound operations.
     pub fn with_doc<F, R>(&self, f: F) -> Result<R, SyncError>
     where
@@ -182,6 +180,18 @@ impl DocHandle {
         let _ = self.changed_tx.send(());
 
         Ok(result)
+    }
+
+    /// Read the document without publishing a snapshot or notifying the sync task.
+    ///
+    /// Use this for read-only operations (e.g., `get_metadata_string`) that
+    /// don't mutate the document and therefore shouldn't trigger a sync cycle.
+    fn with_doc_readonly<F, R>(&self, f: F) -> Result<R, SyncError>
+    where
+        F: FnOnce(&AutoCommit) -> R,
+    {
+        let state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+        Ok(f(&state.doc))
     }
 
     // =====================================================================
@@ -311,11 +321,9 @@ impl DocHandle {
 
     /// Get a string metadata value.
     pub fn get_metadata_string(&self, key: &str) -> Option<String> {
-        self.with_doc(|doc| {
-            let nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
-            let result = nd.get_metadata(key);
-            *doc = nd.into_inner();
-            result
+        self.with_doc_readonly(|doc| {
+            let nd = notebook_doc::NotebookDoc::wrap(doc.clone());
+            nd.get_metadata(key)
         })
         .ok()
         .flatten()
@@ -467,6 +475,7 @@ impl DocHandle {
     ///
     /// This is primarily for the sync task to apply incoming sync messages.
     /// Callers should prefer `with_doc` for mutations and `snapshot()` for reads.
+    #[allow(dead_code)]
     pub(crate) fn shared_state(&self) -> &Arc<Mutex<SharedDocState>> {
         &self.doc
     }
@@ -475,6 +484,7 @@ impl DocHandle {
     ///
     /// Called by the sync task after applying incoming changes from the daemon.
     /// Handle callers don't need this — `with_doc` publishes automatically.
+    #[allow(dead_code)]
     pub(crate) fn publish_snapshot_from_doc(&self, doc: &AutoCommit) {
         let snapshot = NotebookSnapshot::from_doc(doc);
         let _ = self.snapshot_tx.send(snapshot);

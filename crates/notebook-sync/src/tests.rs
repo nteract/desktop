@@ -4,6 +4,7 @@
 //! Integration tests (behind `#[ignore]`) connect to a running daemon.
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
@@ -561,6 +562,7 @@ mod tests {
 // =========================================================================
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod integration_tests {
     use std::path::PathBuf;
     use std::time::Duration;

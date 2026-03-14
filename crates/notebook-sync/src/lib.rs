@@ -10,9 +10,12 @@
 //! ```text
 //! DocHandle (callers)                    SyncTask (network I/O)
 //!   │                                      │
-//!   ├─ with_doc(|doc| doc.add_cell(...))   │
+//!   ├─ handle.add_cell_after(...)           │
+//!   │   (convenience method)               │
+//!   │                                      │
+//!   ├─ handle.with_doc(|doc| { ... })      │
 //!   │   → lock mutex                       │
-//!   │   → mutate doc                       │
+//!   │   → mutate &mut AutoCommit           │
 //!   │   → publish snapshot                 │
 //!   │   → notify sync task ──────────────► │ generate_sync_message()
 //!   │                                      │ → send to daemon
@@ -24,9 +27,26 @@
 //!   │   (async — needs socket I/O)         │
 //! ```
 //!
+//! For single operations, use convenience methods like `add_cell_after`,
+//! `update_source`, `set_metadata_string`, etc. For compound operations
+//! that should be atomic, use `with_doc` directly with `NotebookDoc::wrap`:
+//!
+//! ```ignore
+//! // Single operation — convenience method
+//! handle.add_cell_after("cell-1", "code", None)?;
+//!
+//! // Compound operation — with_doc for atomicity
+//! handle.with_doc(|doc| {
+//!     let mut nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
+//!     nd.add_cell_after("cell-1", "code", None)?;
+//!     nd.update_source("cell-1", "print('hello')")?;
+//!     *doc = nd.into_inner();
+//!     Ok::<_, automerge::AutomergeError>(())
+//! })?;
+//! ```
+//!
 //! Document mutations (`with_doc`) are synchronous and microsecond-fast.
 //! Only daemon protocol operations (`send_request`, `confirm_sync`) are async.
-
 pub mod connect;
 pub mod error;
 pub mod handle;

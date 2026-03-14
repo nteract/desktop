@@ -3673,7 +3673,6 @@ name = "notebook-sync"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "futures",
  "log",
  "notebook-doc",
  "runtimed",
