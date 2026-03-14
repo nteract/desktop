@@ -4,6 +4,12 @@
 //! Python environments (UV and Conda), a content-addressed blob store for
 //! notebook outputs, and an Automerge-based settings sync service.
 //!
+//! ## Protocol types
+//!
+//! The wire protocol types (`connection`, `protocol`) are defined in the
+//! `notebook-protocol` crate and re-exported here for backward compatibility.
+//! New code should prefer importing from `notebook_protocol` directly.
+//!
 //! All services communicate over a single Unix socket (named pipe on Windows)
 //! using length-prefixed binary framing with a channel-based handshake.
 
@@ -15,7 +21,11 @@ pub mod blob_server;
 pub mod blob_store;
 pub mod client;
 pub mod comm_state;
-pub mod connection;
+/// Re-export connection types from notebook-protocol.
+///
+/// The canonical definitions live in `notebook_protocol::connection`.
+/// This re-export preserves backward compatibility for existing callers.
+pub use notebook_protocol::connection;
 pub mod daemon;
 pub mod inline_env;
 pub mod kernel_manager;

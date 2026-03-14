@@ -5613,6 +5613,7 @@ dependencies = [
  "nbformat",
  "nix",
  "notebook-doc",
+ "notebook-protocol",
  "notify",
  "notify-debouncer-mini",
  "petname",
