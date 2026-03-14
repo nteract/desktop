@@ -63,11 +63,13 @@ fn get_inline_cache_dir() -> std::path::PathBuf {
 /// immediately. Otherwise creates a new environment with uv venv + uv pip install.
 pub async fn prepare_uv_inline_env(
     deps: &[String],
+    prerelease: Option<&str>,
     handler: Arc<dyn ProgressHandler>,
 ) -> Result<PreparedEnv> {
     let uv_deps = kernel_env::UvDependencies {
         dependencies: deps.to_vec(),
         requires_python: None,
+        prerelease: prerelease.map(|s| s.to_string()),
     };
 
     let env =

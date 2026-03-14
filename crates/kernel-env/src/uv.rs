@@ -21,6 +21,10 @@ pub struct UvDependencies {
     pub dependencies: Vec<String>,
     #[serde(rename = "requires-python")]
     pub requires_python: Option<String>,
+    /// UV prerelease strategy. When set, passes `--prerelease <value>` to uv pip install.
+    /// Possible values: "disallow", "allow", "if-necessary", "explicit", "if-necessary-or-explicit"
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub prerelease: Option<String>,
 }
 
 /// A resolved UV virtual environment on disk.
@@ -70,6 +74,13 @@ pub fn compute_env_hash(deps: &UvDependencies, env_id: Option<&str>) -> String {
     if let Some(ref py) = deps.requires_python {
         hasher.update(b"requires-python:");
         hasher.update(py.as_bytes());
+        hasher.update(b"\n");
+    }
+
+    if let Some(ref prerelease) = deps.prerelease {
+        hasher.update(b"prerelease:");
+        hasher.update(prerelease.as_bytes());
+        hasher.update(b"\n");
     }
 
     let hash = hasher.finalize();
@@ -187,10 +198,19 @@ pub async fn prepare_environment_in(
         "install".to_string(),
         "--python".to_string(),
         python_path.to_string_lossy().to_string(),
+    ];
+
+    // Add prerelease flag if set
+    if let Some(ref prerelease) = deps.prerelease {
+        install_args.push("--prerelease".to_string());
+        install_args.push(prerelease.clone());
+    }
+
+    install_args.extend([
         "ipykernel".to_string(),
         "ipywidgets".to_string(),
         "uv".to_string(), // For %uv magic in notebooks
-    ];
+    ]);
 
     for dep in &deps.dependencies {
         install_args.push(dep.clone());
@@ -404,6 +424,7 @@ pub async fn claim_prewarmed_environment_in(
     let deps = UvDependencies {
         dependencies: vec![],
         requires_python: None,
+        prerelease: None,
     };
     let hash = compute_env_hash(&deps, Some(env_id));
     let dest_path = cache_dir.join(&hash);
@@ -646,6 +667,7 @@ mod tests {
         let deps = UvDependencies {
             dependencies: vec!["pandas".to_string(), "numpy".to_string()],
             requires_python: Some(">=3.10".to_string()),
+            prerelease: None,
         };
 
         let hash1 = compute_env_hash(&deps, None);
@@ -658,11 +680,13 @@ mod tests {
         let deps1 = UvDependencies {
             dependencies: vec!["pandas".to_string(), "numpy".to_string()],
             requires_python: None,
+            prerelease: None,
         };
 
         let deps2 = UvDependencies {
             dependencies: vec!["numpy".to_string(), "pandas".to_string()],
             requires_python: None,
+            prerelease: None,
         };
 
         assert_eq!(
@@ -676,11 +700,13 @@ mod tests {
         let deps1 = UvDependencies {
             dependencies: vec!["pandas".to_string()],
             requires_python: None,
+            prerelease: None,
         };
 
         let deps2 = UvDependencies {
             dependencies: vec!["numpy".to_string()],
             requires_python: None,
+            prerelease: None,
         };
 
         assert_ne!(
@@ -694,6 +720,7 @@ mod tests {
         let deps = UvDependencies {
             dependencies: vec![],
             requires_python: None,
+            prerelease: None,
         };
 
         let hash1 = compute_env_hash(&deps, Some("notebook-1"));
@@ -706,11 +733,45 @@ mod tests {
         let deps = UvDependencies {
             dependencies: vec!["pandas".to_string()],
             requires_python: None,
+            prerelease: None,
         };
 
         let hash1 = compute_env_hash(&deps, Some("notebook-1"));
         let hash2 = compute_env_hash(&deps, Some("notebook-2"));
         // env_id is only included for empty deps
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_compute_env_hash_prerelease_changes_hash() {
+        let deps1 = UvDependencies {
+            dependencies: vec!["pandas".to_string()],
+            requires_python: None,
+            prerelease: None,
+        };
+
+        let deps2 = UvDependencies {
+            dependencies: vec!["pandas".to_string()],
+            requires_python: None,
+            prerelease: Some("allow".to_string()),
+        };
+
+        assert_ne!(
+            compute_env_hash(&deps1, None),
+            compute_env_hash(&deps2, None)
+        );
+    }
+
+    #[test]
+    fn test_compute_env_hash_prerelease_stable() {
+        let deps = UvDependencies {
+            dependencies: vec!["pandas".to_string()],
+            requires_python: None,
+            prerelease: Some("allow".to_string()),
+        };
+
+        let hash1 = compute_env_hash(&deps, None);
+        let hash2 = compute_env_hash(&deps, None);
         assert_eq!(hash1, hash2);
     }
 }

@@ -277,6 +277,11 @@ export class NotebookHandle {
      */
     set_metadata_value(key: string, value: any): void;
     /**
+     * Set UV prerelease strategy, preserving deps and requires-python.
+     * Pass "allow", "disallow", "if-necessary", "explicit", "if-necessary-or-explicit", or null to clear.
+     */
+    set_uv_prerelease(prerelease?: string | null): void;
+    /**
      * Set UV requires-python constraint, preserving deps.
      * Pass undefined/null to clear the constraint.
      */
@@ -363,6 +368,7 @@ export interface InitOutput {
     readonly notebookhandle_remove_uv_dependency: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_clear_uv_section: (a: number, b: number) => void;
     readonly notebookhandle_set_uv_requires_python: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_set_uv_prerelease: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_add_conda_dependency: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_remove_conda_dependency: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_clear_conda_section: (a: number, b: number) => void;

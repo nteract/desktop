@@ -105,6 +105,15 @@ fn get_inline_uv_deps(snapshot: &NotebookMetadataSnapshot) -> Option<Vec<String>
     None
 }
 
+/// Extract UV prerelease strategy from a metadata snapshot.
+fn get_inline_uv_prerelease(snapshot: &NotebookMetadataSnapshot) -> Option<String> {
+    snapshot
+        .runt
+        .uv
+        .as_ref()
+        .and_then(|uv| uv.prerelease.clone())
+}
+
 /// Extract conda channels from a metadata snapshot.
 /// Returns the list of channel strings, or defaults to ["conda-forge"].
 fn get_inline_conda_channels(snapshot: &NotebookMetadataSnapshot) -> Vec<String> {
@@ -1772,7 +1781,9 @@ async fn auto_launch_kernel(
                 "[notebook-sync] Preparing cached UV env for PEP 723 deps: {:?}",
                 deps
             );
-            match crate::inline_env::prepare_uv_inline_env(deps, progress_handler.clone()).await {
+            match crate::inline_env::prepare_uv_inline_env(deps, None, progress_handler.clone())
+                .await
+            {
                 Ok(prepared) => {
                     info!(
                         "[notebook-sync] Using cached PEP 723 env at {:?}",
@@ -1801,11 +1812,20 @@ async fn auto_launch_kernel(
         }
     } else if env_source == "uv:inline" {
         if let Some(deps) = metadata_snapshot.as_ref().and_then(get_inline_uv_deps) {
+            let prerelease = metadata_snapshot
+                .as_ref()
+                .and_then(get_inline_uv_prerelease);
             info!(
-                "[notebook-sync] Preparing cached UV env for inline deps: {:?}",
-                deps
+                "[notebook-sync] Preparing cached UV env for inline deps: {:?} (prerelease: {:?})",
+                deps, prerelease
             );
-            match crate::inline_env::prepare_uv_inline_env(&deps, progress_handler.clone()).await {
+            match crate::inline_env::prepare_uv_inline_env(
+                &deps,
+                prerelease.as_deref(),
+                progress_handler.clone(),
+            )
+            .await
+            {
                 Ok(prepared) => {
                     info!(
                         "[notebook-sync] Using cached inline env at {:?}",
@@ -2212,6 +2232,7 @@ async fn handle_notebook_request(
                     );
                     match crate::inline_env::prepare_uv_inline_env(
                         &deps,
+                        None,
                         launch_progress_handler.clone(),
                     )
                     .await
@@ -2243,12 +2264,16 @@ async fn handle_notebook_request(
                 }
             } else if resolved_env_source == "uv:inline" {
                 if let Some(deps) = metadata_snapshot.as_ref().and_then(get_inline_uv_deps) {
+                    let prerelease = metadata_snapshot
+                        .as_ref()
+                        .and_then(get_inline_uv_prerelease);
                     info!(
-                        "[notebook-sync] LaunchKernel: Preparing cached UV env for inline deps: {:?}",
-                        deps
+                        "[notebook-sync] LaunchKernel: Preparing cached UV env for inline deps: {:?} (prerelease: {:?})",
+                        deps, prerelease
                     );
                     match crate::inline_env::prepare_uv_inline_env(
                         &deps,
+                        prerelease.as_deref(),
                         launch_progress_handler.clone(),
                     )
                     .await
@@ -4298,6 +4323,7 @@ fn build_new_notebook_metadata(
                     Some(UvInlineMetadata {
                         dependencies: vec![],
                         requires_python: None,
+                        prerelease: None,
                     }),
                     None,
                 ),
@@ -5000,6 +5026,7 @@ mod tests {
                 uv: Some(crate::notebook_metadata::UvInlineMetadata {
                     dependencies: deps,
                     requires_python: None,
+                    prerelease: None,
                 }),
                 conda: None,
                 deno: None,
@@ -5090,6 +5117,7 @@ mod tests {
                 uv: Some(crate::notebook_metadata::UvInlineMetadata {
                     dependencies: vec!["numpy".to_string()],
                     requires_python: None,
+                    prerelease: None,
                 }),
                 conda: Some(crate::notebook_metadata::CondaInlineMetadata {
                     dependencies: vec!["pandas".to_string()],
@@ -5117,6 +5145,7 @@ mod tests {
                 uv: Some(crate::notebook_metadata::UvInlineMetadata {
                     dependencies: vec!["numpy".to_string()],
                     requires_python: None,
+                    prerelease: None,
                 }),
                 conda: None,
                 deno: Some(crate::notebook_metadata::DenoMetadata {

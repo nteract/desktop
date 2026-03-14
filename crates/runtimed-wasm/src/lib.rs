@@ -505,6 +505,14 @@ impl NotebookHandle {
             .map_err(|e| JsError::new(&format!("set_uv_requires_python failed: {}", e)))
     }
 
+    /// Set UV prerelease strategy, preserving deps and requires-python.
+    /// Pass "allow", "disallow", "if-necessary", "explicit", "if-necessary-or-explicit", or null to clear.
+    pub fn set_uv_prerelease(&mut self, prerelease: Option<String>) -> Result<(), JsError> {
+        self.doc
+            .set_uv_prerelease(prerelease)
+            .map_err(|e| JsError::new(&format!("set_uv_prerelease failed: {}", e)))
+    }
+
     // ── Conda dependency operations ──────────────────────────────
 
     /// Add a Conda dependency, deduplicating by package name (case-insensitive).

@@ -20,6 +20,9 @@ pub struct NotebookDependencies {
     pub dependencies: Vec<String>,
     #[serde(rename = "requires-python")]
     pub requires_python: Option<String>,
+    /// UV prerelease strategy. When set, passes `--prerelease <value>` to uv pip install.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub prerelease: Option<String>,
 }
 
 impl From<NotebookDependencies> for kernel_env::UvDependencies {
@@ -27,6 +30,7 @@ impl From<NotebookDependencies> for kernel_env::UvDependencies {
         Self {
             dependencies: deps.dependencies,
             requires_python: deps.requires_python,
+            prerelease: deps.prerelease,
         }
     }
 }
@@ -36,6 +40,7 @@ impl From<kernel_env::UvDependencies> for NotebookDependencies {
         Self {
             dependencies: deps.dependencies,
             requires_python: deps.requires_python,
+            prerelease: deps.prerelease,
         }
     }
 }

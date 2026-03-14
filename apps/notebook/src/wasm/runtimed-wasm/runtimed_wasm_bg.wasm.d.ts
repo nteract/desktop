@@ -45,6 +45,7 @@ export const notebookhandle_add_uv_dependency: (a: number, b: number, c: number,
 export const notebookhandle_remove_uv_dependency: (a: number, b: number, c: number, d: number) => void;
 export const notebookhandle_clear_uv_section: (a: number, b: number) => void;
 export const notebookhandle_set_uv_requires_python: (a: number, b: number, c: number, d: number) => void;
+export const notebookhandle_set_uv_prerelease: (a: number, b: number, c: number, d: number) => void;
 export const notebookhandle_add_conda_dependency: (a: number, b: number, c: number, d: number) => void;
 export const notebookhandle_remove_conda_dependency: (a: number, b: number, c: number, d: number) => void;
 export const notebookhandle_clear_conda_section: (a: number, b: number) => void;
