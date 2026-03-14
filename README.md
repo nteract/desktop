@@ -108,14 +108,14 @@ sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
 ### Quick start
 
 ```bash
-pnpm install
-cargo xtask build
+cargo xtask notebook
 ```
 
 ### Development workflows
 
 | Workflow | Command | Use when |
 |----------|---------|----------|
+| One-shot setup + dev | `cargo xtask notebook` | First-time setup plus daemon + app in one command |
 | Hot reload | `cargo xtask dev` | Iterating on React UI |
 | Standalone Vite | `cargo xtask vite` | Multi-window testing (Vite survives window closes) |
 | Attach to Vite | `cargo xtask dev --attach` | Connect Tauri to already-running Vite |
@@ -124,6 +124,10 @@ cargo xtask build
 | Run bundled | `cargo xtask run notebook.ipynb` | Run standalone binary |
 | Release .app | `cargo xtask build-app` | Testing app bundle locally |
 | Release DMG | `cargo xtask build-dmg` | Distribution (usually CI) |
+
+`cargo xtask notebook` runs the first-time bootstrap (`pnpm install` + `cargo xtask build`),
+starts the per-worktree dev daemon, waits for it to be ready, and then launches the
+notebook app. For repeat launches, use `cargo xtask notebook --skip-install --skip-build`.
 
 ### Build order
 

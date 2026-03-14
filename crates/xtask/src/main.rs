@@ -1,7 +1,10 @@
 use std::env;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::{exit, Command};
+use std::process::{exit, Child, Command, ExitStatus, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -20,6 +23,10 @@ fn main() {
                 .find(|a| !a.starts_with('-'))
                 .map(String::as_str);
             cmd_dev(notebook, attach);
+        }
+        "notebook" => {
+            let options = parse_notebook_options(&args);
+            cmd_notebook(options.notebook, options.skip_install, options.skip_build);
         }
         "vite" => cmd_vite(),
         "build" => {
@@ -61,6 +68,9 @@ fn print_help() {
         "Usage: cargo xtask <COMMAND>
 
 Development:
+  notebook [notebook.ipynb]    Setup once, start dev daemon + notebook app
+  notebook --skip-build        Reuse existing build artifacts before launch
+  notebook --skip-install      Reuse existing pnpm install before launch
   dev [notebook.ipynb]       Start hot-reload dev server (Vite + Tauri)
   dev --attach [notebook]    Attach Tauri to existing Vite server
   vite                       Start Vite server standalone
@@ -88,18 +98,72 @@ Other:
     );
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NotebookOptions<'a> {
+    notebook: Option<&'a str>,
+    skip_install: bool,
+    skip_build: bool,
+}
+
+fn parse_notebook_options(args: &[String]) -> NotebookOptions<'_> {
+    NotebookOptions {
+        notebook: args
+            .iter()
+            .skip(1)
+            .find(|arg| !arg.starts_with('-'))
+            .map(String::as_str),
+        skip_install: args.iter().any(|arg| arg == "--skip-install"),
+        skip_build: args.iter().any(|arg| arg == "--skip-build"),
+    }
+}
+
 fn cmd_dev(notebook: Option<&str>, attach: bool) {
+    let status = run_notebook_dev_app(notebook, attach, false);
+    exit_on_failed_status("cargo tauri dev", status);
+}
+
+fn cmd_notebook(notebook: Option<&str>, skip_install: bool, skip_build: bool) {
+    if skip_install {
+        println!("Skipping pnpm install (--skip-install)");
+    } else {
+        ensure_pnpm_install();
+    }
+
+    if skip_build {
+        println!("Skipping cargo xtask build (--skip-build)");
+        ensure_dev_daemon_binaries();
+    } else {
+        println!("Running cargo xtask build for first-time setup...");
+        cmd_build(false);
+    }
+
+    println!();
+    println!("Starting development daemon for one-shot notebook workflow...");
+    let mut daemon = spawn_dev_daemon_process(false);
+    if let Err(error) = wait_for_dev_daemon(&mut daemon, Duration::from_secs(30)) {
+        stop_child(&mut daemon, "development daemon");
+        eprintln!("{error}");
+        exit(1);
+    }
+    println!("Development daemon is ready.");
+    println!();
+
+    let status = run_notebook_dev_app(notebook, false, true);
+    stop_child(&mut daemon, "development daemon");
+    exit_on_failed_status("cargo tauri dev", status);
+}
+
+fn run_notebook_dev_app(notebook: Option<&str>, attach: bool, force_dev_mode: bool) -> ExitStatus {
     // Delete bundled marker since we're building a dev binary
     let marker = Path::new("./target/debug/.notebook-bundled");
     let _ = fs::remove_file(marker);
 
+    let vite_port = resolve_vite_port(force_dev_mode);
+    let mut command = Command::new("cargo");
+
     if attach {
         println!("Attaching to existing Vite server...");
-
-        // Use RUNTIMED_VITE_PORT, fall back to CONDUCTOR_PORT, then default
-        let port = env::var("RUNTIMED_VITE_PORT")
-            .or_else(|_| env::var("CONDUCTOR_PORT"))
-            .unwrap_or_else(|_| "5174".to_string());
+        let port = vite_port.clone().unwrap_or_else(|| "5174".to_string());
         println!("Connecting to Vite at http://localhost:{port}");
 
         // Skip beforeDevCommand (Vite is already running) and set devUrl
@@ -111,19 +175,14 @@ fn cmd_dev(notebook: Option<&str>, attach: bool) {
             args.extend(["--", path]);
         }
 
-        run_cmd_with_rust_log("cargo", &args);
+        command.args(&args);
     } else {
         println!("Starting dev server with hot reload...");
 
-        // Check for port override: RUNTIMED_VITE_PORT > CONDUCTOR_PORT
-        let config_override = env::var("RUNTIMED_VITE_PORT")
-            .map(|port| ("RUNTIMED_VITE_PORT", port))
-            .or_else(|_| env::var("CONDUCTOR_PORT").map(|port| ("CONDUCTOR_PORT", port)))
-            .ok()
-            .map(|(var, port)| {
-                println!("Using {var}={port}");
-                format!(r#"{{"build":{{"devUrl":"http://localhost:{port}"}}}}"#)
-            });
+        let config_override = vite_port.as_ref().map(|port| {
+            println!("Using RUNTIMED_VITE_PORT={port}");
+            format!(r#"{{"build":{{"devUrl":"http://localhost:{port}"}}}}"#)
+        });
 
         let mut args = vec!["tauri", "dev"];
         if let Some(ref config) = config_override {
@@ -134,8 +193,19 @@ fn cmd_dev(notebook: Option<&str>, attach: bool) {
             args.extend(["--", path]);
         }
 
-        run_cmd_with_rust_log("cargo", &args);
+        command.args(&args);
     }
+
+    apply_rust_log_env(&mut command);
+    apply_worktree_env(&mut command, force_dev_mode);
+    if let Some(ref port) = vite_port {
+        command.env("RUNTIMED_VITE_PORT", port);
+    }
+
+    command.status().unwrap_or_else(|e| {
+        eprintln!("Failed to run cargo tauri dev: {e}");
+        exit(1);
+    })
 }
 
 fn cmd_vite() {
@@ -153,6 +223,40 @@ fn cmd_vite() {
 
     // Run pnpm dev for the notebook app
     run_cmd("pnpm", &["--filter", "notebook", "dev"]);
+}
+
+fn ensure_pnpm_install() {
+    if let Some(reason) = pnpm_install_reason() {
+        println!("Running pnpm install ({reason})...");
+        run_cmd("pnpm", &["install"]);
+    } else {
+        println!("Skipping pnpm install (node_modules is up to date).");
+    }
+}
+
+fn pnpm_install_reason() -> Option<&'static str> {
+    let install_marker = Path::new("node_modules/.modules.yaml");
+    if !install_marker.exists() {
+        return Some("missing node_modules metadata");
+    }
+
+    let Some(install_time) = modified_time(install_marker) else {
+        return Some("could not read node_modules metadata timestamp");
+    };
+    for manifest in [Path::new("package.json"), Path::new("pnpm-lock.yaml")] {
+        let Some(manifest_time) = modified_time(manifest) else {
+            return Some("could not read package manifest timestamps");
+        };
+        if manifest_time > install_time {
+            return Some("package manifests changed");
+        }
+    }
+
+    None
+}
+
+fn modified_time(path: &Path) -> Option<std::time::SystemTime> {
+    fs::metadata(path).ok()?.modified().ok()
 }
 
 fn cmd_build(rust_only: bool) {
@@ -528,6 +632,180 @@ fn cmd_dev_daemon(release: bool) {
     }
 }
 
+fn ensure_dev_daemon_binaries() {
+    if Path::new(dev_daemon_binary(false)).exists() && Path::new(dev_runt_cli_binary()).exists() {
+        println!("Reusing existing runtimed/runt debug binaries.");
+        return;
+    }
+
+    println!("Building runtimed + runt binaries for dev daemon...");
+    build_runtimed_daemon(false);
+}
+
+fn spawn_dev_daemon_process(release: bool) -> Child {
+    ensure_dev_daemon_binaries();
+
+    let binary = dev_daemon_binary(release);
+    let cache_base = dirs::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join(runt_workspace::cache_namespace())
+        .join("worktrees");
+
+    let state_dir = match runt_workspace::get_workspace_path() {
+        Some(path) => cache_base.join(runt_workspace::worktree_hash(&path)),
+        None => cache_base.join("<unknown>"),
+    };
+
+    println!("State will be stored in {}/", state_dir.display());
+    println!("Notebook command will stop the daemon when the app exits.");
+    println!();
+
+    let mut command = Command::new(binary);
+    command
+        .args(["--dev", "run"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    apply_worktree_env(&mut command, true);
+
+    let mut child = command.spawn().unwrap_or_else(|e| {
+        eprintln!("Failed to run runtimed: {e}");
+        exit(1);
+    });
+
+    relay_child_output("daemon", child.stdout.take());
+    relay_child_output("daemon", child.stderr.take());
+    child
+}
+
+fn wait_for_dev_daemon(child: &mut Child, timeout: Duration) -> Result<(), String> {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("Failed to poll dev daemon status: {error}"))?
+        {
+            return Err(format!(
+                "Development daemon exited before it became ready (status: {status})."
+            ));
+        }
+
+        if dev_daemon_running() {
+            return Ok(());
+        }
+
+        thread::sleep(Duration::from_millis(250));
+    }
+
+    Err("Timed out waiting for the development daemon to become ready.".to_string())
+}
+
+fn dev_daemon_running() -> bool {
+    let mut command = Command::new(dev_runt_cli_binary());
+    command
+        .args(["daemon", "status", "--json"])
+        .env("RUST_LOG", "error")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    apply_worktree_env(&mut command, true);
+
+    let output = command.output();
+
+    let output = match output {
+        Ok(output) if output.status.success() => output,
+        _ => return false,
+    };
+
+    let status_json: serde_json::Value = match serde_json::from_slice(&output.stdout) {
+        Ok(json) => json,
+        Err(_) => return false,
+    };
+
+    status_json
+        .get("running")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn dev_daemon_binary(release: bool) -> &'static str {
+    if cfg!(windows) {
+        if release {
+            "target/release/runtimed.exe"
+        } else {
+            "target/debug/runtimed.exe"
+        }
+    } else if release {
+        "target/release/runtimed"
+    } else {
+        "target/debug/runtimed"
+    }
+}
+
+fn dev_runt_cli_binary() -> &'static str {
+    if cfg!(windows) {
+        "target/debug/runt.exe"
+    } else {
+        "target/debug/runt"
+    }
+}
+
+fn relay_child_output<R>(label: &'static str, stream: Option<R>)
+where
+    R: std::io::Read + Send + 'static,
+{
+    let Some(stream) = stream else {
+        return;
+    };
+
+    thread::spawn(move || {
+        let reader = BufReader::new(stream);
+        for line in reader.lines() {
+            match line {
+                Ok(line) => eprintln!("[{label}] {line}"),
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+fn stop_child(child: &mut Child, label: &str) {
+    match child.try_wait() {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            println!("Stopping {label}...");
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        Err(error) => {
+            eprintln!("Failed to poll {label}: {error}");
+        }
+    }
+}
+
+fn resolve_vite_port(force_dev_mode: bool) -> Option<String> {
+    env::var("RUNTIMED_VITE_PORT")
+        .ok()
+        .or_else(|| env::var("CONDUCTOR_PORT").ok())
+        .or_else(|| {
+            if force_dev_mode {
+                default_dev_vite_port().map(|port| port.to_string())
+            } else {
+                None
+            }
+        })
+}
+
+fn default_dev_vite_port() -> Option<u16> {
+    let workspace = runt_workspace::get_workspace_path()?;
+    Some(default_vite_port_for_workspace(&workspace))
+}
+
+fn default_vite_port_for_workspace(path: &Path) -> u16 {
+    let hash = runt_workspace::worktree_hash(path);
+    let prefix = hash.get(..4).unwrap_or("0000");
+    let offset = u16::from_str_radix(prefix, 16).unwrap_or(0) % 4900;
+    5100 + offset
+}
+
 /// Run linting and formatting checks across all languages.
 ///
 /// In check mode (default): exits non-zero if any issues are found.
@@ -748,30 +1026,71 @@ fn run_cmd(cmd: &str, args: &[&str]) {
     }
 }
 
-/// Run a command with RUST_LOG set to enable info-level logging.
-/// This is useful for dev mode to see Rust logs from the notebook app.
-/// Also translates CONDUCTOR_* env vars to RUNTIMED_* for Conductor workspace users.
-fn run_cmd_with_rust_log(cmd: &str, args: &[&str]) {
-    // Use existing RUST_LOG if set, otherwise default to info
+fn apply_rust_log_env(command: &mut Command) {
     let rust_log = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
-    let mut command = Command::new(cmd);
-    command.args(args).env("RUST_LOG", &rust_log);
+    command.env("RUST_LOG", rust_log);
+}
 
-    // Translate Conductor → Runtimed for Conductor workspace users
+fn apply_worktree_env(command: &mut Command, force_dev_mode: bool) {
+    if force_dev_mode {
+        command.env("RUNTIMED_DEV", "1");
+    }
+
     if let Ok(path) = env::var("CONDUCTOR_WORKSPACE_PATH") {
-        command.env("RUNTIMED_WORKSPACE_PATH", &path);
+        command.env("RUNTIMED_WORKSPACE_PATH", path);
+    } else if force_dev_mode {
+        if let Some(path) = runt_workspace::get_workspace_path() {
+            command.env("RUNTIMED_WORKSPACE_PATH", path);
+        }
     }
+
     if let Ok(name) = env::var("CONDUCTOR_WORKSPACE_NAME") {
-        command.env("RUNTIMED_WORKSPACE_NAME", &name);
+        command.env("RUNTIMED_WORKSPACE_NAME", name);
+    } else if force_dev_mode {
+        if let Some(name) = runt_workspace::get_workspace_name() {
+            command.env("RUNTIMED_WORKSPACE_NAME", name);
+        }
+    }
+}
+
+fn exit_on_failed_status(label: &str, status: ExitStatus) {
+    if !status.success() {
+        eprintln!("{label} exited with status {status}");
+        exit(status.code().unwrap_or(1));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn parse_notebook_options_reads_flags_and_path() {
+        let args = vec![
+            "notebook".to_string(),
+            "--skip-install".to_string(),
+            "notebooks/demo.ipynb".to_string(),
+            "--skip-build".to_string(),
+        ];
+
+        let options = parse_notebook_options(&args);
+        assert_eq!(
+            options,
+            NotebookOptions {
+                notebook: Some("notebooks/demo.ipynb"),
+                skip_install: true,
+                skip_build: true,
+            }
+        );
     }
 
-    let status = command.status().unwrap_or_else(|e| {
-        eprintln!("Failed to run {cmd}: {e}");
-        exit(1);
-    });
-
-    if !status.success() {
-        eprintln!("Command failed: {cmd} {}", args.join(" "));
-        exit(status.code().unwrap_or(1));
+    #[test]
+    fn default_vite_port_is_stable_for_workspace() {
+        let workspace = Path::new("/workspace/example");
+        let port = default_vite_port_for_workspace(workspace);
+        assert_eq!(port, default_vite_port_for_workspace(workspace));
+        assert!((5100u16..10000u16).contains(&port));
     }
 }

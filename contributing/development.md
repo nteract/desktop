@@ -4,6 +4,7 @@
 
 | Task | Command |
 |------|---------|
+| One-shot notebook setup | `cargo xtask notebook` |
 | Start dev server | `cargo xtask dev` |
 | Standalone Vite | `cargo xtask vite` |
 | Attach to Vite | `cargo xtask dev --attach` |
@@ -17,6 +18,28 @@
 | Lint (auto-fix) | `cargo xtask lint --fix` |
 
 ## Choosing a Workflow
+
+### `cargo xtask notebook` — One Command Setup + Dev
+
+Best for first-time local setup or when you want the daemon and notebook app to
+come up together.
+
+```bash
+cargo xtask notebook
+```
+
+This command:
+- runs `pnpm install` when your workspace dependencies are missing or stale
+- runs `cargo xtask build` unless you pass `--skip-build`
+- starts the per-worktree dev daemon
+- waits for the daemon to be reachable
+- launches the notebook app in dev mode
+
+For faster repeat launches:
+
+```bash
+cargo xtask notebook --skip-install --skip-build
+```
 
 ### `cargo xtask dev` — Hot Reload
 
