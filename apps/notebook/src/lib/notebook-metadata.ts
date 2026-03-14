@@ -20,6 +20,17 @@ let _snapshotCache: NotebookMetadataSnapshot | null = null;
 const _subscribers = new Set<() => void>();
 
 /**
+ * Read the current metadata snapshot from the WASM handle as a typed object.
+ * Returns null if no handle is set or the WASM method returns a non-object.
+ */
+function readSnapshot(): NotebookMetadataSnapshot | null {
+  const raw = _handle?.get_metadata_snapshot();
+  return raw && typeof raw === "object"
+    ? (raw as NotebookMetadataSnapshot)
+    : null;
+}
+
+/**
  * Notify all useSyncExternalStore subscribers that the doc changed.
  * Call this after any operation that mutates the Automerge document:
  * - setNotebookHandle (bootstrap / reconnect)
@@ -27,9 +38,7 @@ const _subscribers = new Set<() => void>();
  * - set_metadata (local writes)
  */
 export function notifyMetadataChanged(): void {
-  const raw = _handle?.get_metadata_snapshot();
-  _snapshotCache =
-    raw && typeof raw === "object" ? (raw as NotebookMetadataSnapshot) : null;
+  _snapshotCache = readSnapshot();
   for (const cb of _subscribers) cb();
 }
 
@@ -60,9 +69,7 @@ function getSnapshot(): NotebookMetadataSnapshot | null {
   // any subscriber fires. This lazy init handles the first read
   // before any notification has occurred.
   if (_snapshotCache === null) {
-    const raw = _handle?.get_metadata_snapshot();
-    _snapshotCache =
-      raw && typeof raw === "object" ? (raw as NotebookMetadataSnapshot) : null;
+    _snapshotCache = readSnapshot();
   }
   return _snapshotCache;
 }
@@ -361,9 +368,7 @@ export async function setDenoFlexibleNpmImports(
   enabled: boolean,
 ): Promise<boolean> {
   if (!_handle) return false;
-  const snapshot = _handle.get_metadata_snapshot() as
-    | NotebookMetadataSnapshot
-    | undefined;
+  const snapshot = readSnapshot();
   if (!snapshot) return false;
   try {
     if (!snapshot.runt.deno) {
