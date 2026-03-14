@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use runtimed::notebook_sync_client::NotebookBroadcastReceiver;
+use notebook_sync::BroadcastReceiver;
 use runtimed::protocol::NotebookBroadcast;
 
 use crate::error::to_py_err;
@@ -39,7 +39,7 @@ pub struct ExecutionEventStream {
 
 struct EventStreamState {
     /// Broadcast receiver for this stream (resubscribed from session)
-    broadcast_rx: NotebookBroadcastReceiver,
+    broadcast_rx: BroadcastReceiver,
     /// Cell ID we're streaming events for
     cell_id: String,
     /// Whether execution is done
@@ -56,7 +56,7 @@ struct EventStreamState {
 impl ExecutionEventStream {
     /// Create a new execution event stream.
     pub fn new(
-        broadcast_rx: NotebookBroadcastReceiver,
+        broadcast_rx: BroadcastReceiver,
         cell_id: String,
         timeout_secs: f64,
         blob_base_url: Option<String>,
@@ -211,7 +211,7 @@ pub struct ExecutionEventIterator {
 impl ExecutionEventIterator {
     /// Create a new execution event iterator.
     pub fn new(
-        broadcast_rx: NotebookBroadcastReceiver,
+        broadcast_rx: BroadcastReceiver,
         cell_id: String,
         timeout_secs: f64,
         blob_base_url: Option<String>,

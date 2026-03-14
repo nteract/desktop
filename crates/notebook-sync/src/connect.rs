@@ -30,7 +30,7 @@ pub struct ConnectResult {
     pub handle: DocHandle,
 
     /// Receiver for kernel/execution broadcasts from the daemon.
-    pub broadcast_rx: tokio::sync::broadcast::Receiver<NotebookBroadcast>,
+    pub broadcast_rx: crate::BroadcastReceiver,
 
     /// Initial cells in the document after sync.
     pub cells: Vec<notebook_doc::CellSnapshot>,
@@ -45,7 +45,7 @@ pub struct OpenResult {
     pub handle: DocHandle,
 
     /// Receiver for kernel/execution broadcasts from the daemon.
-    pub broadcast_rx: tokio::sync::broadcast::Receiver<NotebookBroadcast>,
+    pub broadcast_rx: crate::BroadcastReceiver,
 
     /// Connection info from the daemon (notebook_id, trust status, etc).
     pub info: NotebookConnectionInfo,
@@ -192,7 +192,7 @@ pub async fn connect_with_options(
 
     Ok(ConnectResult {
         handle,
-        broadcast_rx,
+        broadcast_rx: broadcast_rx.into(),
         cells,
         initial_metadata: legacy_metadata,
     })
@@ -311,7 +311,7 @@ pub async fn connect_open(socket_path: PathBuf, path: PathBuf) -> Result<OpenRes
 
     Ok(OpenResult {
         handle,
-        broadcast_rx,
+        broadcast_rx: broadcast_rx.into(),
         info,
         cells,
     })
@@ -323,7 +323,7 @@ pub struct CreateResult {
     pub handle: DocHandle,
 
     /// Receiver for kernel/execution broadcasts from the daemon.
-    pub broadcast_rx: tokio::sync::broadcast::Receiver<NotebookBroadcast>,
+    pub broadcast_rx: crate::BroadcastReceiver,
 
     /// Connection info from the daemon (notebook_id, trust status, etc).
     pub info: NotebookConnectionInfo,
@@ -456,7 +456,7 @@ pub async fn connect_create(
 
     Ok(CreateResult {
         handle,
-        broadcast_rx,
+        broadcast_rx: broadcast_rx.into(),
         info,
         cells,
     })

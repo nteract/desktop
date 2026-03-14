@@ -696,13 +696,15 @@ mod integration_tests {
 
         while tokio::time::Instant::now() < deadline {
             match tokio::time::timeout(Duration::from_millis(500), broadcast_rx.recv()).await {
-                Ok(Ok(NotebookBroadcast::ExecutionDone { cell_id })) if cell_id == "cell-exec" => {
+                Ok(Some(NotebookBroadcast::ExecutionDone { cell_id }))
+                    if cell_id == "cell-exec" =>
+                {
                     got_done = true;
                     break;
                 }
-                Ok(Ok(_)) => continue, // other broadcasts
-                Ok(Err(_)) => break,   // channel lagged or closed
-                Err(_) => continue,    // timeout, keep waiting
+                Ok(Some(_)) => continue, // other broadcasts
+                Ok(None) => break,       // channel closed
+                Err(_) => continue,      // timeout, keep waiting
             }
         }
 

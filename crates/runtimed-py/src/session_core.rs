@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use notebook_sync::DocHandle;
+use notebook_sync::{BroadcastReceiver, DocHandle};
 use runtimed::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 
 use notebook_doc::metadata::NotebookMetadataSnapshot;
@@ -37,7 +37,7 @@ pub(crate) struct SessionState {
     /// DocHandle for direct document access and daemon protocol operations.
     pub handle: Option<DocHandle>,
     /// Broadcast receiver for kernel/execution events from the daemon.
-    pub broadcast_rx: Option<tokio::sync::broadcast::Receiver<NotebookBroadcast>>,
+    pub broadcast_rx: Option<BroadcastReceiver>,
     pub kernel_started: bool,
     pub env_source: Option<String>,
     /// Base URL for blob server (for resolving blob hashes)
