@@ -21,7 +21,9 @@ jobs:
         with:
           script: |
             const body = context.payload.pull_request.body || '';
-            if (body.includes('agent Quill') || body.includes('agent, Quill')) {
+            const author = context.payload.pull_request.user.login;
+            if ((author === 'rgbkrk' || author === 'quillaid') &&
+                (body.includes('agent Quill') || body.includes('agent, Quill'))) {
               await github.rest.issues.addLabels({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
