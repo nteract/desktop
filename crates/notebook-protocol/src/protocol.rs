@@ -275,19 +275,30 @@ pub enum NotebookRequest {
     GetDocBytes {},
 
     /// Get raw metadata JSON from the daemon's Automerge doc.
-    /// Returns the value stored at the given key (e.g., "notebook_metadata").
+    /// Returns the value stored at the given key.
     GetRawMetadata {
-        /// Metadata key to read (e.g., "notebook_metadata").
+        /// Metadata key to read.
         key: String,
     },
 
     /// Set raw metadata JSON in the daemon's Automerge doc.
     /// Writes the JSON string at the given key, then syncs to all peers.
     SetRawMetadata {
-        /// Metadata key to write (e.g., "notebook_metadata").
+        /// Metadata key to write.
         key: String,
         /// JSON string value to store.
         value: String,
+    },
+
+    /// Get the typed notebook metadata snapshot from native Automerge keys.
+    /// Returns the serialized NotebookMetadataSnapshot, or None if not available.
+    GetMetadataSnapshot {},
+
+    /// Set the typed notebook metadata snapshot using native Automerge keys.
+    /// Takes a serialized NotebookMetadataSnapshot JSON string.
+    SetMetadataSnapshot {
+        /// JSON string of NotebookMetadataSnapshot.
+        snapshot: String,
     },
 }
 
@@ -406,6 +417,12 @@ pub enum NotebookResponse {
 
     /// Metadata was set successfully.
     MetadataSet {},
+
+    /// Typed notebook metadata snapshot from native Automerge keys.
+    MetadataSnapshot {
+        /// Serialized NotebookMetadataSnapshot JSON, or None if not available.
+        snapshot: Option<String>,
+    },
 }
 
 /// Broadcast messages from daemon to all peers in a room.

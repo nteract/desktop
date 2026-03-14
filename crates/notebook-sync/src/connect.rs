@@ -165,8 +165,8 @@ pub async fn connect_with_options(
 
     // Read initial state before splitting
     let cells = notebook_doc::get_cells_from_doc(&doc);
-    let legacy_metadata =
-        notebook_doc::get_metadata_from_doc(&doc, notebook_doc::metadata::NOTEBOOK_METADATA_KEY);
+    let initial_metadata_snapshot = notebook_doc::get_metadata_snapshot_from_doc(&doc)
+        .and_then(|s| serde_json::to_string(&s).ok());
 
     // Build the shared state and channels
     build_and_spawn(
@@ -181,7 +181,7 @@ pub async fn connect_with_options(
         handle,
         broadcast_rx,
         cells,
-        initial_metadata: legacy_metadata,
+        initial_metadata: initial_metadata_snapshot,
     })
 }
 

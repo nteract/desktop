@@ -36,7 +36,7 @@ use crate::notebook_doc::{
     self, get_cells_from_doc, get_metadata_from_doc, get_metadata_snapshot_from_doc,
     set_metadata_in_doc, CellSnapshot,
 };
-use crate::notebook_metadata::{NotebookMetadataSnapshot, NOTEBOOK_METADATA_KEY};
+use crate::notebook_metadata::NotebookMetadataSnapshot;
 use crate::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 
 /// Error type for notebook sync client operations.
@@ -398,18 +398,7 @@ impl NotebookSyncHandle {
     }
 
     /// Read a metadata value from the local Automerge doc replica.
-    ///
-    /// `notebook_metadata` uses the watch snapshot fast path. Other metadata
-    /// keys fall back to the sync task so callers keep the pre-watch behavior.
     pub async fn get_metadata(&self, key: &str) -> Result<Option<String>, NotebookSyncError> {
-        if key == NOTEBOOK_METADATA_KEY {
-            let snap = self.snapshot_rx.borrow();
-            return Ok(snap
-                .notebook_metadata
-                .as_ref()
-                .and_then(|m| serde_json::to_string(m).ok()));
-        }
-
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(SyncCommand::GetMetadata {
@@ -423,8 +412,7 @@ impl NotebookSyncHandle {
 
     /// Get the typed notebook metadata snapshot.
     ///
-    /// Prefer this over `get_metadata("notebook_metadata")` followed by
-    /// `serde_json::from_str` — the snapshot is already parsed.
+    /// Returns the snapshot from the watch channel (instant, no await).
     pub fn get_notebook_metadata(&self) -> Option<NotebookMetadataSnapshot> {
         self.snapshot_rx.borrow().notebook_metadata.clone()
     }
@@ -2465,7 +2453,8 @@ where
         Option<String>,
     ) {
         let initial_cells = self.get_cells();
-        let initial_metadata = self.get_metadata(NOTEBOOK_METADATA_KEY);
+        let initial_metadata =
+            get_metadata_snapshot_from_doc(&self.doc).and_then(|s| serde_json::to_string(&s).ok());
         let notebook_id = self.notebook_id.clone();
         let pending_broadcasts = self.pending_broadcasts.clone();
 
@@ -2600,7 +2589,8 @@ async fn run_sync_task<S>(
 
     let mut loop_count = 0u64;
     // Track last metadata to only send updates when it actually changes
-    let mut last_metadata: Option<String> = client.get_metadata(NOTEBOOK_METADATA_KEY);
+    let mut last_metadata: Option<String> =
+        get_metadata_snapshot_from_doc(&client.doc).and_then(|s| serde_json::to_string(&s).ok());
 
     loop {
         loop_count += 1;
@@ -2915,7 +2905,8 @@ async fn run_sync_task<S>(
                             Ok(Some(ReceivedFrame::Changes(cells))) => {
                                 publish_snapshot(&client, &snapshot_tx);
                                 // Full peer mode: metadata diffing and SyncUpdate
-                                let current_metadata = client.get_metadata(NOTEBOOK_METADATA_KEY);
+                                let current_metadata = get_metadata_snapshot_from_doc(&client.doc)
+                                    .and_then(|s| serde_json::to_string(&s).ok());
                                 let metadata_changed = current_metadata != last_metadata;
                                 if metadata_changed {
                                     last_metadata = current_metadata.clone();

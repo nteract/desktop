@@ -371,6 +371,27 @@ impl Session {
             .block_on(session_core::get_metadata(&self.state, key))
     }
 
+    /// Set the notebook kernelspec.
+    #[pyo3(signature = (name, display_name, language=None))]
+    fn set_kernelspec(
+        &self,
+        name: &str,
+        display_name: &str,
+        language: Option<&str>,
+    ) -> PyResult<()> {
+        self.connect()?;
+        let mut snapshot = self
+            .runtime
+            .block_on(session_core::get_notebook_metadata(&self.state))?;
+        snapshot.kernelspec = Some(runtimed::notebook_metadata::KernelspecSnapshot {
+            name: name.to_string(),
+            display_name: display_name.to_string(),
+            language: language.map(|s| s.to_string()),
+        });
+        self.runtime
+            .block_on(session_core::set_notebook_metadata(&self.state, &snapshot))
+    }
+
     // =========================================================================
     // Cell metadata
     // =========================================================================

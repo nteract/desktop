@@ -540,12 +540,6 @@ pub fn extract_package_name(spec: &str) -> String {
         .to_lowercase()
 }
 
-// ── Automerge document key ───────────────────────────────────────────
-
-/// The key used to store the serialized `NotebookMetadataSnapshot` in the
-/// Automerge document's `metadata` map.
-pub const NOTEBOOK_METADATA_KEY: &str = "notebook_metadata";
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

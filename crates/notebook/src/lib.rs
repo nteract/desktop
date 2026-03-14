@@ -246,12 +246,13 @@ where
 async fn get_metadata_snapshot(
     handle: &NotebookSyncHandle,
 ) -> Option<runtimed::notebook_metadata::NotebookMetadataSnapshot> {
-    let key = runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY.to_string();
     match handle
-        .send_request(NotebookRequest::GetRawMetadata { key })
+        .send_request(NotebookRequest::GetMetadataSnapshot {})
         .await
     {
-        Ok(NotebookResponse::RawMetadata { value: Some(json) }) => serde_json::from_str(&json).ok(),
+        Ok(NotebookResponse::MetadataSnapshot {
+            snapshot: Some(json),
+        }) => serde_json::from_str(&json).ok(),
         _ => None,
     }
 }
@@ -261,93 +262,11 @@ async fn set_metadata_snapshot(
     handle: &NotebookSyncHandle,
     snapshot: &runtimed::notebook_metadata::NotebookMetadataSnapshot,
 ) -> Result<(), String> {
-    let value =
+    let snapshot_json =
         serde_json::to_string(snapshot).map_err(|e| format!("serialize metadata: {}", e))?;
-    let key = runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY.to_string();
     match handle
-        .send_request(NotebookRequest::SetRawMetadata { key, value })
-        .await
-    {
-        Ok(NotebookResponse::MetadataSet {}) => Ok(()),
-        Ok(NotebookResponse::Error { error }) => Err(error),
-        Ok(other) => Err(format!("Unexpected response: {:?}", other)),
-        Err(e) => Err(format!("set_metadata request failed: {}", e)),
-    }
-}
-
-/// Read the raw metadata `additional` fields from the daemon's Automerge doc,
-/// preserving all unknown fields in `runt` (e.g. `trust_signature`, `trust_timestamp`).
-///
-/// Unlike `get_metadata_snapshot` → `metadata_from_snapshot`, this does not
-/// go through the typed `RuntMetadata` struct which would strip unknown keys.
-async fn get_raw_metadata_additional(
-    handle: &NotebookSyncHandle,
-) -> Option<HashMap<String, serde_json::Value>> {
-    let key = runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY.to_string();
-    let json_str = match handle
-        .send_request(NotebookRequest::GetRawMetadata { key })
-        .await
-    {
-        Ok(NotebookResponse::RawMetadata { value: Some(json) }) => json,
-        _ => return None,
-    };
-    let value: serde_json::Value = serde_json::from_str(&json_str).ok()?;
-    let obj = value.as_object()?;
-    let mut additional = HashMap::new();
-    if let Some(runt) = obj.get("runt") {
-        additional.insert("runt".to_string(), runt.clone());
-    }
-    Some(additional)
-}
-
-/// Write trust fields into the daemon's Automerge metadata JSON without going
-/// through the typed `NotebookMetadataSnapshot` round-trip (which strips unknown
-/// `runt` keys like `trust_signature` that aren't modeled in `RuntMetadata`).
-async fn set_raw_trust_in_metadata(
-    handle: &NotebookSyncHandle,
-    signature: &str,
-    timestamp: &str,
-) -> Result<(), String> {
-    let key = runtimed::notebook_metadata::NOTEBOOK_METADATA_KEY.to_string();
-    let json_str = match handle
-        .send_request(NotebookRequest::GetRawMetadata { key: key.clone() })
-        .await
-    {
-        Ok(NotebookResponse::RawMetadata { value: Some(json) }) => json,
-        Ok(NotebookResponse::RawMetadata { value: None }) => {
-            return Err("No metadata in Automerge doc".to_string())
-        }
-        Ok(NotebookResponse::Error { error }) => return Err(error),
-        Ok(other) => return Err(format!("Unexpected response: {:?}", other)),
-        Err(e) => return Err(format!("get_metadata request failed: {}", e)),
-    };
-
-    let mut value: serde_json::Value =
-        serde_json::from_str(&json_str).map_err(|e| format!("parse metadata: {}", e))?;
-
-    let runt = value
-        .as_object_mut()
-        .ok_or("metadata is not an object")?
-        .entry("runt")
-        .or_insert_with(|| serde_json::json!({}));
-
-    if let Some(obj) = runt.as_object_mut() {
-        obj.insert(
-            "trust_signature".to_string(),
-            serde_json::Value::String(signature.to_string()),
-        );
-        obj.insert(
-            "trust_timestamp".to_string(),
-            serde_json::Value::String(timestamp.to_string()),
-        );
-    }
-
-    let new_json =
-        serde_json::to_string(&value).map_err(|e| format!("serialize metadata: {}", e))?;
-    match handle
-        .send_request(NotebookRequest::SetRawMetadata {
-            key,
-            value: new_json,
+        .send_request(NotebookRequest::SetMetadataSnapshot {
+            snapshot: snapshot_json,
         })
         .await
     {
@@ -356,6 +275,34 @@ async fn set_raw_trust_in_metadata(
         Ok(other) => Err(format!("Unexpected response: {:?}", other)),
         Err(e) => Err(format!("set_metadata request failed: {}", e)),
     }
+}
+
+/// Read the metadata `additional` fields from the daemon's Automerge doc.
+/// Returns a HashMap with the `runt` field as a JSON value for trust verification.
+async fn get_raw_metadata_additional(
+    handle: &NotebookSyncHandle,
+) -> Option<HashMap<String, serde_json::Value>> {
+    let snapshot = get_metadata_snapshot(handle).await?;
+    let runt_value = serde_json::to_value(&snapshot.runt).ok()?;
+    let mut additional = HashMap::new();
+    additional.insert("runt".to_string(), runt_value);
+    Some(additional)
+}
+
+/// Write trust fields into the daemon's metadata.
+async fn set_raw_trust_in_metadata(
+    handle: &NotebookSyncHandle,
+    signature: &str,
+    timestamp: &str,
+) -> Result<(), String> {
+    let mut snapshot = get_metadata_snapshot(handle)
+        .await
+        .ok_or("No metadata in Automerge doc")?;
+
+    snapshot.runt.trust_signature = Some(signature.to_string());
+    snapshot.runt.trust_timestamp = Some(timestamp.to_string());
+
+    set_metadata_snapshot(handle, &snapshot).await
 }
 
 /// Reconstruct an nbformat Metadata from a NotebookMetadataSnapshot.

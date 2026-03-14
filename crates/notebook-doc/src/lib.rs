@@ -226,12 +226,11 @@ impl NotebookDoc {
 impl NotebookDoc {
     /// Read the notebook metadata as a typed snapshot.
     ///
-    /// Reads native Automerge keys first (`kernelspec`, `language_info`, `runt`),
-    /// falling back to the legacy `notebook_metadata` JSON string.
+    /// Reads native Automerge keys (`kernelspec`, `language_info`, `runt`).
+    /// Returns `None` if no metadata keys are present.
     pub fn get_metadata_snapshot(&self) -> Option<metadata::NotebookMetadataSnapshot> {
         let meta_id = self.metadata_map_id()?;
 
-        // Try native Automerge keys first
         let kernelspec = read_json_value(&self.doc, &meta_id, "kernelspec")
             .and_then(|v| serde_json::from_value::<metadata::KernelspecSnapshot>(v).ok());
         let language_info = read_json_value(&self.doc, &meta_id, "language_info")
@@ -247,16 +246,13 @@ impl NotebookDoc {
             });
         }
 
-        // Fallback to legacy JSON string
-        let json = read_str(&self.doc, &meta_id, metadata::NOTEBOOK_METADATA_KEY)?;
-        serde_json::from_str(&json).ok()
+        None
     }
 
     /// Write a typed metadata snapshot to the document.
     ///
     /// Writes each top-level key (`kernelspec`, `language_info`, `runt`) as native
-    /// Automerge maps for per-field CRDT merging, and dual-writes the legacy
-    /// `notebook_metadata` JSON string for backward compatibility.
+    /// Automerge maps for per-field CRDT merging.
     pub fn set_metadata_snapshot(
         &mut self,
         snapshot: &metadata::NotebookMetadataSnapshot,
@@ -268,7 +264,6 @@ impl NotebookDoc {
                 .put_object(automerge::ROOT, "metadata", ObjType::Map)?,
         };
 
-        // Write native Automerge keys for per-field CRDT merging
         match &snapshot.kernelspec {
             Some(ks) => {
                 let v = serde_json::to_value(ks).map_err(|e| {
@@ -296,12 +291,6 @@ impl NotebookDoc {
         let runt_v = serde_json::to_value(&snapshot.runt)
             .map_err(|e| AutomergeError::InvalidObjId(format!("serialize runt: {}", e)))?;
         put_json_at_key(&mut self.doc, &meta_id, "runt", &runt_v)?;
-
-        // Dual-write legacy JSON string for backward compatibility
-        let json = serde_json::to_string(snapshot)
-            .map_err(|e| AutomergeError::InvalidObjId(format!("serialize metadata: {}", e)))?;
-        self.doc
-            .put(&meta_id, metadata::NOTEBOOK_METADATA_KEY, json.as_str())?;
 
         Ok(())
     }
@@ -1877,6 +1866,9 @@ pub fn get_metadata_from_doc(doc: &AutoCommit, key: &str) -> Option<String> {
 /// This is the free-function counterpart of `NotebookDoc::get_metadata_snapshot`,
 /// for use by the sync client which holds a raw `AutoCommit` instead of a
 /// `NotebookDoc`.
+///
+/// Reads native Automerge keys (`kernelspec`, `language_info`, `runt`).
+/// Returns `None` if no metadata keys are present.
 pub fn get_metadata_snapshot_from_doc(
     doc: &AutoCommit,
 ) -> Option<metadata::NotebookMetadataSnapshot> {
@@ -1889,7 +1881,6 @@ pub fn get_metadata_snapshot_from_doc(
             _ => None,
         })?;
 
-    // Try native Automerge keys first
     let kernelspec = read_json_value(doc, &meta_id, "kernelspec")
         .and_then(|v| serde_json::from_value::<metadata::KernelspecSnapshot>(v).ok());
     let language_info = read_json_value(doc, &meta_id, "language_info")
@@ -1905,9 +1896,7 @@ pub fn get_metadata_snapshot_from_doc(
         });
     }
 
-    // Fallback to legacy JSON string
-    let json = read_str(doc, &meta_id, metadata::NOTEBOOK_METADATA_KEY)?;
-    serde_json::from_str(&json).ok()
+    None
 }
 
 /// Set a metadata value in a raw `AutoCommit` document.
@@ -3505,32 +3494,8 @@ mod tests {
     }
 
     #[test]
-    fn test_native_metadata_legacy_fallback() {
-        let mut doc = NotebookDoc::new("nb-legacy-fb");
-
-        // Write ONLY the legacy JSON string (simulating an old peer)
-        let snapshot = metadata::NotebookMetadataSnapshot {
-            kernelspec: Some(metadata::KernelspecSnapshot {
-                name: "deno".to_string(),
-                display_name: "Deno".to_string(),
-                language: Some("typescript".to_string()),
-            }),
-            language_info: None,
-            runt: metadata::RuntMetadata::default(),
-        };
-        let json = serde_json::to_string(&snapshot).unwrap();
-        doc.set_metadata(metadata::NOTEBOOK_METADATA_KEY, &json)
-            .unwrap();
-
-        // Should read back via legacy fallback
-        let read_back = doc.get_metadata_snapshot().unwrap();
-        assert_eq!(read_back.kernelspec, snapshot.kernelspec);
-        assert_eq!(read_back.language_info, None);
-    }
-
-    #[test]
-    fn test_native_metadata_dual_write() {
-        let mut doc = NotebookDoc::new("nb-dual-write");
+    fn test_native_metadata_write() {
+        let mut doc = NotebookDoc::new("nb-native-write");
 
         let snapshot = metadata::NotebookMetadataSnapshot {
             kernelspec: Some(metadata::KernelspecSnapshot {
@@ -3549,12 +3514,9 @@ mod tests {
         assert!(doc.get_json_value(&meta_id, "kernelspec").is_some());
         assert!(doc.get_json_value(&meta_id, "runt").is_some());
 
-        // Legacy string should also exist
-        let legacy = doc.get_metadata(metadata::NOTEBOOK_METADATA_KEY);
-        assert!(legacy.is_some());
-        let legacy_parsed: metadata::NotebookMetadataSnapshot =
-            serde_json::from_str(&legacy.unwrap()).unwrap();
-        assert_eq!(legacy_parsed, snapshot);
+        // Read back via native keys
+        let read_back = doc.get_metadata_snapshot().unwrap();
+        assert_eq!(read_back, snapshot);
     }
 
     #[test]

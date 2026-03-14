@@ -476,6 +476,33 @@ impl AsyncSession {
         })
     }
 
+    /// Set the notebook kernelspec.
+    #[pyo3(signature = (name, display_name, language=None))]
+    fn set_kernelspec<'py>(
+        &self,
+        py: Python<'py>,
+        name: &str,
+        display_name: &str,
+        language: Option<&str>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let notebook_id = self.notebook_id.clone();
+        let name = name.to_string();
+        let display_name = display_name.to_string();
+        let language = language.map(|s| s.to_string());
+
+        future_into_py(py, async move {
+            session_core::connect(&state, &notebook_id).await?;
+            let mut snapshot = session_core::get_notebook_metadata(&state).await?;
+            snapshot.kernelspec = Some(runtimed::notebook_metadata::KernelspecSnapshot {
+                name,
+                display_name,
+                language,
+            });
+            session_core::set_notebook_metadata(&state, &snapshot).await
+        })
+    }
+
     // =========================================================================
     // Cell metadata
     // =========================================================================
