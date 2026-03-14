@@ -27,7 +27,12 @@ export interface AnyWidgetModel {
   get(key: string): unknown;
   /** Set a value in the model state (buffered until save_changes) */
   set(key: string, value: unknown): void;
-  /** Subscribe to model events */
+  /**
+   * Subscribe to model events.
+   * - "change:key" callbacks receive no arguments (use model.get() to read values)
+   * - "change" callbacks receive no arguments
+   * - "msg:custom" callbacks receive (content, buffers)
+   */
   on(event: string, callback: (...args: unknown[]) => void): void;
   /** Unsubscribe from model events */
   off(event: string, callback?: (...args: unknown[]) => void): void;
@@ -225,12 +230,12 @@ export function createAFMModelProxy(
 
         // Only subscribe once per key
         if (!keyUnsubscribers.has(key)) {
-          const unsubscribe = store.subscribeToKey(model.id, key, (value) => {
-            // Notify all listeners for this specific key
+          const unsubscribe = store.subscribeToKey(model.id, key, () => {
+            // Notify all listeners for this specific key (no args per AFM spec)
             const keyEvent = `change:${key}`;
             const keyListeners = listeners.get(keyEvent);
             if (keyListeners) {
-              keyListeners.forEach((cb) => cb(value));
+              keyListeners.forEach((cb) => cb());
             }
 
             // Also notify generic "change" listeners
