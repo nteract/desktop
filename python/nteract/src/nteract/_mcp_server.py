@@ -772,7 +772,7 @@ async def _send_edit_cursor(
 async def _send_cell_cursor(
     session: runtimed.AsyncSession, cell_id: str, line: int = 0, column: int = 0
 ) -> None:
-    """Send cursor presence on a cell (best-effort, non-blocking)."""
+    """Send cursor presence on a cell (best-effort, errors silently ignored)."""
     with contextlib.suppress(Exception):
         await session.set_cursor(cell_id=cell_id, line=line, column=column)
 

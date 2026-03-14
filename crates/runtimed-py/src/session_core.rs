@@ -469,10 +469,13 @@ pub(crate) async fn set_source(
         handle.update_source(cell_id, source).map_err(to_py_err)?;
     }
 
-    // Emit presence at end of new source
-    let lines: Vec<&str> = source.lines().collect();
-    let last_line = lines.len().saturating_sub(1) as u32;
-    let last_col = lines.last().map(|l| l.len()).unwrap_or(0) as u32;
+    // Emit presence at end of new source (single pass, no allocation)
+    let (last_line, last_col) = source
+        .lines()
+        .enumerate()
+        .last()
+        .map(|(i, line)| (i as u32, line.len() as u32))
+        .unwrap_or((0, 0));
     emit_cursor_presence(state, cell_id, last_line, last_col).await;
 
     Ok(())
@@ -961,8 +964,9 @@ pub(crate) async fn set_selection(
     handle.send_presence(data).await.map_err(to_py_err)
 }
 
-/// Internal helper to emit cursor presence (best-effort, non-blocking).
+/// Internal helper to emit cursor presence (best-effort).
 /// Reads peer_label from SessionState, so callers don't need to pass it.
+/// Errors are silently ignored since presence is non-critical.
 pub(crate) async fn emit_cursor_presence(
     state: &Arc<Mutex<SessionState>>,
     cell_id: &str,
@@ -979,18 +983,22 @@ async fn emit_cursor_presence_internal(
     line: u32,
     column: u32,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let st = state.lock().await;
-    let peer_label = st.peer_label.as_deref();
-    let data = notebook_doc::presence::encode_cursor_update_labeled(
-        "local",
-        peer_label,
-        &notebook_doc::presence::CursorPosition {
-            cell_id: cell_id.to_string(),
-            line,
-            column,
-        },
-    );
-    let handle = st.handle.as_ref().ok_or("Not connected")?;
+    // Clone what we need and drop the lock before await to avoid contention
+    let (data, handle) = {
+        let st = state.lock().await;
+        let peer_label = st.peer_label.clone();
+        let data = notebook_doc::presence::encode_cursor_update_labeled(
+            "local",
+            peer_label.as_deref(),
+            &notebook_doc::presence::CursorPosition {
+                cell_id: cell_id.to_string(),
+                line,
+                column,
+            },
+        );
+        let handle = st.handle.clone().ok_or("Not connected")?;
+        (data, handle)
+    };
     handle.send_presence(data).await?;
     Ok(())
 }
