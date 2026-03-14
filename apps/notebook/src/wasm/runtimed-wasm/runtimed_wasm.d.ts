@@ -123,9 +123,16 @@ export class NotebookHandle {
      */
     get_cells_json(): string;
     /**
-     * Get a metadata value by key.
+     * Get a metadata value by key (legacy string API).
      */
     get_metadata(key: string): string | undefined;
+    /**
+     * Get the full typed metadata as a native JS object.
+     *
+     * Returns the `NotebookMetadataSnapshot` as a JS object via serde-wasm-bindgen,
+     * avoiding JSON string round-trips. Returns undefined if no metadata is set.
+     */
+    get_metadata_snapshot(): any;
     /**
      * Get the full typed metadata as a JSON string.
      *
@@ -133,6 +140,13 @@ export class NotebookHandle {
      * if no metadata is set. The frontend can parse this with a shared TS interface.
      */
     get_metadata_snapshot_json(): string | undefined;
+    /**
+     * Get a metadata value as a native JS value.
+     *
+     * Reads the Automerge metadata subtree and returns it as a JS object/array/scalar.
+     * Returns undefined if the key doesn't exist.
+     */
+    get_metadata_value(key: string): any;
     /**
      * Load a notebook document from saved bytes (e.g., from get_automerge_doc_bytes).
      */
@@ -202,6 +216,10 @@ export class NotebookHandle {
      */
     set_cell_metadata(cell_id: string, metadata_json: string): boolean;
     /**
+     * Replace entire cell metadata from a JS object (native, no JSON string).
+     */
+    set_cell_metadata_value(cell_id: string, metadata: any): boolean;
+    /**
      * Set whether the cell outputs should be hidden (JupyterLab convention).
      *
      * Sets `metadata.jupyter.outputs_hidden` for the specified cell.
@@ -223,6 +241,12 @@ export class NotebookHandle {
      */
     set_cell_tags(cell_id: string, tags_json: string): boolean;
     /**
+     * Set the cell tags from a JS array (native, no JSON string).
+     *
+     * Accepts a JS array of strings directly via serde-wasm-bindgen.
+     */
+    set_cell_tags_value(cell_id: string, tags: any): boolean;
+    /**
      * Set Conda channels, preserving deps and python.
      * Accepts a JSON array string (e.g. `'["conda-forge","bioconda"]'`).
      */
@@ -233,9 +257,25 @@ export class NotebookHandle {
      */
     set_conda_python(python?: string | null): void;
     /**
-     * Set a metadata value.
+     * Set a metadata value (legacy string API).
      */
     set_metadata(key: string, value: string): void;
+    /**
+     * Set the full typed metadata snapshot from a JS object.
+     *
+     * Accepts a JS object matching the `NotebookMetadataSnapshot` shape and writes
+     * it as native Automerge types (maps, lists, scalars). This enables per-field
+     * CRDT merging instead of last-write-wins on a JSON string.
+     */
+    set_metadata_snapshot_value(value: any): void;
+    /**
+     * Set a metadata value from a JS object (native Automerge types).
+     *
+     * Accepts any JS value and writes it as native Automerge types under the
+     * given key in the metadata map. Objects become Maps, arrays become Lists,
+     * and scalars become native scalars.
+     */
+    set_metadata_value(key: string, value: any): void;
     /**
      * Set UV requires-python constraint, preserving deps.
      * Pass undefined/null to clear the constraint.
@@ -249,6 +289,13 @@ export class NotebookHandle {
      * Returns true if the cell was found and updated.
      */
     update_cell_metadata_at(cell_id: string, path_json: string, value_json: string): boolean;
+    /**
+     * Update cell metadata at a specific path using native JS values.
+     *
+     * Path is a JS array of strings, value is any JS value.
+     * No JSON string round-trips.
+     */
+    update_cell_metadata_at_value(cell_id: string, path: any, value: any): boolean;
     /**
      * Update a cell's source text using Automerge Text CRDT (Myers diff).
      */
@@ -298,13 +345,20 @@ export interface InitOutput {
     readonly notebookhandle_append_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_get_metadata: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_get_metadata_snapshot_json: (a: number, b: number) => void;
+    readonly notebookhandle_get_metadata_snapshot: (a: number) => number;
+    readonly notebookhandle_get_metadata_value: (a: number, b: number, c: number) => number;
     readonly notebookhandle_detect_runtime: (a: number, b: number) => void;
     readonly notebookhandle_set_metadata: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly notebookhandle_set_metadata_snapshot_value: (a: number, b: number, c: number) => void;
+    readonly notebookhandle_set_metadata_value: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly notebookhandle_set_cell_source_hidden: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly notebookhandle_set_cell_outputs_hidden: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly notebookhandle_set_cell_tags: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly notebookhandle_set_cell_tags_value: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly notebookhandle_update_cell_metadata_at: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+    readonly notebookhandle_update_cell_metadata_at_value: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_set_cell_metadata: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly notebookhandle_set_cell_metadata_value: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly notebookhandle_add_uv_dependency: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_remove_uv_dependency: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_clear_uv_section: (a: number, b: number) => void;
@@ -321,10 +375,10 @@ export interface InitOutput {
     readonly notebookhandle_receive_frame: (a: number, b: number, c: number) => number;
     readonly encode_cursor_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly encode_selection_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
-    readonly __wbindgen_export: (a: number) => void;
+    readonly __wbindgen_export: (a: number, b: number) => number;
+    readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
+    readonly __wbindgen_export3: (a: number) => void;
     readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
-    readonly __wbindgen_export2: (a: number, b: number) => number;
-    readonly __wbindgen_export3: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export4: (a: number, b: number, c: number) => void;
 }
 
