@@ -3,6 +3,10 @@
 //! Establishes a connection to the runtimed daemon, performs the protocol
 //! handshake, and runs the initial Automerge sync exchange to populate
 //! the local document replica.
+//!
+//! Platform-specific stream creation (Unix socket or Windows named pipe)
+//! is handled internally. The handshake and sync logic is generic over
+//! `AsyncRead + AsyncWrite`.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -11,6 +15,7 @@ use std::time::Duration;
 use automerge::sync::{self, SyncDoc};
 use automerge::AutoCommit;
 use log::{debug, info};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, watch};
 
 use notebook_protocol::connection::{
@@ -54,14 +59,52 @@ pub struct OpenResult {
     pub cells: Vec<notebook_doc::CellSnapshot>,
 }
 
-// TODO: Windows support — use named pipes instead of Unix domain sockets.
+/// Result of creating a new notebook.
+pub struct CreateResult {
+    /// Handle for document mutations and reads.
+    pub handle: DocHandle,
+
+    /// Receiver for kernel/execution broadcasts from the daemon.
+    pub broadcast_rx: crate::BroadcastReceiver,
+
+    /// Connection info from the daemon (notebook_id, trust status, etc).
+    pub info: NotebookConnectionInfo,
+
+    /// Initial cells in the document after sync.
+    pub cells: Vec<notebook_doc::CellSnapshot>,
+}
+
+/// Platform-specific helper macro to connect to the daemon socket.
+///
+/// On Unix: `tokio::net::UnixStream::connect`
+/// On Windows: `tokio::net::windows::named_pipe::ClientOptions::new().open`
+macro_rules! connect_stream {
+    ($socket_path:expr) => {{
+        #[cfg(unix)]
+        {
+            tokio::net::UnixStream::connect($socket_path)
+                .await
+                .map_err(SyncError::Io)?
+        }
+        #[cfg(windows)]
+        {
+            let path_str = $socket_path.to_string_lossy();
+            tokio::net::windows::named_pipe::ClientOptions::new()
+                .open(&*path_str)
+                .map_err(SyncError::Io)?
+        }
+    }};
+}
+
+// =========================================================================
+// Public connect functions
+// =========================================================================
 
 /// Connect to a notebook room by ID.
 ///
 /// Performs the protocol handshake and initial Automerge sync. Returns a
 /// `DocHandle` for direct document access and a broadcast receiver for
 /// kernel events.
-#[cfg(unix)]
 pub async fn connect(
     socket_path: PathBuf,
     notebook_id: String,
@@ -70,17 +113,13 @@ pub async fn connect(
 }
 
 /// Connect to a notebook room with options.
-#[cfg(unix)]
 pub async fn connect_with_options(
     socket_path: PathBuf,
     notebook_id: String,
     working_dir: Option<PathBuf>,
     initial_metadata: Option<String>,
 ) -> Result<ConnectResult, SyncError> {
-    let stream = tokio::net::UnixStream::connect(&socket_path)
-        .await
-        .map_err(SyncError::Io)?;
-
+    let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
     let mut reader = tokio::io::BufReader::new(reader);
     let mut writer = tokio::io::BufWriter::new(writer);
@@ -131,80 +170,26 @@ pub async fn connect_with_options(
         notebook_doc::get_metadata_from_doc(&doc, notebook_doc::metadata::NOTEBOOK_METADATA_KEY);
 
     // Build the shared state and channels
-    let shared = Arc::new(Mutex::new(SharedDocState::new(doc, notebook_id.clone())));
-    // Restore the peer_state from the handshake sync
-    {
-        let mut state = shared.lock().map_err(|_| SyncError::LockPoisoned)?;
-        state.peer_state = peer_state;
-    }
-
-    let initial_snapshot = {
-        let state = shared.lock().map_err(|_| SyncError::LockPoisoned)?;
-        NotebookSnapshot::from_doc(&state.doc)
-    };
-
-    let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
-    let snapshot_tx = Arc::new(snapshot_tx);
-    let (changed_tx, changed_rx) = mpsc::unbounded_channel();
-    let (cmd_tx, cmd_rx) = mpsc::channel::<sync_task::SyncCommand>(32);
-    let (broadcast_tx, broadcast_rx) = tokio::sync::broadcast::channel::<NotebookBroadcast>(64);
-    let cmd_tx_for_handle = cmd_tx.clone();
-
-    // Send any broadcasts received during initial sync
-    for bc in pending_broadcasts {
-        let _ = broadcast_tx.send(bc);
-    }
-
-    // Build the handle
-    let handle = DocHandle::new(
-        Arc::clone(&shared),
-        changed_tx,
-        cmd_tx_for_handle,
-        Arc::clone(&snapshot_tx),
-        snapshot_rx,
-        notebook_id.clone(),
-    );
-
-    // Reunite the split stream for the sync task
-    let stream = reader.into_inner().unsplit(writer.into_inner());
-
-    // Spawn the sync task
-    let task_config = sync_task::SyncTaskConfig {
-        doc: Arc::clone(&shared),
-        changed_rx,
-        cmd_rx,
-        snapshot_tx: Arc::clone(&snapshot_tx),
-        broadcast_tx,
-    };
-
-    let notebook_id_for_task = notebook_id.clone();
-    tokio::spawn(async move {
-        info!(
-            "[notebook-sync] Sync task started for {}",
-            notebook_id_for_task
-        );
-        sync_task::run(task_config, stream).await;
-        info!(
-            "[notebook-sync] Sync task stopped for {}",
-            notebook_id_for_task
-        );
-    });
-
-    Ok(ConnectResult {
+    build_and_spawn(
+        doc,
+        peer_state,
+        notebook_id,
+        pending_broadcasts,
+        reader,
+        writer,
+    )
+    .await
+    .map(|(handle, broadcast_rx)| ConnectResult {
         handle,
-        broadcast_rx: broadcast_rx.into(),
+        broadcast_rx,
         cells,
         initial_metadata: legacy_metadata,
     })
 }
 
 /// Connect and open an existing notebook file.
-#[cfg(unix)]
 pub async fn connect_open(socket_path: PathBuf, path: PathBuf) -> Result<OpenResult, SyncError> {
-    let stream = tokio::net::UnixStream::connect(&socket_path)
-        .await
-        .map_err(SyncError::Io)?;
-
+    let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
     let mut reader = tokio::io::BufReader::new(reader);
     let mut writer = tokio::io::BufWriter::new(writer);
@@ -254,98 +239,33 @@ pub async fn connect_open(socket_path: PathBuf, path: PathBuf) -> Result<OpenRes
 
     let cells = notebook_doc::get_cells_from_doc(&doc);
 
-    // Build shared state and channels
-    let shared = Arc::new(Mutex::new(SharedDocState::new(doc, notebook_id.clone())));
-    {
-        let mut state = shared.lock().map_err(|_| SyncError::LockPoisoned)?;
-        state.peer_state = peer_state;
-    }
-
-    let initial_snapshot = {
-        let state = shared.lock().map_err(|_| SyncError::LockPoisoned)?;
-        NotebookSnapshot::from_doc(&state.doc)
-    };
-
-    let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
-    let snapshot_tx = Arc::new(snapshot_tx);
-    let (changed_tx, changed_rx) = mpsc::unbounded_channel();
-    let (cmd_tx, cmd_rx) = mpsc::channel::<sync_task::SyncCommand>(32);
-    let (broadcast_tx, broadcast_rx) = tokio::sync::broadcast::channel::<NotebookBroadcast>(64);
-    let cmd_tx_for_handle = cmd_tx.clone();
-
-    for bc in pending_broadcasts {
-        let _ = broadcast_tx.send(bc);
-    }
-
-    let handle = DocHandle::new(
-        Arc::clone(&shared),
-        changed_tx,
-        cmd_tx_for_handle,
-        Arc::clone(&snapshot_tx),
-        snapshot_rx,
-        notebook_id.clone(),
-    );
-
-    let stream = reader.into_inner().unsplit(writer.into_inner());
-
-    let task_config = sync_task::SyncTaskConfig {
-        doc: Arc::clone(&shared),
-        changed_rx,
-        cmd_rx,
-        snapshot_tx: Arc::clone(&snapshot_tx),
-        broadcast_tx,
-    };
-
-    let notebook_id_for_task = notebook_id.clone();
-    tokio::spawn(async move {
-        info!(
-            "[notebook-sync] Sync task started for {}",
-            notebook_id_for_task
-        );
-        sync_task::run(task_config, stream).await;
-        info!(
-            "[notebook-sync] Sync task stopped for {}",
-            notebook_id_for_task
-        );
-    });
-
-    Ok(OpenResult {
+    build_and_spawn(
+        doc,
+        peer_state,
+        notebook_id,
+        pending_broadcasts,
+        reader,
+        writer,
+    )
+    .await
+    .map(|(handle, broadcast_rx)| OpenResult {
         handle,
-        broadcast_rx: broadcast_rx.into(),
+        broadcast_rx,
         info,
         cells,
     })
-}
-
-/// Result of creating a new notebook.
-pub struct CreateResult {
-    /// Handle for document mutations and reads.
-    pub handle: DocHandle,
-
-    /// Receiver for kernel/execution broadcasts from the daemon.
-    pub broadcast_rx: crate::BroadcastReceiver,
-
-    /// Connection info from the daemon (notebook_id, trust status, etc).
-    pub info: NotebookConnectionInfo,
-
-    /// Initial cells in the document after sync.
-    pub cells: Vec<notebook_doc::CellSnapshot>,
 }
 
 /// Connect and create a new notebook.
 ///
 /// The daemon creates an empty notebook room with one code cell and
 /// returns connection info with a generated UUID as the notebook_id.
-#[cfg(unix)]
 pub async fn connect_create(
     socket_path: PathBuf,
     runtime: &str,
     working_dir: Option<PathBuf>,
 ) -> Result<CreateResult, SyncError> {
-    let stream = tokio::net::UnixStream::connect(&socket_path)
-        .await
-        .map_err(SyncError::Io)?;
-
+    let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
     let mut reader = tokio::io::BufReader::new(reader);
     let mut writer = tokio::io::BufWriter::new(writer);
@@ -399,7 +319,43 @@ pub async fn connect_create(
 
     let cells = notebook_doc::get_cells_from_doc(&doc);
 
-    // Build shared state and channels
+    build_and_spawn(
+        doc,
+        peer_state,
+        notebook_id,
+        pending_broadcasts,
+        reader,
+        writer,
+    )
+    .await
+    .map(|(handle, broadcast_rx)| CreateResult {
+        handle,
+        broadcast_rx,
+        info,
+        cells,
+    })
+}
+
+// =========================================================================
+// Internal helpers
+// =========================================================================
+
+/// Build the shared state, channels, and spawn the sync task.
+///
+/// This is the common setup after handshake + initial sync, shared by
+/// all connect variants.
+async fn build_and_spawn<R, W>(
+    doc: AutoCommit,
+    peer_state: sync::State,
+    notebook_id: String,
+    pending_broadcasts: Vec<NotebookBroadcast>,
+    reader: R,
+    writer: W,
+) -> Result<(DocHandle, crate::BroadcastReceiver), SyncError>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
     let shared = Arc::new(Mutex::new(SharedDocState::new(doc, notebook_id.clone())));
     {
         let mut state = shared.lock().map_err(|_| SyncError::LockPoisoned)?;
@@ -416,8 +372,8 @@ pub async fn connect_create(
     let (changed_tx, changed_rx) = mpsc::unbounded_channel();
     let (cmd_tx, cmd_rx) = mpsc::channel::<sync_task::SyncCommand>(32);
     let (broadcast_tx, broadcast_rx) = tokio::sync::broadcast::channel::<NotebookBroadcast>(64);
-    let cmd_tx_for_handle = cmd_tx.clone();
 
+    // Send any broadcasts received during initial sync
     for bc in pending_broadcasts {
         let _ = broadcast_tx.send(bc);
     }
@@ -425,13 +381,16 @@ pub async fn connect_create(
     let handle = DocHandle::new(
         Arc::clone(&shared),
         changed_tx,
-        cmd_tx_for_handle,
+        cmd_tx,
         Arc::clone(&snapshot_tx),
         snapshot_rx,
         notebook_id.clone(),
     );
 
-    let stream = reader.into_inner().unsplit(writer.into_inner());
+    // Reunite reader + writer into a single stream for the sync task.
+    // We use a helper struct since tokio::io::split produces types that
+    // can't be unsplit across the generic boundary.
+    let stream = ReuniteStream { reader, writer };
 
     let task_config = sync_task::SyncTaskConfig {
         doc: Arc::clone(&shared),
@@ -441,7 +400,7 @@ pub async fn connect_create(
         broadcast_tx,
     };
 
-    let notebook_id_for_task = notebook_id.clone();
+    let notebook_id_for_task = notebook_id;
     tokio::spawn(async move {
         info!(
             "[notebook-sync] Sync task started for {}",
@@ -454,12 +413,7 @@ pub async fn connect_create(
         );
     });
 
-    Ok(CreateResult {
-        handle,
-        broadcast_rx: broadcast_rx.into(),
-        info,
-        cells,
-    })
+    Ok((handle, broadcast_rx.into()))
 }
 
 /// Perform the initial Automerge sync exchange after handshake.
@@ -474,8 +428,8 @@ async fn do_initial_sync<R, W>(
     pending_broadcasts: &mut Vec<NotebookBroadcast>,
 ) -> Result<(), SyncError>
 where
-    R: tokio::io::AsyncRead + Unpin,
-    W: tokio::io::AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
 {
     // Receive the daemon's first sync message
     let first_frame = connection::recv_typed_frame(reader)
@@ -562,4 +516,55 @@ where
     }
 
     Ok(())
+}
+
+// =========================================================================
+// Helper: reunite split reader/writer into a single stream
+// =========================================================================
+
+/// A stream that wraps separate reader and writer halves.
+///
+/// Used to pass a split stream to the sync task which needs a single
+/// `AsyncRead + AsyncWrite` value.
+struct ReuniteStream<R, W> {
+    reader: R,
+    writer: W,
+}
+
+impl<R: AsyncRead + Unpin, W: Unpin> AsyncRead for ReuniteStream<R, W> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        std::pin::Pin::new(&mut this.reader).poll_read(cx, buf)
+    }
+}
+
+impl<R: Unpin, W: AsyncWrite + Unpin> AsyncWrite for ReuniteStream<R, W> {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        std::pin::Pin::new(&mut this.writer).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        std::pin::Pin::new(&mut this.writer).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        std::pin::Pin::new(&mut this.writer).poll_shutdown(cx)
+    }
 }
