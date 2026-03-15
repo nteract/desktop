@@ -10,6 +10,7 @@
 //! Both sync and async APIs are provided with full feature parity.
 
 use pyo3::prelude::*;
+use std::path::PathBuf;
 
 mod async_session;
 mod client;
@@ -32,6 +33,18 @@ use output::{
 };
 use session::Session;
 use subscription::{EventIteratorSubscription, EventSubscription};
+
+/// Launch the desktop notebook app, optionally opening a specific notebook.
+///
+/// In dev mode, uses the local bundled binary. In production, tries installed
+/// app candidates via platform-specific launch.
+#[pyfunction]
+#[pyo3(signature = (path=None))]
+fn show_notebook_app(path: Option<String>) -> PyResult<()> {
+    let path_buf = path.map(PathBuf::from);
+    runt_workspace::open_notebook_app(path_buf.as_deref(), &[])
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
+}
 
 /// Python module for runtimed daemon client.
 #[pymodule]
@@ -67,6 +80,9 @@ fn runtimed(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Error type
     m.add("RuntimedError", m.py().get_type::<RuntimedError>())?;
+
+    // Standalone functions
+    m.add_function(wrap_pyfunction!(show_notebook_app, m)?)?;
 
     Ok(())
 }

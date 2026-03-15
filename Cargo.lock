@@ -5655,6 +5655,7 @@ dependencies = [
  "pyo3",
  "pyo3-async-runtimes",
  "reqwest 0.12.28",
+ "runt-workspace",
  "runtimed",
  "serde_json",
  "thiserror 1.0.69",

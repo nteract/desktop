@@ -148,6 +148,120 @@ pub fn channel_display_name() -> &'static str {
 }
 
 // ============================================================================
+// Desktop App Launching
+// ============================================================================
+
+/// App names to try when launching the desktop notebook app.
+///
+/// Returns candidates in priority order. On nightly, tries nightly-specific
+/// names first, falling back to stable. On stable, only tries "nteract".
+pub fn desktop_app_launch_candidates() -> &'static [&'static str] {
+    match build_channel() {
+        BuildChannel::Stable => &["nteract"],
+        BuildChannel::Nightly => &[
+            "nteract Nightly",
+            "nteract-nightly",
+            "nteract (Nightly)", // legacy fallback for older installs
+            "nteract",
+        ],
+    }
+}
+
+/// Launch the desktop notebook app, optionally opening a specific notebook.
+///
+/// In dev mode, uses the local bundled binary at `{workspace}/target/debug/notebook`.
+/// Requires `cargo xtask build` first (checks for `.notebook-bundled` marker).
+/// This ensures the app connects to the worktree daemon, not the system daemon.
+///
+/// In production, tries installed app candidates via platform-specific launch
+/// (macOS: `open -a`, Linux/Windows: direct exec).
+pub fn open_notebook_app(path: Option<&Path>, extra_args: &[&str]) -> Result<(), String> {
+    if is_dev_mode() {
+        return open_notebook_dev(path, extra_args);
+    }
+    open_notebook_installed(path, extra_args)
+}
+
+fn open_notebook_dev(path: Option<&Path>, extra_args: &[&str]) -> Result<(), String> {
+    let workspace = get_workspace_path().ok_or("Dev mode active but no workspace path found")?;
+    let binary = workspace.join("target/debug/notebook");
+    let marker = workspace.join("target/debug/.notebook-bundled");
+
+    if !binary.exists() {
+        return Err(format!(
+            "No notebook binary found at {}. Run `cargo xtask build` first.",
+            binary.display()
+        ));
+    }
+    if !marker.exists() {
+        return Err(format!(
+            "Notebook binary at {} is a dev build (requires Vite server). \
+             Run `cargo xtask build` for a standalone bundled binary.",
+            binary.display()
+        ));
+    }
+
+    let mut cmd = Command::new(&binary);
+    if let Some(p) = path {
+        cmd.arg(p);
+    }
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
+    cmd.spawn()
+        .map_err(|e| format!("Failed to launch {}: {}", binary.display(), e))?;
+    Ok(())
+}
+
+fn open_notebook_installed(path: Option<&Path>, extra_args: &[&str]) -> Result<(), String> {
+    let mut last_error = None;
+
+    for app_name in desktop_app_launch_candidates() {
+        #[cfg(target_os = "macos")]
+        let spawn_result = {
+            let mut cmd = Command::new("open");
+            cmd.arg("-a").arg(app_name);
+            if path.is_some() || !extra_args.is_empty() {
+                cmd.arg("--args");
+            }
+            if let Some(p) = path {
+                cmd.arg(p);
+            }
+            for arg in extra_args {
+                cmd.arg(arg);
+            }
+            cmd.spawn()
+        };
+
+        #[cfg(not(target_os = "macos"))]
+        let spawn_result = {
+            let mut cmd = Command::new(app_name);
+            if let Some(p) = path {
+                cmd.arg(p);
+            }
+            for arg in extra_args {
+                cmd.arg(arg);
+            }
+            cmd.spawn()
+        };
+
+        match spawn_result {
+            Ok(_) => return Ok(()),
+            Err(e) => last_error = Some((app_name, e)),
+        }
+    }
+
+    let detail = last_error
+        .map(|(candidate, e)| format!("last attempt ({candidate}) failed: {e}"))
+        .unwrap_or_else(|| "no launch candidates were attempted".to_string());
+    Err(format!(
+        "Failed to launch {}: {}",
+        desktop_display_name(),
+        detail
+    ))
+}
+
+// ============================================================================
 // Development Mode Detection
 // ============================================================================
 
@@ -333,6 +447,15 @@ mod tests {
             build_channel_from_str(Some("something-else")),
             BuildChannel::Nightly
         );
+    }
+
+    #[test]
+    fn test_desktop_app_launch_candidates() {
+        let candidates = desktop_app_launch_candidates();
+        // Should always have at least one candidate
+        assert!(!candidates.is_empty());
+        // Last candidate should always be "nteract" (the stable fallback)
+        assert_eq!(*candidates.last().unwrap(), "nteract");
     }
 
     #[test]

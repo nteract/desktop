@@ -473,18 +473,6 @@ fn main() -> Result<()> {
 ///
 /// The app automatically captures its working directory at startup for untitled
 /// notebooks, so we don't need to pass --cwd explicitly.
-fn desktop_app_launch_candidates() -> &'static [&'static str] {
-    match runt_workspace::build_channel() {
-        runt_workspace::BuildChannel::Stable => &["nteract"],
-        runt_workspace::BuildChannel::Nightly => &[
-            "nteract Nightly",
-            "nteract-nightly",
-            "nteract (Nightly)", // legacy fallback for older installs
-            "nteract",
-        ],
-    }
-}
-
 fn open_notebook(path: Option<PathBuf>, runtime: Option<String>) -> Result<()> {
     // Convert relative paths to absolute
     let abs_path = path.map(|p| {
@@ -495,98 +483,14 @@ fn open_notebook(path: Option<PathBuf>, runtime: Option<String>) -> Result<()> {
         }
     });
 
-    let launch_result: Result<()> = {
-        #[cfg(target_os = "macos")]
-        {
-            let mut last_error = None;
-            for app_name in desktop_app_launch_candidates() {
-                let mut cmd = std::process::Command::new("open");
-                cmd.arg("-a").arg(app_name);
+    let mut extra_args = Vec::new();
+    if let Some(ref r) = runtime {
+        extra_args.push("--runtime");
+        extra_args.push(r);
+    }
 
-                if abs_path.is_some() || runtime.is_some() {
-                    cmd.arg("--args");
-                }
-                if let Some(ref p) = abs_path {
-                    cmd.arg(p);
-                }
-                if let Some(ref r) = runtime {
-                    cmd.arg("--runtime").arg(r);
-                }
-
-                match cmd.spawn() {
-                    Ok(_) => return Ok(()),
-                    Err(e) => last_error = Some((app_name, e)),
-                }
-            }
-
-            let detail = last_error
-                .map(|(candidate, e)| format!("last attempt ({candidate}) failed: {e}"))
-                .unwrap_or_else(|| "no launch candidates were attempted".to_string());
-            Err(anyhow::anyhow!(
-                "Failed to launch {}: {}",
-                runt_workspace::desktop_display_name(),
-                detail
-            ))
-        }
-        #[cfg(target_os = "windows")]
-        {
-            let mut last_error = None;
-            for app_name in desktop_app_launch_candidates() {
-                let mut cmd = std::process::Command::new(app_name);
-
-                if let Some(ref p) = abs_path {
-                    cmd.arg(p);
-                }
-                if let Some(ref r) = runtime {
-                    cmd.arg("--runtime").arg(r);
-                }
-
-                match cmd.spawn() {
-                    Ok(_) => return Ok(()),
-                    Err(e) => last_error = Some((app_name, e)),
-                }
-            }
-
-            let detail = last_error
-                .map(|(candidate, e)| format!("last attempt ({candidate}) failed: {e}"))
-                .unwrap_or_else(|| "no launch candidates were attempted".to_string());
-            Err(anyhow::anyhow!(
-                "Failed to launch {}: {}",
-                runt_workspace::desktop_display_name(),
-                detail
-            ))
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let mut last_error = None;
-            for app_name in desktop_app_launch_candidates() {
-                let mut cmd = std::process::Command::new(app_name);
-
-                if let Some(ref p) = abs_path {
-                    cmd.arg(p);
-                }
-                if let Some(ref r) = runtime {
-                    cmd.arg("--runtime").arg(r);
-                }
-
-                match cmd.spawn() {
-                    Ok(_) => return Ok(()),
-                    Err(e) => last_error = Some((app_name, e)),
-                }
-            }
-
-            let detail = last_error
-                .map(|(candidate, e)| format!("last attempt ({candidate}) failed: {e}"))
-                .unwrap_or_else(|| "no launch candidates were attempted".to_string());
-            Err(anyhow::anyhow!(
-                "Failed to launch {}: {}",
-                runt_workspace::desktop_display_name(),
-                detail
-            ))
-        }
-    };
-
-    launch_result
+    runt_workspace::open_notebook_app(abs_path.as_deref(), &extra_args)
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 async fn async_main(command: Option<Commands>) -> Result<()> {
@@ -2644,7 +2548,7 @@ fn find_bundled_runtimed() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let mut locations = Vec::new();
-        for app_name in desktop_app_launch_candidates() {
+        for app_name in runt_workspace::desktop_app_launch_candidates() {
             locations.push(PathBuf::from(format!(
                 "/Applications/{app_name}.app/Contents/MacOS/{binary_name}"
             )));
@@ -2663,7 +2567,7 @@ fn find_bundled_runtimed() -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     {
         let mut locations = Vec::new();
-        for app_name in desktop_app_launch_candidates() {
+        for app_name in runt_workspace::desktop_app_launch_candidates() {
             locations.push(PathBuf::from(format!(
                 "/usr/share/{app_name}/{binary_name}"
             )));
@@ -2682,7 +2586,7 @@ fn find_bundled_runtimed() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         let mut locations = Vec::new();
-        for app_name in desktop_app_launch_candidates() {
+        for app_name in runt_workspace::desktop_app_launch_candidates() {
             locations.push(
                 dirs::data_local_dir()
                     .unwrap_or_default()

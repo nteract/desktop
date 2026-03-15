@@ -39,6 +39,10 @@ ContentItem = TextContent | ImageContent
 # Create the MCP server
 mcp = FastMCP("nteract")
 
+# When --no-show is passed, the show_notebook tool is not registered.
+# This is useful for headless environments where no desktop app is available.
+_no_show = "--no-show" in sys.argv
+
 
 # ── Peer label for remote cursors ─────────────────────────────────────
 # The MCP initialize handshake includes clientInfo with `name` and
@@ -461,6 +465,45 @@ async def list_notebooks() -> list[dict[str, Any]]:
         }
         for room in rooms
     ]
+
+
+if not _no_show:
+
+    @mcp.tool()
+    async def show_notebook(
+        notebook_id: Annotated[
+            str | None,
+            Field(
+                description="Notebook ID to show. Defaults to current session's notebook.",
+            ),
+        ] = None,
+    ) -> str:
+        """Open the notebook in the nteract desktop app.
+
+        The notebook must be currently running in the daemon. If no notebook_id
+        is provided, opens the notebook from the current session.
+        """
+        target = notebook_id
+        if target is None:
+            if _session is not None:
+                target = _session.notebook_id
+            else:
+                raise ValueError(
+                    "No notebook_id provided and no active session. "
+                    "Use list_notebooks() to find a notebook_id, or connect to one first."
+                )
+
+        client = _get_daemon_client()
+        rooms = client.list_rooms()
+        room_ids = {room["notebook_id"] for room in rooms}
+        if target not in room_ids:
+            raise ValueError(
+                f"Notebook '{target}' is not currently running. "
+                f"Use list_notebooks() to see active notebooks."
+            )
+
+        runtimed.show_notebook_app(target)
+        return f"Opened notebook in nteract: {target}"
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
