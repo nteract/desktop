@@ -16,5 +16,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 runt-workspace = { path = "../runt-workspace" }
 dirs = "5"
+notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -7,6 +7,7 @@
 //! - Proxies tools/prompts/resources between client and child
 //! - Injects `supervisor_*` meta-tools for self-management
 //! - Auto-restarts the child on crash
+//! - Watches files for changes and hot-reloads the child
 //! - Manages the dev daemon lifecycle
 //!
 //! Usage:
@@ -19,6 +20,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, Content, Implementation, ListToolsResult,
     ServerCapabilities, ServerInfo, Tool,
@@ -30,7 +32,7 @@ use rmcp::{ClientHandler, ErrorData as McpError, ServerHandler, ServiceExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::process::Command;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
 
 // ---------------------------------------------------------------------------
@@ -239,6 +241,15 @@ impl ClientHandler for NteractClientHandler {
 // Supervisor server (faces the MCP client)
 // ---------------------------------------------------------------------------
 
+/// What kind of file change was detected.
+#[derive(Debug, Clone, PartialEq)]
+enum ChangeKind {
+    /// Only Python files changed — restart child only.
+    PythonOnly,
+    /// Rust files changed — needs maturin develop + restart.
+    RustChanged,
+}
+
 /// Shared state for the supervisor.
 struct SupervisorState {
     /// rmcp client connected to the nteract child process.
@@ -255,6 +266,9 @@ struct SupervisorState {
     last_error: Option<String>,
     /// Whether we started the daemon (so we know to clean it up).
     daemon_child: Option<std::process::Child>,
+    /// Channel to request a tool list changed notification from the server context.
+    /// The file watcher sends on this channel after triggering a restart.
+    tool_list_changed_tx: Option<mpsc::Sender<()>>,
 }
 
 impl SupervisorState {
@@ -286,6 +300,7 @@ impl Supervisor {
         socket_path: String,
         child_client: rmcp::service::RunningService<RoleNteractClient, NteractClientHandler>,
         daemon_child: Option<std::process::Child>,
+        tool_list_changed_tx: mpsc::Sender<()>,
     ) -> Self {
         Self {
             state: Arc::new(RwLock::new(SupervisorState {
@@ -296,6 +311,7 @@ impl Supervisor {
                 recent_crashes: Vec::new(),
                 last_error: None,
                 daemon_child,
+                tool_list_changed_tx: Some(tool_list_changed_tx),
             })),
         }
     }
@@ -393,6 +409,41 @@ impl Supervisor {
             daemon_managed: state.daemon_child.is_some(),
         }
     }
+
+    /// Handle a file change event: restart child (and rebuild if Rust changed).
+    async fn handle_file_change(&self, kind: ChangeKind) {
+        if kind == ChangeKind::RustChanged {
+            info!("Rust files changed, running maturin develop...");
+            let project_root = {
+                let state = self.state.read().await;
+                state.project_root.clone()
+            };
+            if !run_maturin_develop(&project_root) {
+                error!("maturin develop failed, keeping current child");
+                return;
+            }
+        }
+
+        // Clear circuit breaker for file-change-triggered restarts
+        {
+            let mut state = self.state.write().await;
+            state.recent_crashes.clear();
+        }
+
+        match self.restart_child().await {
+            Ok(()) => {
+                info!("Child restarted after file change ({kind:?})");
+                // Signal that the tool list may have changed
+                let state = self.state.read().await;
+                if let Some(ref tx) = state.tool_list_changed_tx {
+                    let _ = tx.send(()).await;
+                }
+            }
+            Err(e) => {
+                error!("Failed to restart child after file change: {e}");
+            }
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -421,6 +472,18 @@ struct SupervisorRestartParams {
 
 fn default_restart_target() -> String {
     "child".to_string()
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[allow(dead_code)] // `lines` is read via serde deserialization, not directly
+struct SupervisorLogsParams {
+    /// Number of lines to return from the end of the log. Defaults to 50.
+    #[serde(default = "default_log_lines")]
+    lines: usize,
+}
+
+fn default_log_lines() -> usize {
+    50
 }
 
 // The supervisor_status tool schema — no input params needed.
@@ -455,20 +518,35 @@ impl ServerHandler for Supervisor {
         let mut tools = Vec::new();
 
         // Supervisor's own tools
+        let empty_schema = serde_json::to_value(schemars::schema_for!(EmptyParams))
+            .unwrap()
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+
         tools.push(Tool::new(
             "supervisor_status",
             "Get the status of the MCP supervisor, child process, and daemon.",
-            serde_json::to_value(schemars::schema_for!(EmptyParams))
+            empty_schema.clone(),
+        ));
+        tools.push(Tool::new(
+            "supervisor_restart",
+            "Restart the nteract MCP server child process, or the daemon. Use target='child' (default) or target='daemon' (restarts both).",
+            serde_json::to_value(schemars::schema_for!(SupervisorRestartParams))
                 .unwrap()
                 .as_object()
                 .cloned()
                 .unwrap_or_default(),
         ));
         tools.push(Tool::new(
-            "supervisor_restart",
-            "Restart the nteract MCP server child process, or the daemon. \
-             Use target='child' (default) or target='daemon' (restarts both).",
-            serde_json::to_value(schemars::schema_for!(SupervisorRestartParams))
+            "supervisor_rebuild",
+            "Run maturin develop to rebuild the Rust Python bindings, then restart the MCP server child. Use after changing crates/runtimed-py/ or crates/runtimed/ source.",
+            empty_schema.clone(),
+        ));
+        tools.push(Tool::new(
+            "supervisor_logs",
+            "Read the last N lines of the daemon log file. Defaults to 50 lines.",
+            serde_json::to_value(schemars::schema_for!(SupervisorLogsParams))
                 .unwrap()
                 .as_object()
                 .cloned()
@@ -562,6 +640,69 @@ impl ServerHandler for Supervisor {
                     }
                 }
             }
+            "supervisor_rebuild" => {
+                info!("Manual rebuild triggered via MCP tool");
+                let project_root = {
+                    let state = self.state.read().await;
+                    state.project_root.clone()
+                };
+                if !run_maturin_develop(&project_root) {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        "maturin develop failed — check the supervisor logs for details",
+                    )]));
+                }
+                // Clear circuit breaker for manual rebuild
+                {
+                    let mut state = self.state.write().await;
+                    state.recent_crashes.clear();
+                }
+                match self.restart_child().await {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(
+                        "Rebuilt Python bindings and restarted MCP server successfully",
+                    )])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Rebuild succeeded but MCP server restart failed: {e}"
+                    ))])),
+                }
+            }
+            "supervisor_logs" => {
+                let lines = request
+                    .arguments
+                    .as_ref()
+                    .and_then(|args| args.get("lines"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(50) as usize;
+
+                let state = self.state.read().await;
+                let log_path = daemon_log_path(&state.project_root, &state.socket_path);
+
+                match log_path {
+                    Some(path) if path.exists() => match std::fs::read_to_string(&path) {
+                        Ok(contents) => {
+                            let tail: Vec<&str> = contents.lines().rev().take(lines).collect();
+                            let tail: Vec<&str> = tail.into_iter().rev().collect();
+                            Ok(CallToolResult::success(vec![Content::text(
+                                if tail.is_empty() {
+                                    "(log file is empty)".to_string()
+                                } else {
+                                    tail.join("\n")
+                                },
+                            )]))
+                        }
+                        Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
+                            "Failed to read log at {}: {e}",
+                            path.display()
+                        ))])),
+                    },
+                    Some(path) => Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Daemon log not found at {}",
+                        path.display()
+                    ))])),
+                    None => Ok(CallToolResult::success(vec![Content::text(
+                        "Could not determine daemon log path",
+                    )])),
+                }
+            }
             // Everything else → forward to child
             _ => self.forward_tool_call(request).await,
         }
@@ -571,6 +712,132 @@ impl ServerHandler for Supervisor {
 // ---------------------------------------------------------------------------
 // Entrypoint
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Daemon log path helper
+// ---------------------------------------------------------------------------
+
+/// Derive the daemon log path from the socket path.
+/// The socket is at `.../worktrees/{hash}/runtimed.sock` and the log is
+/// `.../worktrees/{hash}/runtimed.log`.
+fn daemon_log_path(_project_root: &Path, socket_path: &str) -> Option<PathBuf> {
+    // Try the socket's sibling file first
+    let socket = PathBuf::from(socket_path);
+    let log_from_socket = socket.with_file_name("runtimed.log");
+    if log_from_socket.parent().is_some_and(|p| p.exists()) {
+        return Some(log_from_socket);
+    }
+
+    // Fallback: compute from runt-workspace
+    let cache_base = dirs::cache_dir()?
+        .join(runt_workspace::cache_namespace())
+        .join("worktrees");
+    let hash = runt_workspace::get_workspace_path().map(|p| runt_workspace::worktree_hash(&p))?;
+    Some(cache_base.join(hash).join("runtimed.log"))
+}
+
+// ---------------------------------------------------------------------------
+// File watcher (phase 2)
+// ---------------------------------------------------------------------------
+
+/// Classify a changed file path into a change kind.
+fn classify_change(path: &Path, project_root: &Path) -> Option<ChangeKind> {
+    let rel = path.strip_prefix(project_root).ok()?;
+    let rel_str = rel.to_string_lossy();
+
+    // Rust source files in runtimed-py or runtimed crates
+    if (rel_str.starts_with("crates/runtimed-py/src/")
+        || rel_str.starts_with("crates/runtimed/src/"))
+        && rel_str.ends_with(".rs")
+    {
+        return Some(ChangeKind::RustChanged);
+    }
+
+    // Python source files
+    if (rel_str.starts_with("python/nteract/src/") || rel_str.starts_with("python/runtimed/src/"))
+        && rel_str.ends_with(".py")
+    {
+        return Some(ChangeKind::PythonOnly);
+    }
+
+    None
+}
+
+/// Start the file watcher. Returns a channel receiver that emits the most
+/// significant change kind when files are modified.
+fn start_file_watcher(
+    project_root: &Path,
+) -> Result<mpsc::Receiver<ChangeKind>, Box<dyn std::error::Error>> {
+    let (tx, rx) = mpsc::channel::<ChangeKind>(8);
+    let project_root_owned = project_root.to_path_buf();
+
+    // Paths to watch
+    let watch_paths: Vec<PathBuf> = [
+        "python/nteract/src",
+        "python/runtimed/src",
+        "crates/runtimed-py/src",
+        "crates/runtimed/src",
+    ]
+    .iter()
+    .map(|p| project_root.join(p))
+    .filter(|p| p.exists())
+    .collect();
+
+    if watch_paths.is_empty() {
+        warn!("No watch paths found — file watching disabled");
+        return Ok(rx);
+    }
+
+    // Debounced watcher (500ms)
+    let mut debouncer = new_debouncer(
+        Duration::from_millis(500),
+        move |events: Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>| {
+            let events = match events {
+                Ok(events) => events,
+                Err(e) => {
+                    eprintln!("[file-watcher] Error: {e}");
+                    return;
+                }
+            };
+
+            // Classify all changed files and pick the most significant change
+            let mut most_significant: Option<ChangeKind> = None;
+            for event in &events {
+                if event.kind != DebouncedEventKind::Any {
+                    continue;
+                }
+                if let Some(kind) = classify_change(&event.path, &project_root_owned) {
+                    most_significant = Some(match (&most_significant, &kind) {
+                        // Rust trumps Python
+                        (_, ChangeKind::RustChanged) => ChangeKind::RustChanged,
+                        (Some(ChangeKind::RustChanged), _) => ChangeKind::RustChanged,
+                        _ => kind,
+                    });
+                }
+            }
+
+            if let Some(kind) = most_significant {
+                // Non-blocking send — if the channel is full, the watcher
+                // will coalesce into the next debounce window
+                let _ = tx.try_send(kind);
+            }
+        },
+    )?;
+
+    for path in &watch_paths {
+        debouncer
+            .watcher()
+            .watch(path, notify::RecursiveMode::Recursive)?;
+        info!("Watching {}", path.display());
+    }
+
+    // Leak the debouncer so it lives for the process lifetime.
+    // The supervisor runs until the MCP client disconnects, at which
+    // point the whole process exits.
+    std::mem::forget(debouncer);
+
+    Ok(rx)
+}
 
 fn resolve_project_root() -> PathBuf {
     // Walk up from current dir looking for Cargo.toml with [workspace]
@@ -617,7 +884,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             daemon_child = start_daemon(&project_root);
             if !wait_for_daemon(&project_root, Duration::from_secs(30)) {
                 error!("Daemon failed to start within 30s");
-                // Continue anyway — the socket path is still valid for config
             }
             info.socket_path
         }
@@ -652,7 +918,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 2: Ensure maturin develop has been run
     if !ensure_maturin_develop(&project_root) {
         error!("Failed to build Python bindings — nteract MCP server may not work");
-        // Continue anyway, let the child process fail with a clear error
     }
 
     // Step 3: Spawn nteract child
@@ -665,16 +930,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
     info!("nteract MCP server connected");
 
-    // Step 4: Start supervisor server on stdin/stdout
-    let supervisor = Supervisor::new(project_root, socket_path, child_client, daemon_child);
+    // Step 4: Start file watcher
+    let mut file_change_rx = start_file_watcher(&project_root).unwrap_or_else(|e| {
+        warn!("File watcher failed to start: {e}");
+        // Return a dummy receiver that never fires
+        mpsc::channel(1).1
+    });
+
+    // Channel for the file watcher to signal tool list changes
+    let (tool_list_changed_tx, mut tool_list_changed_rx) = mpsc::channel::<()>(4);
+
+    // Step 5: Start supervisor server on stdin/stdout
+    let supervisor = Supervisor::new(
+        project_root,
+        socket_path,
+        child_client,
+        daemon_child,
+        tool_list_changed_tx,
+    );
 
     let transport = rmcp::transport::io::stdio();
     let server = supervisor.serve(transport).await?;
 
-    // Clone the state Arc before waiting() consumes the server
-    let state_for_cleanup = server.service().state.clone();
+    // Clone what we need before waiting() consumes the server
+    let state_for_watcher = server.service().state.clone();
+    let state_for_cleanup = state_for_watcher.clone();
+    let peer = server.peer().clone();
 
-    info!("MCP supervisor running, waiting for client disconnect...");
+    // Spawn the file watcher handler task
+    let watcher_supervisor = Supervisor {
+        state: state_for_watcher,
+    };
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                Some(change_kind) = file_change_rx.recv() => {
+                    info!("File change detected: {change_kind:?}");
+                    watcher_supervisor.handle_file_change(change_kind).await;
+                }
+                Some(()) = tool_list_changed_rx.recv() => {
+                    // The child was restarted — notify the MCP client
+                    if let Err(e) = peer.notify_tool_list_changed().await {
+                        warn!("Failed to send tools/list_changed: {e}");
+                    } else {
+                        info!("Sent tools/list_changed notification to client");
+                    }
+                }
+                else => break,
+            }
+        }
+    });
+
+    info!("MCP supervisor running (file watching active), waiting for client disconnect...");
     let reason = server.waiting().await?;
     info!("Supervisor shutting down: {reason:?}");
 
