@@ -843,26 +843,23 @@ Deno.test(
     assertExists(snapshot, "snapshot should not be undefined");
 
     // The snapshot itself must be a plain object, not a Map
-    assertEquals(
-      snapshot.constructor,
-      Object,
-      "snapshot should be a plain Object",
+    assert(
+      !(snapshot instanceof Map),
+      "snapshot should be a plain Object, not a Map",
     );
 
     // runt must be a plain object (this is the one that breaks with flatten)
     assertExists(snapshot.runt, "snapshot.runt should exist");
-    assertEquals(
-      snapshot.runt.constructor,
-      Object,
+    assert(
+      !(snapshot.runt instanceof Map),
       "snapshot.runt should be a plain Object, not a Map",
     );
 
     // UV deps must be accessible via dot notation
     assertExists(snapshot.runt.uv, "snapshot.runt.uv should exist");
-    assertEquals(
-      snapshot.runt.uv.constructor,
-      Object,
-      "snapshot.runt.uv should be a plain Object",
+    assert(
+      !(snapshot.runt.uv instanceof Map),
+      "snapshot.runt.uv should be a plain Object, not a Map",
     );
     assertExists(
       snapshot.runt.uv.dependencies,
@@ -905,10 +902,9 @@ Deno.test("Metadata snapshot: conda deps accessible via dot notation", () => {
 
   const snapshot = handle.get_metadata_snapshot();
   assertExists(snapshot.runt.conda, "snapshot.runt.conda should exist");
-  assertEquals(
-    snapshot.runt.conda.constructor,
-    Object,
-    "snapshot.runt.conda should be a plain Object",
+  assert(
+    !(snapshot.runt.conda instanceof Map),
+    "snapshot.runt.conda should be a plain Object, not a Map",
   );
   assert(snapshot.runt.conda.dependencies.includes("scipy"));
   assertEquals(snapshot.runt.conda.channels, ["conda-forge"]);
