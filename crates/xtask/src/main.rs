@@ -3,6 +3,7 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{exit, Child, Command, ExitStatus, Stdio};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -168,6 +169,7 @@ fn run_notebook_dev_app(notebook: Option<&str>, attach: bool, force_dev_mode: bo
 
     let vite_port = resolve_vite_port(force_dev_mode);
     let mut command = Command::new("cargo");
+    apply_sccache_env(&mut command);
 
     if attach {
         println!("Attaching to existing Vite server...");
@@ -991,6 +993,7 @@ fn run_cmd_ok(cmd: &str, args: &[&str]) -> bool {
     command.args(args);
     if cmd == "cargo" {
         apply_build_channel_env(&mut command);
+        apply_sccache_env(&mut command);
     }
 
     command.status().map(|s| s.success()).unwrap_or_else(|e| {
@@ -1081,6 +1084,7 @@ fn run_cmd(cmd: &str, args: &[&str]) {
     command.args(args);
     if cmd == "cargo" {
         apply_build_channel_env(&mut command);
+        apply_sccache_env(&mut command);
     }
 
     let status = command.status().unwrap_or_else(|e| {
@@ -1109,6 +1113,30 @@ fn run_frontend_build(debug_bundle: bool) {
     if !status.success() {
         eprintln!("Command failed: pnpm build");
         exit(status.code().unwrap_or(1));
+    }
+}
+
+/// Set `RUSTC_WRAPPER=sccache` when sccache is available.
+///
+/// Detection is cached for the lifetime of the process so the `which`
+/// lookup only runs once.
+fn apply_sccache_env(command: &mut Command) {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    let available = *AVAILABLE.get_or_init(|| {
+        let found = Command::new("sccache")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if found {
+            println!("Using sccache for compilation cache");
+        }
+        found
+    });
+    if available {
+        command.env("RUSTC_WRAPPER", "sccache");
     }
 }
 
