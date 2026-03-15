@@ -1,30 +1,28 @@
 #!/usr/bin/env bash
 # Wrapper for launching the nteract MCP server in dev mode.
 #
-# Zed doesn't resolve $ZED_WORKTREE_ROOT in context_servers env fields,
-# but PWD is set to the project root. This script bridges the gap.
+# MCP clients often spawn servers with a minimal PATH and may not
+# resolve env var references (e.g. $ZED_WORKTREE_ROOT). This script
+# augments PATH for common tool locations and derives the workspace
+# path from the project root.
 #
-# Usage (in .zed/settings.json):
+# Example MCP client config:
 #   {
-#     "context_servers": {
-#       "nteract": {
-#         "command": "bash",
-#         "args": ["scripts/dev-nteract-mcp.sh"],
-#         "env": { "RUNTIMED_DEV": "1" }
-#       }
-#     }
+#     "command": "bash",
+#     "args": ["scripts/dev-nteract-mcp.sh"],
+#     "env": { "RUNTIMED_DEV": "1" }
 #   }
 
 set -euo pipefail
 
-# Zed spawns context servers with a minimal PATH that may not include
+# MCP clients may spawn servers with a minimal PATH that doesn't include
 # user-local tool directories. Add the common locations for uv.
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Log to a file so we can debug Zed launch failures
+# Log to a file so we can debug MCP client launch failures
 LOGDIR="$PROJECT_ROOT/.context"
 mkdir -p "$LOGDIR"
 LOGFILE="$LOGDIR/nteract-mcp.log"
@@ -42,7 +40,7 @@ PIDFILE="$LOGDIR/nteract-mcp.pid"
 echo $$ > "$PIDFILE"
 trap 'rm -f "$PIDFILE"; log "exiting (pid=$$)"' EXIT
 
-# Use PWD (set by Zed to the project root) as the workspace path
+# Derive workspace path from the project root
 export RUNTIMED_DEV="${RUNTIMED_DEV:-1}"
 export RUNTIMED_WORKSPACE_PATH="${RUNTIMED_WORKSPACE_PATH:-$PROJECT_ROOT}"
 

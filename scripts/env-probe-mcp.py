@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 """Tiny MCP server that exposes its own environment for debugging.
 
-Use this to check what env vars Zed passes to context servers.
-Configure in .zed/settings.json:
+Use this to check what env vars an MCP client passes to spawned servers.
+Zero dependencies — just needs Python 3.
+
+Example MCP client config:
 
 {
-  "context_servers": {
-    "env-probe": {
-      "command": "python3",
-      "args": ["scripts/env-probe-mcp.py"],
-      "env": {
-        "RUNTIMED_DEV": "1",
-        "RUNTIMED_WORKSPACE_PATH": "$ZED_WORKTREE_ROOT",
-        "PROBE_MARKER": "hello-from-zed"
-      }
-    }
+  "command": "python3",
+  "args": ["scripts/env-probe-mcp.py"],
+  "env": {
+    "RUNTIMED_DEV": "1",
+    "PROBE_MARKER": "hello"
   }
 }
 
