@@ -40,7 +40,7 @@ struct WindowNotebookContext {
     /// Generation counter to prevent stale broadcast tasks from clobbering new connections.
     /// Incremented each time a sync init function is called (open, create, or reconnect).
     sync_generation: Arc<AtomicU64>,
-    /// Notebook file path — authoritative for path reads (has_notebook_path, get_notebook_path, etc.)
+    /// Notebook file path — authoritative for path reads (has_notebook_path, etc.)
     path: Arc<Mutex<Option<PathBuf>>>,
     /// Working directory for untitled notebooks (project file detection).
     working_dir: Option<PathBuf>,
@@ -99,13 +99,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 use tauri::{RunEvent, WindowEvent};
-
-#[derive(Serialize)]
-struct KernelspecInfo {
-    name: String,
-    display_name: String,
-    language: String,
-}
 
 /// Payload emitted with the `daemon:ready` event after daemon-owned notebook loading.
 /// Carries notebook identity and trust status so the frontend can show loading state (#599)
@@ -824,21 +817,6 @@ where
 /// Called by the frontend before `relaunch()` to ensure the new app version
 /// launches with a compatible daemon. This prevents the "restart twice" problem
 /// where the new frontend connects to an old daemon with incompatible protocol.
-#[tauri::command]
-async fn install_daemon_for_update(app: tauri::AppHandle) -> Result<(), String> {
-    log::info!("[updater] Installing daemon before app restart...");
-
-    // Force upgrade regardless of version match - we're about to restart
-    // with a new app version that expects the new daemon
-    upgrade_daemon_via_sidecar(&app, |progress| {
-        log::info!("[updater] Daemon install progress: {:?}", progress);
-    })
-    .await?;
-
-    log::info!("[updater] Daemon installed successfully, ready for app restart");
-    Ok(())
-}
-
 /// Begin the upgrade flow by opening the dedicated upgrade window.
 ///
 /// Saves session state for restore after relaunch and opens the upgrade screen.
@@ -1447,17 +1425,6 @@ async fn has_notebook_path(
     let path = path_for_window(&window, registry.inner())?;
     let path = path.lock().map_err(|e| e.to_string())?;
     Ok(path.is_some())
-}
-
-/// Get the current notebook file path
-#[tauri::command]
-async fn get_notebook_path(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<Option<String>, String> {
-    let path = path_for_window(&window, registry.inner())?;
-    let path = path.lock().map_err(|e| e.to_string())?;
-    Ok(path.as_ref().map(|p| p.to_string_lossy().to_string()))
 }
 
 /// Format all code cells in the notebook and save.
@@ -2421,28 +2388,6 @@ async fn reconnect_to_daemon(
     }
 }
 
-/// Export the local Automerge document as raw bytes.
-///
-/// The frontend can load these bytes with `Automerge.load()` to initialize
-/// its own local document replica. Used by the `useAutomergeNotebook` hook.
-#[tauri::command]
-async fn get_automerge_doc_bytes(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<Vec<u8>, String> {
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-    let guard = notebook_sync.lock().await;
-    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
-
-    // Fetch doc bytes from the daemon's canonical Automerge doc.
-    match handle.send_request(NotebookRequest::GetDocBytes {}).await {
-        Ok(NotebookResponse::DocBytes { bytes }) => Ok(bytes),
-        Ok(NotebookResponse::Error { error }) => Err(error),
-        Ok(other) => Err(format!("Unexpected response: {:?}", other)),
-        Err(e) => Err(format!("Failed to get doc bytes: {}", e)),
-    }
-}
-
 /// Send a typed frame to the daemon.
 ///
 /// The first byte is the frame type, the rest is the payload.
@@ -2478,19 +2423,6 @@ async fn send_frame(
             frame_type
         )),
     }
-}
-
-#[tauri::command]
-async fn list_kernelspecs() -> Result<Vec<KernelspecInfo>, String> {
-    let specs = runtimelib::list_kernelspecs().await;
-    Ok(specs
-        .into_iter()
-        .map(|s| KernelspecInfo {
-            name: s.kernel_name,
-            display_name: s.kernelspec.display_name,
-            language: s.kernelspec.language,
-        })
-        .collect())
 }
 
 // ============================================================================
@@ -2879,14 +2811,6 @@ async fn check_deno_available() -> bool {
     deno_env::check_deno_available().await
 }
 
-/// Get the installed Deno version
-#[tauri::command]
-async fn get_deno_version() -> Result<String, String> {
-    deno_env::get_deno_version()
-        .await
-        .map_err(|e| e.to_string())
-}
-
 /// Detect deno.json/deno.jsonc near the notebook and return info about it
 #[tauri::command]
 async fn detect_deno_config(
@@ -2912,12 +2836,6 @@ async fn detect_deno_config(
         &config,
         &notebook_path,
     )))
-}
-
-/// Get app settings (default runtime, etc.)
-#[tauri::command]
-async fn get_settings() -> runtimed::settings_doc::SyncedSettings {
-    settings::load_settings()
 }
 
 /// Get synced settings from the Automerge settings document via runtimed.
@@ -3555,7 +3473,6 @@ pub fn run(
         .invoke_handler(tauri::generate_handler![
             // Notebook file operations
             has_notebook_path,
-            get_notebook_path,
             save_notebook,
             save_notebook_as,
             get_default_save_directory,
@@ -3578,17 +3495,12 @@ pub fn run(
             get_history_via_daemon,
             complete_via_daemon,
             reconnect_to_daemon,
-            get_automerge_doc_bytes,
             send_frame,
             // App update support
-            install_daemon_for_update,
             begin_upgrade,
             get_upgrade_notebook_status,
             abort_kernel_for_upgrade,
             run_upgrade,
-
-            // Kernelspec discovery (used by UI)
-            list_kernelspecs,
             // UV dependency management
             check_uv_available,
             // pyproject.toml discovery
@@ -3607,11 +3519,7 @@ pub fn run(
             check_typosquats,
             // Deno kernel support
             check_deno_available,
-            get_deno_version,
             detect_deno_config,
-
-            // Settings
-            get_settings,
             // Synced settings (via runtimed Automerge)
             get_synced_settings,
             set_synced_setting,

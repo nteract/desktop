@@ -100,34 +100,6 @@ pub async fn check_deno_available() -> bool {
     tools::check_deno_available_without_bootstrap().await
 }
 
-/// Get the installed Deno version
-///
-/// Deno is auto-bootstrapped via rattler if not found on PATH.
-pub async fn get_deno_version() -> Result<String> {
-    let deno_path = tools::get_deno_path().await?;
-
-    let output = tokio::process::Command::new(&deno_path)
-        .arg("--version")
-        .output()
-        .await
-        .map_err(|e| anyhow!("Failed to run deno --version: {}", e))?;
-
-    if !output.status.success() {
-        return Err(anyhow!("deno --version failed"));
-    }
-
-    let version_str = String::from_utf8_lossy(&output.stdout);
-    // Output is like "deno 2.1.0 (release, ...)". Extract just the version.
-    let version = version_str
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .unwrap_or("unknown")
-        .to_string();
-
-    Ok(version)
-}
-
 /// Check if Deno Jupyter support is available (Deno 1.37+)
 ///
 /// Deno is auto-bootstrapped via rattler if not found on PATH.
