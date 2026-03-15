@@ -745,16 +745,17 @@ function AppContent() {
   // Cell menu: Clear Outputs (focused cell)
   useEffect(() => {
     const webview = getCurrentWebview();
-    const unlistenPromise = webview.listen("menu:clear-outputs", () => {
-      if (focusedCellId) {
-        clearCellOutputs(focusedCellId);
-        clearOutputs(focusedCellId);
-      }
+    const unlistenPromise = webview.listen("menu:clear-outputs", async () => {
+      if (!focusedCellId) return;
+      const cell = cells.find((c) => c.id === focusedCellId);
+      if (!cell || cell.cell_type !== "code") return;
+      clearCellOutputs(focusedCellId);
+      await clearOutputs(focusedCellId);
     });
     return () => {
       unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
     };
-  }, [focusedCellId, clearCellOutputs, clearOutputs]);
+  }, [focusedCellId, cells, clearCellOutputs, clearOutputs]);
 
   // Cell menu: Clear All Outputs
   useEffect(() => {
