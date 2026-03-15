@@ -14,6 +14,8 @@
 | Run with notebook | `cargo xtask run path/to/notebook.ipynb` |
 | Build release .app | `cargo xtask build-app` |
 | Build release DMG | `cargo xtask build-dmg` |
+| Launch MCP server | `cargo xtask dev-mcp` |
+| Print MCP config JSON | `cargo xtask dev-mcp --print-config` |
 | Lint (check mode) | `cargo xtask lint` |
 | Lint (auto-fix) | `cargo xtask lint --fix` |
 
@@ -251,6 +253,54 @@ If the app says "Dev daemon not running":
 - Run `cargo xtask dev-daemon` in another terminal first
 
 See [contributing/runtimed.md](./runtimed.md) for full daemon development docs.
+
+## MCP Server Development
+
+The [nteract MCP server](https://github.com/nteract/nteract) lets AI agents
+(Claude, Zed, etc.) interact with notebooks via the daemon. To run it against
+your local dev build:
+
+```bash
+# Terminal 1: dev daemon must be running
+cargo xtask dev-daemon
+
+# Terminal 2: build bindings + launch MCP server
+cargo xtask dev-mcp
+```
+
+This command:
+1. Builds `runtimed-py` via `maturin develop` (compiles the Rust PyO3 bindings
+   into the uv workspace venv)
+2. Resolves the dev daemon socket path from `runt daemon status --json`
+3. Launches the nteract MCP server with `RUNTIMED_SOCKET_PATH` set
+
+### Getting the MCP config for your AI tool
+
+To get the JSON config you can paste into Claude Desktop, Zed, or any MCP
+client:
+
+```bash
+cargo xtask dev-mcp --print-config
+```
+
+This prints something like:
+
+```json
+{
+  "command": "uv",
+  "args": ["run", "--no-sync", "--directory", "/path/to/python", "nteract"],
+  "env": {
+    "RUNTIMED_SOCKET_PATH": "/path/to/runt-nightly/worktrees/{hash}/runtimed.sock"
+  }
+}
+```
+
+### How it works
+
+The MCP server is a pure Python package (`python/nteract/`) that depends on
+`runtimed` (PyO3 bindings in `python/runtimed/`, built from
+`crates/runtimed-py/`). The `dev-mcp` command uses `uv run --no-sync` to avoid
+clobbering the `maturin develop` install.
 
 ## Before You Commit
 
