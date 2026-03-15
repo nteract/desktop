@@ -1,5 +1,7 @@
 """Smoke tests to verify the package can be imported."""
 
+from unittest.mock import patch
+
 
 def test_import():
     """Verify the nteract package can be imported."""
@@ -13,3 +15,18 @@ def test_mcp_server_import():
     from nteract._mcp_server import mcp
 
     assert mcp.name == "nteract"
+
+
+def test_keyboard_interrupt_exits_130():
+    """Ctrl+C should exit with code 130 (Unix SIGINT convention), not dump a traceback."""
+    from nteract._mcp_server import main
+
+    with patch("nteract._mcp_server.mcp") as mock_mcp:
+        mock_mcp.run.side_effect = KeyboardInterrupt
+        try:
+            main()
+            raised = False
+        except SystemExit as e:
+            raised = True
+            assert e.code == 130, f"Expected exit code 130, got {e.code}"
+        assert raised, "main() should have called sys.exit(130)"
