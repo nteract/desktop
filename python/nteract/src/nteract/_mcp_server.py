@@ -1312,7 +1312,8 @@ def main():
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         stream=sys.stderr,
     )
-    mcp.run(transport="stdio")
+    with contextlib.suppress(KeyboardInterrupt):
+        mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
