@@ -1937,17 +1937,24 @@ async fn auto_launch_kernel(
                         match cmd {
                             QueueCommand::ExecutionDone { cell_id } => {
                                 debug!("[notebook-sync] ExecutionDone for {}", cell_id);
-                                let mut guard = room_kernel.lock().await;
-                                if let Some(ref mut k) = *guard {
-                                    if let Err(e) = k.execution_done(&cell_id).await {
-                                        warn!("[notebook-sync] execution_done error: {}", e);
+                                let env_source = {
+                                    let mut guard = room_kernel.lock().await;
+                                    if let Some(ref mut k) = *guard {
+                                        if let Err(e) = k.execution_done(&cell_id).await {
+                                            warn!("[notebook-sync] execution_done error: {}", e);
+                                        }
+                                        Some(k.env_source().to_string())
+                                    } else {
+                                        None
                                     }
-                                    // Update presence to reflect idle status
+                                };
+                                // Update presence outside the kernel lock
+                                if let Some(es) = env_source {
                                     update_kernel_presence(
                                         &room_presence,
                                         &room_presence_tx,
                                         presence::KernelStatus::Idle,
-                                        k.env_source(),
+                                        &es,
                                     )
                                     .await;
                                 }
@@ -1969,16 +1976,23 @@ async fn auto_launch_kernel(
                             }
                             QueueCommand::KernelDied => {
                                 warn!("[notebook-sync] Kernel died, unblocking execution queue");
-                                let mut guard = room_kernel.lock().await;
-                                if let Some(ref mut k) = *guard {
-                                    let env_source = k.env_source().to_string();
-                                    k.kernel_died();
-                                    // Update presence to reflect errored status
+                                let env_source = {
+                                    let mut guard = room_kernel.lock().await;
+                                    if let Some(ref mut k) = *guard {
+                                        let es = k.env_source().to_string();
+                                        k.kernel_died();
+                                        Some(es)
+                                    } else {
+                                        None
+                                    }
+                                };
+                                // Update presence outside the kernel lock
+                                if let Some(es) = env_source {
                                     update_kernel_presence(
                                         &room_presence,
                                         &room_presence_tx,
                                         presence::KernelStatus::Errored,
-                                        &env_source,
+                                        &es,
                                     )
                                     .await;
                                 }
@@ -1997,6 +2011,9 @@ async fn auto_launch_kernel(
                     status: "idle".to_string(),
                     cell_id: None,
                 });
+
+            // Drop the kernel lock before awaiting the presence update
+            drop(kernel_guard);
 
             // Publish kernel state presence so late joiners see the running kernel
             publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es).await;
@@ -2442,20 +2459,27 @@ async fn handle_notebook_request(
                                             "[notebook-sync] Processing ExecutionDone for {}",
                                             cell_id
                                         );
-                                        let mut guard = room_kernel.lock().await;
-                                        if let Some(ref mut k) = *guard {
-                                            if let Err(e) = k.execution_done(&cell_id).await {
-                                                warn!(
-                                                    "[notebook-sync] execution_done error: {}",
-                                                    e
-                                                );
+                                        let env_source = {
+                                            let mut guard = room_kernel.lock().await;
+                                            if let Some(ref mut k) = *guard {
+                                                if let Err(e) = k.execution_done(&cell_id).await {
+                                                    warn!(
+                                                        "[notebook-sync] execution_done error: {}",
+                                                        e
+                                                    );
+                                                }
+                                                Some(k.env_source().to_string())
+                                            } else {
+                                                None
                                             }
-                                            // Update presence to reflect idle status
+                                        };
+                                        // Update presence outside the kernel lock
+                                        if let Some(es) = env_source {
                                             update_kernel_presence(
                                                 &room_presence,
                                                 &room_presence_tx,
                                                 presence::KernelStatus::Idle,
-                                                k.env_source(),
+                                                &es,
                                             )
                                             .await;
                                         }
@@ -2479,16 +2503,23 @@ async fn handle_notebook_request(
                                     }
                                     QueueCommand::KernelDied => {
                                         warn!("[notebook-sync] Kernel died, unblocking execution queue");
-                                        let mut guard = room_kernel.lock().await;
-                                        if let Some(ref mut k) = *guard {
-                                            let env_source = k.env_source().to_string();
-                                            k.kernel_died();
-                                            // Update presence to reflect errored status
+                                        let env_source = {
+                                            let mut guard = room_kernel.lock().await;
+                                            if let Some(ref mut k) = *guard {
+                                                let es = k.env_source().to_string();
+                                                k.kernel_died();
+                                                Some(es)
+                                            } else {
+                                                None
+                                            }
+                                        };
+                                        // Update presence outside the kernel lock
+                                        if let Some(es) = env_source {
                                             update_kernel_presence(
                                                 &room_presence,
                                                 &room_presence_tx,
                                                 presence::KernelStatus::Errored,
-                                                &env_source,
+                                                &es,
                                             )
                                             .await;
                                         }
@@ -2502,6 +2533,8 @@ async fn handle_notebook_request(
                     }
 
                     *kernel_guard = Some(kernel);
+                    // Drop the kernel lock before awaiting the presence update
+                    drop(kernel_guard);
 
                     // Publish kernel state presence so late joiners see the running kernel
                     publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es).await;
@@ -2651,14 +2684,21 @@ async fn handle_notebook_request(
         NotebookRequest::ShutdownKernel {} => {
             let mut kernel_guard = room.kernel.lock().await;
             if let Some(ref mut kernel) = *kernel_guard {
+                let env_source = kernel.env_source().to_string();
                 match kernel.shutdown().await {
                     Ok(()) => {
                         *kernel_guard = None;
                         // Clear comm state - all widgets become invalid when kernel shuts down
                         room.comm_state.clear().await;
+                        // Drop the kernel lock before awaiting the presence update
+                        drop(kernel_guard);
                         // Publish shutdown presence so late joiners don't see stale kernel state
-                        publish_kernel_state_presence(room, presence::KernelStatus::Shutdown, "")
-                            .await;
+                        publish_kernel_state_presence(
+                            room,
+                            presence::KernelStatus::Shutdown,
+                            &env_source,
+                        )
+                        .await;
                         NotebookResponse::KernelShuttingDown {}
                     }
                     Err(e) => NotebookResponse::Error {
@@ -6497,5 +6537,60 @@ mod tests {
             total_blob + total_add + total_sync_gen
         );
         eprintln!("  cells: {}, batches: {}", doc.cell_count(), batch_num);
+    }
+
+    #[tokio::test]
+    async fn test_update_kernel_presence_publishes_state_and_relays() {
+        let presence_state = Arc::new(RwLock::new(PresenceState::new()));
+        let (presence_tx, mut presence_rx) = broadcast::channel::<(String, Vec<u8>)>(16);
+
+        update_kernel_presence(
+            &presence_state,
+            &presence_tx,
+            presence::KernelStatus::Idle,
+            "uv:prewarmed",
+        )
+        .await;
+
+        // Verify presence state contains the daemon peer with KernelState channel
+        let state = presence_state.read().await;
+        let peers = state.peers();
+        let daemon_peer = peers.get("daemon").expect("daemon peer should exist");
+        assert_eq!(daemon_peer.peer_id, "daemon");
+
+        let kernel_channel = daemon_peer
+            .channels
+            .get(&presence::Channel::KernelState)
+            .expect("kernel_state channel should exist");
+        match kernel_channel {
+            presence::ChannelData::KernelState(data) => {
+                assert_eq!(data.status, presence::KernelStatus::Idle);
+                assert_eq!(data.env_source, "uv:prewarmed");
+            }
+            other => panic!("expected KernelState, got {:?}", other),
+        }
+        drop(state);
+
+        // Verify a relay frame was sent
+        let (peer_id, bytes) = presence_rx
+            .recv()
+            .await
+            .expect("should receive relay frame");
+        assert_eq!(peer_id, "daemon");
+        // Decode the frame to verify it's a valid KernelState update
+        let msg = presence::decode_message(&bytes).expect("should decode presence message");
+        match msg {
+            presence::PresenceMessage::Update { peer_id, data, .. } => {
+                assert_eq!(peer_id, "daemon");
+                match data {
+                    presence::ChannelData::KernelState(data) => {
+                        assert_eq!(data.status, presence::KernelStatus::Idle);
+                        assert_eq!(data.env_source, "uv:prewarmed");
+                    }
+                    other => panic!("expected KernelState data, got {:?}", other),
+                }
+            }
+            other => panic!("expected Update message, got {:?}", other),
+        }
     }
 }
