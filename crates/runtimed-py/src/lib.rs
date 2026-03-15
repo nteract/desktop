@@ -46,7 +46,7 @@ use subscription::{EventIteratorSubscription, EventSubscription};
 #[pyo3(signature = (notebook_path=None))]
 fn show_notebook_app(notebook_path: Option<PathBuf>) -> PyResult<()> {
     runt_workspace::open_notebook_app(notebook_path.as_deref(), &[])
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
+        .map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
 }
 
 /// Python module for runtimed daemon client.
