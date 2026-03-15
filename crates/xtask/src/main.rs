@@ -157,13 +157,12 @@ fn cmd_dev(notebook: Option<&str>, skip_install: bool, skip_build: bool) {
 }
 
 fn cmd_notebook(notebook: Option<&str>, attach: bool) {
+    ensure_pnpm_install();
     let status = run_notebook_dev_app(notebook, attach, false);
     exit_on_failed_status("cargo tauri dev", status);
 }
 
 fn run_notebook_dev_app(notebook: Option<&str>, attach: bool, force_dev_mode: bool) -> ExitStatus {
-    ensure_pnpm_install();
-
     // Delete bundled marker since we're building a dev binary
     let marker = Path::new("./target/debug/.notebook-bundled");
     let _ = fs::remove_file(marker);
