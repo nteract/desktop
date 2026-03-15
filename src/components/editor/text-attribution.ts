@@ -168,10 +168,10 @@ function buildDecorations(marks: TimedMark[]): DecorationSet {
     // Compute opacity: full during hold, linear fade after
     let opacity: number;
     if (age < HOLD_MS) {
-      opacity = 0.18;
+      opacity = 0.3;
     } else {
       const fadeProgress = (age - HOLD_MS) / FADE_MS;
-      opacity = 0.18 * (1 - fadeProgress);
+      opacity = 0.3 * (1 - fadeProgress);
     }
 
     if (opacity <= 0.005) continue;

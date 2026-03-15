@@ -26,6 +26,7 @@ import {
 } from "@/components/editor/text-attribution";
 import { peerColor } from "@/components/editor/remote-cursors";
 import { subscribeBroadcast } from "./notebook-frame-bus";
+import { findPeerColorByLabel } from "./cursor-registry";
 
 // ── Types (text_attribution event shape from WASM) ───────────────────
 
@@ -82,6 +83,17 @@ export function unregisterAttributionEditor(cellId: string): void {
  */
 function colorForActors(actors: string[]): string {
   if (actors.length === 0) return "#3b82f6"; // blue-500 fallback
+
+  // TODO(rgbkrk): This fuzzy matching is fragile — it works when the actor
+  // label contains the peer's display name (e.g., "agent:claude:ab12cd34"
+  // matches peer label "Claude") but breaks for generic labels like "Agent".
+  // The real fix is unifying peer_label and actor_label so both systems hash
+  // the same string. See the discussion on identity alignment in #833.
+  for (const actor of actors) {
+    const peerMatch = findPeerColorByLabel(actor);
+    if (peerMatch) return peerMatch;
+  }
+
   return peerColor(actors[0]);
 }
 
