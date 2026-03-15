@@ -25,6 +25,7 @@ from typing import Any
 import anyio
 import pytest
 from mcp import ClientSession
+from mcp.types import TextContent
 
 from nteract._mcp_server import mcp
 
@@ -432,6 +433,7 @@ async def test_get_all_cells_summary_format(mcp_client: ClientSession):
     # JSON format returns each cell as separate content item
     assert len(result.content) >= 2  # at least md_id and code_id cells
     for item in result.content:
+        assert isinstance(item, TextContent), f"Expected TextContent, got {type(item)}"
         cell = json.loads(item.text)
         assert "cell_id" in cell
         assert "cell_type" in cell

@@ -37,6 +37,7 @@ import { useGlobalFind } from "./hooks/useGlobalFind";
 import { usePoolState } from "./hooks/usePoolState";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
+import { startAttributionDispatch } from "./lib/attribution-registry";
 import { startCursorDispatch } from "./lib/cursor-registry";
 import { KERNEL_STATUS } from "./lib/kernel-status";
 import { logger } from "./lib/logger";
@@ -97,6 +98,11 @@ function AppContent() {
   // Start dispatching presence events to CodeMirror EditorViews
   useEffect(() => {
     return startCursorDispatch(peerIdRef.current);
+  }, []);
+
+  // Start dispatching text attribution events to CodeMirror EditorViews
+  useEffect(() => {
+    return startAttributionDispatch();
   }, []);
 
   const {

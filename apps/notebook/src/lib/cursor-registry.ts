@@ -312,6 +312,31 @@ export function startCursorDispatch(peerId: string): () => void {
 const cellSubscribers = new Map<string, Set<() => void>>();
 
 /**
+ * Find a connected peer's color by matching against an actor label.
+ *
+ * Actor labels follow the convention `"agent:<name>:<session>"` while
+ * peer labels are display names like `"Claude"` or `"🤖 Agent"`.
+ * We match by checking if the actor label contains the peer label
+ * (case-insensitive), so `"agent:claude:ab12cd34"` matches a peer
+ * labeled `"Claude"`.
+ *
+ * Returns the peer's cursor color if found, or `undefined` if no
+ * connected peer matches. This lets text attribution highlights use
+ * the same color as the peer's live cursor.
+ */
+export function findPeerColorByLabel(actorLabel: string): string | undefined {
+  const lower = actorLabel.toLowerCase();
+  for (const peer of peers.values()) {
+    if (peer.peerId === localPeerId) continue;
+    const peerLower = peer.peerLabel.toLowerCase();
+    if (peerLower && lower.includes(peerLower)) {
+      return peer.color;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Get all remote peers that have a cursor in the given cell.
  * Returns peer info for UI rendering (colored dots, labels, etc.)
  */
