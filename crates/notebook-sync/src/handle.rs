@@ -119,6 +119,24 @@ impl DocHandle {
         &self.notebook_id
     }
 
+    /// Set the actor identity for this handle's Automerge document.
+    ///
+    /// Tags all subsequent edits with the given label for provenance tracking
+    /// (e.g., `"agent:claude"`, `"runtimed-py:<session>"`).
+    pub fn set_actor(&self, actor_label: &str) -> Result<(), SyncError> {
+        let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+        state
+            .doc
+            .set_actor(automerge::ActorId::from(actor_label.as_bytes()));
+        Ok(())
+    }
+
+    /// Get the actor identity label for this handle's document.
+    pub fn get_actor_id(&self) -> Result<String, SyncError> {
+        let state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+        Ok(notebook_doc::actor_label_from_id(state.doc.get_actor()))
+    }
+
     // =====================================================================
     // Document mutations — synchronous, direct, no channels
     // =====================================================================

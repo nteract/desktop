@@ -555,6 +555,33 @@ mod tests {
         assert_eq!(cell.source, "print('atomic')");
         assert!(cell.is_source_hidden());
     }
+
+    #[test]
+    fn test_set_actor_and_get_actor_id() {
+        let (handle, _changed_rx, _cmd_rx) = test_handle();
+        handle.set_actor("agent:claude:abc123").unwrap();
+        assert_eq!(handle.get_actor_id().unwrap(), "agent:claude:abc123");
+    }
+
+    #[test]
+    fn test_default_actor_is_not_empty() {
+        let (handle, _changed_rx, _cmd_rx) = test_handle();
+        let actor = handle.get_actor_id().unwrap();
+        assert!(!actor.is_empty());
+    }
+
+    #[test]
+    fn test_actor_persists_through_mutations() {
+        let (handle, _changed_rx, _cmd_rx) = test_handle();
+        handle.set_actor("agent:test:session1").unwrap();
+
+        // Mutate the doc
+        handle.add_cell_after("cell-1", "code", None).unwrap();
+        handle.update_source("cell-1", "print('hello')").unwrap();
+
+        // Actor should still be the same
+        assert_eq!(handle.get_actor_id().unwrap(), "agent:test:session1");
+    }
 }
 
 // =========================================================================
@@ -816,5 +843,121 @@ mod integration_tests {
         let ks = meta.kernelspec.expect("should have kernelspec");
         assert_eq!(ks.name, "python3");
         assert_eq!(ks.display_name, "Python 3");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_actor_identity_round_trip() {
+        if !daemon_available() {
+            eprintln!("Skipping: no daemon running");
+            return;
+        }
+
+        let notebook_id = format!("test-actor-{}", uuid::Uuid::new_v4());
+        let conn = crate::connect::connect(daemon_socket_path(), notebook_id)
+            .await
+            .expect("connect");
+
+        let handle = conn.handle;
+
+        // Set a meaningful actor label
+        handle
+            .set_actor("agent:claude:test1234")
+            .expect("set_actor");
+
+        // Verify it sticks
+        assert_eq!(handle.get_actor_id().unwrap(), "agent:claude:test1234");
+
+        // Make an edit — this op should be tagged with our actor
+        handle
+            .add_cell_with_source("prov-cell", "code", None, "# written by agent")
+            .expect("add_cell");
+
+        // Sync to daemon
+        handle.confirm_sync().await.expect("confirm_sync");
+
+        // Actor should still be ours after sync
+        assert_eq!(handle.get_actor_id().unwrap(), "agent:claude:test1234");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_contributing_actors_across_peers() {
+        if !daemon_available() {
+            eprintln!("Skipping: no daemon running");
+            return;
+        }
+
+        let notebook_id = format!("test-contrib-{}", uuid::Uuid::new_v4());
+
+        // Peer 1: "agent:alice"
+        let conn1 = crate::connect::connect(daemon_socket_path(), notebook_id.clone())
+            .await
+            .expect("connect 1");
+        conn1
+            .handle
+            .set_actor("agent:alice:aaa")
+            .expect("set_actor 1");
+        conn1
+            .handle
+            .add_cell_with_source("cell-alice", "code", None, "# alice")
+            .expect("add_cell alice");
+        conn1.handle.confirm_sync().await.expect("confirm_sync 1");
+
+        // Peer 2: "agent:bob"
+        let conn2 = crate::connect::connect(daemon_socket_path(), notebook_id)
+            .await
+            .expect("connect 2");
+        conn2
+            .handle
+            .set_actor("agent:bob:bbb")
+            .expect("set_actor 2");
+        conn2
+            .handle
+            .add_cell_with_source("cell-bob", "code", None, "# bob")
+            .expect("add_cell bob");
+        conn2.handle.confirm_sync().await.expect("confirm_sync 2");
+
+        // Give sync a moment to propagate
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Both peers should see both cells
+        let snap1 = conn1.handle.snapshot();
+        assert!(
+            snap1.get_cell("cell-alice").is_some(),
+            "peer1 should see alice's cell"
+        );
+        assert!(
+            snap1.get_cell("cell-bob").is_some(),
+            "peer1 should see bob's cell"
+        );
+
+        // Walk the change history — both agents + runtimed should appear
+        let actors = conn2
+            .handle
+            .with_doc(|doc| {
+                let mut nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
+                let actors = nd.contributing_actors();
+                *doc = nd.into_inner();
+                actors
+            })
+            .expect("with_doc");
+
+        assert!(
+            actors.contains(&"agent:alice:aaa".to_string()),
+            "should see alice in contributors: {:?}",
+            actors
+        );
+        assert!(
+            actors.contains(&"agent:bob:bbb".to_string()),
+            "should see bob in contributors: {:?}",
+            actors
+        );
+        // runtimed is also a contributor (it creates the room/doc structure)
+        assert!(
+            actors.contains(&"runtimed".to_string()),
+            "should see runtimed in contributors: {:?}",
+            actors
+        );
     }
 }

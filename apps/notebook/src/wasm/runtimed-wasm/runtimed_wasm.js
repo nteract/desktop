@@ -387,6 +387,27 @@ export class NotebookHandle {
         }
     }
     /**
+     * Return the deduplicated, sorted list of actor labels that have
+     * contributed changes to this document's history.
+     *
+     * Useful for debugging provenance — call after sync to see which
+     * peers (e.g., `"runtimed"`, `"human:abc123"`) have touched the notebook.
+     * @returns {string[]}
+     */
+    contributing_actors() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.notebookhandle_contributing_actors(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var v1 = getArrayJsValueFromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export4(r0, r1 * 4, 4);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Create a handle with an empty Automerge doc (zero operations) for
      * sync-only bootstrap.  The sync protocol populates the doc from the
      * daemon — no `GetDocBytes` needed.
@@ -394,6 +415,20 @@ export class NotebookHandle {
      */
     static create_empty() {
         const ret = wasm.notebookhandle_create_empty();
+        return NotebookHandle.__wrap(ret);
+    }
+    /**
+     * Create an empty sync-only bootstrap handle with a specific actor identity.
+     *
+     * The `actor_label` is a self-attested identity string (e.g., `"human:<session>"`,
+     * `"agent:claude:<session>"`) that tags all subsequent edits for provenance.
+     * @param {string} actor_label
+     * @returns {NotebookHandle}
+     */
+    static create_empty_with_actor(actor_label) {
+        const ptr0 = passStringToWasm0(actor_label, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.notebookhandle_create_empty_with_actor(ptr0, len0);
         return NotebookHandle.__wrap(ret);
     }
     /**
@@ -462,6 +497,26 @@ export class NotebookHandle {
             return v1;
         } finally {
             wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Get the actor identity label for this document.
+     * @returns {string}
+     */
+    get_actor_id() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.notebookhandle_get_actor_id(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export4(deferred1_0, deferred1_1, 1);
         }
     }
     /**
@@ -775,6 +830,17 @@ export class NotebookHandle {
         } finally {
             wasm.__wbindgen_add_to_stack_pointer(16);
         }
+    }
+    /**
+     * Set the actor identity for this document.
+     *
+     * Tags all subsequent edits with this label for provenance tracking.
+     * @param {string} actor_label
+     */
+    set_actor(actor_label) {
+        const ptr0 = passStringToWasm0(actor_label, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.notebookhandle_set_actor(this.__wbg_ptr, ptr0, len0);
     }
     /**
      * Replace entire cell metadata (last-write-wins).

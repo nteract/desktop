@@ -50,8 +50,11 @@ impl AsyncSession {
         let notebook_id =
             notebook_id.unwrap_or_else(|| format!("agent-session-{}", uuid::Uuid::new_v4()));
 
+        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
+
         let mut state = SessionState::new();
         state.peer_label = peer_label.clone();
+        state.actor_label = actor_label.clone();
 
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
@@ -129,11 +132,12 @@ impl AsyncSession {
         peer_label: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let path = path.to_string();
+        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
 
         future_into_py(py, async move {
             let socket_path = get_socket_path();
             let (notebook_id, mut state, _info) =
-                session_core::connect_open(socket_path, &path).await?;
+                session_core::connect_open(socket_path, &path, actor_label.as_deref()).await?;
 
             state.peer_label = peer_label.clone();
 
@@ -160,6 +164,7 @@ impl AsyncSession {
         working_dir: Option<&str>,
         peer_label: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
         // Validate working_dir if provided
         if let Some(wd) = working_dir {
             let path = std::path::Path::new(wd);
@@ -182,8 +187,13 @@ impl AsyncSession {
 
         future_into_py(py, async move {
             let socket_path = get_socket_path();
-            let (notebook_id, mut state, _info) =
-                session_core::connect_create(socket_path, &runtime, working_dir_buf).await?;
+            let (notebook_id, mut state, _info) = session_core::connect_create(
+                socket_path,
+                &runtime,
+                working_dir_buf,
+                actor_label.as_deref(),
+            )
+            .await?;
 
             state.peer_label = peer_label.clone();
 

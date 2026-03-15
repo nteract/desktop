@@ -54,8 +54,11 @@ impl Session {
         let notebook_id =
             notebook_id.unwrap_or_else(|| format!("agent-session-{}", uuid::Uuid::new_v4()));
 
+        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
+
         let mut state = SessionState::new();
         state.peer_label = peer_label.clone();
+        state.actor_label = actor_label.clone();
 
         Ok(Self {
             runtime,
@@ -124,9 +127,13 @@ impl Session {
     fn open_notebook(path: &str, peer_label: Option<String>) -> PyResult<Self> {
         let runtime = Runtime::new().map_err(to_py_err)?;
         let socket_path = get_socket_path();
+        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
 
-        let (notebook_id, mut state, _info) =
-            runtime.block_on(session_core::connect_open(socket_path, path))?;
+        let (notebook_id, mut state, _info) = runtime.block_on(session_core::connect_open(
+            socket_path,
+            path,
+            actor_label.as_deref(),
+        ))?;
 
         state.peer_label = peer_label.clone();
 
@@ -175,11 +182,13 @@ impl Session {
         let rt = Runtime::new().map_err(to_py_err)?;
         let socket_path = get_socket_path();
         let working_dir_buf = working_dir.map(PathBuf::from);
+        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
 
         let (notebook_id, mut state, _info) = rt.block_on(session_core::connect_create(
             socket_path,
             runtime,
             working_dir_buf,
+            actor_label.as_deref(),
         ))?;
 
         state.peer_label = peer_label.clone();
