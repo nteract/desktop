@@ -274,6 +274,8 @@ async def _get_cell_status_map(session: runtimed.AsyncSession) -> dict[str, str]
     try:
         queue_state = await session.get_queue_state()
         return _build_cell_status_map(queue_state)
+    except asyncio.CancelledError:
+        raise
     except Exception:
         return {}
 
@@ -287,6 +289,8 @@ async def _get_single_cell_status(session: runtimed.AsyncSession, cell_id: str) 
         if cell_id in queue_state.queued:
             return "queued"
         return None
+    except asyncio.CancelledError:
+        raise
     except Exception:
         return None
 
@@ -350,7 +354,7 @@ def _format_header(
 
     Example: ━━━ cell-abc12345 (code) ✓ idle [3] ━━━
     """
-    icons = {"idle": "✓", "error": "✗", "running": "◐"}
+    icons = {"idle": "✓", "error": "✗", "running": "◐", "queued": "⧗"}
 
     parts = [f"━━━ {cell_id}"]
 
