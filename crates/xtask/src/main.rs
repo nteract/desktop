@@ -597,7 +597,7 @@ fn cmd_dev_mcp(print_config: bool) {
         command
             .args(["daemon", "status", "--json"])
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         apply_worktree_env(&mut command, true);
 
         let output = command.output().unwrap_or_else(|e| {
@@ -607,7 +607,11 @@ fn cmd_dev_mcp(print_config: bool) {
         });
 
         if !output.status.success() {
-            eprintln!("runt daemon status failed");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("runt daemon status failed:");
+            if !stderr.trim().is_empty() {
+                eprintln!("{}", stderr.trim());
+            }
             exit(1);
         }
 
@@ -674,7 +678,13 @@ fn cmd_dev_mcp(print_config: bool) {
                 "RUNTIMED_SOCKET_PATH": socket_path
             }
         });
-        println!("{}", serde_json::to_string_pretty(&config).unwrap());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&config).unwrap_or_else(|e| {
+                eprintln!("Failed to serialize MCP config: {e}");
+                exit(1);
+            })
+        );
     } else {
         println!();
         println!("Launching nteract MCP server...");
