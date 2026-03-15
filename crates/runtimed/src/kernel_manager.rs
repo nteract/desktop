@@ -261,6 +261,8 @@ pub struct RoomKernel {
     /// Process group ID for cleanup (Unix only)
     #[cfg(unix)]
     process_group_id: Option<i32>,
+    /// Kernel ID for the process registry (orphan reaping)
+    kernel_id: Option<String>,
     /// Mapping from msg_id → cell_id for routing iopub messages
     cell_id_map: Arc<StdMutex<HashMap<String, String>>>,
     /// Execution queue (pending cells)
@@ -371,6 +373,7 @@ impl RoomKernel {
             shell_writer: None,
             #[cfg(unix)]
             process_group_id: None,
+            kernel_id: None,
             cell_id_map: Arc::new(StdMutex::new(HashMap::new())),
             queue: VecDeque::new(),
             executing: None,
@@ -669,7 +672,11 @@ impl RoomKernel {
         #[cfg(unix)]
         {
             self.process_group_id = process.id().map(|pid| pid as i32);
+            if let Some(pgid) = self.process_group_id {
+                crate::kernel_pids::register_kernel(&kernel_id, pgid, &connection_file_path);
+            }
         }
+        self.kernel_id = Some(kernel_id.clone());
 
         // Small delay to let the kernel start
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -2118,6 +2125,11 @@ impl RoomKernel {
             }
         }
 
+        // Unregister from process registry
+        if let Some(ref kid) = self.kernel_id {
+            crate::kernel_pids::unregister_kernel(kid);
+        }
+
         // Clean up connection file
         if let Some(ref path) = self.connection_file {
             let _ = std::fs::remove_file(path);
@@ -2158,6 +2170,11 @@ impl Drop for RoomKernel {
             use nix::sys::signal::{killpg, Signal};
             use nix::unistd::Pid;
             let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL);
+        }
+
+        // Unregister from process registry
+        if let Some(ref kid) = self.kernel_id {
+            crate::kernel_pids::unregister_kernel(kid);
         }
 
         // Clean up connection file

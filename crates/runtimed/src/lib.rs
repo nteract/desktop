@@ -29,6 +29,7 @@ pub use notebook_protocol::connection;
 pub mod daemon;
 pub mod inline_env;
 pub mod kernel_manager;
+pub mod kernel_pids;
 pub mod markdown_assets;
 pub use notebook_doc;
 pub use notebook_doc::metadata as notebook_metadata;
