@@ -51,6 +51,8 @@ pub mod broadcast;
 pub mod connect;
 pub mod error;
 pub mod handle;
+pub mod relay;
+pub mod relay_task;
 mod shared;
 mod snapshot;
 pub mod sync_task;
@@ -58,6 +60,7 @@ pub mod sync_task;
 pub use broadcast::BroadcastReceiver;
 pub use error::SyncError;
 pub use handle::DocHandle;
+pub use relay::RelayHandle;
 pub use shared::SharedDocState;
 pub use snapshot::NotebookSnapshot;
 

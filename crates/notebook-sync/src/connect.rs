@@ -25,6 +25,8 @@ use notebook_protocol::protocol::NotebookBroadcast;
 
 use crate::error::SyncError;
 use crate::handle::DocHandle;
+use crate::relay::RelayHandle;
+use crate::relay_task;
 use crate::shared::SharedDocState;
 use crate::snapshot::NotebookSnapshot;
 use crate::sync_task;
@@ -72,6 +74,24 @@ pub struct CreateResult {
 
     /// Initial cells in the document after sync.
     pub cells: Vec<notebook_doc::CellSnapshot>,
+}
+
+/// Result of opening a notebook as a relay (no local document).
+pub struct RelayOpenResult {
+    /// Handle for forwarding frames and sending requests.
+    pub handle: RelayHandle,
+
+    /// Connection info from the daemon (notebook_id, trust status, etc).
+    pub info: NotebookConnectionInfo,
+}
+
+/// Result of creating a notebook as a relay (no local document).
+pub struct RelayCreateResult {
+    /// Handle for forwarding frames and sending requests.
+    pub handle: RelayHandle,
+
+    /// Connection info from the daemon (notebook_id, trust status, etc).
+    pub info: NotebookConnectionInfo,
 }
 
 /// Platform-specific helper macro to connect to the daemon socket.
@@ -499,6 +519,143 @@ where
     });
 
     Ok((handle, broadcast_rx.into()))
+}
+
+// =========================================================================
+// Relay connect functions — no initial sync, no local doc
+// =========================================================================
+
+/// Open a notebook as a relay — transparent byte pipe, no local document.
+///
+/// Performs the handshake only (preamble + OpenNotebook + receive info).
+/// Does NOT call `do_initial_sync` — the daemon's initial sync message
+/// stays in the socket buffer and gets piped to the frontend by the relay
+/// task. The frontend (WASM) owns the sync protocol.
+///
+/// This eliminates the 100ms convergence floor and wasted doc allocation
+/// that the full-peer `connect_open` incurs.
+pub async fn connect_open_relay(
+    socket_path: PathBuf,
+    path: PathBuf,
+    frame_tx: mpsc::UnboundedSender<Vec<u8>>,
+) -> Result<RelayOpenResult, SyncError> {
+    let stream = connect_stream!(&socket_path);
+    let (reader, writer) = tokio::io::split(stream);
+    let mut reader = tokio::io::BufReader::new(reader);
+    let mut writer = tokio::io::BufWriter::new(writer);
+
+    // Send preamble
+    connection::send_preamble(&mut writer).await?;
+
+    // Send open handshake
+    let handshake = Handshake::OpenNotebook {
+        path: path.to_string_lossy().to_string(),
+    };
+    connection::send_json_frame(&mut writer, &handshake)
+        .await
+        .map_err(|e| SyncError::Protocol(format!("Send handshake: {}", e)))?;
+
+    // Receive connection info
+    let info_data = connection::recv_frame(&mut reader)
+        .await?
+        .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))?;
+    let info: NotebookConnectionInfo = serde_json::from_slice(&info_data)?;
+
+    if let Some(ref error) = info.error {
+        return Err(SyncError::Protocol(error.clone()));
+    }
+
+    let notebook_id = info.notebook_id.clone();
+    info!(
+        "[relay] Connected to {} (relay mode, no initial sync)",
+        notebook_id
+    );
+
+    let handle = spawn_relay(notebook_id, frame_tx, reader, writer);
+
+    Ok(RelayOpenResult { handle, info })
+}
+
+/// Create a notebook as a relay — transparent byte pipe, no local document.
+///
+/// Same as `connect_open_relay` but for new notebooks. Performs the
+/// CreateNotebook handshake, then immediately starts piping.
+pub async fn connect_create_relay(
+    socket_path: PathBuf,
+    runtime: &str,
+    working_dir: Option<PathBuf>,
+    notebook_id: Option<String>,
+    frame_tx: mpsc::UnboundedSender<Vec<u8>>,
+) -> Result<RelayCreateResult, SyncError> {
+    let stream = connect_stream!(&socket_path);
+    let (reader, writer) = tokio::io::split(stream);
+    let mut reader = tokio::io::BufReader::new(reader);
+    let mut writer = tokio::io::BufWriter::new(writer);
+
+    // Send preamble
+    connection::send_preamble(&mut writer).await?;
+
+    // Send create handshake
+    let handshake = Handshake::CreateNotebook {
+        runtime: runtime.to_string(),
+        working_dir: working_dir
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
+        notebook_id,
+    };
+    connection::send_json_frame(&mut writer, &handshake)
+        .await
+        .map_err(|e| SyncError::Protocol(format!("Send handshake: {}", e)))?;
+
+    // Receive connection info
+    let info_data = connection::recv_frame(&mut reader)
+        .await?
+        .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))?;
+    let info: NotebookConnectionInfo = serde_json::from_slice(&info_data)?;
+
+    if let Some(ref error) = info.error {
+        return Err(SyncError::Protocol(error.clone()));
+    }
+
+    let notebook_id = info.notebook_id.clone();
+    info!(
+        "[relay] Created {} (relay mode, no initial sync)",
+        notebook_id
+    );
+
+    let handle = spawn_relay(notebook_id, frame_tx, reader, writer);
+
+    Ok(RelayCreateResult { handle, info })
+}
+
+/// Spawn a relay task and return the handle.
+///
+/// Common tail for `connect_open_relay` and `connect_create_relay`.
+fn spawn_relay<R, W>(
+    notebook_id: String,
+    frame_tx: mpsc::UnboundedSender<Vec<u8>>,
+    reader: R,
+    writer: W,
+) -> RelayHandle
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    let (cmd_tx, cmd_rx) = mpsc::channel::<crate::relay::RelayCommand>(32);
+
+    let handle = RelayHandle::new(cmd_tx, notebook_id.clone());
+
+    let task_config = relay_task::RelayTaskConfig {
+        cmd_rx,
+        frame_tx,
+        notebook_id: notebook_id.clone(),
+    };
+
+    tokio::spawn(async move {
+        relay_task::run(task_config, reader, writer).await;
+    });
+
+    handle
 }
 
 /// Perform the initial Automerge sync exchange after handshake.
