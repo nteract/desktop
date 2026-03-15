@@ -465,6 +465,41 @@ impl DocHandle {
         reply_rx.await.map_err(|_| SyncError::Disconnected)?
     }
 
+    /// Get all connected peer IDs and labels.
+    pub fn get_peers(&self) -> Vec<(String, String)> {
+        let state = self.doc.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .presence
+            .peers()
+            .values()
+            .map(|p| (p.peer_id.clone(), p.peer_label.clone()))
+            .collect()
+    }
+
+    /// Get all remote peer cursors, excluding the given peer ID.
+    ///
+    /// Returns `(peer_id, peer_label, cursor_position)` tuples.
+    pub fn remote_cursors(
+        &self,
+        exclude_peer: &str,
+    ) -> Vec<(String, String, notebook_doc::presence::CursorPosition)> {
+        let state = self.doc.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .presence
+            .remote_cursors(exclude_peer)
+            .into_iter()
+            .map(|(id, pos)| {
+                let label = state
+                    .presence
+                    .peers()
+                    .get(id)
+                    .map(|p| p.peer_label.clone())
+                    .unwrap_or_default();
+                (id.to_string(), label, pos.clone())
+            })
+            .collect()
+    }
+
     /// Send a raw presence frame to the daemon.
     ///
     /// The daemon relays this to all other peers in the notebook room.

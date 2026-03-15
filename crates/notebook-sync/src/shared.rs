@@ -7,6 +7,7 @@
 
 use automerge::sync;
 use automerge::AutoCommit;
+use notebook_doc::presence::PresenceState;
 
 /// The shared state behind `Arc<Mutex<SharedDocState>>`.
 ///
@@ -22,6 +23,9 @@ pub struct SharedDocState {
     /// The notebook identifier (canonical path for file-backed notebooks,
     /// UUID for ephemeral/untitled notebooks).
     pub(crate) notebook_id: String,
+
+    /// Incoming presence state from remote peers (cursors, selections, etc.).
+    pub(crate) presence: PresenceState,
 }
 
 impl SharedDocState {
@@ -31,6 +35,7 @@ impl SharedDocState {
             doc,
             peer_state: sync::State::new(),
             notebook_id,
+            presence: PresenceState::new(),
         }
     }
 

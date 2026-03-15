@@ -405,6 +405,29 @@ impl AsyncSession {
     // Presence
     // =========================================================================
 
+    /// Get all connected peer IDs and labels.
+    ///
+    /// Returns:
+    ///     List of (peer_id, peer_label) tuples.
+    fn get_peers<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+
+        future_into_py(py, async move { session_core::get_peers(&state).await })
+    }
+
+    /// Get remote peer cursors.
+    ///
+    /// Returns:
+    ///     List of (peer_id, peer_label, cell_id, line, column) tuples.
+    fn get_remote_cursors<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+
+        future_into_py(
+            py,
+            async move { session_core::get_remote_cursors(&state).await },
+        )
+    }
+
     /// Set cursor position for collaborative presence.
     fn set_cursor<'py>(
         &self,

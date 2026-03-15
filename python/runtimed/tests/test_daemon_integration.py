@@ -2715,6 +2715,53 @@ class TestPresence:
         s1.set_cursor(cell_id, line=0, column=0)
         s2.set_cursor(cell_id, line=0, column=5)
 
+    def test_get_peers_and_remote_cursors(self, two_sessions):
+        """Session B sees Session A's cursor via get_peers/get_remote_cursors."""
+        s1, s2 = two_sessions
+        cell_id = s1.create_cell("shared cell")
+
+        # Wait for cell to sync to s2
+        wait_for_sync(
+            lambda: len(s2.get_cells()) > 0,
+            description="cell sync to s2",
+        )
+
+        # Session A sends cursor presence
+        s1.set_cursor(cell_id, line=5, column=10)
+
+        # Session B should see Session A as a peer
+        wait_for_sync(
+            lambda: len(s2.get_peers()) > 0,
+            description="s2 sees s1 peer",
+        )
+        peers = s2.get_peers()
+        assert len(peers) > 0, "Expected at least one remote peer"
+
+        # Session B should see Session A's cursor
+        wait_for_sync(
+            lambda: len(s2.get_remote_cursors()) > 0,
+            description="s2 sees s1 cursor",
+        )
+        cursors = s2.get_remote_cursors()
+        assert len(cursors) > 0, "Expected at least one remote cursor"
+        # Each cursor is (peer_id, peer_label, cell_id, line, column)
+        _, _, cursor_cell_id, line, column = cursors[0]
+        assert cursor_cell_id == cell_id
+        assert line == 5
+        assert column == 10
+
+    def test_get_peers_not_connected_raises(self):
+        """get_peers raises when not connected."""
+        sess = runtimed.Session()
+        with pytest.raises(runtimed.RuntimedError):
+            sess.get_peers()
+
+    def test_get_remote_cursors_not_connected_raises(self):
+        """get_remote_cursors raises when not connected."""
+        sess = runtimed.Session()
+        with pytest.raises(runtimed.RuntimedError):
+            sess.get_remote_cursors()
+
 
 class TestAsyncPresence:
     """Async versions of presence tests."""

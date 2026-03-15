@@ -333,6 +333,23 @@ impl Session {
     // Presence
     // =========================================================================
 
+    /// Get all connected peer IDs and labels.
+    ///
+    /// Returns:
+    ///     List of (peer_id, peer_label) tuples.
+    fn get_peers(&self) -> PyResult<Vec<(String, String)>> {
+        self.runtime.block_on(session_core::get_peers(&self.state))
+    }
+
+    /// Get remote peer cursors.
+    ///
+    /// Returns:
+    ///     List of (peer_id, peer_label, cell_id, line, column) tuples.
+    fn get_remote_cursors(&self) -> PyResult<Vec<(String, String, String, u32, u32)>> {
+        self.runtime
+            .block_on(session_core::get_remote_cursors(&self.state))
+    }
+
     /// Set cursor position for collaborative presence.
     fn set_cursor(&self, cell_id: &str, line: u32, column: u32) -> PyResult<()> {
         self.runtime.block_on(session_core::set_cursor(

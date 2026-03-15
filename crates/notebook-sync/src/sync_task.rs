@@ -364,12 +364,46 @@ async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
         }
 
         NotebookFrameType::Presence => {
-            // Presence frames are typically forwarded to UI — for now, log and ignore
-            debug!(
-                "[notebook-sync] Received presence frame for {} ({} bytes)",
-                notebook_id,
-                frame.payload.len()
-            );
+            use notebook_doc::presence::{decode_message, PresenceMessage};
+
+            match decode_message(&frame.payload) {
+                Ok(msg) => {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let mut state = doc.lock().unwrap_or_else(|e| e.into_inner());
+                    match msg {
+                        PresenceMessage::Update {
+                            peer_id,
+                            peer_label,
+                            data,
+                        } => {
+                            state.presence.update_peer(
+                                &peer_id,
+                                peer_label.as_deref().unwrap_or("peer"),
+                                data,
+                                now_ms,
+                            );
+                        }
+                        PresenceMessage::Snapshot { peers, .. } => {
+                            state.presence.apply_snapshot(&peers, now_ms);
+                        }
+                        PresenceMessage::Left { peer_id } => {
+                            state.presence.remove_peer(&peer_id);
+                        }
+                        PresenceMessage::Heartbeat { peer_id } => {
+                            state.presence.mark_seen(&peer_id, now_ms);
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!(
+                        "[notebook-sync] Failed to decode presence for {}: {}",
+                        notebook_id, e
+                    );
+                }
+            }
         }
 
         NotebookFrameType::Response => {
