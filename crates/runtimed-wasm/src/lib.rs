@@ -5,7 +5,9 @@
 //! this WASM module instead of `@automerge/automerge` to avoid
 //! version mismatch issues that produce phantom cells.
 
+use automerge::patches::PatchAction;
 use automerge::sync;
+use automerge::Prop;
 use notebook_doc::presence;
 use notebook_doc::{CellSnapshot, NotebookDoc};
 use serde::Serialize;
@@ -29,6 +31,24 @@ fn serialize_to_js<T: Serialize>(value: &T) -> Result<JsValue, serde_wasm_bindge
 
 use notebook_doc::frame_types;
 
+/// A text attribution range produced when a sync message modifies cell source.
+///
+/// Pushed to the frontend inside `SyncApplied` so it can highlight freshly
+/// arrived text (e.g., a fade-in glow showing who wrote it).
+#[derive(Serialize)]
+pub struct TextAttribution {
+    /// The cell ID whose source was modified.
+    pub cell_id: String,
+    /// Character index in the source where the change starts.
+    pub index: usize,
+    /// Text that was inserted at this index (empty for pure deletions).
+    pub text: String,
+    /// Number of characters deleted at this index (0 for pure insertions).
+    pub deleted: usize,
+    /// Actor label(s) that contributed to this sync batch.
+    pub actors: Vec<String>,
+}
+
 /// Event returned from `receive_frame()` for the frontend to handle.
 ///
 /// Converted directly to a JS object via `serde-wasm-bindgen` — no JSON
@@ -41,6 +61,10 @@ pub enum FrameEvent {
     SyncApplied {
         /// True if the document changed (new cells, updated source, etc.)
         changed: bool,
+        /// Text attribution ranges for source edits in this sync batch.
+        /// Empty when `changed` is false or when only non-source fields changed.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        attributions: Vec<TextAttribution>,
     },
     /// A sync message was generated in response; frontend should send it back.
     SyncReply {
@@ -688,7 +712,16 @@ impl NotebookHandle {
                 let heads_after = self.doc.doc_mut().get_heads();
                 let changed = heads_before != heads_after;
 
-                events.push(FrameEvent::SyncApplied { changed });
+                let attributions = if changed {
+                    compute_text_attributions(self.doc.doc_mut(), &heads_before, &heads_after)
+                } else {
+                    Vec::new()
+                };
+
+                events.push(FrameEvent::SyncApplied {
+                    changed,
+                    attributions,
+                });
 
                 // The sync protocol may need a reply
                 if let Some(reply_msg) = self.doc.generate_sync_message(&mut self.sync_state) {
@@ -720,6 +753,109 @@ impl NotebookHandle {
         }
 
         serialize_to_js(&events).unwrap_or(JsValue::UNDEFINED)
+    }
+}
+
+// ── Attribution extraction ───────────────────────────────────────────
+
+/// Compute text attribution ranges from the diff between two document states.
+///
+/// Walks the Automerge patches produced by `diff(before, after)` and extracts
+/// `SpliceText` and `DeleteSeq` actions on cell source `Text` objects.
+/// The actors are determined from the new changes in the diff range.
+///
+/// Performance: `diff()` and `get_changes()` only examine the delta — they
+/// do not walk the entire document.  The cost is proportional to the number
+/// of operations in the new changes, which is typically small per sync cycle.
+fn compute_text_attributions(
+    doc: &mut automerge::AutoCommit,
+    before: &[automerge::ChangeHash],
+    after: &[automerge::ChangeHash],
+) -> Vec<TextAttribution> {
+    use std::collections::BTreeSet;
+
+    // Determine which actors contributed the new changes
+    let new_changes = doc.get_changes(before);
+    let actors: Vec<String> = new_changes
+        .iter()
+        .map(|c| notebook_doc::actor_label_from_id(c.actor_id()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    if actors.is_empty() {
+        return Vec::new();
+    }
+
+    // Compute the structural diff — only the delta, not the whole doc
+    let patches = doc.diff(before, after);
+
+    let mut result = Vec::new();
+    for patch in &patches {
+        // Extract cell_id from the patch path.
+        //
+        // For a source text splice the path looks like:
+        //   [(ROOT, "cells"), (cells_map, "<cell-id>"), (cell_obj, "source")]
+        //
+        // We need at least 2 path elements, and the second must be a Map
+        // key (the cell ID).  The last element should be "source".
+        let cell_id = match extract_cell_source_id(&patch.path) {
+            Some(id) => id,
+            None => continue,
+        };
+
+        match &patch.action {
+            PatchAction::SpliceText { index, value, .. } => {
+                let text = value.make_string();
+                if !text.is_empty() {
+                    result.push(TextAttribution {
+                        cell_id: cell_id.clone(),
+                        index: *index,
+                        text,
+                        deleted: 0,
+                        actors: actors.clone(),
+                    });
+                }
+            }
+            PatchAction::DeleteSeq { index, length } => {
+                result.push(TextAttribution {
+                    cell_id: cell_id.clone(),
+                    index: *index,
+                    text: String::new(),
+                    deleted: *length,
+                    actors: actors.clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+    result
+}
+
+/// Extract the cell ID from a patch path if it points to a cell's source text.
+///
+/// Returns `Some(cell_id)` when the path matches:
+///   `[..., (_, "cells"), (_, <cell_id>), (_, "source")]`
+///
+/// We search from the end so this works regardless of whether the path
+/// includes the root element or other prefixes.
+fn extract_cell_source_id(path: &[(automerge::ObjId, Prop)]) -> Option<String> {
+    // Need at least: (_, "cells"), (_, cell_id), (_, "source")
+    if path.len() < 3 {
+        return None;
+    }
+
+    // Walk backwards: last element should be "source"
+    let last = &path[path.len() - 1].1;
+    if !matches!(last, Prop::Map(k) if k == "source") {
+        return None;
+    }
+
+    // Second-to-last should be the cell ID
+    let cell_prop = &path[path.len() - 2].1;
+    match cell_prop {
+        Prop::Map(cell_id) => Some(cell_id.clone()),
+        _ => None,
     }
 }
 

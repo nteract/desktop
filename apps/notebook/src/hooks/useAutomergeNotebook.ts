@@ -243,6 +243,13 @@ export function useAutomergeNotebook() {
           const events = result as Array<{
             type: string;
             changed?: boolean;
+            attributions?: Array<{
+              cell_id: string;
+              index: number;
+              text: string;
+              deleted: number;
+              actors: string[];
+            }>;
             reply?: Uint8Array;
             payload?: unknown;
           }>;
@@ -257,6 +264,15 @@ export function useAutomergeNotebook() {
                 if (frameEvent.changed) {
                   await materializeCells(handle);
                   notifyMetadataChanged();
+                }
+                if (
+                  frameEvent.attributions &&
+                  frameEvent.attributions.length > 0
+                ) {
+                  emitBroadcast({
+                    type: "text_attribution",
+                    attributions: frameEvent.attributions,
+                  });
                 }
                 break;
               }
