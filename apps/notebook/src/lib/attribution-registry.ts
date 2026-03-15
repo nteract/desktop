@@ -20,13 +20,13 @@
  * agent's attribution highlight matches their cursor color.
  */
 
-import {
-  addTextAttributions,
-  type AttributionMark,
-} from "@/components/editor/text-attribution";
 import { peerColor } from "@/components/editor/remote-cursors";
-import { subscribeBroadcast } from "./notebook-frame-bus";
+import {
+  type AttributionMark,
+  addTextAttributions,
+} from "@/components/editor/text-attribution";
 import { findPeerColorByLabel } from "./cursor-registry";
+import { subscribeBroadcast } from "./notebook-frame-bus";
 
 // ── Types (text_attribution event shape from WASM) ───────────────────
 

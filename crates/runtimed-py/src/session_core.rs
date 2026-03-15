@@ -519,14 +519,33 @@ pub(crate) async fn append_source(
     cell_id: &str,
     text: &str,
 ) -> PyResult<()> {
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    // Compute cursor position at end of the full source after append.
+    // We need the current source + appended text to find the last line/col.
+    let (last_line, last_col) = {
+        let st = state.lock().await;
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
 
-    // Synchronous — direct doc mutation via DocHandle
-    handle.append_source(cell_id, text).map_err(to_py_err)?;
+        // Synchronous — direct doc mutation via DocHandle
+        handle.append_source(cell_id, text).map_err(to_py_err)?;
+
+        // Read back the full source to compute end position
+        let cell = handle
+            .get_cell(cell_id)
+            .ok_or_else(|| to_py_err(format!("Cell {} not found", cell_id)))?;
+
+        cell.source
+            .lines()
+            .enumerate()
+            .last()
+            .map(|(i, line)| (i as u32, line.len() as u32))
+            .unwrap_or((0, 0))
+    };
+
+    emit_cursor_presence(state, cell_id, last_line, last_col).await;
+
     Ok(())
 }
 
