@@ -28,6 +28,11 @@ export {
 } from "./languages";
 export { searchHighlight } from "./search-highlight";
 export {
+  addTextAttributions,
+  textAttributionExtension,
+  type AttributionMark,
+} from "./text-attribution";
+export {
   darkTheme,
   documentHasDarkMode,
   getAutoTheme,

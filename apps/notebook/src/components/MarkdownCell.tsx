@@ -8,12 +8,17 @@ import {
 } from "@/components/editor/codemirror-editor";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
+import { textAttributionExtension } from "@/components/editor/text-attribution";
 import { IsolatedFrame, type IsolatedFrameHandle } from "@/components/isolated";
 import { isDarkMode as detectDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { useBlobPort } from "../hooks/useManifestResolver";
+import {
+  registerAttributionEditor,
+  unregisterAttributionEditor,
+} from "../lib/attribution-registry";
 import { registerEditor, unregisterEditor } from "../lib/cursor-registry";
 import { logger } from "../lib/logger";
 import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
@@ -144,6 +149,7 @@ export function MarkdownCell({
     if (!editing) {
       if (registeredViewRef.current) {
         unregisterEditor(cell.id);
+        unregisterAttributionEditor(cell.id);
         registeredViewRef.current = null;
       }
       return;
@@ -154,6 +160,7 @@ export function MarkdownCell({
       if (view && view !== registeredViewRef.current) {
         registeredViewRef.current = view;
         registerEditor(cell.id, view);
+        registerAttributionEditor(cell.id, view);
         return true;
       }
       return false;
@@ -172,6 +179,7 @@ export function MarkdownCell({
         clearInterval(intervalId);
         if (registeredViewRef.current) {
           unregisterEditor(cell.id);
+          unregisterAttributionEditor(cell.id);
           registeredViewRef.current = null;
         }
       };
@@ -180,6 +188,7 @@ export function MarkdownCell({
     return () => {
       if (registeredViewRef.current) {
         unregisterEditor(cell.id);
+        unregisterAttributionEditor(cell.id);
         registeredViewRef.current = null;
       }
     };
@@ -290,6 +299,9 @@ export function MarkdownCell({
   // Remote cursors extension (stable — no deps that change)
   const remoteCursorsExt = useMemo(() => remoteCursorsExtension(), []);
 
+  // Text attribution extension (stable — no deps that change)
+  const textAttributionExt = useMemo(() => textAttributionExtension(), []);
+
   // Presence sender extension — broadcasts local cursor/selection to other peers
   const presenceSenderExt = useMemo(() => {
     if (!presence) return [];
@@ -306,9 +318,10 @@ export function MarkdownCell({
     () => [
       ...searchHighlight(searchQuery || ""),
       ...remoteCursorsExt,
+      ...textAttributionExt,
       ...presenceSenderExt,
     ],
-    [searchQuery, remoteCursorsExt, presenceSenderExt],
+    [searchQuery, remoteCursorsExt, textAttributionExt, presenceSenderExt],
   );
 
   // Get keyboard navigation bindings

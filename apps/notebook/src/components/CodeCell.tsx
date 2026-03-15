@@ -19,12 +19,17 @@ import {
 import type { SupportedLanguage } from "@/components/editor/languages";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
+import { textAttributionExtension } from "@/components/editor/text-attribution";
 import { AnsiOutput } from "@/components/outputs/ansi-output";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
 import type { CellPagePayload, MimeBundle } from "../App";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
+import {
+  registerAttributionEditor,
+  unregisterAttributionEditor,
+} from "../lib/attribution-registry";
 import { registerEditor, unregisterEditor } from "../lib/cursor-registry";
 import { kernelCompletionExtension } from "../lib/kernel-completion";
 import { openUrl } from "../lib/open-url";
@@ -163,6 +168,7 @@ export function CodeCell({
       if (view && view !== registeredViewRef.current) {
         registeredViewRef.current = view;
         registerEditor(cell.id, view);
+        registerAttributionEditor(cell.id, view);
         return true;
       }
       return false;
@@ -181,6 +187,7 @@ export function CodeCell({
         clearInterval(intervalId);
         if (registeredViewRef.current) {
           unregisterEditor(cell.id);
+          unregisterAttributionEditor(cell.id);
           registeredViewRef.current = null;
         }
       };
@@ -189,6 +196,7 @@ export function CodeCell({
     return () => {
       if (registeredViewRef.current) {
         unregisterEditor(cell.id);
+        unregisterAttributionEditor(cell.id);
         registeredViewRef.current = null;
       }
     };
@@ -271,6 +279,9 @@ export function CodeCell({
   // Remote cursors extension (stable — no deps that change)
   const remoteCursorsExt = useMemo(() => remoteCursorsExtension(), []);
 
+  // Text attribution extension (stable — no deps that change)
+  const textAttributionExt = useMemo(() => textAttributionExtension(), []);
+
   // Presence sender extension — broadcasts local cursor/selection to other peers
   const presenceSenderExt = useMemo(() => {
     if (!presence) return [];
@@ -289,9 +300,16 @@ export function CodeCell({
       tabCompletionKeymap,
       ...searchHighlight(searchQuery || "", searchActiveOffset),
       ...remoteCursorsExt,
+      ...textAttributionExt,
       ...presenceSenderExt,
     ],
-    [searchQuery, searchActiveOffset, remoteCursorsExt, presenceSenderExt],
+    [
+      searchQuery,
+      searchActiveOffset,
+      remoteCursorsExt,
+      textAttributionExt,
+      presenceSenderExt,
+    ],
   );
 
   const handleExecute = useCallback(() => {

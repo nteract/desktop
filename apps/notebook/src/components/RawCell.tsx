@@ -8,8 +8,13 @@ import {
 } from "@/components/editor/codemirror-editor";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
+import { textAttributionExtension } from "@/components/editor/text-attribution";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
+import {
+  registerAttributionEditor,
+  unregisterAttributionEditor,
+} from "../lib/attribution-registry";
 import { registerEditor, unregisterEditor } from "../lib/cursor-registry";
 import { detectRawFormat } from "../lib/detect-raw-format";
 import { presenceSenderExtension } from "../lib/presence-sender";
@@ -58,6 +63,7 @@ export function RawCell({
       if (view && view !== registeredViewRef.current) {
         registeredViewRef.current = view;
         registerEditor(cell.id, view);
+        registerAttributionEditor(cell.id, view);
         return true;
       }
       return false;
@@ -76,6 +82,7 @@ export function RawCell({
         clearInterval(intervalId);
         if (registeredViewRef.current) {
           unregisterEditor(cell.id);
+          unregisterAttributionEditor(cell.id);
           registeredViewRef.current = null;
         }
       };
@@ -84,6 +91,7 @@ export function RawCell({
     return () => {
       if (registeredViewRef.current) {
         unregisterEditor(cell.id);
+        unregisterAttributionEditor(cell.id);
         registeredViewRef.current = null;
       }
     };
@@ -124,6 +132,9 @@ export function RawCell({
   // Remote cursors extension (stable — no deps that change)
   const remoteCursorsExt = useMemo(() => remoteCursorsExtension(), []);
 
+  // Text attribution extension (stable — no deps that change)
+  const textAttributionExt = useMemo(() => textAttributionExtension(), []);
+
   // Presence sender extension — broadcasts local cursor/selection to other peers
   const presenceSenderExt = useMemo(() => {
     if (!presence) return [];
@@ -140,9 +151,10 @@ export function RawCell({
     () => [
       ...searchHighlight(searchQuery || ""),
       ...remoteCursorsExt,
+      ...textAttributionExt,
       ...presenceSenderExt,
     ],
-    [searchQuery, remoteCursorsExt, presenceSenderExt],
+    [searchQuery, remoteCursorsExt, textAttributionExt, presenceSenderExt],
   );
 
   // Get keyboard navigation bindings
