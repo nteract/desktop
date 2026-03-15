@@ -227,7 +227,7 @@ jobs:
         run: rustup target add x86_64-pc-windows-msvc
 
       - name: Clippy (Windows cross-check)
-        run: cargo clippy --target x86_64-pc-windows-msvc --workspace --exclude notebook --exclude runtimed-wasm --exclude runtimed-py --exclude xtask --all-targets -- -D warnings
+        run: cargo clippy --target x86_64-pc-windows-msvc --workspace --exclude notebook --exclude runtimed-wasm --exclude runtimed-py --all-targets -- -D warnings
 
       - name: Build
         run: cargo build --release
