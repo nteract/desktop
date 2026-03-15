@@ -5,7 +5,6 @@ pub mod environment_yml;
 pub mod menu;
 
 pub mod pixi;
-pub mod project_file;
 pub mod pyproject;
 pub mod runtime;
 pub mod session;
@@ -3089,7 +3088,6 @@ async fn get_default_save_directory() -> Result<String, String> {
 /// and emits Tauri events to all windows when settings change.
 ///
 /// Reconnects automatically with backoff if the connection drops.
-#[cfg(unix)]
 async fn run_settings_sync(app: tauri::AppHandle) {
     use tauri::Emitter;
 
@@ -3105,46 +3103,6 @@ async fn run_settings_sync(app: tauri::AppHandle) {
                     settings.default_runtime,
                     settings.default_python_env
                 );
-                let _ = app.emit("settings:changed", &settings);
-
-                // Watch for changes
-                loop {
-                    match client.recv_changes().await {
-                        Ok(settings) => {
-                            log::info!("[settings-sync] Settings changed: {:?}", settings);
-                            let _ = app.emit("settings:changed", &settings);
-                        }
-                        Err(e) => {
-                            log::warn!("[settings-sync] Disconnected: {}", e);
-                            break;
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                log::info!(
-                    "[settings-sync] Cannot connect to sync daemon: {}. Retrying in 5s.",
-                    e
-                );
-            }
-        }
-
-        // Backoff before reconnecting
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-    }
-}
-
-#[cfg(windows)]
-async fn run_settings_sync(app: tauri::AppHandle) {
-    use tauri::Emitter;
-
-    let socket_path = runtimed::default_socket_path();
-
-    loop {
-        match runtimed::sync_client::SyncClient::connect(socket_path.clone()).await {
-            Ok(mut client) => {
-                // Emit initial settings
-                let settings = client.get_all();
                 let _ = app.emit("settings:changed", &settings);
 
                 // Watch for changes
