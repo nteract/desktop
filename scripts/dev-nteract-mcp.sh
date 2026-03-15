@@ -17,6 +17,10 @@
 
 set -euo pipefail
 
+# Zed spawns context servers with a minimal PATH that may not include
+# user-local tool directories. Add the common locations for uv.
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
