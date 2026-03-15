@@ -1043,16 +1043,11 @@ async fn test_pipe_mode_forwards_sync_frames() {
     // Create a pipe channel
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-    // Connect pipe client
-    let _result = connect::connect_with_pipe(
-        socket_path.clone(),
-        "pipe-sync-test".to_string(),
-        None,
-        None,
-        frame_tx,
-    )
-    .await
-    .unwrap();
+    // Connect pipe client (relay mode — no local doc, no initial sync)
+    let _result =
+        connect::connect_relay(socket_path.clone(), "pipe-sync-test".to_string(), frame_tx)
+            .await
+            .unwrap();
 
     // Second client (full peer) adds a cell and updates source
     let client2 = connect::connect(socket_path.clone(), "pipe-sync-test".to_string())
@@ -1109,11 +1104,9 @@ async fn test_pipe_mode_only_pipes_allowed_frame_types() {
 
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-    let _result = connect::connect_with_pipe(
+    let _result = connect::connect_relay(
         socket_path.clone(),
         "pipe-broadcast-test".to_string(),
-        None,
-        None,
         frame_tx,
     )
     .await
@@ -1183,11 +1176,9 @@ async fn test_pipe_mode_does_not_forward_response_frames() {
 
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-    let result = connect::connect_with_pipe(
+    let result = connect::connect_relay(
         socket_path.clone(),
         "pipe-response-test".to_string(),
-        None,
-        None,
         frame_tx,
     )
     .await
@@ -1257,15 +1248,10 @@ async fn test_pipe_mode_preserves_frame_order() {
 
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-    let _result = connect::connect_with_pipe(
-        socket_path.clone(),
-        "pipe-order-test".to_string(),
-        None,
-        None,
-        frame_tx,
-    )
-    .await
-    .unwrap();
+    let _result =
+        connect::connect_relay(socket_path.clone(), "pipe-order-test".to_string(), frame_tx)
+            .await
+            .unwrap();
 
     // Second client rapidly adds multiple cells
     let client2 = connect::connect(socket_path.clone(), "pipe-order-test".to_string())

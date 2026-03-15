@@ -628,6 +628,62 @@ pub async fn connect_create_relay(
     Ok(RelayCreateResult { handle, info })
 }
 
+/// Connect to a notebook room by ID as a relay — no local document.
+///
+/// Same as `connect_open_relay` but for connecting to an existing room
+/// by notebook ID rather than file path. Used by integration tests.
+pub async fn connect_relay(
+    socket_path: PathBuf,
+    notebook_id: String,
+    frame_tx: mpsc::UnboundedSender<Vec<u8>>,
+) -> Result<RelayConnectResult, SyncError> {
+    let stream = connect_stream!(&socket_path);
+    let (reader, writer) = tokio::io::split(stream);
+    let mut reader = tokio::io::BufReader::new(reader);
+    let mut writer = tokio::io::BufWriter::new(writer);
+
+    // Send preamble
+    connection::send_preamble(&mut writer).await?;
+
+    // Send notebook sync handshake
+    let handshake = Handshake::NotebookSync {
+        notebook_id: notebook_id.clone(),
+        protocol: Some(PROTOCOL_V2.to_string()),
+        initial_metadata: None,
+        working_dir: None,
+    };
+    connection::send_json_frame(&mut writer, &handshake)
+        .await
+        .map_err(|e| SyncError::Protocol(format!("Send handshake: {}", e)))?;
+
+    // Receive protocol capabilities (v2 handshake)
+    let caps_data = connection::recv_frame(&mut reader)
+        .await?
+        .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))?;
+    let _caps: ProtocolCapabilities = serde_json::from_slice(&caps_data)
+        .map_err(|e| SyncError::Protocol(format!("Parse capabilities: {}", e)))?;
+
+    // Receive initial metadata frame (may be empty)
+    let _initial_data = connection::recv_frame(&mut reader)
+        .await?
+        .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))?;
+
+    info!(
+        "[relay] Connected to {} (relay mode, no initial sync)",
+        notebook_id
+    );
+
+    let handle = spawn_relay(notebook_id, frame_tx, reader, writer);
+
+    Ok(RelayConnectResult { handle })
+}
+
+/// Result of connecting to a notebook room by ID as a relay.
+pub struct RelayConnectResult {
+    /// Handle for forwarding frames and sending requests.
+    pub handle: RelayHandle,
+}
+
 /// Spawn a relay task and return the handle.
 ///
 /// Common tail for `connect_open_relay` and `connect_create_relay`.

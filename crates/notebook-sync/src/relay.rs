@@ -147,11 +147,7 @@ impl RelayHandle {
     /// The relay writes the frame directly to the daemon socket without
     /// decoding or processing it. Used for Automerge sync messages and
     /// presence frames originating from the WASM frontend.
-    pub async fn forward_frame(
-        &self,
-        frame_type: u8,
-        payload: Vec<u8>,
-    ) -> Result<(), SyncError> {
+    pub async fn forward_frame(&self, frame_type: u8, payload: Vec<u8>) -> Result<(), SyncError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.cmd_tx
             .send(RelayCommand::ForwardFrame {
