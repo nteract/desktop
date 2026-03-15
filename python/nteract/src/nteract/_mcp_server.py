@@ -502,6 +502,12 @@ if not _no_show:
                 f"Use list_notebooks() to see active notebooks."
             )
 
+        if not os.path.isabs(target):
+            raise ValueError(
+                f"Notebook '{target}' is an untitled notebook (not saved to disk). "
+                f"Use save_notebook(path) first, then call show_notebook()."
+            )
+
         runtimed.show_notebook_app(target)
         return f"Opened notebook in nteract: {target}"
 

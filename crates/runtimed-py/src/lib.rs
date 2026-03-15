@@ -38,11 +38,14 @@ use subscription::{EventIteratorSubscription, EventSubscription};
 ///
 /// In dev mode, uses the local bundled binary. In production, tries installed
 /// app candidates via platform-specific launch.
+///
+/// Args:
+///     notebook_path: Optional filesystem path to the notebook to open.
+///         Accepts str or pathlib.Path (any os.PathLike).
 #[pyfunction]
-#[pyo3(signature = (path=None))]
-fn show_notebook_app(path: Option<String>) -> PyResult<()> {
-    let path_buf = path.map(PathBuf::from);
-    runt_workspace::open_notebook_app(path_buf.as_deref(), &[])
+#[pyo3(signature = (notebook_path=None))]
+fn show_notebook_app(notebook_path: Option<PathBuf>) -> PyResult<()> {
+    runt_workspace::open_notebook_app(notebook_path.as_deref(), &[])
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
 }
 

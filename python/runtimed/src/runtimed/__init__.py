@@ -17,6 +17,7 @@ from runtimed.runtimed import (
     QueueState,
     RuntimedError,
     Session,
+    show_notebook_app,
 )
 
 __all__ = [
@@ -37,6 +38,8 @@ __all__ = [
     "CompletionResult",
     "QueueState",
     "HistoryEntry",
+    # Standalone functions
+    "show_notebook_app",
 ]
 
 try:

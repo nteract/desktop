@@ -184,7 +184,8 @@ pub fn open_notebook_app(path: Option<&Path>, extra_args: &[&str]) -> Result<(),
 
 fn open_notebook_dev(path: Option<&Path>, extra_args: &[&str]) -> Result<(), String> {
     let workspace = get_workspace_path().ok_or("Dev mode active but no workspace path found")?;
-    let binary = workspace.join("target/debug/notebook");
+    let binary_name = format!("notebook{}", std::env::consts::EXE_SUFFIX);
+    let binary = workspace.join("target/debug").join(&binary_name);
     let marker = workspace.join("target/debug/.notebook-bundled");
 
     if !binary.exists() {
