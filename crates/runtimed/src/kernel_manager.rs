@@ -501,13 +501,14 @@ impl RoomKernel {
             kernel_name: Some(kernelspec_name.to_string()),
         };
 
-        // Write connection file
-        let runtime_dir = runtimelib::dirs::runtime_dir();
-        tokio::fs::create_dir_all(&runtime_dir).await?;
+        // Write connection file to the daemon's own directory (not the shared
+        // Jupyter runtime dir) so we can safely clean up orphans on restart.
+        let conn_dir = crate::connections_dir();
+        tokio::fs::create_dir_all(&conn_dir).await?;
 
         let kernel_id: String =
             petname::petname(2, "-").unwrap_or_else(|| Uuid::new_v4().to_string());
-        let connection_file_path = runtime_dir.join(format!("runtimed-kernel-{}.json", kernel_id));
+        let connection_file_path = conn_dir.join(format!("{}.json", kernel_id));
 
         tokio::fs::write(
             &connection_file_path,
@@ -673,7 +674,7 @@ impl RoomKernel {
         {
             self.process_group_id = process.id().map(|pid| pid as i32);
             if let Some(pgid) = self.process_group_id {
-                crate::kernel_pids::register_kernel(&kernel_id, pgid, &connection_file_path);
+                crate::kernel_pids::register_kernel(&kernel_id, pgid);
             }
         }
         self.kernel_id = Some(kernel_id.clone());
@@ -2126,8 +2127,8 @@ impl RoomKernel {
         }
 
         // Unregister from process registry
-        if let Some(ref kid) = self.kernel_id {
-            crate::kernel_pids::unregister_kernel(kid);
+        if let Some(kid) = self.kernel_id.take() {
+            crate::kernel_pids::unregister_kernel(&kid);
         }
 
         // Clean up connection file
@@ -2173,8 +2174,8 @@ impl Drop for RoomKernel {
         }
 
         // Unregister from process registry
-        if let Some(ref kid) = self.kernel_id {
-            crate::kernel_pids::unregister_kernel(kid);
+        if let Some(kid) = self.kernel_id.take() {
+            crate::kernel_pids::unregister_kernel(&kid);
         }
 
         // Clean up connection file

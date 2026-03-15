@@ -201,6 +201,16 @@ pub fn default_blob_store_dir() -> PathBuf {
     daemon_base_dir().join("blobs")
 }
 
+/// Get the directory for kernel connection files.
+///
+/// Connection files are stored here (rather than the shared Jupyter runtime
+/// directory) so the daemon owns its files exclusively. This enables safe
+/// bulk cleanup on startup and opens the door for future kernel reattachment
+/// during daemon upgrades.
+pub fn connections_dir() -> PathBuf {
+    daemon_base_dir().join("connections")
+}
+
 /// Get the default path for the persisted Automerge settings document.
 pub fn default_settings_doc_path() -> PathBuf {
     daemon_base_dir().join("settings.automerge")
