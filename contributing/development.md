@@ -49,12 +49,6 @@ Best for UI/React development. Uses Vite dev server on port 5174. Changes to Rea
 cargo xtask notebook
 ```
 
-When the standalone React DevTools app is running, dev-mode webviews auto-connect
-to it by default (`localhost:8097`). Override with
-`VITE_REACT_DEVTOOLS_HOST`, `VITE_REACT_DEVTOOLS_PORT`,
-`VITE_REACT_DEVTOOLS_HTTPS`, or `VITE_REACT_DEVTOOLS_RETRY_DELAY_MS`, and set
-`VITE_REACT_DEVTOOLS_DISABLED=1` to opt out.
-
 ### `cargo xtask vite` + `notebook --attach` — Multi-Window Testing
 
 When testing with multiple notebook windows, closing the first Tauri window normally kills the Vite server. To avoid this:

@@ -10,32 +10,9 @@ export default defineConfig(({ command }) => {
     process.env.RUNT_NOTEBOOK_DEBUG_BUILD === "1";
   const isolatedRendererSourceMapsEnabled =
     command === "serve" || debugBundleSourceMapsEnabled;
-  const reactDevToolsBootstrap = {
-    name: "react-devtools-bootstrap",
-    transformIndexHtml(html: string) {
-      if (command !== "serve") {
-        return html;
-      }
-
-      return {
-        html,
-        tags: [
-          {
-            tag: "script",
-            attrs: {
-              type: "module",
-              src: "/src/lib/connect-react-devtools.ts",
-            },
-            injectTo: "head-prepend",
-          },
-        ],
-      };
-    },
-  };
 
   return {
     plugins: [
-      reactDevToolsBootstrap,
       react(),
       tailwindcss(),
       isolatedRendererPlugin({

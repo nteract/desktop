@@ -40,7 +40,6 @@
     "lucide-react": "^0.513.0",
     "radix-ui": "^1.4.3",
     "react": "^19.1.0",
-    "react-devtools-core": "^7.0.1",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.0",
