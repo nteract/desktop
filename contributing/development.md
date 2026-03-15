@@ -269,9 +269,9 @@ cargo xtask dev-mcp
 ```
 
 This command:
-1. Builds `runtimed-py` via `maturin develop` (compiles the Rust PyO3 bindings
+1. Resolves the dev daemon socket path from `runt daemon status --json`
+2. Builds `runtimed-py` via `maturin develop` (compiles the Rust PyO3 bindings
    into the uv workspace venv)
-2. Resolves the dev daemon socket path from `runt daemon status --json`
 3. Launches the nteract MCP server with `RUNTIMED_SOCKET_PATH` set
 
 ### Getting the MCP config for your AI tool
