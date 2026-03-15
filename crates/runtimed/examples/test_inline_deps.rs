@@ -12,7 +12,6 @@ use tokio::time::sleep;
 
 use runtimed::client::PoolClient;
 use runtimed::daemon::{Daemon, DaemonConfig};
-use runtimed::notebook_sync_client::NotebookSyncClient;
 use runtimed::protocol::{NotebookRequest, NotebookResponse};
 
 #[tokio::main]
@@ -82,7 +81,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Connect to notebook room
     let notebook_id = format!("test-{}", uuid::Uuid::new_v4());
-    let mut client = NotebookSyncClient::connect(socket_path.clone(), notebook_id.clone()).await?;
+    let result = notebook_sync::connect::connect(socket_path.clone(), notebook_id.clone()).await?;
+    let handle = result.handle;
     println!("Connected to notebook room: {}", notebook_id);
 
     // Send LaunchKernel request with env_source: "auto"
@@ -95,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
         notebook_path: Some(notebook_path.to_string_lossy().to_string()),
     };
 
-    let response = client.send_request(&request).await;
+    let response = handle.send_request(request).await;
     println!("\n=== Response ===");
     match response {
         Ok(NotebookResponse::KernelLaunched {

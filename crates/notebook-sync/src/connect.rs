@@ -118,6 +118,44 @@ pub async fn connect_with_options(
     working_dir: Option<PathBuf>,
     initial_metadata: Option<String>,
 ) -> Result<ConnectResult, SyncError> {
+    connect_with_options_impl(
+        socket_path,
+        notebook_id,
+        working_dir,
+        initial_metadata,
+        None,
+    )
+    .await
+}
+
+/// Connect to a notebook room by ID with pipe frame forwarding.
+///
+/// Same as `connect_with_options` but forwards raw daemon frames to the
+/// given channel before processing them locally.
+pub async fn connect_with_pipe(
+    socket_path: PathBuf,
+    notebook_id: String,
+    initial_metadata: Option<String>,
+    working_dir: Option<PathBuf>,
+    pipe_frame_tx: mpsc::UnboundedSender<Vec<u8>>,
+) -> Result<ConnectResult, SyncError> {
+    connect_with_options_impl(
+        socket_path,
+        notebook_id,
+        working_dir,
+        initial_metadata,
+        Some(pipe_frame_tx),
+    )
+    .await
+}
+
+async fn connect_with_options_impl(
+    socket_path: PathBuf,
+    notebook_id: String,
+    working_dir: Option<PathBuf>,
+    initial_metadata: Option<String>,
+    pipe_frame_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+) -> Result<ConnectResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
     let mut reader = tokio::io::BufReader::new(reader);
@@ -176,7 +214,7 @@ pub async fn connect_with_options(
         pending_broadcasts,
         reader,
         writer,
-        None,
+        pipe_frame_tx,
     )
     .map(|(handle, broadcast_rx)| ConnectResult {
         handle,
