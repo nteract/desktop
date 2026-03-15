@@ -742,6 +742,38 @@ function AppContent() {
     };
   }, [handleAddCell, focusedCellId]);
 
+  // Cell menu: Clear Outputs (focused cell)
+  useEffect(() => {
+    const webview = getCurrentWebview();
+    const unlistenPromise = webview.listen("menu:clear-outputs", () => {
+      if (focusedCellId) {
+        clearCellOutputs(focusedCellId);
+        clearOutputs(focusedCellId);
+      }
+    });
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
+    };
+  }, [focusedCellId, clearCellOutputs, clearOutputs]);
+
+  // Cell menu: Clear All Outputs
+  useEffect(() => {
+    const webview = getCurrentWebview();
+    const unlistenPromise = webview.listen(
+      "menu:clear-all-outputs",
+      async () => {
+        const codeCells = cells.filter((c) => c.cell_type === "code");
+        for (const cell of codeCells) {
+          clearCellOutputs(cell.id);
+        }
+        await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
+      },
+    );
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
+    };
+  }, [cells, clearCellOutputs, clearOutputs]);
+
   // Kernel menu: Run All Cells
   useEffect(() => {
     const webview = getCurrentWebview();

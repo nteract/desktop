@@ -34,6 +34,8 @@ pub const MENU_RESTART_AND_RUN_ALL: &str = "restart_and_run_all";
 pub const MENU_INSERT_CODE_CELL: &str = "insert_code_cell";
 pub const MENU_INSERT_MARKDOWN_CELL: &str = "insert_markdown_cell";
 pub const MENU_INSERT_RAW_CELL: &str = "insert_raw_cell";
+pub const MENU_CLEAR_OUTPUTS: &str = "clear_outputs";
+pub const MENU_CLEAR_ALL_OUTPUTS: &str = "clear_all_outputs";
 
 // Menu item IDs for CLI installation and settings
 pub const MENU_INSTALL_CLI: &str = "install_cli";
@@ -257,6 +259,21 @@ pub fn create_menu(
         "Insert Raw Cell",
         true,
         Some("CmdOrCtrl+Shift+R"),
+    )?)?;
+    cell_menu.append(&PredefinedMenuItem::separator(app)?)?;
+    cell_menu.append(&MenuItem::with_id(
+        app,
+        MENU_CLEAR_OUTPUTS,
+        "Clear Outputs",
+        true,
+        None::<&str>,
+    )?)?;
+    cell_menu.append(&MenuItem::with_id(
+        app,
+        MENU_CLEAR_ALL_OUTPUTS,
+        "Clear All Outputs",
+        true,
+        None::<&str>,
     )?)?;
     menu.append(&cell_menu)?;
 

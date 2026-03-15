@@ -4041,6 +4041,22 @@ pub fn run(
                             emit_to_label::<_, _, _>(&window, window.label(), "menu:insert-cell", "raw");
                     }
                 }
+                crate::menu::MENU_CLEAR_OUTPUTS => {
+                    if let Some(window) = focused_window(app) {
+                        let _ =
+                            emit_to_label::<_, _, _>(&window, window.label(), "menu:clear-outputs", ());
+                    }
+                }
+                crate::menu::MENU_CLEAR_ALL_OUTPUTS => {
+                    if let Some(window) = focused_window(app) {
+                        let _ = emit_to_label::<_, _, _>(
+                            &window,
+                            window.label(),
+                            "menu:clear-all-outputs",
+                            (),
+                        );
+                    }
+                }
                 crate::menu::MENU_CHECK_FOR_UPDATES => {
                     if let Some(window) = focused_window(app) {
                         let _ = emit_to_label::<_, _, _>(
