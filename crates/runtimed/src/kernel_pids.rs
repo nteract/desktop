@@ -8,7 +8,9 @@
 //! All I/O is synchronous (`std::fs`) since it's called from both async and
 //! `Drop` contexts.
 
-use log::{error, info, warn};
+use log::error;
+#[cfg(unix)]
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
