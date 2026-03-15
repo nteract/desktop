@@ -174,9 +174,11 @@ fn run_notebook_dev_app(notebook: Option<&str>, attach: bool, force_dev_mode: bo
         let port = vite_port.clone().unwrap_or_else(|| "5174".to_string());
         println!("Connecting to Vite at http://localhost:{port}");
 
-        // Skip beforeDevCommand (Vite is already running) and set devUrl
-        let config =
-            format!(r#"{{"build":{{"devUrl":"http://localhost:{port}","beforeDevCommand":""}}}}"#);
+        // Skip beforeDevCommand (Vite is already running), set devUrl,
+        // and drop externalBin so sidecar binaries aren't required in dev
+        let config = format!(
+            r#"{{"build":{{"devUrl":"http://localhost:{port}","beforeDevCommand":""}},"bundle":{{"externalBin":[]}}}}"#
+        );
 
         let mut args = vec!["tauri", "dev", "--config", &config, "--", "-p", "notebook"];
         if let Some(path) = notebook {
@@ -187,15 +189,19 @@ fn run_notebook_dev_app(notebook: Option<&str>, attach: bool, force_dev_mode: bo
     } else {
         println!("Starting dev server with hot reload...");
 
-        let config_override = vite_port.as_ref().map(|port| {
-            println!("Using RUNTIMED_VITE_PORT={port}");
-            format!(r#"{{"build":{{"devUrl":"http://localhost:{port}"}}}}"#)
-        });
+        // Always override externalBin so sidecar binaries aren't required
+        // in dev mode (the daemon is started separately via dev-daemon)
+        let config_override = match vite_port.as_ref() {
+            Some(port) => {
+                println!("Using RUNTIMED_VITE_PORT={port}");
+                format!(
+                    r#"{{"build":{{"devUrl":"http://localhost:{port}"}},"bundle":{{"externalBin":[]}}}}"#
+                )
+            }
+            None => r#"{"bundle":{"externalBin":[]}}"#.to_string(),
+        };
 
-        let mut args = vec!["tauri", "dev"];
-        if let Some(ref config) = config_override {
-            args.extend(["--config", config]);
-        }
+        let mut args = vec!["tauri", "dev", "--config", &config_override];
         args.extend(["--", "-p", "notebook"]);
         if let Some(path) = notebook {
             args.extend(["--", path]);
