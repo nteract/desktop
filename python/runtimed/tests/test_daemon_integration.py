@@ -2782,6 +2782,16 @@ class TestAsyncPresence:
             head_col=5,
         )
 
+    async def test_async_get_peers(self, async_session):
+        """Can query peers via AsyncSession."""
+        peers = await async_session.get_peers()
+        assert isinstance(peers, list)
+
+    async def test_async_get_remote_cursors(self, async_session):
+        """Can query remote cursors via AsyncSession."""
+        cursors = await async_session.get_remote_cursors()
+        assert isinstance(cursors, list)
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -364,7 +364,15 @@ async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
         }
 
         NotebookFrameType::Presence => {
-            use notebook_doc::presence::{decode_message, PresenceMessage};
+            use notebook_doc::presence::{decode_message, validate_frame_size, PresenceMessage};
+
+            if let Err(e) = validate_frame_size(&frame.payload) {
+                debug!(
+                    "[notebook-sync] Dropping oversized presence frame for {}: {}",
+                    notebook_id, e
+                );
+                return;
+            }
 
             match decode_message(&frame.payload) {
                 Ok(msg) => {
