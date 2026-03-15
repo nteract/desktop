@@ -1,5 +1,5 @@
-import { AlertTriangle, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { AlertTriangle, Settings, X } from "lucide-react";
 import type { PoolErrorWithTimestamp } from "../hooks/usePoolState";
 
 interface PoolErrorItemProps {
@@ -9,55 +9,46 @@ interface PoolErrorItemProps {
 }
 
 function PoolErrorItem({ envType, error, onDismiss }: PoolErrorItemProps) {
-  // Live countdown timer
-  const [secondsRemaining, setSecondsRemaining] = useState(() => {
-    const elapsed = Math.floor((Date.now() - error.receivedAt) / 1000);
-    return Math.max(0, error.retry_in_secs - elapsed);
-  });
+  const openSettings = () => {
+    invoke("open_settings_window").catch((e) => {
+      console.error("Failed to open settings:", e);
+    });
+  };
 
-  useEffect(() => {
-    // Don't start interval if already at 0
-    const elapsed = Math.floor((Date.now() - error.receivedAt) / 1000);
-    const remaining = Math.max(0, error.retry_in_secs - elapsed);
-    setSecondsRemaining(remaining);
-
-    if (remaining === 0) return;
-
-    const interval = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - error.receivedAt) / 1000);
-      const remaining = Math.max(0, error.retry_in_secs - elapsed);
-      setSecondsRemaining(remaining);
-
-      // Clear interval once countdown hits 0
-      if (remaining === 0) {
-        clearInterval(interval);
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [error.receivedAt, error.retry_in_secs]);
-
-  const retryText =
-    secondsRemaining > 0 ? `Retrying in ${secondsRemaining}s` : "Retrying...";
+  // Build a helpful message based on the error
+  const failureCount = error.consecutive_failures;
+  const failureText =
+    failureCount > 1 ? `Failed ${failureCount} times` : "Failed";
 
   return (
     <div className="flex items-center justify-between gap-2 bg-amber-600/90 px-3 py-1.5 text-xs text-white">
       <div className="flex items-center gap-2 min-w-0">
         <AlertTriangle className="h-3 w-3 flex-shrink-0" />
-        <span className="font-medium flex-shrink-0">{envType} pool error</span>
-        <span className="text-amber-200 flex-shrink-0">—</span>
+        <span className="font-medium flex-shrink-0">
+          {envType} default package error
+        </span>
         {error.failed_package && (
           <>
+            <span className="text-amber-200 flex-shrink-0">—</span>
             <code className="bg-amber-700/50 px-1 rounded text-amber-100 flex-shrink-0">
               {error.failed_package}
             </code>
-            <span className="text-amber-200 flex-shrink-0">—</span>
           </>
         )}
-        <span className="text-amber-100 truncate">{error.message}</span>
+        <span className="text-amber-200 flex-shrink-0">—</span>
+        <span className="text-amber-100 truncate" title={error.message}>
+          {failureText}. Check package name in settings.
+        </span>
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
-        <span className="text-amber-200 text-[10px]">{retryText}</span>
+        <button
+          type="button"
+          onClick={openSettings}
+          className="flex items-center gap-1 rounded bg-amber-700/60 px-2 py-0.5 hover:bg-amber-700 transition-colors"
+        >
+          <Settings className="h-3 w-3" />
+          <span>Settings</span>
+        </button>
         <button
           type="button"
           onClick={onDismiss}
@@ -82,7 +73,7 @@ interface PoolErrorBannerProps {
  * Banner component showing pool warming errors.
  *
  * Displays amber warning banners for UV and/or Conda pool errors,
- * with the failed package name, error message, and live retry countdown.
+ * with the failed package name and a link to open settings to fix the issue.
  */
 export function PoolErrorBanner({
   uvError,
