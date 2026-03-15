@@ -50,9 +50,6 @@ export function EditorRegistryProvider({ children }: { children: ReactNode }) {
         scrollIntoView: true,
       });
       view.focus();
-
-      // Scroll cell into view
-      cellElement.scrollIntoView({ behavior: "smooth", block: "nearest" });
     },
     [],
   );

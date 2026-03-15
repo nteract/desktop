@@ -366,6 +366,16 @@ function NotebookViewContent({
     }
   }, [searchCurrentMatch]);
 
+  useEffect(() => {
+    if (!focusedCellId) return;
+    const cellEl = containerRef.current?.querySelector(
+      `[data-cell-id="${CSS.escape(focusedCellId)}"]`,
+    );
+    if (cellEl) {
+      cellEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [focusedCellId]);
+
   const renderCell = useCallback(
     (
       cell: NotebookCell,
