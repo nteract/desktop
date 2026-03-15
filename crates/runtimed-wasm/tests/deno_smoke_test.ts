@@ -595,35 +595,38 @@ Deno.test("create_empty: creates doc with zero cells", () => {
   handle.free();
 });
 
-Deno.test("create_empty: sync-only bootstrap receives all content from daemon", () => {
-  // Daemon has existing content (simulates loaded notebook)
-  const daemon = new NotebookHandle("sync-bootstrap-test");
-  daemon.add_cell(0, "cell-1", "code");
-  daemon.update_source("cell-1", "import numpy as np");
-  daemon.add_cell(1, "cell-2", "markdown");
-  daemon.update_source("cell-2", "# Analysis");
-  daemon.set_metadata("custom_key", "custom_value");
+Deno.test(
+  "create_empty: sync-only bootstrap receives all content from daemon",
+  () => {
+    // Daemon has existing content (simulates loaded notebook)
+    const daemon = new NotebookHandle("sync-bootstrap-test");
+    daemon.add_cell(0, "cell-1", "code");
+    daemon.update_source("cell-1", "import numpy as np");
+    daemon.add_cell(1, "cell-2", "markdown");
+    daemon.update_source("cell-2", "# Analysis");
+    daemon.set_metadata("custom_key", "custom_value");
 
-  // WASM starts completely empty (zero operations) — the #622 path
-  const wasm = NotebookHandle.create_empty();
-  assertEquals(wasm.cell_count(), 0);
+    // WASM starts completely empty (zero operations) — the #622 path
+    const wasm = NotebookHandle.create_empty();
+    assertEquals(wasm.cell_count(), 0);
 
-  // Sync should transfer all content
-  syncHandles(daemon, wasm);
+    // Sync should transfer all content
+    syncHandles(daemon, wasm);
 
-  // WASM should have all content from daemon
-  assertEquals(wasm.cell_count(), 2);
-  const cells = wasm.get_cells();
-  assertEquals(cells[0].id, "cell-1");
-  assertEquals(cells[0].source, "import numpy as np");
-  assertEquals(cells[1].id, "cell-2");
-  assertEquals(cells[1].source, "# Analysis");
-  assertEquals(wasm.get_metadata("custom_key"), "custom_value");
+    // WASM should have all content from daemon
+    assertEquals(wasm.cell_count(), 2);
+    const cells = wasm.get_cells();
+    assertEquals(cells[0].id, "cell-1");
+    assertEquals(cells[0].source, "import numpy as np");
+    assertEquals(cells[1].id, "cell-2");
+    assertEquals(cells[1].source, "# Analysis");
+    assertEquals(wasm.get_metadata("custom_key"), "custom_value");
 
-  for (const c of cells) c.free();
-  daemon.free();
-  wasm.free();
-});
+    for (const c of cells) c.free();
+    daemon.free();
+    wasm.free();
+  },
+);
 
 Deno.test("create_empty: can mutate after sync bootstrap", () => {
   const daemon = new NotebookHandle("mutate-after-bootstrap");
@@ -821,6 +824,117 @@ Deno.test("Cell metadata: returns false for non-existent cell", () => {
 
   handle.free();
 });
+
+// ── Notebook metadata snapshot tests ────────────────────────────────
+
+Deno.test(
+  "Metadata snapshot: returns plain Objects, not Maps (serde flatten regression)",
+  () => {
+    // Regression test: RuntMetadata has #[serde(flatten)] on its `extra` field,
+    // which causes serde to emit it via serialize_map. serde_wasm_bindgen defaults
+    // to creating JS Map objects for maps, making snapshot.runt a Map — breaking
+    // dot-access (snapshot.runt.uv would be undefined). The fix uses
+    // serialize_maps_as_objects(true) so all maps become plain Objects.
+    const handle = new NotebookHandle("metadata-snapshot-test");
+    handle.add_uv_dependency("pandas>=2.0");
+    handle.add_uv_dependency("numpy");
+
+    const snapshot = handle.get_metadata_snapshot();
+    assertExists(snapshot, "snapshot should not be undefined");
+
+    // The snapshot itself must be a plain object, not a Map
+    assertEquals(
+      snapshot.constructor,
+      Object,
+      "snapshot should be a plain Object",
+    );
+
+    // runt must be a plain object (this is the one that breaks with flatten)
+    assertExists(snapshot.runt, "snapshot.runt should exist");
+    assertEquals(
+      snapshot.runt.constructor,
+      Object,
+      "snapshot.runt should be a plain Object, not a Map",
+    );
+
+    // UV deps must be accessible via dot notation
+    assertExists(snapshot.runt.uv, "snapshot.runt.uv should exist");
+    assertEquals(
+      snapshot.runt.uv.constructor,
+      Object,
+      "snapshot.runt.uv should be a plain Object",
+    );
+    assertExists(
+      snapshot.runt.uv.dependencies,
+      "snapshot.runt.uv.dependencies should exist",
+    );
+    assert(
+      Array.isArray(snapshot.runt.uv.dependencies),
+      "dependencies should be an array",
+    );
+    assertEquals(snapshot.runt.uv.dependencies.length, 2);
+    assert(snapshot.runt.uv.dependencies.includes("pandas>=2.0"));
+    assert(snapshot.runt.uv.dependencies.includes("numpy"));
+
+    handle.free();
+  },
+);
+
+Deno.test(
+  "Metadata snapshot: UV requires-python and prerelease accessible via dot notation",
+  () => {
+    const handle = new NotebookHandle("metadata-snapshot-uv-fields");
+    handle.add_uv_dependency("requests");
+    handle.set_uv_requires_python(">=3.10");
+    handle.set_uv_prerelease("allow");
+
+    const snapshot = handle.get_metadata_snapshot();
+    assertExists(snapshot.runt.uv);
+    assertEquals(snapshot.runt.uv["requires-python"], ">=3.10");
+    assertEquals(snapshot.runt.uv.prerelease, "allow");
+
+    handle.free();
+  },
+);
+
+Deno.test("Metadata snapshot: conda deps accessible via dot notation", () => {
+  const handle = new NotebookHandle("metadata-snapshot-conda");
+  handle.add_conda_dependency("scipy");
+  handle.set_conda_channels('["conda-forge"]');
+  handle.set_conda_python("3.11");
+
+  const snapshot = handle.get_metadata_snapshot();
+  assertExists(snapshot.runt.conda, "snapshot.runt.conda should exist");
+  assertEquals(
+    snapshot.runt.conda.constructor,
+    Object,
+    "snapshot.runt.conda should be a plain Object",
+  );
+  assert(snapshot.runt.conda.dependencies.includes("scipy"));
+  assertEquals(snapshot.runt.conda.channels, ["conda-forge"]);
+  assertEquals(snapshot.runt.conda.python, "3.11");
+
+  handle.free();
+});
+
+Deno.test(
+  "Metadata snapshot: synced deps visible via get_metadata_snapshot on peer",
+  () => {
+    const daemon = new NotebookHandle("metadata-snapshot-sync");
+    daemon.add_uv_dependency("flask");
+
+    const wasm = NotebookHandle.load(daemon.save());
+    syncHandles(daemon, wasm);
+
+    // Peer should see deps via snapshot dot-access (not Map.get)
+    const snapshot = wasm.get_metadata_snapshot();
+    assertExists(snapshot.runt.uv);
+    assert(snapshot.runt.uv.dependencies.includes("flask"));
+
+    daemon.free();
+    wasm.free();
+  },
+);
 
 Deno.test("Cell metadata: syncs between handles", () => {
   const daemon = new NotebookHandle("metadata-sync-test");
