@@ -64,6 +64,7 @@ where
         }
 
         let select_result = tokio::select! {
+            biased;
             cmd = config.cmd_rx.recv() => SelectResult::Command(cmd),
             frame = connection::recv_typed_frame(&mut reader) => SelectResult::Frame(frame),
         };
@@ -194,10 +195,13 @@ async fn send_request_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 
     match result {
         Ok(inner) => inner,
-        Err(_) => Err(SyncError::Protocol(format!(
-            "Request timed out after {}s: {:?}",
-            timeout_secs, request
-        ))),
+        Err(_) => {
+            warn!(
+                "[relay] Request timed out after {}s: {:?}",
+                timeout_secs, request
+            );
+            Err(SyncError::Timeout)
+        }
     }
 }
 

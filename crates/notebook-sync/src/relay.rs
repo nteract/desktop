@@ -40,8 +40,9 @@ pub enum RelayCommand {
 
     /// Forward a typed frame from the frontend to the daemon.
     ///
-    /// The relay does not decode or validate the frame — it writes the
-    /// type byte and payload directly to the daemon socket.
+    /// The relay validates the frame type byte but does not decode
+    /// the payload — it writes the type and payload directly to the
+    /// daemon socket.
     ForwardFrame {
         frame_type: u8,
         payload: Vec<u8>,
