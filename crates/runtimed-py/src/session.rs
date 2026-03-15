@@ -345,7 +345,7 @@ impl Session {
     ///
     /// Returns:
     ///     List of (peer_id, peer_label, cell_id, line, column) tuples.
-    fn get_remote_cursors(&self) -> PyResult<Vec<(String, String, String, u32, u32)>> {
+    fn get_remote_cursors(&self) -> PyResult<Vec<session_core::RemoteCursor>> {
         self.runtime
             .block_on(session_core::get_remote_cursors(&self.state))
     }
