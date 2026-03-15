@@ -33,8 +33,6 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
-jupyter-protocol = { workspace = true }
-runtimelib = { workspace = true, features = ["tokio-runtime", "aws-lc-rs"] }
 tauri-jupyter = { path = "../tauri-jupyter" }
 runtimed = { path = "../runtimed" }
 notebook-sync = { path = "../notebook-sync" }
