@@ -265,13 +265,30 @@ def _build_cell_status_map(queue_state: runtimed.QueueState) -> dict[str, str]:
     return cell_status
 
 
-def _cell_queue_status(cell_id: str, queue_state: runtimed.QueueState) -> str | None:
-    """Get the queue status for a single cell."""
-    if queue_state.executing == cell_id:
-        return "running"
-    if cell_id in queue_state.queued:
-        return "queued"
-    return None
+async def _get_cell_status_map(session: runtimed.AsyncSession) -> dict[str, str]:
+    """Fetch queue state and return cell status map, empty on failure.
+
+    Status is a best-effort annotation — errors should never prevent
+    get_all_cells or get_cell from returning results.
+    """
+    try:
+        queue_state = await session.get_queue_state()
+        return _build_cell_status_map(queue_state)
+    except Exception:
+        return {}
+
+
+async def _get_single_cell_status(session: runtimed.AsyncSession, cell_id: str) -> str | None:
+    """Fetch queue status for a single cell, None on failure."""
+    try:
+        queue_state = await session.get_queue_state()
+        if queue_state.executing == cell_id:
+            return "running"
+        if cell_id in queue_state.queued:
+            return "queued"
+        return None
+    except Exception:
+        return None
 
 
 def _format_cell_summary(
@@ -970,8 +987,7 @@ async def get_cell(
     session = await _get_session()
     await _send_cell_cursor(session, cell_id)
     cell = await session.get_cell(cell_id=cell_id)
-    queue_state = await session.get_queue_state()
-    status = _cell_queue_status(cell_id, queue_state)
+    status = await _get_single_cell_status(session, cell_id)
     return _cell_to_content(cell, status=status)
 
 
@@ -1037,8 +1053,7 @@ async def get_all_cells(
     cells = await session.get_cells()
 
     # Fetch execution queue state to annotate running/queued cells
-    queue_state = await session.get_queue_state()
-    cell_status = _build_cell_status_map(queue_state)
+    cell_status = await _get_cell_status_map(session)
 
     # Apply pagination
     end = start + count if count is not None else len(cells)
@@ -1185,12 +1200,7 @@ async def resource_cells() -> str:
 
     try:
         cells = await _session.get_cells()
-        queue_state = await _session.get_queue_state()
-        cell_status: dict[str, str] = {}
-        if queue_state.executing:
-            cell_status[queue_state.executing] = "running"
-        for cid in queue_state.queued:
-            cell_status[cid] = "queued"
+        cell_status = await _get_cell_status_map(_session)
         lines = [
             _format_cell_summary(i, cell, status=cell_status.get(cell.id))
             for i, cell in enumerate(cells)
@@ -1209,8 +1219,7 @@ async def resource_cell(cell_id: str) -> str:
     try:
         await _send_cell_cursor(_session, cell_id)
         cell = await _session.get_cell(cell_id=cell_id)
-        queue_state = await _session.get_queue_state()
-        status = _cell_queue_status(cell_id, queue_state)
+        status = await _get_single_cell_status(_session, cell_id)
         return _format_cell(cell, status=status)
     except Exception as e:
         return f"Error: {e}"
@@ -1228,8 +1237,7 @@ async def resource_cell_by_index(index: int) -> str:
             return f"Error: Index {index} out of range (notebook has {len(cells)} cells)"
         cell = cells[index]
         await _send_cell_cursor(_session, cell.id)
-        queue_state = await _session.get_queue_state()
-        status = _cell_queue_status(cell.id, queue_state)
+        status = await _get_single_cell_status(_session, cell.id)
         return _format_cell(cell, status=status)
     except Exception as e:
         return f"Error: {e}"
