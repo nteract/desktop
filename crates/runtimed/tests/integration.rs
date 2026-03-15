@@ -86,6 +86,39 @@ async fn wait_for_daemon(client: &PoolClient, timeout: Duration) -> bool {
     false
 }
 
+#[cfg(unix)]
+type LegacyPoolStream = tokio::net::UnixStream;
+
+#[cfg(windows)]
+type LegacyPoolStream = tokio::net::windows::named_pipe::NamedPipeClient;
+
+#[cfg(unix)]
+async fn connect_legacy_pool_stream(
+    socket_path: &std::path::Path,
+) -> Result<LegacyPoolStream, std::io::Error> {
+    tokio::net::UnixStream::connect(socket_path).await
+}
+
+#[cfg(windows)]
+async fn connect_legacy_pool_stream(
+    socket_path: &std::path::Path,
+) -> Result<LegacyPoolStream, std::io::Error> {
+    const ERROR_PIPE_BUSY: i32 = 231;
+    let pipe_name = socket_path.to_string_lossy().to_string();
+    let mut attempts = 0;
+
+    loop {
+        match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name) {
+            Ok(client) => return Ok(client),
+            Err(err) if err.raw_os_error() == Some(ERROR_PIPE_BUSY) && attempts < 5 => {
+                attempts += 1;
+                sleep(Duration::from_millis(50)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 #[tokio::test]
 async fn test_daemon_ping_pong() {
     let temp_dir = TempDir::new().unwrap();
@@ -986,7 +1019,7 @@ async fn test_legacy_client_no_preamble() {
 
     // Now connect as a legacy client: send a raw length-prefixed JSON
     // handshake WITHOUT the magic bytes preamble.
-    let mut stream = tokio::net::UnixStream::connect(&socket_path)
+    let mut stream = connect_legacy_pool_stream(&socket_path)
         .await
         .expect("legacy client should connect");
 
