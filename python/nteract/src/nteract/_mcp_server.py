@@ -260,14 +260,21 @@ def _format_cell_summary(
     cell: runtimed.Cell,
     preview_chars: int = 60,
     include_outputs: bool = False,
+    status: str | None = None,
 ) -> str:
     """Format a cell as a single summary line.
 
     Example output:
     0 | markdown | id=cell-1be2a179-... | # Crate Download Analysis
-    1 | code | id=cell-e18fcc2a-... | exec=4 | import requests…[+45 chars]
+    1 | code | running | id=cell-e18fcc2a-... | exec=4 | import requests…[+45 chars]
+    2 | code | queued | id=cell-abc123-... | exec=3 | df.plot()…[+20 chars]
     """
-    parts = [str(index), cell.cell_type, f"id={cell.id}"]
+    parts = [str(index), cell.cell_type]
+
+    if status:
+        parts.append(status)
+
+    parts.append(f"id={cell.id}")
 
     if cell.cell_type == "code" and cell.execution_count is not None:
         parts.append(f"exec={cell.execution_count}")
@@ -1004,6 +1011,14 @@ async def get_all_cells(
     session = await _get_session()
     cells = await session.get_cells()
 
+    # Fetch execution queue state to annotate running/queued cells
+    queue_state = await session.get_queue_state()
+    cell_status: dict[str, str] = {}
+    if queue_state.executing:
+        cell_status[queue_state.executing] = "running"
+    for cid in queue_state.queued:
+        cell_status[cid] = "queued"
+
     # Apply pagination
     end = start + count if count is not None else len(cells)
     cells = cells[start:end]
@@ -1016,6 +1031,7 @@ async def get_all_cells(
                 "execution_count": cell.execution_count,
                 "source": cell.source,
                 "outputs": [_output_to_dict(o) for o in cell.outputs],
+                "status": cell_status.get(cell.id),
             }
             for cell in cells
         ]
@@ -1028,7 +1044,13 @@ async def get_all_cells(
 
     # Default summary format - compact one-line-per-cell
     lines = [
-        _format_cell_summary(start + i, cell, preview_chars, include_outputs)
+        _format_cell_summary(
+            start + i,
+            cell,
+            preview_chars,
+            include_outputs,
+            status=cell_status.get(cell.id),
+        )
         for i, cell in enumerate(cells)
     ]
     return "\n".join(lines)
@@ -1142,7 +1164,16 @@ async def resource_cells() -> str:
 
     try:
         cells = await _session.get_cells()
-        lines = [_format_cell_summary(i, cell) for i, cell in enumerate(cells)]
+        queue_state = await _session.get_queue_state()
+        cell_status: dict[str, str] = {}
+        if queue_state.executing:
+            cell_status[queue_state.executing] = "running"
+        for cid in queue_state.queued:
+            cell_status[cid] = "queued"
+        lines = [
+            _format_cell_summary(i, cell, status=cell_status.get(cell.id))
+            for i, cell in enumerate(cells)
+        ]
         return "\n".join(lines)
     except Exception as e:
         return f"Error: {e}"
