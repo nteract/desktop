@@ -17,6 +17,20 @@
 | Lint (check mode) | `cargo xtask lint` |
 | Lint (auto-fix) | `cargo xtask lint --fix` |
 
+## Build Cache (sccache)
+
+Install [sccache](https://github.com/mozilla/sccache) to share compiled
+artifacts across worktrees. Without it, each worktree rebuilds ~788 crates from
+scratch.
+
+```bash
+brew install sccache   # macOS
+```
+
+The xtask commands auto-detect sccache and set `RUSTC_WRAPPER` when it's
+available — no configuration needed. You'll see "Using sccache for compilation
+cache" in the build output when it's active.
+
 ## Choosing a Workflow
 
 ### `cargo xtask dev` — One Command Setup + Dev
