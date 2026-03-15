@@ -255,6 +255,25 @@ def _outputs_to_content(outputs: list[runtimed.Output]) -> list[ContentItem]:
     return items
 
 
+def _build_cell_status_map(queue_state: runtimed.QueueState) -> dict[str, str]:
+    """Build a cell_id -> status mapping from queue state."""
+    cell_status: dict[str, str] = {}
+    if queue_state.executing:
+        cell_status[queue_state.executing] = "running"
+    for cid in queue_state.queued:
+        cell_status[cid] = "queued"
+    return cell_status
+
+
+def _cell_queue_status(cell_id: str, queue_state: runtimed.QueueState) -> str | None:
+    """Get the queue status for a single cell."""
+    if queue_state.executing == cell_id:
+        return "running"
+    if cell_id in queue_state.queued:
+        return "queued"
+    return None
+
+
 def _format_cell_summary(
     index: int,
     cell: runtimed.Cell,
@@ -332,12 +351,14 @@ def _format_header(
     return " ".join(parts)
 
 
-def _format_cell(cell: runtimed.Cell) -> str:
+def _format_cell(cell: runtimed.Cell, status: str | None = None) -> str:
     """Format a cell for terminal display (includes source).
 
     Used by get_cell to show full cell state.
     """
-    header = _format_header(cell.id, cell_type=cell.cell_type, execution_count=cell.execution_count)
+    header = _format_header(
+        cell.id, cell_type=cell.cell_type, status=status, execution_count=cell.execution_count
+    )
     output_text = _format_outputs_text(cell.outputs)
 
     if cell.source and output_text:
@@ -350,12 +371,14 @@ def _format_cell(cell: runtimed.Cell) -> str:
         return header
 
 
-def _cell_to_content(cell: runtimed.Cell) -> list[ContentItem]:
+def _cell_to_content(cell: runtimed.Cell, status: str | None = None) -> list[ContentItem]:
     """Convert a cell to rich MCP content items.
 
     Returns a header as TextContent, then each output as its richest type.
     """
-    header = _format_header(cell.id, cell_type=cell.cell_type, execution_count=cell.execution_count)
+    header = _format_header(
+        cell.id, cell_type=cell.cell_type, status=status, execution_count=cell.execution_count
+    )
     items: list[ContentItem] = []
 
     if cell.source:
@@ -947,7 +970,9 @@ async def get_cell(
     session = await _get_session()
     await _send_cell_cursor(session, cell_id)
     cell = await session.get_cell(cell_id=cell_id)
-    return _cell_to_content(cell)
+    queue_state = await session.get_queue_state()
+    status = _cell_queue_status(cell_id, queue_state)
+    return _cell_to_content(cell, status=status)
 
 
 def _output_to_dict(output: runtimed.Output) -> dict[str, Any]:
@@ -1013,11 +1038,7 @@ async def get_all_cells(
 
     # Fetch execution queue state to annotate running/queued cells
     queue_state = await session.get_queue_state()
-    cell_status: dict[str, str] = {}
-    if queue_state.executing:
-        cell_status[queue_state.executing] = "running"
-    for cid in queue_state.queued:
-        cell_status[cid] = "queued"
+    cell_status = _build_cell_status_map(queue_state)
 
     # Apply pagination
     end = start + count if count is not None else len(cells)
@@ -1039,7 +1060,7 @@ async def get_all_cells(
     if format == "rich":
         items: list[ContentItem] = []
         for cell in cells:
-            items.extend(_cell_to_content(cell))
+            items.extend(_cell_to_content(cell, status=cell_status.get(cell.id)))
         return items
 
     # Default summary format - compact one-line-per-cell
@@ -1188,7 +1209,9 @@ async def resource_cell(cell_id: str) -> str:
     try:
         await _send_cell_cursor(_session, cell_id)
         cell = await _session.get_cell(cell_id=cell_id)
-        return _format_cell(cell)
+        queue_state = await _session.get_queue_state()
+        status = _cell_queue_status(cell_id, queue_state)
+        return _format_cell(cell, status=status)
     except Exception as e:
         return f"Error: {e}"
 
@@ -1205,7 +1228,9 @@ async def resource_cell_by_index(index: int) -> str:
             return f"Error: Index {index} out of range (notebook has {len(cells)} cells)"
         cell = cells[index]
         await _send_cell_cursor(_session, cell.id)
-        return _format_cell(cell)
+        queue_state = await _session.get_queue_state()
+        status = _cell_queue_status(cell.id, queue_state)
+        return _format_cell(cell, status=status)
     except Exception as e:
         return f"Error: {e}"
 
