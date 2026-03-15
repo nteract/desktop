@@ -162,6 +162,8 @@ fn cmd_notebook(notebook: Option<&str>, attach: bool) {
 }
 
 fn run_notebook_dev_app(notebook: Option<&str>, attach: bool, force_dev_mode: bool) -> ExitStatus {
+    ensure_pnpm_install();
+
     // Delete bundled marker since we're building a dev binary
     let marker = Path::new("./target/debug/.notebook-bundled");
     let _ = fs::remove_file(marker);
