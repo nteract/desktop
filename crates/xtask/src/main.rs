@@ -1118,9 +1118,13 @@ fn run_frontend_build(debug_bundle: bool) {
 
 /// Set `RUSTC_WRAPPER=sccache` when sccache is available.
 ///
-/// Detection is cached for the lifetime of the process so the `which`
-/// lookup only runs once.
+/// Skips detection entirely if `RUSTC_WRAPPER` is already set in the
+/// environment (respects existing tooling). Detection runs `sccache
+/// --version` once and caches the result for the lifetime of the process.
 fn apply_sccache_env(command: &mut Command) {
+    if env::var_os("RUSTC_WRAPPER").is_some() {
+        return;
+    }
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     let available = *AVAILABLE.get_or_init(|| {
         let found = Command::new("sccache")
