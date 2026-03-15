@@ -173,6 +173,17 @@ impl NotebookHandle {
         }
     }
 
+    /// Create an empty sync-only bootstrap handle with a specific actor identity.
+    ///
+    /// The `actor_label` is a self-attested identity string (e.g., `"human:<session>"`,
+    /// `"agent:claude:<session>"`) that tags all subsequent edits for provenance.
+    pub fn create_empty_with_actor(actor_label: &str) -> NotebookHandle {
+        NotebookHandle {
+            doc: NotebookDoc::empty_with_actor(actor_label),
+            sync_state: sync::State::new(),
+        }
+    }
+
     /// Load a notebook document from saved bytes (e.g., from get_automerge_doc_bytes).
     pub fn load(bytes: &[u8]) -> Result<NotebookHandle, JsError> {
         let doc =
@@ -181,6 +192,18 @@ impl NotebookHandle {
             doc,
             sync_state: sync::State::new(),
         })
+    }
+
+    /// Get the actor identity label for this document.
+    pub fn get_actor_id(&self) -> String {
+        self.doc.get_actor_id()
+    }
+
+    /// Set the actor identity for this document.
+    ///
+    /// Tags all subsequent edits with this label for provenance tracking.
+    pub fn set_actor(&mut self, actor_label: &str) {
+        self.doc.set_actor(actor_label);
     }
 
     /// Get the number of cells in the document.

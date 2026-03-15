@@ -93,6 +93,13 @@ export class NotebookHandle {
      */
     static create_empty(): NotebookHandle;
     /**
+     * Create an empty sync-only bootstrap handle with a specific actor identity.
+     *
+     * The `actor_label` is a self-attested identity string (e.g., `"human:<session>"`,
+     * `"agent:claude:<session>"`) that tags all subsequent edits for provenance.
+     */
+    static create_empty_with_actor(actor_label: string): NotebookHandle;
+    /**
      * Delete a cell by ID. Returns true if the cell was found and deleted.
      */
     delete_cell(cell_id: string): boolean;
@@ -110,6 +117,10 @@ export class NotebookHandle {
      * and send via `invoke("send_frame", { frameData })`.
      */
     generate_sync_message(): Uint8Array | undefined;
+    /**
+     * Get the actor identity label for this document.
+     */
+    get_actor_id(): string;
     /**
      * Get a single cell by ID, or null if not found.
      */
@@ -208,6 +219,12 @@ export class NotebookHandle {
      * Export the full document as bytes (for debugging or persistence).
      */
     save(): Uint8Array;
+    /**
+     * Set the actor identity for this document.
+     *
+     * Tags all subsequent edits with this label for provenance tracking.
+     */
+    set_actor(actor_label: string): void;
     /**
      * Replace entire cell metadata (last-write-wins).
      *
@@ -337,7 +354,10 @@ export interface InitOutput {
     readonly jscell_resolved_assets_json: (a: number, b: number) => void;
     readonly notebookhandle_new: (a: number, b: number) => number;
     readonly notebookhandle_create_empty: () => number;
+    readonly notebookhandle_create_empty_with_actor: (a: number, b: number) => number;
     readonly notebookhandle_load: (a: number, b: number, c: number) => void;
+    readonly notebookhandle_get_actor_id: (a: number, b: number) => void;
+    readonly notebookhandle_set_actor: (a: number, b: number, c: number) => void;
     readonly notebookhandle_cell_count: (a: number) => number;
     readonly notebookhandle_get_cells: (a: number, b: number) => void;
     readonly notebookhandle_get_cells_json: (a: number, b: number) => void;

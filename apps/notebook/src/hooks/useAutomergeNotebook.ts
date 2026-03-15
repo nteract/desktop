@@ -149,7 +149,10 @@ export function useAutomergeNotebook() {
   const bootstrap = useCallback(async () => {
     await wasmReady;
 
-    const handle = NotebookHandle.create_empty();
+    // Tag this peer's edits with a "human" actor label for provenance.
+    // The session suffix ensures uniqueness across concurrent tabs.
+    const sessionId = crypto.randomUUID().slice(0, 8);
+    const handle = NotebookHandle.create_empty_with_actor(`human:${sessionId}`);
 
     // Dispose previous handle (WASM allocation).
     handleRef.current?.free();

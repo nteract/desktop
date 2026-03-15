@@ -549,12 +549,13 @@ impl NotebookRoom {
         // so content survives daemon restarts.
         // For saved notebooks (file paths), .ipynb is the source of truth, so
         // delete stale persisted docs and start fresh (daemon loads from disk).
+        let daemon_actor = "runtimed";
         let doc = if is_untitled_notebook(notebook_id) && persist_path.exists() {
             info!(
                 "[notebook-sync] Loading persisted doc for untitled notebook: {:?}",
                 persist_path
             );
-            NotebookDoc::load_or_create(&persist_path, notebook_id)
+            NotebookDoc::load_or_create_with_actor(&persist_path, notebook_id, daemon_actor)
         } else {
             if persist_path.exists() {
                 info!(
@@ -563,7 +564,7 @@ impl NotebookRoom {
                 );
                 let _ = std::fs::remove_file(&persist_path);
             }
-            NotebookDoc::new(notebook_id)
+            NotebookDoc::new_with_actor(notebook_id, daemon_actor)
         };
         let (changed_tx, _) = broadcast::channel(16);
         let (kernel_broadcast_tx, _) = broadcast::channel(64);
