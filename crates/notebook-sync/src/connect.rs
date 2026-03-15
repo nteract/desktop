@@ -138,35 +138,7 @@ pub async fn connect_with_options(
     working_dir: Option<PathBuf>,
     initial_metadata: Option<String>,
 ) -> Result<ConnectResult, SyncError> {
-    connect_with_options_impl(
-        socket_path,
-        notebook_id,
-        working_dir,
-        initial_metadata,
-        None,
-    )
-    .await
-}
-
-/// Connect to a notebook room by ID with pipe frame forwarding.
-///
-/// Same as `connect_with_options` but forwards raw daemon frames to the
-/// given channel before processing them locally.
-pub async fn connect_with_pipe(
-    socket_path: PathBuf,
-    notebook_id: String,
-    initial_metadata: Option<String>,
-    working_dir: Option<PathBuf>,
-    pipe_frame_tx: mpsc::UnboundedSender<Vec<u8>>,
-) -> Result<ConnectResult, SyncError> {
-    connect_with_options_impl(
-        socket_path,
-        notebook_id,
-        working_dir,
-        initial_metadata,
-        Some(pipe_frame_tx),
-    )
-    .await
+    connect_with_options_impl(socket_path, notebook_id, working_dir, initial_metadata).await
 }
 
 async fn connect_with_options_impl(
@@ -174,7 +146,6 @@ async fn connect_with_options_impl(
     notebook_id: String,
     working_dir: Option<PathBuf>,
     initial_metadata: Option<String>,
-    pipe_frame_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
 ) -> Result<ConnectResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
@@ -234,7 +205,6 @@ async fn connect_with_options_impl(
         pending_broadcasts,
         reader,
         writer,
-        pipe_frame_tx,
     )
     .map(|(handle, broadcast_rx)| ConnectResult {
         handle,
@@ -246,27 +216,10 @@ async fn connect_with_options_impl(
 
 /// Connect and open an existing notebook file.
 pub async fn connect_open(socket_path: PathBuf, path: PathBuf) -> Result<OpenResult, SyncError> {
-    connect_open_impl(socket_path, path, None).await
+    connect_open_impl(socket_path, path).await
 }
 
-/// Open a notebook with pipe frame forwarding for Tauri relay mode.
-///
-/// Same as `connect_open` but forwards raw daemon frames to the given
-/// channel before processing them locally. Used by the Tauri webview
-/// to relay frames to the WASM frontend.
-pub async fn connect_open_with_pipe(
-    socket_path: PathBuf,
-    path: PathBuf,
-    pipe_frame_tx: mpsc::UnboundedSender<Vec<u8>>,
-) -> Result<OpenResult, SyncError> {
-    connect_open_impl(socket_path, path, Some(pipe_frame_tx)).await
-}
-
-async fn connect_open_impl(
-    socket_path: PathBuf,
-    path: PathBuf,
-    pipe_frame_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
-) -> Result<OpenResult, SyncError> {
+async fn connect_open_impl(socket_path: PathBuf, path: PathBuf) -> Result<OpenResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
     let mut reader = tokio::io::BufReader::new(reader);
@@ -324,7 +277,6 @@ async fn connect_open_impl(
         pending_broadcasts,
         reader,
         writer,
-        pipe_frame_tx,
     )
     .map(|(handle, broadcast_rx)| OpenResult {
         handle,
@@ -343,29 +295,7 @@ pub async fn connect_create(
     runtime: &str,
     working_dir: Option<PathBuf>,
 ) -> Result<CreateResult, SyncError> {
-    connect_create_impl(socket_path, runtime, working_dir, None, None).await
-}
-
-/// Create a notebook with pipe frame forwarding for Tauri relay mode.
-///
-/// Same as `connect_create` but forwards raw daemon frames to the given
-/// channel before processing them locally. Used by the Tauri webview
-/// to relay frames to the WASM frontend.
-pub async fn connect_create_with_pipe(
-    socket_path: PathBuf,
-    runtime: &str,
-    working_dir: Option<PathBuf>,
-    notebook_id: Option<String>,
-    pipe_frame_tx: mpsc::UnboundedSender<Vec<u8>>,
-) -> Result<CreateResult, SyncError> {
-    connect_create_impl(
-        socket_path,
-        runtime,
-        working_dir,
-        notebook_id,
-        Some(pipe_frame_tx),
-    )
-    .await
+    connect_create_impl(socket_path, runtime, working_dir, None).await
 }
 
 async fn connect_create_impl(
@@ -373,7 +303,6 @@ async fn connect_create_impl(
     runtime: &str,
     working_dir: Option<PathBuf>,
     notebook_id: Option<String>,
-    pipe_frame_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
 ) -> Result<CreateResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
@@ -436,7 +365,6 @@ async fn connect_create_impl(
         pending_broadcasts,
         reader,
         writer,
-        pipe_frame_tx,
     )
     .map(|(handle, broadcast_rx)| CreateResult {
         handle,
@@ -461,7 +389,6 @@ fn build_and_spawn<R, W>(
     pending_broadcasts: Vec<NotebookBroadcast>,
     reader: R,
     writer: W,
-    pipe_frame_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
 ) -> Result<(DocHandle, crate::BroadcastReceiver), SyncError>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -502,7 +429,6 @@ where
         cmd_rx,
         snapshot_tx: Arc::clone(&snapshot_tx),
         broadcast_tx,
-        pipe_forwarder: sync_task::FrameForwarder::new(pipe_frame_tx),
     };
 
     let notebook_id_for_task = notebook_id;

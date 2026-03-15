@@ -480,23 +480,6 @@ impl DocHandle {
         reply_rx.await.map_err(|_| SyncError::Disconnected)?
     }
 
-    /// Forward a raw Automerge sync message from the frontend (WASM) to the daemon.
-    ///
-    /// In pipe mode, the WASM frontend generates sync messages that need to be
-    /// applied to the local doc and forwarded to the daemon. This method sends
-    /// the raw bytes through the sync task which handles decode, apply, and relay.
-    pub async fn receive_frontend_sync_message(&self, message: Vec<u8>) -> Result<(), SyncError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.cmd_tx
-            .send(SyncCommand::ReceiveFrontendSyncMessage {
-                message,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SyncError::Disconnected)?;
-        reply_rx.await.map_err(|_| SyncError::Disconnected)?
-    }
-
     // =====================================================================
     // Read-only access — no lock needed
     // =====================================================================

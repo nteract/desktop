@@ -2447,8 +2447,8 @@ async fn get_automerge_doc_bytes(
 ///
 /// The first byte is the frame type, the rest is the payload.
 /// Supported outgoing types:
-/// - 0x00: AutomergeSync (forwarded via receive_frontend_sync_message)
-/// - 0x04: Presence (forwarded via send_presence)
+/// - 0x00: AutomergeSync (forwarded via RelayHandle::forward_frame)
+/// - 0x04: Presence (forwarded via RelayHandle::forward_frame)
 #[tauri::command]
 async fn send_frame(
     window: tauri::Window,
