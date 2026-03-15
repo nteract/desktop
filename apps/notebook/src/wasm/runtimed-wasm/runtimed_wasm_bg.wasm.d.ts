@@ -18,6 +18,7 @@ export const notebookhandle_create_empty_with_actor: (a: number, b: number) => n
 export const notebookhandle_load: (a: number, b: number, c: number) => void;
 export const notebookhandle_get_actor_id: (a: number, b: number) => void;
 export const notebookhandle_set_actor: (a: number, b: number, c: number) => void;
+export const notebookhandle_contributing_actors: (a: number, b: number) => void;
 export const notebookhandle_cell_count: (a: number) => number;
 export const notebookhandle_get_cells: (a: number, b: number) => void;
 export const notebookhandle_get_cells_json: (a: number, b: number) => void;

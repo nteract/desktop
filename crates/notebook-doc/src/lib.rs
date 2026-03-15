@@ -1596,6 +1596,25 @@ impl NotebookDoc {
         self.doc.sync().receive_sync_message(peer_state, message)
     }
 
+    // ── Provenance queries ──────────────────────────────────────────
+
+    /// Return the deduplicated, sorted list of actor labels that have
+    /// contributed changes to this document.
+    ///
+    /// Walks the Automerge change history and converts each change's
+    /// `ActorId` to a label via [`actor_label_from_id`].
+    ///
+    /// This is useful for debugging ("who has touched this notebook?")
+    /// and will underpin richer attribution queries in the future.
+    pub fn contributing_actors(&mut self) -> Vec<String> {
+        let changes = self.doc.get_changes(&[]);
+        let mut seen = std::collections::BTreeSet::new();
+        for change in &changes {
+            seen.insert(actor_label_from_id(change.actor_id()));
+        }
+        seen.into_iter().collect()
+    }
+
     // ── Internal helpers ────────────────────────────────────────────
 
     /// Get the cells Map object ID.
@@ -3860,5 +3879,55 @@ mod tests {
         // Default actor is a random UUID (32 hex chars)
         // get_actor_id falls back to hex for non-UTF-8 bytes
         assert!(!actor_id.is_empty());
+    }
+
+    #[test]
+    fn test_contributing_actors_single() {
+        let mut doc = NotebookDoc::new_with_actor("test", "runtimed");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        let actors = doc.contributing_actors();
+        assert_eq!(actors, vec!["runtimed"]);
+    }
+
+    #[test]
+    fn test_contributing_actors_after_sync() {
+        use automerge::sync;
+
+        // runtimed creates the doc and adds a cell
+        let mut runtimed = NotebookDoc::new_with_actor("nb", "runtimed");
+        runtimed.add_cell(0, "cell-1", "code").unwrap();
+
+        // human joins and syncs
+        let mut human = NotebookDoc::empty_with_actor("human:tab-1");
+        let mut rs = sync::State::new();
+        let mut hs = sync::State::new();
+        for _ in 0..10 {
+            if let Some(msg) = runtimed.generate_sync_message(&mut rs) {
+                human.receive_sync_message(&mut hs, msg).unwrap();
+            }
+            if let Some(msg) = human.generate_sync_message(&mut hs) {
+                runtimed.receive_sync_message(&mut rs, msg).unwrap();
+            }
+        }
+
+        // human edits
+        human.update_source("cell-1", "print('hello')").unwrap();
+
+        // sync back
+        for _ in 0..10 {
+            if let Some(msg) = human.generate_sync_message(&mut hs) {
+                runtimed.receive_sync_message(&mut rs, msg).unwrap();
+            }
+            if let Some(msg) = runtimed.generate_sync_message(&mut rs) {
+                human.receive_sync_message(&mut hs, msg).unwrap();
+            }
+        }
+
+        // Both docs see both contributors
+        let actors = runtimed.contributing_actors();
+        assert_eq!(actors, vec!["human:tab-1", "runtimed"]);
+
+        let actors = human.contributing_actors();
+        assert_eq!(actors, vec!["human:tab-1", "runtimed"]);
     }
 }

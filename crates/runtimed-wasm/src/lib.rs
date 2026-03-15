@@ -206,6 +206,15 @@ impl NotebookHandle {
         self.doc.set_actor(actor_label);
     }
 
+    /// Return the deduplicated, sorted list of actor labels that have
+    /// contributed changes to this document's history.
+    ///
+    /// Useful for debugging provenance — call after sync to see which
+    /// peers (e.g., `"runtimed"`, `"human:abc123"`) have touched the notebook.
+    pub fn contributing_actors(&mut self) -> Vec<String> {
+        self.doc.contributing_actors()
+    }
+
     /// Get the number of cells in the document.
     pub fn cell_count(&self) -> usize {
         self.doc.cell_count()

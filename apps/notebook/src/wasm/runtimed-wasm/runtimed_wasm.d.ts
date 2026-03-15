@@ -87,6 +87,14 @@ export class NotebookHandle {
      */
     clear_uv_section(): void;
     /**
+     * Return the deduplicated, sorted list of actor labels that have
+     * contributed changes to this document's history.
+     *
+     * Useful for debugging provenance — call after sync to see which
+     * peers (e.g., `"runtimed"`, `"human:abc123"`) have touched the notebook.
+     */
+    contributing_actors(): string[];
+    /**
      * Create a handle with an empty Automerge doc (zero operations) for
      * sync-only bootstrap.  The sync protocol populates the doc from the
      * daemon — no `GetDocBytes` needed.
@@ -358,6 +366,7 @@ export interface InitOutput {
     readonly notebookhandle_load: (a: number, b: number, c: number) => void;
     readonly notebookhandle_get_actor_id: (a: number, b: number) => void;
     readonly notebookhandle_set_actor: (a: number, b: number, c: number) => void;
+    readonly notebookhandle_contributing_actors: (a: number, b: number) => void;
     readonly notebookhandle_cell_count: (a: number) => number;
     readonly notebookhandle_get_cells: (a: number, b: number) => void;
     readonly notebookhandle_get_cells_json: (a: number, b: number) => void;

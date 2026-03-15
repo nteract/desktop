@@ -387,6 +387,27 @@ export class NotebookHandle {
         }
     }
     /**
+     * Return the deduplicated, sorted list of actor labels that have
+     * contributed changes to this document's history.
+     *
+     * Useful for debugging provenance — call after sync to see which
+     * peers (e.g., `"runtimed"`, `"human:abc123"`) have touched the notebook.
+     * @returns {string[]}
+     */
+    contributing_actors() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.notebookhandle_contributing_actors(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var v1 = getArrayJsValueFromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export4(r0, r1 * 4, 4);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Create a handle with an empty Automerge doc (zero operations) for
      * sync-only bootstrap.  The sync protocol populates the doc from the
      * daemon — no `GetDocBytes` needed.
