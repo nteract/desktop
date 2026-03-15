@@ -2737,18 +2737,19 @@ class TestPresence:
         peers = s2.get_peers()
         assert len(peers) > 0, "Expected at least one remote peer"
 
-        # Session B should see Session A's cursor
+        # Session B should see Session A's cursor at (5, 10).
+        # Note: create_cell auto-emits presence at (0, 0), so we must wait
+        # specifically for the updated cursor position from set_cursor.
+        def _cursor_at_expected_pos():
+            for _, _, cid, ln, col in s2.get_remote_cursors():
+                if cid == cell_id and ln == 5 and col == 10:
+                    return True
+            return False
+
         wait_for_sync(
-            lambda: len(s2.get_remote_cursors()) > 0,
-            description="s2 sees s1 cursor",
+            _cursor_at_expected_pos,
+            description="s2 sees s1 cursor at (5, 10)",
         )
-        cursors = s2.get_remote_cursors()
-        assert len(cursors) > 0, "Expected at least one remote cursor"
-        # Each cursor is (peer_id, peer_label, cell_id, line, column)
-        _, _, cursor_cell_id, line, column = cursors[0]
-        assert cursor_cell_id == cell_id
-        assert line == 5
-        assert column == 10
 
     def test_get_peers_not_connected_raises(self):
         """get_peers raises when not connected."""
