@@ -834,29 +834,29 @@ fn compute_text_attributions(
 
 /// Extract the cell ID from a patch path if it points to a cell's source text.
 ///
-/// Returns `Some(cell_id)` when the path matches:
+/// Returns `Some(cell_id)` when the path contains the 3-element window:
 ///   `[..., (_, "cells"), (_, <cell_id>), (_, "source")]`
 ///
-/// We search from the end so this works regardless of whether the path
-/// includes the root element or other prefixes.
+/// Scans backwards for this exact sequence so we don't match unrelated
+/// paths that happen to end in `"source"` (e.g., nested metadata maps).
 fn extract_cell_source_id(path: &[(automerge::ObjId, Prop)]) -> Option<String> {
-    // Need at least: (_, "cells"), (_, cell_id), (_, "source")
+    // Scan backwards for a 3-element window: "cells" → <cell_id> → "source"
     if path.len() < 3 {
         return None;
     }
 
-    // Walk backwards: last element should be "source"
-    let last = &path[path.len() - 1].1;
-    if !matches!(last, Prop::Map(k) if k == "source") {
-        return None;
+    for window in path.windows(3).rev() {
+        let is_cells = matches!(&window[0].1, Prop::Map(k) if k == "cells");
+        let is_source = matches!(&window[2].1, Prop::Map(k) if k == "source");
+
+        if is_cells && is_source {
+            if let Prop::Map(cell_id) = &window[1].1 {
+                return Some(cell_id.clone());
+            }
+        }
     }
 
-    // Second-to-last should be the cell ID
-    let cell_prop = &path[path.len() - 2].1;
-    match cell_prop {
-        Prop::Map(cell_id) => Some(cell_id.clone()),
-        _ => None,
-    }
+    None
 }
 
 // ── Presence encoding (free functions for wasm_bindgen export) ────────
