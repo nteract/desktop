@@ -5615,6 +5615,7 @@ dependencies = [
  "nix",
  "notebook-doc",
  "notebook-protocol",
+ "notebook-sync",
  "notify",
  "notify-debouncer-mini",
  "petname",

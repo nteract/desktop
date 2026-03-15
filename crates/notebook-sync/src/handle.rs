@@ -354,6 +354,27 @@ impl DocHandle {
         self.with_notebook_doc(|nd| nd.remove_conda_dependency(pkg))
     }
 
+    /// Get a single cell by ID from the latest snapshot.
+    pub fn get_cell(&self, cell_id: &str) -> Option<notebook_doc::CellSnapshot> {
+        let snapshot = self.snapshot_rx.borrow();
+        snapshot.cells.iter().find(|c| c.id == cell_id).cloned()
+    }
+
+    /// Set a cell's execution count.
+    pub fn set_execution_count(&self, cell_id: &str, count: &str) -> Result<bool, SyncError> {
+        self.with_notebook_doc(|doc| doc.set_execution_count(cell_id, count))
+    }
+
+    /// Append an output to a cell.
+    pub fn append_output(&self, cell_id: &str, output_json: &str) -> Result<bool, SyncError> {
+        self.with_notebook_doc(|doc| doc.append_output(cell_id, output_json))
+    }
+
+    /// Clear all outputs from a cell.
+    pub fn clear_outputs(&self, cell_id: &str) -> Result<bool, SyncError> {
+        self.with_notebook_doc(|doc| doc.clear_outputs(cell_id))
+    }
+
     // =====================================================================
     // Async operations — need socket I/O via the sync task
     // =====================================================================
