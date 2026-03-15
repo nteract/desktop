@@ -1929,6 +1929,8 @@ async fn auto_launch_kernel(
             // Take the command receiver and spawn a task to process execution events
             if let Some(mut cmd_rx) = kernel.take_command_rx() {
                 let room_kernel = room.kernel.clone();
+                let room_presence = room.presence.clone();
+                let room_presence_tx = room.presence_tx.clone();
                 tokio::spawn(async move {
                     use crate::kernel_manager::QueueCommand;
                     while let Some(cmd) = cmd_rx.recv().await {
@@ -1940,6 +1942,14 @@ async fn auto_launch_kernel(
                                     if let Err(e) = k.execution_done(&cell_id).await {
                                         warn!("[notebook-sync] execution_done error: {}", e);
                                     }
+                                    // Update presence to reflect idle status
+                                    update_kernel_presence(
+                                        &room_presence,
+                                        &room_presence_tx,
+                                        presence::KernelStatus::Idle,
+                                        k.env_source(),
+                                    )
+                                    .await;
                                 }
                             }
                             QueueCommand::CellError { cell_id } => {
@@ -1961,7 +1971,16 @@ async fn auto_launch_kernel(
                                 warn!("[notebook-sync] Kernel died, unblocking execution queue");
                                 let mut guard = room_kernel.lock().await;
                                 if let Some(ref mut k) = *guard {
+                                    let env_source = k.env_source().to_string();
                                     k.kernel_died();
+                                    // Update presence to reflect errored status
+                                    update_kernel_presence(
+                                        &room_presence,
+                                        &room_presence_tx,
+                                        presence::KernelStatus::Errored,
+                                        &env_source,
+                                    )
+                                    .await;
                                 }
                             }
                         }
@@ -1979,6 +1998,9 @@ async fn auto_launch_kernel(
                     cell_id: None,
                 });
 
+            // Publish kernel state presence so late joiners see the running kernel
+            publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es).await;
+
             info!(
                 "[notebook-sync] Auto-launch succeeded: {} kernel with {} environment",
                 kt, es
@@ -1995,6 +2017,44 @@ async fn auto_launch_kernel(
                 });
         }
     }
+}
+
+/// Publish the daemon's `KernelState` presence so late-joining peers
+/// receive kernel status in their `PresenceSnapshot`.
+async fn publish_kernel_state_presence(
+    room: &NotebookRoom,
+    status: presence::KernelStatus,
+    env_source: &str,
+) {
+    update_kernel_presence(&room.presence, &room.presence_tx, status, env_source).await;
+}
+
+/// Update kernel state in the shared presence state and relay to all peers.
+///
+/// Factored out so spawned tasks (which only hold cloned Arcs) can call it
+/// without needing a full `&NotebookRoom` reference.
+async fn update_kernel_presence(
+    presence_state: &Arc<RwLock<PresenceState>>,
+    presence_tx: &broadcast::Sender<(String, Vec<u8>)>,
+    status: presence::KernelStatus,
+    env_source: &str,
+) {
+    let data = presence::KernelStateData {
+        status,
+        env_source: env_source.to_string(),
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    presence_state.write().await.update_peer(
+        "daemon",
+        "daemon",
+        presence::ChannelData::KernelState(data.clone()),
+        now_ms,
+    );
+    let bytes = presence::encode_kernel_state_update("daemon", &data);
+    let _ = presence_tx.send(("daemon".to_string(), bytes));
 }
 
 /// Handle a NotebookRequest and return a NotebookResponse.
@@ -2371,6 +2431,8 @@ async fn handle_notebook_request(
                     // Take the command receiver and spawn a task to process execution events
                     if let Some(mut cmd_rx) = kernel.take_command_rx() {
                         let room_kernel = room.kernel.clone();
+                        let room_presence = room.presence.clone();
+                        let room_presence_tx = room.presence_tx.clone();
                         tokio::spawn(async move {
                             use crate::kernel_manager::QueueCommand;
                             while let Some(cmd) = cmd_rx.recv().await {
@@ -2388,6 +2450,14 @@ async fn handle_notebook_request(
                                                     e
                                                 );
                                             }
+                                            // Update presence to reflect idle status
+                                            update_kernel_presence(
+                                                &room_presence,
+                                                &room_presence_tx,
+                                                presence::KernelStatus::Idle,
+                                                k.env_source(),
+                                            )
+                                            .await;
                                         }
                                     }
                                     QueueCommand::CellError { cell_id } => {
@@ -2411,7 +2481,16 @@ async fn handle_notebook_request(
                                         warn!("[notebook-sync] Kernel died, unblocking execution queue");
                                         let mut guard = room_kernel.lock().await;
                                         if let Some(ref mut k) = *guard {
+                                            let env_source = k.env_source().to_string();
                                             k.kernel_died();
+                                            // Update presence to reflect errored status
+                                            update_kernel_presence(
+                                                &room_presence,
+                                                &room_presence_tx,
+                                                presence::KernelStatus::Errored,
+                                                &env_source,
+                                            )
+                                            .await;
                                         }
                                     }
                                 }
@@ -2423,6 +2502,10 @@ async fn handle_notebook_request(
                     }
 
                     *kernel_guard = Some(kernel);
+
+                    // Publish kernel state presence so late joiners see the running kernel
+                    publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es).await;
+
                     NotebookResponse::KernelLaunched {
                         kernel_type: kt,
                         env_source: es,
@@ -2573,6 +2656,9 @@ async fn handle_notebook_request(
                         *kernel_guard = None;
                         // Clear comm state - all widgets become invalid when kernel shuts down
                         room.comm_state.clear().await;
+                        // Publish shutdown presence so late joiners don't see stale kernel state
+                        publish_kernel_state_presence(room, presence::KernelStatus::Shutdown, "")
+                            .await;
                         NotebookResponse::KernelShuttingDown {}
                     }
                     Err(e) => NotebookResponse::Error {
