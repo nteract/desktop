@@ -53,6 +53,8 @@ pub(crate) struct SessionState {
     pub settings: Option<runtimed::settings_doc::SyncedSettings>,
     /// Peer label for presence (e.g., "Claude", "Agent")
     pub peer_label: Option<String>,
+    /// Actor label for Automerge provenance (e.g., "agent:claude:ab12cd34")
+    pub actor_label: Option<String>,
 }
 
 impl SessionState {
@@ -69,8 +71,19 @@ impl SessionState {
             notebook_path: None,
             settings: None,
             peer_label: None,
+            actor_label: None,
         }
     }
+}
+
+/// Build an actor label from a peer display name.
+///
+/// The format is `"agent:<lowercased_name>:<short_random>"`, e.g.
+/// `"agent:claude:ab12cd34"`. The random suffix makes each session
+/// unique even when the same agent reconnects.
+pub(crate) fn make_actor_label(peer_label: &str) -> String {
+    let short_id = &uuid::Uuid::new_v4().simple().to_string()[..8];
+    format!("agent:{}:{}", peer_label.to_lowercase(), short_id)
 }
 
 // =========================================================================
@@ -131,6 +144,11 @@ pub(crate) async fn connect(state: &Arc<Mutex<SessionState>>, notebook_id: &str)
         .await
         .map_err(to_py_err)?;
 
+    // Set actor label on the handle for provenance tracking
+    if let Some(label) = &st.actor_label {
+        result.handle.set_actor(label).map_err(to_py_err)?;
+    }
+
     // Resolve blob paths from daemon info
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
 
@@ -148,10 +166,16 @@ pub(crate) async fn connect(state: &Arc<Mutex<SessionState>>, notebook_id: &str)
 pub(crate) async fn connect_open(
     socket_path: PathBuf,
     path: &str,
+    actor_label: Option<&str>,
 ) -> PyResult<(String, SessionState, NotebookConnectionInfo)> {
     let result = notebook_sync::connect::connect_open(socket_path.clone(), PathBuf::from(path))
         .await
         .map_err(to_py_err)?;
+
+    // Set actor label on the handle for provenance tracking
+    if let Some(label) = actor_label {
+        result.handle.set_actor(label).map_err(to_py_err)?;
+    }
 
     let notebook_id = result.info.notebook_id.clone();
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
@@ -172,6 +196,7 @@ pub(crate) async fn connect_open(
         notebook_path: Some(path.to_string()),
         settings,
         peer_label: None, // Set by caller (Session/AsyncSession)
+        actor_label: actor_label.map(String::from),
     };
 
     Ok((notebook_id, state, connection_info))
@@ -184,11 +209,17 @@ pub(crate) async fn connect_create(
     socket_path: PathBuf,
     runtime: &str,
     working_dir: Option<PathBuf>,
+    actor_label: Option<&str>,
 ) -> PyResult<(String, SessionState, NotebookConnectionInfo)> {
     let result =
         notebook_sync::connect::connect_create(socket_path.clone(), runtime, working_dir.clone())
             .await
             .map_err(to_py_err)?;
+
+    // Set actor label on the handle for provenance tracking
+    if let Some(label) = actor_label {
+        result.handle.set_actor(label).map_err(to_py_err)?;
+    }
 
     let notebook_id = result.info.notebook_id.clone();
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
@@ -209,6 +240,7 @@ pub(crate) async fn connect_create(
         notebook_path: working_dir.map(|p| p.to_string_lossy().to_string()),
         settings,
         peer_label: None, // Set by caller (Session/AsyncSession)
+        actor_label: actor_label.map(String::from),
     };
 
     Ok((notebook_id, state, connection_info))

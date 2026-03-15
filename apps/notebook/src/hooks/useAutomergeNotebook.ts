@@ -58,6 +58,11 @@ export function useAutomergeNotebook() {
   const handleRef = useRef<NotebookHandle | null>(null);
   const awaitingInitialSyncRef = useRef(true);
 
+  // Stable session ID for provenance — generated once so the actor label
+  // remains consistent across bootstrap() re-invocations (daemon:ready,
+  // file-opened, etc.).
+  const sessionIdRef = useRef(crypto.randomUUID().slice(0, 8));
+
   // Output manifest cache (shared with materialize-cells utilities).
   const outputCacheRef = useRef<Map<string, JupyterOutput>>(new Map());
 
@@ -150,9 +155,11 @@ export function useAutomergeNotebook() {
     await wasmReady;
 
     // Tag this peer's edits with a "human" actor label for provenance.
-    // The session suffix ensures uniqueness across concurrent tabs.
-    const sessionId = crypto.randomUUID().slice(0, 8);
-    const handle = NotebookHandle.create_empty_with_actor(`human:${sessionId}`);
+    // The session suffix (stable for this hook instance) ensures uniqueness
+    // across concurrent tabs without fragmenting provenance on re-bootstrap.
+    const handle = NotebookHandle.create_empty_with_actor(
+      `human:${sessionIdRef.current}`,
+    );
 
     // Dispose previous handle (WASM allocation).
     handleRef.current?.free();

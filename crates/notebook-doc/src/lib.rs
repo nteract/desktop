@@ -200,7 +200,9 @@ impl NotebookDoc {
 /// falling back to the hex representation for IDs that aren't valid UTF-8
 /// (e.g., the random UUIDs assigned by `AutoCommit::new()`).
 pub fn actor_label_from_id(actor: &ActorId) -> String {
-    String::from_utf8(actor.to_bytes().to_vec()).unwrap_or_else(|_| actor.to_hex_string())
+    std::str::from_utf8(actor.to_bytes())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|_| actor.to_hex_string())
 }
 
 // ── Native Automerge JSON storage ───────────────────────────────────
@@ -653,6 +655,28 @@ impl NotebookDoc {
     /// This avoids silent data loss while still allowing the daemon to proceed.
     #[cfg(feature = "persistence")]
     pub fn load_or_create(path: &Path, notebook_id: &str) -> Self {
+        Self::load_or_create_inner(path, notebook_id, None)
+    }
+
+    /// Load from file or create, with a specific actor identity for new operations.
+    ///
+    /// For loaded documents, `set_actor` is safe — there is no pending
+    /// transaction, so the actor simply applies to future operations.
+    /// For fresh documents (file missing or corrupt), `new_with_actor` sets
+    /// the actor before any structural puts so the initial change is properly
+    /// attributed — even on the corrupt-file recovery path.
+    #[cfg(feature = "persistence")]
+    pub fn load_or_create_with_actor(path: &Path, notebook_id: &str, actor_label: &str) -> Self {
+        Self::load_or_create_inner(path, notebook_id, Some(actor_label))
+    }
+
+    /// Shared implementation for `load_or_create` and `load_or_create_with_actor`.
+    ///
+    /// When `actor_label` is `Some`, every code path that creates a fresh
+    /// document uses `new_with_actor` so the structural bootstrap operations
+    /// are properly attributed (not just the post-load `set_actor` call).
+    #[cfg(feature = "persistence")]
+    fn load_or_create_inner(path: &Path, notebook_id: &str, actor_label: Option<&str>) -> Self {
         if path.exists() {
             match std::fs::read(path) {
                 Ok(data) => match AutoCommit::load(&data) {
@@ -669,12 +693,19 @@ impl NotebookDoc {
                                     "[notebook-doc] Migration failed for {}: {}. Creating fresh doc.",
                                     notebook_id, e
                                 );
+                                // Fall through to create a fresh doc below
                             } else {
                                 info!("[notebook-doc] Migration complete for {}", notebook_id);
+                                if let Some(label) = actor_label {
+                                    loaded.set_actor(label);
+                                }
                                 return loaded;
                             }
                         } else {
                             info!("[notebook-doc] Loaded from {:?} for {}", path, notebook_id);
+                            if let Some(label) = actor_label {
+                                loaded.set_actor(label);
+                            }
                             return loaded;
                         }
                     }
@@ -702,37 +733,9 @@ impl NotebookDoc {
             "[notebook-doc] Creating new doc for {} (path: {:?})",
             notebook_id, path
         );
-        Self::new(notebook_id)
-    }
-
-    /// Load from file or create, with a specific actor identity for new operations.
-    ///
-    /// For loaded documents, `set_actor` is safe — there is no pending
-    /// transaction, so the actor simply applies to future operations.
-    /// For fresh documents (file missing), `new_with_actor` sets the actor
-    /// before any structural puts so the initial change is properly attributed.
-    ///
-    /// Edge case: if the file exists but is corrupt, `load_or_create` falls
-    /// through to `new()` and the structural ops land under a random actor
-    /// before we can call `set_actor`.  This is acceptable for the rare
-    /// corrupt-file recovery path.
-    #[cfg(feature = "persistence")]
-    pub fn load_or_create_with_actor(path: &Path, notebook_id: &str, actor_label: &str) -> Self {
-        if path.exists() {
-            // Attempt to load — for successfully loaded docs, set_actor is
-            // clean because there is no pending transaction to commit.
-            let mut doc = Self::load_or_create(path, notebook_id);
-            doc.set_actor(actor_label);
-            doc
-        } else {
-            // File doesn't exist — create with actor from the start so
-            // structural ops are properly attributed.
-            #[cfg(feature = "persistence")]
-            info!(
-                "[notebook-doc] Creating new doc for {} (path: {:?})",
-                notebook_id, path
-            );
-            Self::new_with_actor(notebook_id, actor_label)
+        match actor_label {
+            Some(label) => Self::new_with_actor(notebook_id, label),
+            None => Self::new(notebook_id),
         }
     }
 
@@ -1603,6 +1606,10 @@ impl NotebookDoc {
     ///
     /// Walks the Automerge change history and converts each change's
     /// `ActorId` to a label via [`actor_label_from_id`].
+    ///
+    /// **Cost:** O(changes) — every change in the document history is
+    /// visited on each call. Avoid calling in hot paths; cache the result
+    /// when the document is known to be unchanged.
     ///
     /// This is useful for debugging ("who has touched this notebook?")
     /// and will underpin richer attribution queries in the future.
