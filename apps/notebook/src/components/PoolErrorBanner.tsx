@@ -15,17 +15,15 @@ function PoolErrorItem({ envType, error, onDismiss }: PoolErrorItemProps) {
     });
   };
 
-  // Build a helpful message based on the error
-  const failureCount = error.consecutive_failures;
-  const failureText =
-    failureCount > 1 ? `Failed ${failureCount} times` : "Failed";
-
   return (
-    <div className="flex items-center justify-between gap-2 bg-amber-600/90 px-3 py-1.5 text-xs text-white">
+    <div
+      className="flex items-center justify-between gap-2 bg-amber-600/90 px-3 py-1.5 text-xs text-white"
+      title={error.message}
+    >
       <div className="flex items-center gap-2 min-w-0">
         <AlertTriangle className="h-3 w-3 flex-shrink-0" />
         <span className="font-medium flex-shrink-0">
-          {envType} default package error
+          Invalid or unavailable package
         </span>
         {error.failed_package && (
           <>
@@ -36,8 +34,8 @@ function PoolErrorItem({ envType, error, onDismiss }: PoolErrorItemProps) {
           </>
         )}
         <span className="text-amber-200 flex-shrink-0">—</span>
-        <span className="text-amber-100 truncate" title={error.message}>
-          {failureText}. Check package name in settings.
+        <span className="text-amber-100">
+          Check package name in {envType.toLowerCase()} settings.
         </span>
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
