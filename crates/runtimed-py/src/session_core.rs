@@ -1508,3 +1508,35 @@ async fn resolve_blob_paths(socket_path: &Path) -> (Option<String>, Option<PathB
         (None, None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_make_actor_label_format() {
+        let label = make_actor_label("Claude");
+        assert!(label.starts_with("agent:claude:"), "got: {}", label);
+        // Session suffix should be 8 hex chars
+        let suffix = label.strip_prefix("agent:claude:").unwrap();
+        assert_eq!(suffix.len(), 8, "suffix should be 8 chars: {}", suffix);
+        assert!(
+            suffix.chars().all(|c| c.is_ascii_hexdigit()),
+            "suffix should be hex: {}",
+            suffix
+        );
+    }
+
+    #[test]
+    fn test_make_actor_label_lowercases() {
+        let label = make_actor_label("Codex");
+        assert!(label.starts_with("agent:codex:"));
+    }
+
+    #[test]
+    fn test_make_actor_label_unique() {
+        let a = make_actor_label("Claude");
+        let b = make_actor_label("Claude");
+        assert_ne!(a, b, "each call should produce a unique session suffix");
+    }
+}
