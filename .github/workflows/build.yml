@@ -223,11 +223,14 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Add Windows target
-        run: rustup target add x86_64-pc-windows-msvc
+      - name: Install mingw-w64 and add Windows GNU target
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc-mingw-w64-x86-64
+          rustup target add x86_64-pc-windows-gnu
 
       - name: Clippy (Windows cross-check)
-        run: cargo clippy --target x86_64-pc-windows-msvc --workspace --exclude notebook --exclude runtimed-wasm --exclude runtimed-py --all-targets -- -D warnings
+        run: cargo clippy --target x86_64-pc-windows-gnu --workspace --exclude notebook --exclude runtimed-wasm --exclude runtimed-py --all-targets -- -D warnings
 
       - name: Build
         run: cargo build --release
