@@ -54,6 +54,10 @@ fn main() {
             let print_config = args.iter().any(|a| a == "--print-config");
             cmd_dev_mcp(print_config);
         }
+        "mcp" => {
+            let print_config = args.iter().any(|a| a == "--print-config");
+            cmd_mcp(print_config);
+        }
         "lint" => {
             let fix = args.iter().any(|a| a == "--fix");
             cmd_lint(fix);
@@ -93,6 +97,8 @@ Daemon:
   dev-daemon [--release]     Build and run runtimed in per-worktree dev mode
 
 MCP:
+  mcp                        MCP supervisor (proxy + daemon + auto-restart)
+  mcp --print-config         Print MCP client config JSON (for Claude, Zed, etc.)
   dev-mcp                    Build Python bindings and launch nteract MCP server
   dev-mcp --print-config     Print MCP client config JSON (for Claude, Zed, etc.)
 
@@ -593,6 +599,57 @@ fn cmd_install_daemon() {
 ///
 /// This enables isolated daemon instances per git worktree, useful when
 /// developing/testing daemon code across multiple worktrees simultaneously.
+fn cmd_mcp(print_config: bool) {
+    if print_config {
+        // Build the supervisor, then run it with --print-config
+        // For now, print the config pointing at the binary
+        run_cmd("cargo", &["build", "-p", "mcp-supervisor"]);
+        let binary = if cfg!(windows) {
+            "target/debug/mcp-supervisor.exe"
+        } else {
+            "target/debug/mcp-supervisor"
+        };
+        let binary_path = fs::canonicalize(binary).unwrap_or_else(|e| {
+            eprintln!("Failed to resolve supervisor binary path: {e}");
+            exit(1);
+        });
+        let config = serde_json::json!({
+            "command": binary_path.to_string_lossy(),
+            "env": {
+                "RUNTIMED_DEV": "1"
+            }
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&config).unwrap_or_else(|e| {
+                eprintln!("Failed to serialize config: {e}");
+                exit(1);
+            })
+        );
+        return;
+    }
+
+    // Build and exec the supervisor binary
+    run_cmd("cargo", &["build", "-p", "mcp-supervisor"]);
+    let binary = if cfg!(windows) {
+        "target/debug/mcp-supervisor.exe"
+    } else {
+        "target/debug/mcp-supervisor"
+    };
+
+    let mut command = Command::new(binary);
+    apply_worktree_env(&mut command, true);
+
+    let status = command.status().unwrap_or_else(|e| {
+        eprintln!("Failed to run mcp-supervisor: {e}");
+        exit(1);
+    });
+
+    if !status.success() {
+        exit(status.code().unwrap_or(1));
+    }
+}
+
 fn cmd_dev_mcp(print_config: bool) {
     // Step 1: Build the runt CLI so we can query daemon status
     if !Path::new(dev_runt_cli_binary()).exists() {
