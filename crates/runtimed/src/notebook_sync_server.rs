@@ -1091,6 +1091,10 @@ where
     let mut kernel_broadcast_rx = room.kernel_broadcast_tx.subscribe();
     let mut presence_rx = room.presence_tx.subscribe();
 
+    // Periodic pruning of stale presence peers (e.g. clients that silently dropped).
+    let mut prune_interval = tokio::time::interval(std::time::Duration::from_secs(15));
+    prune_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     // Phase 1: Initial sync — server sends first (typed frame)
     // Encode the sync message inside the lock, then send outside it
     // to avoid holding the write lock across async I/O.
@@ -1422,6 +1426,19 @@ where
                         // Broadcast channel closed — room is being evicted
                         return Ok(());
                     }
+                }
+            }
+
+            // Prune stale presence peers that haven't heartbeated within the TTL
+            _ = prune_interval.tick() => {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let pruned = room.presence.write().await.prune_stale(now_ms, presence::DEFAULT_PEER_TTL_MS);
+                for pruned_peer_id in pruned {
+                    let left_bytes = presence::encode_left(&pruned_peer_id);
+                    let _ = room.presence_tx.send((pruned_peer_id, left_bytes));
                 }
             }
         }
