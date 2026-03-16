@@ -159,10 +159,11 @@ pub fn reap_orphaned_kernels() -> usize {
             }
             Err(nix::errno::Errno::EPERM) => {
                 warn!(
-                    "[kernel-pids] No permission to kill orphaned kernel '{}' (pgid {})",
+                    "[kernel-pids] No permission to kill orphaned kernel '{}' (pgid {}), \
+                     removing from registry (process likely already exited and was reparented)",
                     kernel_id, entry.pgid
                 );
-                false
+                true
             }
             Err(e) => {
                 error!(
