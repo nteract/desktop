@@ -17,7 +17,7 @@
 //!   cargo xtask mcp
 
 use std::collections::HashMap;
-
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -317,6 +317,8 @@ struct SupervisorState {
     child_client: Option<rmcp::service::RunningService<RoleNteractClient, NteractClientHandler>>,
     /// Project root path.
     project_root: PathBuf,
+    /// Log directory (.context/ in the project root).
+    log_dir: PathBuf,
     /// Daemon socket path.
     socket_path: String,
     /// Number of times the child has been restarted.
@@ -365,9 +367,12 @@ impl Supervisor {
         daemon_child: Option<std::process::Child>,
         tool_list_changed_tx: mpsc::Sender<()>,
     ) -> Self {
+        let log_dir = project_root.join(".context");
+        let _ = std::fs::create_dir_all(&log_dir);
         Self {
             state: Arc::new(RwLock::new(SupervisorState {
                 child_client: Some(child_client),
+                log_dir,
                 project_root,
                 socket_path,
                 restart_count: 0,
@@ -547,6 +552,7 @@ impl Supervisor {
                     .args(["install"])
                     .current_dir(&pr)
                     .env("PATH", augmented_path())
+                    .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::inherit())
                     .status()
@@ -559,23 +565,46 @@ impl Supervisor {
             }
         }
 
+        // Route Vite output to a log file instead of /dev/null
+        let vite_log_path = project_root.join(".context/vite.log");
+        let vite_log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&vite_log_path)
+            .map_err(|e| {
+                format!(
+                    "Failed to open vite log at {}: {e}",
+                    vite_log_path.display()
+                )
+            })?;
+        let vite_stderr = vite_log
+            .try_clone()
+            .map_err(|e| format!("Failed to clone vite log handle: {e}"))?;
+
         info!("Starting Vite dev server on port {port}...");
-        let child = std::process::Command::new("pnpm")
-            .args([
-                "--dir",
-                "apps/notebook",
-                "dev",
-                "--",
-                "--port",
-                &port.to_string(),
-                "--strictPort",
-            ])
-            .current_dir(&project_root)
-            .env("PATH", augmented_path())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("Failed to start Vite: {e}"))?;
+        info!("Vite logs: {}", vite_log_path.display());
+        let pr = project_root.clone();
+        let child = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("pnpm")
+                .args([
+                    "--dir",
+                    "apps/notebook",
+                    "dev",
+                    "--",
+                    "--port",
+                    &port.to_string(),
+                    "--strictPort",
+                ])
+                .current_dir(&pr)
+                .env("PATH", augmented_path())
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(vite_log))
+                .stderr(Stdio::from(vite_stderr))
+                .spawn()
+        })
+        .await
+        .map_err(|e| format!("Vite spawn task failed: {e}"))?
+        .map_err(|e| format!("Failed to start Vite: {e}"))?;
 
         info!("Vite dev server started (PID {}, port {port})", child.id());
 
@@ -600,7 +629,8 @@ impl Supervisor {
     ) -> Result<CallToolResult, McpError> {
         let state = self.state.read().await;
 
-        let binary = state.project_root.join("target/debug/notebook");
+        let binary_name = format!("notebook{}", std::env::consts::EXE_SUFFIX);
+        let binary = state.project_root.join("target/debug").join(&binary_name);
         if !binary.exists() {
             return Ok(CallToolResult::success(vec![Content::text(
                 "No notebook binary found. Run `cargo build -p notebook --no-default-features` first.",
@@ -625,10 +655,10 @@ impl Supervisor {
                 id.to_string()
             }
             None => {
-                return Ok(CallToolResult::success(vec![Content::text(
-                    "Please provide a notebook_id when using dev mode with Vite. \
-                     Use list_notebooks() to find one.",
-                )]));
+                // No notebook_id — fall through to the child's show_notebook
+                // which can resolve the current session's notebook.
+                drop(state);
+                return self.forward_tool_call(request.clone()).await;
             }
         };
 
@@ -653,8 +683,13 @@ impl Supervisor {
                     "Launched notebook app (PID {}, Vite port {vite_port}): {path}",
                     child.id()
                 );
-                // Track as a managed process
+                // Track as a managed process, stopping any existing instance first
                 let mut state = self.state.write().await;
+                if let Some(mut old) = state.managed.remove("notebook-app") {
+                    info!("Stopping previous notebook-app (PID {})...", old.child.id());
+                    let _ = old.child.kill();
+                    let _ = old.child.wait();
+                }
                 state
                     .managed
                     .insert("notebook-app".into(), ManagedProcess { child, port: None });
@@ -854,6 +889,15 @@ impl ServerHandler for Supervisor {
                 .unwrap_or_default(),
         ));
         tools.push(Tool::new(
+            "supervisor_vite_logs",
+            "Read the last N lines of the Vite dev server log. Defaults to 50 lines.",
+            serde_json::to_value(schemars::schema_for!(SupervisorLogsParams))
+                .unwrap()
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+        ));
+        tools.push(Tool::new(
             "supervisor_start_vite",
             "Start the Vite dev server for hot-reload frontend development. Returns the port number. If already running, returns the existing port.",
             empty_schema.clone(),
@@ -972,13 +1016,21 @@ impl ServerHandler for Supervisor {
 
                 match vite_port {
                     Some(port) => {
-                        // Dev mode with managed Vite: launch the binary ourselves
+                        // Managed Vite running: launch the dev binary ourselves
                         self.show_notebook_dev(&request, port).await
                     }
                     None => {
-                        // No managed Vite — fall through to child's show_notebook
-                        // (handles bundled builds and installed apps)
-                        self.forward_tool_call(request).await
+                        // No managed Vite — forward to child's show_notebook
+                        // (uses bundled build or installed app) and hint that
+                        // Vite is available via the supervisor
+                        let mut result = self.forward_tool_call(request).await?;
+                        result.content.push(Content::text(
+                            "\n\nTip: Use supervisor_start_vite to start a Vite \
+                             dev server for hot-reload, then show_notebook will \
+                             launch with live frontend changes."
+                                .to_string(),
+                        ));
+                        Ok(result)
                     }
                 }
             }
@@ -1034,6 +1086,27 @@ impl ServerHandler for Supervisor {
                     ))])),
                 }
             }
+            "supervisor_vite_logs" => {
+                let lines = request
+                    .arguments
+                    .as_ref()
+                    .and_then(|args| args.get("lines"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(50) as usize;
+
+                let state = self.state.read().await;
+                let log_path = Some(state.log_dir.join("vite.log"));
+
+                match log_path {
+                    Some(path) if path.exists() => {
+                        let text = tail_file(&path, lines);
+                        Ok(CallToolResult::success(vec![Content::text(text)]))
+                    }
+                    _ => Ok(CallToolResult::success(vec![Content::text(
+                        "No Vite log found. Start Vite first with supervisor_start_vite.",
+                    )])),
+                }
+            }
             "supervisor_logs" => {
                 let lines = request
                     .arguments
@@ -1047,36 +1120,8 @@ impl ServerHandler for Supervisor {
 
                 match log_path {
                     Some(path) if path.exists() => {
-                        // Read only the last 64KB to avoid loading huge log files
-                        let tail_bytes = match std::fs::File::open(&path) {
-                            Ok(file) => {
-                                use std::io::{Read, Seek, SeekFrom};
-                                let mut file = file;
-                                let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-                                let max_bytes: u64 = 64 * 1024;
-                                if len > max_bytes {
-                                    let _ = file.seek(SeekFrom::End(-(max_bytes as i64)));
-                                }
-                                let mut buf = String::new();
-                                file.read_to_string(&mut buf).ok();
-                                buf
-                            }
-                            Err(e) => {
-                                return Ok(CallToolResult::success(vec![Content::text(format!(
-                                    "Failed to read log at {}: {e}",
-                                    path.display()
-                                ))]));
-                            }
-                        };
-                        let tail: Vec<&str> = tail_bytes.lines().rev().take(lines).collect();
-                        let tail: Vec<&str> = tail.into_iter().rev().collect();
-                        Ok(CallToolResult::success(vec![Content::text(
-                            if tail.is_empty() {
-                                "(log file is empty)".to_string()
-                            } else {
-                                tail.join("\n")
-                            },
-                        )]))
+                        let text = tail_file(&path, lines);
+                        Ok(CallToolResult::success(vec![Content::text(text)]))
                     }
                     Some(path) => Ok(CallToolResult::success(vec![Content::text(format!(
                         "Daemon log not found at {}",
@@ -1096,6 +1141,34 @@ impl ServerHandler for Supervisor {
 // ---------------------------------------------------------------------------
 // Entrypoint
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Log helpers
+// ---------------------------------------------------------------------------
+
+/// Read the last N lines of a log file (caps at 64KB to avoid huge reads).
+fn tail_file(path: &Path, lines: usize) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    match std::fs::File::open(path) {
+        Ok(mut file) => {
+            let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+            let max_bytes: u64 = 64 * 1024;
+            if len > max_bytes {
+                let _ = file.seek(SeekFrom::End(-(max_bytes as i64)));
+            }
+            let mut buf = String::new();
+            file.read_to_string(&mut buf).ok();
+            let tail: Vec<&str> = buf.lines().rev().take(lines).collect();
+            let tail: Vec<&str> = tail.into_iter().rev().collect();
+            if tail.is_empty() {
+                "(log file is empty)".to_string()
+            } else {
+                tail.join("\n")
+            }
+        }
+        Err(e) => format!("Failed to read log at {}: {e}", path.display()),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Daemon log path helper
@@ -1244,14 +1317,42 @@ fn resolve_project_root() -> PathBuf {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Log to stderr (MCP uses stdin/stdout for transport)
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    // Log to both stderr and a file (.context/inkwell.log)
+    // stderr goes to whatever the MCP client captures; the file is
+    // readable via supervisor tools for debugging.
+    let project_root_for_log = resolve_project_root();
+    let log_dir = project_root_for_log.join(".context");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_dir.join("inkwell.log"))
+        .ok();
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    if let Some(file) = log_file {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_writer(std::sync::Mutex::new(file))
+            .with_ansi(false);
+        let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(file_layer)
+            .with(stderr_layer)
+            .init();
+    } else {
+        // Fallback: stderr only
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_writer(std::io::stderr)
+            .init();
+    }
 
     let project_root = resolve_project_root();
     info!("Project root: {}", project_root.display());
