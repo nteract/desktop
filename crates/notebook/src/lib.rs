@@ -3551,78 +3551,32 @@ pub fn run(
             let menu = crate::menu::create_menu(app.handle(), &window_display_names)?;
             app.set_menu(menu)?;
 
-            // Restore additional windows from session (main window already restored above)
-            if let Some(session) = &restored_session {
-                let registry = app.state::<WindowNotebookRegistry>();
-                let mut restore_failed = false;
-                for window_session in &session.windows {
-                    if window_session.label == "main" {
-                        continue; // Already restored
-                    }
-                    let label = session::window_label_for_session(window_session);
-                    let mode = match (&window_session.path, &window_session.env_id) {
-                        (Some(path), _) if path.exists() => {
-                            info!(
-                                "[session] Restoring window from path: {}",
-                                path.display()
-                            );
-                            OpenMode::Open { path: path.clone() }
-                        }
-                        (_, Some(env_id)) => {
-                            info!(
-                                "[session] Restoring untitled window: {}",
-                                env_id
-                            );
-                            OpenMode::Create {
-                                runtime: window_session.runtime.clone(),
-                                working_dir: None,
-                                notebook_id: Some(env_id.clone()),
-                            }
-                        }
-                        _ => {
-                            let rt: Runtime =
-                                window_session.runtime.parse().unwrap_or(Runtime::Python);
-                            OpenMode::Create {
-                                runtime: rt.to_string(),
-                                working_dir: None,
-                                notebook_id: None,
-                            }
-                        }
-                    };
-                    match create_notebook_window_for_daemon(
-                        app.handle(),
-                        &registry,
-                        mode,
-                        Some(label.clone()),
-                    ) {
-                        Ok(created_label) => {
-                            info!(
-                                "[session] Restored additional window: {}",
-                                created_label
-                            );
-                        }
-                        Err(e) => {
-                            warn!(
-                                "[session] Failed to create window for {}: {}",
-                                label, e
-                            );
-                            restore_failed = true;
-                        }
-                    }
-                }
-                // Only clear session file if at least one window restored successfully
-                // This allows retry on next startup if all windows failed
-                if !restore_failed || session.windows.iter().any(|w| w.label == "main") {
+            // Collect additional session windows (non-main) for deferred restore.
+            // Windows are created after daemon is confirmed available to avoid
+            // sync tasks racing with daemon startup.
+            let additional_session_windows: Vec<session::WindowSession> =
+                if let Some(session) = &restored_session {
+                    // Clear session file eagerly — main window was already restored above,
+                    // so the session has served its purpose even if additional windows fail.
                     session::clear_session();
-                }
-            }
+                    session
+                        .windows
+                        .iter()
+                        .filter(|w| w.label != "main")
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                };
 
             // Ensure runtimed is running (required for daemon-only mode)
             // The daemon provides centralized prewarming across all notebook windows
             let app_for_daemon = app.handle().clone();
             let app_for_sync = app.handle().clone();
             let app_for_notebook_sync = app.handle().clone();
+            let app_for_session_restore = app.handle().clone();
             let registry_for_notebook_sync = registry_for_sync.clone();
+            let registry_for_session_restore = registry_for_sync.clone();
             let daemon_status_for_callback = daemon_status_for_startup.clone();
             // Capture for async block - onboarding doesn't need notebook sync
             let skip_notebook_sync = needs_onboarding;
@@ -3736,6 +3690,67 @@ pub fn run(
                 }
                 // Signal that daemon sync attempt is complete (success or failure)
                 daemon_sync_complete_for_init.store(true, Ordering::SeqCst);
+
+                // Restore additional session windows now that the daemon is available.
+                // Creating them here (instead of in synchronous setup) ensures their
+                // sync tasks don't race with daemon startup.
+                if daemon_available && !additional_session_windows.is_empty() {
+                    log::info!(
+                        "[session] Restoring {} additional window(s) after daemon ready",
+                        additional_session_windows.len()
+                    );
+                    for window_session in &additional_session_windows {
+                        let label = session::window_label_for_session(window_session);
+                        let mode = match (&window_session.path, &window_session.env_id) {
+                            (Some(path), _) if path.exists() => {
+                                info!(
+                                    "[session] Restoring window from path: {}",
+                                    path.display()
+                                );
+                                OpenMode::Open { path: path.clone() }
+                            }
+                            (_, Some(env_id)) => {
+                                info!(
+                                    "[session] Restoring untitled window: {}",
+                                    env_id
+                                );
+                                OpenMode::Create {
+                                    runtime: window_session.runtime.clone(),
+                                    working_dir: None,
+                                    notebook_id: Some(env_id.clone()),
+                                }
+                            }
+                            _ => {
+                                let rt: Runtime =
+                                    window_session.runtime.parse().unwrap_or(Runtime::Python);
+                                OpenMode::Create {
+                                    runtime: rt.to_string(),
+                                    working_dir: None,
+                                    notebook_id: None,
+                                }
+                            }
+                        };
+                        match create_notebook_window_for_daemon(
+                            &app_for_session_restore,
+                            &registry_for_session_restore,
+                            mode,
+                            Some(label.clone()),
+                        ) {
+                            Ok(created_label) => {
+                                info!(
+                                    "[session] Restored additional window: {}",
+                                    created_label
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "[session] Failed to create window for {}: {}",
+                                    label, e
+                                );
+                            }
+                        }
+                    }
+                }
             });
 
             // Wait for daemon sync to complete before considering startup done
