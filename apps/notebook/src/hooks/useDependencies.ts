@@ -47,7 +47,6 @@ export interface PyProjectInfo {
 }
 
 export function useDependencies() {
-  const [uvAvailable, setUvAvailable] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(false);
   // Track if deps were synced to a running kernel (user may need to restart for some changes)
   const [syncedWhileRunning, setSyncedWhileRunning] = useState(false);
@@ -72,9 +71,8 @@ export function useDependencies() {
     setSyncState(null);
   }, []);
 
-  // Check if uv is available and detect pyproject on mount
+  // Detect pyproject on mount
   useEffect(() => {
-    invoke<boolean>("check_uv_available").then(setUvAvailable);
     invoke<PyProjectInfo | null>("detect_pyproject").then(setPyprojectInfo);
   }, []);
 
@@ -261,7 +259,6 @@ export function useDependencies() {
 
   return {
     dependencies,
-    uvAvailable,
     hasDependencies,
     isUvConfigured,
     loading,

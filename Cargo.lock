@@ -3513,7 +3513,6 @@ dependencies = [
  "env_logger",
  "hex",
  "hmac",
- "kernel-env",
  "log",
  "nbformat",
  "nix 0.30.1",

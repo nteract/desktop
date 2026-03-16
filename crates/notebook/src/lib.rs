@@ -2399,16 +2399,6 @@ async fn send_frame(
 }
 
 // ============================================================================
-// UV Dependency Management Commands
-// ============================================================================
-
-/// Check if uv is available on the system.
-#[tauri::command]
-async fn check_uv_available() -> bool {
-    uv_env::check_uv_available().await
-}
-
-// ============================================================================
 // pyproject.toml Discovery and Environment Commands
 // ============================================================================
 
@@ -2777,32 +2767,6 @@ async fn import_pixi_dependencies(
 }
 
 // ========== Deno kernel support ==========
-
-/// Check if Deno is available on the system.
-/// Queries the daemon via the notebook sync protocol so the notebook crate
-/// does not need a direct dependency on kernel-launch.
-#[tauri::command]
-async fn check_deno_available(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<bool, String> {
-    let Ok(notebook_sync) = notebook_sync_for_window(&window, registry.inner()) else {
-        return Ok(false);
-    };
-    let guard = notebook_sync.lock().await;
-    let Some(handle) = guard.as_ref() else {
-        return Ok(false);
-    };
-    match handle
-        .send_request(NotebookRequest::CheckToolAvailable {
-            tool: "deno".to_string(),
-        })
-        .await
-    {
-        Ok(NotebookResponse::ToolAvailable { available }) => Ok(available),
-        _ => Ok(false),
-    }
-}
 
 /// Detect deno.json/deno.jsonc near the notebook and return info about it
 #[tauri::command]
@@ -3453,8 +3417,6 @@ pub fn run(
             get_upgrade_notebook_status,
             abort_kernel_for_upgrade,
             run_upgrade,
-            // UV dependency management
-            check_uv_available,
             // pyproject.toml discovery
             detect_pyproject,
             get_pyproject_dependencies,
@@ -3470,7 +3432,6 @@ pub fn run(
             approve_notebook_trust,
             check_typosquats,
             // Deno kernel support
-            check_deno_available,
             detect_deno_config,
             // Synced settings (via runtimed Automerge)
             get_synced_settings,

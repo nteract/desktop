@@ -11,7 +11,6 @@ import { Label } from "@/components/ui/label";
 import type { DenoConfigInfo } from "../hooks/useDenoDependencies";
 
 interface DenoDependencyHeaderProps {
-  denoAvailable: boolean | null;
   denoConfigInfo: DenoConfigInfo | null;
   flexibleNpmImports: boolean;
   onSetFlexibleNpmImports: (enabled: boolean) => void;
@@ -24,7 +23,6 @@ interface DenoDependencyHeaderProps {
 }
 
 export function DenoDependencyHeader({
-  denoAvailable,
   denoConfigInfo,
   flexibleNpmImports,
   onSetFlexibleNpmImports,
@@ -73,16 +71,6 @@ export function DenoDependencyHeader({
           </div>
         )}
 
-        {/* Deno availability notice */}
-        {denoAvailable === false && (
-          <div className="mb-3 rounded bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
-            <span className="font-medium">Deno not found.</span> Install it with{" "}
-            <code className="rounded bg-amber-500/20 px-1">
-              curl -fsSL https://deno.land/install.sh | sh
-            </code>
-          </div>
-        )}
-
         {/* deno.json detected banner */}
         {denoConfigInfo && (
           <div className="mb-3 rounded bg-muted/80 px-2 py-1.5 text-xs text-muted-foreground">
@@ -116,7 +104,7 @@ export function DenoDependencyHeader({
         )}
 
         {/* No config file - explain how Deno handles deps */}
-        {!denoConfigInfo && denoAvailable !== false && (
+        {!denoConfigInfo && (
           <div className="mb-3 flex items-start gap-2 rounded bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
             <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
             <span>
@@ -127,30 +115,28 @@ export function DenoDependencyHeader({
         )}
 
         {/* Auto-install npm packages setting */}
-        {denoAvailable !== false && (
-          <div className="mb-3 flex items-start gap-2.5">
-            <Checkbox
-              id="flexible-npm-imports"
-              checked={flexibleNpmImports}
-              onCheckedChange={(checked) =>
-                onSetFlexibleNpmImports(checked === true)
-              }
-              className="mt-0.5"
-            />
-            <Label
-              htmlFor="flexible-npm-imports"
-              className="flex-1 flex-col items-start gap-1 cursor-pointer"
-            >
-              <span className="text-xs font-medium text-foreground">
-                Auto-install npm packages
-              </span>
-              <p className="text-xs text-muted-foreground font-normal">
-                Packages download automatically when you import them. Disable to
-                use your project&apos;s node_modules instead.
-              </p>
-            </Label>
-          </div>
-        )}
+        <div className="mb-3 flex items-start gap-2.5">
+          <Checkbox
+            id="flexible-npm-imports"
+            checked={flexibleNpmImports}
+            onCheckedChange={(checked) =>
+              onSetFlexibleNpmImports(checked === true)
+            }
+            className="mt-0.5"
+          />
+          <Label
+            htmlFor="flexible-npm-imports"
+            className="flex-1 flex-col items-start gap-1 cursor-pointer"
+          >
+            <span className="text-xs font-medium text-foreground">
+              Auto-install npm packages
+            </span>
+            <p className="text-xs text-muted-foreground font-normal">
+              Packages download automatically when you import them. Disable to
+              use your project&apos;s node_modules instead.
+            </p>
+          </Label>
+        </div>
 
         {/* Import examples */}
         <div className="space-y-2">

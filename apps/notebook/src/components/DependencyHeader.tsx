@@ -18,7 +18,6 @@ interface DependencyHeaderProps {
   dependencies: string[];
   requiresPython: string | null;
   prerelease: string | null;
-  uvAvailable: boolean | null;
   loading: boolean;
   syncedWhileRunning: boolean;
   needsKernelRestart: boolean;
@@ -45,7 +44,6 @@ export function DependencyHeader({
   dependencies,
   requiresPython,
   prerelease,
-  uvAvailable,
   loading,
   syncedWhileRunning,
   needsKernelRestart,
@@ -160,19 +158,6 @@ export function DependencyHeader({
               />
               Re-initialize
             </button>
-          </div>
-        )}
-
-        {/* UV availability notice */}
-        {uvAvailable === false && (
-          <div className="mb-3 flex items-start gap-2 rounded bg-muted/80 px-2 py-1.5 text-xs text-muted-foreground">
-            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-            <span>
-              <span className="font-medium">uv not found.</span> Install it with{" "}
-              <code className="rounded bg-muted px-1">
-                curl -LsSf https://astral.sh/uv/install.sh | sh
-              </code>
-            </span>
           </div>
         )}
 
