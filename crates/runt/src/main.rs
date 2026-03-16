@@ -3283,9 +3283,17 @@ fn all_notebook_docs_dirs() -> Vec<std::path::PathBuf> {
 /// Find the automerge file for a notebook by its hash across all cache directories.
 /// Checks live docs first, then falls back to the most recent snapshot.
 fn find_automerge_file(filename: &str) -> Option<std::path::PathBuf> {
+    find_automerge_file_in_dirs(&all_notebook_docs_dirs(), filename)
+}
+
+/// Core logic: search a given list of notebook-docs directories for an automerge file.
+fn find_automerge_file_in_dirs(
+    dirs: &[std::path::PathBuf],
+    filename: &str,
+) -> Option<std::path::PathBuf> {
     let stem = filename.strip_suffix(".automerge").unwrap_or(filename);
 
-    for dir in all_notebook_docs_dirs() {
+    for dir in dirs {
         // Check live doc first
         let candidate = dir.join(filename);
         if candidate.is_file() {
@@ -3678,5 +3686,164 @@ mod tests {
         assert!(uuid::Uuid::parse_str("").is_err());
         assert!(uuid::Uuid::parse_str("not-a-uuid").is_err());
         assert!(uuid::Uuid::parse_str("12345").is_err());
+    }
+
+    #[test]
+    fn test_find_automerge_file_live_doc() {
+        use runtimed::notebook_doc::NotebookDoc;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let docs_dir = tmp.path().to_path_buf();
+
+        // Create and save a live automerge doc
+        let mut doc = NotebookDoc::new("test-nb");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        let bytes = doc.save();
+        let filename = "abc123.automerge";
+        std::fs::write(docs_dir.join(filename), &bytes).unwrap();
+
+        let result = super::find_automerge_file_in_dirs(&[docs_dir.clone()], filename);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), docs_dir.join(filename));
+    }
+
+    #[test]
+    fn test_find_automerge_file_snapshot_fallback() {
+        use runtimed::notebook_doc::NotebookDoc;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let docs_dir = tmp.path().to_path_buf();
+
+        // Only create a snapshot, no live doc
+        let snapshots_dir = docs_dir.join("snapshots");
+        std::fs::create_dir_all(&snapshots_dir).unwrap();
+
+        let mut doc = NotebookDoc::new("test-nb");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        let bytes = doc.save();
+        let snapshot_name = "abc123-1710000000000.automerge";
+        std::fs::write(snapshots_dir.join(snapshot_name), &bytes).unwrap();
+
+        let result = super::find_automerge_file_in_dirs(&[docs_dir], "abc123.automerge");
+        assert!(result.is_some());
+        assert!(result.unwrap().to_string_lossy().contains(snapshot_name));
+    }
+
+    #[test]
+    fn test_find_latest_snapshot_selects_most_recent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snapshots_dir = tmp.path();
+
+        // Create three snapshots with different timestamps (out of order)
+        for name in &[
+            "abc123-1710000100000.automerge",
+            "abc123-1710000300000.automerge",
+            "abc123-1710000200000.automerge",
+        ] {
+            std::fs::write(snapshots_dir.join(name), b"data").unwrap();
+        }
+
+        let result = super::find_latest_snapshot(snapshots_dir, "abc123");
+        assert!(result.is_some());
+        assert!(result
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("1710000300000"));
+    }
+
+    #[test]
+    fn test_find_latest_snapshot_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = super::find_latest_snapshot(tmp.path(), "abc123");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_notebook_doc_filename_deterministic() {
+        use runtimed::notebook_doc::notebook_doc_filename;
+
+        let path = "/Users/test/notebook.ipynb";
+        let a = notebook_doc_filename(path);
+        let b = notebook_doc_filename(path);
+
+        // Same input produces same output
+        assert_eq!(a, b);
+        assert!(a.ends_with(".automerge"));
+
+        // Different inputs produce different outputs
+        let c = notebook_doc_filename("/Users/other/notebook.ipynb");
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn test_doc_to_ipynb_basic() {
+        use runtimed::notebook_doc::NotebookDoc;
+
+        let mut doc = NotebookDoc::new("test");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "print('hello')").unwrap();
+        doc.add_cell(1, "cell-2", "markdown").unwrap();
+        doc.update_source("cell-2", "# Title").unwrap();
+
+        let result = super::doc_to_ipynb(&doc);
+
+        assert_eq!(result["nbformat"], 4);
+        assert_eq!(result["nbformat_minor"], 5);
+        assert!(result["metadata"].is_object());
+
+        let cells = result["cells"].as_array().unwrap();
+        assert_eq!(cells.len(), 2);
+
+        // Code cell
+        assert_eq!(cells[0]["cell_type"], "code");
+        assert_eq!(cells[0]["id"], "cell-1");
+        let source: Vec<&str> = cells[0]["source"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(source.join(""), "print('hello')");
+        assert!(cells[0]["outputs"].as_array().unwrap().is_empty());
+        assert!(cells[0]["execution_count"].is_null());
+
+        // Markdown cell — no outputs or execution_count keys
+        assert_eq!(cells[1]["cell_type"], "markdown");
+        assert_eq!(cells[1]["id"], "cell-2");
+        assert!(cells[1].get("outputs").is_none());
+        assert!(cells[1].get("execution_count").is_none());
+    }
+
+    #[test]
+    fn test_doc_to_ipynb_multiline_source() {
+        use runtimed::notebook_doc::NotebookDoc;
+
+        let mut doc = NotebookDoc::new("test");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "line1\nline2\nline3").unwrap();
+
+        let result = super::doc_to_ipynb(&doc);
+        let source: Vec<&str> = result["cells"][0]["source"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(source, vec!["line1\n", "line2\n", "line3"]);
+    }
+
+    #[test]
+    fn test_doc_to_ipynb_empty_source() {
+        use runtimed::notebook_doc::NotebookDoc;
+
+        let mut doc = NotebookDoc::new("test");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+
+        let result = super::doc_to_ipynb(&doc);
+        let source = result["cells"][0]["source"].as_array().unwrap();
+        assert!(source.is_empty());
     }
 }
