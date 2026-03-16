@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IsolationTest } from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
@@ -674,6 +675,18 @@ function AppContent() {
     };
   }, [save]);
 
+  // Show asterisk in window title when notebook has unsaved changes.
+  // Untitled notebooks (no file path) always show the asterisk.
+  useEffect(() => {
+    const win = getCurrentWindow();
+    win.title().then(async (currentTitle) => {
+      const base = currentTitle.replace(/^\* /, "");
+      const hasPath = await invoke<boolean>("has_notebook_path");
+      const showDirty = dirty || !hasPath;
+      win.setTitle(showDirty ? `* ${base}` : base);
+    });
+  }, [dirty]);
+
   // Cmd+F to open global find
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -987,12 +1000,10 @@ function AppContent() {
           kernelStatus={kernelStatus}
           envSource={envSource}
           envTypeHint={envTypeHint}
-          dirty={dirty}
           envProgress={
             envProgress.isActive || envProgress.error ? envProgress : null
           }
           runtime={runtime}
-          onSave={save}
           onStartKernel={handleStartKernel}
           onInterruptKernel={interruptKernel}
           onRestartKernel={handleRestartKernel}

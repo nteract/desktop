@@ -1,11 +1,11 @@
 import {
   ArrowDownToLine,
   ChevronsRight,
+  Code,
   Info,
+  LetterText,
   Play,
-  Plus,
   RotateCcw,
-  Save,
   Square,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
@@ -34,10 +34,8 @@ interface NotebookToolbarProps {
   envSource: string | null;
   /** Pre-start hint: "uv" | "conda" | "pixi" | null, derived from notebook metadata */
   envTypeHint?: EnvBadgeVariant | null;
-  dirty: boolean;
   envProgress: EnvProgressState | null;
   runtime?: string;
-  onSave: () => void;
   onStartKernel: (name: string) => void;
   onInterruptKernel: () => void;
   onRestartKernel: () => void;
@@ -59,10 +57,8 @@ export function NotebookToolbar({
   kernelErrorMessage,
   envSource,
   envTypeHint,
-  dirty,
   envProgress,
   runtime = "python",
-  onSave,
   onStartKernel,
   onInterruptKernel,
   onRestartKernel,
@@ -142,46 +138,29 @@ export function NotebookToolbar({
   return (
     <header
       data-testid="notebook-toolbar"
-      className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-backdrop-filter:bg-background/60 select-none"
+      className="@container sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-backdrop-filter:bg-background/60 select-none"
     >
       <div className="flex h-10 items-center gap-2 px-3">
-        {/* Save */}
-        <button
-          type="button"
-          onClick={onSave}
-          className={cn(
-            "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors hover:bg-muted",
-            dirty ? "text-foreground" : "text-muted-foreground",
-          )}
-          title="Save (Cmd+S)"
-          data-testid="save-button"
-        >
-          <Save className="h-3.5 w-3.5" />
-          {dirty && <span className="text-[10px]">&bull;</span>}
-        </button>
-
-        <div className="h-4 w-px bg-border" />
-
         {/* Add cells */}
         <button
           type="button"
           onClick={() => onAddCell("code", focusedCellId ?? lastCellId)}
-          className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           title="Add code cell"
           data-testid="add-code-cell-button"
         >
-          <Plus className="h-3 w-3" />
-          Code
+          <Code className="h-3 w-3" />
+          <span className="hidden @[40rem]:inline">Code</span>
         </button>
         <button
           type="button"
           onClick={() => onAddCell("markdown", focusedCellId ?? lastCellId)}
-          className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           title="Add markdown cell"
           data-testid="add-markdown-cell-button"
         >
-          <Plus className="h-3 w-3" />
-          Markdown
+          <LetterText className="h-3 w-3" />
+          <span className="hidden @[40rem]:inline">Markdown</span>
         </button>
 
         <div className="h-4 w-px bg-border" />
@@ -192,33 +171,33 @@ export function NotebookToolbar({
             type="button"
             onClick={handleStartKernel}
             disabled={listKernelspecs && kernelspecs.length === 0}
-            className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+            className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
             title="Start kernel"
             data-testid="start-kernel-button"
           >
             <Play className="h-3 w-3" fill="currentColor" />
-            Start Kernel
+            <span className="hidden @[40rem]:inline">Start Kernel</span>
           </button>
         )}
         <button
           type="button"
           onClick={onRunAllCells}
-          className="flex items-center gap-1 rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
+          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
           title="Run all cells"
           data-testid="run-all-button"
         >
           <ChevronsRight className="h-3.5 w-3.5" />
-          Run All
+          <span className="hidden @[40rem]:inline">Run All</span>
         </button>
         <button
           type="button"
           onClick={onRestartKernel}
-          className="flex items-center gap-1 rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
+          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
           title="Restart kernel"
           data-testid="restart-kernel-button"
         >
           <RotateCcw className="h-3 w-3" />
-          Restart
+          <span className="hidden @[40rem]:inline">Restart</span>
         </button>
         <button
           type="button"
@@ -235,7 +214,7 @@ export function NotebookToolbar({
             type="button"
             onClick={onInterruptKernel}
             className={cn(
-              "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
+              "flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs transition-colors",
               kernelStatus === KERNEL_STATUS.BUSY
                 ? "text-destructive hover:bg-destructive/10"
                 : "text-foreground hover:bg-muted",
@@ -249,7 +228,7 @@ export function NotebookToolbar({
                 kernelStatus === KERNEL_STATUS.BUSY ? "currentColor" : "none"
               }
             />
-            Interrupt
+            <span className="hidden @[40rem]:inline">Interrupt</span>
           </button>
         )}
 
