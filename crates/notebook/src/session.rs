@@ -43,6 +43,14 @@ impl SessionState {
 
 /// Save the current session state to disk.
 pub(crate) fn save_session(registry: &WindowNotebookRegistry) -> Result<(), String> {
+    save_session_to(registry, &runtimed::session_state_path())
+}
+
+/// Save the current session state to a specific path.
+pub(crate) fn save_session_to(
+    registry: &WindowNotebookRegistry,
+    dest: &std::path::Path,
+) -> Result<(), String> {
     let contexts = registry.contexts.lock().map_err(|e| e.to_string())?;
 
     let windows: Vec<WindowSession> = contexts
@@ -79,18 +87,17 @@ pub(crate) fn save_session(registry: &WindowNotebookRegistry) -> Result<(), Stri
         windows,
     };
 
-    let path = runtimed::session_state_path();
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
     let json = serde_json::to_string_pretty(&session).map_err(|e| e.to_string())?;
-    std::fs::write(&path, format!("{json}\n")).map_err(|e| e.to_string())?;
+    std::fs::write(dest, format!("{json}\n")).map_err(|e| e.to_string())?;
 
     info!(
         "[session] Saved {} windows to {}",
         session.windows.len(),
-        path.display()
+        dest.display()
     );
     Ok(())
 }
@@ -102,13 +109,17 @@ pub(crate) fn save_session(registry: &WindowNotebookRegistry) -> Result<(), Stri
 /// - Session is too old (> 24 hours)
 /// - Session file is corrupted
 pub fn load_session() -> Option<SessionState> {
-    let path = runtimed::session_state_path();
+    load_session_from(&runtimed::session_state_path())
+}
+
+/// Load session state from a specific path.
+pub(crate) fn load_session_from(path: &std::path::Path) -> Option<SessionState> {
     if !path.exists() {
         info!("[session] No session file found at {}", path.display());
         return None;
     }
 
-    let contents = match std::fs::read_to_string(&path) {
+    let contents = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
             warn!("[session] Failed to read session file: {}", e);
@@ -144,9 +155,13 @@ pub fn load_session() -> Option<SessionState> {
 
 /// Delete the session file after successful restore.
 pub fn clear_session() {
-    let path = runtimed::session_state_path();
+    clear_session_at(&runtimed::session_state_path());
+}
+
+/// Delete a specific session file.
+pub(crate) fn clear_session_at(path: &std::path::Path) {
     if path.exists() {
-        if let Err(e) = std::fs::remove_file(&path) {
+        if let Err(e) = std::fs::remove_file(path) {
             warn!("[session] Failed to remove session file: {}", e);
         } else {
             info!("[session] Cleared session file");
@@ -172,5 +187,200 @@ pub fn window_label_for_session(session: &WindowSession) -> String {
     } else {
         // Fallback to UUID
         format!("notebook-{}", uuid::Uuid::new_v4())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::WindowNotebookContext;
+    use runtimed::runtime::Runtime;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicU64};
+    use std::sync::{Arc, Mutex};
+
+    fn test_context(path: Option<PathBuf>, notebook_id: &str) -> WindowNotebookContext {
+        WindowNotebookContext {
+            notebook_sync: Arc::new(tokio::sync::Mutex::new(None)),
+            sync_generation: Arc::new(AtomicU64::new(0)),
+            path: Arc::new(Mutex::new(path)),
+            working_dir: None,
+            dirty: Arc::new(AtomicBool::new(false)),
+            notebook_id: Arc::new(Mutex::new(notebook_id.to_string())),
+            runtime: Runtime::Python,
+        }
+    }
+
+    fn test_registry(entries: Vec<(&str, WindowNotebookContext)>) -> crate::WindowNotebookRegistry {
+        let registry = crate::WindowNotebookRegistry::default();
+        {
+            let mut contexts = registry.contexts.lock().unwrap();
+            for (label, ctx) in entries {
+                contexts.insert(label.to_string(), ctx);
+            }
+        }
+        registry
+    }
+
+    #[test]
+    fn test_save_load_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_path = dir.path().join("session.json");
+
+        let saved_path = dir.path().join("my_notebook.ipynb");
+        std::fs::write(&saved_path, "{}").unwrap();
+
+        let registry = test_registry(vec![
+            ("main", test_context(Some(saved_path.clone()), "")),
+            ("notebook-abc12345", test_context(None, "env-uuid-1234")),
+        ]);
+
+        save_session_to(&registry, &session_path).unwrap();
+        assert!(session_path.exists());
+
+        let loaded = load_session_from(&session_path).unwrap();
+        assert_eq!(loaded.schema_version, SessionState::CURRENT_SCHEMA_VERSION);
+        assert_eq!(loaded.windows.len(), 2);
+
+        let main_win = loaded.windows.iter().find(|w| w.label == "main").unwrap();
+        assert_eq!(main_win.path.as_ref().unwrap(), &saved_path);
+        assert!(main_win.env_id.is_none());
+
+        let untitled = loaded
+            .windows
+            .iter()
+            .find(|w| w.label == "notebook-abc12345")
+            .unwrap();
+        assert!(untitled.path.is_none());
+        assert_eq!(untitled.env_id.as_deref().unwrap(), "env-uuid-1234");
+        assert_eq!(untitled.runtime, "python");
+    }
+
+    #[test]
+    fn test_save_empty_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_path = dir.path().join("session.json");
+
+        let registry = test_registry(vec![]);
+        save_session_to(&registry, &session_path).unwrap();
+
+        // Empty registry should not create a session file
+        assert!(!session_path.exists());
+    }
+
+    #[test]
+    fn test_load_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_path = dir.path().join("nonexistent.json");
+        assert!(load_session_from(&session_path).is_none());
+    }
+
+    #[test]
+    fn test_load_corrupted_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_path = dir.path().join("session.json");
+        std::fs::write(&session_path, "not valid json {{{").unwrap();
+        assert!(load_session_from(&session_path).is_none());
+    }
+
+    #[test]
+    fn test_load_stale_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_path = dir.path().join("session.json");
+
+        let stale_time =
+            chrono::Utc::now() - chrono::Duration::hours(SessionState::MAX_AGE_HOURS + 1);
+        let session = SessionState {
+            schema_version: SessionState::CURRENT_SCHEMA_VERSION,
+            saved_at: stale_time.to_rfc3339(),
+            windows: vec![WindowSession {
+                label: "main".to_string(),
+                path: None,
+                env_id: Some("test".to_string()),
+                runtime: "python".to_string(),
+            }],
+        };
+        let json = serde_json::to_string_pretty(&session).unwrap();
+        std::fs::write(&session_path, format!("{json}\n")).unwrap();
+
+        assert!(load_session_from(&session_path).is_none());
+    }
+
+    #[test]
+    fn test_clear_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_path = dir.path().join("session.json");
+
+        let registry = test_registry(vec![("main", test_context(None, "env-id"))]);
+        save_session_to(&registry, &session_path).unwrap();
+        assert!(session_path.exists());
+
+        clear_session_at(&session_path);
+        assert!(!session_path.exists());
+    }
+
+    #[test]
+    fn test_window_label_determinism() {
+        let session = WindowSession {
+            label: "notebook-12345678".to_string(),
+            path: Some(PathBuf::from("/tmp/test.ipynb")),
+            env_id: None,
+            runtime: "python".to_string(),
+        };
+
+        let label1 = window_label_for_session(&session);
+        let label2 = window_label_for_session(&session);
+        assert_eq!(label1, label2);
+        assert!(label1.starts_with("notebook-"));
+    }
+
+    #[test]
+    fn test_window_label_main_passthrough() {
+        let session = WindowSession {
+            label: "main".to_string(),
+            path: None,
+            env_id: None,
+            runtime: "python".to_string(),
+        };
+        assert_eq!(window_label_for_session(&session), "main");
+    }
+
+    #[test]
+    fn test_window_label_untitled_uses_env_id() {
+        let session = WindowSession {
+            label: "notebook-old".to_string(),
+            path: None,
+            env_id: Some("abcdef1234567890".to_string()),
+            runtime: "python".to_string(),
+        };
+        assert_eq!(window_label_for_session(&session), "notebook-abcdef12");
+    }
+
+    /// Regression test for #848: only registered windows should appear in the
+    /// saved session. Before fix #883, ghost entries from destroyed windows
+    /// could persist in the registry and corrupt the session file.
+    #[test]
+    fn test_only_registered_windows_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_path = dir.path().join("session.json");
+
+        let nb_path = dir.path().join("real.ipynb");
+        std::fs::write(&nb_path, "{}").unwrap();
+
+        // Simulate a clean registry with exactly 2 windows (no ghosts)
+        let registry = test_registry(vec![
+            ("main", test_context(Some(nb_path.clone()), "")),
+            ("notebook-second", test_context(None, "env-uuid-5678")),
+        ]);
+
+        save_session_to(&registry, &session_path).unwrap();
+        let loaded = load_session_from(&session_path).unwrap();
+
+        // The session must contain exactly the 2 registered windows
+        assert_eq!(loaded.windows.len(), 2);
+        let labels: Vec<&str> = loaded.windows.iter().map(|w| w.label.as_str()).collect();
+        assert!(labels.contains(&"main"));
+        assert!(labels.contains(&"notebook-second"));
     }
 }
