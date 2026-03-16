@@ -12,7 +12,7 @@ We're actively developing the spiritual successor to the nteract desktop app in 
 
 The new app is a native desktop app with instant startup and intelligent environment management.
 
-<img width="1100" height="750" alt="Screenshot 2026-02-27 at 8 33 13 AM" src="https://github.com/user-attachments/assets/06be5ab5-9390-43a9-993a-ccb07ec9139d" />
+<img width="1100" height="750" alt="Screenshot 2025-02-27 at 8 33 13 AM" src="https://github.com/user-attachments/assets/06be5ab5-9390-43a9-993a-ccb07ec9139d" />
 
 ## Bringing Agents in the Loop
 
@@ -128,6 +128,7 @@ claude mcp add nteract -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-ni
 | `delete_cell` | Remove a cell from the notebook |
 | `interrupt_kernel` | Interrupt the currently executing cell |
 | `restart_kernel` | Restart kernel with updated dependencies |
+| `show_notebook` | Open the notebook in the nteract desktop app (disabled with `--no-show`) |
 | `add_dependency` | Add a Python package dependency |
 | `remove_dependency` | Remove a dependency |
 | `get_dependencies` | List current dependencies |

@@ -410,11 +410,6 @@ await browser.keys(["Shift", "Enter"]); // execute
 | `run-all-button` | Run all cells | `NotebookToolbar` |
 | `restart-run-all-button` | Restart & run all | `NotebookToolbar` |
 | `deps-toggle` | Toggle deps panel | `NotebookToolbar` |
-| `settings-panel` | Settings panel container | `NotebookToolbar` |
-| `settings-theme-group` | Theme button group | `NotebookToolbar` |
-| `settings-runtime-group` | Runtime button group | `NotebookToolbar` |
-| `settings-python-env-group` | Python env button group | `NotebookToolbar` |
-| `execute-button` | Run cell button | `CodeCell` |
 | `trust-dialog` | Trust dialog overlay | `TrustDialog` |
 | `trust-approve-button` | "Trust & Install" button | `TrustDialog` |
 | `trust-decline-button` | "Don't Trust" button | `TrustDialog` |
@@ -443,7 +438,6 @@ await browser.keys(["Shift", "Enter"]); // execute
 | `.cm-content[contenteditable="true"]` | CodeMirror editor |
 | `iframe[sandbox]` | Isolated output iframe |
 | `iframe[title="Isolated output frame"]` | Named isolated iframe |
-| `[aria-label="Settings"]` | Settings gear button |
 
 ### Adding New `data-testid` Attributes
 

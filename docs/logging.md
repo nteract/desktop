@@ -47,13 +47,13 @@ For persistent verbose logging, you can modify the launch agent/service configur
 
 ## Frontend Logs
 
-The notebook app logs to the browser console (View > Developer > Developer Tools).
+The notebook app logs to the webview console (View > Developer > Developer Tools).
 
 ### Enabling Debug Mode
 
 By default, routine operations are not logged in production. To enable verbose logging:
 
-1. Open the browser console (Cmd+Option+I)
+1. Open the webview console (Cmd+Option+I)
 2. Run: `localStorage.setItem('runt:debug', 'true')`
 3. Reload the page
 
@@ -81,7 +81,7 @@ runt daemon logs -n 50 | grep -i error
 
 ### Outputs Not Displaying
 
-Enable debug mode and check for manifest resolution errors in the browser console.
+Enable debug mode and check for manifest resolution errors in the webview console.
 
 ### Environment Issues
 

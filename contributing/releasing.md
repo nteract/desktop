@@ -23,7 +23,7 @@ Standard semver rules apply:
 
 Two independent version numbers handle compatibility, separate from the artifact version:
 
-- **Protocol version** (`PROTOCOL_VERSION` in `connection.rs`) — governs wire compatibility. Validated by the magic bytes preamble at connection time. Bump when the framing, handshake shape, or message serialization format changes.
+- **Protocol version** (`PROTOCOL_VERSION` in `crates/notebook-protocol/src/connection.rs`) — governs wire compatibility. Validated by the magic bytes preamble at connection time. Bump when the framing, handshake shape, or message serialization format changes.
 - **Schema version** (`SCHEMA_VERSION` in `notebook-doc/src/lib.rs`) — governs Automerge document compatibility. Stored in the doc root. Bump when the document structure changes (v2 switched cells from an ordered list to a fractional-indexed map).
 
 These are just incrementing integers. They evolve independently from each other and from the artifact version. A protocol bump doesn't force a major version bump — it depends on whether the change is user-facing.
@@ -111,7 +111,7 @@ This builds macOS + Linux wheels and publishes to PyPI. Use this when you need t
 
 When making a breaking wire protocol change:
 
-1. Bump `PROTOCOL_VERSION` in `crates/runtimed/src/connection.rs`
+1. Bump `PROTOCOL_VERSION` in `crates/notebook-protocol/src/connection.rs`
 2. Update `PROTOCOL_V2` string constant if the version string changes
 3. Update `contributing/protocol.md`
 4. Decide whether this warrants a major, minor, or patch version bump based on user impact

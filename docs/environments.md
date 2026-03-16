@@ -104,13 +104,13 @@ After you approve, the notebook is re-signed with your machine's key and won't p
 
 nteract Desktop caches environments so notebooks with the same dependencies share a single environment, making subsequent opens instant.
 
-| What | Location |
-|------|----------|
-| UV environments | `~/.cache/runt/envs/` |
-| Conda environments | `~/.cache/runt/conda-envs/` |
-| Inline dependency envs | `~/.cache/runt/inline-envs/` |
-| Tools (uv, deno) | `~/.cache/runt/tools/` |
-| Trust key | `~/.config/runt/trust-key` |
+| What | macOS | Linux |
+|------|-------|-------|
+| UV environments | `~/Library/Caches/runt/envs/` | `~/.cache/runt/envs/` |
+| Conda environments | `~/Library/Caches/runt/conda-envs/` | `~/.cache/runt/conda-envs/` |
+| Inline dependency envs | `~/Library/Caches/runt/inline-envs/` | `~/.cache/runt/inline-envs/` |
+| Tools (uv, deno) | `~/Library/Caches/runt/tools/` | `~/.cache/runt/tools/` |
+| Trust key | `~/Library/Application Support/runt/trust-key` | `~/.config/runt/trust-key` |
 
 To reclaim disk space, delete the environment cache directories. nteract Desktop will recreate environments as needed.
 

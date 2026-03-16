@@ -101,7 +101,7 @@ cargo test -- --nocapture     # Show println! output
 |-------|-------|
 | `kernel-launch` | Tool hashing, path resolution |
 | `notebook-doc` | Automerge document operations |
-| `runtimed` | Settings, kernel manager, stream terminal |
+| `runtimed` | Blob store/server, connections, daemon, kernel manager, notebook sync, output store, protocol, runtime, settings, stream terminal, and more |
 
 ## Hone CLI Tests
 
@@ -202,10 +202,10 @@ class TestSessionConstruction:
 # Integration test (needs daemon)
 @pytest.mark.asyncio
 async def test_kernel_execution(self):
-    session = runtimed.AsyncSession()
-    await session.connect()
-    result = await session.execute("1 + 1")
-    assert "2" in result
+    async with runtimed.AsyncSession() as session:
+        await session.start_kernel()
+        result = await session.run("1 + 1")
+        assert result.success
 ```
 
 **Environment variables:**

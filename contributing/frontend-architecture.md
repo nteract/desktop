@@ -31,8 +31,7 @@ This guide explains the frontend code organization and how shared components rel
 │   │   └── types.ts              ← App types
 │   ├── notebook/onboarding/      ← Onboarding sub-app (separate HTML entry point)
 │   ├── notebook/settings/        ← Settings sub-app
-│   ├── notebook/upgrade/         ← Upgrade sub-app
-│   └── sidecar/                  ← Sidecar app
+│   └── notebook/upgrade/         ← Upgrade sub-app
 │
 
 ```
@@ -73,7 +72,18 @@ import { useDaemonKernel } from "~/hooks/useDaemonKernel";  // app-specific
 | `CellContainer` | Wrapper with selection, focus, drag handles |
 | `CellControls` | Play button, cell type indicator |
 | `CellHeader` | Execution count display |
+| `CellBetweener` | Insert-cell affordance between cells |
+| `CellTypeButton` | Cell type toggle (code/markdown) |
+| `CellTypeSelector` | Dropdown for switching cell types |
 | `PlayButton` | Execute cell action |
+| `CompactExecutionButton` | Inline run button for compact layouts |
+| `ExecutionCount` | `[n]` execution counter display |
+| `ExecutionStatus` | Running/queued/error indicator |
+| `OutputArea` | Cell output rendering (routes to isolated frames) |
+| `CollaboratorAvatars` | Presence avatars for multi-user editing |
+| `PresenceBookmarks` | Gutter marks showing collaborator positions |
+| `RuntimeHealthIndicator` | Kernel connection health badge |
+| `gutter-colors.ts` | Color assignment for collaborator gutters |
 
 ### Editor (`src/components/editor/`)
 
