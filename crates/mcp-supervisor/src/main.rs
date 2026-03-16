@@ -592,6 +592,82 @@ impl Supervisor {
         Ok(port)
     }
 
+    /// Launch the notebook app in dev mode connected to the managed Vite server.
+    async fn show_notebook_dev(
+        &self,
+        request: &CallToolRequestParams,
+        vite_port: u16,
+    ) -> Result<CallToolResult, McpError> {
+        let state = self.state.read().await;
+
+        let binary = state.project_root.join("target/debug/notebook");
+        if !binary.exists() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No notebook binary found. Run `cargo build -p notebook --no-default-features` first.",
+            )]));
+        }
+
+        // Resolve notebook path from arguments
+        let notebook_id = request
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("notebook_id"))
+            .and_then(Value::as_str);
+
+        let path = match notebook_id {
+            Some(id) => {
+                if !std::path::Path::new(id).is_absolute() {
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Notebook '{id}' is untitled (not saved to disk). \
+                         Use save_notebook(path) first, then call show_notebook()."
+                    ))]));
+                }
+                id.to_string()
+            }
+            None => {
+                return Ok(CallToolResult::success(vec![Content::text(
+                    "Please provide a notebook_id when using dev mode with Vite. \
+                     Use list_notebooks() to find one.",
+                )]));
+            }
+        };
+
+        // Launch the dev binary with Vite URL
+        let mut cmd = std::process::Command::new(&binary);
+        cmd.arg(&path)
+            .env("RUNTIMED_DEV", "1")
+            .env("RUNTIMED_VITE_PORT", vite_port.to_string())
+            .env("PATH", augmented_path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        if let Some(wp) = runt_workspace::get_workspace_path() {
+            cmd.env("RUNTIMED_WORKSPACE_PATH", &wp);
+        }
+
+        drop(state);
+
+        match cmd.spawn() {
+            Ok(child) => {
+                info!(
+                    "Launched notebook app (PID {}, Vite port {vite_port}): {path}",
+                    child.id()
+                );
+                // Track as a managed process
+                let mut state = self.state.write().await;
+                state
+                    .managed
+                    .insert("notebook-app".into(), ManagedProcess { child, port: None });
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Opened notebook in nteract (dev, Vite port {vite_port}): {path}"
+                ))]))
+            }
+            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Failed to launch notebook app: {e}"
+            ))])),
+        }
+    }
+
     /// Stop a managed process by name.
     async fn stop_managed(&self, name: &str) -> Result<(), String> {
         // Remove from map under the lock, then kill outside the lock
@@ -876,6 +952,33 @@ impl ServerHandler for Supervisor {
                                 "Restart failed: {e}"
                             ))])),
                         }
+                    }
+                }
+            }
+            "show_notebook" => {
+                // Check if we have a managed Vite process
+                let vite_port = {
+                    let mut state = self.state.write().await;
+                    if let Some(p) = state.managed.get_mut("vite") {
+                        if p.is_alive() {
+                            p.port
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                };
+
+                match vite_port {
+                    Some(port) => {
+                        // Dev mode with managed Vite: launch the binary ourselves
+                        self.show_notebook_dev(&request, port).await
+                    }
+                    None => {
+                        // No managed Vite — fall through to child's show_notebook
+                        // (handles bundled builds and installed apps)
+                        self.forward_tool_call(request).await
                     }
                 }
             }
