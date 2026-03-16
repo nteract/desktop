@@ -527,4 +527,7 @@ pub enum NotebookBroadcast {
         #[serde(skip_serializing_if = "Option::is_none")]
         diff: Option<EnvSyncDiff>,
     },
+
+    /// Notebook was autosaved to disk by the daemon.
+    NotebookAutosaved { path: String },
 }

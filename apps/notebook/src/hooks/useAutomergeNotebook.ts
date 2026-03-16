@@ -19,12 +19,16 @@ import {
   updateNotebookCells,
   useNotebookCells,
 } from "../lib/notebook-cells";
-import { emitBroadcast, emitPresence } from "../lib/notebook-frame-bus";
+import {
+  emitBroadcast,
+  emitPresence,
+  subscribeBroadcast,
+} from "../lib/notebook-frame-bus";
 import {
   notifyMetadataChanged,
   setNotebookHandle,
 } from "../lib/notebook-metadata";
-import type { JupyterOutput } from "../types";
+import type { DaemonBroadcast, JupyterOutput } from "../types";
 import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
 // ---------------------------------------------------------------------------
@@ -79,6 +83,17 @@ export function useAutomergeNotebook() {
   useEffect(() => {
     refreshBlobPort();
   }, [refreshBlobPort]);
+
+  // Clear dirty state when daemon autosaves the notebook to disk.
+  useEffect(() => {
+    return subscribeBroadcast((payload) => {
+      const broadcast = payload as DaemonBroadcast;
+      if (broadcast.event === "notebook_autosaved") {
+        setDirty(false);
+        invoke("mark_notebook_clean").catch(() => {});
+      }
+    });
+  }, []);
 
   // ── Helpers ────────────────────────────────────────────────────────
 

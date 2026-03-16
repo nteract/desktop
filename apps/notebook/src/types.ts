@@ -219,6 +219,10 @@ export type DaemonBroadcast =
     }
   | {
       event: "file_changed";
+    }
+  | {
+      event: "notebook_autosaved";
+      path: string;
     };
 
 /** Response types from daemon notebook requests */

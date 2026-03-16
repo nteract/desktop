@@ -1432,6 +1432,18 @@ async fn has_notebook_path(
     Ok(path.is_some())
 }
 
+/// Clear the Tauri-side dirty flag. Called by the frontend when the daemon
+/// autosaves the notebook, so the flag stays in sync without a full save round-trip.
+#[tauri::command]
+fn mark_notebook_clean(
+    window: tauri::Window,
+    registry: tauri::State<'_, WindowNotebookRegistry>,
+) -> Result<(), String> {
+    let dirty = dirty_for_window(&window, registry.inner())?;
+    dirty.store(false, Ordering::SeqCst);
+    Ok(())
+}
+
 /// Format all code cells in the notebook and save.
 /// Formatting is best-effort - cells that fail to format are saved as-is.
 ///
@@ -3426,6 +3438,7 @@ pub fn run(
         .invoke_handler(tauri::generate_handler![
             // Notebook file operations
             has_notebook_path,
+            mark_notebook_clean,
             save_notebook,
             save_notebook_as,
             get_default_save_directory,
