@@ -1,8 +1,8 @@
 //! UV-based notebook metadata operations.
 //!
 //! This module provides notebook-specific metadata operations (set
-//! dependencies in `nbformat::Metadata`) and a thin availability check.
-//! Environment creation is handled entirely by the daemon via `kernel_env::uv`.
+//! dependencies in `nbformat::Metadata`). Environment creation and tool
+//! availability checks are handled entirely by the daemon.
 
 use serde::{Deserialize, Serialize};
 
@@ -35,9 +35,4 @@ pub fn set_dependencies(metadata: &mut nbformat::v4::Metadata, deps: &NotebookDe
     if let Some(runt_obj) = runt.as_object_mut() {
         runt_obj.insert("uv".to_string(), uv_value);
     }
-}
-
-/// Check if uv is available (either on PATH or bootstrappable via rattler).
-pub async fn check_uv_available() -> bool {
-    kernel_env::uv::check_uv_available().await
 }

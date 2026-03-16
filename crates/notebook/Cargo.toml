@@ -36,7 +36,6 @@ runtimed = { path = "../runtimed" }
 notebook-sync = { path = "../notebook-sync" }
 runt-trust = { path = "../runt-trust" }
 runt-workspace = { path = "../runt-workspace" }
-kernel-env = { path = "../kernel-env" }
 nbformat = "1.2.1"
 petname = "2"
 log = "0.4"

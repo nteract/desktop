@@ -182,7 +182,6 @@ function AppContent() {
   // UV Dependency management
   const {
     dependencies,
-    uvAvailable,
     hasDependencies: hasUvDependencies,
     isUvConfigured,
     loading: depsLoading,
@@ -222,12 +221,8 @@ function AppContent() {
   } = useCondaDependencies();
 
   // Deno config detection and settings
-  const {
-    denoAvailable,
-    denoConfigInfo,
-    flexibleNpmImports,
-    setFlexibleNpmImports,
-  } = useDenoDependencies();
+  const { denoConfigInfo, flexibleNpmImports, setFlexibleNpmImports } =
+    useDenoDependencies();
 
   // Get widget store handler for routing comm messages
   const { handleMessage: handleWidgetMessage } = useWidgetStoreRequired();
@@ -316,11 +311,9 @@ function AppContent() {
     ? "conda"
     : envSource?.startsWith("uv:")
       ? "uv"
-      : isUvConfigured && uvAvailable !== false
+      : isUvConfigured
         ? "uv"
-        : isCondaConfigured ||
-            environmentYmlInfo?.has_dependencies ||
-            uvAvailable === false
+        : isCondaConfigured || environmentYmlInfo?.has_dependencies
           ? "conda"
           : null;
 
@@ -1068,7 +1061,6 @@ function AppContent() {
           )}
         {dependencyHeaderOpen && runtime === "deno" && (
           <DenoDependencyHeader
-            denoAvailable={denoAvailable}
             denoConfigInfo={denoConfigInfo}
             flexibleNpmImports={flexibleNpmImports}
             onSetFlexibleNpmImports={setFlexibleNpmImports}
@@ -1111,7 +1103,6 @@ function AppContent() {
               dependencies={dependencies?.dependencies ?? []}
               requiresPython={dependencies?.requires_python ?? null}
               prerelease={dependencies?.prerelease ?? null}
-              uvAvailable={uvAvailable}
               loading={depsLoading}
               syncedWhileRunning={syncedWhileRunning}
               needsKernelRestart={needsKernelRestart}
