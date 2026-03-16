@@ -4881,12 +4881,13 @@ pub(crate) fn spawn_notebook_file_watcher(
                                 }
                             };
                             let external_attachments = parse_nbformat_attachments_from_ipynb(&json);
+                            let external_metadata = parse_metadata_from_ipynb(&json);
 
                             // Check if kernel is running (to preserve outputs)
                             let has_kernel = room.has_kernel().await;
 
-                            // Apply changes to Automerge doc
-                            let changed = apply_ipynb_changes(
+                            // Apply cell changes to Automerge doc
+                            let cells_changed = apply_ipynb_changes(
                                 &room,
                                 &external_cells,
                                 &external_attachments,
@@ -4894,10 +4895,27 @@ pub(crate) fn spawn_notebook_file_watcher(
                             )
                             .await;
 
-                            if changed {
+                            // Apply metadata changes to Automerge doc
+                            let metadata_changed = {
+                                let current = {
+                                    let doc = room.doc.read().await;
+                                    doc.get_metadata_snapshot()
+                                };
+                                external_metadata != current
+                            };
+                            if metadata_changed {
+                                if let Some(ref meta) = external_metadata {
+                                    let mut doc = room.doc.write().await;
+                                    if let Err(e) = doc.set_metadata_snapshot(meta) {
+                                        warn!("[notebook-watch] Failed to set metadata: {}", e);
+                                    }
+                                }
+                            }
+
+                            if cells_changed || metadata_changed {
                                 info!(
-                                    "[notebook-watch] Applied external changes from {:?}",
-                                    notebook_path
+                                    "[notebook-watch] Applied external changes from {:?} (cells={}, metadata={})",
+                                    notebook_path, cells_changed, metadata_changed,
                                 );
 
                                 // Notify peers of the change
@@ -4911,7 +4929,7 @@ pub(crate) fn spawn_notebook_file_watcher(
                                 let _ = room.kernel_broadcast_tx.send(
                                     NotebookBroadcast::FileChanged {
                                         cells,
-                                        metadata: None, // TODO: handle metadata changes
+                                        metadata: external_metadata,
                                     }
                                 );
                             }
