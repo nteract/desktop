@@ -106,6 +106,7 @@ impl WindowNotebookRegistry {
     }
 
     /// Find the first window label whose stored path matches `target`.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     fn find_label_by_path(&self, target: &Path) -> Option<String> {
         let contexts = self.contexts.lock().ok()?;
         for (label, ctx) in contexts.iter() {
