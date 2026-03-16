@@ -2164,9 +2164,8 @@ async fn rekey_ephemeral_room(
         // already opened via open_notebook(path).
         if rooms_guard.contains_key(&canonical) {
             let existing = rooms_guard.get(&canonical);
-            let is_same_room = existing.map_or(false, |r| {
-                Arc::ptr_eq(r, rooms_guard.get(old_notebook_id).unwrap_or(r))
-            });
+            let is_same_room = existing
+                .is_some_and(|r| Arc::ptr_eq(r, rooms_guard.get(old_notebook_id).unwrap_or(r)));
             if !is_same_room {
                 warn!(
                     "[notebook-sync] Re-key skipped: canonical path {} already has a different room",
