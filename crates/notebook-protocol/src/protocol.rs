@@ -7,9 +7,6 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use notebook_doc::metadata::NotebookMetadataSnapshot;
-use notebook_doc::CellSnapshot;
-
 // ── Data structs referenced by protocol enums ───────────────────────────────
 
 /// A snapshot of a comm channel's state.
@@ -498,14 +495,8 @@ pub enum NotebookBroadcast {
     },
 
     /// External file changes were detected and merged into the Automerge doc.
-    /// Broadcast to all connected windows so they can update their UI.
-    FileChanged {
-        /// Updated cells from the merged .ipynb file.
-        cells: Vec<CellSnapshot>,
-        /// Updated notebook metadata, if changed.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        metadata: Option<NotebookMetadataSnapshot>,
-    },
+    /// This is a signal only — the actual data arrives via Automerge sync frames.
+    FileChanged,
 
     /// Environment progress update during kernel launch.
     ///

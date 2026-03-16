@@ -4918,20 +4918,14 @@ pub(crate) fn spawn_notebook_file_watcher(
                                     notebook_path, cells_changed, metadata_changed,
                                 );
 
-                                // Notify peers of the change
+                                // Notify peers of the change — actual data
+                                // arrives via Automerge sync frames
                                 let _ = room.changed_tx.send(());
 
-                                // Broadcast FileChanged to all connected clients
-                                let cells = {
-                                    let doc = room.doc.read().await;
-                                    doc.get_cells()
-                                };
-                                let _ = room.kernel_broadcast_tx.send(
-                                    NotebookBroadcast::FileChanged {
-                                        cells,
-                                        metadata: external_metadata,
-                                    }
-                                );
+                                // Signal that external file changes were merged
+                                let _ = room
+                                    .kernel_broadcast_tx
+                                    .send(NotebookBroadcast::FileChanged);
                             }
                         }
                         Err(errs) => {

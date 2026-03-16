@@ -16,7 +16,6 @@ import {
 } from "../lib/kernel-status";
 import { logger } from "../lib/logger";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
-import type { NotebookMetadataSnapshot } from "../lib/notebook-metadata";
 import type {
   DaemonBroadcast,
   DaemonNotebookResponse,
@@ -403,17 +402,9 @@ export function useDaemonKernel({
         }
 
         case "file_changed": {
-          // External file changes detected and merged into Automerge doc.
-          // Cell and metadata data arrives through `notebook:frame` (Automerge sync relay),
+          // Signal only — actual data arrives via Automerge sync frames,
           // which triggers notifyMetadataChanged() automatically.
-          // This broadcast is for notification purposes.
-          const fileBroadcast = broadcast as {
-            cells: unknown[];
-            metadata?: NotebookMetadataSnapshot;
-          };
-          logger.info(
-            `[daemon-kernel] External file changes detected (${fileBroadcast.cells.length} cells)`,
-          );
+          logger.info("[daemon-kernel] External file changes detected");
           break;
         }
 
