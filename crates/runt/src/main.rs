@@ -224,6 +224,18 @@ enum Commands {
     /// Development utilities for runtimed contributors
     #[command(subcommand, hide = true)]
     Dev(DevCommands),
+    /// Recover a notebook from its persisted Automerge document (offline, no daemon needed)
+    Recover {
+        /// Path to the notebook file to recover
+        #[arg(required_unless_present = "list")]
+        path: Option<PathBuf>,
+        /// Write recovered notebook to a different path
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// List all recoverable notebooks
+        #[arg(long)]
+        list: bool,
+    },
     /// Inspect the Automerge state for a notebook (debug command)
     #[command(hide = true)]
     Inspect {
@@ -501,6 +513,9 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
         Some(Commands::Daemon { command }) => daemon_command(command).await?,
         Some(Commands::Ps { json }) => list_notebooks(json).await?,
         Some(Commands::Stop { path }) => shutdown_notebook(&path).await?,
+        Some(Commands::Recover { path, output, list }) => {
+            recover_notebook(path.as_deref(), output.as_deref(), list)?
+        }
         Some(Commands::Inspect {
             path,
             full_outputs,
@@ -3221,6 +3236,292 @@ async fn shutdown_notebook(path: &PathBuf) -> Result<()> {
             std::process::exit(1)
         }
     }
+
+    Ok(())
+}
+
+// =============================================================================
+// Notebook recovery (offline, no daemon needed)
+// =============================================================================
+
+/// Collect all `notebook-docs/` directories across system and worktree caches.
+fn all_notebook_docs_dirs() -> Vec<std::path::PathBuf> {
+    let cache_dir = match dirs::cache_dir() {
+        Some(d) => d,
+        None => return vec![],
+    };
+
+    let mut dirs = Vec::new();
+
+    // Both stable ("runt") and nightly ("runt-nightly") namespaces
+    for ns in &["runt", "runt-nightly"] {
+        let base = cache_dir.join(ns);
+
+        // Top-level notebook-docs (non-dev daemon)
+        let top = base.join("notebook-docs");
+        if top.is_dir() {
+            dirs.push(top);
+        }
+
+        // Per-worktree notebook-docs (dev daemons)
+        let worktrees = base.join("worktrees");
+        if worktrees.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&worktrees) {
+                for entry in entries.flatten() {
+                    let nd = entry.path().join("notebook-docs");
+                    if nd.is_dir() {
+                        dirs.push(nd);
+                    }
+                }
+            }
+        }
+    }
+
+    dirs
+}
+
+/// Find the automerge file for a notebook by its hash across all cache directories.
+/// Checks live docs first, then falls back to the most recent snapshot.
+fn find_automerge_file(filename: &str) -> Option<std::path::PathBuf> {
+    let stem = filename.strip_suffix(".automerge").unwrap_or(filename);
+
+    for dir in all_notebook_docs_dirs() {
+        // Check live doc first
+        let candidate = dir.join(filename);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+
+        // Check snapshots (most recent by filename sort, which embeds timestamp)
+        let snapshots_dir = dir.join("snapshots");
+        if snapshots_dir.is_dir() {
+            if let Some(path) = find_latest_snapshot(&snapshots_dir, stem) {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+/// Find the most recent snapshot for a given hash stem in a snapshots directory.
+fn find_latest_snapshot(snapshots_dir: &std::path::Path, stem: &str) -> Option<std::path::PathBuf> {
+    let prefix = format!("{}-", stem);
+    let mut matches: Vec<_> = std::fs::read_dir(snapshots_dir)
+        .ok()?
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".automerge"))
+        })
+        .collect();
+
+    if matches.is_empty() {
+        return None;
+    }
+
+    // Sort by filename descending (latest timestamp last in ascending, so reverse)
+    matches.sort_by_key(|e| e.file_name());
+    matches.last().map(|e| e.path())
+}
+
+/// Export a NotebookDoc to .ipynb JSON.
+fn doc_to_ipynb(doc: &runtimed::notebook_doc::NotebookDoc) -> serde_json::Value {
+    let cells = doc.get_cells();
+    let metadata_snapshot = doc.get_metadata_snapshot();
+
+    let mut nb_cells = Vec::new();
+    for cell in &cells {
+        // Split source into multiline array format (nbformat convention)
+        let source_lines: Vec<String> = if cell.source.is_empty() {
+            vec![]
+        } else {
+            let mut lines = Vec::new();
+            let mut remaining = cell.source.as_str();
+            while let Some(pos) = remaining.find('\n') {
+                lines.push(remaining[..=pos].to_string());
+                remaining = &remaining[pos + 1..];
+            }
+            if !remaining.is_empty() {
+                lines.push(remaining.to_string());
+            }
+            lines
+        };
+
+        let mut cell_json = serde_json::json!({
+            "id": cell.id,
+            "cell_type": cell.cell_type,
+            "source": source_lines,
+            "metadata": cell.metadata,
+        });
+
+        if cell.cell_type == "code" {
+            // Parse outputs from stored JSON strings
+            let resolved_outputs: Vec<serde_json::Value> = cell
+                .outputs
+                .iter()
+                .map(|o| serde_json::from_str(o).unwrap_or(serde_json::Value::String(o.clone())))
+                .collect();
+            cell_json["outputs"] = serde_json::Value::Array(resolved_outputs);
+
+            let exec_count: serde_json::Value =
+                serde_json::from_str(&cell.execution_count).unwrap_or(serde_json::Value::Null);
+            cell_json["execution_count"] = exec_count;
+        }
+
+        nb_cells.push(cell_json);
+    }
+
+    // Build metadata
+    let mut metadata = serde_json::json!({});
+    if let Some(ref snapshot) = metadata_snapshot {
+        let _ = snapshot.merge_into_metadata_value(&mut metadata);
+    }
+
+    serde_json::json!({
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": metadata,
+        "cells": nb_cells,
+    })
+}
+
+fn format_file_modified(entry: &std::fs::DirEntry) -> String {
+    entry
+        .metadata()
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|d| {
+            chrono::DateTime::from_timestamp(d.as_secs() as i64, d.subsec_nanos()).map(|dt| {
+                dt.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string()
+            })
+        })
+        .unwrap_or_else(|| "?".to_string())
+}
+
+fn format_file_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+fn print_automerge_entry(entry: &std::fs::DirEntry, label: &str) -> bool {
+    let Ok(meta) = entry.metadata() else {
+        return false;
+    };
+    let name = entry.file_name();
+    let name = name.to_string_lossy();
+    let modified = format_file_modified(entry);
+    let size = format_file_size(meta.len());
+    println!("{:<70} {:>8}  {}{}", name, size, modified, label);
+    true
+}
+
+fn recover_notebook(
+    path: Option<&std::path::Path>,
+    output: Option<&std::path::Path>,
+    list: bool,
+) -> Result<()> {
+    use runtimed::notebook_doc::{notebook_doc_filename, NotebookDoc};
+
+    if list {
+        let dirs = all_notebook_docs_dirs();
+        let mut found = false;
+
+        for dir in &dirs {
+            // List live docs
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    if entry
+                        .path()
+                        .extension()
+                        .is_some_and(|e| e == "automerge")
+                    {
+                        found |= print_automerge_entry(&entry, "");
+                    }
+                }
+            }
+
+            // List snapshots
+            let snapshots_dir = dir.join("snapshots");
+            if let Ok(entries) = std::fs::read_dir(&snapshots_dir) {
+                for entry in entries.flatten() {
+                    if entry
+                        .path()
+                        .extension()
+                        .is_some_and(|e| e == "automerge")
+                    {
+                        found |= print_automerge_entry(&entry, " [snapshot]");
+                    }
+                }
+            }
+        }
+
+        if !found {
+            eprintln!("No recoverable notebooks found.");
+        }
+        return Ok(());
+    }
+
+    // Fast path: compute hash and look up directly
+    let path = path.expect("path is required when --list is not set");
+    let abs_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let notebook_id = abs_path.to_string_lossy().to_string();
+    let filename = notebook_doc_filename(&notebook_id);
+
+    let automerge_path = match find_automerge_file(&filename) {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "No automerge document found for: {}\n\
+                 Expected filename: {}\n\
+                 \n\
+                 Use 'runt recover --list' to see all recoverable notebooks.",
+                notebook_id, filename
+            );
+            std::process::exit(1);
+        }
+    };
+
+    let data = std::fs::read(&automerge_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read {:?}: {}", automerge_path, e))?;
+    let doc = NotebookDoc::load(&data)
+        .map_err(|e| anyhow::anyhow!("Failed to load automerge document: {}", e))?;
+
+    let cell_count = doc.cell_count();
+    let notebook_json = doc_to_ipynb(&doc);
+
+    let output_path = match output {
+        Some(p) => p.to_path_buf(),
+        None => abs_path.clone(),
+    };
+
+    // Ensure parent directory exists
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let content = serde_json::to_string_pretty(&notebook_json)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize notebook: {}", e))?;
+    std::fs::write(&output_path, format!("{content}\n"))?;
+
+    println!(
+        "Recovered {} cells to {}",
+        cell_count,
+        output_path.display()
+    );
+    println!("Source: {}", automerge_path.display());
 
     Ok(())
 }
