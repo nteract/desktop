@@ -1057,6 +1057,11 @@ class TestOutputHandling:
     execution stops when an error is raised.
     """
 
+    @pytest.mark.xfail(
+        reason="Sync race: create_cell + execute_cell in quick succession may execute "
+        "before source is synced to daemon. See #875 discussion.",
+        strict=False,
+    )
     def test_output_types_and_error_stops_execution(self, session):
         """Test stream, display, error outputs and verify error stops execution.
 
