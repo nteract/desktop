@@ -69,9 +69,16 @@ impl Session {
     }
 
     /// The notebook ID for this session.
+    /// After saving an ephemeral notebook, this reflects the new file-path ID.
     #[getter]
-    fn notebook_id(&self) -> &str {
-        &self.notebook_id
+    fn notebook_id(&self) -> String {
+        // Check if save() updated the ID via the daemon re-keying the room
+        if let Ok(st) = self.state.try_lock() {
+            if let Some(ref id) = st.notebook_id_override {
+                return id.clone();
+            }
+        }
+        self.notebook_id.clone()
     }
 
     /// Whether the session is connected to the daemon.
@@ -203,8 +210,16 @@ impl Session {
 
     /// Connect to the daemon.
     fn connect(&self) -> PyResult<()> {
+        // Use the override ID if save() re-keyed the room, otherwise the original.
+        let effective_id = self
+            .runtime
+            .block_on(async {
+                let st = self.state.lock().await;
+                st.notebook_id_override.clone()
+            })
+            .unwrap_or_else(|| self.notebook_id.clone());
         self.runtime
-            .block_on(session_core::connect(&self.state, &self.notebook_id))
+            .block_on(session_core::connect(&self.state, &effective_id))
     }
 
     // =========================================================================
@@ -393,9 +408,18 @@ impl Session {
     /// Returns:
     ///     The path the notebook was saved to.
     #[pyo3(signature = (path=None))]
-    fn save(&self, path: Option<&str>) -> PyResult<String> {
+    fn save(&mut self, path: Option<&str>) -> PyResult<String> {
         self.connect()?;
-        self.runtime.block_on(session_core::save(&self.state, path))
+        let result = self
+            .runtime
+            .block_on(session_core::save(&self.state, path))?;
+        // If the daemon re-keyed the room, update self.notebook_id so that
+        // future reconnects (connect() calls) use the new file-path ID
+        // instead of the stale UUID.
+        if let Some(new_id) = result.new_notebook_id {
+            self.notebook_id = new_id;
+        }
+        Ok(result.path)
     }
 
     /// Set a notebook metadata key.

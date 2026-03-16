@@ -64,9 +64,16 @@ impl AsyncSession {
     }
 
     /// The notebook ID for this session.
+    /// After saving an ephemeral notebook, this reflects the new file-path ID.
     #[getter]
-    fn notebook_id(&self) -> &str {
-        &self.notebook_id
+    fn notebook_id(&self) -> String {
+        // Check if save() updated the ID via the daemon re-keying the room
+        if let Ok(st) = self.state.try_lock() {
+            if let Some(ref id) = st.notebook_id_override {
+                return id.clone();
+            }
+        }
+        self.notebook_id.clone()
     }
 
     /// Whether the session is connected to the daemon.
@@ -210,7 +217,12 @@ impl AsyncSession {
         let state = Arc::clone(&self.state);
         let notebook_id = self.notebook_id.clone();
         future_into_py(py, async move {
-            session_core::connect(&state, &notebook_id).await
+            // Use the override ID if save() re-keyed the room, otherwise the original.
+            let effective_id = {
+                let st = state.lock().await;
+                st.notebook_id_override.clone().unwrap_or(notebook_id)
+            };
+            session_core::connect(&state, &effective_id).await
         })
     }
 
@@ -490,9 +502,14 @@ impl AsyncSession {
         let path = path.map(|s| s.to_string());
 
         future_into_py(py, async move {
-            // Ensure connected
-            session_core::connect(&state, &notebook_id).await?;
-            session_core::save(&state, path.as_deref()).await
+            // Use the override ID if save() previously re-keyed the room.
+            let effective_id = {
+                let st = state.lock().await;
+                st.notebook_id_override.clone().unwrap_or(notebook_id)
+            };
+            session_core::connect(&state, &effective_id).await?;
+            let result = session_core::save(&state, path.as_deref()).await?;
+            Ok(result.path)
         })
     }
 

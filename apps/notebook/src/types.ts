@@ -221,6 +221,10 @@ export type DaemonBroadcast =
       event: "file_changed";
     }
   | {
+      event: "room_renamed";
+      new_notebook_id: string;
+    }
+  | {
       event: "notebook_autosaved";
       path: string;
     };
