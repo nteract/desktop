@@ -100,17 +100,47 @@ pub struct RelayCreateResult {
 /// On Windows: `tokio::net::windows::named_pipe::ClientOptions::new().open`
 macro_rules! connect_stream {
     ($socket_path:expr) => {{
-        #[cfg(unix)]
-        {
-            tokio::net::UnixStream::connect($socket_path)
-                .await
-                .map_err(SyncError::Io)?
-        }
-        #[cfg(windows)]
-        {
-            tokio::net::windows::named_pipe::ClientOptions::new()
-                .open($socket_path)
-                .map_err(SyncError::Io)?
+        let path = $socket_path;
+        let result = {
+            #[cfg(unix)]
+            {
+                tokio::net::UnixStream::connect(path).await
+            }
+            #[cfg(windows)]
+            {
+                tokio::net::windows::named_pipe::ClientOptions::new().open(path)
+            }
+        };
+        match result {
+            Ok(stream) => stream,
+            Err(e) => {
+                let path_display = path.display();
+                return Err(match e.kind() {
+                    std::io::ErrorKind::NotFound => SyncError::DaemonUnavailable {
+                        message: format!(
+                            "Daemon is not running. Endpoint not found at {path_display}. \
+                             Start the daemon with `runt daemon start` or `cargo xtask dev-daemon`."
+                        ),
+                        source: e,
+                    },
+                    std::io::ErrorKind::ConnectionRefused => SyncError::DaemonUnavailable {
+                        message: format!(
+                            "Daemon connection refused at {path_display}. \
+                             The daemon may have crashed. Try restarting with \
+                             `runt daemon start` or `cargo xtask dev-daemon`."
+                        ),
+                        source: e,
+                    },
+                    std::io::ErrorKind::PermissionDenied => SyncError::DaemonUnavailable {
+                        message: format!(
+                            "Permission denied connecting to daemon at {path_display}. \
+                             Check file permissions."
+                        ),
+                        source: e,
+                    },
+                    _ => SyncError::Io(e),
+                });
+            }
         }
     }};
 }

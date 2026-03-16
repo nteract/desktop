@@ -960,4 +960,32 @@ mod integration_tests {
             actors
         );
     }
+
+    #[tokio::test]
+    async fn test_connect_to_missing_socket_returns_daemon_unavailable() {
+        use std::error::Error;
+        use std::path::PathBuf;
+
+        let bogus_path = PathBuf::from("/tmp/nonexistent-runtimed-test.sock");
+        let result = crate::connect::connect(bogus_path.clone(), "test-notebook".to_string()).await;
+
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("should fail to connect to nonexistent socket"),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Daemon is not running"),
+            "expected DaemonUnavailable, got: {msg}"
+        );
+        assert!(
+            msg.contains("nonexistent-runtimed-test.sock"),
+            "expected path in error message, got: {msg}"
+        );
+        // Verify the source error is preserved
+        assert!(
+            err.source().is_some(),
+            "expected source io::Error to be preserved"
+        );
+    }
 }
