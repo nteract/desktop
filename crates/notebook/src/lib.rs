@@ -76,19 +76,24 @@ impl WindowNotebookRegistry {
     /// restore). If the user reopens a new window before quitting, the stale entry
     /// would otherwise appear as a ghost notebook in the upgrade dialog and session.
     fn prune_stale_entries(&self, app: &tauri::AppHandle) {
-        if let Ok(mut contexts) = self.contexts.lock() {
-            let stale: Vec<String> = contexts
-                .keys()
-                .filter(|label| app.get_webview_window(label).is_none())
-                .cloned()
-                .collect();
-            for label in stale {
-                contexts.remove(&label);
-                log::info!(
-                    "[registry] Pruned stale entry for destroyed window: {}",
-                    label
-                );
+        let mut contexts = match self.contexts.lock() {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("[registry] Failed to lock contexts for pruning: {}", e);
+                return;
             }
+        };
+        let stale: Vec<String> = contexts
+            .keys()
+            .filter(|label| app.get_webview_window(label).is_none())
+            .cloned()
+            .collect();
+        for label in stale {
+            contexts.remove(&label);
+            log::info!(
+                "[registry] Pruned stale entry for destroyed window: {}",
+                label
+            );
         }
     }
 
