@@ -426,20 +426,20 @@ Dependencies and environment config are stored in notebook JSON metadata:
     },
     "runt": {
       "schema_version": "1",
-      "env_id": "uuid"
-    },
-    "uv": {
-      "dependencies": ["pandas", "numpy"],
-      "requires-python": ">=3.10"
-    },
-    "conda": {
-      "dependencies": ["numpy", "scipy"],
-      "channels": ["conda-forge"],
-      "python": "3.12"
-    },
-    "deno": {
-      "permissions": ["--allow-net", "--allow-read"],
-      "config": "deno.json"
+      "env_id": "uuid",
+      "uv": {
+        "dependencies": ["pandas", "numpy"],
+        "requires-python": ">=3.10"
+      },
+      "conda": {
+        "dependencies": ["numpy", "scipy"],
+        "channels": ["conda-forge"],
+        "python": "3.12"
+      },
+      "deno": {
+        "permissions": ["--allow-net", "--allow-read"],
+        "config": "deno.json"
+      }
     }
   }
 }
@@ -453,7 +453,7 @@ Note: The runtime type (Python vs Deno) is determined by `kernelspec.name`, not 
 
 Dependencies are signed with HMAC-SHA256 to prevent untrusted code execution on notebook open.
 
-- **Key**: 32 random bytes stored at `~/.config/runt/trust-key`, generated on first use
+- **Key**: 32 random bytes stored at `~/Library/Application Support/runt/trust-key` (macOS) or `~/.config/runt/trust-key` (Linux), generated on first use
 - **Signed content**: Canonical JSON of `metadata.runt.uv` + `metadata.runt.conda` (with fallback to legacy `metadata.uv` + `metadata.conda`; not cell contents or outputs)
 - **Signature format**: `"hmac-sha256:{hex_digest}"` stored in notebook metadata
 - **Machine-specific**: The key is per-machine, so every shared notebook is untrusted on the recipient's machine
@@ -516,9 +516,8 @@ The kernel lifecycle is managed by `useDaemonKernel.ts`, which:
 | File | Role |
 |------|------|
 | `crates/notebook/src/lib.rs` | Tauri commands (save, format, kernel, env), sync pipe setup, `launch_kernel_via_daemon` |
-| `crates/notebook/src/project_file.rs` | Unified closest-wins project file detection |
-| `crates/notebook/src/uv_env.rs` | UV environment creation, dep hashing (delegates to `kernel-env`), caching |
-| `crates/notebook/src/conda_env.rs` | Conda environment creation via rattler (delegates to `kernel-env`) |
+| `crates/notebook/src/uv_env.rs` | UV dependency metadata (set/get deps in notebook JSON) |
+| `crates/notebook/src/conda_env.rs` | Conda dependency metadata (set/get deps in notebook JSON) |
 | `crates/notebook/src/pyproject.rs` | pyproject.toml discovery and parsing |
 | `crates/notebook/src/pixi.rs` | pixi.toml discovery and parsing |
 | `crates/notebook/src/environment_yml.rs` | environment.yml discovery and parsing |

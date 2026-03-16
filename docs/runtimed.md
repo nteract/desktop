@@ -279,7 +279,7 @@ See source for full definition (includes `working_dir`, `nbformat_attachments`, 
 | `sync_client.rs` | Settings sync client library |
 | `crates/notebook-doc/src/lib.rs` | Notebook Automerge document, cell CRUD, text editing, persistence |
 | `notebook_sync_server.rs` | Room-based notebook sync, peer management, eviction |
-| `notebook_sync_client.rs` | Notebook sync client library |
+| `crates/notebook-sync/src/relay.rs` | Relay handle for notebook sync connections |
 
 ---
 
@@ -447,12 +447,12 @@ pub enum BlobResponse {
 
 | File | Role |
 |------|------|
-| `connection.rs` | Unified framing, handshake enum, send/recv helpers |
+| `crates/notebook-protocol/src/connection.rs` | Unified framing, handshake enum, send/recv helpers |
 | `daemon.rs` | Single accept loop, `route_connection()` dispatcher |
 | `client.rs` | Uses `Handshake::Pool` |
 | `sync_client.rs` | Uses `Handshake::SettingsSync` |
 | `sync_server.rs` | Handler function (no longer owns accept loop) |
-| `notebook_sync_client.rs` | Uses `Handshake::NotebookSync` |
+| `crates/notebook-sync/src/connect.rs` | Uses `Handshake::NotebookSync` for relay connections |
 | `notebook_sync_server.rs` | Handler function, room lookup |
 | `protocol.rs` | `BlobRequest`/`BlobResponse` enums |
 
@@ -779,7 +779,7 @@ Broadcast types (see `NotebookBroadcast` in `crates/notebook-protocol/src/protoc
 - `KernelError { error }` — launch failure or crash
 - `Comm { msg_type, content, buffers }` — ipywidgets protocol (comm_open/msg/close)
 - `CommSync { comms }` — initial widget state for newly connected clients
-- `FileChanged { cells, metadata }` — external .ipynb edits merged into Automerge doc
+- `FileChanged` — External file changes detected and merged into the Automerge doc (signal only — actual data arrives via sync frames)
 - `EnvProgress { env_type, phase }` — rich environment setup progress (repodata, solve, download, link)
 - `EnvSyncState { in_sync, diff }` — notebook metadata vs launched config drift
 

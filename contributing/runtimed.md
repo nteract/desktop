@@ -117,8 +117,7 @@ crates/runtimed/
 │   ├── lib.rs                   # Public types, path helpers (default_socket_path, etc.)
 │   ├── main.rs                  # CLI entry point (run, install, status, etc.)
 │   ├── daemon.rs                # Daemon state, pool management, connection routing
-│   ├── connection.rs            # Unified framing, Handshake enum, send/recv helpers
-│   ├── protocol.rs              # Request/Response enums, BlobRequest/BlobResponse (re-exported from notebook-protocol crate)
+│   ├── protocol.rs              # BlobRequest/BlobResponse enums (notebook types re-exported from notebook-protocol crate)
 │   ├── client.rs                # PoolClient for pool operations
 │   ├── singleton.rs             # File-based locking for single instance
 │   ├── service.rs               # Cross-platform service installation
@@ -127,11 +126,11 @@ crates/runtimed/
 │   ├── sync_client.rs           # Settings sync client library
 │   ├── (uses notebook_doc crate) # Shared `NotebookDoc` from crates/notebook-doc/src/lib.rs
 │   ├── notebook_sync_server.rs  # Room-based notebook sync, peer management, eviction
-│   ├── notebook_sync_client.rs  # Notebook sync client library
 │   ├── blob_store.rs            # Content-addressed blob store with metadata sidecars
 │   ├── blob_server.rs           # HTTP read server for blobs (hyper 1.x)
 │   ├── runtime.rs               # Runtime enum definition (Python/Deno/Other)
 │   ├── kernel_manager.rs        # Kernel lifecycle, ZMQ iopub watching, execution queue
+│   ├── kernel_pids.rs           # Kernel PID tracking and cleanup
 │   ├── inline_env.rs            # Inline dependency environment caching (UV/Conda)
 │   ├── project_file.rs          # Project file detection (pyproject.toml, pixi.toml, etc.)
 │   ├── comm_state.rs            # Comm message state for ipywidgets

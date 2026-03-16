@@ -118,14 +118,14 @@ The `index.ts` file re-exports all generated types for convenient imports.
 ## Usage in Frontend
 
 ```typescript
-import type { SyncedSettings, ThemeMode } from "@/bindings";
+import type { ThemeMode } from "@/bindings";
 import { useSyncedSettings } from "@/hooks/useSyncedSettings";
 
 function Settings() {
-  const { settings, updateSettings } = useSyncedSettings();
+  const { theme, setTheme, defaultRuntime, setDefaultRuntime } = useSyncedSettings();
 
-  const handleThemeChange = (theme: ThemeMode) => {
-    updateSettings({ theme });
+  const handleThemeChange = (newTheme: ThemeMode) => {
+    setTheme(newTheme);
   };
   // ...
 }
