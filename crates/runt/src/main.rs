@@ -3375,7 +3375,9 @@ fn doc_to_ipynb(doc: &runtimed::notebook_doc::NotebookDoc) -> serde_json::Value 
     // Build metadata
     let mut metadata = serde_json::json!({});
     if let Some(ref snapshot) = metadata_snapshot {
-        let _ = snapshot.merge_into_metadata_value(&mut metadata);
+        if let Err(e) = snapshot.merge_into_metadata_value(&mut metadata) {
+            eprintln!("Warning: failed to merge notebook metadata: {}", e);
+        }
     }
 
     serde_json::json!({
@@ -3466,7 +3468,11 @@ fn recover_notebook(
     let Some(path) = path else {
         anyhow::bail!("path is required when --list is not set");
     };
-    let abs_path = if path.is_absolute() {
+    // Canonicalize if the file exists (matches daemon's notebook_id derivation),
+    // otherwise fall back to joining with cwd for deleted/missing files.
+    let abs_path = if path.exists() {
+        path.canonicalize()?
+    } else if path.is_absolute() {
         path.to_path_buf()
     } else {
         std::env::current_dir()?.join(path)
