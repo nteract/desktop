@@ -318,30 +318,40 @@ impl Supervisor {
 
     /// Attempt to restart the nteract child process.
     async fn restart_child(&self) -> Result<(), String> {
-        let mut state = self.state.write().await;
+        // Phase 1: Drop old client and check circuit breaker (hold lock briefly)
+        let (project_root, socket_path) = {
+            let mut state = self.state.write().await;
 
-        // Drop old client
-        if let Some(old) = state.child_client.take() {
-            let _ = old.cancel().await;
-        }
+            // Drop old client
+            if let Some(old) = state.child_client.take() {
+                let _ = old.cancel().await;
+            }
 
-        info!(
-            "Restarting nteract MCP server (restart #{})",
-            state.restart_count + 1
-        );
+            info!(
+                "Restarting nteract MCP server (restart #{})",
+                state.restart_count + 1
+            );
 
-        // Check circuit breaker
-        if !state.should_retry() {
-            let msg = "Too many crashes, auto-restart disabled. Call supervisor_restart to retry.";
-            state.last_error = Some(msg.to_string());
-            return Err(msg.to_string());
-        }
+            // Check circuit breaker
+            if !state.should_retry() {
+                let msg =
+                    "Too many crashes, auto-restart disabled. Call supervisor_restart to retry.";
+                state.last_error = Some(msg.to_string());
+                return Err(msg.to_string());
+            }
 
-        // Small delay to avoid tight restart loops
+            (state.project_root.clone(), state.socket_path.clone())
+            // Lock dropped here
+        };
+
+        // Phase 2: Sleep without holding the lock (other tasks can read state)
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        match spawn_nteract_child(&state.project_root, &state.socket_path).await {
+        // Phase 3: Spawn child without holding the lock
+        match spawn_nteract_child(&project_root, &socket_path).await {
             Ok(client) => {
+                // Phase 4: Re-acquire lock to store the new client
+                let mut state = self.state.write().await;
                 state.child_client = Some(client);
                 state.restart_count += 1;
                 state.last_error = None;
@@ -349,6 +359,7 @@ impl Supervisor {
                 Ok(())
             }
             Err(e) => {
+                let mut state = self.state.write().await;
                 state.last_error = Some(e.clone());
                 error!("Failed to restart nteract child: {e}");
                 Err(e)
@@ -400,8 +411,16 @@ impl Supervisor {
     /// Build the supervisor_status result.
     async fn status(&self) -> SupervisorStatus {
         let state = self.state.read().await;
+        // Check actual liveness: is_some() means we have a client handle,
+        // but the child may have crashed. Try a lightweight probe.
+        let child_running = if let Some(ref client) = state.child_client {
+            // list_tools is a cheap probe — if it fails, the child is dead
+            client.list_tools(None).await.is_ok()
+        } else {
+            false
+        };
         SupervisorStatus {
-            child_running: state.child_client.is_some(),
+            child_running,
             restart_count: state.restart_count,
             last_error: state.last_error.clone(),
             socket_path: state.socket_path.clone(),

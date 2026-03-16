@@ -11,9 +11,10 @@ path = "src/main.rs"
 
 [dependencies]
 rmcp = { version = "0.16", features = ["server", "client", "transport-child-process", "transport-io"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { workspace = true }
 runt-workspace = { path = "../runt-workspace" }
 dirs = "5"
 notify = { workspace = true }

@@ -3267,6 +3267,7 @@ dependencies = [
  "notify-debouncer-mini",
  "rmcp",
  "runt-workspace",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tokio",
