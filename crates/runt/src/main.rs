@@ -3463,7 +3463,9 @@ fn recover_notebook(
     }
 
     // Fast path: compute hash and look up directly
-    let path = path.expect("path is required when --list is not set");
+    let Some(path) = path else {
+        anyhow::bail!("path is required when --list is not set");
+    };
     let abs_path = if path.is_absolute() {
         path.to_path_buf()
     } else {
