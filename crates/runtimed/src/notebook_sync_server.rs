@@ -2143,15 +2143,39 @@ async fn rekey_ephemeral_room(
         return None;
     }
 
-    let canonical = match PathBuf::from(saved_path).canonicalize() {
+    let canonical = match tokio::fs::canonicalize(saved_path).await {
         Ok(c) => c.to_string_lossy().to_string(),
-        Err(_) => saved_path.to_string(),
+        Err(e) => {
+            warn!(
+                "[notebook-sync] canonicalize({}) failed: {}, using raw path",
+                saved_path, e
+            );
+            saved_path.to_string()
+        }
     };
 
     // Re-key in the rooms map: remove UUID key, insert canonical path key.
     // We hold on to the Arc clone for spawning the file watcher below.
     let room_arc = {
         let mut rooms_guard = rooms.lock().await;
+
+        // Guard against overwriting an existing room at the canonical path.
+        // This can happen if two peers save concurrently, or if the path was
+        // already opened via open_notebook(path).
+        if rooms_guard.contains_key(&canonical) {
+            let existing = rooms_guard.get(&canonical);
+            let is_same_room = existing.map_or(false, |r| {
+                Arc::ptr_eq(r, rooms_guard.get(old_notebook_id).unwrap_or(r))
+            });
+            if !is_same_room {
+                warn!(
+                    "[notebook-sync] Re-key skipped: canonical path {} already has a different room",
+                    canonical
+                );
+                return None;
+            }
+        }
+
         if let Some(room_arc) = rooms_guard.remove(old_notebook_id) {
             rooms_guard.insert(canonical.clone(), room_arc.clone());
             room_arc
@@ -2170,20 +2194,25 @@ async fn rekey_ephemeral_room(
     *room.notebook_path.write().await = new_path.clone();
 
     // Delete the old UUID-based persist file — the .ipynb is now source of truth.
-    // The debounced persistence task still writes to the old path, which is harmless;
-    // on next room creation via open_notebook(path), new_fresh() starts from .ipynb.
+    // Note: The debounced persistence task captures persist_path by value at spawn
+    // time, so it may recreate this file. That's acceptable: the file is only used
+    // for crash recovery of ephemeral notebooks, and once saved to .ipynb the file
+    // on disk is authoritative. The stale persist file is cleaned up on room eviction.
     let old_persist = room.persist_path.clone();
     if old_persist.exists() {
-        let _ = std::fs::remove_file(&old_persist);
+        if let Err(e) = std::fs::remove_file(&old_persist) {
+            warn!(
+                "[notebook-sync] Failed to remove old persist file {:?}: {}",
+                old_persist, e
+            );
+        }
     }
 
     // Spawn a file watcher for the new .ipynb path (same as get_or_create_room
     // does for non-UUID rooms)
     if new_path.extension().is_some_and(|ext| ext == "ipynb") {
         let shutdown_tx = spawn_notebook_file_watcher(new_path, room_arc);
-        if let Ok(mut guard) = room.watcher_shutdown_tx.try_lock() {
-            *guard = Some(shutdown_tx);
-        }
+        *room.watcher_shutdown_tx.lock().await = Some(shutdown_tx);
     }
 
     // Broadcast to all peers so they can update their local notebook_id.

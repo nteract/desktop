@@ -217,7 +217,12 @@ impl AsyncSession {
         let state = Arc::clone(&self.state);
         let notebook_id = self.notebook_id.clone();
         future_into_py(py, async move {
-            session_core::connect(&state, &notebook_id).await
+            // Use the override ID if save() re-keyed the room, otherwise the original.
+            let effective_id = {
+                let st = state.lock().await;
+                st.notebook_id_override.clone().unwrap_or(notebook_id)
+            };
+            session_core::connect(&state, &effective_id).await
         })
     }
 
@@ -497,8 +502,12 @@ impl AsyncSession {
         let path = path.map(|s| s.to_string());
 
         future_into_py(py, async move {
-            // Ensure connected
-            session_core::connect(&state, &notebook_id).await?;
+            // Use the override ID if save() previously re-keyed the room.
+            let effective_id = {
+                let st = state.lock().await;
+                st.notebook_id_override.clone().unwrap_or(notebook_id)
+            };
+            session_core::connect(&state, &effective_id).await?;
             let result = session_core::save(&state, path.as_deref()).await?;
             Ok(result.path)
         })
