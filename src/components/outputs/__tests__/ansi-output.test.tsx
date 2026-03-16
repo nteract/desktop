@@ -344,6 +344,6 @@ describe("AnsiErrorOutput", () => {
       <AnsiErrorOutput ename="Error" evalue="test" />,
     );
     const output = container.querySelector("[data-slot='ansi-error-output']");
-    expect(output?.className).toContain("border-red");
+    expect(output?.className).toContain("not-prose");
   });
 });

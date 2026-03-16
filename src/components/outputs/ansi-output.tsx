@@ -279,7 +279,7 @@ export function AnsiErrorOutput({
     <div
       data-slot="ansi-error-output"
       className={cn(
-        "not-prose border-l-2 border-red-200 dark:border-red-800 py-3 pl-1",
+        "not-prose py-3",
         className,
       )}
     >
