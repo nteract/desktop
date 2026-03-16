@@ -1,5 +1,7 @@
 # Agent Instructions
 
+<!-- This file is canonical. CLAUDE.md is a symlink to AGENTS.md. -->
+
 This document provides guidance for AI agents working in this repository.
 
 ## Code Formatting (Required Before Committing)
@@ -59,9 +61,75 @@ Keep descriptions short and descriptive, e.g.:
 
 The `.context/` directory is gitignored and used for per-worktree state that shouldn't be committed.
 
-## MCP Server
+## MCP Server (Local Development)
 
 For programmatic notebook interaction, use the [nteract MCP server](https://github.com/nteract/nteract) (`nteract` on PyPI).
+
+### Inkwell — MCP Supervisor
+
+When developing locally, the **Inkwell** MCP supervisor (`crates/mcp-supervisor/`)
+provides a stable MCP proxy between your editor and the nteract Python MCP server.
+It manages the dev daemon lifecycle, auto-restarts the Python server on crash, and
+hot-reloads when source files change.
+
+```bash
+# Build and run the supervisor (starts daemon if needed)
+cargo xtask mcp
+
+# Or print config JSON for your MCP client
+cargo xtask mcp --print-config
+```
+
+For `.zed/settings.json` (gitignored, per-developer):
+```json
+{
+  "context_servers": {
+    "nteract": {
+      "command": "./target/debug/mcp-supervisor",
+      "args": [],
+      "env": { "RUNTIMED_DEV": "1" }
+    }
+  }
+}
+```
+
+### Available MCP tools
+
+If the Inkwell supervisor is active in your session, you have access to these
+tools in addition to the standard nteract notebook tools:
+
+| Tool | Purpose |
+|------|---------|
+| `supervisor_status` | Check child process, daemon, restart count, last error |
+| `supervisor_restart` | Restart child (`target="child"`) or daemon (`target="daemon"`) |
+| `supervisor_rebuild` | Run `maturin develop` to rebuild Rust Python bindings, then restart |
+| `supervisor_logs` | Tail the daemon log file |
+
+The nteract tools (`list_notebooks`, `create_notebook`, `execute_cell`, etc.)
+are proxied through the supervisor. If tools start failing, call
+`supervisor_status` to diagnose, then `supervisor_restart` or
+`supervisor_rebuild` to recover.
+
+### Hot reload
+
+The supervisor watches `python/nteract/src/`, `python/runtimed/src/`,
+`crates/runtimed-py/src/`, and `crates/runtimed/src/` for changes:
+
+- **Python changes** → child process restarts automatically
+- **Rust changes** → `maturin develop` runs first, then child restarts
+- **Behavior changes** take effect immediately on the next tool call
+- **New/removed tools** may take a moment for the client to discover
+
+### Tool availability
+
+MCP tools may or may not be available depending on your session:
+
+- **Inkwell active** → all supervisor + nteract tools available
+- **nteract MCP only** (no supervisor) → nteract tools only, no `supervisor_*`
+- **No MCP server** → use `cargo xtask dev-mcp` or `cargo xtask mcp` to set one up
+- **Dev daemon not running** → Inkwell starts it automatically; for manual control use `cargo xtask dev-daemon`
+
+See `contributing/development.md` for the full MCP development workflow.
 
 ## Contributing Guidelines
 

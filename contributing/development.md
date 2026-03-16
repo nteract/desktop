@@ -14,8 +14,9 @@
 | Run with notebook | `cargo xtask run path/to/notebook.ipynb` |
 | Build release .app | `cargo xtask build-app` |
 | Build release DMG | `cargo xtask build-dmg` |
-| Launch MCP server | `cargo xtask dev-mcp` |
-| Print MCP config JSON | `cargo xtask dev-mcp --print-config` |
+| MCP supervisor (Inkwell) | `cargo xtask mcp` |
+| MCP config JSON | `cargo xtask mcp --print-config` |
+| MCP server (no supervisor) | `cargo xtask dev-mcp` |
 | Lint (check mode) | `cargo xtask lint` |
 | Lint (auto-fix) | `cargo xtask lint --fix` |
 
@@ -257,50 +258,88 @@ See [contributing/runtimed.md](./runtimed.md) for full daemon development docs.
 ## MCP Server Development
 
 The [nteract MCP server](https://github.com/nteract/nteract) lets AI agents
-(Claude, Zed, etc.) interact with notebooks via the daemon. To run it against
-your local dev build:
+(Claude, Zed, etc.) interact with notebooks via the daemon. There are two ways
+to run it locally.
+
+### Inkwell supervisor (recommended)
+
+The **Inkwell** MCP supervisor (`crates/mcp-supervisor/`) is a stable Rust
+process that proxies to the nteract Python MCP server. It handles daemon
+lifecycle, auto-restart on crash, and hot-reload on file changes — one command,
+everything works:
 
 ```bash
-# Terminal 1: dev daemon must be running
+cargo xtask mcp
+```
+
+This:
+1. Starts the dev daemon if not running
+2. Builds Python bindings via `maturin develop` if needed
+3. Spawns the nteract MCP server as a child process
+4. Proxies all tool calls + injects `supervisor_*` management tools
+5. Watches source files and hot-reloads on changes
+
+For your MCP client config (Zed, Claude Desktop, etc.):
+
+```bash
+cargo xtask mcp --print-config
+```
+
+Or configure `.zed/settings.json` directly (gitignored):
+
+```json
+{
+  "context_servers": {
+    "nteract": {
+      "command": "./target/debug/mcp-supervisor",
+      "args": [],
+      "env": { "RUNTIMED_DEV": "1" }
+    }
+  }
+}
+```
+
+#### Supervisor tools
+
+These tools are always available, even when the Python child is down:
+
+| Tool | Purpose |
+|------|---------|
+| `supervisor_status` | Child process, daemon, restart count, last error |
+| `supervisor_restart` | Restart child or daemon |
+| `supervisor_rebuild` | `maturin develop` + restart (after Rust changes) |
+| `supervisor_logs` | Tail the daemon log file |
+
+#### Hot reload
+
+The supervisor watches `python/nteract/src/`, `python/runtimed/src/`,
+`crates/runtimed-py/src/`, and `crates/runtimed/src/`:
+
+- **Python changes** → child restarts automatically
+- **Rust changes** → `maturin develop` runs first, then child restarts
+- **Behavior changes** take effect immediately on the next tool call
+- **New/removed tools** may take a moment for the client to discover
+
+### Direct mode (no supervisor)
+
+If you don't need auto-restart or file watching, `dev-mcp` runs the nteract
+server directly:
+
+```bash
+# Terminal 1: start the dev daemon
 cargo xtask dev-daemon
 
 # Terminal 2: build bindings + launch MCP server
 cargo xtask dev-mcp
 ```
 
-This command:
-1. Resolves the dev daemon socket path from `runt daemon status --json`
-2. Builds `runtimed-py` via `maturin develop` (compiles the Rust PyO3 bindings
-   into the uv workspace venv)
-3. Launches the nteract MCP server with `RUNTIMED_SOCKET_PATH` set
-
-### Getting the MCP config for your AI tool
-
-To get the JSON config you can paste into Claude Desktop, Zed, or any MCP
-client:
-
-```bash
-cargo xtask dev-mcp --print-config
-```
-
-This prints something like:
-
-```json
-{
-  "command": "uv",
-  "args": ["run", "--no-sync", "--directory", "/path/to/python", "nteract"],
-  "env": {
-    "RUNTIMED_SOCKET_PATH": "/path/to/runt-nightly/worktrees/{hash}/runtimed.sock"
-  }
-}
-```
-
 ### How it works
 
 The MCP server is a pure Python package (`python/nteract/`) that depends on
 `runtimed` (PyO3 bindings in `python/runtimed/`, built from
-`crates/runtimed-py/`). The `dev-mcp` command uses `uv run --no-sync` to avoid
-clobbering the `maturin develop` install.
+`crates/runtimed-py/`). The Inkwell supervisor (`crates/mcp-supervisor/`) uses
+the `rmcp` Rust SDK to act as both an MCP server (facing the client) and an MCP
+client (facing the Python child process).
 
 ## Before You Commit
 
