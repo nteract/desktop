@@ -58,6 +58,9 @@ pub(crate) struct SessionState {
     pub peer_label: Option<String>,
     /// Actor label for Automerge provenance (e.g., "agent:claude:ab12cd34")
     pub actor_label: Option<String>,
+    /// Updated notebook_id after the daemon re-keys an ephemeral room on save.
+    /// When set, this overrides the original notebook_id on Session/AsyncSession.
+    pub notebook_id_override: Option<String>,
 }
 
 impl SessionState {
@@ -75,6 +78,7 @@ impl SessionState {
             settings: None,
             peer_label: None,
             actor_label: None,
+            notebook_id_override: None,
         }
     }
 }
@@ -200,6 +204,7 @@ pub(crate) async fn connect_open(
         settings,
         peer_label: None, // Set by caller (Session/AsyncSession)
         actor_label: actor_label.map(String::from),
+        notebook_id_override: None,
     };
 
     Ok((notebook_id, state, connection_info))
@@ -244,6 +249,7 @@ pub(crate) async fn connect_create(
         settings,
         peer_label: None, // Set by caller (Session/AsyncSession)
         actor_label: actor_label.map(String::from),
+        notebook_id_override: None,
     };
 
     Ok((notebook_id, state, connection_info))
@@ -1120,12 +1126,25 @@ pub(crate) async fn get_metadata(
 }
 
 /// Save the notebook to disk.
-pub(crate) async fn save(state: &Arc<Mutex<SessionState>>, path: Option<&str>) -> PyResult<String> {
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+/// Result of a save operation, containing the saved path and optionally
+/// a new notebook_id if the daemon re-keyed the room (ephemeral → file-path).
+pub(crate) struct SaveResult {
+    pub path: String,
+    pub new_notebook_id: Option<String>,
+}
+
+pub(crate) async fn save(
+    state: &Arc<Mutex<SessionState>>,
+    path: Option<&str>,
+) -> PyResult<SaveResult> {
+    // Clone the handle so we can release the lock before the async request,
+    // then re-lock to update notebook_id_override if needed.
+    let handle = {
+        let st = state.lock().await;
+        st.handle
+            .clone()
+            .ok_or_else(|| to_py_err("Not connected"))?
+    };
 
     let request = if let Some(p) = path {
         NotebookRequest::SaveNotebook {
@@ -1142,7 +1161,21 @@ pub(crate) async fn save(state: &Arc<Mutex<SessionState>>, path: Option<&str>) -
     let response = handle.send_request(request).await.map_err(to_py_err)?;
 
     match response {
-        NotebookResponse::NotebookSaved { path: saved_path } => Ok(saved_path),
+        NotebookResponse::NotebookSaved {
+            path: saved_path,
+            new_notebook_id,
+        } => {
+            // If the daemon re-keyed the room (ephemeral → file-path),
+            // store the new ID so the Session/AsyncSession getter reflects it.
+            if new_notebook_id.is_some() {
+                let mut st = state.lock().await;
+                st.notebook_id_override = new_notebook_id.clone();
+            }
+            Ok(SaveResult {
+                path: saved_path,
+                new_notebook_id,
+            })
+        }
         NotebookResponse::Error { error } => Err(to_py_err(error)),
         other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
     }

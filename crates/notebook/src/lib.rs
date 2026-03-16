@@ -1009,7 +1009,7 @@ async fn run_upgrade(
                 })
                 .await
             {
-                Ok(NotebookResponse::NotebookSaved { path }) => {
+                Ok(NotebookResponse::NotebookSaved { path, .. }) => {
                     log::info!("[upgrade] Saved notebook: {}", path);
                     dirty.store(false, Ordering::SeqCst);
                 }
@@ -1468,7 +1468,7 @@ async fn save_notebook(
         })
         .await
     {
-        Ok(NotebookResponse::NotebookSaved { path }) => {
+        Ok(NotebookResponse::NotebookSaved { path, .. }) => {
             info!("[save] Notebook saved via daemon to: {}", path);
         }
         Ok(NotebookResponse::Error { error }) => {
@@ -1519,7 +1519,9 @@ async fn save_notebook_as(
         })
         .await
     {
-        Ok(NotebookResponse::NotebookSaved { path: daemon_path }) => {
+        Ok(NotebookResponse::NotebookSaved {
+            path: daemon_path, ..
+        }) => {
             info!("[save-as] Notebook saved via daemon to: {}", daemon_path);
             PathBuf::from(daemon_path)
         }

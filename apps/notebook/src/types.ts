@@ -219,6 +219,10 @@ export type DaemonBroadcast =
     }
   | {
       event: "file_changed";
+    }
+  | {
+      event: "room_renamed";
+      new_notebook_id: string;
     };
 
 /** Response types from daemon notebook requests */

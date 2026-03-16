@@ -361,6 +361,11 @@ pub enum NotebookResponse {
     NotebookSaved {
         /// The absolute path where the notebook was written.
         path: String,
+        /// If the notebook was ephemeral (UUID-keyed) and has been re-keyed to a
+        /// file-path room, this contains the new canonical notebook_id.
+        /// Clients should update their local notebook_id to this value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        new_notebook_id: Option<String>,
     },
 
     /// Notebook cloned successfully to a new file.
@@ -526,5 +531,15 @@ pub enum NotebookBroadcast {
         /// What's different (for UI display). None if in_sync is true.
         #[serde(skip_serializing_if = "Option::is_none")]
         diff: Option<EnvSyncDiff>,
+    },
+
+    /// The room was re-keyed from an ephemeral UUID to a file-path ID.
+    ///
+    /// Broadcast to all peers when an untitled notebook is saved so they can
+    /// update their local notebook_id. Without this, peers that disconnect
+    /// and reconnect would use the stale UUID and end up in a new empty room.
+    RoomRenamed {
+        /// The new canonical notebook_id (file path).
+        new_notebook_id: String,
     },
 }

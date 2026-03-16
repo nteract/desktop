@@ -69,9 +69,16 @@ impl Session {
     }
 
     /// The notebook ID for this session.
+    /// After saving an ephemeral notebook, this reflects the new file-path ID.
     #[getter]
-    fn notebook_id(&self) -> &str {
-        &self.notebook_id
+    fn notebook_id(&self) -> String {
+        // Check if save() updated the ID via the daemon re-keying the room
+        if let Ok(st) = self.state.try_lock() {
+            if let Some(ref id) = st.notebook_id_override {
+                return id.clone();
+            }
+        }
+        self.notebook_id.clone()
     }
 
     /// Whether the session is connected to the daemon.
@@ -395,7 +402,10 @@ impl Session {
     #[pyo3(signature = (path=None))]
     fn save(&self, path: Option<&str>) -> PyResult<String> {
         self.connect()?;
-        self.runtime.block_on(session_core::save(&self.state, path))
+        let result = self
+            .runtime
+            .block_on(session_core::save(&self.state, path))?;
+        Ok(result.path)
     }
 
     /// Set a notebook metadata key.

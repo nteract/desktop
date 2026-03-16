@@ -641,11 +641,12 @@ async def create_notebook(
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
 async def save_notebook(path: str | None = None) -> dict[str, Any]:
-    """Save notebook to disk. Automatically reconnects to the saved file's session."""
-    global _session
-    session = await _get_session()
+    """Save notebook to disk.
 
-    old_notebook_id = session.notebook_id
+    The daemon automatically re-keys ephemeral (UUID-based) rooms to the saved
+    file path, so no disconnect/reconnect is needed.
+    """
+    session = await _get_session()
 
     try:
         saved_path = await session.save(path)
@@ -659,21 +660,7 @@ async def save_notebook(path: str | None = None) -> dict[str, Any]:
             ) from e
         raise
 
-    # If notebook_id was UUID-based (ephemeral) and we saved to a path,
-    # reconnect to the path-based room so we're in sync with users who open the file
-    is_ephemeral = not os.path.isabs(old_notebook_id)
-    if is_ephemeral and saved_path:
-        with contextlib.suppress(Exception):
-            await session.close()
-
-        _session = await runtimed.AsyncSession.open_notebook(saved_path, peer_label=_peer_label())
-        return {
-            "path": saved_path,
-            "reconnected": True,
-            "notebook_id": _session.notebook_id,
-        }
-
-    return {"path": saved_path}
+    return {"path": saved_path, "notebook_id": session.notebook_id}
 
 
 # =============================================================================
