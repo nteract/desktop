@@ -424,11 +424,17 @@ impl Daemon {
                 tokio::fs::create_dir_all(parent).await?;
             }
 
-            // Remove stale socket file (use .ok() since the singleton lock
-            // guarantees exclusivity — if removal fails, bind will report the
-            // real error)
+            // Remove stale socket file — singleton lock guarantees exclusivity,
+            // so NotFound is fine; log other errors for diagnostics.
             if self.config.socket_path.exists() {
-                tokio::fs::remove_file(&self.config.socket_path).await.ok();
+                if let Err(e) = tokio::fs::remove_file(&self.config.socket_path).await {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        warn!(
+                            "[runtimed] Failed to remove stale socket {:?}: {}",
+                            self.config.socket_path, e
+                        );
+                    }
+                }
             }
 
             // Clean up obsolete sync socket from pre-unification daemons

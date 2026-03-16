@@ -46,6 +46,11 @@ use crate::notebook_metadata::NotebookMetadataSnapshot;
 use crate::protocol::{EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse};
 use notebook_doc::presence::{self, PresenceState};
 
+/// Capacity for the per-room kernel broadcast channel. Sized to absorb bursts
+/// of output messages (e.g. fast-printing cells) so slower peers trigger a
+/// full doc sync ("peer lagged") rather than losing messages.
+const KERNEL_BROADCAST_CAPACITY: usize = 256;
+
 /// Trust state for a notebook room.
 /// Tracks whether the notebook's dependencies are trusted for auto-launch.
 #[derive(Debug, Clone)]
@@ -641,7 +646,7 @@ impl NotebookRoom {
             NotebookDoc::new_with_actor(notebook_id, runtimed_actor)
         };
         let (changed_tx, _) = broadcast::channel(16);
-        let (kernel_broadcast_tx, _) = broadcast::channel(256);
+        let (kernel_broadcast_tx, _) = broadcast::channel(KERNEL_BROADCAST_CAPACITY);
 
         // Spawn debounced persistence task (watch channel keeps latest value only)
         let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
@@ -707,7 +712,7 @@ impl NotebookRoom {
         let persist_path = docs_dir.join(filename);
         let doc = NotebookDoc::load_or_create(&persist_path, notebook_id);
         let (changed_tx, _) = broadcast::channel(16);
-        let (kernel_broadcast_tx, _) = broadcast::channel(256);
+        let (kernel_broadcast_tx, _) = broadcast::channel(KERNEL_BROADCAST_CAPACITY);
         let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
         spawn_persist_debouncer(persist_rx, persist_path.clone());
         let (presence_tx, _) = broadcast::channel(64);
@@ -5695,7 +5700,7 @@ mod tests {
 
         let doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
         let (changed_tx, _) = broadcast::channel(16);
-        let (kernel_broadcast_tx, _) = broadcast::channel(256);
+        let (kernel_broadcast_tx, _) = broadcast::channel(KERNEL_BROADCAST_CAPACITY);
         let persist_path = tmp.path().join("doc.automerge");
         let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
         spawn_persist_debouncer(persist_rx, persist_path.clone());

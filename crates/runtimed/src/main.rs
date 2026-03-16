@@ -343,10 +343,12 @@ async fn run_daemon(
             // Another daemon is already running — this is expected during
             // launchd double-start races, NOT a crash. Exit 0 so launchd's
             // KeepAlive.Crashed does not restart us.
-            early_log(&format!(
+            let msg = format!(
                 "Another daemon already running (pid={}, endpoint={}), exiting cleanly",
                 e.info.pid, e.info.endpoint
-            ));
+            );
+            early_log(&msg);
+            eprintln!("{msg}");
             std::process::exit(0);
         }
     };
