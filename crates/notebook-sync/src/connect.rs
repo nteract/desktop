@@ -118,7 +118,7 @@ macro_rules! connect_stream {
                 return Err(match e.kind() {
                     std::io::ErrorKind::NotFound => SyncError::DaemonUnavailable {
                         message: format!(
-                            "Daemon is not running. Socket not found at {path_display}."
+                            "Daemon is not running. Endpoint not found at {path_display}."
                         ),
                         source: e,
                     },

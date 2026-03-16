@@ -2325,10 +2325,9 @@ async fn reconnect_to_daemon(
             // In dev mode, don't attempt recovery - show helpful guidance
             if runtimed::is_dev_mode() {
                 reset_flag();
-                return Err(format!(
-                    "Dev daemon not running. {}",
-                    runt_workspace::daemon_start_guidance()
-                ));
+                return Err(
+                    "Dev daemon not running. Start it with: cargo xtask dev-daemon".to_string(),
+                );
             }
 
             // Try to acquire the restart flag (only one window should restart)
@@ -3805,7 +3804,7 @@ pub fn run(
                     let _ = app_for_autolaunch.emit("daemon:unavailable", serde_json::json!({
                         "reason": "sync_timeout",
                         "message": "Daemon sync timed out. The runtime daemon may not be running.",
-                        "guidance": runt_workspace::daemon_start_guidance()
+                        "guidance": runt_workspace::daemon_unavailable_guidance()
                     }));
                 } else if daemon_sync_success_for_autolaunch.load(Ordering::SeqCst) {
                     // Daemon sync succeeded - daemon handles auto-launch
@@ -3822,7 +3821,7 @@ pub fn run(
                     let _ = app_for_autolaunch.emit("daemon:unavailable", serde_json::json!({
                         "reason": "sync_failed",
                         "message": "Failed to connect to runtime daemon.",
-                        "guidance": runt_workspace::daemon_start_guidance()
+                        "guidance": runt_workspace::daemon_unavailable_guidance()
                     }));
                 }
             });
