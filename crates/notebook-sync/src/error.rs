@@ -15,6 +15,10 @@ pub enum SyncError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// The daemon socket is not available (not running, crashed, or permission issue).
+    #[error("{0}")]
+    DaemonUnavailable(String),
+
     /// The sync task has stopped (channels closed).
     #[error("Disconnected from sync task")]
     Disconnected,
