@@ -291,10 +291,11 @@ Cell outputs use a blob manifest system rather than inline data. When the daemon
 
 | File | Role |
 |------|------|
-| `crates/runtimed/src/connection.rs` | Frame protocol implementation (length-prefixed, typed frames) |
+| `crates/notebook-protocol/src/connection.rs` | Frame protocol implementation (length-prefixed, typed frames, handshake) |
 | `crates/notebook-protocol/src/protocol.rs` | Canonical message type definitions (Request, Response, Broadcast enums) — shared crate |
 | `crates/runtimed/src/protocol.rs` | Daemon-internal protocol types, plus re-exports from `notebook-protocol` |
-| `crates/runtimed/src/notebook_sync_client.rs` | Client-side connection, channels, sync handle |
+| `crates/notebook-sync/src/relay.rs` | Relay handle for notebook sync connections |
+| `crates/notebook-sync/src/connect.rs` | Connection setup (`connect_open_relay`, `connect_create_relay`) |
 | `crates/runtimed/src/notebook_sync_server.rs` | Daemon-side room management, kernel dispatch, sync loop |
 | `crates/runtimed/src/kernel_manager.rs` | Kernel process lifecycle, execution queue, output interception |
 | `crates/notebook/src/lib.rs` | Tauri commands and relay tasks (pipes sync bytes, emits events) |

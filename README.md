@@ -38,7 +38,7 @@ For AI agent integration with Jupyter notebooks, see the [nteract MCP server](ht
 runt notebook path/to/notebook.ipynb
 
 # Interactive console
-runt console
+runt jupyter console
 
 # Daemon management
 runt daemon status
@@ -75,8 +75,7 @@ nteract/desktop
 │   ├── lib/               # Shared utilities (cn(), dark-mode, error-boundary)
 │   └── styles/            # Global stylesheets
 ├── apps/                   # App entry points
-│   ├── notebook/          # Notebook Tauri frontend
-│   └── sidecar/           # Sidecar app
+│   └── notebook/          # Notebook Tauri frontend
 ├── crates/                 # Rust code
 │   ├── runt/              # CLI binary
 │   ├── runtimed/          # Background daemon
@@ -91,7 +90,11 @@ nteract/desktop
 │   ├── kernel-env/        # Environment progress reporting
 │   ├── runt-trust/        # HMAC trust verification
 │   ├── runt-workspace/    # Workspace detection utilities
-│   └── xtask/             # Build automation tasks
+│   ├── xtask/             # Build automation tasks
+│   └── mcp-supervisor/    # Inkwell MCP supervisor for dev workflows
+├── python/                 # Python packages
+│   ├── runtimed/          # PyPI: runtimed (Python bindings for daemon)
+│   └── nteract/           # PyPI: nteract (MCP server)
 ├── docs/                   # User-facing documentation
 └── contributing/           # Developer guides
 ```

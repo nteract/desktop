@@ -146,11 +146,12 @@ The frontend now owns a local Automerge doc via `runtimed-wasm` WASM bindings, m
 
 ## References
 
-- `crates/runtimed/src/protocol.rs` - Request/response types
+- `crates/notebook-protocol/src/protocol.rs` - Canonical request/response/broadcast type definitions
 - `crates/notebook-doc/src/lib.rs` - Shared Automerge document operations (`NotebookDoc`) used by daemon and WASM
 - `crates/runtimed/src/notebook_sync_server.rs` - Sync protocol handling
 - `crates/runtimed/src/kernel_manager.rs` - Kernel lifecycle
-- `crates/runtimed/src/notebook_sync_client.rs` - Tauri relay: transparent byte pipe between WASM and daemon (`PipeChannel`)
+- `crates/notebook-sync/src/relay.rs` - `RelayHandle`: relay API for forwarding typed frames between WASM and daemon
+- `crates/notebook-sync/src/connect.rs` - `connect_open_relay()`, `connect_create_relay()`: transparent byte pipe setup
 - `crates/runtimed-wasm/src/lib.rs` - WASM bindings: local Automerge peer, frame demux (`receive_frame`)
 - `crates/notebook/src/lib.rs` - Tauri commands and relay tasks (`send_frame`, `setup_sync_receivers`)
 - `crates/notebook-doc/src/frame_types.rs` - Shared frame type constants (0x00–0x04)

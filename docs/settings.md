@@ -22,7 +22,7 @@ Settings are synced across all notebook windows via the runtimed daemon using Au
 - **Persistence:** Settings are also written to `settings.json` in the same nested format
 - **External edits:** The daemon watches `settings.json` for external changes (manual edits, CLI tools) and propagates them to all connected windows automatically
 - **Fallback:** When the daemon is unavailable, settings are read directly from `settings.json`
-- **Theme special case:** Theme also uses browser localStorage to prevent a flash of unstyled content on startup
+- **Theme special case:** Theme also uses webview localStorage to prevent a flash of unstyled content on startup
 
 When you change a setting in any window, it propagates to all other open windows in real time.
 

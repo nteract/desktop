@@ -718,6 +718,9 @@ pub fn get_or_create_room(
                         *guard = Some(shutdown_tx);
                     }
                 }
+
+                // Spawn autosave debouncer to keep .ipynb on disk current
+                spawn_autosave_debouncer(notebook_id.to_string(), room.clone());
             }
 
             room
@@ -3836,6 +3839,135 @@ fn spawn_persist_debouncer_with_config(
                             do_persist(&data, &persist_path);
                             last_flush = Some(Instant::now());
                             last_receive = None;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Configuration for the autosave debouncer (testable).
+struct AutosaveDebouncerConfig {
+    /// Quiet period: flush only after no changes for this long.
+    debounce_ms: u64,
+    /// Max interval: flush even during continuous changes after this long.
+    max_interval_ms: u64,
+    /// How often to check whether a flush is due.
+    check_interval_ms: u64,
+}
+
+impl Default for AutosaveDebouncerConfig {
+    fn default() -> Self {
+        Self {
+            debounce_ms: 2_000,
+            max_interval_ms: 10_000,
+            check_interval_ms: 500,
+        }
+    }
+}
+
+/// Spawn a debounced autosave task that writes the `.ipynb` file to disk
+/// whenever the Automerge document changes. Only for saved (non-untitled)
+/// notebooks. Does NOT format cells — formatting is reserved for explicit saves.
+fn spawn_autosave_debouncer(notebook_id: String, room: Arc<NotebookRoom>) {
+    spawn_autosave_debouncer_with_config(notebook_id, room, AutosaveDebouncerConfig::default());
+}
+
+/// Spawn autosave debouncer with custom timing configuration (for testing).
+fn spawn_autosave_debouncer_with_config(
+    notebook_id: String,
+    room: Arc<NotebookRoom>,
+    config: AutosaveDebouncerConfig,
+) {
+    let mut changed_rx = room.changed_tx.subscribe();
+    tokio::spawn(async move {
+        use std::time::Duration;
+        use tokio::time::{interval, Instant, MissedTickBehavior};
+
+        let debounce_duration = Duration::from_millis(config.debounce_ms);
+        let max_flush_interval = Duration::from_millis(config.max_interval_ms);
+
+        let mut last_receive: Option<Instant> = None;
+        let mut last_flush: Option<Instant> = None;
+
+        let mut check_interval = interval(Duration::from_millis(config.check_interval_ms));
+        check_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                result = changed_rx.recv() => {
+                    match result {
+                        Ok(()) => {
+                            last_receive = Some(Instant::now());
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            // Room is being evicted — do a final autosave
+                            if !is_untitled_notebook(&notebook_id)
+                                && !room.is_loading.load(Ordering::Acquire)
+                            {
+                                match save_notebook_to_disk(&room, None).await {
+                                    Ok(path) => {
+                                        info!("[autosave] Final save on room close: {}", path);
+                                    }
+                                    Err(e) => {
+                                        warn!("[autosave] Final save failed: {}", e);
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            // Missed some updates, treat as a change
+                            debug!("[autosave] Lagged {} messages", n);
+                            last_receive = Some(Instant::now());
+                        }
+                    }
+                }
+                _ = check_interval.tick() => {
+                    let should_flush = if let Some(recv) = last_receive {
+                        let debounce_ready = recv.elapsed() >= debounce_duration;
+                        let max_interval_ready = last_flush
+                            .map(|f| f.elapsed() >= max_flush_interval)
+                            .unwrap_or(recv.elapsed() >= max_flush_interval);
+                        debounce_ready || max_interval_ready
+                    } else {
+                        false
+                    };
+
+                    if should_flush {
+                        // Skip during initial load
+                        if room.is_loading.load(Ordering::Acquire) {
+                            continue;
+                        }
+
+                        match save_notebook_to_disk(&room, None).await {
+                            Ok(path) => {
+                                debug!("[autosave] Saved {}", path);
+                                last_flush = Some(Instant::now());
+
+                                // Check if changes arrived during the save. If so,
+                                // keep last_receive set so we flush again soon —
+                                // don't broadcast "clean" when the file is already stale.
+                                let changed_during_save =
+                                    matches!(changed_rx.try_recv(), Ok(()) | Err(broadcast::error::TryRecvError::Lagged(_)));
+                                if changed_during_save {
+                                    last_receive = Some(Instant::now());
+                                } else {
+                                    last_receive = None;
+                                    // Broadcast to connected clients so they can clear dirty state
+                                    let _ = room.kernel_broadcast_tx.send(
+                                        NotebookBroadcast::NotebookAutosaved {
+                                            path,
+                                        },
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!("[autosave] Failed to save: {}", e);
+                                // Keep last_receive set so we retry on next interval
+                                last_flush = Some(Instant::now());
+                            }
                         }
                     }
                 }

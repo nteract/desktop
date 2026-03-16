@@ -542,4 +542,7 @@ pub enum NotebookBroadcast {
         /// The new canonical notebook_id (file path).
         new_notebook_id: String,
     },
+
+    /// Notebook was autosaved to disk by the daemon.
+    NotebookAutosaved { path: String },
 }

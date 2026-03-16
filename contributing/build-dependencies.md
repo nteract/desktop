@@ -107,8 +107,7 @@ graph BT
 
     NB -->|"depends on"| TJ
     NB -->|"depends on"| RD
-    NB -->|"depends on"| KL
-    NB -->|"depends on"| KE
+    NB -->|"depends on"| NS
     NB -->|"depends on"| RT
     NB -->|"depends on"| RW
     RC -->|"depends on"| RD
@@ -123,11 +122,13 @@ graph BT
     RDPY -->|"depends on"| ND
     RDPY -->|"depends on"| NP
     RDPY -->|"depends on"| NS
+    RDPY -->|"depends on"| RW
     RWASM -->|"depends on"| ND
     NP -->|"depends on"| ND
     NP -->|"depends on"| KE
     NS -->|"depends on"| ND
     NS -->|"depends on"| NP
+    KE -->|"depends on"| KL
 
     classDef standalone fill:#fff9c4,stroke:#f9a825
     classDef leaf fill:#c8e6c9,stroke:#388e3c
