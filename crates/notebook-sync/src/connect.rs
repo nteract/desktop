@@ -118,16 +118,14 @@ macro_rules! connect_stream {
                 return Err(match e.kind() {
                     std::io::ErrorKind::NotFound => SyncError::DaemonUnavailable {
                         message: format!(
-                            "Daemon is not running. Endpoint not found at {path_display}. \
-                             Start the daemon with `runt daemon start` or `cargo xtask dev-daemon`."
+                            "Daemon is not running. Socket not found at {path_display}."
                         ),
                         source: e,
                     },
                     std::io::ErrorKind::ConnectionRefused => SyncError::DaemonUnavailable {
                         message: format!(
                             "Daemon connection refused at {path_display}. \
-                             The daemon may have crashed. Try restarting with \
-                             `runt daemon start` or `cargo xtask dev-daemon`."
+                             The daemon may have crashed or is restarting."
                         ),
                         source: e,
                     },

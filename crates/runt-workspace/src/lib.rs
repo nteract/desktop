@@ -147,6 +147,21 @@ pub fn channel_display_name() -> &'static str {
     }
 }
 
+/// Context-aware guidance string for when the daemon is unavailable.
+///
+/// Returns appropriate instructions based on whether the user is in
+/// dev mode (building from source) or running a released build.
+pub fn daemon_start_guidance() -> String {
+    if is_dev_mode() {
+        "Start the dev daemon with: cargo xtask dev-daemon".to_string()
+    } else {
+        format!(
+            "Check daemon status with: {} daemon status",
+            cli_command_name()
+        )
+    }
+}
+
 // ============================================================================
 // Desktop App Launching
 // ============================================================================
