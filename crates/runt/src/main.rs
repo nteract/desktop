@@ -3702,7 +3702,7 @@ mod tests {
         let filename = "abc123.automerge";
         std::fs::write(docs_dir.join(filename), &bytes).unwrap();
 
-        let result = super::find_automerge_file_in_dirs(&[docs_dir.clone()], filename);
+        let result = super::find_automerge_file_in_dirs(std::slice::from_ref(&docs_dir), filename);
         assert!(result.is_some());
         assert_eq!(result.unwrap(), docs_dir.join(filename));
     }
