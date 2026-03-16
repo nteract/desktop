@@ -302,14 +302,13 @@ struct ManagedProcess {
 }
 
 impl ManagedProcess {
-    fn is_alive(&self) -> bool {
-        // Check if process is still running (non-blocking)
-        let child_ref = std::process::Command::new("kill")
-            .args(["-0", &self.child.id().to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        child_ref.map(|s| s.success()).unwrap_or(false)
+    fn is_alive(&mut self) -> bool {
+        // Cross-platform liveness check via try_wait (no extra process spawn)
+        match self.child.try_wait() {
+            Ok(None) => true,     // Still running
+            Ok(Some(_)) => false, // Exited
+            Err(_) => false,      // Can't check — assume dead
+        }
     }
 }
 
@@ -476,7 +475,7 @@ impl Supervisor {
 
     /// Build the supervisor_status result.
     async fn status(&self) -> SupervisorStatus {
-        let state = self.state.read().await;
+        let mut state = self.state.write().await;
         // Just check if we have a client handle. A full liveness probe
         // (list_tools) can hang if the child is wedged, which blocks the
         // entire status call. The forward_tool_call path handles detection
@@ -484,7 +483,7 @@ impl Supervisor {
         let child_running = state.child_client.is_some();
         let managed_processes: HashMap<String, ManagedProcessStatus> = state
             .managed
-            .iter()
+            .iter_mut()
             .map(|(name, proc)| {
                 (
                     name.clone(),
@@ -509,27 +508,34 @@ impl Supervisor {
 
     /// Start the Vite dev server for hot-reload frontend development.
     async fn start_vite(&self) -> Result<u16, String> {
-        let mut state = self.state.write().await;
+        // Phase 1: Check existing process and extract state (hold lock briefly)
+        let (project_root, needs_start) = {
+            let mut state = self.state.write().await;
 
-        // Already running?
-        if let Some(proc) = state.managed.get("vite") {
-            if proc.is_alive() {
-                return proc
-                    .port
-                    .ok_or_else(|| "Vite is running but port unknown".into());
+            // Already running?
+            if let Some(proc) = state.managed.get_mut("vite") {
+                if proc.is_alive() {
+                    return proc
+                        .port
+                        .ok_or_else(|| "Vite is running but port unknown".into());
+                }
+                // Dead — clean up
+                state.managed.remove("vite");
             }
-            // Dead — clean up
-            state.managed.remove("vite");
+
+            (state.project_root.clone(), true)
+            // Lock dropped here
+        };
+
+        if !needs_start {
+            unreachable!();
         }
 
-        let project_root = state.project_root.clone();
-
-        // Pick a port — check env var first, then derive from worktree hash
+        // Phase 2: Derive port and run pnpm install without holding the lock
         let port = std::env::var("RUNTIMED_VITE_PORT")
             .ok()
             .and_then(|p| p.parse::<u16>().ok())
-            .or_else(|| runt_workspace::default_vite_port())
-            .unwrap_or(5174);
+            .unwrap_or_else(|| runt_workspace::vite_port_for_workspace(&project_root));
 
         // Ensure pnpm install has been run
         let node_modules = project_root.join("node_modules/.modules.yaml");
@@ -550,7 +556,14 @@ impl Supervisor {
 
         info!("Starting Vite dev server on port {port}...");
         let child = std::process::Command::new("pnpm")
-            .args(["--dir", "apps/notebook", "dev", "--port", &port.to_string()])
+            .args([
+                "--dir",
+                "apps/notebook",
+                "dev",
+                "--",
+                "--port",
+                &port.to_string(),
+            ])
             .current_dir(&project_root)
             .env("PATH", augmented_path())
             .stdout(Stdio::null())
@@ -560,6 +573,8 @@ impl Supervisor {
 
         info!("Vite dev server started (PID {}, port {port})", child.id());
 
+        // Phase 3: Re-acquire lock to store the process
+        let mut state = self.state.write().await;
         state.managed.insert(
             "vite".into(),
             ManagedProcess {
@@ -574,19 +589,24 @@ impl Supervisor {
 
     /// Stop a managed process by name.
     async fn stop_managed(&self, name: &str) -> Result<(), String> {
-        let mut state = self.state.write().await;
-        if let Some(mut proc) = state.managed.remove(name) {
-            info!(
-                "Stopping managed process '{}' (PID {})...",
-                name,
-                proc.child.id()
-            );
-            let _ = proc.child.kill();
-            let _ = proc.child.wait();
-            Ok(())
-        } else {
-            Err(format!("No managed process named '{name}'"))
-        }
+        // Remove from map under the lock, then kill outside the lock
+        let mut proc = {
+            let mut state = self.state.write().await;
+            state
+                .managed
+                .remove(name)
+                .ok_or_else(|| format!("No managed process named '{name}'"))?
+            // Lock dropped here
+        };
+
+        info!(
+            "Stopping managed process '{}' (PID {})...",
+            name,
+            proc.child.id()
+        );
+        let _ = proc.child.kill();
+        let _ = proc.child.wait();
+        Ok(())
     }
 
     /// Handle a file change event: restart child (and rebuild if Rust changed).
@@ -699,7 +719,8 @@ impl ServerHandler for Supervisor {
             instructions: Some(
                 "Inkwell — MCP supervisor proxying to the nteract notebook server. \
                  Includes supervisor_status, supervisor_restart, supervisor_rebuild, \
-                 and supervisor_logs tools for managing the server lifecycle. \
+                 supervisor_logs, supervisor_start_vite, and supervisor_stop tools \
+                 for managing the server lifecycle and dev environment. \
                  File watching is active: Python changes hot-reload instantly, \
                  Rust changes trigger maturin develop + reload. Changed tool \
                  behavior takes effect immediately; new/removed tools may take \

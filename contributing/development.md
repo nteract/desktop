@@ -309,6 +309,8 @@ These tools are always available, even when the Python child is down:
 | `supervisor_restart` | Restart child or daemon |
 | `supervisor_rebuild` | `maturin develop` + restart (after Rust changes) |
 | `supervisor_logs` | Tail the daemon log file |
+| `supervisor_start_vite` | Start the Vite dev server for hot-reload frontend development |
+| `supervisor_stop` | Stop a managed process by name (e.g. `"vite"`) |
 
 #### Hot reload
 
