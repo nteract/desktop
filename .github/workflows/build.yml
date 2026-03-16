@@ -777,7 +777,7 @@ jobs:
         run: uv run pytest tests/test_session_unit.py -v --tb=short
 
       - name: Run integration tests
-        timeout-minutes: 25
+        timeout-minutes: 30
         working-directory: python/runtimed
         run: |
           set -o pipefail

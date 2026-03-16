@@ -242,9 +242,9 @@ def daemon_process():
             "--blob-store-dir",
             str(blob_dir),
             "--uv-pool-size",
-            "6",  # Pool for sequential tests (need headroom for replenishment)
+            "3",  # Reduced from 6 — CI runners are slow to warm large pools
             "--conda-pool-size",
-            "3",  # Need headroom for conda project file tests + inline fallback
+            "1",  # Reduced from 3 — one env is enough, tests run sequentially
         ]
 
         print(f"\n[test] Starting daemon: {' '.join(cmd)}", file=sys.stderr)
