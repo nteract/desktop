@@ -31,14 +31,11 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
-futures = { workspace = true }
-bytes = { workspace = true }
 tauri-jupyter = { path = "../tauri-jupyter" }
 runtimed = { path = "../runtimed" }
 notebook-sync = { path = "../notebook-sync" }
 runt-trust = { path = "../runt-trust" }
 runt-workspace = { path = "../runt-workspace" }
-kernel-launch = { path = "../kernel-launch" }
 kernel-env = { path = "../kernel-env" }
 nbformat = "1.2.1"
 petname = "2"
@@ -58,17 +55,7 @@ pyproject-toml = "0.13"
 schemars = { workspace = true }
 ts-rs = { workspace = true }
 
-# Conda environment support via rattler
-rattler = { version = "0.39", default-features = false, features = ["native-tls"] }
-rattler_cache = { version = "0.6", default-features = false, features = ["native-tls"] }
-rattler_conda_types = "0.43"
-rattler_repodata_gateway = { version = "0.25", default-features = false, features = ["gateway", "native-tls"] }
-rattler_solve = { version = "4.2", features = ["resolvo"] }
-rattler_virtual_packages = "2.3"
-reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
-reqwest-middleware = "0.4"
 rfd = "0.17"  # Native dialogs for pre-window error display
-url = "2.5"
 
 # WebDriver test server (native E2E testing without Docker)
 axum = { version = "0.7", optional = true }
@@ -89,7 +76,6 @@ webdriver-test = ["axum", "tower-http", "base64"]
 
 [dev-dependencies]
 tempfile = "3"
-serial_test = "3"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -6,19 +6,16 @@ pub mod menu;
 
 pub mod pixi;
 pub mod pyproject;
-pub mod runtime;
 pub mod session;
 pub mod settings;
 pub mod shell_env;
-// Re-export tools from kernel-launch crate
-pub use kernel_launch::tools;
 pub mod trust;
 pub mod typosquat;
 pub mod uv_env;
 #[cfg(feature = "webdriver-test")]
 pub mod webdriver;
 
-pub use runtime::Runtime;
+pub use runtimed::runtime::Runtime;
 
 use notebook_sync::RelayHandle;
 use runtimed::protocol::{CompletionItem, HistoryEntry, NotebookRequest, NotebookResponse};
@@ -131,29 +128,6 @@ struct GitInfo {
     branch: String,
     commit: String,
     description: Option<String>,
-}
-
-/// Environment sync state for dirty detection.
-#[derive(Serialize)]
-#[serde(tag = "status")]
-pub enum EnvSyncState {
-    /// Kernel is not running
-    #[serde(rename = "not_running")]
-    NotRunning,
-    /// Kernel is running but not UV-managed
-    #[serde(rename = "not_uv_managed")]
-    NotUvManaged,
-    /// Environment is in sync with declared dependencies
-    #[serde(rename = "synced")]
-    Synced,
-    /// Environment differs from declared dependencies
-    #[serde(rename = "dirty")]
-    Dirty {
-        /// Dependencies declared but not synced
-        added: Vec<String>,
-        /// Dependencies synced but no longer declared
-        removed: Vec<String>,
-    },
 }
 
 /// Status of a notebook for the upgrade screen.
