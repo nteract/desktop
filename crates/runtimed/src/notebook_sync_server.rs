@@ -641,7 +641,7 @@ impl NotebookRoom {
             NotebookDoc::new_with_actor(notebook_id, runtimed_actor)
         };
         let (changed_tx, _) = broadcast::channel(16);
-        let (kernel_broadcast_tx, _) = broadcast::channel(64);
+        let (kernel_broadcast_tx, _) = broadcast::channel(256);
 
         // Spawn debounced persistence task (watch channel keeps latest value only)
         let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
@@ -707,7 +707,7 @@ impl NotebookRoom {
         let persist_path = docs_dir.join(filename);
         let doc = NotebookDoc::load_or_create(&persist_path, notebook_id);
         let (changed_tx, _) = broadcast::channel(16);
-        let (kernel_broadcast_tx, _) = broadcast::channel(64);
+        let (kernel_broadcast_tx, _) = broadcast::channel(256);
         let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
         spawn_persist_debouncer(persist_rx, persist_path.clone());
         let (presence_tx, _) = broadcast::channel(64);
@@ -5695,7 +5695,7 @@ mod tests {
 
         let doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
         let (changed_tx, _) = broadcast::channel(16);
-        let (kernel_broadcast_tx, _) = broadcast::channel(64);
+        let (kernel_broadcast_tx, _) = broadcast::channel(256);
         let persist_path = tmp.path().join("doc.automerge");
         let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
         spawn_persist_debouncer(persist_rx, persist_path.clone());

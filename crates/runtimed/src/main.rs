@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use log::{error, info};
+use log::info;
 use runtimed::client::PoolClient;
 use runtimed::daemon::{Daemon, DaemonConfig};
 use runtimed::service::ServiceManager;
@@ -340,16 +340,14 @@ async fn run_daemon(
     let daemon = match Daemon::new(config) {
         Ok(d) => d,
         Err(e) => {
-            error!(
-                "Daemon already running: pid={}, endpoint={}",
+            // Another daemon is already running — this is expected during
+            // launchd double-start races, NOT a crash. Exit 0 so launchd's
+            // KeepAlive.Crashed does not restart us.
+            early_log(&format!(
+                "Another daemon already running (pid={}, endpoint={}), exiting cleanly",
                 e.info.pid, e.info.endpoint
-            );
-            eprintln!("Error: {}", e);
-            eprintln!(
-                "Running daemon: pid={}, endpoint={}",
-                e.info.pid, e.info.endpoint
-            );
-            std::process::exit(1);
+            ));
+            std::process::exit(0);
         }
     };
 
@@ -369,17 +367,22 @@ async fn run_daemon(
 
             tokio::select! {
                 _ = sigterm.recv() => {
-                    info!("[runtimed] Received SIGTERM");
+                    early_log("Received SIGTERM, initiating shutdown");
                 }
                 _ = sigint.recv() => {
-                    info!("[runtimed] Received SIGINT");
+                    early_log("Received SIGINT, initiating shutdown");
                 }
             }
             shutdown_daemon.trigger_shutdown().await;
         });
     }
 
-    daemon.run().await
+    let result = daemon.run().await;
+    match &result {
+        Ok(()) => early_log("Daemon exited: Ok (graceful shutdown)"),
+        Err(e) => early_log(&format!("Daemon exited: Err: {}", e)),
+    }
+    result
 }
 
 fn install_service(binary: Option<PathBuf>) -> anyhow::Result<()> {
