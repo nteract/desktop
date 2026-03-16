@@ -357,30 +357,48 @@ mod tests {
         assert_eq!(window_label_for_session(&session), "notebook-abcdef12");
     }
 
-    /// Regression test for #848: only registered windows should appear in the
-    /// saved session. Before fix #883, ghost entries from destroyed windows
-    /// could persist in the registry and corrupt the session file.
+    /// Regression test for #848: ghost entries from destroyed windows must be
+    /// pruned before saving the session. Before fix #883, stale entries
+    /// persisted in the registry and corrupted the session file, causing only
+    /// an Untitled notebook to load after an update restart.
     #[test]
-    fn test_only_registered_windows_saved() {
+    fn test_prune_removes_ghost_entries_before_save() {
         let dir = tempfile::tempdir().unwrap();
         let session_path = dir.path().join("session.json");
 
         let nb_path = dir.path().join("real.ipynb");
         std::fs::write(&nb_path, "{}").unwrap();
 
-        // Simulate a clean registry with exactly 2 windows (no ghosts)
+        // Populate registry with 3 entries: 2 real windows + 1 ghost
         let registry = test_registry(vec![
             ("main", test_context(Some(nb_path.clone()), "")),
-            ("notebook-second", test_context(None, "env-uuid-5678")),
+            ("notebook-real", test_context(None, "env-uuid-5678")),
+            ("notebook-ghost", test_context(None, "env-ghost-dead")),
         ]);
 
+        // Before pruning, all 3 entries are in the registry
+        assert_eq!(registry.contexts.lock().unwrap().len(), 3);
+
+        // Prune: simulate that "notebook-ghost" window no longer exists
+        // (only "main" and "notebook-real" are live windows)
+        registry.prune_where(|label| label == "notebook-ghost");
+
+        // Ghost entry is gone from the registry
+        assert_eq!(registry.contexts.lock().unwrap().len(), 2);
+        assert!(!registry
+            .contexts
+            .lock()
+            .unwrap()
+            .contains_key("notebook-ghost"));
+
+        // Save after pruning — session must only contain the 2 live windows
         save_session_to(&registry, &session_path).unwrap();
         let loaded = load_session_from(&session_path).unwrap();
 
-        // The session must contain exactly the 2 registered windows
         assert_eq!(loaded.windows.len(), 2);
         let labels: Vec<&str> = loaded.windows.iter().map(|w| w.label.as_str()).collect();
         assert!(labels.contains(&"main"));
-        assert!(labels.contains(&"notebook-second"));
+        assert!(labels.contains(&"notebook-real"));
+        assert!(!labels.contains(&"notebook-ghost"));
     }
 }
