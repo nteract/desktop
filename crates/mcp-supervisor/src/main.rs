@@ -179,6 +179,9 @@ fn augmented_path() -> String {
                 dirs.push(version.join("bin").to_string_lossy().to_string());
             }
         }
+
+        // Standalone pnpm installer location
+        dirs.push(format!("{home}/Library/pnpm"));
     }
 
     dirs.push("/opt/homebrew/bin".into());
@@ -474,14 +477,11 @@ impl Supervisor {
     /// Build the supervisor_status result.
     async fn status(&self) -> SupervisorStatus {
         let state = self.state.read().await;
-        // Check actual liveness: is_some() means we have a client handle,
-        // but the child may have crashed. Try a lightweight probe.
-        let child_running = if let Some(ref client) = state.child_client {
-            // list_tools is a cheap probe — if it fails, the child is dead
-            client.list_tools(None).await.is_ok()
-        } else {
-            false
-        };
+        // Just check if we have a client handle. A full liveness probe
+        // (list_tools) can hang if the child is wedged, which blocks the
+        // entire status call. The forward_tool_call path handles detection
+        // and auto-restart on actual failures.
+        let child_running = state.child_client.is_some();
         let managed_processes: HashMap<String, ManagedProcessStatus> = state
             .managed
             .iter()
