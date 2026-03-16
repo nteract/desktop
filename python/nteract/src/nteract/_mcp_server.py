@@ -584,10 +584,11 @@ async def join_notebook(
 
     # Join existing session
     _session = runtimed.AsyncSession(notebook_id=notebook_id, peer_label=_peer_label())
-    await _session.connect()
+    session = _session
+    await session.connect()
 
     return {
-        "notebook_id": _session.notebook_id,
+        "notebook_id": session.notebook_id,
         "connected": True,
     }
 
@@ -604,9 +605,10 @@ async def open_notebook(path: str, ctx: Context | None = None) -> dict[str, Any]
             await _session.close()
 
     _session = await runtimed.AsyncSession.open_notebook(path, peer_label=_peer_label())
-    info = await _session.connection_info()
+    session = _session
+    info = await session.connection_info()
     return {
-        "notebook_id": _session.notebook_id,
+        "notebook_id": session.notebook_id,
         "path": path,
         "cell_count": info.cell_count if info else 0,
         "needs_trust_approval": info.needs_trust_approval if info else False,
@@ -631,9 +633,10 @@ async def create_notebook(
     _session = await runtimed.AsyncSession.create_notebook(
         runtime=runtime, working_dir=working_dir, peer_label=_peer_label()
     )
-    info = await _session.connection_info()
+    session = _session
+    info = await session.connection_info()
     return {
-        "notebook_id": _session.notebook_id,
+        "notebook_id": session.notebook_id,
         "runtime": runtime,
         "cell_count": info.cell_count if info else 1,
     }
@@ -837,6 +840,8 @@ async def set_cell(
     if and_run:
         # Re-fetch cell to check type after potential change
         cell = await session.get_cell(cell_id=cell_id)
+        if cell is None:
+            return TextContent(type="text", text=f'Cell "{cell_id}" not found')
         if cell.cell_type == "code":
             return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
 
@@ -899,6 +904,8 @@ async def replace_match(
 
     session = await _get_session()
     cell = await session.get_cell(cell_id=cell_id)
+    if cell is None:
+        return TextContent(type="text", text=f'Cell "{cell_id}" not found')
     source = cell.source
 
     try:
@@ -947,6 +954,8 @@ async def replace_regex(
 
     session = await _get_session()
     cell = await session.get_cell(cell_id=cell_id)
+    if cell is None:
+        return TextContent(type="text", text=f'Cell "{cell_id}" not found')
     source = cell.source
 
     try:
@@ -978,6 +987,8 @@ async def get_cell(
     session = await _get_session()
     await _send_cell_cursor(session, cell_id)
     cell = await session.get_cell(cell_id=cell_id)
+    if cell is None:
+        return [TextContent(type="text", text=f'Cell "{cell_id}" not found')]
     status = await _get_single_cell_status(session, cell_id)
     return _cell_to_content(cell, status=status)
 
@@ -1149,6 +1160,8 @@ async def _execute_cell_internal(
         session = await _get_session()
         with contextlib.suppress(Exception):
             cell = await session.get_cell(cell_id=cell_id)
+            if cell is None:
+                raise ValueError(f'Cell "{cell_id}" not found')
             has_error_output = any(output.output_type == "error" for output in cell.outputs)
             status = "error" if has_error_output else "idle"
             header = _format_header(cell.id, status=status, execution_count=cell.execution_count)
@@ -1210,6 +1223,8 @@ async def resource_cell(cell_id: str) -> str:
     try:
         await _send_cell_cursor(_session, cell_id)
         cell = await _session.get_cell(cell_id=cell_id)
+        if cell is None:
+            return f"Error: Cell {cell_id} not found"
         status = await _get_single_cell_status(_session, cell_id)
         return _format_cell(cell, status=status)
     except Exception as e:
@@ -1243,6 +1258,8 @@ async def resource_cell_outputs(cell_id: str) -> str:
     try:
         await _send_cell_cursor(_session, cell_id)
         cell = await _session.get_cell(cell_id=cell_id)
+        if cell is None:
+            return f"Error: Cell {cell_id} not found"
         output_text = _format_outputs_text(cell.outputs)
         if not output_text:
             return "(no outputs)"

@@ -185,7 +185,9 @@ def _get_socket_path():
         return None  # Will be set by the daemon fixture
 
     # Otherwise, use default (assumes dev daemon is running)
-    return runtimed.default_socket_path() if hasattr(runtimed, "default_socket_path") else None
+    return (
+        Path(runtimed.default_socket_path()) if hasattr(runtimed, "default_socket_path") else None
+    )
 
 
 @pytest.fixture(scope="module")
@@ -205,7 +207,9 @@ def daemon_process():
             # Try the default
             import runtimed as rt
 
-            socket_path = rt.default_socket_path() if hasattr(rt, "default_socket_path") else None
+            socket_path = (
+                Path(rt.default_socket_path()) if hasattr(rt, "default_socket_path") else None
+            )
 
         if socket_path and not socket_path.exists():
             pytest.skip(
@@ -2435,6 +2439,7 @@ class TestOpenNotebook:
         session = runtimed.Session.open_notebook(str(tmp_path / "new_notebook.ipynb"))
         try:
             info = session.connection_info
+            assert info is not None
             # Notebook is created with the path as notebook_id
             assert "new_notebook.ipynb" in info.notebook_id
             # New notebook starts with cells (one empty code cell)
@@ -2453,6 +2458,7 @@ class TestOpenNotebook:
         session = runtimed.Session.open_notebook(str(tmp_path / "mynotebook"))
         try:
             info = session.connection_info
+            assert info is not None
             # The .ipynb extension is auto-appended
             assert info.notebook_id.endswith("mynotebook.ipynb")
         finally:
