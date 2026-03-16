@@ -17,6 +17,7 @@ from runtimed.runtimed import (
     QueueState,
     RuntimedError,
     Session,
+    default_socket_path,
     show_notebook_app,
 )
 
@@ -39,6 +40,7 @@ __all__ = [
     "QueueState",
     "HistoryEntry",
     # Standalone functions
+    "default_socket_path",
     "show_notebook_app",
 ]
 

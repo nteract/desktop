@@ -44,8 +44,8 @@ dev = [
 ]
 
 [tool.ty.rules]
-# runtimed.runtimed is a native PyO3 module — ty can't resolve it
-unresolved-import = "warn"
+# .pyi stubs exist for the native PyO3 module (runtimed.pyi) — keep this strict
+unresolved-import = "error"
 
 # Tests patch builtins.get_ipython which ty can't model
 [[tool.ty.overrides]]

@@ -49,6 +49,17 @@ fn show_notebook_app(notebook_path: Option<PathBuf>) -> PyResult<()> {
         .map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
 }
 
+/// Get the default daemon socket path.
+///
+/// Respects the RUNTIMED_SOCKET_PATH environment variable if set.
+/// In dev mode (RUNTIMED_WORKSPACE_PATH set), returns the per-worktree socket path.
+#[pyfunction]
+fn default_socket_path() -> String {
+    ::runtimed::default_socket_path()
+        .to_string_lossy()
+        .to_string()
+}
+
 /// Python module for runtimed daemon client.
 #[pymodule]
 fn runtimed(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -86,6 +97,7 @@ fn runtimed(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Standalone functions
     m.add_function(wrap_pyfunction!(show_notebook_app, m)?)?;
+    m.add_function(wrap_pyfunction!(default_socket_path, m)?)?;
 
     Ok(())
 }
