@@ -961,7 +961,6 @@ function AppContent() {
             commit={gitInfo.commit}
             description={gitInfo.description}
             daemonVersion={daemonInfo?.version}
-            socketPath={daemonInfo?.socket_path}
             isDevMode={daemonInfo?.is_dev_mode}
           />
         )}
