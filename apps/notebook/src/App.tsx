@@ -678,13 +678,24 @@ function AppContent() {
   // Show asterisk in window title when notebook has unsaved changes.
   // Untitled notebooks (no file path) always show the asterisk.
   useEffect(() => {
+    let cancelled = false;
     const win = getCurrentWindow();
-    win.title().then(async (currentTitle) => {
-      const base = currentTitle.replace(/^\* /, "");
-      const hasPath = await invoke<boolean>("has_notebook_path");
-      const showDirty = dirty || !hasPath;
-      win.setTitle(showDirty ? `* ${base}` : base);
-    });
+    (async () => {
+      try {
+        const currentTitle = await win.title();
+        if (cancelled) return;
+        const base = currentTitle.replace(/^\* /, "");
+        const hasPath = await invoke<boolean>("has_notebook_path");
+        if (cancelled) return;
+        const showDirty = dirty || !hasPath;
+        await win.setTitle(showDirty ? `* ${base}` : base);
+      } catch {
+        // Window may have been closed between rapid dirty toggles
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [dirty]);
 
   // Cmd+F to open global find

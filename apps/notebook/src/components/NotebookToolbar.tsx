@@ -147,6 +147,7 @@ export function NotebookToolbar({
           onClick={() => onAddCell("code", focusedCellId ?? lastCellId)}
           className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           title="Add code cell"
+          aria-label="Add code cell"
           data-testid="add-code-cell-button"
         >
           <Code className="h-3 w-3" />
@@ -157,6 +158,7 @@ export function NotebookToolbar({
           onClick={() => onAddCell("markdown", focusedCellId ?? lastCellId)}
           className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           title="Add markdown cell"
+          aria-label="Add markdown cell"
           data-testid="add-markdown-cell-button"
         >
           <LetterText className="h-3 w-3" />
@@ -173,6 +175,7 @@ export function NotebookToolbar({
             disabled={listKernelspecs && kernelspecs.length === 0}
             className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
             title="Start kernel"
+            aria-label="Start kernel"
             data-testid="start-kernel-button"
           >
             <Play className="h-3 w-3" fill="currentColor" />
@@ -184,6 +187,7 @@ export function NotebookToolbar({
           onClick={onRunAllCells}
           className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
           title="Run all cells"
+          aria-label="Run all cells"
           data-testid="run-all-button"
         >
           <ChevronsRight className="h-3.5 w-3.5" />
@@ -194,6 +198,7 @@ export function NotebookToolbar({
           onClick={onRestartKernel}
           className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
           title="Restart kernel"
+          aria-label="Restart kernel"
           data-testid="restart-kernel-button"
         >
           <RotateCcw className="h-3 w-3" />
@@ -220,6 +225,7 @@ export function NotebookToolbar({
                 : "text-foreground hover:bg-muted",
             )}
             title="Interrupt kernel"
+            aria-label="Interrupt kernel"
             data-testid="interrupt-kernel-button"
           >
             <Square
