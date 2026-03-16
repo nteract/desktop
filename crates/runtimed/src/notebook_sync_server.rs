@@ -4895,22 +4895,26 @@ pub(crate) fn spawn_notebook_file_watcher(
                             )
                             .await;
 
-                            // Apply metadata changes to Automerge doc
-                            let metadata_changed = {
+                            // Apply metadata changes to Automerge doc.
+                            // Only update when the external file has a metadata
+                            // object — a missing key means "no metadata info",
+                            // not "clear metadata".
+                            let metadata_changed = if let Some(ref meta) = external_metadata {
                                 let current = {
                                     let doc = room.doc.read().await;
                                     doc.get_metadata_snapshot()
                                 };
-                                external_metadata != current
-                            };
-                            if metadata_changed {
-                                if let Some(ref meta) = external_metadata {
+                                let changed = Some(meta) != current.as_ref();
+                                if changed {
                                     let mut doc = room.doc.write().await;
                                     if let Err(e) = doc.set_metadata_snapshot(meta) {
                                         warn!("[notebook-watch] Failed to set metadata: {}", e);
                                     }
                                 }
-                            }
+                                changed
+                            } else {
+                                false
+                            };
 
                             if cells_changed || metadata_changed {
                                 info!(
