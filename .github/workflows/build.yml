@@ -109,6 +109,35 @@ jobs:
       - name: Clippy (Windows cross-check)
         run: cargo clippy --target x86_64-pc-windows-gnu --workspace --exclude notebook --exclude runtimed-wasm --exclude runtimed-py --all-targets -- -D warnings
 
+  wasm-deno:
+    name: WASM + Deno Tests
+    needs: [changes]
+    if: needs.changes.outputs.source_changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ubuntu-latest
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build runtimed-wasm
+        run: wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm
+
+      - name: Install Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Run runtimed-wasm Deno tests
+        run: deno test --allow-read --allow-env --no-check crates/runtimed-wasm/tests/
+
   build-ui:
     name: Build shared UI artifacts
     needs: [changes]
@@ -271,20 +300,6 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --verbose
-
-      - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-
-      - name: Build runtimed-wasm
-        run: wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm
-
-      - name: Install Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-
-      - name: Run runtimed-wasm Deno tests
-        run: deno test --allow-read --allow-env --no-check crates/runtimed-wasm/tests/
 
   build:
     name: ${{ matrix.platform.name }}
