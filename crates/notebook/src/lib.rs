@@ -1731,6 +1731,7 @@ fn create_notebook_window_for_daemon(
         match tauri::WebviewWindowBuilder::new(app, label.clone(), tauri::WebviewUrl::default())
             .title(&title)
             .inner_size(1100.0, 750.0)
+            .min_inner_size(400.0, 250.0)
             .resizable(true)
             .build()
         {

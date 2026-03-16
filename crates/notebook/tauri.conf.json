@@ -15,6 +15,8 @@
         "title": "Untitled.ipynb",
         "width": 1100,
         "height": 750,
+        "minWidth": 400,
+        "minHeight": 250,
         "resizable": true
       }
     ],
