@@ -1697,13 +1697,16 @@ fn create_notebook_window_for_daemon(
     // in the upgrade dialog and saved session when new windows are opened later.
     registry.prune_stale_entries(app);
 
-    // If a window with this label already exists, focus it instead of creating a duplicate.
-    // This prevents the race condition where opening the same file twice overwrites and then
-    // removes the context, leaving the original window in a broken state (#577).
-    if let Some(existing_window) = app.get_webview_window(&label) {
-        let _ = existing_window.set_focus();
-        return Ok(label);
-    }
+    // If a window with this label already exists, append a unique suffix so the same
+    // notebook can be open in multiple windows simultaneously. The first window keeps
+    // the deterministic label (window-state geometry persists); additional windows get
+    // a UUID suffix and connect as additional peers to the same daemon room.
+    // Defense-in-depth: registry.insert() still rejects duplicate labels (#577).
+    let label = if app.get_webview_window(&label).is_some() {
+        format!("{}-{}", label, &uuid::Uuid::new_v4().to_string()[..8])
+    } else {
+        label
+    };
 
     // Placeholder notebook_id — daemon will provide the canonical one.
     let placeholder_id = match &mode {
@@ -4103,6 +4106,15 @@ pub fn run(
                 };
                 let Some(path) = path else { continue };
                 if path.extension().and_then(|e| e.to_str()) != Some("ipynb") {
+                    continue;
+                }
+
+                // For file association (Finder double-click), focus the existing window
+                // if this notebook is already open — expected macOS behavior.
+                let hash = runtimed::worktree_hash(&path);
+                let base_label = format!("notebook-{}", &hash[..8]);
+                if let Some(existing) = app_handle.get_webview_window(&base_label) {
+                    let _ = existing.set_focus();
                     continue;
                 }
 
