@@ -2939,6 +2939,14 @@ async fn handle_notebook_request(
                 },
             }
         }
+
+        NotebookRequest::CheckToolAvailable { tool } => {
+            let available = match tool.as_str() {
+                "deno" => kernel_launch::tools::check_deno_available_without_bootstrap().await,
+                _ => false,
+            };
+            NotebookResponse::ToolAvailable { available }
+        }
     }
 }
 

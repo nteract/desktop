@@ -6,7 +6,6 @@
 //! - Extracting Deno configuration from notebook metadata
 //! - Managing Deno permissions for kernel execution
 
-use crate::tools;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -86,33 +85,6 @@ struct RawDenoConfig {
     import_map: Option<String>,
     imports: Option<serde_json::Value>,
     tasks: Option<serde_json::Value>,
-}
-
-/// Check if Deno is available on PATH or already cached.
-///
-/// This intentionally avoids triggering a full bootstrap during UI initialization,
-/// because daemon kernel launch handles on-demand bootstrap when needed.
-///
-/// Returns true if:
-/// - System deno exists and is version 2.x+, OR
-/// - A cached deno binary exists (from GitHub download or rattler fallback)
-pub async fn check_deno_available() -> bool {
-    tools::check_deno_available_without_bootstrap().await
-}
-
-/// Check if Deno Jupyter support is available (Deno 1.37+)
-///
-/// Deno is auto-bootstrapped via rattler if not found on PATH.
-pub async fn check_deno_jupyter_available() -> Result<bool> {
-    let deno_path = tools::get_deno_path().await?;
-
-    let output = tokio::process::Command::new(&deno_path)
-        .args(["jupyter", "--help"])
-        .output()
-        .await
-        .map_err(|e| anyhow!("Failed to check deno jupyter: {}", e))?;
-
-    Ok(output.status.success())
 }
 
 /// Find a deno.json or deno.jsonc file by walking up from the given path

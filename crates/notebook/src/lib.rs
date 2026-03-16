@@ -2778,10 +2778,30 @@ async fn import_pixi_dependencies(
 
 // ========== Deno kernel support ==========
 
-/// Check if Deno is available on the system
+/// Check if Deno is available on the system.
+/// Queries the daemon via the notebook sync protocol so the notebook crate
+/// does not need a direct dependency on kernel-launch.
 #[tauri::command]
-async fn check_deno_available() -> bool {
-    deno_env::check_deno_available().await
+async fn check_deno_available(
+    window: tauri::Window,
+    registry: tauri::State<'_, WindowNotebookRegistry>,
+) -> Result<bool, String> {
+    let Ok(notebook_sync) = notebook_sync_for_window(&window, registry.inner()) else {
+        return Ok(false);
+    };
+    let guard = notebook_sync.lock().await;
+    let Some(handle) = guard.as_ref() else {
+        return Ok(false);
+    };
+    match handle
+        .send_request(NotebookRequest::CheckToolAvailable {
+            tool: "deno".to_string(),
+        })
+        .await
+    {
+        Ok(NotebookResponse::ToolAvailable { available }) => Ok(available),
+        _ => Ok(false),
+    }
 }
 
 /// Detect deno.json/deno.jsonc near the notebook and return info about it
