@@ -2,7 +2,7 @@
 name = "mcp-supervisor"
 version = "0.1.0"
 edition = "2021"
-description = "MCP supervisor that proxies to the nteract MCP server with auto-restart and daemon management"
+description = "Inkwell — MCP supervisor that proxies to the nteract MCP server with auto-restart, file watching, and daemon management"
 publish = false
 
 [[bin]]

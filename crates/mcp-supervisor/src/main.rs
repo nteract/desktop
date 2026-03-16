@@ -1,4 +1,4 @@
-//! MCP Supervisor — a stable MCP server that proxies to the nteract MCP server.
+//! Inkwell — a stable MCP server that proxies to the nteract MCP server.
 //!
 //! Architecture:
 //! - Acts as an MCP **server** facing the client (Zed, Claude, etc.) via stdin/stdout
@@ -231,7 +231,7 @@ impl ClientHandler for NteractClientHandler {
     fn get_info(&self) -> rmcp::model::ClientInfo {
         rmcp::model::ClientInfo {
             client_info: Implementation {
-                name: "mcp-supervisor".into(),
+                name: "inkwell".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
                 ..Default::default()
             },
@@ -519,14 +519,18 @@ impl ServerHandler for Supervisor {
             protocol_version: Default::default(),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation {
-                name: "mcp-supervisor".into(),
+                name: "inkwell".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
                 ..Default::default()
             },
             instructions: Some(
-                "MCP supervisor proxying to the nteract notebook server. \
-                 Includes supervisor_status and supervisor_restart tools \
-                 for managing the server lifecycle."
+                "Inkwell — MCP supervisor proxying to the nteract notebook server. \
+                 Includes supervisor_status, supervisor_restart, supervisor_rebuild, \
+                 and supervisor_logs tools for managing the server lifecycle. \
+                 File watching is active: Python changes hot-reload instantly, \
+                 Rust changes trigger maturin develop + reload. Changed tool \
+                 behavior takes effect immediately; new/removed tools may take \
+                 a moment for the client to discover."
                     .into(),
             ),
         }

@@ -1301,6 +1301,20 @@ async def resource_rooms() -> str:
 
 
 # =============================================================================
+# Hot reload test tool
+# =============================================================================
+
+
+@mcp.tool()
+async def hot_reload_test() -> str:
+    """A test tool to verify the MCP supervisor's file watcher hot-reloads correctly.
+
+    If you can call this tool, the hot reload worked!
+    """
+    return "🔥 Hot reload is working! This tool was added without restarting Zed."
+
+
+# =============================================================================
 # Entry Point
 # =============================================================================
 
