@@ -1057,15 +1057,7 @@ fn resolve_vite_port(force_dev_mode: bool) -> Option<String> {
 }
 
 fn default_dev_vite_port() -> Option<u16> {
-    let workspace = runt_workspace::get_workspace_path()?;
-    Some(default_vite_port_for_workspace(&workspace))
-}
-
-fn default_vite_port_for_workspace(path: &Path) -> u16 {
-    let hash = runt_workspace::worktree_hash(path);
-    let prefix = hash.get(..4).unwrap_or("0000");
-    let offset = u16::from_str_radix(prefix, 16).unwrap_or(0) % 4900;
-    5100 + offset
+    runt_workspace::default_vite_port()
 }
 
 /// Run linting and formatting checks across all languages.
@@ -1413,8 +1405,8 @@ mod tests {
     #[test]
     fn default_vite_port_is_stable_for_workspace() {
         let workspace = Path::new("/workspace/example");
-        let port = default_vite_port_for_workspace(workspace);
-        assert_eq!(port, default_vite_port_for_workspace(workspace));
+        let port = runt_workspace::vite_port_for_workspace(workspace);
+        assert_eq!(port, runt_workspace::vite_port_for_workspace(workspace));
         assert!((5100u16..10000u16).contains(&port));
     }
 }

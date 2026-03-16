@@ -1,4 +1,5 @@
-//! Inkwell — a stable MCP server that proxies to the nteract MCP server.
+//! Inkwell — a stable MCP server that proxies to the nteract MCP server
+//! and manages the full dev environment (daemon, vite, notebook app).
 //!
 //! Architecture:
 //! - Acts as an MCP **server** facing the client (Zed, Claude, etc.) via stdin/stdout
@@ -14,6 +15,8 @@
 //!   cargo run -p mcp-supervisor
 //!   # or via xtask:
 //!   cargo xtask mcp
+
+use std::collections::HashMap;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -253,6 +256,29 @@ enum ChangeKind {
     RustChanged,
 }
 
+/// A managed long-running child process (vite, notebook app, etc.).
+#[allow(dead_code)]
+struct ManagedProcess {
+    /// Human-readable name for logging and status.
+    name: String,
+    /// The child process handle.
+    child: std::process::Child,
+    /// The port it's listening on, if applicable.
+    port: Option<u16>,
+}
+
+impl ManagedProcess {
+    fn is_alive(&self) -> bool {
+        // Check if process is still running (non-blocking)
+        let child_ref = std::process::Command::new("kill")
+            .args(["-0", &self.child.id().to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        child_ref.map(|s| s.success()).unwrap_or(false)
+    }
+}
+
 /// Shared state for the supervisor.
 struct SupervisorState {
     /// rmcp client connected to the nteract child process.
@@ -272,6 +298,8 @@ struct SupervisorState {
     /// Channel to request a tool list changed notification from the server context.
     /// The file watcher sends on this channel after triggering a restart.
     tool_list_changed_tx: Option<mpsc::Sender<()>>,
+    /// Managed long-running processes (vite dev server, notebook app, etc.).
+    managed: HashMap<String, ManagedProcess>,
 }
 
 impl SupervisorState {
@@ -315,6 +343,7 @@ impl Supervisor {
                 last_error: None,
                 daemon_child,
                 tool_list_changed_tx: Some(tool_list_changed_tx),
+                managed: HashMap::new(),
             })),
         }
     }
@@ -422,6 +451,20 @@ impl Supervisor {
         } else {
             false
         };
+        let managed_processes: HashMap<String, ManagedProcessStatus> = state
+            .managed
+            .iter()
+            .map(|(name, proc)| {
+                (
+                    name.clone(),
+                    ManagedProcessStatus {
+                        pid: proc.child.id(),
+                        alive: proc.is_alive(),
+                        port: proc.port,
+                    },
+                )
+            })
+            .collect();
         SupervisorStatus {
             child_running,
             restart_count: state.restart_count,
@@ -429,6 +472,87 @@ impl Supervisor {
             socket_path: state.socket_path.clone(),
             project_root: state.project_root.to_string_lossy().to_string(),
             daemon_managed: state.daemon_child.is_some(),
+            managed_processes,
+        }
+    }
+
+    /// Start the Vite dev server for hot-reload frontend development.
+    async fn start_vite(&self) -> Result<u16, String> {
+        let mut state = self.state.write().await;
+
+        // Already running?
+        if let Some(proc) = state.managed.get("vite") {
+            if proc.is_alive() {
+                return proc
+                    .port
+                    .ok_or_else(|| "Vite is running but port unknown".into());
+            }
+            // Dead — clean up
+            state.managed.remove("vite");
+        }
+
+        let project_root = state.project_root.clone();
+
+        // Pick a port — check env var first, then derive from worktree hash
+        let port = std::env::var("RUNTIMED_VITE_PORT")
+            .ok()
+            .and_then(|p| p.parse::<u16>().ok())
+            .or_else(|| runt_workspace::default_vite_port())
+            .unwrap_or(5174);
+
+        // Ensure pnpm install has been run
+        let node_modules = project_root.join("node_modules/.modules.yaml");
+        if !node_modules.exists() {
+            info!("Running pnpm install...");
+            let status = std::process::Command::new("pnpm")
+                .args(["install"])
+                .current_dir(&project_root)
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit())
+                .status()
+                .map_err(|e| format!("Failed to run pnpm install: {e}"))?;
+            if !status.success() {
+                return Err("pnpm install failed".into());
+            }
+        }
+
+        info!("Starting Vite dev server on port {port}...");
+        let child = std::process::Command::new("pnpm")
+            .args(["--dir", "apps/notebook", "dev", "--port", &port.to_string()])
+            .current_dir(&project_root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to start Vite: {e}"))?;
+
+        info!("Vite dev server started (PID {}, port {port})", child.id());
+
+        state.managed.insert(
+            "vite".into(),
+            ManagedProcess {
+                name: "vite".into(),
+                child,
+                port: Some(port),
+            },
+        );
+
+        Ok(port)
+    }
+
+    /// Stop a managed process by name.
+    async fn stop_managed(&self, name: &str) -> Result<(), String> {
+        let mut state = self.state.write().await;
+        if let Some(mut proc) = state.managed.remove(name) {
+            info!(
+                "Stopping managed process '{}' (PID {})...",
+                name,
+                proc.child.id()
+            );
+            let _ = proc.child.kill();
+            let _ = proc.child.wait();
+            Ok(())
+        } else {
+            Err(format!("No managed process named '{name}'"))
         }
     }
 
@@ -469,6 +593,13 @@ impl Supervisor {
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+struct ManagedProcessStatus {
+    pid: u32,
+    alive: bool,
+    port: Option<u16>,
+}
+
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 struct SupervisorStatus {
     /// Whether the nteract MCP child process is running.
     child_running: bool,
@@ -482,6 +613,8 @@ struct SupervisorStatus {
     project_root: String,
     /// Whether the supervisor started (and manages) the daemon.
     daemon_managed: bool,
+    /// Status of managed long-running processes (vite, app, etc.).
+    managed_processes: HashMap<String, ManagedProcessStatus>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -506,6 +639,13 @@ struct SupervisorLogsParams {
 
 fn default_log_lines() -> usize {
     50
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+struct StopProcessParams {
+    /// Name of the managed process to stop (e.g. "vite").
+    name: String,
 }
 
 // The supervisor_status tool schema — no input params needed.
@@ -573,6 +713,20 @@ impl ServerHandler for Supervisor {
             "supervisor_logs",
             "Read the last N lines of the daemon log file. Defaults to 50 lines.",
             serde_json::to_value(schemars::schema_for!(SupervisorLogsParams))
+                .unwrap()
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+        ));
+        tools.push(Tool::new(
+            "supervisor_start_vite",
+            "Start the Vite dev server for hot-reload frontend development. Returns the port number. If already running, returns the existing port.",
+            empty_schema.clone(),
+        ));
+        tools.push(Tool::new(
+            "supervisor_stop",
+            "Stop a managed process by name (e.g. 'vite').",
+            serde_json::to_value(schemars::schema_for!(StopProcessParams))
                 .unwrap()
                 .as_object()
                 .cloned()
@@ -664,6 +818,28 @@ impl ServerHandler for Supervisor {
                             ))])),
                         }
                     }
+                }
+            }
+            "supervisor_start_vite" => match self.start_vite().await {
+                Ok(port) => Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Vite dev server running on http://localhost:{port}"
+                ))])),
+                Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Failed to start Vite: {e}"
+                ))])),
+            },
+            "supervisor_stop" => {
+                let name = request
+                    .arguments
+                    .as_ref()
+                    .and_then(|args| args.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                match self.stop_managed(name).await {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Stopped '{name}'"
+                    ))])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(e)])),
                 }
             }
             "supervisor_rebuild" => {

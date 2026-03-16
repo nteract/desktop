@@ -335,6 +335,24 @@ pub fn worktree_hash(path: &Path) -> String {
     hex::encode(&hasher.finalize()[..6]) // 6 bytes = 12 hex chars
 }
 
+/// Derive a stable Vite dev server port for a worktree.
+///
+/// Uses the first 4 hex chars of the worktree hash to pick a port in
+/// the range 5100–9999, avoiding conflicts between parallel worktrees.
+/// Returns `None` if the workspace path can't be determined.
+pub fn default_vite_port() -> Option<u16> {
+    let workspace = get_workspace_path()?;
+    Some(vite_port_for_workspace(&workspace))
+}
+
+/// Derive a Vite port for a specific workspace path.
+pub fn vite_port_for_workspace(path: &Path) -> u16 {
+    let hash = worktree_hash(path);
+    let prefix = hash.get(..4).unwrap_or("0000");
+    let offset = u16::from_str_radix(prefix, 16).unwrap_or(0) % 4900;
+    5100 + offset
+}
+
 // ============================================================================
 // Directory Paths
 // ============================================================================
