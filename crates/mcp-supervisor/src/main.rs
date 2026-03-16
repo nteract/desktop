@@ -152,6 +152,39 @@ fn ensure_maturin_develop(project_root: &Path) -> bool {
     }
 }
 
+/// Build an augmented PATH that includes common user-local tool directories.
+///
+/// MCP clients (Zed, Claude, etc.) often spawn servers with a minimal PATH
+/// that's missing ~/.local/bin (uv), ~/.cargo/bin, ~/.nvm/*, /opt/homebrew/bin, etc.
+fn augmented_path() -> String {
+    let base = std::env::var("PATH").unwrap_or_default();
+    let mut dirs: Vec<String> = Vec::new();
+
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(format!("{home}/.local/bin"));
+        dirs.push(format!("{home}/.cargo/bin"));
+
+        // nvm: scan for node versions (picks the latest lexicographically)
+        let nvm_dir = PathBuf::from(&home).join(".nvm/versions/node");
+        if let Ok(entries) = std::fs::read_dir(&nvm_dir) {
+            let mut versions: Vec<PathBuf> = entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.join("bin/node").exists())
+                .collect();
+            versions.sort();
+            if let Some(latest) = versions.last() {
+                dirs.push(latest.join("bin").to_string_lossy().to_string());
+            }
+        }
+    }
+
+    dirs.push("/opt/homebrew/bin".into());
+
+    let prefix = dirs.join(":");
+    format!("{prefix}:{base}")
+}
+
 fn run_maturin_develop(project_root: &Path) -> bool {
     // Route stdout to null — the supervisor uses stdout for MCP transport,
     // so maturin output would corrupt the JSON-RPC stream. Stderr goes to
@@ -195,11 +228,7 @@ async fn spawn_nteract_child(
 ) -> Result<rmcp::service::RunningService<RoleNteractClient, NteractClientHandler>, String> {
     let python_dir = project_root.join("python");
 
-    // Augment PATH for uv discovery (same issue as the wrapper script)
-    let mut path = std::env::var("PATH").unwrap_or_default();
-    if let Ok(home) = std::env::var("HOME") {
-        path = format!("{home}/.local/bin:{home}/.cargo/bin:/opt/homebrew/bin:{path}");
-    }
+    let path = augmented_path();
 
     let transport = TokioChildProcess::new(Command::new("uv").configure(|cmd| {
         cmd.args([
@@ -507,6 +536,7 @@ impl Supervisor {
             let status = std::process::Command::new("pnpm")
                 .args(["install"])
                 .current_dir(&project_root)
+                .env("PATH", augmented_path())
                 .stdout(Stdio::null())
                 .stderr(Stdio::inherit())
                 .status()
@@ -520,6 +550,7 @@ impl Supervisor {
         let child = std::process::Command::new("pnpm")
             .args(["--dir", "apps/notebook", "dev", "--port", &port.to_string()])
             .current_dir(&project_root)
+            .env("PATH", augmented_path())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
