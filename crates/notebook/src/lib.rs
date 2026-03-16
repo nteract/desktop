@@ -70,6 +70,28 @@ impl WindowNotebookRegistry {
         Ok(())
     }
 
+    /// Remove registry entries whose windows no longer exist.
+    ///
+    /// On macOS the main window's entry is preserved on close (for Cmd+Q session
+    /// restore). If the user reopens a new window before quitting, the stale entry
+    /// would otherwise appear as a ghost notebook in the upgrade dialog and session.
+    fn prune_stale_entries(&self, app: &tauri::AppHandle) {
+        if let Ok(mut contexts) = self.contexts.lock() {
+            let stale: Vec<String> = contexts
+                .keys()
+                .filter(|label| app.get_webview_window(label).is_none())
+                .cloned()
+                .collect();
+            for label in stale {
+                contexts.remove(&label);
+                log::info!(
+                    "[registry] Pruned stale entry for destroyed window: {}",
+                    label
+                );
+            }
+        }
+    }
+
     fn get(&self, label: &str) -> Result<WindowNotebookContext, String> {
         let contexts = self.contexts.lock().map_err(|e| e.to_string())?;
         contexts
@@ -809,6 +831,9 @@ async fn begin_upgrade(
         return Ok(());
     }
 
+    // Remove stale entries before saving so ghost notebooks don't persist
+    registry.prune_stale_entries(&app);
+
     // Save session for restore after relaunch
     session::save_session(registry.inner())?;
     log::info!("[upgrade] Session saved");
@@ -839,8 +864,10 @@ async fn begin_upgrade(
 /// Returns a list of notebooks with their kernel status, dirty state, and display name.
 #[tauri::command]
 async fn get_upgrade_notebook_status(
+    app: tauri::AppHandle,
     registry: tauri::State<'_, WindowNotebookRegistry>,
 ) -> Result<Vec<UpgradeNotebookStatus>, String> {
+    registry.prune_stale_entries(&app);
     // Extract data from registry without holding lock across await
     let notebook_data: Vec<(String, String, String, bool, SharedNotebookSync)> = {
         let contexts = registry.contexts.lock().map_err(|e| e.to_string())?;
@@ -1647,6 +1674,11 @@ fn create_notebook_window_for_daemon(
             format!("notebook-{}", uuid::Uuid::new_v4())
         }
     });
+
+    // Remove registry entries for windows that were destroyed but kept for session
+    // restore (e.g. the main window on macOS). Without this, ghost notebooks appear
+    // in the upgrade dialog and saved session when new windows are opened later.
+    registry.prune_stale_entries(app);
 
     // If a window with this label already exists, focus it instead of creating a duplicate.
     // This prevents the race condition where opening the same file twice overwrites and then
@@ -4083,6 +4115,8 @@ pub fn run(
         // Handle file associations (macOS only)
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         if let RunEvent::Opened { urls } = &event {
+            // Prune stale entries so a destroyed main window isn't reused
+            registry_for_open.prune_stale_entries(app_handle);
             for url in urls {
                 let path = match url.scheme() {
                     "file" => url.to_file_path().ok(),
