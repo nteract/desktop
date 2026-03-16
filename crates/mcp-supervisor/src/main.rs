@@ -164,7 +164,8 @@ fn augmented_path() -> String {
         dirs.push(format!("{home}/.local/bin"));
         dirs.push(format!("{home}/.cargo/bin"));
 
-        // nvm: scan for node versions (picks the latest lexicographically)
+        // nvm: include all node version bin dirs (pnpm may only be installed
+        // in some versions, not necessarily the latest)
         let nvm_dir = PathBuf::from(&home).join(".nvm/versions/node");
         if let Ok(entries) = std::fs::read_dir(&nvm_dir) {
             let mut versions: Vec<PathBuf> = entries
@@ -173,8 +174,9 @@ fn augmented_path() -> String {
                 .filter(|p| p.join("bin/node").exists())
                 .collect();
             versions.sort();
-            if let Some(latest) = versions.last() {
-                dirs.push(latest.join("bin").to_string_lossy().to_string());
+            // Add in reverse order so newer versions take priority
+            for version in versions.into_iter().rev() {
+                dirs.push(version.join("bin").to_string_lossy().to_string());
             }
         }
     }
