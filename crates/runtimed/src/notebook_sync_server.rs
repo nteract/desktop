@@ -1041,6 +1041,7 @@ fn sanitize_peer_label(raw: Option<&str>) -> String {
 ///
 /// Handles both Automerge sync messages and NotebookRequest messages.
 /// This protocol supports daemon-owned kernel execution (Phase 8).
+#[allow(clippy::too_many_arguments)]
 async fn run_sync_loop_v2<R, W>(
     reader: &mut R,
     writer: &mut W,
@@ -3584,7 +3585,7 @@ async fn clone_notebook_to_disk(room: &NotebookRoom, target_path: &str) -> Resul
     }
 
     // Ensure .ipynb extension
-    let notebook_path = if target_path.ends_with(".ipynb") {
+    let clone_path = if target_path.ends_with(".ipynb") {
         path
     } else {
         PathBuf::from(format!("{}.ipynb", target_path))
@@ -3599,12 +3600,12 @@ async fn clone_notebook_to_disk(room: &NotebookRoom, target_path: &str) -> Resul
     let nbformat_attachments = room.nbformat_attachments.read().await.clone();
 
     // Read existing source notebook to preserve unknown top-level metadata keys.
-    let notebook_path = room.notebook_path.read().await.clone();
-    let existing: Option<serde_json::Value> = match tokio::fs::read_to_string(&notebook_path).await
-    {
-        Ok(content) => serde_json::from_str(&content).ok(),
-        Err(_) => None,
-    };
+    let source_notebook_path = room.notebook_path.read().await.clone();
+    let existing: Option<serde_json::Value> =
+        match tokio::fs::read_to_string(&source_notebook_path).await {
+            Ok(content) => serde_json::from_str(&content).ok(),
+            Err(_) => None,
+        };
 
     // Generate fresh env_id for the cloned notebook
     let new_env_id = uuid::Uuid::new_v4().to_string();
@@ -3686,16 +3687,16 @@ async fn clone_notebook_to_disk(room: &NotebookRoom, target_path: &str) -> Resul
     let content_with_newline = format!("{content}\n");
 
     // Write to disk
-    tokio::fs::write(&notebook_path, content_with_newline)
+    tokio::fs::write(&clone_path, content_with_newline)
         .await
         .map_err(|e| format!("Failed to write notebook: {e}"))?;
 
     info!(
         "[notebook-sync] Cloned notebook to disk: {:?} ({} cells, new env_id: {})",
-        notebook_path, cell_count, new_env_id
+        clone_path, cell_count, new_env_id
     );
 
-    Ok(notebook_path.to_string_lossy().to_string())
+    Ok(clone_path.to_string_lossy().to_string())
 }
 
 /// Resolve a single cell output — handles both manifest hashes and raw JSON.
