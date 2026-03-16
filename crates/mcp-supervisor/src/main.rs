@@ -186,8 +186,10 @@ fn augmented_path() -> String {
 
     dirs.push("/opt/homebrew/bin".into());
 
-    let prefix = dirs.join(":");
-    format!("{prefix}:{base}")
+    // Use platform-appropriate PATH separator
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    let prefix = dirs.join(sep);
+    format!("{prefix}{sep}{base}")
 }
 
 fn run_maturin_develop(project_root: &Path) -> bool {
@@ -291,10 +293,7 @@ enum ChangeKind {
 }
 
 /// A managed long-running child process (vite, notebook app, etc.).
-#[allow(dead_code)]
 struct ManagedProcess {
-    /// Human-readable name for logging and status.
-    name: String,
     /// The child process handle.
     child: std::process::Child,
     /// The port it's listening on, if applicable.
@@ -537,18 +536,24 @@ impl Supervisor {
             .and_then(|p| p.parse::<u16>().ok())
             .unwrap_or_else(|| runt_workspace::vite_port_for_workspace(&project_root));
 
-        // Ensure pnpm install has been run
+        // Ensure pnpm install has been run (use spawn_blocking to avoid
+        // stalling the tokio runtime during a potentially long install)
         let node_modules = project_root.join("node_modules/.modules.yaml");
         if !node_modules.exists() {
             info!("Running pnpm install...");
-            let status = std::process::Command::new("pnpm")
-                .args(["install"])
-                .current_dir(&project_root)
-                .env("PATH", augmented_path())
-                .stdout(Stdio::null())
-                .stderr(Stdio::inherit())
-                .status()
-                .map_err(|e| format!("Failed to run pnpm install: {e}"))?;
+            let pr = project_root.clone();
+            let status = tokio::task::spawn_blocking(move || {
+                std::process::Command::new("pnpm")
+                    .args(["install"])
+                    .current_dir(&pr)
+                    .env("PATH", augmented_path())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::inherit())
+                    .status()
+            })
+            .await
+            .map_err(|e| format!("pnpm install task failed: {e}"))?
+            .map_err(|e| format!("Failed to run pnpm install: {e}"))?;
             if !status.success() {
                 return Err("pnpm install failed".into());
             }
@@ -563,6 +568,7 @@ impl Supervisor {
                 "--",
                 "--port",
                 &port.to_string(),
+                "--strictPort",
             ])
             .current_dir(&project_root)
             .env("PATH", augmented_path())
@@ -578,7 +584,6 @@ impl Supervisor {
         state.managed.insert(
             "vite".into(),
             ManagedProcess {
-                name: "vite".into(),
                 child,
                 port: Some(port),
             },
@@ -889,6 +894,11 @@ impl ServerHandler for Supervisor {
                     .and_then(|args| args.get("name"))
                     .and_then(Value::as_str)
                     .unwrap_or("");
+                if name.is_empty() {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        "Missing required 'name' argument (e.g. \"vite\")",
+                    )]));
+                }
                 match self.stop_managed(name).await {
                     Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
                         "Stopped '{name}'"
