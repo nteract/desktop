@@ -3439,11 +3439,7 @@ fn recover_notebook(
             // List live docs
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
-                    if entry
-                        .path()
-                        .extension()
-                        .is_some_and(|e| e == "automerge")
-                    {
+                    if entry.path().extension().is_some_and(|e| e == "automerge") {
                         found |= print_automerge_entry(&entry, "");
                     }
                 }
@@ -3453,11 +3449,7 @@ fn recover_notebook(
             let snapshots_dir = dir.join("snapshots");
             if let Ok(entries) = std::fs::read_dir(&snapshots_dir) {
                 for entry in entries.flatten() {
-                    if entry
-                        .path()
-                        .extension()
-                        .is_some_and(|e| e == "automerge")
-                    {
+                    if entry.path().extension().is_some_and(|e| e == "automerge") {
                         found |= print_automerge_entry(&entry, " [snapshot]");
                     }
                 }
