@@ -104,6 +104,19 @@ impl WindowNotebookRegistry {
             .cloned()
             .ok_or_else(|| format!("No notebook context for window '{label}'"))
     }
+
+    /// Find the first window label whose stored path matches `target`.
+    fn find_label_by_path(&self, target: &Path) -> Option<String> {
+        let contexts = self.contexts.lock().ok()?;
+        for (label, ctx) in contexts.iter() {
+            if let Ok(guard) = ctx.path.lock() {
+                if guard.as_deref() == Some(target) {
+                    return Some(label.clone());
+                }
+            }
+        }
+        None
+    }
 }
 
 /// Newtype wrapper for reconnect-in-progress flag (distinguishes from other AtomicBool states).
@@ -1701,7 +1714,6 @@ fn create_notebook_window_for_daemon(
     // notebook can be open in multiple windows simultaneously. The first window keeps
     // the deterministic label (window-state geometry persists); additional windows get
     // a UUID suffix and connect as additional peers to the same daemon room.
-    // Defense-in-depth: registry.insert() still rejects duplicate labels (#577).
     let label = if app.get_webview_window(&label).is_some() {
         format!("{}-{}", label, &uuid::Uuid::new_v4().to_string()[..8])
     } else {
@@ -1726,7 +1738,15 @@ fn create_notebook_window_for_daemon(
 
     let context =
         create_window_context_for_daemon(path, working_dir.clone(), placeholder_id, runtime);
-    registry.insert(label.clone(), context.clone())?;
+    // If insert fails due to a label collision (race between window check and insert),
+    // retry with a unique suffix (#577).
+    let label = if registry.insert(label.clone(), context.clone()).is_err() {
+        let suffixed = format!("{}-{}", label, &uuid::Uuid::new_v4().to_string()[..8]);
+        registry.insert(suffixed.clone(), context.clone())?;
+        suffixed
+    } else {
+        label
+    };
 
     let window =
         match tauri::WebviewWindowBuilder::new(app, label.clone(), tauri::WebviewUrl::default())
@@ -4109,13 +4129,15 @@ pub fn run(
                     continue;
                 }
 
-                // For file association (Finder double-click), focus the existing window
-                // if this notebook is already open — expected macOS behavior.
-                let hash = runtimed::worktree_hash(&path);
-                let base_label = format!("notebook-{}", &hash[..8]);
-                if let Some(existing) = app_handle.get_webview_window(&base_label) {
-                    let _ = existing.set_focus();
-                    continue;
+                // For file association (Finder double-click), focus an existing window
+                // for this notebook if one is open — expected macOS behavior. Scan the
+                // registry by path rather than label, since the notebook may be open in
+                // the "main" window or a UUID-suffixed window.
+                if let Some(label) = registry_for_open.find_label_by_path(&path) {
+                    if let Some(existing) = app_handle.get_webview_window(&label) {
+                        let _ = existing.set_focus();
+                        continue;
+                    }
                 }
 
                 // Note: only checks path, not dirty/content state. Cell edits
