@@ -3553,12 +3553,11 @@ pub fn run(
 
             // Collect additional session windows (non-main) for deferred restore.
             // Windows are created after daemon is confirmed available to avoid
-            // sync tasks racing with daemon startup.
+            // sync tasks racing with daemon startup. Session file is cleared
+            // after the deferred restore completes so it remains available for
+            // retry if the daemon fails to start.
             let additional_session_windows: Vec<session::WindowSession> =
                 if let Some(session) = &restored_session {
-                    // Clear session file eagerly — main window was already restored above,
-                    // so the session has served its purpose even if additional windows fail.
-                    session::clear_session();
                     session
                         .windows
                         .iter()
@@ -3568,6 +3567,7 @@ pub fn run(
                 } else {
                     Vec::new()
                 };
+            let has_session_to_clear = restored_session.is_some();
 
             // Ensure runtimed is running (required for daemon-only mode)
             // The daemon provides centralized prewarming across all notebook windows
@@ -3750,6 +3750,13 @@ pub fn run(
                             }
                         }
                     }
+                }
+
+                // Clear session file after all windows have been restored (or
+                // attempted). Keeping it until now allows a retry on next launch
+                // if the daemon was unavailable this time.
+                if has_session_to_clear {
+                    session::clear_session();
                 }
             });
 
