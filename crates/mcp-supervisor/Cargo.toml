@@ -1,0 +1,23 @@
+[package]
+name = "mcp-supervisor"
+version = "0.1.0"
+edition = "2021"
+description = "Inkwell — MCP supervisor that proxies to the nteract MCP server with auto-restart, file watching, and daemon management"
+publish = false
+
+[[bin]]
+name = "mcp-supervisor"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "0.16", features = ["server", "client", "transport-child-process", "transport-io"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+runt-workspace = { path = "../runt-workspace" }
+dirs = "5"
+notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
