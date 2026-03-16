@@ -141,7 +141,7 @@ pub fn reap_orphaned_kernels() -> usize {
             continue;
         }
 
-        let kill_succeeded = match killpg(Pid::from_raw(entry.pgid), Signal::SIGKILL) {
+        let should_remove = match killpg(Pid::from_raw(entry.pgid), Signal::SIGKILL) {
             Ok(()) => {
                 info!(
                     "[kernel-pids] Reaped orphaned kernel '{}' (pgid {})",
@@ -159,8 +159,8 @@ pub fn reap_orphaned_kernels() -> usize {
             }
             Err(nix::errno::Errno::EPERM) => {
                 warn!(
-                    "[kernel-pids] No permission to kill orphaned kernel '{}' (pgid {}), \
-                     removing from registry (process likely already exited and was reparented)",
+                    "[kernel-pids] Permission denied killing orphaned kernel '{}' (pgid {}), \
+                     removing stale entry from registry",
                     kernel_id, entry.pgid
                 );
                 true
@@ -174,7 +174,7 @@ pub fn reap_orphaned_kernels() -> usize {
             }
         };
 
-        if !kill_succeeded {
+        if !should_remove {
             failed_entries.insert(kernel_id, entry);
         }
     }

@@ -2120,10 +2120,10 @@ impl RoomKernel {
                 match e {
                     // Process group already gone — nothing to do
                     nix::errno::Errno::ESRCH => {}
-                    // No permission — process group was likely reparented after kernel exited
+                    // Permission denied — pgid may have been reused or is no longer ours
                     nix::errno::Errno::EPERM => {
                         debug!(
-                            "[kernel-manager] No permission to kill process group {} (likely already exited)",
+                            "[kernel-manager] Permission denied killing process group {}",
                             pgid
                         );
                     }
