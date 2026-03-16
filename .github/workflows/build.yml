@@ -313,7 +313,7 @@ jobs:
           - name: macOS
             runner: macos-latest
             setup: echo "No extra deps needed on macOS"
-            run_on_pr: true
+            run_on_pr: false
             non_blocking: false
           - name: Windows
             runner: windows-latest
