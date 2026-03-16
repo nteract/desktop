@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useState } from "react";
 import { logger } from "../lib/logger";
 
@@ -53,7 +54,11 @@ export function useTrust() {
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       setError(message);
-      logger.error("Failed to check trust:", e);
+      if (message === "Not connected to daemon") {
+        logger.debug("Trust check deferred: daemon not yet connected");
+      } else {
+        logger.error("Failed to check trust:", e);
+      }
       return null;
     } finally {
       setLoading(false);
@@ -82,6 +87,18 @@ export function useTrust() {
   // Check trust on mount
   useEffect(() => {
     checkTrust();
+  }, [checkTrust]);
+
+  // Re-check trust when daemon (re)connects — handles the startup race where
+  // the initial mount-time check fires before the relay handle is stored.
+  useEffect(() => {
+    const webview = getCurrentWebview();
+    const unlistenReady = webview.listen("daemon:ready", () => {
+      checkTrust();
+    });
+    return () => {
+      unlistenReady.then((unlisten) => unlisten()).catch(() => {});
+    };
   }, [checkTrust]);
 
   // Computed properties
