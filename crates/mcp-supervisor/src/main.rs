@@ -150,6 +150,9 @@ fn ensure_maturin_develop(project_root: &Path) -> bool {
 }
 
 fn run_maturin_develop(project_root: &Path) -> bool {
+    // Route stdout to null — the supervisor uses stdout for MCP transport,
+    // so maturin output would corrupt the JSON-RPC stream. Stderr goes to
+    // our stderr (which is the supervisor's log stream).
     let status = std::process::Command::new("uv")
         .args([
             "run",
@@ -158,7 +161,7 @@ fn run_maturin_develop(project_root: &Path) -> bool {
             "maturin",
             "develop",
         ])
-        .stdout(Stdio::inherit())
+        .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .status();
 
@@ -696,23 +699,38 @@ impl ServerHandler for Supervisor {
                 let log_path = daemon_log_path(&state.project_root, &state.socket_path);
 
                 match log_path {
-                    Some(path) if path.exists() => match std::fs::read_to_string(&path) {
-                        Ok(contents) => {
-                            let tail: Vec<&str> = contents.lines().rev().take(lines).collect();
-                            let tail: Vec<&str> = tail.into_iter().rev().collect();
-                            Ok(CallToolResult::success(vec![Content::text(
-                                if tail.is_empty() {
-                                    "(log file is empty)".to_string()
-                                } else {
-                                    tail.join("\n")
-                                },
-                            )]))
-                        }
-                        Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
-                            "Failed to read log at {}: {e}",
-                            path.display()
-                        ))])),
-                    },
+                    Some(path) if path.exists() => {
+                        // Read only the last 64KB to avoid loading huge log files
+                        let tail_bytes = match std::fs::File::open(&path) {
+                            Ok(file) => {
+                                use std::io::{Read, Seek, SeekFrom};
+                                let mut file = file;
+                                let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+                                let max_bytes: u64 = 64 * 1024;
+                                if len > max_bytes {
+                                    let _ = file.seek(SeekFrom::End(-(max_bytes as i64)));
+                                }
+                                let mut buf = String::new();
+                                file.read_to_string(&mut buf).ok();
+                                buf
+                            }
+                            Err(e) => {
+                                return Ok(CallToolResult::success(vec![Content::text(format!(
+                                    "Failed to read log at {}: {e}",
+                                    path.display()
+                                ))]));
+                            }
+                        };
+                        let tail: Vec<&str> = tail_bytes.lines().rev().take(lines).collect();
+                        let tail: Vec<&str> = tail.into_iter().rev().collect();
+                        Ok(CallToolResult::success(vec![Content::text(
+                            if tail.is_empty() {
+                                "(log file is empty)".to_string()
+                            } else {
+                                tail.join("\n")
+                            },
+                        )]))
+                    }
                     Some(path) => Ok(CallToolResult::success(vec![Content::text(format!(
                         "Daemon log not found at {}",
                         path.display()
@@ -898,13 +916,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("Dev daemon already running at {}", info.socket_path);
             info.socket_path
         }
-        Some(info) => {
+        Some(_info) => {
             info!("Daemon not running, starting it...");
             daemon_child = start_daemon(&project_root);
             if !wait_for_daemon(&project_root, Duration::from_secs(30)) {
                 error!("Daemon failed to start within 30s");
+                std::process::exit(1);
             }
-            info.socket_path
+            // Re-query to get the socket path from the now-running daemon
+            match daemon_status(&project_root) {
+                Some(info) if info.running => info.socket_path,
+                _ => {
+                    error!("Daemon started but status query failed");
+                    std::process::exit(1);
+                }
+            }
         }
         None => {
             // Can't even get status — try to build runt CLI first
@@ -922,9 +948,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some(info) => {
                     if !info.running {
                         daemon_child = start_daemon(&project_root);
-                        wait_for_daemon(&project_root, Duration::from_secs(30));
+                        if !wait_for_daemon(&project_root, Duration::from_secs(30)) {
+                            error!("Daemon failed to start within 30s");
+                            std::process::exit(1);
+                        }
+                        // Re-query for fresh socket path
+                        match daemon_status(&project_root) {
+                            Some(fresh) if fresh.running => fresh.socket_path,
+                            _ => {
+                                error!("Daemon started but status query failed");
+                                std::process::exit(1);
+                            }
+                        }
+                    } else {
+                        info.socket_path
                     }
-                    info.socket_path
                 }
                 None => {
                     error!("Cannot determine daemon socket path");
