@@ -458,6 +458,18 @@ impl Daemon {
             error!("[runtimed] Failed to write daemon info: {}", e);
         }
 
+        // Reap any orphaned kernel process groups from a previous crash
+        #[cfg(unix)]
+        {
+            let reaped = crate::kernel_pids::reap_orphaned_kernels();
+            if reaped > 0 {
+                info!(
+                    "[runtimed] Reaped {} orphaned kernel process group(s)",
+                    reaped
+                );
+            }
+        }
+
         // Find and reuse existing environments from previous runs
         self.find_existing_environments().await;
 

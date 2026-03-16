@@ -261,6 +261,8 @@ pub struct RoomKernel {
     /// Process group ID for cleanup (Unix only)
     #[cfg(unix)]
     process_group_id: Option<i32>,
+    /// Kernel ID for the process registry (orphan reaping)
+    kernel_id: Option<String>,
     /// Mapping from msg_id → cell_id for routing iopub messages
     cell_id_map: Arc<StdMutex<HashMap<String, String>>>,
     /// Execution queue (pending cells)
@@ -371,6 +373,7 @@ impl RoomKernel {
             shell_writer: None,
             #[cfg(unix)]
             process_group_id: None,
+            kernel_id: None,
             cell_id_map: Arc::new(StdMutex::new(HashMap::new())),
             queue: VecDeque::new(),
             executing: None,
@@ -498,13 +501,14 @@ impl RoomKernel {
             kernel_name: Some(kernelspec_name.to_string()),
         };
 
-        // Write connection file
-        let runtime_dir = runtimelib::dirs::runtime_dir();
-        tokio::fs::create_dir_all(&runtime_dir).await?;
+        // Write connection file to the daemon's own directory (not the shared
+        // Jupyter runtime dir) so we can safely clean up orphans on restart.
+        let conn_dir = crate::connections_dir();
+        tokio::fs::create_dir_all(&conn_dir).await?;
 
         let kernel_id: String =
             petname::petname(2, "-").unwrap_or_else(|| Uuid::new_v4().to_string());
-        let connection_file_path = runtime_dir.join(format!("runtimed-kernel-{}.json", kernel_id));
+        let connection_file_path = conn_dir.join(format!("{}.json", kernel_id));
 
         tokio::fs::write(
             &connection_file_path,
@@ -669,7 +673,11 @@ impl RoomKernel {
         #[cfg(unix)]
         {
             self.process_group_id = process.id().map(|pid| pid as i32);
+            if let Some(pgid) = self.process_group_id {
+                crate::kernel_pids::register_kernel(&kernel_id, pgid);
+            }
         }
+        self.kernel_id = Some(kernel_id.clone());
 
         // Small delay to let the kernel start
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -2118,6 +2126,11 @@ impl RoomKernel {
             }
         }
 
+        // Unregister from process registry
+        if let Some(kid) = self.kernel_id.take() {
+            crate::kernel_pids::unregister_kernel(&kid);
+        }
+
         // Clean up connection file
         if let Some(ref path) = self.connection_file {
             let _ = std::fs::remove_file(path);
@@ -2158,6 +2171,11 @@ impl Drop for RoomKernel {
             use nix::sys::signal::{killpg, Signal};
             use nix::unistd::Pid;
             let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL);
+        }
+
+        // Unregister from process registry
+        if let Some(kid) = self.kernel_id.take() {
+            crate::kernel_pids::unregister_kernel(&kid);
         }
 
         // Clean up connection file

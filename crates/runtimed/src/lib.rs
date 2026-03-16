@@ -29,6 +29,7 @@ pub use notebook_protocol::connection;
 pub mod daemon;
 pub mod inline_env;
 pub mod kernel_manager;
+pub mod kernel_pids;
 pub mod markdown_assets;
 pub use notebook_doc;
 pub use notebook_doc::metadata as notebook_metadata;
@@ -198,6 +199,16 @@ pub fn default_cache_dir() -> PathBuf {
 /// Get the default directory for the content-addressed blob store.
 pub fn default_blob_store_dir() -> PathBuf {
     daemon_base_dir().join("blobs")
+}
+
+/// Get the directory for kernel connection files.
+///
+/// Connection files are stored here (rather than the shared Jupyter runtime
+/// directory) so the daemon owns its files exclusively. This enables safe
+/// bulk cleanup on startup and opens the door for future kernel reattachment
+/// during daemon upgrades.
+pub fn connections_dir() -> PathBuf {
+    daemon_base_dir().join("connections")
 }
 
 /// Get the default path for the persisted Automerge settings document.
