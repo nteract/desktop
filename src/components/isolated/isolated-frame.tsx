@@ -363,17 +363,17 @@ export const IsolatedFrame = forwardRef<
           // setIsIframeReady(true) both no-ops, so the injection effect would
           // not re-run. To avoid this, force a real state transition on
           // isIframeReady by toggling it in separate render passes.
-          if (wasBootstrapping && !wasRendererReady) {
-            // Reload happened while the renderer was still bootstrapping.
-            // First mark the iframe as not ready, then in the next tick mark
-            // it ready again so effects depending on isIframeReady re-run.
+          if (wasBootstrapping || wasRendererReady) {
+            // Reload: isIframeReady may already be true, so toggle to
+            // force effects that depend on it (theme sync, renderer
+            // injection) to re-run.
             setIsIframeReady(false);
             setTimeout(() => {
               setIsIframeReady(true);
             }, 0);
           } else {
-            // Initial load, or reload after the renderer was fully ready:
-            // a single transition to "ready" is sufficient.
+            // Initial load: a single transition from false→true is
+            // sufficient.
             setIsIframeReady(true);
           }
           break;
