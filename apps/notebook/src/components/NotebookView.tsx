@@ -432,13 +432,22 @@ function NotebookViewContent({
       const isFocused = cell.id === focusedCellId;
       const isExecuting = executingCellIds.has(cell.id);
 
-      // Navigation callbacks
+      // Navigation callbacks — skip cells that are collapsed into a hidden group
+      const isVisibleCell = (id: string) => {
+        const g = hiddenGroups.get(id);
+        return !g || g.isFirst;
+      };
+
       const onFocusPrevious = (cursorPosition: "start" | "end") => {
         logger.debug(
           `[cell-nav] onFocusPrevious called: cell=${cell.id.slice(0, 8)} index=${index} cellIds=${cellIds.map((id) => id.slice(0, 8)).join(",")}`,
         );
-        if (index > 0) {
-          const prevCellId = cellIds[index - 1];
+        let prevIndex = index - 1;
+        while (prevIndex >= 0 && !isVisibleCell(cellIds[prevIndex])) {
+          prevIndex--;
+        }
+        if (prevIndex >= 0) {
+          const prevCellId = cellIds[prevIndex];
           logger.debug(
             `[cell-nav] Focusing previous: ${prevCellId.slice(0, 8)}`,
           );
@@ -453,8 +462,15 @@ function NotebookViewContent({
         logger.debug(
           `[cell-nav] onFocusNext called: cell=${cell.id.slice(0, 8)} index=${index} cellIds=${cellIds.map((id) => id.slice(0, 8)).join(",")}`,
         );
-        if (index < cellIds.length - 1) {
-          const nextCellId = cellIds[index + 1];
+        let nextIndex = index + 1;
+        while (
+          nextIndex < cellIds.length &&
+          !isVisibleCell(cellIds[nextIndex])
+        ) {
+          nextIndex++;
+        }
+        if (nextIndex < cellIds.length) {
+          const nextCellId = cellIds[nextIndex];
           logger.debug(`[cell-nav] Focusing next: ${nextCellId.slice(0, 8)}`);
           onFocusCell(nextCellId);
           focusCell(nextCellId, cursorPosition);
@@ -519,13 +535,15 @@ function NotebookViewContent({
                 ?.groupCellIds.some((id) => executingCellIds.has(id)) ?? false
             }
             onExpandHiddenGroup={
-              hiddenGroups.has(cell.id)
+              hiddenGroups.has(cell.id) &&
+              onSetCellSourceHidden &&
+              onSetCellOutputsHidden
                 ? () => {
                     const group = hiddenGroups.get(cell.id);
                     if (group) {
                       for (const id of group.groupCellIds) {
-                        onSetCellSourceHidden?.(id, false);
-                        onSetCellOutputsHidden?.(id, false);
+                        onSetCellSourceHidden(id, false);
+                        onSetCellOutputsHidden(id, false);
                       }
                     }
                   }
