@@ -10,16 +10,7 @@
     "beforeBuildCommand": "pnpm --dir apps/notebook build"
   },
   "app": {
-    "windows": [
-      {
-        "title": "Untitled.ipynb",
-        "width": 1100,
-        "height": 750,
-        "minWidth": 400,
-        "minHeight": 250,
-        "resizable": true
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

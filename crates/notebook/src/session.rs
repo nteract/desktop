@@ -11,7 +11,7 @@ use std::path::PathBuf;
 /// Represents a single window's session state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowSession {
-    /// Window label (e.g., "main", "notebook-{hash}")
+    /// Window label (e.g., "notebook-{hash}")
     pub label: String,
     /// File path for saved notebooks, None for untitled
     pub path: Option<PathBuf>,
@@ -173,10 +173,6 @@ pub(crate) fn clear_session_at(path: &std::path::Path) {
 ///
 /// Uses deterministic labels so window-state plugin can restore geometry.
 pub fn window_label_for_session(session: &WindowSession) -> String {
-    if session.label == "main" {
-        return "main".to_string();
-    }
-
     if let Some(path) = &session.path {
         // Hash the path for a stable label
         let hash = runtimed::worktree_hash(path);
@@ -232,7 +228,10 @@ mod tests {
         std::fs::write(&saved_path, "{}").unwrap();
 
         let registry = test_registry(vec![
-            ("main", test_context(Some(saved_path.clone()), "")),
+            (
+                "notebook-ab1234cd",
+                test_context(Some(saved_path.clone()), ""),
+            ),
             ("notebook-abc12345", test_context(None, "env-uuid-1234")),
         ]);
 
@@ -243,9 +242,13 @@ mod tests {
         assert_eq!(loaded.schema_version, SessionState::CURRENT_SCHEMA_VERSION);
         assert_eq!(loaded.windows.len(), 2);
 
-        let main_win = loaded.windows.iter().find(|w| w.label == "main").unwrap();
-        assert_eq!(main_win.path.as_ref().unwrap(), &saved_path);
-        assert!(main_win.env_id.is_none());
+        let saved_win = loaded
+            .windows
+            .iter()
+            .find(|w| w.label == "notebook-ab1234cd")
+            .unwrap();
+        assert_eq!(saved_win.path.as_ref().unwrap(), &saved_path);
+        assert!(saved_win.env_id.is_none());
 
         let untitled = loaded
             .windows
@@ -295,7 +298,7 @@ mod tests {
             schema_version: SessionState::CURRENT_SCHEMA_VERSION,
             saved_at: stale_time.to_rfc3339(),
             windows: vec![WindowSession {
-                label: "main".to_string(),
+                label: "notebook-test1234".to_string(),
                 path: None,
                 env_id: Some("test".to_string()),
                 runtime: "python".to_string(),
@@ -312,7 +315,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let session_path = dir.path().join("session.json");
 
-        let registry = test_registry(vec![("main", test_context(None, "env-id"))]);
+        let registry = test_registry(vec![("notebook-env12345", test_context(None, "env-id"))]);
         save_session_to(&registry, &session_path).unwrap();
         assert!(session_path.exists());
 
@@ -333,17 +336,6 @@ mod tests {
         let label2 = window_label_for_session(&session);
         assert_eq!(label1, label2);
         assert!(label1.starts_with("notebook-"));
-    }
-
-    #[test]
-    fn test_window_label_main_passthrough() {
-        let session = WindowSession {
-            label: "main".to_string(),
-            path: None,
-            env_id: None,
-            runtime: "python".to_string(),
-        };
-        assert_eq!(window_label_for_session(&session), "main");
     }
 
     #[test]
@@ -371,7 +363,7 @@ mod tests {
 
         // Populate registry with 3 entries: 2 real windows + 1 ghost
         let registry = test_registry(vec![
-            ("main", test_context(Some(nb_path.clone()), "")),
+            ("notebook-primary1", test_context(Some(nb_path.clone()), "")),
             ("notebook-real", test_context(None, "env-uuid-5678")),
             ("notebook-ghost", test_context(None, "env-ghost-dead")),
         ]);
@@ -380,7 +372,7 @@ mod tests {
         assert_eq!(registry.contexts.lock().unwrap().len(), 3);
 
         // Prune: simulate that "notebook-ghost" window no longer exists
-        // (only "main" and "notebook-real" are live windows)
+        // (only "notebook-primary1" and "notebook-real" are live windows)
         registry.prune_where(|label| label == "notebook-ghost");
 
         // Ghost entry is gone from the registry
@@ -397,7 +389,7 @@ mod tests {
 
         assert_eq!(loaded.windows.len(), 2);
         let labels: Vec<&str> = loaded.windows.iter().map(|w| w.label.as_str()).collect();
-        assert!(labels.contains(&"main"));
+        assert!(labels.contains(&"notebook-primary1"));
         assert!(labels.contains(&"notebook-real"));
         assert!(!labels.contains(&"notebook-ghost"));
     }

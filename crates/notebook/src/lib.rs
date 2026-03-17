@@ -71,10 +71,6 @@ impl WindowNotebookRegistry {
     }
 
     /// Remove registry entries whose windows no longer exist.
-    ///
-    /// On macOS the main window's entry is preserved on close (for Cmd+Q session
-    /// restore). If the user reopens a new window before quitting, the stale entry
-    /// would otherwise appear as a ghost notebook in the upgrade dialog and session.
     fn prune_stale_entries(&self, app: &tauri::AppHandle) {
         self.prune_where(|label| app.get_webview_window(label).is_none());
     }
@@ -118,6 +114,22 @@ impl WindowNotebookRegistry {
             if let Ok(guard) = ctx.path.lock() {
                 if guard.as_deref() == Some(target) {
                     return Some(label.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Find the first live window that has no file path (untitled/empty notebook).
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    fn find_empty_window_label(&self, app: &tauri::AppHandle) -> Option<String> {
+        let contexts = self.contexts.lock().ok()?;
+        for (label, ctx) in contexts.iter() {
+            if app.get_webview_window(label).is_some() {
+                if let Ok(guard) = ctx.path.lock() {
+                    if guard.is_none() {
+                        return Some(label.clone());
+                    }
                 }
             }
         }
@@ -1713,9 +1725,8 @@ fn create_notebook_window_for_daemon(
         }
     });
 
-    // Remove registry entries for windows that were destroyed but kept for session
-    // restore (e.g. the main window on macOS). Without this, ghost notebooks appear
-    // in the upgrade dialog and saved session when new windows are opened later.
+    // Remove registry entries for windows that no longer exist. Without this,
+    // ghost notebooks appear in the upgrade dialog and saved session.
     registry.prune_stale_entries(app);
 
     // If a window with this label already exists, append a unique suffix so the same
@@ -3316,17 +3327,21 @@ pub fn run(
     // Window registry is always needed for multi-window support
     let window_registry = WindowNotebookRegistry::default();
 
-    // Only set up initial notebook state if not showing onboarding
-    let (window_title, _main_context, main_open_mode) = if needs_onboarding {
+    // Determine the first window's open mode and label.
+    // Unlike the old approach that reused Tauri's auto-created "main" window, we now
+    // create all notebook windows explicitly with proper "notebook-{hash}" labels.
+    // This ensures the window-state plugin persists geometry under a deterministic,
+    // content-based key — not a generic "main" that accumulates stale state.
+    let (window_title, first_window_label, _first_context, first_open_mode) = if needs_onboarding {
         info!("[startup] Onboarding needed, skipping notebook state setup");
-        // No main context - onboarding window doesn't need notebook state
         (
             format!("Welcome to {}", runt_workspace::desktop_display_name()),
             None,
             None,
+            None,
         )
     } else {
-        // Determine how to open the main window — no local file parsing needed.
+        // Determine how to open the first window — no local file parsing needed.
         // The daemon loads/creates the notebook.
         let (mode, title) = match notebook_path.as_ref() {
             Some(path) => {
@@ -3339,8 +3354,9 @@ pub fn run(
             }
             None => {
                 if let Some(ref session) = restored_session {
-                    if let Some(main_session) = session.windows.iter().find(|w| w.label == "main") {
-                        match (&main_session.path, &main_session.env_id) {
+                    // Use the first session window (was the primary window at save time).
+                    if let Some(first_session) = session.windows.first() {
+                        match (&first_session.path, &first_session.env_id) {
                             (Some(path), _) if path.exists() => {
                                 let title = path
                                     .file_name()
@@ -3348,13 +3364,13 @@ pub fn run(
                                     .unwrap_or("Untitled.ipynb")
                                     .to_string();
                                 info!(
-                                    "[session] Restoring main window from path: {}",
+                                    "[session] Restoring first window from path: {}",
                                     path.display()
                                 );
                                 (OpenMode::Open { path: path.clone() }, title)
                             }
                             (_, Some(env_id)) => {
-                                info!("[session] Restoring untitled main window: {}", env_id);
+                                info!("[session] Restoring untitled first window: {}", env_id);
                                 (
                                     OpenMode::Create {
                                         runtime: runtime.to_string(),
@@ -3365,7 +3381,7 @@ pub fn run(
                                 )
                             }
                             _ => {
-                                warn!("[session] Main session has no path or env_id");
+                                warn!("[session] First session entry has no path or env_id");
                                 (
                                     OpenMode::Create {
                                         runtime: runtime.to_string(),
@@ -3399,6 +3415,21 @@ pub fn run(
             }
         };
 
+        // Generate a proper notebook label (same logic as create_notebook_window_for_daemon)
+        let label = match &mode {
+            OpenMode::Open { path } => {
+                let hash = runtimed::worktree_hash(path);
+                format!("notebook-{}", &hash[..8])
+            }
+            OpenMode::Create {
+                notebook_id: Some(ref id),
+                ..
+            } => format!("notebook-{}", &id[..8.min(id.len())]),
+            OpenMode::Create {
+                notebook_id: None, ..
+            } => format!("notebook-{}", uuid::Uuid::new_v4()),
+        };
+
         let placeholder_id = match &mode {
             OpenMode::Open { path } => path
                 .canonicalize()
@@ -3423,10 +3454,10 @@ pub fn run(
             runtime,
         );
         window_registry
-            .insert("main", context.clone())
+            .insert(&label, context.clone())
             .map_err(anyhow::Error::msg)?;
 
-        (title, Some(context), Some(mode))
+        (title, Some(label), Some(context), Some(mode))
     };
 
     // Guard against concurrent reconnect attempts
@@ -3460,7 +3491,7 @@ pub fn run(
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_window_state::Builder::default()
-                .with_denylist(&["onboarding", "upgrade"])
+                .with_denylist(&["main", "onboarding", "upgrade"])
                 .build(),
         )
         .manage(window_registry.clone())
@@ -3536,11 +3567,6 @@ pub fn run(
             log::info!("[startup] Notebooks directory: {}", notebooks_dir.display());
 
             if needs_onboarding {
-                // Close the default main window - we'll create an onboarding-specific one
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.close();
-                }
-
                 // Create dedicated onboarding window with fixed size appropriate for content.
                 // Uses the separate onboarding app bundle (not the notebook bundle) to avoid
                 // loading notebook hooks that don't apply to the onboarding window.
@@ -3559,15 +3585,26 @@ pub fn run(
                 .build()?;
 
                 log::info!("[startup] Created dedicated onboarding window");
-            } else {
-                // Normal startup - just set the title on the main window
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.set_title(&window_title);
-                    refresh_native_menu(
-                        app.handle(),
-                        app.state::<WindowNotebookRegistry>().inner(),
-                    );
-                }
+            } else if let Some(ref label) = first_window_label {
+                // Create the first notebook window with a proper label.
+                // The window appears immediately with a loading UI; daemon sync
+                // happens later in the async block after the daemon is confirmed available.
+                let _notebook_window = tauri::WebviewWindowBuilder::new(
+                    app,
+                    label,
+                    tauri::WebviewUrl::default(),
+                )
+                .title(&window_title)
+                .inner_size(1100.0, 750.0)
+                .min_inner_size(400.0, 250.0)
+                .resizable(true)
+                .build()?;
+
+                log::info!("[startup] Created first notebook window: {}", label);
+                refresh_native_menu(
+                    app.handle(),
+                    app.state::<WindowNotebookRegistry>().inner(),
+                );
             }
 
             // Start WebDriver server for native E2E testing (if enabled)
@@ -3594,19 +3631,12 @@ pub fn run(
             let menu = crate::menu::create_menu(app.handle(), &window_display_names)?;
             app.set_menu(menu)?;
 
-            // Collect additional session windows (non-main) for deferred restore.
-            // Windows are created after daemon is confirmed available to avoid
-            // sync tasks racing with daemon startup. Session file is cleared
-            // after the deferred restore completes so it remains available for
-            // retry if the daemon fails to start.
+            // Additional session windows (skip first, already created in setup).
+            // Created after daemon is confirmed available to avoid sync tasks
+            // racing with daemon startup.
             let additional_session_windows: Vec<session::WindowSession> =
                 if let Some(session) = &restored_session {
-                    session
-                        .windows
-                        .iter()
-                        .filter(|w| w.label != "main")
-                        .cloned()
-                        .collect()
+                    session.windows.iter().skip(1).cloned().collect()
                 } else {
                     Vec::new()
                 };
@@ -3667,10 +3697,12 @@ pub fn run(
                 // Skip during onboarding - the onboarding window doesn't need notebook sync,
                 // it just needs daemon progress events
                 if daemon_available && !skip_notebook_sync {
-                    if let Some(mode) = main_open_mode {
+                    if let (Some(mode), Some(ref label)) =
+                        (first_open_mode, &first_window_label)
+                    {
                         match (
-                            app_for_notebook_sync.get_webview_window("main"),
-                            registry_for_notebook_sync.get("main"),
+                            app_for_notebook_sync.get_webview_window(label),
+                            registry_for_notebook_sync.get(label),
                         ) {
                             (Some(window), Ok(context)) => {
                                 let result = match mode {
@@ -3718,10 +3750,17 @@ pub fn run(
                                 }
                             }
                             (None, _) => {
-                                log::warn!("[startup] Main window missing during sync init");
+                                log::warn!(
+                                    "[startup] Notebook window '{}' missing during sync init",
+                                    label
+                                );
                             }
                             (_, Err(e)) => {
-                                log::warn!("[startup] Main notebook context missing: {}", e);
+                                log::warn!(
+                                    "[startup] Notebook context for '{}' missing: {}",
+                                    label,
+                                    e
+                                );
                             }
                         }
                     }
@@ -4080,21 +4119,13 @@ pub fn run(
         } = &event
         {
             if let Ok(mut contexts) = registry_for_window_close.contexts.lock() {
-                // Keep the main context for session restore, but always clear
-                // its sync handle so daemon peer tracking can evict idle rooms.
-                let closed_handle = if label == "main" {
-                    contexts
-                        .get(label)
-                        .map(|context| context.notebook_sync.clone())
-                } else {
-                    contexts.remove(label).map(|context| {
-                        log::info!(
-                            "[window] Removed registry entry for closed window: {}",
-                            label
-                        );
-                        context.notebook_sync
-                    })
-                };
+                let closed_handle = contexts.remove(label).map(|context| {
+                    log::info!(
+                        "[window] Removed registry entry for closed window: {}",
+                        label
+                    );
+                    context.notebook_sync
+                });
 
                 if let Some(notebook_sync) = closed_handle {
                     clear_notebook_sync_handles(
@@ -4134,8 +4165,7 @@ pub fn run(
 
                 // For file association (Finder double-click), focus an existing window
                 // for this notebook if one is open — expected macOS behavior. Scan the
-                // registry by path rather than label, since the notebook may be open in
-                // the "main" window or a UUID-suffixed window.
+                // registry by path rather than label.
                 if let Some(label) = registry_for_open.find_label_by_path(&path) {
                     if let Some(existing) = app_handle.get_webview_window(&label) {
                         let _ = existing.set_focus();
@@ -4143,25 +4173,18 @@ pub fn run(
                     }
                 }
 
+                // Reuse an empty (untitled) window if one exists, otherwise open new.
                 // Note: only checks path, not dirty/content state. Cell edits
                 // no longer set NotebookState.dirty (mutations go through sync
                 // handle), so an untitled notebook with user edits may be reused.
-                // Phase 1.4 will move this check to the sync handle.
-                let main_is_empty = registry_for_open
-                    .get("main")
-                    .ok()
-                    .and_then(|context| context.path.lock().ok().map(|path| path.is_none()))
-                    .unwrap_or(false);
-
-                if main_is_empty {
-                    // Reuse the empty main window — update path and reconnect to daemon
-                    if let Ok(context) = registry_for_open.get("main") {
+                if let Some(empty_label) = registry_for_open.find_empty_window_label(app_handle) {
+                    if let Ok(context) = registry_for_open.get(&empty_label) {
                         // Update path in context
                         if let Ok(mut p) = context.path.lock() {
                             *p = Some(path.clone());
                         }
 
-                        if let Some(window) = app_handle.get_webview_window("main") {
+                        if let Some(window) = app_handle.get_webview_window(&empty_label) {
                             let title = path
                                 .file_name()
                                 .and_then(|n| n.to_str())
@@ -4208,9 +4231,7 @@ pub fn run(
         {
             match reopen_action(*has_visible_windows, app_handle.webview_windows().len()) {
                 Some(ReopenAction::RestoreWindow) => {
-                    let window = app_handle
-                        .get_webview_window("main")
-                        .or_else(|| app_handle.webview_windows().into_values().next());
+                    let window = app_handle.webview_windows().into_values().next();
 
                     if let Some(window) = window {
                         if let Err(error) = window.show() {
