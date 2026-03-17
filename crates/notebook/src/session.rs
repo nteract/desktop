@@ -204,6 +204,19 @@ pub(crate) fn load_session_from(path: &std::path::Path) -> Option<SessionState> 
     Some(session)
 }
 
+/// Load session state ignoring the age check.
+///
+/// Used for one-time migrations (e.g., renaming stale window labels) where
+/// the session data is needed even if it would be too old for restore.
+pub fn load_session_ignoring_age() -> Option<SessionState> {
+    let path = runtimed::session_state_path();
+    if !path.exists() {
+        return None;
+    }
+    let contents = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&contents).ok()
+}
+
 /// Delete the session file after successful restore.
 pub fn clear_session() {
     clear_session_at(&runtimed::session_state_path());

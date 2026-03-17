@@ -3690,8 +3690,18 @@ pub fn run(
     // Pre-97b0422f versions used a hardcoded "main" label for the first window.
     // The plugin now denylists "main", orphaning its saved geometry. This renames
     // the entry so the new deterministic label picks up the old geometry.
-    if let Some(ref session) = restored_session {
-        migrate_main_window_state(session);
+    //
+    // Runs unconditionally: the session file may exist even when restored_session
+    // is None (e.g., Finder launch, expired session, CLI open). Uses the
+    // age-ignoring loader so stale sessions still trigger the one-time migration.
+    {
+        let session_for_migration = restored_session
+            .as_ref()
+            .cloned()
+            .or_else(session::load_session_ignoring_age);
+        if let Some(ref session) = session_for_migration {
+            migrate_main_window_state(session);
+        }
     }
 
     let app = tauri::Builder::default()
@@ -4257,19 +4267,38 @@ pub fn run(
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     let registry_for_open = window_registry.clone();
     let registry_for_session = window_registry.clone();
+    let registry_for_exit_session = window_registry.clone();
     let registry_for_window_close = window_registry.clone();
     app.run(move |app_handle, event| {
-        // Keep the app process alive when the final window is closed on macOS.
-        // Other platforms should exit when the final window closes.
+        // Save session at ExitRequested — before windows are destroyed.
+        // WindowEvent::Destroyed removes registry entries, so by RunEvent::Exit
+        // the registry is empty and save_session() would no-op.
         #[cfg(target_os = "macos")]
         if let RunEvent::ExitRequested { code, api, .. } = &event {
             if code.is_none() && app_handle.webview_windows().is_empty() {
+                // Last window closed via X — keep app alive for dock (macOS)
                 log::info!("[app] Preventing exit after closing last window (macOS)");
                 clear_all_notebook_sync_handles(
                     &registry_for_window_close,
                     "macos last-window close",
                 );
                 api.prevent_exit();
+            } else {
+                // Real quit (Cmd+Q or code-initiated). Save now while windows are alive.
+                log::info!("[session] Saving session before windows are destroyed");
+                registry_for_exit_session.prune_stale_entries(app_handle);
+                if let Err(e) = session::save_session(&registry_for_exit_session, app_handle) {
+                    log::error!("[session] Failed to save session on exit: {}", e);
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        if let RunEvent::ExitRequested { .. } = &event {
+            log::info!("[session] Saving session before windows are destroyed");
+            registry_for_exit_session.prune_stale_entries(app_handle);
+            if let Err(e) = session::save_session(&registry_for_exit_session, app_handle) {
+                log::error!("[session] Failed to save session on exit: {}", e);
             }
         }
 
@@ -4299,14 +4328,13 @@ pub fn run(
             refresh_native_menu(app_handle, &registry_for_window_close);
         }
 
-        // Save session state when app is about to exit
-        // Use Exit (not ExitRequested) as it fires reliably on all platforms
+        // Fallback session save. ExitRequested (above) is the primary save point;
+        // by this time Destroyed events have usually emptied the registry, so
+        // save_session returns early without overwriting.
         if let RunEvent::Exit = &event {
-            log::info!("[session] App exiting, saving session...");
+            log::info!("[session] App exiting, saving session (fallback)...");
             if let Err(e) = session::save_session(&registry_for_session, app_handle) {
                 log::error!("[session] Failed to save session: {}", e);
-            } else {
-                log::info!("[session] Session saved successfully");
             }
         }
 
