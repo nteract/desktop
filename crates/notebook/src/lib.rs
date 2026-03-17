@@ -1379,6 +1379,62 @@ async fn get_daemon_info() -> Option<DaemonInfoForBanner> {
     }
 }
 
+/// System info for the feedback window (not debug-gated).
+#[derive(Clone, serde::Serialize)]
+pub struct FeedbackSystemInfo {
+    pub app_version: String,
+    pub commit_sha: String,
+    pub release_date: String,
+    pub os: String,
+    pub arch: String,
+    pub os_version: String,
+}
+
+fn get_os_version() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("sw_vers")
+            .arg("-productVersion")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/etc/os-release")
+            .ok()
+            .and_then(|content| {
+                content
+                    .lines()
+                    .find(|l| l.starts_with("PRETTY_NAME="))
+                    .map(|l| {
+                        l.trim_start_matches("PRETTY_NAME=")
+                            .trim_matches('"')
+                            .to_string()
+                    })
+            })
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        "unknown".to_string()
+    }
+}
+
+#[tauri::command]
+async fn get_feedback_system_info() -> FeedbackSystemInfo {
+    FeedbackSystemInfo {
+        app_version: crate::menu::APP_VERSION.to_string(),
+        commit_sha: crate::menu::APP_COMMIT_SHA.to_string(),
+        release_date: crate::menu::APP_RELEASE_DATE.to_string(),
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        os_version: get_os_version(),
+    }
+}
+
 /// Get the blob server port from the running daemon.
 /// Used by the frontend to resolve manifest hashes to outputs.
 #[tauri::command]
@@ -2962,6 +3018,34 @@ async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Open the feedback window.
+///
+/// Uses singleton pattern - focuses existing window if present, otherwise creates new one.
+#[tauri::command]
+async fn open_feedback_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(existing_window) = app.get_webview_window("feedback") {
+        existing_window
+            .set_focus()
+            .map_err(|e| format!("Failed to focus feedback window: {}", e))?;
+        return Ok(());
+    }
+
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        "feedback",
+        tauri::WebviewUrl::App("feedback/index.html".into()),
+    )
+    .title("Send Feedback")
+    .inner_size(480.0, 420.0)
+    .min_inner_size(400.0, 385.0)
+    .resizable(true)
+    .center()
+    .build()
+    .map_err(|e| format!("Failed to create feedback window: {}", e))?;
+
+    Ok(())
+}
+
 fn focused_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
     app.webview_windows()
         .into_values()
@@ -3525,6 +3609,9 @@ pub fn run(
             get_git_info,
             get_daemon_info,
             get_blob_port,
+            // Feedback
+            open_feedback_window,
+            get_feedback_system_info,
         ])
         .setup(move |app| {
             let setup_start = std::time::Instant::now();
@@ -3991,6 +4078,14 @@ pub fn run(
                     tauri::async_runtime::spawn(async move {
                         if let Err(e) = open_settings_window(app_handle).await {
                             log::error!("[menu] Failed to open settings window: {}", e);
+                        }
+                    });
+                }
+                crate::menu::MENU_SEND_FEEDBACK => {
+                    let app_handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = open_feedback_window(app_handle).await {
+                            log::error!("[menu] Failed to open feedback window: {}", e);
                         }
                     });
                 }

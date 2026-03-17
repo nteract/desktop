@@ -41,6 +41,7 @@ pub const MENU_CLEAR_ALL_OUTPUTS: &str = "clear_all_outputs";
 pub const MENU_INSTALL_CLI: &str = "install_cli";
 pub const MENU_CHECK_FOR_UPDATES: &str = "check_for_updates";
 pub const MENU_SETTINGS: &str = "settings";
+pub const MENU_SEND_FEEDBACK: &str = "send_feedback";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const APP_COMMIT_SHA: &str = env!("GIT_COMMIT");
 pub const APP_RELEASE_DATE: &str = env!("GIT_COMMIT_DATE");
@@ -351,6 +352,17 @@ pub fn create_menu(
         }
     }
     menu.append(&window_menu)?;
+
+    // Help menu
+    let help_menu = Submenu::new(app, "Help", true)?;
+    help_menu.append(&MenuItem::with_id(
+        app,
+        MENU_SEND_FEEDBACK,
+        "Send Feedback...",
+        true,
+        None::<&str>,
+    )?)?;
+    menu.append(&help_menu)?;
 
     Ok(menu)
 }

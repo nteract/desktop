@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Send Feedback</title>
+    <script>
+      // Apply theme immediately to prevent flash of wrong color on boot
+      (() => {
+        var STORAGE_KEY = 'notebook-theme';
+        var theme;
+        try {
+          theme = localStorage.getItem(STORAGE_KEY);
+        } catch (_e) {}
+
+        if (theme !== 'light' && theme !== 'dark' && theme !== 'system') {
+          theme = 'system';
+        }
+
+        var resolved = theme;
+        if (theme === 'system') {
+          resolved = window.matchMedia('(prefers-color-scheme: dark)').matches
+            ? 'dark'
+            : 'light';
+        }
+
+        document.documentElement.classList.add(resolved);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>
