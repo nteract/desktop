@@ -80,7 +80,7 @@ Development:
   dev [notebook.ipynb]         Setup once, start dev daemon + notebook app
   dev --skip-build             Reuse existing build artifacts before launch
   dev --skip-install           Reuse existing pnpm install before launch
-  notebook [notebook.ipynb]    Start hot-reload dev server (Vite + Tauri)
+  notebook [notebook.ipynb]    Start hot-reload dev server (dev mode, safe)
   notebook --attach [notebook] Attach Tauri to existing Vite server
   vite                       Start Vite server standalone
   build                      Full debug build (frontend + rust)
@@ -172,8 +172,23 @@ fn cmd_dev(notebook: Option<&str>, skip_install: bool, skip_build: bool) {
 }
 
 fn cmd_notebook(notebook: Option<&str>, attach: bool) {
+    // Always use dev mode to prevent the Tauri app from auto-installing
+    // the dev binary as the system daemon sidecar — that would clobber
+    // any running nightly/release daemon and disconnect all open notebooks.
+    //
+    // In dev mode, ensure_daemon_via_sidecar() skips auto-install and
+    // tells the user to run `cargo xtask dev-daemon` instead.
+    if !dev_daemon_running() {
+        eprintln!("⚠️  No dev daemon detected for this worktree.");
+        eprintln!("   Start one first:  cargo xtask dev-daemon");
+        eprintln!("   Or use the full workflow:  cargo xtask dev");
+        eprintln!();
+        eprintln!("   Running without a dev daemon will connect to the system daemon,");
+        eprintln!("   which may disrupt other notebooks. Proceeding in dev mode anyway...");
+        eprintln!();
+    }
     ensure_pnpm_install();
-    let status = run_notebook_dev_app(notebook, attach, false);
+    let status = run_notebook_dev_app(notebook, attach, true);
     exit_on_failed_status("cargo tauri dev", status);
 }
 
@@ -452,6 +467,25 @@ fn build_with_bundle(bundle: &str) {
 /// 4. Restart the service
 #[allow(clippy::expect_used)] // xtask is a dev tool; panics with context are fine here
 fn cmd_install_daemon() {
+    // Guard: warn if running from a feature branch or worktree to prevent
+    // accidentally replacing the system daemon with a dev build.
+    if let Ok(branch) = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+    {
+        let branch = String::from_utf8_lossy(&branch.stdout).trim().to_string();
+        if branch != "main" && !branch.is_empty() {
+            eprintln!("⚠️  You are on branch '{branch}', not 'main'.");
+            eprintln!("   This will install your local build as the system daemon,");
+            eprintln!("   replacing the current nightly/release version.");
+            eprintln!();
+            eprintln!("   For development, use: cargo xtask dev-daemon");
+            eprintln!("   Press Ctrl+C within 5 seconds to abort...");
+            eprintln!();
+            std::thread::sleep(Duration::from_secs(5));
+        }
+    }
+
     println!("Building runtimed (release)...");
     run_cmd("cargo", &["build", "--release", "-p", "runtimed"]);
 
