@@ -472,15 +472,14 @@ pub(crate) async fn create_cell(
             .as_ref()
             .ok_or_else(|| to_py_err("Not connected"))?;
 
-        // Determine after_cell_id from index
-        let after_cell_id = index.and_then(|i| {
-            if i == 0 {
-                None
-            } else {
-                let cells = handle.get_cells();
-                cells.get(i.saturating_sub(1)).map(|c| c.id.clone())
-            }
-        });
+        // Determine after_cell_id from index.
+        // None → append at end; Some(0) → prepend; Some(i) → after cell i-1.
+        let cells = handle.get_cells();
+        let after_cell_id = match index {
+            None => cells.last().map(|c| c.id.clone()),
+            Some(0) => None,
+            Some(i) => cells.get(i.saturating_sub(1)).map(|c| c.id.clone()),
+        };
 
         handle
             .add_cell_with_source(&cell_id, cell_type, after_cell_id.as_deref(), source)

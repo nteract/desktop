@@ -349,7 +349,19 @@ class Session:
         source: str = "",
         cell_type: str = "code",
         index: int | None = None,
-    ) -> str: ...
+    ) -> str:
+        """Create a new cell.
+
+        Args:
+            source: Cell source text.
+            cell_type: One of "code", "markdown", "raw".
+            index: Position to insert. ``None`` appends at the end,
+                ``0`` prepends at the beginning.
+
+        Returns:
+            The new cell's ID.
+        """
+        ...
     def set_source(self, cell_id: str, source: str) -> None: ...
     def append_source(self, cell_id: str, text: str) -> None: ...
     def set_cell_type(self, cell_id: str, cell_type: str) -> None: ...
@@ -500,7 +512,19 @@ class AsyncSession:
         source: str = "",
         cell_type: str = "code",
         index: int | None = None,
-    ) -> Coroutine[Any, Any, str]: ...
+    ) -> Coroutine[Any, Any, str]:
+        """Create a new cell.
+
+        Args:
+            source: Cell source text.
+            cell_type: One of "code", "markdown", "raw".
+            index: Position to insert. ``None`` appends at the end,
+                ``0`` prepends at the beginning.
+
+        Returns:
+            The new cell's ID.
+        """
+        ...
     def set_source(self, cell_id: str, source: str) -> Coroutine[Any, Any, None]: ...
     def append_source(self, cell_id: str, text: str) -> Coroutine[Any, Any, None]: ...
     def set_cell_type(self, cell_id: str, cell_type: str) -> Coroutine[Any, Any, None]: ...
