@@ -1769,6 +1769,7 @@ async fn doctor_command(
         conflicting_services: Option<CheckResult>, // macOS only: stale/conflicting daemon services
         socket_file: CheckResult,
         daemon_state: CheckResult,
+        version_match: CheckResult,
         daemon_running: CheckResult,
         diagnosis: String,
         actions_taken: Vec<String>,
@@ -2044,7 +2045,74 @@ async fn doctor_command(
             detail: daemon_state_detail,
         };
 
-        // Check 5: Can we ping the daemon? Try regardless of daemon.json state
+        // Check 5: Version comparison
+        let version_match = {
+            let binary_path = runtimed::service::default_binary_path();
+            let installed_ver = if binary_exists {
+                get_binary_version(&binary_path)
+            } else {
+                None
+            };
+            // Only trust daemon_info version if the PID is confirmed running
+            let running_ver = if daemon_state_status == "ok" {
+                daemon_info.map(|d| d.version.clone())
+            } else {
+                None
+            };
+            let bundled_ver = find_bundled_runtimed().and_then(|p| get_binary_version(&p));
+
+            // Build detail string showing all available versions
+            let mut parts = Vec::new();
+            if let Some(ref v) = installed_ver {
+                parts.push(format!("installed={}", v));
+            }
+            if let Some(ref v) = running_ver {
+                parts.push(format!("running={}", v));
+            }
+            if let Some(ref v) = bundled_ver {
+                parts.push(format!("bundled={}", v));
+            }
+            let detail = parts.join(" ");
+
+            match (&installed_ver, &running_ver) {
+                (Some(inst), Some(run)) => {
+                    // Full version+commit comparison catches same-crate-version, different-commit
+                    let installed_match = inst == run;
+                    let bundled_match = bundled_ver
+                        .as_ref()
+                        .map(|b| b == run && b == inst)
+                        .unwrap_or(true);
+
+                    if installed_match && bundled_match {
+                        CheckResult {
+                            path: String::new(),
+                            status: "ok".to_string(),
+                            detail: Some(detail),
+                        }
+                    } else {
+                        CheckResult {
+                            path: String::new(),
+                            status: "mismatch".to_string(),
+                            detail: Some(detail),
+                        }
+                    }
+                }
+                _ => CheckResult {
+                    path: String::new(),
+                    status: "unknown".to_string(),
+                    detail: Some(match (installed_ver.is_some(), running_ver.is_some()) {
+                        (false, false) => {
+                            "installed binary not found, daemon info unavailable".to_string()
+                        }
+                        (true, false) => "daemon info unavailable".to_string(),
+                        (false, true) => "installed binary not found".to_string(),
+                        _ => unreachable!(),
+                    }),
+                },
+            }
+        };
+
+        // Check 6: Can we ping the daemon? Try regardless of daemon.json state
         let daemon_running_result = tokio::time::timeout(Duration::from_secs(2), client.ping())
             .await
             .map(|r| r.is_ok())
@@ -2091,8 +2159,12 @@ async fn doctor_command(
         #[allow(unused_variables)]
         let is_quarantined = false;
 
+        let version_mismatch = version_match.status == "mismatch";
+
         // Determine diagnosis
-        let diagnosis = if daemon_running_result {
+        let diagnosis = if daemon_running_result && version_mismatch {
+            "Daemon is running but version mismatch detected. Run 'runt daemon doctor --fix' or restart the app.".to_string()
+        } else if daemon_running_result {
             "Daemon is healthy and running.".to_string()
         } else if !binary_exists && !config_exists {
             format!(
@@ -2127,6 +2199,7 @@ async fn doctor_command(
             conflicting_services,
             socket_file,
             daemon_state,
+            version_match,
             daemon_running,
             diagnosis,
             actions_taken,
@@ -2280,17 +2353,49 @@ async fn doctor_command(
             }
         }
 
+        // Look up bundled binary once for version mismatch and repair scenarios
+        let bundled = find_bundled_runtimed();
+        let installed_ver = if binary_exists {
+            get_binary_version(&binary_path)
+        } else {
+            None
+        };
+        let bundled_ver = bundled.as_ref().and_then(|p| get_binary_version(p));
+
+        // Fix version mismatch: installed binary differs from bundled app binary
+        // Common when a dev binary is accidentally left in the nightly install path
+        if binary_exists && config_exists {
+            if let (Some(inst), Some(bund), Some(bundled_path)) =
+                (&installed_ver, &bundled_ver, &bundled)
+            {
+                if inst != bund {
+                    match manager.upgrade(bundled_path) {
+                        Ok(()) => {
+                            actions_taken.push(format!(
+                                "Upgraded daemon: {} -> {} (from {})",
+                                inst,
+                                bund,
+                                bundled_path.display()
+                            ));
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to upgrade daemon binary: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
         // Handle different repair scenarios
         if !binary_exists || !config_exists {
-            // Look for bundled binary in common app locations
-            if let Some(bundled) = find_bundled_runtimed() {
+            if let Some(bundled_path) = &bundled {
                 if !binary_exists && config_exists {
                     // Service config exists but binary missing - use upgrade to replace binary
-                    match manager.upgrade(&bundled) {
+                    match manager.upgrade(bundled_path) {
                         Ok(()) => {
                             actions_taken.push(format!(
                                 "Reinstalled daemon binary from {}",
-                                bundled.display()
+                                bundled_path.display()
                             ));
                         }
                         Err(e) => {
@@ -2299,10 +2404,10 @@ async fn doctor_command(
                     }
                 } else if !manager.is_installed() {
                     // Fresh install needed
-                    match manager.install(&bundled) {
+                    match manager.install(bundled_path) {
                         Ok(()) => {
                             actions_taken
-                                .push(format!("Installed daemon from {}", bundled.display()));
+                                .push(format!("Installed daemon from {}", bundled_path.display()));
                         }
                         Err(e) => {
                             eprintln!("Failed to install daemon: {}", e);
@@ -2433,6 +2538,17 @@ async fn doctor_command(
         );
         println!(
             "{:<20} {}{}",
+            "Version match:".bold(),
+            colored_status_icon(&report.version_match.status),
+            report
+                .version_match
+                .detail
+                .as_ref()
+                .map(|d| format!(" ({})", d).dimmed().to_string())
+                .unwrap_or_default()
+        );
+        println!(
+            "{:<20} {}{}",
             "Daemon running:".bold(),
             colored_yes_no(report.daemon_running.status == "ok"),
             report
@@ -2450,9 +2566,10 @@ async fn doctor_command(
             .as_ref()
             .map(|c| c.status == "not_loaded" || c.status == "error")
             .unwrap_or(false);
-        let diagnosis_colored = if report.daemon_running.status == "ok" {
+        let version_mismatch = report.version_match.status == "mismatch";
+        let diagnosis_colored = if report.daemon_running.status == "ok" && !version_mismatch {
             report.diagnosis.green()
-        } else if report.daemon_state.status == "stale" || launchd_has_issue {
+        } else if version_mismatch || report.daemon_state.status == "stale" || launchd_has_issue {
             report.diagnosis.yellow()
         } else {
             report.diagnosis.red()
@@ -2505,6 +2622,24 @@ fn is_process_running(pid: u32) -> bool {
             })
             .unwrap_or(false)
     }
+}
+
+/// Get the version from a runtimed binary by running `--version`.
+/// Returns e.g. `"2.0.0+a1b2c3d"` (crate version + commit hash).
+fn get_binary_version(path: &Path) -> Option<String> {
+    let output = std::process::Command::new(path)
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = String::from_utf8(output.stdout).ok()?;
+    let version = version.trim().trim_start_matches("runtimed ").to_string();
+    if version.is_empty() {
+        return None;
+    }
+    Some(version)
 }
 
 /// Find bundled runtimed binary in common app locations
@@ -2603,6 +2738,8 @@ fn colored_status_icon(status: &str) -> colored::ColoredString {
         "quarantined" => "[quarantined]".red(),
         "warning" => "[warning]".yellow(),
         "error" => "[error]".red(),
+        "mismatch" => "[mismatch]".red(),
+        "unknown" => "[unknown]".yellow(),
         "not_running" => "".normal(),
         _ => "[?]".yellow(),
     }
