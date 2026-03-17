@@ -1658,28 +1658,25 @@ async fn auto_launch_kernel(
         return;
     }
 
-    // notebook_path_opt is ONLY for saved notebooks (actual file paths).
-    // For untitled notebooks, kernel_manager will use default_notebooks_dir() for CWD.
+    // For saved notebooks, notebook_path_opt is the file path (kernel cwd = parent dir).
+    // For untitled notebooks, use working_dir as-is (kernel_manager handles is_dir()).
     let notebook_path = PathBuf::from(notebook_id);
     let notebook_path_opt = if notebook_path.exists() {
         Some(notebook_path.clone())
-    } else {
-        None
-    };
-
-    // For untitled notebooks, get working_dir separately for project file detection.
-    // This is NOT passed to kernel.launch() - that would cause .parent() to give wrong CWD.
-    let working_dir_for_detection = if is_untitled_notebook(notebook_id) {
+    } else if is_untitled_notebook(notebook_id) {
         let working_dir = room.working_dir.read().await;
         working_dir.clone().inspect(|p| {
             info!(
-                "[notebook-sync] Using working_dir for untitled notebook project detection: {}",
+                "[notebook-sync] Using working_dir for untitled notebook: {}",
                 p.display()
             );
         })
     } else {
         None
     };
+
+    // For project file detection, use the same path
+    let working_dir_for_detection = notebook_path_opt.clone();
 
     // Resolve metadata snapshot: try Automerge doc first, fall back to disk
     let metadata_snapshot = resolve_metadata_snapshot(room, notebook_path_opt.as_deref()).await;

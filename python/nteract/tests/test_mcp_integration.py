@@ -119,7 +119,7 @@ async def test_list_tools(mcp_client: ClientSession):
     tool_names = {t.name for t in tools.tools}
 
     # Core tools should be present
-    assert "list_notebooks" in tool_names
+    assert "list_active_notebooks" in tool_names
     assert "join_notebook" in tool_names
     assert "open_notebook" in tool_names
     assert "create_notebook" in tool_names

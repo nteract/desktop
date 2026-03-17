@@ -107,7 +107,7 @@ tools in addition to the standard nteract notebook tools:
 | `supervisor_start_vite` | Start the Vite dev server for hot-reload frontend development. Returns the port number. If already running, returns the existing port. |
 | `supervisor_stop` | Stop a managed process by name (e.g. `"vite"`). |
 
-The nteract tools (`list_notebooks`, `create_notebook`, `execute_cell`, etc.)
+The nteract tools (`list_active_notebooks`, `create_notebook`, `execute_cell`, etc.)
 are proxied through the supervisor. If tools start failing, call
 `supervisor_status` to diagnose, then `supervisor_restart` or
 `supervisor_rebuild` to recover.
