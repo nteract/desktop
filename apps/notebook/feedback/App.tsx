@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open } from "@tauri-apps/plugin-shell";
 import { useCallback, useEffect, useState } from "react";
 import { useSyncedTheme } from "@/hooks/useSyncedSettings";
-import { openUrl } from "~/lib/open-url";
 
 interface FeedbackSystemInfo {
   app_version: string;
@@ -23,7 +23,9 @@ export default function App() {
   const [sending, setSending] = useState(false);
 
   useEffect(() => {
-    invoke<FeedbackSystemInfo>("get_feedback_system_info").then(setSystemInfo);
+    invoke<FeedbackSystemInfo>("get_feedback_system_info")
+      .then(setSystemInfo)
+      .catch(() => {});
   }, []);
 
   const handleSubmit = useCallback(async () => {
@@ -46,20 +48,26 @@ export default function App() {
     const fullBody = message.trim() + sysBlock;
 
     // Truncate body if URL would exceed limit
+    const suffix = "\n\n[truncated]";
+    const encodedSuffix = encodeURIComponent(suffix);
     const overhead = GITHUB_ISSUES_URL.length + "?title=".length + title.length + "&body=".length + "&labels=feedback".length;
     const bodyBudget = MAX_URL_LENGTH - overhead;
     const encodedBody = encodeURIComponent(fullBody);
     const body =
       encodedBody.length > bodyBudget
         ? encodeURIComponent(
-            fullBody.slice(0, Math.floor(bodyBudget / 3)) + "\n\n[truncated]",
-          )
+            fullBody.slice(0, Math.floor((bodyBudget - encodedSuffix.length) / 3)),
+          ) + encodedSuffix
         : encodedBody;
 
     const url = `${GITHUB_ISSUES_URL}?title=${title}&body=${body}&labels=feedback`;
-    await openUrl(url);
 
-    getCurrentWindow().close();
+    try {
+      await open(url);
+      getCurrentWindow().close();
+    } catch {
+      setSending(false);
+    }
   }, [message, systemInfo, sending]);
 
   useEffect(() => {
@@ -86,6 +94,7 @@ export default function App() {
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             placeholder="Tell us about your experience, bugs you've found, or features you'd like to see..."
+            aria-label="Feedback message"
             className="w-full h-48 rounded-md border bg-muted/50 px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-sky-400 resize-y"
             autoFocus
           />
