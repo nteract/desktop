@@ -134,6 +134,34 @@ export class NotebookHandle {
      */
     get_cell(cell_id: string): JsCell | undefined;
     /**
+     * Get a cell's execution count.
+     */
+    get_cell_execution_count(cell_id: string): string | undefined;
+    /**
+     * Get ordered cell IDs (sorted by position, tiebreak on ID).
+     */
+    get_cell_ids(): string[];
+    /**
+     * Get a cell's metadata as a JSON object string.
+     */
+    get_cell_metadata_json(cell_id: string): string | undefined;
+    /**
+     * Get a cell's outputs as a JSON array string.
+     */
+    get_cell_outputs_json(cell_id: string): string | undefined;
+    /**
+     * Get a cell's fractional index position string.
+     */
+    get_cell_position(cell_id: string): string | undefined;
+    /**
+     * Get a cell's source text.
+     */
+    get_cell_source(cell_id: string): string | undefined;
+    /**
+     * Get a cell's type — "code", "markdown", or "raw".
+     */
+    get_cell_type(cell_id: string): string | undefined;
+    /**
      * Get all cells as an array of JsCell objects.
      */
     get_cells(): JsCell[];
@@ -370,6 +398,13 @@ export interface InitOutput {
     readonly notebookhandle_cell_count: (a: number) => number;
     readonly notebookhandle_get_cells: (a: number, b: number) => void;
     readonly notebookhandle_get_cells_json: (a: number, b: number) => void;
+    readonly notebookhandle_get_cell_ids: (a: number, b: number) => void;
+    readonly notebookhandle_get_cell_source: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_get_cell_type: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_get_cell_outputs_json: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_get_cell_execution_count: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_get_cell_metadata_json: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_get_cell_position: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_get_cell: (a: number, b: number, c: number) => number;
     readonly notebookhandle_add_cell: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly notebookhandle_add_cell_after: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
