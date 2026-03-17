@@ -234,6 +234,9 @@ jobs:
       - name: Run JS tests
         run: pnpm test:run
 
+      - name: Run JS benchmarks
+        run: pnpm vitest bench --run apps/notebook/src/lib/__tests__/
+
       - name: Build external binaries
         shell: bash
         run: |
