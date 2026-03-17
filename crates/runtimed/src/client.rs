@@ -249,7 +249,19 @@ impl PoolClient {
     }
 
     /// Send a request to the daemon and receive a response.
+    ///
+    /// The entire request (connect + send + recv) is bounded by a timeout
+    /// derived from `connect_timeout` so that a bound-but-not-yet-accepting
+    /// socket cannot stall the caller indefinitely.
     async fn send_request(&self, request: Request) -> Result<Response, ClientError> {
+        // Overall timeout: connect_timeout + 3s for the request/response exchange.
+        let overall_timeout = self.connect_timeout + Duration::from_secs(3);
+        tokio::time::timeout(overall_timeout, self.send_request_inner(request))
+            .await
+            .map_err(|_| ClientError::Timeout)?
+    }
+
+    async fn send_request_inner(&self, request: Request) -> Result<Response, ClientError> {
         #[cfg(unix)]
         let stream = {
             let connect_result =
