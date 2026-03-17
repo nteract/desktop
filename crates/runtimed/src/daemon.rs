@@ -458,6 +458,24 @@ impl Daemon {
             }
         };
 
+        // Bind the Unix socket early so clients can connect (and ping) while
+        // the rest of initialisation finishes.  The accept loop runs later.
+        #[cfg(unix)]
+        let unix_listener = {
+            let listener = UnixListener::bind(&self.config.socket_path)?;
+            // Restrict socket permissions to owner-only (0600) so other users
+            // cannot connect to the daemon.
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(
+                    &self.config.socket_path,
+                    std::fs::Permissions::from_mode(0o600),
+                )?;
+            }
+            info!("[runtimed] Listening on {:?}", self.config.socket_path);
+            listener
+        };
+
         // Write daemon info so clients can discover us
         if let Err(e) = self
             ._lock
@@ -501,7 +519,7 @@ impl Daemon {
         // Platform-specific accept loop
         #[cfg(unix)]
         {
-            self.run_unix_server().await?;
+            self.run_unix_server(unix_listener).await?;
         }
 
         #[cfg(windows)]
@@ -549,23 +567,12 @@ impl Daemon {
         Ok(())
     }
 
-    /// Unix-specific server loop using Unix domain sockets.
+    /// Unix-specific server loop using a pre-bound Unix domain socket.
     #[cfg(unix)]
-    async fn run_unix_server(self: &Arc<Self>) -> anyhow::Result<()> {
-        let listener = UnixListener::bind(&self.config.socket_path)?;
-
-        // Restrict socket permissions to owner-only (0600) so other users cannot
-        // connect to the daemon.
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(
-                &self.config.socket_path,
-                std::fs::Permissions::from_mode(0o600),
-            )?;
-        }
-
-        info!("[runtimed] Listening on {:?}", self.config.socket_path);
-
+    async fn run_unix_server(
+        self: &Arc<Self>,
+        listener: tokio::net::UnixListener,
+    ) -> anyhow::Result<()> {
         loop {
             tokio::select! {
                 accept_result = listener.accept() => {

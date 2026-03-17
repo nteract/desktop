@@ -806,7 +806,7 @@ where
     on_progress(DaemonProgress::Starting);
 
     let client = runtimed::client::PoolClient::default();
-    let max_attempts = 20;
+    let max_attempts = 40;
     for attempt in 1..=max_attempts {
         on_progress(DaemonProgress::WaitingForReady {
             attempt,

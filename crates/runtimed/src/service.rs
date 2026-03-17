@@ -274,6 +274,13 @@ impl ServiceManager {
         self.create_service_config()?;
         info!("[service] Updated service config");
 
+        // Use launchd_start() which always does bootout+bootstrap, not
+        // start() which uses ensure_loaded (a no-op if KeepAlive already
+        // restarted the old binary during the stop→copy window).
+        #[cfg(target_os = "macos")]
+        runt_workspace::launchd_start().map_err(ServiceError::StartFailed)?;
+
+        #[cfg(not(target_os = "macos"))]
         self.start()?;
 
         info!("[service] Upgrade completed successfully");
