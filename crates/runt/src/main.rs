@@ -1592,6 +1592,11 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
             doctor_command(&manager, &client, daemon_info.as_ref(), fix, json).await?;
         }
         DaemonCommands::Start => {
+            if runt_workspace::is_dev_mode() {
+                eprintln!("Dev daemons are not managed by the system service.");
+                eprintln!("Use 'cargo xtask dev-daemon' to start a dev daemon.");
+                std::process::exit(1);
+            }
             if !manager.is_installed() {
                 eprintln!("Service not installed. Run 'runt daemon install' first.");
                 std::process::exit(1);
@@ -1604,18 +1609,40 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
             println!("Service started.");
         }
         DaemonCommands::Stop => {
-            if !manager.is_installed() {
-                eprintln!("Service not installed.");
-                std::process::exit(1);
+            if runt_workspace::is_dev_mode() {
+                // Dev daemons are foreground processes, not launchd services.
+                // Stop via socket shutdown.
+                if daemon_info.is_some() {
+                    println!("Stopping dev daemon...");
+                    match client.shutdown().await {
+                        Ok(()) => println!("Dev daemon stopped."),
+                        Err(e) => {
+                            eprintln!("Failed to stop dev daemon: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    println!("No dev daemon running.");
+                }
+            } else {
+                if !manager.is_installed() {
+                    eprintln!("Service not installed.");
+                    std::process::exit(1);
+                }
+                println!(
+                    "Stopping {} service...",
+                    runt_workspace::daemon_service_basename()
+                );
+                manager.stop()?;
+                println!("Service stopped.");
             }
-            println!(
-                "Stopping {} service...",
-                runt_workspace::daemon_service_basename()
-            );
-            manager.stop()?;
-            println!("Service stopped.");
         }
         DaemonCommands::Restart => {
+            if runt_workspace::is_dev_mode() {
+                eprintln!("Dev daemons are not managed by the system service.");
+                eprintln!("Use 'cargo xtask dev-daemon' to restart a dev daemon.");
+                std::process::exit(1);
+            }
             if !manager.is_installed() {
                 eprintln!("Service not installed. Run 'runt daemon install' first.");
                 std::process::exit(1);
@@ -2839,7 +2866,7 @@ async fn list_worktree_daemons(json_output: bool) -> Result<()> {
 
     let worktrees_dir = dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("runt")
+        .join(runt_workspace::cache_namespace())
         .join("worktrees");
 
     #[derive(Serialize)]
@@ -2958,7 +2985,7 @@ async fn clean_worktree_command(
 
     let worktrees_dir = dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("runt")
+        .join(runt_workspace::cache_namespace())
         .join("worktrees");
 
     if !worktrees_dir.exists() {
