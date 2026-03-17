@@ -119,6 +119,8 @@ interface CodeCellProps {
   hiddenGroupCount?: number;
   /** Callback to expand all cells in a hidden group */
   onExpandHiddenGroup?: () => void;
+  /** Whether any cell in a hidden group is currently executing */
+  isGroupExecuting?: boolean;
 }
 
 export function CodeCell({
@@ -147,6 +149,7 @@ export function CodeCell({
   onToggleOutputsHidden,
   hiddenGroupCount,
   onExpandHiddenGroup,
+  isGroupExecuting,
 }: CodeCellProps) {
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
@@ -392,7 +395,10 @@ export function CodeCell({
                       onToggleOutputsHidden?.(false);
                     }
                   }}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
+                  className={cn(
+                    "inline-flex items-center gap-1 px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors",
+                    (isExecuting || isGroupExecuting) && "animate-pulse",
+                  )}
                   title={
                     hiddenGroupCount && hiddenGroupCount > 1
                       ? `Show ${hiddenGroupCount} cells`

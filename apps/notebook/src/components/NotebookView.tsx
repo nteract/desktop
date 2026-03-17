@@ -513,6 +513,11 @@ function NotebookViewContent({
                 : undefined
             }
             hiddenGroupCount={hiddenGroups.get(cell.id)?.count}
+            isGroupExecuting={
+              hiddenGroups
+                .get(cell.id)
+                ?.groupCellIds.some((id) => executingCellIds.has(id)) ?? false
+            }
             onExpandHiddenGroup={
               hiddenGroups.has(cell.id)
                 ? () => {
