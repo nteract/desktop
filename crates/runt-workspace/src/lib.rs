@@ -289,6 +289,15 @@ pub fn launchd_uid() -> Result<String, String> {
         .output()
         .map_err(|e| format!("Failed to run `id -u`: {e}"))?;
 
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "`id -u` failed (exit {}): {}",
+            output.status,
+            stderr.trim()
+        ));
+    }
+
     let uid = String::from_utf8(output.stdout)
         .map_err(|e| format!("Non-UTF8 output from `id -u`: {e}"))?;
 
@@ -353,29 +362,14 @@ pub fn launchd_start() -> Result<(), String> {
     let uid = launchd_uid()?;
     let domain = format!("gui/{uid}");
 
-    // Clear any stale registration (ignore "not found" errors)
-    launchd_stop().ok();
+    // Clear any stale registration — launchd_stop() already treats "not found"
+    // as Ok, so ? propagates only unexpected failures.
+    launchd_stop()?;
 
     // Brief pause for launchd to clean up
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    // Bootstrap fresh
-    let output = Command::new("launchctl")
-        .arg("bootstrap")
-        .arg(&domain)
-        .arg(&plist)
-        .output()
-        .map_err(|e| format!("Failed to run launchctl bootstrap: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // Error 37 means service is already loaded (which is fine)
-        if !stderr.contains("37") {
-            return Err(format!("launchctl bootstrap failed: {}", stderr.trim()));
-        }
-    }
-
-    Ok(())
+    launchd_bootstrap(&plist, &domain)
 }
 
 /// Check whether the daemon's launchd service is currently loaded.
@@ -386,7 +380,22 @@ pub fn launchd_is_loaded() -> Result<bool, String> {
         .args(["list", label])
         .output()
         .map_err(|e| format!("Failed to run launchctl list: {e}"))?;
-    Ok(output.status.success())
+
+    if output.status.success() {
+        return Ok(true);
+    }
+
+    // Only treat "not found" as "not loaded"; surface unexpected errors
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("Could not find")
+        || stderr.contains("No such")
+        || stderr.contains("36")
+        || stderr.contains("113")
+    {
+        return Ok(false);
+    }
+
+    Err(format!("launchctl list failed: {}", stderr.trim()))
 }
 
 /// Ensure the daemon's launchd service is loaded, without restarting it
@@ -394,12 +403,12 @@ pub fn launchd_is_loaded() -> Result<bool, String> {
 ///
 /// Unlike `launchd_start()` which always does bootout+bootstrap (a restart),
 /// this only bootstraps if the service is not currently loaded.
+/// Returns `true` if it actually bootstrapped, `false` if already loaded.
 #[cfg(target_os = "macos")]
-pub fn launchd_ensure_loaded() -> Result<(), String> {
+pub fn launchd_ensure_loaded() -> Result<bool, String> {
     if launchd_is_loaded()? {
-        return Ok(());
+        return Ok(false);
     }
-    // Not loaded — bootstrap it
     let plist = launchd_plist_path()?;
     if !plist.exists() {
         return Err(format!("launchd plist not found at {}", plist.display()));
@@ -407,15 +416,23 @@ pub fn launchd_ensure_loaded() -> Result<(), String> {
     let uid = launchd_uid()?;
     let domain = format!("gui/{uid}");
 
+    launchd_bootstrap(&plist, &domain)?;
+    Ok(true)
+}
+
+/// Run `launchctl bootstrap` for the given plist in the given domain.
+#[cfg(target_os = "macos")]
+fn launchd_bootstrap(plist: &Path, domain: &str) -> Result<(), String> {
     let output = Command::new("launchctl")
         .arg("bootstrap")
-        .arg(&domain)
-        .arg(&plist)
+        .arg(domain)
+        .arg(plist)
         .output()
         .map_err(|e| format!("Failed to run launchctl bootstrap: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        // Error 37 means service is already loaded (which is fine)
         if !stderr.contains("37") {
             return Err(format!("launchctl bootstrap failed: {}", stderr.trim()));
         }
