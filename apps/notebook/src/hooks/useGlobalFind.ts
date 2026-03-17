@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import type { NotebookCell } from "../types";
+import { getNotebookCellsSnapshot } from "../lib/notebook-cells";
 
 /** A single search match location. */
 export interface FindMatch {
@@ -70,7 +70,7 @@ function findInText(
  * Output matches are reported asynchronously by OutputArea components
  * (via iframe postMessage search_results or in-DOM highlight counts).
  */
-export function useGlobalFind(cells: NotebookCell[]): GlobalFindState {
+export function useGlobalFind(cellIds: string[]): GlobalFindState {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQueryState] = useState("");
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
@@ -97,9 +97,15 @@ export function useGlobalFind(cells: NotebookCell[]): GlobalFindState {
     [],
   );
 
-  // Compute all matches: source matches directly, output matches from reported counts
+  // Compute all matches: source matches directly, output matches from reported counts.
+  // Reads cells imperatively — recomputes on query change and structural changes
+  // (cellIds), not on every source keystroke.
   const matches = useMemo(() => {
     if (!query) return [];
+    // Depend on cellIds to recompute when cells are added/removed.
+    // We read cells imperatively for the actual data.
+    void cellIds;
+    const cells = getNotebookCellsSnapshot();
     const allMatches: FindMatch[] = [];
 
     for (let i = 0; i < cells.length; i++) {
@@ -131,7 +137,7 @@ export function useGlobalFind(cells: NotebookCell[]): GlobalFindState {
     }
 
     return allMatches;
-  }, [query, cells, outputMatchCounts]);
+  }, [query, cellIds, outputMatchCounts]);
 
   const currentMatch =
     matches.length > 0 && currentMatchIndex >= 0

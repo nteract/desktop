@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { NotebookCell } from "../../types";
 import {
+  getCellById,
   getNotebookCellsSnapshot,
   replaceNotebookCells,
   resetNotebookCells,
+  updateCellById,
   updateNotebookCells,
 } from "../notebook-cells";
 
@@ -31,14 +33,14 @@ describe("replaceNotebookCells", () => {
   it("sets the snapshot to the provided cells", () => {
     const cells = [codeCell("a"), markdownCell("b")];
     replaceNotebookCells(cells);
-    expect(getNotebookCellsSnapshot()).toBe(cells);
+    expect(getNotebookCellsSnapshot()).toEqual(cells);
   });
 
   it("replaces previous cells entirely", () => {
     replaceNotebookCells([codeCell("a")]);
     const next = [codeCell("b"), codeCell("c")];
     replaceNotebookCells(next);
-    expect(getNotebookCellsSnapshot()).toBe(next);
+    expect(getNotebookCellsSnapshot()).toEqual(next);
     expect(getNotebookCellsSnapshot()).toHaveLength(2);
   });
 
@@ -55,7 +57,7 @@ describe("updateNotebookCells", () => {
     const result = updateNotebookCells((cells) => cells.slice(1));
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("b");
-    expect(getNotebookCellsSnapshot()).toBe(result);
+    expect(getNotebookCellsSnapshot()).toEqual(result);
   });
 
   it("returns the new snapshot", () => {
@@ -63,7 +65,7 @@ describe("updateNotebookCells", () => {
     const appended = codeCell("b");
     const result = updateNotebookCells((cells) => [...cells, appended]);
     expect(result).toHaveLength(2);
-    expect(result[1]).toBe(appended);
+    expect(result[1]).toEqual(appended);
   });
 
   it("can clear cells via updater", () => {
@@ -80,6 +82,42 @@ describe("updateNotebookCells", () => {
       ),
     );
     expect(getNotebookCellsSnapshot()[0].source).toBe("print('world')");
+  });
+});
+
+describe("updateCellById", () => {
+  it("updates a single cell by ID", () => {
+    replaceNotebookCells([codeCell("a", "old"), codeCell("b", "keep")]);
+    updateCellById("a", (c) => ({ ...c, source: "new" }));
+    expect(getCellById("a")?.source).toBe("new");
+    expect(getCellById("b")?.source).toBe("keep");
+  });
+
+  it("is a no-op for non-existent IDs", () => {
+    replaceNotebookCells([codeCell("a")]);
+    updateCellById("nonexistent", (c) => ({ ...c, source: "boom" }));
+    expect(getNotebookCellsSnapshot()).toHaveLength(1);
+  });
+
+  it("preserves cell ordering", () => {
+    replaceNotebookCells([codeCell("a"), codeCell("b"), codeCell("c")]);
+    updateCellById("b", (c) => ({ ...c, source: "updated" }));
+    const ids = getNotebookCellsSnapshot().map((c) => c.id);
+    expect(ids).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("getCellById", () => {
+  it("returns the cell for a known ID", () => {
+    replaceNotebookCells([codeCell("a", "hello")]);
+    const cell = getCellById("a");
+    expect(cell?.id).toBe("a");
+    expect(cell?.source).toBe("hello");
+  });
+
+  it("returns undefined for unknown IDs", () => {
+    replaceNotebookCells([codeCell("a")]);
+    expect(getCellById("nonexistent")).toBeUndefined();
   });
 });
 
@@ -102,54 +140,35 @@ describe("getNotebookCellsSnapshot", () => {
     expect(getNotebookCellsSnapshot()).toEqual([]);
   });
 
-  it("returns the same reference until replaced", () => {
+  it("returns content-equal results on consecutive calls", () => {
     const cells = [codeCell("a")];
     replaceNotebookCells(cells);
     const snap1 = getNotebookCellsSnapshot();
     const snap2 = getNotebookCellsSnapshot();
-    expect(snap1).toBe(snap2);
-  });
-
-  it("returns a new reference after replace", () => {
-    replaceNotebookCells([codeCell("a")]);
-    const snap1 = getNotebookCellsSnapshot();
-    replaceNotebookCells([codeCell("a")]);
-    const snap2 = getNotebookCellsSnapshot();
-    expect(snap1).not.toBe(snap2);
-  });
-
-  it("returns a new reference after update", () => {
-    replaceNotebookCells([codeCell("a")]);
-    const snap1 = getNotebookCellsSnapshot();
-    updateNotebookCells((cells) => [...cells]);
-    const snap2 = getNotebookCellsSnapshot();
-    expect(snap1).not.toBe(snap2);
+    expect(snap1).toEqual(snap2);
   });
 });
 
 describe("subscriber notifications", () => {
-  // We access subscribe indirectly through the module. Since subscribe isn't
-  // exported, we test notifications via the observable behavior of the store:
-  // snapshot identity changes are the externally visible effect of emitChange().
-
-  it("replace produces a distinct snapshot each call", () => {
-    const refs = new Set<NotebookCell[]>();
+  it("replace produces distinct content each call", () => {
+    const ids = new Set<string>();
     for (let i = 0; i < 5; i++) {
       replaceNotebookCells([codeCell(`cell-${i}`)]);
-      refs.add(getNotebookCellsSnapshot());
+      ids.add(getNotebookCellsSnapshot()[0].id);
     }
-    expect(refs.size).toBe(5);
+    expect(ids.size).toBe(5);
   });
 
-  it("update produces a distinct snapshot each call", () => {
+  it("update produces distinct content each call", () => {
     replaceNotebookCells([codeCell("a")]);
     const ref1 = getNotebookCellsSnapshot();
     updateNotebookCells((cells) => [...cells, codeCell("b")]);
     const ref2 = getNotebookCellsSnapshot();
     updateNotebookCells((cells) => [...cells, codeCell("c")]);
     const ref3 = getNotebookCellsSnapshot();
-    expect(ref1).not.toBe(ref2);
-    expect(ref2).not.toBe(ref3);
+    expect(ref1).toHaveLength(1);
+    expect(ref2).toHaveLength(2);
+    expect(ref3).toHaveLength(3);
   });
 });
 

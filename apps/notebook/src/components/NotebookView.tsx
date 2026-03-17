@@ -17,7 +17,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS as DndCSS } from "@dnd-kit/utilities";
 import { Plus, RotateCcw, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
@@ -29,6 +29,11 @@ import {
 } from "../hooks/useEditorRegistry";
 import type { FindMatch } from "../hooks/useGlobalFind";
 import { logger } from "../lib/logger";
+import {
+  getNotebookCellsSnapshot,
+  useCell,
+  useMaterializeVersion,
+} from "../lib/notebook-cells";
 import type { CodeCell as CodeCellType, NotebookCell } from "../types";
 import { CellSkeleton } from "./CellSkeleton";
 import { CodeCell } from "./CodeCell";
@@ -36,7 +41,7 @@ import { MarkdownCell } from "./MarkdownCell";
 import { RawCell } from "./RawCell";
 
 interface NotebookViewProps {
-  cells: NotebookCell[];
+  cellIds: string[];
   isLoading?: boolean;
   focusedCellId: string | null;
   executingCellIds: Set<string>;
@@ -149,7 +154,8 @@ function CellErrorFallback({
 }
 
 /** Index card preview shown when dragging a cell */
-function CellDragPreview({ cell }: { cell: NotebookCell | undefined }) {
+function CellDragPreview({ cellId }: { cellId: string }) {
+  const cell = useCell(cellId);
   if (!cell) return null;
 
   // Get first 3 lines of source, truncated
@@ -210,16 +216,43 @@ function isCellFullyHidden(cell: NotebookCell): boolean {
   return jupyter?.source_hidden === true && jupyter?.outputs_hidden === true;
 }
 
+/**
+ * Per-cell subscriber component. Uses useCell(id) so it only re-renders
+ * when this specific cell changes — not when other cells change.
+ */
+const CellRenderer = memo(function CellRenderer({
+  cellId,
+  index,
+  renderCell,
+  dragHandleProps,
+  isDragging,
+}: {
+  cellId: string;
+  index: number;
+  renderCell: (
+    cell: NotebookCell,
+    index: number,
+    dragHandleProps?: Record<string, unknown>,
+    isDragging?: boolean,
+  ) => React.ReactNode;
+  dragHandleProps?: Record<string, unknown>;
+  isDragging?: boolean;
+}) {
+  const cell = useCell(cellId);
+  if (!cell) return null;
+  return <>{renderCell(cell, index, dragHandleProps, isDragging)}</>;
+});
+
 /** Wrapper component for sortable cells */
 function SortableCell({
-  cell,
+  cellId,
   index,
   renderCell,
   onAddCell,
   onDeleteCell,
   isHiddenInGroup,
 }: {
-  cell: NotebookCell;
+  cellId: string;
   index: number;
   renderCell: (
     cell: NotebookCell,
@@ -238,7 +271,7 @@ function SortableCell({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: cell.id });
+  } = useSortable({ id: cellId });
 
   const style = {
     transform: DndCSS.Transform.toString(transform),
@@ -264,19 +297,25 @@ function SortableCell({
           <CellErrorFallback
             error={error}
             onRetry={resetErrorBoundary}
-            onDelete={() => onDeleteCell(cell.id)}
+            onDelete={() => onDeleteCell(cellId)}
           />
         )}
       >
-        {renderCell(cell, index, dragHandleProps, isDragging)}
+        <CellRenderer
+          cellId={cellId}
+          index={index}
+          renderCell={renderCell}
+          dragHandleProps={dragHandleProps}
+          isDragging={isDragging}
+        />
       </ErrorBoundary>
-      <AddCellButtons afterCellId={cell.id} onAdd={onAddCell} />
+      <AddCellButtons afterCellId={cellId} onAdd={onAddCell} />
     </div>
   );
 }
 
 function NotebookViewContent({
-  cells,
+  cellIds,
   isLoading = false,
   focusedCellId,
   executingCellIds,
@@ -299,9 +338,11 @@ function NotebookViewContent({
   const containerRef = useRef<HTMLDivElement>(null);
   const { focusCell } = useEditorRegistry();
 
+  // Track full materializations for cross-cell derived state
+  const materializeVersion = useMaterializeVersion();
+
   // Drag-and-drop state
   const [activeId, setActiveId] = useState<string | null>(null);
-  const activeCell = activeId ? cells.find((c) => c.id === activeId) : null;
 
   // Configure dnd-kit sensors
   const sensors = useSensors(
@@ -323,8 +364,8 @@ function NotebookViewContent({
       setActiveId(null);
 
       if (over && active.id !== over.id) {
-        const oldIndex = cells.findIndex((c) => c.id === active.id);
-        const newIndex = cells.findIndex((c) => c.id === over.id);
+        const oldIndex = cellIds.indexOf(active.id as string);
+        const newIndex = cellIds.indexOf(over.id as string);
 
         // Calculate afterCellId: we want to place the cell after the cell
         // that will be above it in the new position
@@ -334,24 +375,28 @@ function NotebookViewContent({
           afterCellId = null;
         } else if (newIndex > oldIndex) {
           // Moving down: place after the cell at newIndex
-          afterCellId = cells[newIndex].id;
+          afterCellId = cellIds[newIndex];
         } else {
           // Moving up: place after the cell at newIndex - 1
-          afterCellId = newIndex > 0 ? cells[newIndex - 1].id : null;
+          afterCellId = newIndex > 0 ? cellIds[newIndex - 1] : null;
         }
 
         onMoveCell(active.id as string, afterCellId);
       }
     },
-    [cells, onMoveCell],
+    [cellIds, onMoveCell],
   );
-
-  // Memoize cell IDs array
-  const cellIds = useMemo(() => cells.map((c) => c.id), [cells]);
 
   // Compute consecutive groups of fully-hidden cells
   // Maps cell ID → { count, isFirst, groupCellIds }
+  // Recomputes on structural changes and full materializations (metadata changes)
   const hiddenGroups = useMemo(() => {
+    // Depend on cellIds (structural changes) and materializeVersion
+    // (metadata changes like source_hidden) to recompute.
+    // We read cells imperatively since this is cross-cell derived state.
+    void cellIds;
+    void materializeVersion;
+    const cells = getNotebookCellsSnapshot();
     const groups = new Map<
       string,
       { count: number; isFirst: boolean; groupCellIds: string[] }
@@ -376,14 +421,14 @@ function NotebookViewContent({
       }
     }
     return groups;
-  }, [cells]);
+  }, [cellIds, materializeVersion]);
 
   // Compute the cell ID that precedes the focused cell (keeps its output bright)
   const previousCellId = useMemo(() => {
     if (!focusedCellId) return null;
-    const focusedIndex = cells.findIndex((c) => c.id === focusedCellId);
-    return focusedIndex > 0 ? cells[focusedIndex - 1].id : null;
-  }, [focusedCellId, cells]);
+    const focusedIndex = cellIds.indexOf(focusedCellId);
+    return focusedIndex > 0 ? cellIds[focusedIndex - 1] : null;
+  }, [focusedCellId, cellIds]);
 
   // Prevent horizontal scroll drift (can happen during text selection)
   useEffect(() => {
@@ -515,7 +560,7 @@ function NotebookViewContent({
             onFocusNext={onFocusNext}
             onInsertCellAfter={() => onAddCell("code", cell.id)}
             onClearPagePayload={() => onClearPagePayload(cell.id)}
-            isLastCell={index === cells.length - 1}
+            isLastCell={index === cellIds.length - 1}
             dragHandleProps={dragHandleProps}
             isDragging={isDragging}
             onToggleSourceHidden={
@@ -567,7 +612,7 @@ function NotebookViewContent({
             onFocusPrevious={onFocusPrevious}
             onFocusNext={onFocusNext}
             onInsertCellAfter={() => onAddCell("markdown", cell.id)}
-            isLastCell={index === cells.length - 1}
+            isLastCell={index === cellIds.length - 1}
             dragHandleProps={dragHandleProps}
             isDragging={isDragging}
           />
@@ -588,7 +633,7 @@ function NotebookViewContent({
           onFocusPrevious={onFocusPrevious}
           onFocusNext={onFocusNext}
           onInsertCellAfter={() => onAddCell("code", cell.id)}
-          isLastCell={index === cells.length - 1}
+          isLastCell={index === cellIds.length - 1}
           dragHandleProps={dragHandleProps}
           isDragging={isDragging}
         />
@@ -603,7 +648,6 @@ function NotebookViewContent({
       searchQuery,
       searchCurrentMatch,
       cellIds,
-      cells.length,
       onFocusCell,
       onUpdateCellSource,
       onExecuteCell,
@@ -624,10 +668,10 @@ function NotebookViewContent({
       ref={containerRef}
       className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain py-4 pl-8 pr-4"
       style={{ contain: "paint" }}
-      data-notebook-synced={!isLoading && cells.length > 0}
-      data-cell-count={cells.length}
+      data-notebook-synced={!isLoading && cellIds.length > 0}
+      data-cell-count={cellIds.length}
     >
-      {cells.length === 0 ? (
+      {cellIds.length === 0 ? (
         isLoading ? (
           <CellSkeleton />
         ) : (
@@ -668,12 +712,12 @@ function NotebookViewContent({
             items={cellIds}
             strategy={verticalListSortingStrategy}
           >
-            {cells.map((cell, index) => {
-              const group = hiddenGroups.get(cell.id);
+            {cellIds.map((cellId, index) => {
+              const group = hiddenGroups.get(cellId);
               return (
                 <SortableCell
-                  key={cell.id}
-                  cell={cell}
+                  key={cellId}
+                  cellId={cellId}
                   index={index}
                   renderCell={renderCell}
                   onAddCell={onAddCell}
@@ -684,7 +728,7 @@ function NotebookViewContent({
             })}
           </SortableContext>
           <DragOverlay>
-            {activeCell && <CellDragPreview cell={activeCell} />}
+            {activeId && <CellDragPreview cellId={activeId} />}
           </DragOverlay>
         </DndContext>
       )}

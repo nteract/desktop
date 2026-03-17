@@ -16,8 +16,9 @@ import {
   getNotebookCellsSnapshot,
   replaceNotebookCells,
   resetNotebookCells,
+  updateCellById,
   updateNotebookCells,
-  useNotebookCells,
+  useCellIds,
 } from "../lib/notebook-cells";
 import {
   emitBroadcast,
@@ -53,7 +54,7 @@ const wasmReady: Promise<void> = init().then(() => {
  * NEVER creates Automerge objects via the JS library.
  */
 export function useAutomergeNotebook() {
-  const cells = useNotebookCells();
+  const cellIds = useCellIds();
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -134,6 +135,26 @@ export function useAutomergeNotebook() {
     }
   }, []);
 
+  // Debounced sync for source updates — batches rapid keystrokes into a
+  // single IPC call. Structural mutations (add/delete/move cell) still use
+  // syncToRelay directly for immediate consistency.
+  const pendingSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+
+  const debouncedSyncToRelay = useCallback(
+    (handle: NotebookHandle) => {
+      if (pendingSyncTimerRef.current) {
+        clearTimeout(pendingSyncTimerRef.current);
+      }
+      pendingSyncTimerRef.current = setTimeout(() => {
+        pendingSyncTimerRef.current = null;
+        syncToRelay(handle);
+      }, 80);
+    },
+    [syncToRelay],
+  );
+
   /**
    * Synchronously re-read cells from WASM after a local mutation.
    * Uses cache-only output resolution (no blob fetches).
@@ -147,6 +168,30 @@ export function useAutomergeNotebook() {
     );
     replaceNotebookCells(newCells);
   }, []);
+
+  // Coalescing timer for incoming sync frames — when an agent is active,
+  // frames arrive rapidly. Instead of materializing on every frame, batch
+  // into a single materialization per ~32ms window.
+  const pendingMaterializeTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
+  const materializeNeededRef = useRef(false);
+
+  const scheduleMaterialize = useCallback(
+    (handle: NotebookHandle) => {
+      materializeNeededRef.current = true;
+      if (pendingMaterializeTimerRef.current) return;
+      pendingMaterializeTimerRef.current = setTimeout(async () => {
+        pendingMaterializeTimerRef.current = null;
+        if (materializeNeededRef.current) {
+          materializeNeededRef.current = false;
+          await materializeCells(handle);
+          notifyMetadataChanged();
+        }
+      }, 32);
+    },
+    [materializeCells],
+  );
 
   // ── Bootstrap ──────────────────────────────────────────────────────
 
@@ -275,10 +320,13 @@ export function useAutomergeNotebook() {
                 if (awaitingInitialSyncRef.current) {
                   awaitingInitialSyncRef.current = false;
                   setIsLoading(false);
-                }
-                if (frameEvent.changed) {
-                  await materializeCells(handle);
-                  notifyMetadataChanged();
+                  // Initial sync: materialize immediately (no throttle)
+                  if (frameEvent.changed) {
+                    await materializeCells(handle);
+                    notifyMetadataChanged();
+                  }
+                } else if (frameEvent.changed) {
+                  scheduleMaterialize(handle);
                 }
                 if (
                   frameEvent.attributions &&
@@ -348,13 +396,30 @@ export function useAutomergeNotebook() {
       unlistenFileOpened.then((fn) => fn()).catch(() => {});
       unlistenFrame.then((fn) => fn()).catch(() => {});
       unlistenClearOutputs.then((fn) => fn()).catch(() => {});
+      // Flush any pending debounced sync before teardown
+      if (pendingSyncTimerRef.current) {
+        clearTimeout(pendingSyncTimerRef.current);
+        pendingSyncTimerRef.current = null;
+        if (handleRef.current) syncToRelay(handleRef.current);
+      }
+      // Cancel pending materialize timer
+      if (pendingMaterializeTimerRef.current) {
+        clearTimeout(pendingMaterializeTimerRef.current);
+        pendingMaterializeTimerRef.current = null;
+      }
       // Free WASM handle.
       resetNotebookCells();
       setNotebookHandle(null);
       handleRef.current?.free();
       handleRef.current = null;
     };
-  }, [bootstrap, materializeCells, refreshBlobPort]);
+  }, [
+    bootstrap,
+    materializeCells,
+    refreshBlobPort,
+    scheduleMaterialize,
+    syncToRelay,
+  ]);
 
   // ── Cell mutations ─────────────────────────────────────────────────
 
@@ -367,27 +432,21 @@ export function useAutomergeNotebook() {
       const updated = handle.update_source(cellId, source);
       if (!updated) return;
 
-      // Fast-path: update only the affected cell in the store (avoids full
-      // rematerialization on every keystroke, which would cause typing lag)
-      updateNotebookCells((prev) =>
-        prev.map((c) => (c.id === cellId ? { ...c, source } : c)),
-      );
+      // Fast-path: update only the affected cell in the store — triggers only
+      // that cell's subscribers, not all cells.
+      updateCellById(cellId, (c) => ({ ...c, source }));
 
-      // Sync to daemon (fire-and-forget)
-      syncToRelay(handle);
+      // Debounced sync to daemon — batches rapid keystrokes
+      debouncedSyncToRelay(handle);
 
       setDirty(true);
     },
-    [syncToRelay],
+    [debouncedSyncToRelay],
   );
 
   const clearCellOutputs = useCallback((cellId: string) => {
-    updateNotebookCells((prev) =>
-      prev.map((c) =>
-        c.id === cellId && c.cell_type === "code"
-          ? { ...c, outputs: [], execution_count: null }
-          : c,
-      ),
+    updateCellById(cellId, (c) =>
+      c.cell_type === "code" ? { ...c, outputs: [], execution_count: null } : c,
     );
   }, []);
 
@@ -591,12 +650,8 @@ export function useAutomergeNotebook() {
   );
 
   const setExecutionCount = useCallback((cellId: string, count: number) => {
-    updateNotebookCells((prev) =>
-      prev.map((c) =>
-        c.id === cellId && c.cell_type === "code"
-          ? { ...c, execution_count: count }
-          : c,
-      ),
+    updateCellById(cellId, (c) =>
+      c.cell_type === "code" ? { ...c, execution_count: count } : c,
     );
   }, []);
 
@@ -645,7 +700,7 @@ export function useAutomergeNotebook() {
   // ── Public interface ───────────────────────────────────────────────
 
   return {
-    cells,
+    cellIds,
     isLoading,
     focusedCellId,
     setFocusedCellId,
