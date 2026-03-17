@@ -871,7 +871,7 @@ async fn begin_upgrade(
     registry.prune_stale_entries(&app);
 
     // Save session for restore after relaunch
-    session::save_session(registry.inner())?;
+    session::save_session(registry.inner(), &app)?;
     log::info!("[upgrade] Session saved");
 
     // Create dedicated upgrade window
@@ -3379,6 +3379,108 @@ fn clear_all_notebook_sync_handles(registry: &WindowNotebookRegistry, reason: &'
     clear_notebook_sync_handles(handles, reason);
 }
 
+/// Migrate stale "main" window geometry to the new deterministic label.
+///
+/// Before commit 97b0422f, the first notebook window used a hardcoded "main" label.
+/// The window-state plugin now denylists "main", orphaning its saved geometry.
+/// This renames the "main" entry in `.window-state.json` so the new hash-based
+/// label (`notebook-{hash}`) inherits the old geometry on first launch after upgrade.
+fn migrate_main_window_state(session: &session::SessionState) {
+    // Find the session entry that was previously the "main" window.
+    // The old code always used "main" for the first window, so look for
+    // entries with label "main" or (more commonly after the fix was applied)
+    // compute what label the first entry would get.
+    let main_entry = session.windows.iter().find(|w| w.label == "main");
+    let Some(entry) = main_entry else {
+        return;
+    };
+
+    let new_label = session::window_label_for_session(entry);
+
+    // Compute the window-state plugin's config directory.
+    // On macOS: ~/Library/Application Support/org.nteract.desktop/
+    let Some(config_base) = dirs::config_dir() else {
+        return;
+    };
+    let state_path = config_base
+        .join("org.nteract.desktop")
+        .join(".window-state.json");
+
+    if !state_path.exists() {
+        return;
+    }
+
+    let Ok(contents) = std::fs::read_to_string(&state_path) else {
+        return;
+    };
+    let Ok(mut map) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&contents)
+    else {
+        return;
+    };
+
+    // Only migrate if "main" exists and the new label doesn't already have geometry
+    if let Some(main_state) = map.remove("main") {
+        if !map.contains_key(&new_label) {
+            log::info!(
+                "[window-state] Migrating geometry from 'main' to '{}'",
+                new_label
+            );
+            map.insert(new_label, main_state);
+        } else {
+            log::info!(
+                "[window-state] Removed stale 'main' entry (new label already has geometry)"
+            );
+        }
+
+        if let Ok(json) = serde_json::to_string_pretty(&serde_json::Value::Object(map)) {
+            let _ = std::fs::write(&state_path, json);
+        }
+    }
+}
+
+/// Correct window size after the window-state plugin restores physical pixels
+/// from a monitor with a different scale factor.
+///
+/// The plugin stores raw physical pixels. A window saved at 1100x750 physical
+/// on a 1x external monitor would appear as 550x375 logical on a 2x Retina
+/// display. This function adjusts the physical size to preserve the logical size.
+fn correct_window_scale(window: &tauri::WebviewWindow, saved_scale_factor: Option<f64>) {
+    let Some(saved_scale) = saved_scale_factor else {
+        return;
+    };
+    let Ok(current_scale) = window.scale_factor() else {
+        return;
+    };
+
+    let ratio = current_scale / saved_scale;
+    // Only correct if the difference is significant (> 5%)
+    if (ratio - 1.0).abs() < 0.05 {
+        return;
+    }
+
+    let Ok(current_size) = window.inner_size() else {
+        return;
+    };
+
+    // The plugin restored physical pixels from the old monitor.
+    // To preserve logical size: new_physical = old_physical * (new_scale / old_scale)
+    let corrected_width = (current_size.width as f64 * ratio) as u32;
+    let corrected_height = (current_size.height as f64 * ratio) as u32;
+
+    log::info!(
+        "[window] Scale correction for {}: {}x{} -> {}x{} (scale {:.1} -> {:.1})",
+        window.label(),
+        current_size.width,
+        current_size.height,
+        corrected_width,
+        corrected_height,
+        saved_scale,
+        current_scale,
+    );
+
+    let _ = window.set_size(tauri::PhysicalSize::new(corrected_width, corrected_height));
+}
+
 /// Run the notebook Tauri app.
 ///
 /// If `notebook_path` is Some, opens that file. If None, creates a new empty notebook.
@@ -3429,6 +3531,7 @@ pub fn run(
         label: String,
         title: String,
         mode: OpenMode,
+        saved_scale_factor: Option<f64>,
     }
 
     let startup_windows: Vec<StartupWindow> = if needs_onboarding {
@@ -3446,6 +3549,7 @@ pub fn run(
             label: format!("notebook-{}", &hash[..8]),
             title,
             mode: OpenMode::Open { path: path.clone() },
+            saved_scale_factor: None,
         }]
     } else if let Some(ref session) = restored_session {
         // Session restore: recreate all windows from the saved session
@@ -3480,7 +3584,12 @@ pub fn run(
                         return None;
                     }
                 };
-                Some(StartupWindow { label, title, mode })
+                Some(StartupWindow {
+                    label,
+                    title,
+                    mode,
+                    saved_scale_factor: ws.scale_factor,
+                })
             })
             .collect()
     } else {
@@ -3493,6 +3602,7 @@ pub fn run(
                 working_dir: working_dir.clone(),
                 notebook_id: None,
             },
+            saved_scale_factor: None,
         }]
     };
 
@@ -3506,6 +3616,7 @@ pub fn run(
                 working_dir: working_dir.clone(),
                 notebook_id: None,
             },
+            saved_scale_factor: None,
         }]
     } else {
         startup_windows
@@ -3564,6 +3675,14 @@ pub fn run(
     // Clone for auto-launch coordination
     let daemon_sync_complete_for_autolaunch = daemon_sync_complete.clone();
     let daemon_sync_success_for_autolaunch = daemon_sync_success.clone();
+
+    // Migrate stale "main" window geometry before the window-state plugin loads.
+    // Pre-97b0422f versions used a hardcoded "main" label for the first window.
+    // The plugin now denylists "main", orphaning its saved geometry. This renames
+    // the entry so the new deterministic label picks up the old geometry.
+    if let Some(ref session) = restored_session {
+        migrate_main_window_state(session);
+    }
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -3684,7 +3803,10 @@ pub fn run(
                     .resizable(true)
                     .build()
                     {
-                        Ok(_) => log::info!("[startup] Created notebook window: {}", sw.label),
+                        Ok(window) => {
+                            log::info!("[startup] Created notebook window: {}", sw.label);
+                            correct_window_scale(&window, sw.saved_scale_factor);
+                        }
                         Err(e) => log::warn!(
                             "[startup] Failed to create window '{}': {}",
                             sw.label,
@@ -4125,10 +4247,14 @@ pub fn run(
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     let registry_for_open = window_registry.clone();
     let registry_for_session = window_registry.clone();
+    let registry_for_exit_session = window_registry.clone();
     let registry_for_window_close = window_registry.clone();
     app.run(move |app_handle, event| {
         // Keep the app process alive when the final window is closed on macOS.
         // Other platforms should exit when the final window closes.
+        //
+        // Session save happens here (not at RunEvent::Exit) because Exit fires
+        // AFTER WindowEvent::Destroyed removes all registry entries.
         #[cfg(target_os = "macos")]
         if let RunEvent::ExitRequested { code, api, .. } = &event {
             if code.is_none() && app_handle.webview_windows().is_empty() {
@@ -4138,6 +4264,23 @@ pub fn run(
                     "macos last-window close",
                 );
                 api.prevent_exit();
+            } else {
+                // Real quit (Cmd+Q, menu quit, or code-initiated exit).
+                // Save session now while registry still has live entries.
+                log::info!("[session] ExitRequested: saving session before windows are destroyed");
+                registry_for_exit_session.prune_stale_entries(app_handle);
+                if let Err(e) = session::save_session(&registry_for_exit_session, app_handle) {
+                    log::error!("[session] Failed to save session on exit: {}", e);
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        if let RunEvent::ExitRequested { .. } = &event {
+            log::info!("[session] ExitRequested: saving session before windows are destroyed");
+            registry_for_exit_session.prune_stale_entries(app_handle);
+            if let Err(e) = session::save_session(&registry_for_exit_session, app_handle) {
+                log::error!("[session] Failed to save session on exit: {}", e);
             }
         }
 
@@ -4167,14 +4310,14 @@ pub fn run(
             refresh_native_menu(app_handle, &registry_for_window_close);
         }
 
-        // Save session state when app is about to exit
-        // Use Exit (not ExitRequested) as it fires reliably on all platforms
+        // Fallback session save at Exit. Normally ExitRequested (above) saves
+        // the session while windows are still alive. This fires after windows
+        // are destroyed, so the registry is usually empty and save_session
+        // returns early without overwriting the file already written above.
         if let RunEvent::Exit = &event {
-            log::info!("[session] App exiting, saving session...");
-            if let Err(e) = session::save_session(&registry_for_session) {
+            log::info!("[session] App exiting, saving session (fallback)...");
+            if let Err(e) = session::save_session(&registry_for_session, app_handle) {
                 log::error!("[session] Failed to save session: {}", e);
-            } else {
-                log::info!("[session] Session saved successfully");
             }
         }
 
