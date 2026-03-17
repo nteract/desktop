@@ -29,7 +29,6 @@ function generateOutputJson(index: number): string {
   return JSON.stringify(output);
 }
 
-
 function generateCellSnapshot(
   index: number,
   sourceLines = 50,
