@@ -29,12 +29,6 @@ function generateOutputJson(index: number): string {
   return JSON.stringify(output);
 }
 
-function generateStreamOutputJson(
-  name: "stdout" | "stderr",
-  text: string,
-): string {
-  return JSON.stringify({ output_type: "stream", name, text });
-}
 
 function generateCellSnapshot(
   index: number,
