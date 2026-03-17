@@ -2056,25 +2056,29 @@ async fn doctor_command(
             let running_ver = daemon_info.map(|d| d.version.clone());
             let bundled_ver = find_bundled_runtimed().and_then(|p| get_binary_version(&p));
 
+            // Build detail string showing all available versions
+            let mut parts = Vec::new();
+            if let Some(ref v) = installed_ver {
+                parts.push(format!("installed={}", v));
+            }
+            if let Some(ref v) = running_ver {
+                parts.push(format!("running={}", v));
+            }
+            if let Some(ref v) = bundled_ver {
+                parts.push(format!("bundled={}", v));
+            }
+            let detail = parts.join(" ");
+
             match (&installed_ver, &running_ver) {
                 (Some(inst), Some(run)) => {
-                    let run_crate = extract_crate_version(run);
-                    // Compare crate versions (installed binary only has crate version from clap)
-                    let crate_match = inst == run_crate;
-                    // If bundled binary is available, also compare against it
+                    // Full version+commit comparison catches same-crate-version, different-commit
+                    let installed_match = inst == run;
                     let bundled_match = bundled_ver
                         .as_ref()
-                        .map(|b| b == run_crate && b == inst.as_str())
+                        .map(|b| b == run && b == inst)
                         .unwrap_or(true);
 
-                    let mut parts = vec![format!("installed={}", inst)];
-                    parts.push(format!("running={}", run));
-                    if let Some(ref b) = bundled_ver {
-                        parts.push(format!("bundled={}", b));
-                    }
-                    let detail = parts.join(" ");
-
-                    if crate_match && bundled_match {
+                    if installed_match && bundled_match {
                         CheckResult {
                             path: String::new(),
                             status: "ok".to_string(),
@@ -2341,13 +2345,18 @@ async fn doctor_command(
             }
         }
 
+        // Look up bundled binary once for version mismatch and repair scenarios
+        let bundled = find_bundled_runtimed();
+        let installed_ver = if binary_exists {
+            get_binary_version(&binary_path)
+        } else {
+            None
+        };
+        let bundled_ver = bundled.as_ref().and_then(|p| get_binary_version(p));
+
         // Fix version mismatch: installed binary differs from bundled app binary
         // Common when a dev binary is accidentally left in the nightly install path
         if binary_exists && config_exists {
-            let installed_ver = get_binary_version(&binary_path);
-            let bundled = find_bundled_runtimed();
-            let bundled_ver = bundled.as_ref().and_then(|p| get_binary_version(p));
-
             if let (Some(inst), Some(bund), Some(bundled_path)) =
                 (&installed_ver, &bundled_ver, &bundled)
             {
@@ -2371,15 +2380,14 @@ async fn doctor_command(
 
         // Handle different repair scenarios
         if !binary_exists || !config_exists {
-            // Look for bundled binary in common app locations
-            if let Some(bundled) = find_bundled_runtimed() {
+            if let Some(bundled_path) = &bundled {
                 if !binary_exists && config_exists {
                     // Service config exists but binary missing - use upgrade to replace binary
-                    match manager.upgrade(&bundled) {
+                    match manager.upgrade(bundled_path) {
                         Ok(()) => {
                             actions_taken.push(format!(
                                 "Reinstalled daemon binary from {}",
-                                bundled.display()
+                                bundled_path.display()
                             ));
                         }
                         Err(e) => {
@@ -2388,10 +2396,10 @@ async fn doctor_command(
                     }
                 } else if !manager.is_installed() {
                     // Fresh install needed
-                    match manager.install(&bundled) {
+                    match manager.install(bundled_path) {
                         Ok(()) => {
                             actions_taken
-                                .push(format!("Installed daemon from {}", bundled.display()));
+                                .push(format!("Installed daemon from {}", bundled_path.display()));
                         }
                         Err(e) => {
                             eprintln!("Failed to install daemon: {}", e);
@@ -2608,8 +2616,8 @@ fn is_process_running(pid: u32) -> bool {
     }
 }
 
-/// Get the crate version from a runtimed binary by running `--version`.
-/// Returns e.g. `"2.0.0"` (no commit hash — clap only has the crate version).
+/// Get the version from a runtimed binary by running `--version`.
+/// Returns e.g. `"2.0.0+a1b2c3d"` (crate version + commit hash).
 fn get_binary_version(path: &Path) -> Option<String> {
     std::process::Command::new(path)
         .arg("--version")
@@ -2617,11 +2625,6 @@ fn get_binary_version(path: &Path) -> Option<String> {
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().trim_start_matches("runtimed ").to_string())
-}
-
-/// Extract just the crate version from a version string like "2.0.0+a1b2c3d" → "2.0.0".
-fn extract_crate_version(version: &str) -> &str {
-    version.split('+').next().unwrap_or(version)
 }
 
 /// Find bundled runtimed binary in common app locations
