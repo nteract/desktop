@@ -8,6 +8,7 @@
 use automerge::patches::PatchAction;
 use automerge::sync;
 use automerge::Prop;
+use notebook_doc::diff::{diff_cells, CellChangeset};
 use notebook_doc::presence;
 use notebook_doc::{CellSnapshot, NotebookDoc};
 use serde::Serialize;
@@ -61,6 +62,10 @@ pub enum FrameEvent {
     SyncApplied {
         /// True if the document changed (new cells, updated source, etc.)
         changed: bool,
+        /// Structural changeset describing which cells/fields changed.
+        /// `None` when `changed` is false.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        changeset: Option<CellChangeset>,
         /// Text attribution ranges for source edits in this sync batch.
         /// Empty when `changed` is false or when only non-source fields changed.
         #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -763,14 +768,18 @@ impl NotebookHandle {
                 let heads_after = self.doc.doc_mut().get_heads();
                 let changed = heads_before != heads_after;
 
-                let attributions = if changed {
-                    compute_text_attributions(self.doc.doc_mut(), &heads_before, &heads_after)
+                let (changeset, attributions) = if changed {
+                    let cs = diff_cells(self.doc.doc_mut(), &heads_before, &heads_after);
+                    let attrs =
+                        compute_text_attributions(self.doc.doc_mut(), &heads_before, &heads_after);
+                    (Some(cs), attrs)
                 } else {
-                    Vec::new()
+                    (None, Vec::new())
                 };
 
                 events.push(FrameEvent::SyncApplied {
                     changed,
+                    changeset,
                     attributions,
                 });
 

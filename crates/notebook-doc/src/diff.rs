@@ -433,7 +433,7 @@ impl serde::Serialize for ChangedFields {
 
 impl<'de> serde::Deserialize<'de> for ChangedFields {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(serde::Deserialize)]
+        #[derive(Default, serde::Deserialize)]
         #[serde(default)]
         struct Helper {
             source: bool,
@@ -443,20 +443,6 @@ impl<'de> serde::Deserialize<'de> for ChangedFields {
             metadata: bool,
             position: bool,
             resolved_assets: bool,
-        }
-
-        impl Default for Helper {
-            fn default() -> Self {
-                Self {
-                    source: false,
-                    outputs: false,
-                    execution_count: false,
-                    cell_type: false,
-                    metadata: false,
-                    position: false,
-                    resolved_assets: false,
-                }
-            }
         }
 
         let h = Helper::deserialize(deserializer)?;
