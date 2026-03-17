@@ -3327,116 +3327,98 @@ pub fn run(
     // Window registry is always needed for multi-window support
     let window_registry = WindowNotebookRegistry::default();
 
-    // Determine the first window's open mode and label.
-    // Unlike the old approach that reused Tauri's auto-created "main" window, we now
-    // create all notebook windows explicitly with proper "notebook-{hash}" labels.
-    // This ensures the window-state plugin persists geometry under a deterministic,
-    // content-based key — not a generic "main" that accumulates stale state.
-    let (window_title, first_window_label, _first_context, first_open_mode) = if needs_onboarding {
+    // Build the list of ALL notebook windows to create at startup.
+    // All windows are created immediately (showing loading UI) and synced
+    // with the daemon once it's available — no primary/secondary distinction.
+    struct StartupWindow {
+        label: String,
+        title: String,
+        mode: OpenMode,
+    }
+
+    let startup_windows: Vec<StartupWindow> = if needs_onboarding {
         info!("[startup] Onboarding needed, skipping notebook state setup");
-        (
-            format!("Welcome to {}", runt_workspace::desktop_display_name()),
-            None,
-            None,
-            None,
-        )
-    } else {
-        // Determine how to open the first window — no local file parsing needed.
-        // The daemon loads/creates the notebook.
-        let (mode, title) = match notebook_path.as_ref() {
-            Some(path) => {
-                let title = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("Untitled.ipynb")
-                    .to_string();
-                (OpenMode::Open { path: path.clone() }, title)
-            }
-            None => {
-                if let Some(ref session) = restored_session {
-                    // Find the primary window: use explicit primary_label if present,
-                    // otherwise fall back to first entry (sorted by label during save).
-                    let primary = session
-                        .primary_label
-                        .as_ref()
-                        .and_then(|label| session.windows.iter().find(|w| &w.label == label))
-                        .or_else(|| session.windows.first());
-                    if let Some(first_session) = primary {
-                        match (&first_session.path, &first_session.env_id) {
-                            (Some(path), _) if path.exists() => {
-                                let title = path
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("Untitled.ipynb")
-                                    .to_string();
-                                info!(
-                                    "[session] Restoring first window from path: {}",
-                                    path.display()
-                                );
-                                (OpenMode::Open { path: path.clone() }, title)
-                            }
-                            (_, Some(env_id)) => {
-                                info!("[session] Restoring untitled first window: {}", env_id);
-                                (
-                                    OpenMode::Create {
-                                        runtime: runtime.to_string(),
-                                        working_dir: working_dir.clone(),
-                                        notebook_id: Some(env_id.clone()),
-                                    },
-                                    "Untitled.ipynb".to_string(),
-                                )
-                            }
-                            _ => {
-                                warn!("[session] First session entry has no path or env_id");
-                                (
-                                    OpenMode::Create {
-                                        runtime: runtime.to_string(),
-                                        working_dir: working_dir.clone(),
-                                        notebook_id: None,
-                                    },
-                                    "Untitled.ipynb".to_string(),
-                                )
-                            }
-                        }
-                    } else {
+        Vec::new()
+    } else if let Some(ref path) = notebook_path {
+        // CLI arg: open a specific notebook
+        let title = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Untitled.ipynb")
+            .to_string();
+        let hash = runtimed::worktree_hash(path);
+        vec![StartupWindow {
+            label: format!("notebook-{}", &hash[..8]),
+            title,
+            mode: OpenMode::Open { path: path.clone() },
+        }]
+    } else if let Some(ref session) = restored_session {
+        // Session restore: recreate all windows from the saved session
+        session
+            .windows
+            .iter()
+            .filter_map(|ws| {
+                let label = session::window_label_for_session(ws);
+                let (title, mode) = match (&ws.path, &ws.env_id) {
+                    (Some(path), _) if path.exists() => {
+                        let title = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("Untitled.ipynb")
+                            .to_string();
+                        info!("[session] Restoring window from path: {}", path.display());
+                        (title, OpenMode::Open { path: path.clone() })
+                    }
+                    (_, Some(env_id)) => {
+                        info!("[session] Restoring untitled window: {}", env_id);
                         (
-                            OpenMode::Create {
-                                runtime: runtime.to_string(),
-                                working_dir: working_dir.clone(),
-                                notebook_id: None,
-                            },
                             "Untitled.ipynb".to_string(),
+                            OpenMode::Create {
+                                runtime: ws.runtime.clone(),
+                                working_dir: working_dir.clone(),
+                                notebook_id: Some(env_id.clone()),
+                            },
                         )
                     }
-                } else {
-                    (
-                        OpenMode::Create {
-                            runtime: runtime.to_string(),
-                            working_dir: working_dir.clone(),
-                            notebook_id: None,
-                        },
-                        "Untitled.ipynb".to_string(),
-                    )
-                }
-            }
-        };
+                    _ => {
+                        warn!("[session] Skipping session entry with no path or env_id");
+                        return None;
+                    }
+                };
+                Some(StartupWindow { label, title, mode })
+            })
+            .collect()
+    } else {
+        // Fresh start: create a new untitled notebook
+        vec![StartupWindow {
+            label: format!("notebook-{}", uuid::Uuid::new_v4()),
+            title: "Untitled.ipynb".to_string(),
+            mode: OpenMode::Create {
+                runtime: runtime.to_string(),
+                working_dir: working_dir.clone(),
+                notebook_id: None,
+            },
+        }]
+    };
 
-        // Generate a proper notebook label (same logic as create_notebook_window_for_daemon)
-        let label = match &mode {
-            OpenMode::Open { path } => {
-                let hash = runtimed::worktree_hash(path);
-                format!("notebook-{}", &hash[..8])
-            }
-            OpenMode::Create {
-                notebook_id: Some(ref id),
-                ..
-            } => format!("notebook-{}", &id[..8.min(id.len())]),
-            OpenMode::Create {
-                notebook_id: None, ..
-            } => format!("notebook-{}", uuid::Uuid::new_v4()),
-        };
+    // If session restore yielded no valid windows, fall back to a fresh notebook
+    let startup_windows = if !needs_onboarding && startup_windows.is_empty() {
+        vec![StartupWindow {
+            label: format!("notebook-{}", uuid::Uuid::new_v4()),
+            title: "Untitled.ipynb".to_string(),
+            mode: OpenMode::Create {
+                runtime: runtime.to_string(),
+                working_dir: working_dir.clone(),
+                notebook_id: None,
+            },
+        }]
+    } else {
+        startup_windows
+    };
 
-        let placeholder_id = match &mode {
+    // Register all startup window contexts in the registry before setup
+    for sw in &startup_windows {
+        let placeholder_id = match &sw.mode {
             OpenMode::Open { path } => path
                 .canonicalize()
                 .unwrap_or_else(|_| path.clone())
@@ -3451,20 +3433,18 @@ pub fn run(
             } => String::new(),
         };
         let context = create_window_context_for_daemon(
-            match &mode {
+            match &sw.mode {
                 OpenMode::Open { path } => Some(path.clone()),
                 _ => None,
             },
             working_dir.clone(),
             placeholder_id,
-            runtime,
+            runtime.clone(),
         );
         window_registry
-            .insert(&label, context.clone())
+            .insert(&sw.label, context)
             .map_err(anyhow::Error::msg)?;
-
-        (title, Some(label), Some(context), Some(mode))
-    };
+    }
 
     // Guard against concurrent reconnect attempts
     let reconnect_in_progress = ReconnectInProgress(Arc::new(AtomicBool::new(false)));
@@ -3591,22 +3571,29 @@ pub fn run(
                 .build()?;
 
                 log::info!("[startup] Created dedicated onboarding window");
-            } else if let Some(ref label) = first_window_label {
-                // Create the first notebook window with a proper label.
-                // The window appears immediately with a loading UI; daemon sync
-                // happens later in the async block after the daemon is confirmed available.
-                let _notebook_window = tauri::WebviewWindowBuilder::new(
-                    app,
-                    label,
-                    tauri::WebviewUrl::default(),
-                )
-                .title(&window_title)
-                .inner_size(1100.0, 750.0)
-                .min_inner_size(400.0, 250.0)
-                .resizable(true)
-                .build()?;
-
-                log::info!("[startup] Created first notebook window: {}", label);
+            } else {
+                // Create ALL notebook windows immediately. Each shows a loading UI
+                // until the daemon is ready and sync completes.
+                for sw in &startup_windows {
+                    match tauri::WebviewWindowBuilder::new(
+                        app,
+                        &sw.label,
+                        tauri::WebviewUrl::default(),
+                    )
+                    .title(&sw.title)
+                    .inner_size(1100.0, 750.0)
+                    .min_inner_size(400.0, 250.0)
+                    .resizable(true)
+                    .build()
+                    {
+                        Ok(_) => log::info!("[startup] Created notebook window: {}", sw.label),
+                        Err(e) => log::warn!(
+                            "[startup] Failed to create window '{}': {}",
+                            sw.label,
+                            e
+                        ),
+                    }
+                }
                 refresh_native_menu(
                     app.handle(),
                     app.state::<WindowNotebookRegistry>().inner(),
@@ -3637,28 +3624,6 @@ pub fn run(
             let menu = crate::menu::create_menu(app.handle(), &window_display_names)?;
             app.set_menu(menu)?;
 
-            // Additional session windows (exclude the primary, already created in setup).
-            // Created after daemon is confirmed available to avoid sync tasks
-            // racing with daemon startup.
-            let additional_session_windows: Vec<session::WindowSession> =
-                if let Some(ref session) = restored_session {
-                    // Find the primary label used during restore. This matches the
-                    // session entry selected in the startup block above.
-                    let primary = session
-                        .primary_label
-                        .as_ref()
-                        .and_then(|label| session.windows.iter().find(|w| &w.label == label))
-                        .or_else(|| session.windows.first());
-                    let primary_label = primary.map(|w| w.label.as_str());
-                    session
-                        .windows
-                        .iter()
-                        .filter(|w| primary_label.is_none_or(|p| w.label != p))
-                        .cloned()
-                        .collect()
-                } else {
-                    Vec::new()
-                };
             let has_session_to_clear = restored_session.is_some();
 
             // Ensure runtimed is running (required for daemon-only mode)
@@ -3666,9 +3631,7 @@ pub fn run(
             let app_for_daemon = app.handle().clone();
             let app_for_sync = app.handle().clone();
             let app_for_notebook_sync = app.handle().clone();
-            let app_for_session_restore = app.handle().clone();
             let registry_for_notebook_sync = registry_for_sync.clone();
-            let registry_for_session_restore = registry_for_sync.clone();
             let daemon_status_for_callback = daemon_status_for_startup.clone();
             // Capture for async block - onboarding doesn't need notebook sync
             let skip_notebook_sync = needs_onboarding;
@@ -3712,19 +3675,18 @@ pub fn run(
                 // Reports prewarm pool errors to UI so users know when default packages fail
                 tokio::spawn(run_pool_state_sync(app_for_sync));
 
-                // Initialize notebook sync if daemon is available
+                // Initialize notebook sync for all startup windows.
                 // Skip during onboarding - the onboarding window doesn't need notebook sync,
-                // it just needs daemon progress events
+                // it just needs daemon progress events.
                 if daemon_available && !skip_notebook_sync {
-                    if let (Some(mode), Some(ref label)) =
-                        (first_open_mode, &first_window_label)
-                    {
+                    let mut any_success = false;
+                    for sw in startup_windows {
                         match (
-                            app_for_notebook_sync.get_webview_window(label),
-                            registry_for_notebook_sync.get(label),
+                            app_for_notebook_sync.get_webview_window(&sw.label),
+                            registry_for_notebook_sync.get(&sw.label),
                         ) {
                             (Some(window), Ok(context)) => {
-                                let result = match mode {
+                                let result = match sw.mode {
                                     OpenMode::Open { path } => {
                                         initialize_notebook_sync_open(
                                             window,
@@ -3755,14 +3717,15 @@ pub fn run(
                                 match result {
                                     Ok(()) => {
                                         log::info!(
-                                            "[startup] Notebook sync initialized successfully"
+                                            "[startup] Notebook sync initialized for '{}'",
+                                            sw.label
                                         );
-                                        daemon_sync_success_for_init
-                                            .store(true, Ordering::SeqCst);
+                                        any_success = true;
                                     }
                                     Err(e) => {
                                         log::warn!(
-                                            "[startup] Notebook sync initialization failed: {}",
+                                            "[startup] Notebook sync failed for '{}': {}",
+                                            sw.label,
                                             e
                                         );
                                     }
@@ -3770,18 +3733,21 @@ pub fn run(
                             }
                             (None, _) => {
                                 log::warn!(
-                                    "[startup] Notebook window '{}' missing during sync init",
-                                    label
+                                    "[startup] Window '{}' missing during sync init",
+                                    sw.label
                                 );
                             }
                             (_, Err(e)) => {
                                 log::warn!(
-                                    "[startup] Notebook context for '{}' missing: {}",
-                                    label,
+                                    "[startup] Context for '{}' missing: {}",
+                                    sw.label,
                                     e
                                 );
                             }
                         }
+                    }
+                    if any_success {
+                        daemon_sync_success_for_init.store(true, Ordering::SeqCst);
                     }
                 } else if daemon_available && skip_notebook_sync {
                     // Onboarding mode: daemon is available, notebook sync deliberately skipped
@@ -3792,68 +3758,7 @@ pub fn run(
                 // Signal that daemon sync attempt is complete (success or failure)
                 daemon_sync_complete_for_init.store(true, Ordering::SeqCst);
 
-                // Restore additional session windows now that the daemon is available.
-                // Creating them here (instead of in synchronous setup) ensures their
-                // sync tasks don't race with daemon startup.
-                if daemon_available && !additional_session_windows.is_empty() {
-                    log::info!(
-                        "[session] Restoring {} additional window(s) after daemon ready",
-                        additional_session_windows.len()
-                    );
-                    for window_session in &additional_session_windows {
-                        let label = session::window_label_for_session(window_session);
-                        let mode = match (&window_session.path, &window_session.env_id) {
-                            (Some(path), _) if path.exists() => {
-                                info!(
-                                    "[session] Restoring window from path: {}",
-                                    path.display()
-                                );
-                                OpenMode::Open { path: path.clone() }
-                            }
-                            (_, Some(env_id)) => {
-                                info!(
-                                    "[session] Restoring untitled window: {}",
-                                    env_id
-                                );
-                                OpenMode::Create {
-                                    runtime: window_session.runtime.clone(),
-                                    working_dir: None,
-                                    notebook_id: Some(env_id.clone()),
-                                }
-                            }
-                            _ => {
-                                let rt: Runtime =
-                                    window_session.runtime.parse().unwrap_or(Runtime::Python);
-                                OpenMode::Create {
-                                    runtime: rt.to_string(),
-                                    working_dir: None,
-                                    notebook_id: None,
-                                }
-                            }
-                        };
-                        match create_notebook_window_for_daemon(
-                            &app_for_session_restore,
-                            &registry_for_session_restore,
-                            mode,
-                            Some(label.clone()),
-                        ) {
-                            Ok(created_label) => {
-                                info!(
-                                    "[session] Restored additional window: {}",
-                                    created_label
-                                );
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "[session] Failed to create window for {}: {}",
-                                    label, e
-                                );
-                            }
-                        }
-                    }
-                }
-
-                // Clear session file after all windows have been restored (or
+                // Clear session file after all windows have been synced (or
                 // attempted). Keeping it until now allows a retry on next launch
                 // if the daemon was unavailable this time.
                 if has_session_to_clear {
