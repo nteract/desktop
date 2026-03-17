@@ -812,9 +812,75 @@ impl NotebookDoc {
 
     /// Get a single cell by ID (O(1) lookup).
     pub fn get_cell(&self, cell_id: &str) -> Option<CellSnapshot> {
-        let cells_id = self.cells_map_id()?;
-        let cell_obj = self.cell_obj_id(&cells_id, cell_id)?;
+        let cell_obj = self.cell_obj_for(cell_id)?;
         self.read_cell(&cell_obj)
+    }
+
+    /// Get ordered cell IDs (sorted by position, tiebreak on ID).
+    ///
+    /// O(n log n) for the sort, but avoids serializing cell contents.
+    pub fn get_cell_ids(&self) -> Vec<String> {
+        let cells_id = match self.cells_map_id() {
+            Some(id) => id,
+            None => return vec![],
+        };
+
+        let mut pairs: Vec<(String, String)> = self
+            .doc
+            .keys(&cells_id)
+            .filter_map(|key| {
+                let cell_obj = self.cell_obj_id(&cells_id, &key)?;
+                let position =
+                    read_str(&self.doc, &cell_obj, "position").unwrap_or_else(|| "80".to_string());
+                Some((position, key))
+            })
+            .collect();
+
+        pairs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        pairs.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// Get a cell's source text (O(1) lookup).
+    pub fn get_cell_source(&self, cell_id: &str) -> Option<String> {
+        let cell_obj = self.cell_obj_for(cell_id)?;
+        let text_id = self.text_id(&cell_obj, "source")?;
+        self.doc.text(&text_id).ok()
+    }
+
+    /// Get a cell's type — "code", "markdown", or "raw" (O(1) lookup).
+    pub fn get_cell_type(&self, cell_id: &str) -> Option<String> {
+        let cell_obj = self.cell_obj_for(cell_id)?;
+        read_str(&self.doc, &cell_obj, "cell_type")
+    }
+
+    /// Get a cell's outputs as a JSON array string (O(1) lookup).
+    pub fn get_cell_outputs_json(&self, cell_id: &str) -> Option<String> {
+        let cell_obj = self.cell_obj_for(cell_id)?;
+        let list_id = self.list_id(&cell_obj, "outputs")?;
+        let len = self.doc.length(&list_id);
+        let outputs: Vec<String> = (0..len)
+            .map(|i| read_str(&self.doc, &list_id, i).unwrap_or_default())
+            .collect();
+        Some(serde_json::to_string(&outputs).unwrap_or_else(|_| "[]".to_string()))
+    }
+
+    /// Get a cell's execution count (O(1) lookup).
+    pub fn get_cell_execution_count(&self, cell_id: &str) -> Option<String> {
+        let cell_obj = self.cell_obj_for(cell_id)?;
+        read_str(&self.doc, &cell_obj, "execution_count")
+    }
+
+    /// Get a cell's metadata as a JSON object string (O(1) lookup).
+    pub fn get_cell_metadata_json(&self, cell_id: &str) -> Option<String> {
+        let cell_obj = self.cell_obj_for(cell_id)?;
+        let metadata = read_cell_metadata(&self.doc, &cell_obj);
+        Some(serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string()))
+    }
+
+    /// Get a cell's fractional index position string (O(1) lookup).
+    pub fn get_cell_position(&self, cell_id: &str) -> Option<String> {
+        let cell_obj = self.cell_obj_for(cell_id)?;
+        read_str(&self.doc, &cell_obj, "position")
     }
 
     /// Insert a new cell at the given index (backward-compatible API).
@@ -1645,6 +1711,12 @@ impl NotebookDoc {
                 automerge::Value::Object(ObjType::Map) => Some(id),
                 _ => None,
             })
+    }
+
+    /// Convenience: look up a cell's ObjId by cell ID (two-step: cells map → cell map).
+    fn cell_obj_for(&self, cell_id: &str) -> Option<ObjId> {
+        let cells_id = self.cells_map_id()?;
+        self.cell_obj_id(&cells_id, cell_id)
     }
 
     /// Get a cell's ObjId by its ID (O(1) map lookup).
@@ -3936,5 +4008,64 @@ mod tests {
 
         let actors = human.contributing_actors();
         assert_eq!(actors, vec!["human:tab-1", "runtimed"]);
+    }
+
+    #[test]
+    fn test_per_cell_accessors() {
+        let mut doc = NotebookDoc::new("nb-accessors");
+
+        // Add cells in a specific order: cell-b first, then cell-a before it, then cell-c after cell-b
+        doc.add_cell_after("cell-b", "code", None).unwrap();
+        doc.add_cell_after("cell-a", "markdown", None).unwrap();
+        doc.add_cell_after("cell-c", "raw", Some("cell-b")).unwrap();
+
+        // Set some source content
+        doc.update_source("cell-a", "# Title").unwrap();
+        doc.update_source("cell-b", "print('hello')").unwrap();
+        doc.update_source("cell-c", "raw content").unwrap();
+
+        // Verify get_cell_ids returns IDs in position order: a, b, c
+        let ids = doc.get_cell_ids();
+        assert_eq!(ids, vec!["cell-a", "cell-b", "cell-c"]);
+
+        // Verify per-cell source
+        assert_eq!(doc.get_cell_source("cell-a"), Some("# Title".to_string()));
+        assert_eq!(
+            doc.get_cell_source("cell-b"),
+            Some("print('hello')".to_string())
+        );
+        assert_eq!(
+            doc.get_cell_source("cell-c"),
+            Some("raw content".to_string())
+        );
+
+        // Verify per-cell type
+        assert_eq!(doc.get_cell_type("cell-a"), Some("markdown".to_string()));
+        assert_eq!(doc.get_cell_type("cell-b"), Some("code".to_string()));
+        assert_eq!(doc.get_cell_type("cell-c"), Some("raw".to_string()));
+
+        // Verify execution count defaults
+        assert_eq!(
+            doc.get_cell_execution_count("cell-b"),
+            Some("null".to_string())
+        );
+
+        // Verify outputs default to empty array
+        assert_eq!(doc.get_cell_outputs_json("cell-b"), Some("[]".to_string()));
+
+        // Verify metadata default to empty object
+        assert_eq!(doc.get_cell_metadata_json("cell-a"), Some("{}".to_string()));
+
+        // Verify position is present
+        assert!(doc.get_cell_position("cell-a").is_some());
+        assert!(doc.get_cell_position("cell-b").is_some());
+
+        // Verify nonexistent cell returns None for all accessors
+        assert_eq!(doc.get_cell_source("nonexistent"), None);
+        assert_eq!(doc.get_cell_type("nonexistent"), None);
+        assert_eq!(doc.get_cell_outputs_json("nonexistent"), None);
+        assert_eq!(doc.get_cell_execution_count("nonexistent"), None);
+        assert_eq!(doc.get_cell_metadata_json("nonexistent"), None);
+        assert_eq!(doc.get_cell_position("nonexistent"), None);
     }
 }
