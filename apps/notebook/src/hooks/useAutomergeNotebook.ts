@@ -266,7 +266,18 @@ export function useAutomergeNotebook() {
           return;
         }
 
-        // Incremental: only re-read cells that actually changed.
+        // Split changed cells: outputs need async blob fetches via full
+        // materialization; source/metadata-only can use the fast sync path.
+        const hasOutputChanges = cs.changed.some((c) => c.fields.outputs);
+
+        if (hasOutputChanges) {
+          // At least one cell has new outputs (likely blob manifest hashes
+          // not yet in cache). Full materialization resolves them via fetch.
+          await materializeCells(handle);
+          return;
+        }
+
+        // Fast path: no output changes — per-cell sync materialization.
         if (cs.changed.length > 0) {
           const cache = outputCacheRef.current;
           for (const { cell_id: cellId } of cs.changed) {
