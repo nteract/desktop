@@ -2270,46 +2270,12 @@ async fn doctor_command(
         // This happens when launchctl load/unload leaves corrupted state
         #[cfg(target_os = "macos")]
         if launchd_not_loaded && config_exists && binary_exists && !daemon_running_before {
-            let label = runt_workspace::daemon_launchd_label();
-
-            // Get current user's UID for the gui domain
-            let uid = std::process::Command::new("id")
-                .args(["-u"])
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .map(|s| s.trim().to_string())
-                .unwrap_or_else(|| "501".to_string());
-            let domain = format!("gui/{}", uid);
-
-            // First bootout any stale registration (ignore errors - may not exist)
-            let _ = std::process::Command::new("launchctl")
-                .args(["bootout", &format!("{}/{}", domain, label)])
-                .output();
-
-            // Small delay for launchd to clean up
-            std::thread::sleep(std::time::Duration::from_millis(100));
-
-            // Bootstrap to register fresh
-            let result = std::process::Command::new("launchctl")
-                .args(["bootstrap", &domain, &service_config_path.to_string_lossy()])
-                .output();
-
-            match result {
-                Ok(o) if o.status.success() => {
+            match runt_workspace::launchd_start() {
+                Ok(()) => {
                     actions_taken.push("Reset launchd service registration".to_string());
                 }
-                Ok(o) => {
-                    let stderr = String::from_utf8_lossy(&o.stderr);
-                    // Error 37 means service is already loaded (which is fine)
-                    if !stderr.contains("37") {
-                        eprintln!("Failed to bootstrap service: {}", stderr.trim());
-                    } else {
-                        actions_taken.push("Launchd service already registered".to_string());
-                    }
-                }
                 Err(e) => {
-                    eprintln!("launchctl bootstrap failed: {}", e);
+                    eprintln!("Failed to reset launchd registration: {e}");
                 }
             }
         }

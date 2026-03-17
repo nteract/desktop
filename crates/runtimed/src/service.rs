@@ -481,18 +481,7 @@ impl ServiceManager {
 
     #[cfg(target_os = "macos")]
     fn start_macos(&self) -> ServiceResult<()> {
-        let output = std::process::Command::new("launchctl")
-            .args(["load", "-w"])
-            .arg(plist_path())
-            .output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            // Ignore "already loaded" error
-            if !stderr.contains("already loaded") {
-                return Err(ServiceError::StartFailed(stderr.to_string()));
-            }
-        }
+        runt_workspace::launchd_start().map_err(ServiceError::StartFailed)?;
 
         info!("[service] Started launchd service");
         Ok(())
@@ -500,18 +489,7 @@ impl ServiceManager {
 
     #[cfg(target_os = "macos")]
     fn stop_macos(&self) -> ServiceResult<()> {
-        let output = std::process::Command::new("launchctl")
-            .args(["unload"])
-            .arg(plist_path())
-            .output()?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            // Ignore "not loaded" error
-            if !stderr.contains("Could not find") && !stderr.contains("No such") {
-                return Err(ServiceError::StopFailed(stderr.to_string()));
-            }
-        }
+        runt_workspace::launchd_stop().map_err(ServiceError::StopFailed)?;
 
         info!("[service] Stopped launchd service");
         Ok(())

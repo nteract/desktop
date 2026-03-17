@@ -475,20 +475,7 @@ fn cmd_install_daemon() {
     // Stop the running daemon gracefully
     #[cfg(target_os = "macos")]
     {
-        let uid = Command::new("id")
-            .args(["-u"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|| "501".to_string());
-        let domain = format!("gui/{uid}/{}", runt_workspace::daemon_launchd_label());
-
-        // Stop (ignore errors — may not be running)
-        let _ = Command::new("launchctl")
-            .args(["bootout", &domain])
-            .status();
-
+        let _ = runt_workspace::launchd_stop();
         // Brief pause for process cleanup
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
@@ -545,25 +532,8 @@ fn cmd_install_daemon() {
     // Restart the service
     #[cfg(target_os = "macos")]
     {
-        let plist = dirs::home_dir().expect("No home dir").join(format!(
-            "Library/LaunchAgents/{}.plist",
-            runt_workspace::daemon_launchd_label()
-        ));
-        if plist.exists() {
-            let uid = Command::new("id")
-                .args(["-u"])
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .map(|s| s.trim().to_string())
-                .unwrap_or_else(|| "501".to_string());
-            let domain = format!("gui/{uid}");
-            run_cmd(
-                "launchctl",
-                &["bootstrap", &domain, &plist.to_string_lossy()],
-            );
-        } else {
-            eprintln!("Warning: launchd plist not found at {}", plist.display());
+        if let Err(e) = runt_workspace::launchd_start() {
+            eprintln!("Warning: failed to start launchd service: {e}");
             eprintln!("Start manually with: {}", install_path.display());
         }
     }
