@@ -199,17 +199,15 @@ function CellDragPreview({ cell }: { cell: NotebookCell | undefined }) {
   );
 }
 
-/** Check if a cell has both source and outputs hidden */
+/** Check if a cell has both source and outputs hidden via metadata.
+ *  We intentionally don't check outputs.length so cells stay collapsed
+ *  when outputs are transiently cleared during re-execution. */
 function isCellFullyHidden(cell: NotebookCell): boolean {
   if (cell.cell_type !== "code") return false;
   const jupyter = cell.metadata?.jupyter as
     | { source_hidden?: boolean; outputs_hidden?: boolean }
     | undefined;
-  return (
-    jupyter?.source_hidden === true &&
-    jupyter?.outputs_hidden === true &&
-    (cell as CodeCellType).outputs.length > 0
-  );
+  return jupyter?.source_hidden === true && jupyter?.outputs_hidden === true;
 }
 
 /** Wrapper component for sortable cells */

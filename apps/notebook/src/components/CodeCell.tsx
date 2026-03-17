@@ -160,9 +160,10 @@ export function CodeCell({
     (cell.metadata?.jupyter as { outputs_hidden?: boolean })?.outputs_hidden ===
     true;
 
-  // When both are hidden, show a compact single-row layout with both badges side by side
-  const bothHidden =
-    isSourceHidden && isOutputsHidden && cell.outputs.length > 0;
+  // When both are hidden, show a single "Cell hidden" chip.
+  // We check metadata only (not outputs.length) so the cell stays collapsed
+  // when outputs are transiently cleared during re-execution.
+  const bothHidden = isSourceHidden && isOutputsHidden;
 
   // Register EditorView with the cursor registry for remote cursor rendering.
   // We use a ref + polling approach because the EditorView is created async
@@ -322,7 +323,7 @@ export function CodeCell({
     handleExecuteWithClear();
   }, [handleExecuteWithClear]);
 
-  const gutterContent = (
+  const gutterContent = bothHidden ? null : (
     <CompactExecutionButton
       count={cell.execution_count}
       isExecuting={isExecuting}
