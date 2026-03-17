@@ -2053,7 +2053,12 @@ async fn doctor_command(
             } else {
                 None
             };
-            let running_ver = daemon_info.map(|d| d.version.clone());
+            // Only trust daemon_info version if the PID is confirmed running
+            let running_ver = if daemon_state_status == "ok" {
+                daemon_info.map(|d| d.version.clone())
+            } else {
+                None
+            };
             let bundled_ver = find_bundled_runtimed().and_then(|p| get_binary_version(&p));
 
             // Build detail string showing all available versions
@@ -2095,10 +2100,13 @@ async fn doctor_command(
                 _ => CheckResult {
                     path: String::new(),
                     status: "unknown".to_string(),
-                    detail: Some(if running_ver.is_none() {
-                        "daemon not running".to_string()
-                    } else {
-                        "installed binary not found".to_string()
+                    detail: Some(match (installed_ver.is_some(), running_ver.is_some()) {
+                        (false, false) => {
+                            "installed binary not found, daemon info unavailable".to_string()
+                        }
+                        (true, false) => "daemon info unavailable".to_string(),
+                        (false, true) => "installed binary not found".to_string(),
+                        _ => unreachable!(),
                     }),
                 },
             }
@@ -2619,12 +2627,19 @@ fn is_process_running(pid: u32) -> bool {
 /// Get the version from a runtimed binary by running `--version`.
 /// Returns e.g. `"2.0.0+a1b2c3d"` (crate version + commit hash).
 fn get_binary_version(path: &Path) -> Option<String> {
-    std::process::Command::new(path)
+    let output = std::process::Command::new(path)
         .arg("--version")
         .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().trim_start_matches("runtimed ").to_string())
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = String::from_utf8(output.stdout).ok()?;
+    let version = version.trim().trim_start_matches("runtimed ").to_string();
+    if version.is_empty() {
+        return None;
+    }
+    Some(version)
 }
 
 /// Find bundled runtimed binary in common app locations
@@ -2723,6 +2738,8 @@ fn colored_status_icon(status: &str) -> colored::ColoredString {
         "quarantined" => "[quarantined]".red(),
         "warning" => "[warning]".yellow(),
         "error" => "[error]".red(),
+        "mismatch" => "[mismatch]".red(),
+        "unknown" => "[unknown]".yellow(),
         "not_running" => "".normal(),
         _ => "[?]".yellow(),
     }
