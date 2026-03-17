@@ -14,6 +14,7 @@ import {
   materializeCellFromWasm,
 } from "../lib/materialize-cells";
 import {
+  getCellById,
   getNotebookCellsSnapshot,
   replaceNotebookCells,
   resetNotebookCells,
@@ -225,7 +226,12 @@ export function useAutomergeNotebook() {
           // Per-cell incremental update
           const cache = outputCacheRef.current;
           for (const cellId of cellIds) {
-            const cell = materializeCellFromWasm(handle, cellId, cache);
+            const cell = materializeCellFromWasm(
+              handle,
+              cellId,
+              cache,
+              getCellById(cellId),
+            );
             if (cell) {
               updateCellById(cellId, () => cell);
             }

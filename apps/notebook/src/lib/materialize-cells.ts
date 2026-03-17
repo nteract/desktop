@@ -267,6 +267,7 @@ export function materializeCellFromWasm(
   handle: NotebookHandle,
   cellId: string,
   cache: Map<string, JupyterOutput>,
+  previousCell?: NotebookCell,
 ): NotebookCell | null {
   const cellType = handle.get_cell_type(cellId);
   if (!cellType) return null;
@@ -309,11 +310,18 @@ export function materializeCellFromWasm(
   }
 
   if (cellType === "markdown") {
+    // Preserve resolvedAssets from the previous cell — these are resolved
+    // during full materialization and don't change on source edits.
+    const resolvedAssets =
+      previousCell?.cell_type === "markdown"
+        ? previousCell.resolvedAssets
+        : undefined;
     return {
       id: cellId,
       cell_type: "markdown",
       source,
       metadata,
+      resolvedAssets,
     };
   }
 
