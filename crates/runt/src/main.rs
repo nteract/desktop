@@ -2553,10 +2553,7 @@ async fn doctor_command(
         let version_mismatch = report.version_match.status == "mismatch";
         let diagnosis_colored = if report.daemon_running.status == "ok" && !version_mismatch {
             report.diagnosis.green()
-        } else if version_mismatch
-            || report.daemon_state.status == "stale"
-            || launchd_has_issue
-        {
+        } else if version_mismatch || report.daemon_state.status == "stale" || launchd_has_issue {
             report.diagnosis.yellow()
         } else {
             report.diagnosis.red()
