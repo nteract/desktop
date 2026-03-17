@@ -280,9 +280,15 @@ impl NotebookHandle {
         self.doc.get_cell_type(cell_id)
     }
 
-    /// Get a cell's outputs as a JSON array string.
-    pub fn get_cell_outputs_json(&self, cell_id: &str) -> Option<String> {
-        self.doc.get_cell_outputs_json(cell_id)
+    /// Get a cell's outputs as a native JS array of strings.
+    ///
+    /// Each element is a JSON-encoded Jupyter output object (or manifest hash).
+    /// Returns undefined if the cell doesn't exist.
+    pub fn get_cell_outputs(&self, cell_id: &str) -> JsValue {
+        match self.doc.get_cell_outputs(cell_id) {
+            Some(outputs) => serialize_to_js(&outputs).unwrap_or(JsValue::UNDEFINED),
+            None => JsValue::UNDEFINED,
+        }
     }
 
     /// Get a cell's execution count.
@@ -290,9 +296,14 @@ impl NotebookHandle {
         self.doc.get_cell_execution_count(cell_id)
     }
 
-    /// Get a cell's metadata as a JSON object string.
-    pub fn get_cell_metadata_json(&self, cell_id: &str) -> Option<String> {
-        self.doc.get_cell_metadata_json(cell_id)
+    /// Get a cell's metadata as a native JS object.
+    ///
+    /// Returns undefined if the cell doesn't exist.
+    pub fn get_cell_metadata(&self, cell_id: &str) -> JsValue {
+        match self.doc.get_cell_metadata(cell_id) {
+            Some(metadata) => serialize_to_js(&metadata).unwrap_or(JsValue::UNDEFINED),
+            None => JsValue::UNDEFINED,
+        }
     }
 
     /// Get a cell's fractional index position string.

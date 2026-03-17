@@ -853,28 +853,24 @@ impl NotebookDoc {
         read_str(&self.doc, &cell_obj, "cell_type")
     }
 
-    /// Get a cell's outputs as a JSON array string (O(1) lookup).
-    pub fn get_cell_outputs_json(&self, cell_id: &str) -> Option<String> {
+    /// Get a cell's outputs as a Vec of JSON strings (O(1) lookup).
+    ///
+    /// Each element is a JSON-encoded Jupyter output object (or manifest hash).
+    pub fn get_cell_outputs(&self, cell_id: &str) -> Option<Vec<String>> {
         let cell_obj = self.cell_obj_for(cell_id)?;
         let list_id = self.list_id(&cell_obj, "outputs")?;
         let len = self.doc.length(&list_id);
-        let outputs: Vec<String> = (0..len)
-            .map(|i| read_str(&self.doc, &list_id, i).unwrap_or_default())
-            .collect();
-        Some(serde_json::to_string(&outputs).unwrap_or_else(|_| "[]".to_string()))
+        Some(
+            (0..len)
+                .map(|i| read_str(&self.doc, &list_id, i).unwrap_or_default())
+                .collect(),
+        )
     }
 
     /// Get a cell's execution count (O(1) lookup).
     pub fn get_cell_execution_count(&self, cell_id: &str) -> Option<String> {
         let cell_obj = self.cell_obj_for(cell_id)?;
         read_str(&self.doc, &cell_obj, "execution_count")
-    }
-
-    /// Get a cell's metadata as a JSON object string (O(1) lookup).
-    pub fn get_cell_metadata_json(&self, cell_id: &str) -> Option<String> {
-        let cell_obj = self.cell_obj_for(cell_id)?;
-        let metadata = read_cell_metadata(&self.doc, &cell_obj);
-        Some(serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string()))
     }
 
     /// Get a cell's fractional index position string (O(1) lookup).
@@ -4050,11 +4046,11 @@ mod tests {
             Some("null".to_string())
         );
 
-        // Verify outputs default to empty array
-        assert_eq!(doc.get_cell_outputs_json("cell-b"), Some("[]".to_string()));
+        // Verify outputs default to empty vec
+        assert_eq!(doc.get_cell_outputs("cell-b"), Some(vec![]));
 
         // Verify metadata default to empty object
-        assert_eq!(doc.get_cell_metadata_json("cell-a"), Some("{}".to_string()));
+        assert_eq!(doc.get_cell_metadata("cell-a"), Some(serde_json::json!({})));
 
         // Verify position is present
         assert!(doc.get_cell_position("cell-a").is_some());
@@ -4063,9 +4059,9 @@ mod tests {
         // Verify nonexistent cell returns None for all accessors
         assert_eq!(doc.get_cell_source("nonexistent"), None);
         assert_eq!(doc.get_cell_type("nonexistent"), None);
-        assert_eq!(doc.get_cell_outputs_json("nonexistent"), None);
+        assert_eq!(doc.get_cell_outputs("nonexistent"), None);
         assert_eq!(doc.get_cell_execution_count("nonexistent"), None);
-        assert_eq!(doc.get_cell_metadata_json("nonexistent"), None);
+        assert_eq!(doc.get_cell_metadata("nonexistent"), None);
         assert_eq!(doc.get_cell_position("nonexistent"), None);
     }
 }
