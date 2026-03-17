@@ -11,8 +11,10 @@ import {
   type CellSnapshot,
   cellSnapshotsToNotebookCells,
   cellSnapshotsToNotebookCellsSync,
+  materializeCellFromWasm,
 } from "../lib/materialize-cells";
 import {
+  getCellById,
   getNotebookCellsSnapshot,
   replaceNotebookCells,
   resetNotebookCells,
@@ -172,21 +174,68 @@ export function useAutomergeNotebook() {
   // Coalescing timer for incoming sync frames — when an agent is active,
   // frames arrive rapidly. Instead of materializing on every frame, batch
   // into a single materialization per ~32ms window.
+  //
+  // Tracks whether a full or incremental materialize is needed:
+  // - pendingFullMaterialize: structural change detected (add/delete/move)
+  //   or non-source change without attributions → full re-read
+  // - pendingCellIds: set of cell IDs with known changes (from attributions)
+  //   → only re-read those cells via per-cell WASM accessors
   const pendingMaterializeTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
-  const materializeNeededRef = useRef(false);
+  const pendingFullMaterializeRef = useRef(false);
+  const pendingCellIdsRef = useRef<Set<string>>(new Set());
 
   const scheduleMaterialize = useCallback(
-    (handle: NotebookHandle) => {
-      materializeNeededRef.current = true;
+    (handle: NotebookHandle, changedCellIds?: string[]) => {
+      if (changedCellIds && changedCellIds.length > 0) {
+        for (const id of changedCellIds) pendingCellIdsRef.current.add(id);
+      } else {
+        // No specific cell IDs — need full materialization
+        pendingFullMaterializeRef.current = true;
+      }
       if (pendingMaterializeTimerRef.current) return;
       pendingMaterializeTimerRef.current = setTimeout(async () => {
         pendingMaterializeTimerRef.current = null;
-        if (materializeNeededRef.current) {
-          materializeNeededRef.current = false;
+        const needsFull = pendingFullMaterializeRef.current;
+        const cellIds = pendingCellIdsRef.current;
+        pendingFullMaterializeRef.current = false;
+        pendingCellIdsRef.current = new Set();
+
+        if (needsFull) {
           await materializeCells(handle);
           notifyMetadataChanged();
+          return;
+        }
+
+        if (cellIds.size > 0) {
+          // Incremental: check for structural changes first
+          const wasmIds = handle.get_cell_ids();
+          const currentIdList = getNotebookCellsSnapshot().map((c) => c.id);
+          const idsMatch =
+            wasmIds.length === currentIdList.length &&
+            wasmIds.every((id, i) => id === currentIdList[i]);
+
+          if (!idsMatch) {
+            // Structural change — fall back to full materialization
+            await materializeCells(handle);
+            notifyMetadataChanged();
+            return;
+          }
+
+          // Per-cell incremental update
+          const cache = outputCacheRef.current;
+          for (const cellId of cellIds) {
+            const cell = materializeCellFromWasm(
+              handle,
+              cellId,
+              cache,
+              getCellById(cellId),
+            );
+            if (cell) {
+              updateCellById(cellId, () => cell);
+            }
+          }
         }
       }, 32);
     },
@@ -326,7 +375,17 @@ export function useAutomergeNotebook() {
                     notifyMetadataChanged();
                   }
                 } else if (frameEvent.changed) {
-                  scheduleMaterialize(handle);
+                  // Extract changed cell IDs from attributions for incremental update.
+                  // If no attributions (output/metadata-only changes), passes undefined
+                  // which triggers full materialization.
+                  const changedIds = frameEvent.attributions?.length
+                    ? [
+                        ...new Set(
+                          frameEvent.attributions.map((a) => a.cell_id),
+                        ),
+                      ]
+                    : undefined;
+                  scheduleMaterialize(handle, changedIds);
                 }
                 if (
                   frameEvent.attributions &&

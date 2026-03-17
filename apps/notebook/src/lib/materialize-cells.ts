@@ -1,4 +1,5 @@
 import type { JupyterOutput, NotebookCell } from "../types";
+import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { logger } from "./logger";
 import type { OutputManifest } from "./manifest-resolution";
 import { isManifestHash, resolveManifest } from "./manifest-resolution";
@@ -254,4 +255,80 @@ export async function cellSnapshotsToNotebookCells(
       };
     }),
   );
+}
+
+/**
+ * Read a single cell from the WASM handle and convert to NotebookCell.
+ *
+ * Uses per-cell WASM accessors (O(1) doc lookups) instead of serializing
+ * the entire document. Output resolution uses cache-only (no blob fetches).
+ */
+export function materializeCellFromWasm(
+  handle: NotebookHandle,
+  cellId: string,
+  cache: Map<string, JupyterOutput>,
+  previousCell?: NotebookCell,
+): NotebookCell | null {
+  const cellType = handle.get_cell_type(cellId);
+  if (!cellType) return null;
+
+  const source = handle.get_cell_source(cellId) ?? "";
+  const metadata = handle.get_cell_metadata(cellId) ?? {};
+
+  if (cellType === "code") {
+    const ecStr = handle.get_cell_execution_count(cellId);
+    const executionCount =
+      !ecStr || ecStr === "null" ? null : Number.parseInt(ecStr, 10);
+
+    const rawOutputs: string[] = handle.get_cell_outputs(cellId) ?? [];
+    const resolvedOutputs = rawOutputs
+      .map((outputStr: string) => {
+        const cached = cache.get(outputStr);
+        if (cached) return cached;
+
+        if (!isManifestHash(outputStr)) {
+          try {
+            const output = JSON.parse(outputStr) as JupyterOutput;
+            cache.set(outputStr, output);
+            return output;
+          } catch {
+            return null;
+          }
+        }
+        return null;
+      })
+      .filter((o): o is JupyterOutput => o !== null);
+
+    return {
+      id: cellId,
+      cell_type: "code",
+      source,
+      execution_count: Number.isNaN(executionCount) ? null : executionCount,
+      outputs: mergeConsecutiveStreams(resolvedOutputs),
+      metadata,
+    };
+  }
+
+  if (cellType === "markdown") {
+    // Preserve resolvedAssets from the previous cell — these are resolved
+    // during full materialization and don't change on source edits.
+    const resolvedAssets =
+      previousCell?.cell_type === "markdown"
+        ? previousCell.resolvedAssets
+        : undefined;
+    return {
+      id: cellId,
+      cell_type: "markdown",
+      source,
+      metadata,
+      resolvedAssets,
+    };
+  }
+
+  return {
+    id: cellId,
+    cell_type: "raw",
+    source,
+    metadata,
+  };
 }
