@@ -1003,6 +1003,16 @@ async fn run_upgrade(
 ) -> Result<(), String> {
     log::info!("[upgrade] Starting upgrade sequence...");
 
+    // Save session now in case begin_upgrade() missed windows that were still
+    // loading, or new windows were opened between begin_upgrade() and this call.
+    // This overwrites the file begin_upgrade() wrote, which is fine — the
+    // registry is strictly a superset at this point.
+    registry.prune_stale_entries(&app);
+    if let Err(e) = session::save_session(registry.inner(), &app) {
+        log::warn!("[upgrade] Failed to re-save session: {}", e);
+        // Non-fatal — begin_upgrade() already saved a session
+    }
+
     // Step 1: Save all dirty notebooks
     app.emit("upgrade:progress", UpgradeProgress::SavingNotebooks)
         .map_err(|e| e.to_string())?;
@@ -4247,14 +4257,10 @@ pub fn run(
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     let registry_for_open = window_registry.clone();
     let registry_for_session = window_registry.clone();
-    let registry_for_exit_session = window_registry.clone();
     let registry_for_window_close = window_registry.clone();
     app.run(move |app_handle, event| {
         // Keep the app process alive when the final window is closed on macOS.
         // Other platforms should exit when the final window closes.
-        //
-        // Session save happens here (not at RunEvent::Exit) because Exit fires
-        // AFTER WindowEvent::Destroyed removes all registry entries.
         #[cfg(target_os = "macos")]
         if let RunEvent::ExitRequested { code, api, .. } = &event {
             if code.is_none() && app_handle.webview_windows().is_empty() {
@@ -4264,23 +4270,6 @@ pub fn run(
                     "macos last-window close",
                 );
                 api.prevent_exit();
-            } else {
-                // Real quit (Cmd+Q, menu quit, or code-initiated exit).
-                // Save session now while registry still has live entries.
-                log::info!("[session] ExitRequested: saving session before windows are destroyed");
-                registry_for_exit_session.prune_stale_entries(app_handle);
-                if let Err(e) = session::save_session(&registry_for_exit_session, app_handle) {
-                    log::error!("[session] Failed to save session on exit: {}", e);
-                }
-            }
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        if let RunEvent::ExitRequested { .. } = &event {
-            log::info!("[session] ExitRequested: saving session before windows are destroyed");
-            registry_for_exit_session.prune_stale_entries(app_handle);
-            if let Err(e) = session::save_session(&registry_for_exit_session, app_handle) {
-                log::error!("[session] Failed to save session on exit: {}", e);
             }
         }
 
@@ -4310,14 +4299,14 @@ pub fn run(
             refresh_native_menu(app_handle, &registry_for_window_close);
         }
 
-        // Fallback session save at Exit. Normally ExitRequested (above) saves
-        // the session while windows are still alive. This fires after windows
-        // are destroyed, so the registry is usually empty and save_session
-        // returns early without overwriting the file already written above.
+        // Save session state when app is about to exit
+        // Use Exit (not ExitRequested) as it fires reliably on all platforms
         if let RunEvent::Exit = &event {
-            log::info!("[session] App exiting, saving session (fallback)...");
+            log::info!("[session] App exiting, saving session...");
             if let Err(e) = session::save_session(&registry_for_session, app_handle) {
                 log::error!("[session] Failed to save session: {}", e);
+            } else {
+                log::info!("[session] Session saved successfully");
             }
         }
 
