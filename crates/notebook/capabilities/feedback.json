@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "feedback",
+  "description": "Minimal capabilities for the feedback window",
+  "windows": ["feedback"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-set-theme",
+    "shell:default"
+  ]
+}
