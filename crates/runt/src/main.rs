@@ -2272,7 +2272,7 @@ async fn doctor_command(
         if launchd_not_loaded && config_exists && binary_exists && !daemon_running_before {
             match runt_workspace::launchd_start() {
                 Ok(()) => {
-                    actions_taken.push("Reset launchd service registration".to_string());
+                    actions_taken.push("Ensured launchd service registration".to_string());
                 }
                 Err(e) => {
                     eprintln!("Failed to reset launchd registration: {e}");

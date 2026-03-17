@@ -283,23 +283,31 @@ fn open_notebook_installed(path: Option<&Path>, extra_args: &[&str]) -> Result<(
 
 /// Get the current user's UID for the launchd gui domain.
 #[cfg(target_os = "macos")]
-pub fn launchd_uid() -> String {
-    Command::new("id")
+pub fn launchd_uid() -> Result<String, String> {
+    let output = Command::new("id")
         .args(["-u"])
         .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "501".to_string())
+        .map_err(|e| format!("Failed to run `id -u`: {e}"))?;
+
+    let uid = String::from_utf8(output.stdout)
+        .map_err(|e| format!("Non-UTF8 output from `id -u`: {e}"))?;
+
+    let uid = uid.trim().to_string();
+    if uid.is_empty() {
+        return Err("Empty UID from `id -u`".to_string());
+    }
+
+    Ok(uid)
 }
 
 /// Path to the launchd plist for the current channel.
 #[cfg(target_os = "macos")]
-pub fn launchd_plist_path() -> PathBuf {
-    dirs::home_dir().expect("No home directory").join(format!(
+pub fn launchd_plist_path() -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
+    Ok(home.join(format!(
         "Library/LaunchAgents/{}.plist",
         daemon_launchd_label()
-    ))
+    )))
 }
 
 /// Stop the daemon's launchd service via `bootout`.
@@ -307,7 +315,7 @@ pub fn launchd_plist_path() -> PathBuf {
 /// Ignores errors if the service is not currently loaded.
 #[cfg(target_os = "macos")]
 pub fn launchd_stop() -> Result<(), String> {
-    let uid = launchd_uid();
+    let uid = launchd_uid()?;
     let label = daemon_launchd_label();
     let domain_target = format!("gui/{uid}/{label}");
 
@@ -333,36 +341,81 @@ pub fn launchd_stop() -> Result<(), String> {
 
 /// Start the daemon's launchd service via `bootstrap`.
 ///
-/// Clears any stale registration first (bootout, ignoring errors),
-/// then bootstraps fresh from the plist.
+/// Clears any stale registration first via `launchd_stop()` (ignoring
+/// "not found" errors), then bootstraps fresh from the plist.
 #[cfg(target_os = "macos")]
 pub fn launchd_start() -> Result<(), String> {
-    let plist = launchd_plist_path();
+    let plist = launchd_plist_path()?;
     if !plist.exists() {
         return Err(format!("launchd plist not found at {}", plist.display()));
     }
 
-    let uid = launchd_uid();
-    let label = daemon_launchd_label();
+    let uid = launchd_uid()?;
     let domain = format!("gui/{uid}");
 
-    // Clear any stale registration (ignore errors)
-    let _ = Command::new("launchctl")
-        .args(["bootout", &format!("{domain}/{label}")])
-        .output();
+    // Clear any stale registration (ignore "not found" errors)
+    launchd_stop().ok();
 
     // Brief pause for launchd to clean up
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     // Bootstrap fresh
     let output = Command::new("launchctl")
-        .args(["bootstrap", &domain, &plist.to_string_lossy()])
+        .arg("bootstrap")
+        .arg(&domain)
+        .arg(&plist)
         .output()
         .map_err(|e| format!("Failed to run launchctl bootstrap: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         // Error 37 means service is already loaded (which is fine)
+        if !stderr.contains("37") {
+            return Err(format!("launchctl bootstrap failed: {}", stderr.trim()));
+        }
+    }
+
+    Ok(())
+}
+
+/// Check whether the daemon's launchd service is currently loaded.
+#[cfg(target_os = "macos")]
+pub fn launchd_is_loaded() -> Result<bool, String> {
+    let label = daemon_launchd_label();
+    let output = Command::new("launchctl")
+        .args(["list", label])
+        .output()
+        .map_err(|e| format!("Failed to run launchctl list: {e}"))?;
+    Ok(output.status.success())
+}
+
+/// Ensure the daemon's launchd service is loaded, without restarting it
+/// if it's already running.
+///
+/// Unlike `launchd_start()` which always does bootout+bootstrap (a restart),
+/// this only bootstraps if the service is not currently loaded.
+#[cfg(target_os = "macos")]
+pub fn launchd_ensure_loaded() -> Result<(), String> {
+    if launchd_is_loaded()? {
+        return Ok(());
+    }
+    // Not loaded — bootstrap it
+    let plist = launchd_plist_path()?;
+    if !plist.exists() {
+        return Err(format!("launchd plist not found at {}", plist.display()));
+    }
+    let uid = launchd_uid()?;
+    let domain = format!("gui/{uid}");
+
+    let output = Command::new("launchctl")
+        .arg("bootstrap")
+        .arg(&domain)
+        .arg(&plist)
+        .output()
+        .map_err(|e| format!("Failed to run launchctl bootstrap: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         if !stderr.contains("37") {
             return Err(format!("launchctl bootstrap failed: {}", stderr.trim()));
         }

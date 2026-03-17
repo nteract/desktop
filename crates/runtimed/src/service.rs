@@ -481,7 +481,7 @@ impl ServiceManager {
 
     #[cfg(target_os = "macos")]
     fn start_macos(&self) -> ServiceResult<()> {
-        runt_workspace::launchd_start().map_err(ServiceError::StartFailed)?;
+        runt_workspace::launchd_ensure_loaded().map_err(ServiceError::StartFailed)?;
 
         info!("[service] Started launchd service");
         Ok(())
