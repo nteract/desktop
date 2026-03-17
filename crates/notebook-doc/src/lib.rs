@@ -34,6 +34,7 @@
 //!     notebook_metadata: Str      ← Legacy JSON string (backward compat, dual-written)
 //! ```
 
+pub mod diff;
 pub mod frame_types;
 pub mod metadata;
 pub mod pep723;
