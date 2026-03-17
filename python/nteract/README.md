@@ -110,7 +110,7 @@ claude mcp add nteract -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-ni
 
 | Tool | Description |
 |------|-------------|
-| `list_notebooks` | List all open notebook sessions |
+| `list_active_notebooks` | List all open notebook sessions |
 | `join_notebook` | Join an existing notebook session by ID |
 | `open_notebook` | Open an existing .ipynb file |
 | `create_notebook` | Create a new notebook |

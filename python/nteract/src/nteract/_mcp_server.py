@@ -498,7 +498,7 @@ def _execution_result_to_content(
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def list_notebooks() -> list[dict[str, Any]]:
+async def list_active_notebooks() -> list[dict[str, Any]]:
     """List all open notebook sessions.
 
     Returns notebooks currently open by users or other agents.
@@ -541,7 +541,7 @@ if not _no_show:
             else:
                 raise ValueError(
                     "No notebook_id provided and no active session. "
-                    "Use list_notebooks() to find a notebook_id, or connect to one first."
+                    "Use list_active_notebooks() to find a notebook_id, or connect to one first."
                 )
 
         client = _get_daemon_client()
@@ -550,7 +550,7 @@ if not _no_show:
         if target not in room_ids:
             raise ValueError(
                 f"Notebook '{target}' is not currently running. "
-                f"Use list_notebooks() to see active notebooks."
+                f"Use list_active_notebooks() to see active notebooks."
             )
 
         if not os.path.isabs(target):
@@ -570,7 +570,7 @@ async def join_notebook(
 ) -> dict[str, Any]:
     """Join an existing notebook session by ID.
 
-    Use list_notebooks() to see available sessions. To open a file from disk,
+    Use list_active_notebooks() to see available sessions. To open a file from disk,
     use open_notebook(path). To create a new notebook, use create_notebook().
     """
     global _session
@@ -595,7 +595,10 @@ async def join_notebook(
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
 async def open_notebook(path: str, ctx: Context | None = None) -> dict[str, Any]:
-    """Open an existing .ipynb file. Use create_notebook() for new notebooks."""
+    """Open an existing .ipynb file. The kernel starts automatically.
+
+    Use create_notebook() for new notebooks.
+    """
     global _session
     if ctx:
         _sniff_client_name(ctx)
@@ -615,10 +618,20 @@ async def open_notebook(path: str, ctx: Context | None = None) -> dict[str, Any]
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
 async def create_notebook(
     runtime: Literal["python", "deno"] = "python",
-    working_dir: str | None = None,
+    working_dir: Annotated[
+        str,
+        Field(
+            description="Working directory for the kernel and"
+            " environment detection (e.g. pyproject.toml)."
+            f" Defaults to {os.getcwd()}"
+        ),
+    ] = os.getcwd(),
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Create a new empty notebook in memory. Call save_notebook(path) to persist to disk."""
+    """Create a new empty notebook. The kernel starts automatically.
+
+    Call save_notebook(path) to persist to disk.
+    """
     global _session
     if ctx:
         _sniff_client_name(ctx)
@@ -785,7 +798,7 @@ async def create_cell(
     and_run: Annotated[
         bool, Field(description="Execute the cell immediately after creation")
     ] = False,
-    timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 5.0,
+    timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 30.0,
 ) -> list[ContentItem]:
     """Create a cell, optionally executing it."""
     session = await _get_session()
@@ -814,7 +827,7 @@ async def set_cell(
     and_run: Annotated[
         bool, Field(description="Execute the cell after changes (code cells only)")
     ] = False,
-    timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 5.0,
+    timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 30.0,
 ) -> ContentItem | list[ContentItem]:
     """Update a cell's source and/or type. Use replace_match for targeted edits."""
     session = await _get_session()
@@ -886,7 +899,7 @@ async def replace_match(
     ] = "",
     context_after: Annotated[str, Field(description="Text that must appear after the match")] = "",
     and_run: Annotated[bool, Field(description="Execute the cell immediately after edit")] = False,
-    timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 5.0,
+    timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 30.0,
 ) -> ContentItem | list[ContentItem]:
     """Replace matched text in a cell. Prefer this for simple, targeted edits.
 
@@ -938,7 +951,7 @@ async def replace_regex(
         str, Field(description="Literal replacement text — not re.sub syntax, no backreferences")
     ],
     and_run: Annotated[bool, Field(description="Execute the cell immediately after edit")] = False,
-    timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 5.0,
+    timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 30.0,
 ) -> ContentItem | list[ContentItem]:
     """Replace a regex-matched span. Use for anchors, lookarounds, or zero-width insertions.
 
@@ -1131,7 +1144,7 @@ async def clear_outputs(cell_id: str) -> dict[str, Any]:
 
 async def _execute_cell_internal(
     cell_id: str,
-    timeout_secs: float = 5.0,
+    timeout_secs: float = 30.0,
 ) -> list[ContentItem]:
     """Internal execution with streaming and partial results."""
     session = await _get_session()
@@ -1172,7 +1185,7 @@ async def execute_cell(
     cell_id: str,
     timeout_secs: Annotated[
         float, Field(description="Max seconds to wait; returns partial results if exceeded")
-    ] = 5.0,
+    ] = 30.0,
 ) -> list[ContentItem]:
     """Execute a cell. Returns partial results if timeout exceeded."""
     return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
