@@ -606,12 +606,9 @@ async def open_notebook(path: str, ctx: Context | None = None) -> dict[str, Any]
 
     _session = await runtimed.AsyncSession.open_notebook(path, peer_label=_peer_label())
     session = _session
-    info = await session.connection_info()
     return {
         "notebook_id": session.notebook_id,
         "path": path,
-        "cell_count": info.cell_count if info else 0,
-        "needs_trust_approval": info.needs_trust_approval if info else False,
     }
 
 
@@ -634,11 +631,9 @@ async def create_notebook(
         runtime=runtime, working_dir=working_dir, peer_label=_peer_label()
     )
     session = _session
-    info = await session.connection_info()
     return {
         "notebook_id": session.notebook_id,
         "runtime": runtime,
-        "cell_count": info.cell_count if info else 1,
     }
 
 
