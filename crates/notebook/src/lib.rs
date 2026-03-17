@@ -3354,8 +3354,14 @@ pub fn run(
             }
             None => {
                 if let Some(ref session) = restored_session {
-                    // Use the first session window (was the primary window at save time).
-                    if let Some(first_session) = session.windows.first() {
+                    // Find the primary window: use explicit primary_label if present,
+                    // otherwise fall back to first entry (sorted by label during save).
+                    let primary = session
+                        .primary_label
+                        .as_ref()
+                        .and_then(|label| session.windows.iter().find(|w| &w.label == label))
+                        .or_else(|| session.windows.first());
+                    if let Some(first_session) = primary {
                         match (&first_session.path, &first_session.env_id) {
                             (Some(path), _) if path.exists() => {
                                 let title = path
@@ -3631,12 +3637,25 @@ pub fn run(
             let menu = crate::menu::create_menu(app.handle(), &window_display_names)?;
             app.set_menu(menu)?;
 
-            // Additional session windows (skip first, already created in setup).
+            // Additional session windows (exclude the primary, already created in setup).
             // Created after daemon is confirmed available to avoid sync tasks
             // racing with daemon startup.
             let additional_session_windows: Vec<session::WindowSession> =
-                if let Some(session) = &restored_session {
-                    session.windows.iter().skip(1).cloned().collect()
+                if let Some(ref session) = restored_session {
+                    // Find the primary label used during restore. This matches the
+                    // session entry selected in the startup block above.
+                    let primary = session
+                        .primary_label
+                        .as_ref()
+                        .and_then(|label| session.windows.iter().find(|w| &w.label == label))
+                        .or_else(|| session.windows.first());
+                    let primary_label = primary.map(|w| w.label.as_str());
+                    session
+                        .windows
+                        .iter()
+                        .filter(|w| primary_label.is_none_or(|p| w.label != p))
+                        .cloned()
+                        .collect()
                 } else {
                     Vec::new()
                 };

@@ -29,7 +29,11 @@ pub struct SessionState {
     pub schema_version: u32,
     /// ISO 8601 timestamp when session was saved
     pub saved_at: String,
-    /// List of open windows
+    /// Label of the window that should be restored first (the primary notebook).
+    /// When absent (e.g., old session files), the first entry in `windows` is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_label: Option<String>,
+    /// List of open windows (sorted by label for deterministic ordering)
     pub windows: Vec<WindowSession>,
 }
 
@@ -53,7 +57,7 @@ pub(crate) fn save_session_to(
 ) -> Result<(), String> {
     let contexts = registry.contexts.lock().map_err(|e| e.to_string())?;
 
-    let windows: Vec<WindowSession> = contexts
+    let mut windows: Vec<WindowSession> = contexts
         .iter()
         .filter_map(|(label, context)| {
             let path = context.path.lock().ok()?.clone();
@@ -81,9 +85,16 @@ pub(crate) fn save_session_to(
         return Ok(());
     }
 
+    // Sort by label for deterministic ordering (HashMap iteration is arbitrary).
+    windows.sort_by(|a, b| a.label.cmp(&b.label));
+
+    // Use the first window as the primary (the one to restore in the startup window).
+    let primary_label = windows.first().map(|w| w.label.clone());
+
     let session = SessionState {
         schema_version: SessionState::CURRENT_SCHEMA_VERSION,
         saved_at: chrono::Utc::now().to_rfc3339(),
+        primary_label,
         windows,
     };
 
@@ -242,19 +253,18 @@ mod tests {
         assert_eq!(loaded.schema_version, SessionState::CURRENT_SCHEMA_VERSION);
         assert_eq!(loaded.windows.len(), 2);
 
-        let saved_win = loaded
-            .windows
-            .iter()
-            .find(|w| w.label == "notebook-ab1234cd")
-            .unwrap();
+        // Windows are sorted by label for deterministic ordering
+        assert_eq!(loaded.windows[0].label, "notebook-ab1234cd");
+        assert_eq!(loaded.windows[1].label, "notebook-abc12345");
+
+        // Primary label is set to the first sorted window
+        assert_eq!(loaded.primary_label.as_deref(), Some("notebook-ab1234cd"));
+
+        let saved_win = &loaded.windows[0];
         assert_eq!(saved_win.path.as_ref().unwrap(), &saved_path);
         assert!(saved_win.env_id.is_none());
 
-        let untitled = loaded
-            .windows
-            .iter()
-            .find(|w| w.label == "notebook-abc12345")
-            .unwrap();
+        let untitled = &loaded.windows[1];
         assert!(untitled.path.is_none());
         assert_eq!(untitled.env_id.as_deref().unwrap(), "env-uuid-1234");
         assert_eq!(untitled.runtime, "python");
@@ -297,6 +307,7 @@ mod tests {
         let session = SessionState {
             schema_version: SessionState::CURRENT_SCHEMA_VERSION,
             saved_at: stale_time.to_rfc3339(),
+            primary_label: Some("notebook-test1234".to_string()),
             windows: vec![WindowSession {
                 label: "notebook-test1234".to_string(),
                 path: None,
