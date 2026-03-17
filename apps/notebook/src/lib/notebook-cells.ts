@@ -33,6 +33,12 @@ const _cellSubscribers = new Map<string, Set<() => void>>();
 let _materializeVersion = 0;
 const _materializeSubscribers = new Set<() => void>();
 
+// Source edit version — bumps on ANY cell source change (including
+// updateCellById). Used by cross-cell features like global find that
+// need to recompute when any source text changes.
+let _sourceVersion = 0;
+const _sourceSubscribers = new Set<() => void>();
+
 function emitIdsChange(): void {
   for (const cb of _idsSubscribers) cb();
 }
@@ -40,6 +46,11 @@ function emitIdsChange(): void {
 function emitMaterializeChange(): void {
   _materializeVersion++;
   for (const cb of _materializeSubscribers) cb();
+}
+
+function emitSourceChange(): void {
+  _sourceVersion++;
+  for (const cb of _sourceSubscribers) cb();
 }
 
 function emitCellChange(id: string): void {
@@ -78,6 +89,15 @@ export function useMaterializeVersion(): number {
   return useSyncExternalStore(subscribeMaterialize, getMaterializeSnapshot);
 }
 
+/**
+ * Subscribe to source edit version. Re-renders on ANY source change —
+ * both per-cell (updateCellById) and full-array (replace/update).
+ * Use for features like global find that need to recompute across all cells.
+ */
+export function useSourceVersion(): number {
+  return useSyncExternalStore(subscribeSource, getSourceSnapshot);
+}
+
 // ── Subscription helpers ────────────────────────────────────────────────
 
 function subscribeIds(callback: () => void): () => void {
@@ -96,6 +116,15 @@ function subscribeMaterialize(callback: () => void): () => void {
 
 function getMaterializeSnapshot(): number {
   return _materializeVersion;
+}
+
+function subscribeSource(callback: () => void): () => void {
+  _sourceSubscribers.add(callback);
+  return () => _sourceSubscribers.delete(callback);
+}
+
+function getSourceSnapshot(): number {
+  return _sourceVersion;
 }
 
 function subscribeCellById(id: string): (cb: () => void) => () => void {
@@ -133,6 +162,9 @@ export function updateCellById(
   const updated = updater(cell);
   _cellMap.set(id, updated);
   emitCellChange(id);
+  if (updated.source !== cell.source) {
+    emitSourceChange();
+  }
 }
 
 /**
@@ -153,6 +185,7 @@ export function replaceNotebookCells(cells: NotebookCell[]): void {
   }
 
   emitMaterializeChange();
+  emitSourceChange();
   emitAllCellChanges();
 }
 
@@ -180,6 +213,7 @@ export function updateNotebookCells(
   }
 
   emitMaterializeChange();
+  emitSourceChange();
 
   // Notify per-cell subscribers for cells that actually changed
   for (let i = 0; i < newCells.length; i++) {

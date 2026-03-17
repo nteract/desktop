@@ -150,7 +150,7 @@ export function useAutomergeNotebook() {
       pendingSyncTimerRef.current = setTimeout(() => {
         pendingSyncTimerRef.current = null;
         syncToRelay(handle);
-      }, 80);
+      }, 20);
     },
     [syncToRelay],
   );
@@ -548,24 +548,39 @@ export function useAutomergeNotebook() {
     [rematerializeCellsSync, syncToRelay],
   );
 
+  /**
+   * Flush any pending debounced sync immediately so the daemon has the
+   * latest source. Call before execute/runAll to avoid stale code.
+   */
+  const flushSync = useCallback(async () => {
+    const handle = handleRef.current;
+    if (!handle) return;
+
+    // Cancel pending debounced sync
+    if (pendingSyncTimerRef.current) {
+      clearTimeout(pendingSyncTimerRef.current);
+      pendingSyncTimerRef.current = null;
+    }
+
+    // Generate and send sync message, awaiting the IPC
+    const msg = handle.generate_sync_message();
+    if (msg) {
+      const frameData = new Uint8Array(1 + msg.length);
+      frameData[0] = frame_types.AUTOMERGE_SYNC;
+      frameData.set(msg, 1);
+      await invoke("send_frame", {
+        frameData: Array.from(frameData),
+      });
+    }
+  }, []);
+
   // ── Save / Open / Clone ────────────────────────────────────────────
 
   const save = useCallback(async () => {
     try {
-      // Flush any pending sync to the relay so the daemon has the latest
-      // source before writing to disk.
-      const handle = handleRef.current;
-      if (handle) {
-        const msg = handle.generate_sync_message();
-        if (msg) {
-          const frameData = new Uint8Array(1 + msg.length);
-          frameData[0] = frame_types.AUTOMERGE_SYNC;
-          frameData.set(msg, 1);
-          await invoke("send_frame", {
-            frameData: Array.from(frameData),
-          });
-        }
-      }
+      // Flush any pending sync so the daemon has the latest source before
+      // writing to disk.
+      await flushSync();
 
       const hasPath = await invoke<boolean>("has_notebook_path");
 
@@ -585,7 +600,7 @@ export function useAutomergeNotebook() {
     } catch (e) {
       logger.error("[automerge-notebook] Save failed:", e);
     }
-  }, []);
+  }, [flushSync]);
 
   const openNotebook = useCallback(async () => {
     try {
@@ -717,5 +732,6 @@ export function useAutomergeNotebook() {
     setExecutionCount,
     setCellSourceHidden,
     setCellOutputsHidden,
+    flushSync,
   };
 }

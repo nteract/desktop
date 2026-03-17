@@ -126,6 +126,7 @@ function AppContent() {
     clearCellOutputs,
     setCellSourceHidden,
     setCellOutputsHidden,
+    flushSync,
   } = useAutomergeNotebook();
 
   // Global find (Cmd+F)
@@ -489,6 +490,9 @@ function AppContent() {
       (c) => c.cell_type === "code",
     );
 
+    // Flush pending source sync so daemon has latest code
+    await flushSync();
+
     // Clear all outputs locally (immediate feedback)
     for (const cell of codeCells) {
       clearCellOutputs(cell.id);
@@ -517,6 +521,7 @@ function AppContent() {
   }, [
     clearCellOutputs,
     clearOutputs,
+    flushSync,
     shutdownKernel,
     tryStartKernel,
     daemonRunAllCells,
@@ -559,6 +564,9 @@ function AppContent() {
       const cell = getNotebookCellsSnapshot().find((c) => c.id === cellId);
       if (!cell || cell.cell_type !== "code") return;
 
+      // Flush pending source sync so daemon has latest code before executing
+      await flushSync();
+
       // Clear outputs immediately so user sees feedback
       clearCellOutputs(cellId);
 
@@ -579,7 +587,14 @@ function AppContent() {
         logger.warn("[App] handleExecuteCell: no kernel available");
       }
     },
-    [clearCellOutputs, clearOutputs, kernelStatus, tryStartKernel, executeCell],
+    [
+      clearCellOutputs,
+      clearOutputs,
+      flushSync,
+      kernelStatus,
+      tryStartKernel,
+      executeCell,
+    ],
   );
 
   const handleAddCell = useCallback(
@@ -610,6 +625,9 @@ function AppContent() {
     );
     if (codeCells.length === 0) return;
 
+    // Flush pending source sync so daemon has latest code
+    await flushSync();
+
     // Clear all outputs first (local for immediate feedback)
     for (const cell of codeCells) {
       clearCellOutputs(cell.id);
@@ -639,6 +657,7 @@ function AppContent() {
     tryStartKernel,
     clearCellOutputs,
     clearOutputs,
+    flushSync,
     daemonRunAllCells,
   ]);
 
