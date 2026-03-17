@@ -115,6 +115,10 @@ interface CodeCellProps {
   onToggleSourceHidden?: (hidden: boolean) => void;
   /** Callback to toggle outputs visibility (JupyterLab convention) */
   onToggleOutputsHidden?: (hidden: boolean) => void;
+  /** Number of consecutive fully-hidden cells in this group (including this one) */
+  hiddenGroupCount?: number;
+  /** Callback to expand all cells in a hidden group */
+  onExpandHiddenGroup?: () => void;
 }
 
 export function CodeCell({
@@ -141,6 +145,8 @@ export function CodeCell({
   isDragging,
   onToggleSourceHidden,
   onToggleOutputsHidden,
+  hiddenGroupCount,
+  onExpandHiddenGroup,
 }: CodeCellProps) {
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
@@ -374,29 +380,28 @@ export function CodeCell({
           <>
             {/* Source visibility toggle + Editor */}
             {bothHidden ? (
-              /* Compact layout: both badges side by side when both hidden */
-              <div className="flex justify-start gap-2">
+              <div className="flex justify-start">
                 <button
                   type="button"
-                  onClick={() => onToggleSourceHidden?.(false)}
+                  onClick={() => {
+                    if (onExpandHiddenGroup) {
+                      onExpandHiddenGroup();
+                    } else {
+                      onToggleSourceHidden?.(false);
+                      onToggleOutputsHidden?.(false);
+                    }
+                  }}
                   className="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
-                  title="Show source"
-                >
-                  <Code2 className="h-3 w-3" />
-                  <span className="font-mono truncate max-w-32">
-                    {cell.source.split("\n")[0] || "source"}
-                  </span>
-                  <ChevronRight className="h-3 w-3" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onToggleOutputsHidden?.(false)}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
-                  title="Show outputs"
+                  title={
+                    hiddenGroupCount && hiddenGroupCount > 1
+                      ? `Show ${hiddenGroupCount} cells`
+                      : "Show cell"
+                  }
                 >
                   <span>
-                    {cell.outputs.length} output
-                    {cell.outputs.length !== 1 ? "s" : ""}
+                    {hiddenGroupCount && hiddenGroupCount > 1
+                      ? `${hiddenGroupCount} cells hidden`
+                      : "Cell hidden"}
                   </span>
                   <ChevronRight className="h-3 w-3" />
                 </button>
