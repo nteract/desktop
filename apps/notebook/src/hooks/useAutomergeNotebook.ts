@@ -44,6 +44,56 @@ const wasmReady: Promise<void> = init().then(() => {
 });
 
 // ---------------------------------------------------------------------------
+// CellChangeset types — mirrors the Rust `notebook_doc::diff` types
+// serialized from WASM via serde-wasm-bindgen.
+// ---------------------------------------------------------------------------
+
+/** Which fields changed on a cell (only `true` fields are present in the JS object). */
+interface ChangedFields {
+  source?: boolean;
+  outputs?: boolean;
+  execution_count?: boolean;
+  cell_type?: boolean;
+  metadata?: boolean;
+  position?: boolean;
+  resolved_assets?: boolean;
+}
+
+interface ChangedCell {
+  cell_id: string;
+  fields: ChangedFields;
+}
+
+/** Structural diff between two Automerge head sets, produced by WASM `diff_cells`. */
+interface CellChangeset {
+  changed: ChangedCell[];
+  added: string[];
+  removed: string[];
+  order_changed: boolean;
+}
+
+/** Merge two CellChangesets (for coalescing frames across the throttle window). */
+function mergeChangesets(a: CellChangeset, b: CellChangeset): CellChangeset {
+  const changedMap = new Map<string, ChangedFields>();
+  for (const c of [...a.changed, ...b.changed]) {
+    const existing = changedMap.get(c.cell_id);
+    if (existing) {
+      for (const [key, val] of Object.entries(c.fields)) {
+        if (val) (existing as Record<string, boolean>)[key] = true;
+      }
+    } else {
+      changedMap.set(c.cell_id, { ...c.fields });
+    }
+  }
+  return {
+    changed: [...changedMap].map(([cell_id, fields]) => ({ cell_id, fields })),
+    added: [...new Set([...a.added, ...b.added])],
+    removed: [...new Set([...a.removed, ...b.removed])],
+    order_changed: a.order_changed || b.order_changed,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
 
@@ -175,57 +225,51 @@ export function useAutomergeNotebook() {
   // frames arrive rapidly. Instead of materializing on every frame, batch
   // into a single materialization per ~32ms window.
   //
-  // Tracks whether a full or incremental materialize is needed:
-  // - pendingFullMaterialize: structural change detected (add/delete/move)
-  //   or non-source change without attributions → full re-read
-  // - pendingCellIds: set of cell IDs with known changes (from attributions)
-  //   → only re-read those cells via per-cell WASM accessors
+  // Tracks a CellChangeset that accumulates across frames. If any frame
+  // arrives without a changeset, falls back to full materialization.
   const pendingMaterializeTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
   const pendingFullMaterializeRef = useRef(false);
-  const pendingCellIdsRef = useRef<Set<string>>(new Set());
+  const pendingChangesetRef = useRef<CellChangeset | null>(null);
 
   const scheduleMaterialize = useCallback(
-    (handle: NotebookHandle, changedCellIds?: string[]) => {
-      if (changedCellIds && changedCellIds.length > 0) {
-        for (const id of changedCellIds) pendingCellIdsRef.current.add(id);
+    (handle: NotebookHandle, changeset?: CellChangeset) => {
+      if (changeset) {
+        // Merge into accumulated changeset for this coalescing window.
+        pendingChangesetRef.current = pendingChangesetRef.current
+          ? mergeChangesets(pendingChangesetRef.current, changeset)
+          : changeset;
       } else {
-        // No specific cell IDs — need full materialization
+        // No changeset — can't do incremental, need full materialization.
         pendingFullMaterializeRef.current = true;
       }
       if (pendingMaterializeTimerRef.current) return;
       pendingMaterializeTimerRef.current = setTimeout(async () => {
         pendingMaterializeTimerRef.current = null;
         const needsFull = pendingFullMaterializeRef.current;
-        const cellIds = pendingCellIdsRef.current;
+        const cs = pendingChangesetRef.current;
         pendingFullMaterializeRef.current = false;
-        pendingCellIdsRef.current = new Set();
+        pendingChangesetRef.current = null;
 
-        if (needsFull) {
+        if (needsFull || !cs) {
           await materializeCells(handle);
           notifyMetadataChanged();
           return;
         }
 
-        if (cellIds.size > 0) {
-          // Incremental: check for structural changes first
-          const wasmIds = handle.get_cell_ids();
-          const currentIdList = getNotebookCellsSnapshot().map((c) => c.id);
-          const idsMatch =
-            wasmIds.length === currentIdList.length &&
-            wasmIds.every((id, i) => id === currentIdList[i]);
+        // Structural changes (cells added/removed/reordered) require full
+        // materialization — the cell ID list and ordering need updating.
+        if (cs.added.length > 0 || cs.removed.length > 0 || cs.order_changed) {
+          await materializeCells(handle);
+          notifyMetadataChanged();
+          return;
+        }
 
-          if (!idsMatch) {
-            // Structural change — fall back to full materialization
-            await materializeCells(handle);
-            notifyMetadataChanged();
-            return;
-          }
-
-          // Per-cell incremental update
+        // Incremental: only re-read cells that actually changed.
+        if (cs.changed.length > 0) {
           const cache = outputCacheRef.current;
-          for (const cellId of cellIds) {
+          for (const { cell_id: cellId } of cs.changed) {
             const cell = materializeCellFromWasm(
               handle,
               cellId,
@@ -352,6 +396,7 @@ export function useAutomergeNotebook() {
           const events = result as Array<{
             type: string;
             changed?: boolean;
+            changeset?: CellChangeset;
             attributions?: Array<{
               cell_id: string;
               index: number;
@@ -375,17 +420,9 @@ export function useAutomergeNotebook() {
                     notifyMetadataChanged();
                   }
                 } else if (frameEvent.changed) {
-                  // Extract changed cell IDs from attributions for incremental update.
-                  // If no attributions (output/metadata-only changes), passes undefined
-                  // which triggers full materialization.
-                  const changedIds = frameEvent.attributions?.length
-                    ? [
-                        ...new Set(
-                          frameEvent.attributions.map((a) => a.cell_id),
-                        ),
-                      ]
-                    : undefined;
-                  scheduleMaterialize(handle, changedIds);
+                  // Use the WASM-computed CellChangeset for surgical updates.
+                  // Falls back to full materialization if changeset is absent.
+                  scheduleMaterialize(handle, frameEvent.changeset);
                 }
                 if (
                   frameEvent.attributions &&
