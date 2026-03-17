@@ -142,13 +142,18 @@ export class NotebookHandle {
      */
     get_cell_ids(): string[];
     /**
-     * Get a cell's metadata as a JSON object string.
+     * Get a cell's metadata as a native JS object.
+     *
+     * Returns undefined if the cell doesn't exist.
      */
-    get_cell_metadata_json(cell_id: string): string | undefined;
+    get_cell_metadata(cell_id: string): any;
     /**
-     * Get a cell's outputs as a JSON array string.
+     * Get a cell's outputs as a native JS array of strings.
+     *
+     * Each element is a JSON-encoded Jupyter output object (or manifest hash).
+     * Returns undefined if the cell doesn't exist.
      */
-    get_cell_outputs_json(cell_id: string): string | undefined;
+    get_cell_outputs(cell_id: string): any;
     /**
      * Get a cell's fractional index position string.
      */
@@ -401,9 +406,9 @@ export interface InitOutput {
     readonly notebookhandle_get_cell_ids: (a: number, b: number) => void;
     readonly notebookhandle_get_cell_source: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_get_cell_type: (a: number, b: number, c: number, d: number) => void;
-    readonly notebookhandle_get_cell_outputs_json: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_get_cell_outputs: (a: number, b: number, c: number) => number;
     readonly notebookhandle_get_cell_execution_count: (a: number, b: number, c: number, d: number) => void;
-    readonly notebookhandle_get_cell_metadata_json: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_get_cell_metadata: (a: number, b: number, c: number) => number;
     readonly notebookhandle_get_cell_position: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_get_cell: (a: number, b: number, c: number) => number;
     readonly notebookhandle_add_cell: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;

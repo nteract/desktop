@@ -571,50 +571,31 @@ export class NotebookHandle {
         }
     }
     /**
-     * Get a cell's metadata as a JSON object string.
+     * Get a cell's metadata as a native JS object.
+     *
+     * Returns undefined if the cell doesn't exist.
      * @param {string} cell_id
-     * @returns {string | undefined}
+     * @returns {any}
      */
-    get_cell_metadata_json(cell_id) {
-        try {
-            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-            const ptr0 = passStringToWasm0(cell_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
-            const len0 = WASM_VECTOR_LEN;
-            wasm.notebookhandle_get_cell_metadata_json(retptr, this.__wbg_ptr, ptr0, len0);
-            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-            let v2;
-            if (r0 !== 0) {
-                v2 = getStringFromWasm0(r0, r1).slice();
-                wasm.__wbindgen_export4(r0, r1 * 1, 1);
-            }
-            return v2;
-        } finally {
-            wasm.__wbindgen_add_to_stack_pointer(16);
-        }
+    get_cell_metadata(cell_id) {
+        const ptr0 = passStringToWasm0(cell_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.notebookhandle_get_cell_metadata(this.__wbg_ptr, ptr0, len0);
+        return takeObject(ret);
     }
     /**
-     * Get a cell's outputs as a JSON array string.
+     * Get a cell's outputs as a native JS array of strings.
+     *
+     * Each element is a JSON-encoded Jupyter output object (or manifest hash).
+     * Returns undefined if the cell doesn't exist.
      * @param {string} cell_id
-     * @returns {string | undefined}
+     * @returns {any}
      */
-    get_cell_outputs_json(cell_id) {
-        try {
-            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-            const ptr0 = passStringToWasm0(cell_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
-            const len0 = WASM_VECTOR_LEN;
-            wasm.notebookhandle_get_cell_outputs_json(retptr, this.__wbg_ptr, ptr0, len0);
-            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-            let v2;
-            if (r0 !== 0) {
-                v2 = getStringFromWasm0(r0, r1).slice();
-                wasm.__wbindgen_export4(r0, r1 * 1, 1);
-            }
-            return v2;
-        } finally {
-            wasm.__wbindgen_add_to_stack_pointer(16);
-        }
+    get_cell_outputs(cell_id) {
+        const ptr0 = passStringToWasm0(cell_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.notebookhandle_get_cell_outputs(this.__wbg_ptr, ptr0, len0);
+        return takeObject(ret);
     }
     /**
      * Get a cell's fractional index position string.
