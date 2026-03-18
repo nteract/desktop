@@ -25,23 +25,42 @@ The automerge document is the source of truth for notebook content: cells, their
 
 ### 3. On-Disk Notebook as Checkpoint
 
-The `.ipynb` file on disk is a checkpoint/snapshot that the daemon periodically saves. It is not the live state.
+The `.ipynb` file on disk is a checkpoint/snapshot. The Automerge document is the live state.
 
 **Implications:**
 - Daemon reads `.ipynb` on first open, loads into automerge doc
-- Daemon writes `.ipynb` on explicit save or auto-save intervals
+- Daemon autosaves `.ipynb` on a debounce (2s quiet period, 10s max interval) via `spawn_autosave_debouncer` — no user action required
+- Explicit save (Cmd+S) additionally runs cell formatting (ruff/deno fmt) before writing
 - Unknown metadata keys in `.ipynb` are preserved through round-trips
-- Crash recovery: last checkpoint + automerge doc replay
+- `NotebookAutosaved` broadcast clears the frontend dirty flag; `NotebookSaved` response confirms explicit saves
+
+**Crash recovery:**
+- Untitled notebooks (UUID-keyed rooms) persist their Automerge doc to `notebook-docs/{hash}.automerge` in the cache directory. On daemon restart, the room loads from this file.
+- Saved notebooks reload from `.ipynb` (which autosave keeps current). Before deleting a persisted Automerge doc on reopen, the daemon snapshots it to `notebook-docs/snapshots/` (max 5 per notebook).
+- `runt recover` can list all snapshots and export any to `.ipynb`.
+
+**Room re-keying:** When an untitled notebook is first saved to a file path, `rekey_ephemeral_room()` atomically changes the room key from a UUID to the canonical path, spawns a file watcher, cleans up the old persist file, and broadcasts `RoomRenamed` so all peers update their `notebook_id`.
 
 ### 4. Local-First Editing, Synced Execution
 
-Editing is local-first for responsiveness. Execution is always against synced state.
+Editing is local-first for responsiveness. Execution is always against synced state. The sync pipeline is incremental — changes propagate without full-document re-reads.
 
 **Implications:**
 - Type freely in cells; automerge handles sync and conflict resolution
 - When you run a cell, you execute what's in the synced document
 - No executing code that differs from the document state
-- If a cell is mid-sync, wait for sync before allowing execution
+- Source edits are debounced (20ms) before syncing to the daemon; `flushSync()` fires immediately before execute/save
+
+**Incremental sync pipeline:**
+- WASM `receive_frame()` computes a `CellChangeset` (in `notebook-doc/src/diff.rs`) by walking Automerge patches — O(delta), not O(doc)
+- The changeset carries per-field flags (`source`, `outputs`, `execution_count`, `cell_type`, `metadata`, `position`, `resolved_assets`) per changed cell, plus lists of added/removed cell IDs
+- `scheduleMaterialize` coalesces changesets within a 32ms window, then dispatches: structural changes → full materialization; field-only changes → per-cell `materializeCellFromWasm()` using O(1) WASM accessors
+- The split cell store (`notebook-cells.ts`) provides per-cell React subscriptions — `useCell(id)` re-renders only when that specific cell changes
+
+**Per-cell accessors** (O(1) Automerge map lookups, available on `NotebookDoc`, `NotebookHandle`, and `DocHandle`):
+- `get_cell_source(id)`, `get_cell_type(id)`, `get_cell_outputs(id)`, `get_cell_execution_count(id)`, `get_cell_metadata(id)`, `get_cell_position(id)`
+- `get_cell_ids()` — position-sorted IDs (O(n log n) sort, reads only position strings, skips source/outputs/metadata)
+- These are used by the frontend (per-cell materialization), the daemon (reading source for execution), and Python bindings (MCP tool responses)
 
 ### 5. Binary Separation via Manifests
 
@@ -89,6 +108,20 @@ The daemon owns kernel lifecycle, environment pools, and tooling (ruff, deno, et
 - Environment selection is the daemon's decision based on notebook metadata
 - Tool availability is the daemon's responsibility (bootstrap via rattler if needed)
 - Clients are stateless with respect to runtime resources
+
+### Crate Boundaries
+
+Three crates share "notebook" in the name but have distinct responsibilities:
+
+| Crate | Owns | Consumers |
+|-------|------|-----------|
+| `notebook-doc` | Automerge document schema, cell CRUD, output writes, per-cell accessors, `CellChangeset` diffing, fractional indexing, presence encoding, frame type constants | daemon, WASM, Python bindings |
+| `notebook-protocol` | Wire protocol types (`NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, `CommSnapshot`), connection handshake, frame parsing | daemon, `notebook-sync`, Python bindings |
+| `notebook-sync` | Sync infrastructure (`DocHandle`), snapshot watch channel, per-cell accessors for Python clients, sync task management | Python bindings (`runtimed-py`) |
+
+**Rule of thumb:** Document schema or cell operations → `notebook-doc`. New request/response/broadcast type → `notebook-protocol`. Python client sync behavior → `notebook-sync`.
+
+The Tauri app crate (`crates/notebook/`) is glue — it wires Tauri commands to daemon requests and manages the socket relay. It does not own protocol types or document operations.
 
 ## Anti-Pattern: Bypassing the Document
 
@@ -146,13 +179,19 @@ The frontend now owns a local Automerge doc via `runtimed-wasm` WASM bindings, m
 
 ## References
 
-- `crates/notebook-protocol/src/protocol.rs` - Canonical request/response/broadcast type definitions
-- `crates/notebook-doc/src/lib.rs` - Shared Automerge document operations (`NotebookDoc`) used by daemon and WASM
-- `crates/runtimed/src/notebook_sync_server.rs` - Sync protocol handling
-- `crates/runtimed/src/kernel_manager.rs` - Kernel lifecycle
-- `crates/notebook-sync/src/relay.rs` - `RelayHandle`: relay API for forwarding typed frames between WASM and daemon
-- `crates/notebook-sync/src/connect.rs` - `connect_open_relay()`, `connect_create_relay()`: transparent byte pipe setup
-- `crates/runtimed-wasm/src/lib.rs` - WASM bindings: local Automerge peer, frame demux (`receive_frame`)
-- `crates/notebook/src/lib.rs` - Tauri commands and relay tasks (`send_frame`, `setup_sync_receivers`)
-- `crates/notebook-doc/src/frame_types.rs` - Shared frame type constants (0x00–0x04)
-- `apps/notebook/src/hooks/useAutomergeNotebook.ts` - Frontend sync hub: WASM handle, `notebook:frame` listener, cell materialization
+- `crates/notebook-protocol/src/protocol.rs` — Canonical wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, `CommSnapshot`
+- `crates/notebook-doc/src/lib.rs` — `NotebookDoc`: Automerge schema, cell CRUD, output writes, per-cell accessors
+- `crates/notebook-doc/src/diff.rs` — `CellChangeset`: structural diff from Automerge patches
+- `crates/notebook-sync/src/handle.rs` — `DocHandle`: sync infrastructure, per-cell accessors for Python clients
+- `crates/runtimed/src/notebook_sync_server.rs` — `NotebookRoom`, room lifecycle, autosave debouncer, re-keying, sync loop
+- `crates/runtimed/src/kernel_manager.rs` — Kernel process lifecycle, execution queue, IOPub output routing
+- `crates/runtimed/src/comm_state.rs` — Widget comm state + Output widget capture routing
+- `crates/runtimed/src/output_store.rs` — Output manifest creation, blob inlining threshold
+- `crates/notebook-sync/src/relay.rs` — `RelayHandle`: relay API for forwarding typed frames between WASM and daemon
+- `crates/notebook-sync/src/connect.rs` — `connect_open_relay()`, `connect_create_relay()`: transparent byte pipe setup
+- `crates/runtimed-wasm/src/lib.rs` — WASM bindings: local Automerge peer, frame demux, per-cell accessors, `CellChangeset`
+- `crates/notebook/src/lib.rs` — Tauri commands and relay tasks (`send_frame`, `setup_sync_receivers`)
+- `crates/notebook-doc/src/frame_types.rs` — Shared frame type constants (0x00–0x04)
+- `apps/notebook/src/hooks/useAutomergeNotebook.ts` — WASM handle owner, `scheduleMaterialize`, `CellChangeset` dispatch
+- `apps/notebook/src/lib/materialize-cells.ts` — `materializeCellFromWasm()` (per-cell) + `cellSnapshotsToNotebookCells()` (full)
+- `apps/notebook/src/lib/notebook-cells.ts` — Split cell store: `useCell(id)`, `useCellIds()`, per-cell subscriptions

@@ -117,8 +117,8 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
 
 | Hook | Role |
 |------|------|
-| `useAutomergeNotebook` | Owns WASM NotebookHandle, drives cell state |
-| `useDaemonKernel` | Kernel execution, status broadcasts |
+| `useAutomergeNotebook` | Owns WASM NotebookHandle, `scheduleMaterialize`, `CellChangeset` dispatch |
+| `useDaemonKernel` | Kernel execution, status broadcasts, widget comm routing |
 | `usePresence` | Remote cursor/selection tracking via presence frames |
 | `useEnvProgress` | Environment setup progress tracking |
 | `useDependencies` | UV dependency management |
@@ -142,36 +142,67 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
 │  Tauri relay ── "notebook:frame" ──► useAutomergeNotebook       │
 │                                      (WASM receive_frame demux) │
 │                                        │          │         │   │
-│                          sync_applied ─┘          │         │   │
+│                   sync_applied ────────┘          │         │   │
+│                   + CellChangeset                 │         │   │
 │                          ▼                        │         │   │
-│                   ┌──────────────┐                │         │   │
-│                   │cellSnapshots-│  emitBroadcast  │ emitPresence│
-│                   │ToNotebook-   │  (frame bus)    │ (frame bus) │
-│                   │Cells()       │                 │             │
-│                   └──────┬───────┘        │         │       │   │
-│                          │                ▼         │       │   │
-│                          │        ┌──────────────┐  │       │   │
-│                          │        │useDaemonKernel│  │       │   │
-│                          │        │useEnvProgress │  │       │   │
-│                          │        └──────┬───────┘  │       │   │
-│                          │               │          ▼       │   │
-│                          │               │   ┌────────────┐ │   │
-│                          │               │   │usePresence │ │   │
-│                          │               │   └─────┬──────┘ │   │
-│                          ▼               ▼         ▼        │   │
-│  ┌─────────────────────────────────────────────────────────┐│   │
-│  │ React Components                                         ││   │
-│  │ (CellContainer → CodeCell/MarkdownCell → Outputs)        ││   │
-│  └─────────────────────────────────────────────────────────┘│   │
+│                   scheduleMaterialize              │         │   │
+│                   (32ms coalesce)       emitBroadcast emitPresence
+│                          │             (frame bus)  │  (frame bus)
+│                   ┌──────┴──────┐             │     │       │   │
+│                   │ structural? │             ▼     │       │   │
+│                   │  outputs?   │     ┌──────────────┐      │   │
+│                   └──┬──────┬───┘     │useDaemonKernel│     │   │
+│             full ◄───┘      └───► per-cell            │     │   │
+│          materialize-     materialize-  useEnvProgress │     │   │
+│          Cells()          CellFromWasm  └──────┬───────┘     │   │
+│                   │           │                │      ▼      │   │
+│                   ▼           ▼                │  usePresence │   │
+│             ┌────────────────────┐             │      │      │   │
+│             │ Split Cell Store   │             │      │      │   │
+│             │ useCell(id)        │             │      │      │   │
+│             │ useCellIds()       │             │      │      │   │
+│             └────────┬───────────┘             │      │      │   │
+│                      ▼                         ▼      ▼      │   │
+│  ┌─────────────────────────────────────────────────────────┐ │   │
+│  │ React Components (React.memo per cell)                   │ │   │
+│  │ CellRenderer → useCell(id) → CodeCell/MarkdownCell       │ │   │
+│  └─────────────────────────────────────────────────────────┘ │   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-1. **useAutomergeNotebook** — Single ingress point. Listens for `notebook:frame`, demuxes via WASM `receive_frame()`, applies sync locally, dispatches to downstream hooks via the in-memory frame bus (`emitBroadcast()` and `emitPresence()` from `notebook-frame-bus.ts`)
-2. **cellSnapshotsToNotebookCells()** / **cellSnapshotsToNotebookCellsSync()** — Converts WASM cell snapshots to React-friendly objects on sync changes
-3. **useDaemonKernel / useEnvProgress** — Subscribe via `subscribeBroadcast()` from the frame bus for kernel status, outputs, and environment progress
-4. **usePresence** — Subscribes via `subscribePresence()` from the frame bus for remote cursor/selection state
+### Incremental sync pipeline
 
-Cell mutations (add, delete, edit) go through the WASM handle for instant response, then sync to the daemon via `invoke("send_frame", { frameData })` where `frameData` includes the type byte prefix. Execution requests go to the daemon via dedicated Tauri commands.
+1. **useAutomergeNotebook** — Single ingress point. Listens for `notebook:frame`, demuxes via WASM `receive_frame()`, applies sync locally. WASM returns a `CellChangeset` with field-level granularity (which cells changed, which fields). Broadcasts and presence are dispatched via in-memory frame bus (`emitBroadcast()` / `emitPresence()` from `notebook-frame-bus.ts`).
+
+2. **scheduleMaterialize** — Coalesces sync frames within a 32ms window via `mergeChangesets()`, then dispatches:
+   - **Structural changes** (cells added/removed/reordered) → full `cellSnapshotsToNotebookCells()` from `get_cells_json()`
+   - **Output changes** (blob manifests need async fetch) → full materialization
+   - **Source/metadata/execution_count only** → per-cell `materializeCellFromWasm()` using O(1) WASM accessors (`get_cell_source()`, `get_cell_type()`, etc.)
+
+3. **Split cell store** (`notebook-cells.ts`) — `Map<id, NotebookCell>` + ordered ID list with independent subscriber channels:
+   - `useCell(id)` — re-renders only when that specific cell changes
+   - `useCellIds()` — re-renders only on structural changes (add/remove/reorder)
+   - `updateCellById()` — O(1) map update, notifies only that cell's subscribers
+   - `replaceNotebookCells()` — full replacement with `cellsEqual()` diffing to preserve object identity for unchanged cells
+
+4. **useDaemonKernel / useEnvProgress** — Subscribe via `subscribeBroadcast()` from the frame bus for kernel status, execution events, and environment progress
+
+5. **usePresence** — Subscribes via `subscribePresence()` from the frame bus. Maintains a React-accessible peer map with `cursorsForCell()`/`selectionsForCell()` queries.
+
+6. **cursor-registry.ts** — Independent frame bus subscriber (parallel to `usePresence`, not delegated). Dispatches `setRemoteCursors()`/`setRemoteSelections()` as CodeMirror `StateEffect`s directly to registered `EditorView` instances — bypasses React entirely for low-latency cursor rendering.
+
+### Mutation flow
+
+Cell mutations (add, delete, edit) go through the WASM handle for instant response. Source edits are batched via `debouncedSyncToRelay` (20ms), with `flushSync()` before execute/save. The fast path for typing: `updateCellSource()` → WASM `update_source()` → `updateCellById()` (one cell, one subscriber) → debounced sync to daemon.
+
+Execution requests go to the daemon via dedicated Tauri commands (`execute_cell_via_daemon`, etc.).
+
+### CellChangeset types
+
+The `CellChangeset` from WASM (`notebook-doc/src/diff.rs`) has TypeScript mirrors defined inline in `apps/notebook/src/hooks/useAutomergeNotebook.ts` (module-private; tests duplicate them in `apps/notebook/src/lib/__tests__/cell-changeset.test.ts`):
+- `CellChangeset` — `{ changed, added, removed, order_changed }`
+- `ChangedCell` — `{ cell_id, fields }` where `fields` has boolean flags per field (`source`, `outputs`, `execution_count`, `cell_type`, `metadata`, `position`, `resolved_assets`)
+- `mergeChangesets()` — union semantics for the coalescing window
 
 ## Key Files
 
@@ -179,7 +210,7 @@ Cell mutations (add, delete, edit) go through the WASM handle for instant respon
 |------|------|
 | `apps/notebook/tsconfig.json` | Path alias configuration |
 | `apps/notebook/src/App.tsx` | Root component, provider setup |
-| `apps/notebook/src/hooks/useAutomergeNotebook.ts` | WASM notebook sync |
+| `apps/notebook/src/hooks/useAutomergeNotebook.ts` | WASM handle owner, `scheduleMaterialize`, `CellChangeset` dispatch |
 | `apps/notebook/src/lib/materialize-cells.ts` | WASM → React conversion |
 | `apps/notebook/src/lib/notebook-frame-bus.ts` | In-memory pub/sub for broadcast and presence dispatch |
 | `apps/notebook/src/hooks/usePresence.ts` | Remote presence tracking |

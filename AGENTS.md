@@ -83,8 +83,11 @@ Before diving into a subsystem, read the relevant guide:
 | Python bindings / MCP | `contributing/runtimed.md` § Python Bindings |
 | Running tests | `contributing/testing.md` |
 | Frontend architecture | `contributing/frontend-architecture.md` |
+| Wire protocol / sync | `contributing/protocol.md` |
+| Widget system | `contributing/widget-development.md` |
 | Daemon development | `contributing/runtimed.md` |
 | Environment management | `contributing/environments.md` |
+| Output iframe sandbox | `contributing/iframe-isolation.md` |
 
 ## Code Formatting (Required Before Committing)
 
@@ -393,20 +396,122 @@ runt daemon status
 
 The notebook uses a local-first CRDT architecture. The frontend owns its own Automerge document via WASM, making cell mutations instant. Two Automerge peers participate:
 
-- **Frontend (WASM)** — `NotebookHandle` from `crates/runtimed-wasm`, loaded in the webview. Cell mutations (add, delete, move, edit source) execute locally in WASM. React state is derived from the WASM doc via `handle.get_cells_json()`. The WASM starts with an empty doc (`create_empty()`); the sync protocol delivers all state from the daemon.
-- **Daemon** — `NotebookDoc` from `crates/notebook-doc/src/lib.rs` (re-exported by `crates/runtimed/src/lib.rs`). Canonical doc for kernel execution, output writing, and persistence.
+- **Frontend (WASM)** — `NotebookHandle` from `crates/runtimed-wasm`, loaded in the webview. Cell mutations (add, delete, move, edit source) execute locally in WASM. The WASM starts with an empty doc (`create_empty()`); the sync protocol delivers all state from the daemon.
+- **Daemon** — `NotebookDoc` from `crates/notebook-doc/src/lib.rs`. Canonical doc for kernel execution, output writing, and persistence.
 
-The **Tauri relay** (`NotebookSyncClient` in `crates/runtimed/src/notebook_sync_client.rs`) is a transparent byte pipe — it forwards raw Automerge sync frames between the WASM and the daemon without merging or maintaining its own doc replica. The daemon's `peer_state` tracks the WASM peer directly through the pipe. A non-pipe "full peer" mode exists for `runtimed-py` (Python bindings), where the relay does maintain a local doc replica — but this is not the Tauri path.
+The **Tauri relay** (`NotebookSyncClient` in `crates/runtimed/src/notebook_sync_client.rs`) is a transparent byte pipe — it forwards raw Automerge sync frames between the WASM and the daemon without merging or maintaining its own doc replica. A non-pipe "full peer" mode exists for `runtimed-py` (Python bindings), where the relay does maintain a local doc replica — but this is not the Tauri path.
 
 Cells are stored in an Automerge Map keyed by cell ID, with a `position` field (fractional index hex string) for ordering. `move_cell` updates only the position field — no delete/re-insert. `get_cells()` returns cells sorted by position with cell ID as tiebreaker.
 
 Mutation flow: React → WASM `handle.add_cell_after()` → `handle.generate_sync_message()` → prepend `0x00` type byte → `invoke("send_frame", { frameData })` → relay pipe → daemon.
 
-Incoming sync: daemon → relay pipe → `notebook:frame` event → WASM `handle.receive_frame()` → demux by type byte → `materializeCells()` → React state. Broadcasts and presence are re-emitted as `notebook:broadcast` and `notebook:presence` webview events for downstream hooks.
+Incoming sync: daemon → relay pipe → `notebook:frame` event → WASM `handle.receive_frame()` → demux by type byte → returns `FrameEvent[]` with `CellChangeset` → incremental cell updates → React state. Broadcasts and presence are re-emitted via an in-memory frame bus (`notebook-frame-bus.ts`) for downstream hooks.
 
 The `runtimed-wasm` crate compiles from the same `automerge = "0.7"` as the daemon. This is critical — the JS `@automerge/automerge` package creates `Object(Text)` CRDTs for all string fields, but Rust uses scalar `Str` for metadata fields (`id`, `cell_type`, `execution_count`). Using the same Rust code in WASM guarantees schema compatibility.
 
 **Important:** Like the daemon binary, `runtimed-wasm` is a separate build artifact. Changes to `crates/runtimed-wasm/` require rebuilding with `wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm` and committing the output. The WASM artifacts are committed to the repo so developers don't need wasm-pack installed for normal development.
+
+### State Ownership
+
+The frontend and daemon both write to the same CRDT. The convention of who writes what is a protocol rule:
+
+| State | Writer | Notes |
+|-------|--------|-------|
+| Cell source (`Text` CRDT) | Frontend WASM | Local-first, character-level merge |
+| Cell position, type, metadata | Frontend WASM | User-initiated via UI |
+| Notebook metadata (deps, runtime) | Frontend WASM | User edits deps, runtime picker |
+| Cell outputs (manifest hashes) | Daemon | Kernel IOPub → blob store → hash in doc |
+| Execution count | Daemon | Set on `execute_input` from kernel |
+| Widget state | Daemon (via `CommState`) | Kernel `comm_open`/`comm_msg` — see #761 for plans to move to `doc.comms` |
+
+**Reads are free for both sides.** The daemon reads cell source from the doc for execution. The frontend reads outputs from the doc for rendering. Both use the same Automerge sync to stay current.
+
+### Incremental Sync Pipeline
+
+The sync pipeline avoids full-notebook re-reads on every change. Each layer is delta-aware:
+
+1. **WASM `receive_frame()`** — applies sync message, computes a `CellChangeset` by walking `doc.diff(before, after)` patches. Returns field-level flags per changed cell (`source`, `outputs`, `execution_count`, `metadata`, `position`). Cost is O(delta), not O(doc).
+
+2. **`scheduleMaterialize()`** — coalesces multiple sync frames within a 32ms window via `mergeChangesets()`. Dispatches:
+   - Structural changes (cells added/removed/reordered) → full materialization
+   - Output changes (blob manifests need async fetch) → full materialization
+   - Source/metadata/execution_count only → per-cell `materializeCellFromWasm()` via O(1) WASM accessors
+
+3. **Split cell store** — `Map<id, NotebookCell>` with per-cell subscriptions. `useCell(id)` re-renders only when that specific cell changes. `useCellIds()` re-renders only on structural changes.
+
+4. **Debounced outbound sync** — source edits batch keystrokes via `debouncedSyncToRelay` (20ms). `flushSync()` fires immediately before execute/save.
+
+**Per-cell WASM accessors** (O(1) Automerge map lookups, no full doc serialization):
+- `get_cell_source(id)`, `get_cell_type(id)`, `get_cell_outputs(id)`, `get_cell_execution_count(id)`, `get_cell_metadata(id)`, `get_cell_position(id)`
+- `get_cell_ids()` — position-sorted IDs (O(n log n) sort, reads only position strings, skips source/outputs/metadata)
+
+The `CellChangeset` and diff logic live in `crates/notebook-doc/src/diff.rs`. The TypeScript mirror types are defined inline in `apps/notebook/src/hooks/useAutomergeNotebook.ts` (module-private; tests duplicate them in `apps/notebook/src/lib/__tests__/cell-changeset.test.ts`).
+
+Full materialization (structural changes, initial load) still uses `handle.get_cells_json()` for bulk serialization. The per-cell path is for incremental updates only.
+
+### Crate Boundaries
+
+Three crates have "notebook" in the name. They have distinct roles:
+
+| Crate | What it owns | Used by |
+|-------|-------------|---------|
+| `notebook-doc` | Automerge document schema and operations (`NotebookDoc`), cell CRUD, output writes, fractional indexing, `CellChangeset` diffing, presence encoding, frame type constants | daemon, WASM, `notebook-protocol`, `notebook-sync`, Python bindings |
+| `notebook-protocol` | Wire protocol types (`NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, `CommSnapshot`), connection handshake, frame parsing | daemon, `notebook-sync`, Python bindings |
+| `notebook-sync` | Sync infrastructure (`DocHandle`), snapshot watch channel, per-cell accessors for Python clients, sync task management | Tauri app crate (`notebook`), Python bindings (`runtimed-py`) |
+
+**Rule of thumb:** If you're changing the document schema or cell operations → `notebook-doc`. If you're adding a new request/response/broadcast type → `notebook-protocol`. If you're changing how Python clients sync → `notebook-sync`.
+
+The Tauri app crate (`crates/notebook/`) is the glue — it wires Tauri commands to daemon requests and manages the socket relay. It does not own protocol types or document operations.
+
+### Blob Store and Output Manifests
+
+Large binary outputs (images, plots, HTML) are stored in a content-addressed blob store, not inline in the CRDT. The Automerge doc carries only 64-char SHA-256 hashes.
+
+**Two-tier indirection:**
+1. **Cell outputs list** → manifest hashes (64-char hex strings in `doc.cells[id].outputs`)
+2. **Manifest** (JSON in blob store) → `ContentRef` per MIME type: `{"inline": "<data>"}` for ≤8KB, `{"blob": "<hash>", "size": N}` for >8KB
+
+**Blob store location:** `~/.cache/runt/blobs/` (sharded by first 2 hex chars). Each blob has a `.meta` sidecar with `{media_type, size}`.
+
+**Blob HTTP server:** `127.0.0.1:<dynamic-port>`, serves `GET /blob/{hash}`. The port is included in the connection capabilities and available via `runt daemon status --json | jq -r .blob_url`.
+
+**Frontend resolution:** `materialize-cells.ts` resolves manifest hashes → fetches manifest JSON from HTTP → resolves `ContentRef::Blob` entries → renders. An output cache deduplicates fetches.
+
+**Key files:** `crates/runtimed/src/output_store.rs` (manifest creation, inlining threshold), `crates/runtimed/src/blob_store.rs` (content-addressed storage), `crates/runtimed/src/blob_server.rs` (HTTP server).
+
+### Notebook Room Lifecycle
+
+Each open notebook is a **room** on the daemon (`NotebookRoom` in `notebook_sync_server.rs`). Rooms are keyed by notebook ID (file path or UUID for untitled notebooks).
+
+**Autosave:** The daemon autosaves `.ipynb` on a debounce (2s quiet period, 10s max interval). No user action required. The `NotebookAutosaved` broadcast clears the frontend's dirty flag. Explicit Cmd+S still works and additionally runs cell formatting.
+
+**Room re-keying:** When an untitled notebook (UUID room) is first saved to a file path, `rekey_ephemeral_room()` atomically re-keys the room in the HashMap, spawns a file watcher, cleans up the old persist file, and broadcasts `RoomRenamed` so all peers update their `notebook_id`.
+
+**Crash recovery:** Untitled notebooks are persisted to `notebook-docs/{hash}.automerge` in the cache directory. On daemon restart, the room loads from this file. Saved notebooks reload from `.ipynb`. Before deleting a persisted doc (on reopen), the daemon snapshots it to `notebook-docs/snapshots/`. `runt recover` can export any snapshot to `.ipynb`.
+
+**Multi-window:** Multiple windows can open the same notebook. Each connects as a separate Automerge peer to the same room. The first window gets a deterministic label (for geometry persistence); additional windows get a UUID suffix. All peers receive the same sync frames and broadcasts.
+
+**Eviction:** When all peers disconnect, a delayed eviction task runs (configurable via `keep_alive_secs` setting, default 30s). If no peers reconnect within the window, the kernel is shut down and the room is removed.
+
+### Widget State (Current Architecture)
+
+Widget state currently lives **outside** the Automerge doc, in parallel in-memory stores:
+- **Daemon:** `CommState` in `comm_state.rs` — tracks all active Jupyter comm channels (ipywidgets), maintains output capture routing for Output widgets
+- **Frontend:** `WidgetStore` in `src/components/widgets/widget-store.ts` — per-model subscriptions, IPY_MODEL_ reference resolution, custom message buffering
+
+New clients receive a `CommSync` broadcast (snapshot of all active widgets) when they connect. Widget messages flow as `NotebookBroadcast::Comm` events, not document mutations.
+
+**Planned:** Move widget state into `doc.comms/` in the Automerge document (#761). This eliminates `CommSync`, simplifies Output widget routing, and means new clients get widget state via normal CRDT sync. See the phased plan in #808–#811.
+
+See `contributing/widget-development.md` for the widget rendering architecture and `contributing/protocol.md` for the wire protocol details.
+
+### Settings Sync
+
+Settings (theme, default_runtime, default_python_env, keep_alive_secs, etc.) are synced via a **separate Automerge document** — not the notebook doc. The daemon holds the canonical copy and persists to disk.
+
+Any window can write a setting; all other windows receive the change via Automerge sync. The frontend connects with a `SettingsSync` handshake on the same Unix socket. Frontend falls back to a local `settings.json` if the daemon is unavailable.
+
+Settings types: `crates/runtimed/src/settings_doc.rs`. Frontend hook: `src/hooks/useSyncedSettings.ts`.
 
 ## Environment Management
 
@@ -484,10 +589,14 @@ Dependencies are signed with HMAC-SHA256 using a per-machine key at `~/.config/r
 |------|------|
 | `crates/kernel-launch/src/lib.rs` | Shared kernel launching API |
 | `crates/kernel-launch/src/tools.rs` | Tool bootstrapping (deno, uv, ruff) via rattler |
-| `crates/runtimed/src/notebook_sync_server.rs` | `auto_launch_kernel()` — runtime detection and environment resolution |
-| `crates/runtimed/src/kernel_manager.rs` | `RoomKernel::launch()` — spawns Python or Deno kernel processes |
+| `crates/runtimed/src/notebook_sync_server.rs` | `NotebookRoom`, `auto_launch_kernel()`, room lifecycle, autosave, re-keying |
+| `crates/runtimed/src/kernel_manager.rs` | `RoomKernel::launch()` — spawns kernel, IOPub handler, output routing |
+| `crates/runtimed/src/comm_state.rs` | Widget comm state tracking + Output widget capture routing |
+| `crates/runtimed/src/output_store.rs` | Output manifest creation, blob inlining threshold |
+| `crates/runtimed/src/blob_store.rs` | Content-addressed blob storage |
 | `crates/runtimed/src/inline_env.rs` | Cached environment creation for inline deps (UV and Conda) |
-| `crates/notebook/src/lib.rs` | Tauri commands (save, format, kernel, env), Automerge sync pipe (forwards raw frames between WASM and daemon). Cell mutation commands removed — mutations go through WASM. |
+| `crates/runtimed/src/settings_doc.rs` | Settings Automerge doc schema and persistence |
+| `crates/notebook/src/lib.rs` | Tauri commands, Automerge sync pipe (transparent byte relay between WASM and daemon) |
 | `crates/notebook/src/project_file.rs` | Unified closest-wins project file detection |
 | `crates/notebook/src/uv_env.rs` | UV environment creation and caching |
 | `crates/notebook/src/conda_env.rs` | Conda environment creation via rattler |
@@ -495,11 +604,18 @@ Dependencies are signed with HMAC-SHA256 using a per-machine key at `~/.config/r
 | `crates/notebook/src/pixi.rs` | pixi.toml discovery and parsing |
 | `crates/notebook/src/environment_yml.rs` | environment.yml discovery and parsing |
 | `crates/notebook/src/deno_env.rs` | Deno config detection and version checking |
-| `crates/notebook/src/trust.rs` | HMAC trust verification |
-| `crates/runtimed-wasm/src/lib.rs` | WASM bindings for NotebookDoc — cell mutations, sync messages |
-| `crates/notebook-doc/src/lib.rs` | Shared Automerge document operations (`NotebookDoc`) used by daemon and WASM bindings |
-| `apps/notebook/src/hooks/useAutomergeNotebook.ts` | Local-first notebook hook — owns NotebookHandle WASM, drives React cell state, sync-only bootstrap (empty doc, no GetDocBytes) |
-| `apps/notebook/src/hooks/useDaemonKernel.ts` | Daemon-owned kernel execution, status broadcasts, environment sync |
+| `crates/notebook/src/trust.rs` | HMAC trust verification (re-exports from `runt-trust`) |
+| `crates/notebook-doc/src/lib.rs` | `NotebookDoc` — Automerge schema, cell CRUD, output writes, per-cell accessors |
+| `crates/notebook-doc/src/diff.rs` | `CellChangeset` — structural diff from Automerge patches |
+| `crates/notebook-doc/src/presence.rs` | CBOR-encoded ephemeral presence (cursors, selections, kernel state) |
+| `crates/notebook-protocol/src/protocol.rs` | Wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, `CommSnapshot` |
+| `crates/notebook-sync/src/handle.rs` | `DocHandle` — sync infrastructure + per-cell accessors for Python clients |
+| `crates/runtimed-wasm/src/lib.rs` | WASM bindings — cell mutations, sync, per-cell accessors, `CellChangeset` |
+| `apps/notebook/src/hooks/useAutomergeNotebook.ts` | WASM handle owner, `scheduleMaterialize`, debounced sync, `CellChangeset` dispatch |
+| `apps/notebook/src/hooks/useDaemonKernel.ts` | Kernel execution, status broadcasts, widget comm routing |
 | `apps/notebook/src/hooks/useDependencies.ts` | Frontend UV dependency management |
 | `apps/notebook/src/hooks/useCondaDependencies.ts` | Frontend conda dependency management |
-| `apps/notebook/src/lib/materialize-cells.ts` | Converts CellSnapshot[] from WASM/sync to NotebookCell[] for React (resolves blob manifests) |
+| `apps/notebook/src/lib/materialize-cells.ts` | `materializeCellFromWasm()` (per-cell) + `cellSnapshotsToNotebookCells()` (full) |
+| `apps/notebook/src/lib/notebook-cells.ts` | Split cell store — `useCell(id)`, `useCellIds()`, per-cell subscriptions |
+| `apps/notebook/src/lib/notebook-frame-bus.ts` | In-memory sync pub/sub for broadcasts and presence (no Tauri event hop) |
+| `src/components/widgets/widget-store.ts` | `WidgetStore` — per-model subscriptions, IPY_MODEL_ resolution |

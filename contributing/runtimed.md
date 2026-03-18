@@ -1,6 +1,6 @@
 # Runtime Daemon (runtimed)
 
-The runtime daemon manages prewarmed Python environments, notebook document sync, and kernel execution across notebook windows.
+The runtime daemon manages prewarmed Python environments, notebook document sync, kernel execution, autosave, and widget state across notebook windows.
 
 ## Quick Reference
 
@@ -51,10 +51,13 @@ The daemon provides a single coordinating entity that prewarms environments in t
 
 | Component | Purpose | Location |
 |-----------|---------|----------|
-| Unix socket | IPC endpoint | `~/.cache/runt/runtimed.sock` (Linux) / `~/Library/Caches/runt/runtimed.sock` (macOS) |
-| Lock file | Singleton guarantee | `~/.cache/runt/daemon.lock` (Linux) / `~/Library/Caches/runt/daemon.lock` (macOS) |
-| Info file | Discovery (PID, endpoint) | `~/.cache/runt/daemon.json` (Linux) / `~/Library/Caches/runt/daemon.json` (macOS) |
-| Environments | Prewarmed venvs | `~/.cache/runt/envs/` (Linux) / `~/Library/Caches/runt/envs/` (macOS) |
+| Unix socket | IPC endpoint | `~/Library/Caches/runt/runtimed.sock` (macOS) / `~/.cache/runt/runtimed.sock` (Linux) |
+| Lock file | Singleton guarantee | `~/Library/Caches/runt/daemon.lock` (macOS) / `~/.cache/runt/daemon.lock` (Linux) |
+| Info file | Discovery (PID, endpoint) | `~/Library/Caches/runt/daemon.json` (macOS) / `~/.cache/runt/daemon.json` (Linux) |
+| Environments | Prewarmed venvs | `~/Library/Caches/runt/envs/` (macOS) / `~/.cache/runt/envs/` (Linux) |
+| Blob store | Content-addressed outputs | `~/Library/Caches/runt/blobs/` (macOS) / `~/.cache/runt/blobs/` (Linux) |
+| Notebook docs | Persisted Automerge docs | `~/Library/Caches/runt/notebook-docs/` (macOS) / `~/.cache/runt/notebook-docs/` (Linux) |
+| Snapshots | Pre-delete safety copies | `~/Library/Caches/runt/notebook-docs/snapshots/` (macOS) / `~/.cache/runt/notebook-docs/snapshots/` (Linux) |
 
 ## Development Workflow
 
@@ -109,6 +112,59 @@ cargo test -p runtimed test_daemon_ping_pong
 
 Integration tests use temp directories for socket and lock files to avoid conflicts with a running daemon.
 
+## Notebook Room Lifecycle
+
+Each open notebook has a **room** (`NotebookRoom` in `notebook_sync_server.rs`), keyed by notebook ID (canonical file path or UUID for untitled notebooks).
+
+### Autosave
+
+The daemon autosaves `.ipynb` on a debounce (2s quiet period, 10s max interval) via `spawn_autosave_debouncer`. No user action required. `NotebookAutosaved` broadcast clears the frontend dirty flag. Explicit Cmd+S additionally runs cell formatting (ruff/deno fmt).
+
+Autosave skips untitled notebooks (no file path) and notebooks mid-load (`is_loading` flag). After saving, the debouncer drains the change channel to detect mutations during the async write — the `NotebookAutosaved` broadcast only fires when the file is truly caught up.
+
+### Room re-keying
+
+When an untitled notebook (UUID room) is first saved, `rekey_ephemeral_room()`:
+1. Canonicalizes the save path
+2. Guards against overwriting an existing room
+3. Re-keys the `NotebookRooms` HashMap (remove UUID, insert path)
+4. Updates the room's `notebook_path` (`RwLock<PathBuf>`)
+5. Deletes the old UUID-based persist file
+6. Spawns a file watcher for the new path
+7. Broadcasts `RoomRenamed { new_notebook_id }` so all peers update their local ID
+
+The `NotebookSaved` response includes `new_notebook_id: Option<String>` for the re-key case.
+
+### Crash recovery
+
+Untitled notebooks persist their Automerge doc to `notebook-docs/{hash}.automerge`. Before deleting a persisted doc on reopen (saved notebooks reload from `.ipynb`), the daemon snapshots it to `notebook-docs/snapshots/` (max 5 per notebook hash).
+
+`runt recover --list` scans all cache namespaces (stable, nightly, per-worktree). `runt recover <path>` finds the live doc or most recent snapshot and exports to `.ipynb`.
+
+### Multi-window
+
+Multiple windows join the same room as separate Automerge peers. The first window gets a deterministic label (for geometry persistence); additional windows get a UUID suffix. All peers receive sync frames and broadcasts independently.
+
+### Eviction
+
+When all peers disconnect, a delayed eviction task runs (configurable via `keep_alive_secs` setting, default 30s). If no peers reconnect, the kernel shuts down, the file watcher stops, and the room is removed. If peers reconnect during the window, eviction is cancelled.
+
+## Per-Cell Accessors
+
+`NotebookDoc` and `DocHandle` expose O(1) cell reads that avoid full-document materialization:
+
+| Method | Returns | Used by |
+|--------|---------|---------|
+| `get_cell_source(id)` | `Option<String>` | Daemon (execution), Python SDK, WASM |
+| `get_cell_type(id)` | `Option<String>` | MCP tools, WASM |
+| `get_cell_outputs(id)` | `Option<Vec<String>>` | Python SDK output collection |
+| `get_cell_execution_count(id)` | `Option<String>` | WASM materialization |
+| `get_cell_metadata(id)` | `Option<Value>` | Python SDK, WASM |
+| `get_cell_position(id)` | `Option<String>` | WASM, fractional index operations |
+| `get_cell_ids()` | `Vec<String>` (position-sorted) | Daemon, Python SDK, WASM |
+
+These are critical for performance — `get_cells()` materializes every cell's source, outputs, and metadata. Use per-cell accessors when you only need one cell or one field.
+
 ## Code Structure
 
 ```
@@ -117,31 +173,37 @@ crates/runtimed/
 │   ├── lib.rs                   # Public types, path helpers (default_socket_path, etc.)
 │   ├── main.rs                  # CLI entry point (run, install, status, etc.)
 │   ├── daemon.rs                # Daemon state, pool management, connection routing
-│   ├── protocol.rs              # BlobRequest/BlobResponse enums (notebook types re-exported from notebook-protocol crate)
+│   ├── protocol.rs              # BlobRequest/BlobResponse + re-exports from notebook-protocol
 │   ├── client.rs                # PoolClient for pool operations
 │   ├── singleton.rs             # File-based locking for single instance
-│   ├── service.rs               # Cross-platform service installation
+│   ├── service.rs               # Cross-platform service installation (launchd/systemd)
 │   ├── settings_doc.rs          # Settings Automerge document, schema, migration
 │   ├── sync_server.rs           # Settings sync handler
 │   ├── sync_client.rs           # Settings sync client library
-│   ├── (uses notebook_doc crate) # Shared `NotebookDoc` from crates/notebook-doc/src/lib.rs
-│   ├── notebook_sync_server.rs  # Room-based notebook sync, peer management, eviction
+│   ├── notebook_sync_server.rs  # NotebookRoom, room lifecycle, autosave, re-keying, sync loop
+│   ├── kernel_manager.rs        # RoomKernel: kernel lifecycle, execution queue, IOPub output routing
+│   ├── kernel_pids.rs           # Kernel PID tracking and orphan reaping
+│   ├── comm_state.rs            # Widget comm state + Output widget capture routing
+│   ├── output_store.rs          # Output manifest creation, blob inlining threshold
 │   ├── blob_store.rs            # Content-addressed blob store with metadata sidecars
 │   ├── blob_server.rs           # HTTP read server for blobs (hyper 1.x)
-│   ├── runtime.rs               # Runtime enum definition (Python/Deno/Other)
-│   ├── kernel_manager.rs        # Kernel lifecycle, ZMQ iopub watching, execution queue
-│   ├── kernel_pids.rs           # Kernel PID tracking and cleanup
 │   ├── inline_env.rs            # Inline dependency environment caching (UV/Conda)
 │   ├── project_file.rs          # Project file detection (pyproject.toml, pixi.toml, etc.)
-│   ├── comm_state.rs            # Comm message state for ipywidgets
-│   ├── output_store.rs          # Output persistence and retrieval
 │   ├── markdown_assets.rs       # Markdown image/asset resolution and rewriting
-│   ├── (metadata via notebook_doc) # `notebook_doc::metadata` re-exported as `notebook_metadata`
-│   ├── stream_terminal.rs       # Stream terminal output handling
+│   ├── stream_terminal.rs       # Stream terminal output handling (carriage return, ANSI)
+│   ├── runtime.rs               # Runtime enum definition (Python/Deno/Other)
 │   └── terminal_size.rs         # Terminal size tracking
 └── tests/
     └── integration.rs           # Integration tests (daemon, pool, settings sync, notebook sync)
 ```
+
+**Related crates** (shared across daemon, WASM, Python):
+
+| Crate | What it owns |
+|-------|-------------|
+| `notebook-doc` | `NotebookDoc`: Automerge schema, cell CRUD, per-cell accessors, `CellChangeset` diffing |
+| `notebook-protocol` | Wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, `CommSnapshot` |
+| `notebook-sync` | `DocHandle`: sync infrastructure, snapshot watch channel, per-cell accessors for Python |
 
 For the full architecture (all phases, schemas, and design decisions), see [docs/runtimed.md](../docs/runtimed.md).
 
@@ -210,12 +272,19 @@ print(result.outputs)  # [Output(stream, stdout: "hello\n")]
 cell = session.get_cell(result.cell_id)
 print(cell.outputs)  # [Output(stream, stdout: "hello\n")]
 
+# Per-cell accessors (O(1), no full-doc materialization)
+source = session.get_cell_source(result.cell_id)  # just the source string
+cell_type = session.get_cell_type(result.cell_id)  # "code" | "markdown" | "raw"
+cell_ids = session.get_cell_ids()                   # position-sorted IDs
+
 # Move a cell (updates fractional index position)
 new_position = session.move_cell("cell-id", after_cell_id="other-cell-id")
 
 # Cell objects include position
 print(cell.position)  # fractional index string e.g. "80", "C0"
 ```
+
+**Prefer per-cell accessors** (`get_cell_source`, `get_cell_type`, `get_cell_ids`) over `get_cells()` when you only need one cell or one field. `get_cells()` materializes every cell's source, outputs, and metadata.
 
 ### Socket Path Configuration
 
