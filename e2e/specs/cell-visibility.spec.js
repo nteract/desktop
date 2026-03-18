@@ -8,7 +8,7 @@
  * Tests:
  * - Hide/show source via gutter button
  * - Hide/show outputs via gutter button
- * - Compact layout when both are hidden
+ * - Compact "Cell hidden" chip when both are hidden
  * - Persistence after save/reload
  */
 
@@ -142,12 +142,11 @@ describe("Cell Visibility Toggles", () => {
     await hideOutputButton.click();
     await browser.pause(300);
 
-    // Both badges should exist side by side (compact layout)
-    const sourceBadge = await codeCell.$('button[title="Show source"]');
-    const outputsBadge = await codeCell.$('button[title="Show outputs"]');
-
-    expect(await sourceBadge.isExisting()).toBe(true);
-    expect(await outputsBadge.isExisting()).toBe(true);
+    // A single "Cell hidden" chip should appear (compact layout)
+    const cellHiddenChip = await codeCell.$('button[title="Show cell"]');
+    expect(await cellHiddenChip.isExisting()).toBe(true);
+    const chipText = await cellHiddenChip.getText();
+    expect(chipText).toContain("Cell hidden");
 
     // The editor should not be visible
     const editor = await codeCell.$('.cm-content[contenteditable="true"]');
@@ -158,39 +157,22 @@ describe("Cell Visibility Toggles", () => {
     expect(await output.isExisting()).toBe(false);
   });
 
-  it("should expand source independently from compact layout", async () => {
+  it("should restore cell when clicking Show cell from compact layout", async () => {
     const codeCell = await $('[data-cell-type="code"]');
 
-    // Click source badge to show source only
-    const sourceBadge = await codeCell.$('button[title="Show source"]');
-    await sourceBadge.waitForClickable({ timeout: 5000 });
-    await sourceBadge.click();
-    await browser.pause(300);
-
-    // Source should be visible
-    const editor = await codeCell.$('.cm-content[contenteditable="true"]');
-    await editor.waitForExist({ timeout: 5000 });
-    expect(await editor.isExisting()).toBe(true);
-
-    // Outputs should still be hidden (badge visible)
-    const outputsBadge = await codeCell.$('button[title="Show outputs"]');
-    expect(await outputsBadge.isExisting()).toBe(true);
-  });
-
-  it("should expand outputs to fully restore cell", async () => {
-    const codeCell = await $('[data-cell-type="code"]');
-
-    // Click outputs badge to show outputs
-    const outputsBadge = await codeCell.$('button[title="Show outputs"]');
-    await outputsBadge.waitForClickable({ timeout: 5000 });
-    await outputsBadge.click();
+    // Click the "Show cell" chip to expand both source and outputs
+    const cellHiddenChip = await codeCell.$('button[title="Show cell"]');
+    await cellHiddenChip.waitForClickable({ timeout: 5000 });
+    await cellHiddenChip.click();
     await browser.pause(300);
 
     // Both source and outputs should now be visible
     const editor = await codeCell.$('.cm-content[contenteditable="true"]');
-    const output = await codeCell.$('[data-slot="ansi-stream-output"]');
-
+    await editor.waitForExist({ timeout: 5000 });
     expect(await editor.isExisting()).toBe(true);
+
+    const output = await codeCell.$('[data-slot="ansi-stream-output"]');
+    await output.waitForExist({ timeout: 5000 });
     expect(await output.isExisting()).toBe(true);
   });
 });
