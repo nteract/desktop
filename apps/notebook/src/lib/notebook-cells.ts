@@ -146,6 +146,52 @@ function getCellSnapshot(id: string): () => NotebookCell | undefined {
   return () => _cellMap.get(id);
 }
 
+// ── Cell comparison ─────────────────────────────────────────────────────
+
+function shallowRecordEqual(
+  a: Record<string, unknown> | undefined,
+  b: Record<string, unknown> | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (const key of keysA) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
+function cellsEqual(a: NotebookCell, b: NotebookCell): boolean {
+  if (a === b) return true;
+  if (a.cell_type !== b.cell_type) return false;
+  if (a.source !== b.source) return false;
+  if (!shallowRecordEqual(a.metadata, b.metadata)) return false;
+
+  // cell_type-specific fields
+  if (a.cell_type === "code") {
+    const bc = b as typeof a;
+    if (a.execution_count !== bc.execution_count) return false;
+    // outputs — same length and each element referentially equal
+    if (a.outputs.length !== bc.outputs.length) return false;
+    for (let i = 0; i < a.outputs.length; i++) {
+      if (a.outputs[i] !== bc.outputs[i]) return false;
+    }
+  } else if (a.cell_type === "markdown") {
+    const bm = b as typeof a;
+    if (
+      !shallowRecordEqual(
+        a.resolvedAssets as Record<string, unknown> | undefined,
+        bm.resolvedAssets as Record<string, unknown> | undefined,
+      )
+    )
+      return false;
+  }
+
+  return true;
+}
+
 // ── Write operations ────────────────────────────────────────────────────
 
 /**
@@ -169,7 +215,8 @@ export function updateCellById(
 
 /**
  * Replace all cells (full materialization from WASM/sync).
- * Notifies ID list subscribers AND all per-cell subscribers.
+ * Diffs each cell against the previous snapshot so only changed cells
+ * trigger per-cell subscriber notifications.
  */
 export function replaceNotebookCells(cells: NotebookCell[]): void {
   const newIds = cells.map((c) => c.id);
@@ -177,7 +224,26 @@ export function replaceNotebookCells(cells: NotebookCell[]): void {
     newIds.length !== _cellIds.length ||
     newIds.some((id, i) => id !== _cellIds[i]);
 
-  _cellMap = new Map(cells.map((c) => [c.id, c]));
+  const oldIds = _cellIds;
+  const newMap = new Map<string, NotebookCell>();
+  const changedIds: string[] = [];
+  let anySourceChanged = false;
+
+  for (const cell of cells) {
+    const prev = _cellMap.get(cell.id);
+    if (prev && cellsEqual(prev, cell)) {
+      // Structurally identical — preserve old reference, skip notification
+      newMap.set(cell.id, prev);
+    } else {
+      newMap.set(cell.id, cell);
+      changedIds.push(cell.id);
+      if (!prev || prev.source !== cell.source) {
+        anySourceChanged = true;
+      }
+    }
+  }
+
+  _cellMap = newMap;
 
   if (idsChanged) {
     _cellIds = newIds;
@@ -185,8 +251,23 @@ export function replaceNotebookCells(cells: NotebookCell[]): void {
   }
 
   emitMaterializeChange();
-  emitSourceChange();
-  emitAllCellChanges();
+
+  if (anySourceChanged) {
+    emitSourceChange();
+  }
+
+  // Emit for cells that actually changed
+  for (const id of changedIds) {
+    emitCellChange(id);
+  }
+
+  // Emit for removed cells (present in old list but absent from new map)
+  const newIdSet = new Set(newIds);
+  for (const id of oldIds) {
+    if (!newIdSet.has(id)) {
+      emitCellChange(id);
+    }
+  }
 }
 
 /**
