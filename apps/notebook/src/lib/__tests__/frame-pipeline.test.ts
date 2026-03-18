@@ -3,7 +3,7 @@ import {
   type CellChangeset,
   type ChangedFields,
   mergeChangesets,
-} from "../frame-pipeline";
+} from "../cell-changeset";
 
 // ---------------------------------------------------------------------------
 // mergeChangesets — merges two CellChangesets produced by successive WASM
@@ -153,17 +153,13 @@ describe("mergeChangesets", () => {
     // If both changesets mark the same field as true, result should be true.
     // If only one does, the field should still be true (union, not intersection).
     const a: CellChangeset = {
-      changed: [
-        { cell_id: "c1", fields: { source: true, outputs: true } },
-      ],
+      changed: [{ cell_id: "c1", fields: { source: true, outputs: true } }],
       added: [],
       removed: [],
       order_changed: false,
     };
     const b: CellChangeset = {
-      changed: [
-        { cell_id: "c1", fields: { source: true, metadata: true } },
-      ],
+      changed: [{ cell_id: "c1", fields: { source: true, metadata: true } }],
       added: [],
       removed: [],
       order_changed: false,

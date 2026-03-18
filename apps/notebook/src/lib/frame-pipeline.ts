@@ -26,6 +26,7 @@ import {
   Subscription,
   from,
   bufferTime,
+  concatMap,
   filter,
   mergeMap,
   share,
@@ -34,6 +35,7 @@ import {
 import type { JupyterOutput } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { getBlobPort, refreshBlobPort } from "./blob-port";
+import { type CellChangeset, mergeChangesets } from "./cell-changeset";
 import { logger } from "./logger";
 import {
   isManifestHash,
@@ -45,65 +47,18 @@ import { emitBroadcast, emitPresence } from "./notebook-frame-bus";
 import { notifyMetadataChanged } from "./notebook-metadata";
 import { fromTauriEvent } from "./tauri-rx";
 
+// Re-export CellChangeset types so existing consumers don't break.
+export type {
+  CellChangeset,
+  ChangedCell,
+  ChangedFields,
+} from "./cell-changeset";
+export { mergeChangesets } from "./cell-changeset";
+
 // ── Constants ────────────────────────────────────────────────────────
 
 /** Coalescing window for incoming sync frames (ms). */
 const COALESCE_MS = 32;
-
-// ── CellChangeset types ─────────────────────────────────────────────
-//
-// Mirrors the Rust `notebook_doc::diff` types serialized from WASM via
-// serde-wasm-bindgen. Moved here from useAutomergeNotebook so the
-// pipeline owns the types it operates on.
-// ─────────────────────────────────────────────────────────────────────
-
-/** Which fields changed on a cell (only `true` keys are present). */
-export interface ChangedFields {
-  source?: boolean;
-  outputs?: boolean;
-  execution_count?: boolean;
-  cell_type?: boolean;
-  metadata?: boolean;
-  position?: boolean;
-  resolved_assets?: boolean;
-}
-
-export interface ChangedCell {
-  cell_id: string;
-  fields: ChangedFields;
-}
-
-/** Structural diff between two Automerge head sets, produced by WASM `diff_cells`. */
-export interface CellChangeset {
-  changed: ChangedCell[];
-  added: string[];
-  removed: string[];
-  order_changed: boolean;
-}
-
-/** Merge two CellChangesets (for coalescing frames across the buffer window). */
-export function mergeChangesets(
-  a: CellChangeset,
-  b: CellChangeset,
-): CellChangeset {
-  const changedMap = new Map<string, ChangedFields>();
-  for (const c of [...a.changed, ...b.changed]) {
-    const existing = changedMap.get(c.cell_id);
-    if (existing) {
-      for (const [key, val] of Object.entries(c.fields)) {
-        if (val) (existing as Record<string, boolean>)[key] = true;
-      }
-    } else {
-      changedMap.set(c.cell_id, { ...c.fields });
-    }
-  }
-  return {
-    changed: [...changedMap].map(([cell_id, fields]) => ({ cell_id, fields })),
-    added: [...new Set([...a.added, ...b.added])],
-    removed: [...new Set([...a.removed, ...b.removed])],
-    order_changed: a.order_changed || b.order_changed,
-  };
-}
 
 // ── Internal types ──────────────────────────────────────────────────
 
@@ -206,41 +161,58 @@ export function createFramePipeline(deps: FramePipelineDeps): Subscription {
 
   subscription.add(
     frameEvents$
-      .pipe(filter((e) => e.type === "sync_applied"))
-      .subscribe((e) => {
-        // ── Initial sync: materialize immediately (no coalescing) ────
-        if (deps.getAwaitingInitialSync()) {
-          deps.setAwaitingInitialSync(false);
-          deps.setIsLoading(false);
-          if (e.changed) {
-            const handle = deps.getHandle();
-            if (handle) {
-              deps.materializeCells(handle).then(
-                () => notifyMetadataChanged(),
-                (err: unknown) =>
-                  logger.warn(
-                    "[frame-pipeline] initial materialize failed:",
-                    err,
-                  ),
-              );
-            }
+      .pipe(
+        filter((e) => e.type === "sync_applied"),
+        // concatMap serializes async work (initial materialization) so
+        // we don't send a sync reply before the store is populated.
+        concatMap((e) => {
+          // ── Attributions (fire-and-forget, no async work) ──────────
+          if (e.attributions && e.attributions.length > 0) {
+            emitBroadcast({
+              type: "text_attribution",
+              attributions: e.attributions,
+            });
           }
-        } else if (e.changed) {
+
+          // ── Initial sync: materialize immediately (no coalescing) ──
+          if (deps.getAwaitingInitialSync()) {
+            deps.setAwaitingInitialSync(false);
+            deps.setIsLoading(false);
+            if (e.changed) {
+              const handle = deps.getHandle();
+              if (handle) {
+                // Return a promise so concatMap waits for materialization
+                // to complete before signaling the sync reply.
+                return from(
+                  deps
+                    .materializeCells(handle)
+                    .then(() => {
+                      notifyMetadataChanged();
+                      deps.onSyncApplied();
+                    })
+                    .catch((err: unknown) => {
+                      logger.warn(
+                        "[frame-pipeline] initial materialize failed:",
+                        err,
+                      );
+                      deps.onSyncApplied();
+                    }),
+                );
+              }
+            }
+            deps.onSyncApplied();
+            return EMPTY;
+          }
+
           // ── Steady-state: push changeset into coalescing buffer ────
-          materialize$.next(e.changeset ?? null);
-        }
-
-        // ── Attributions (text provenance for agent-authored changes) ─
-        if (e.attributions && e.attributions.length > 0) {
-          emitBroadcast({
-            type: "text_attribution",
-            attributions: e.attributions,
-          });
-        }
-
-        // ── Signal for sync reply ────────────────────────────────────
-        deps.onSyncApplied();
-      }),
+          if (e.changed) {
+            materialize$.next(e.changeset ?? null);
+          }
+          deps.onSyncApplied();
+          return EMPTY;
+        }),
+      )
+      .subscribe(),
   );
 
   // ── Coalescing buffer → materialization ────────────────────────────
@@ -254,12 +226,18 @@ export function createFramePipeline(deps: FramePipelineDeps): Subscription {
       .pipe(
         bufferTime(COALESCE_MS),
         filter((batch) => batch.length > 0),
+        // concatMap(_, 1) serializes materialization — if a batch takes
+        // longer than COALESCE_MS (e.g. blob resolution), subsequent
+        // batches queue rather than overlapping and racing store writes.
+        concatMap((batch) =>
+          from(
+            materializeFromBatch(batch, deps).catch((err: unknown) =>
+              logger.warn("[frame-pipeline] materialize batch failed:", err),
+            ),
+          ),
+        ),
       )
-      .subscribe((batch) => {
-        materializeFromBatch(batch, deps).catch((err: unknown) =>
-          logger.warn("[frame-pipeline] materialize batch failed:", err),
-        );
-      }),
+      .subscribe(),
   );
 
   // ── Sub-pipeline: broadcasts ───────────────────────────────────────

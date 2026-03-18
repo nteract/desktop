@@ -3,7 +3,7 @@ import {
   type CellChangeset,
   type ChangedFields,
   mergeChangesets,
-} from "../frame-pipeline";
+} from "../cell-changeset";
 
 // ---------------------------------------------------------------------------
 // Helpers
