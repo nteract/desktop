@@ -958,3 +958,23 @@ pub fn encode_selection_presence(
         },
     )
 }
+
+/// Encode a cell focus as a presence frame payload (CBOR).
+/// Focus means "I'm on this cell" without an editor cursor position.
+#[wasm_bindgen]
+pub fn encode_focus_presence(peer_id: &str, cell_id: &str) -> Vec<u8> {
+    presence::encode_focus_update(peer_id, cell_id)
+}
+
+/// Encode a clear-channel message as a presence frame payload (CBOR).
+/// Removes a single presence channel (e.g. cursor or selection) for this peer.
+#[wasm_bindgen]
+pub fn encode_clear_channel_presence(peer_id: &str, channel: &str) -> Vec<u8> {
+    let ch = match channel {
+        "cursor" => presence::Channel::Cursor,
+        "selection" => presence::Channel::Selection,
+        "focus" => presence::Channel::Focus,
+        _ => return vec![],
+    };
+    presence::encode_clear_channel(peer_id, ch)
+}

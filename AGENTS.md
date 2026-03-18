@@ -31,17 +31,26 @@ RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH=$(pwd) ./target/debug/runt ps
 
 ### Rebuilding Python bindings (runtimed-py)
 
-The Python package `runtimed` wraps the Rust `runtimed-py` crate via PyO3. After changing Rust code in `crates/runtimed-py/`, rebuild into the correct venv:
+The Python package `runtimed` wraps the Rust `runtimed-py` crate via PyO3. After changing Rust code in `crates/runtimed-py/`, rebuild into the correct venv.
+
+There are **two venvs** that matter:
+
+| Venv | Purpose | Used by |
+|------|---------|---------|
+| `python/.venv` | Workspace venv — has both `nteract` and `runtimed` as editable installs | MCP server (`uv run --directory python nteract`) |
+| `python/runtimed/.venv` | Test-only venv — has `runtimed` + `maturin` + test deps | `pytest` integration tests |
 
 ```bash
-# Install maturin into the runtimed venv (one-time)
-cd python/runtimed && uv pip install maturin
+# For the MCP server (most common — this is what supervisor_rebuild does):
+cd crates/runtimed-py && VIRTUAL_ENV=../../python/.venv uv run --directory ../../python/runtimed maturin develop
 
-# Rebuild the native extension into the runtimed test venv
-cd crates/runtimed-py && VIRTUAL_ENV=../../python/runtimed/.venv ../../python/runtimed/.venv/bin/maturin develop
+# For integration tests only:
+cd crates/runtimed-py && VIRTUAL_ENV=../../python/runtimed/.venv uv run --directory ../../python/runtimed maturin develop
 ```
 
-**Common mistake:** Running `maturin develop` without `VIRTUAL_ENV` pointing at the right venv installs the `.so` somewhere tests can't find it. The test venv is `python/runtimed/.venv`.
+**Common mistake:** Running `maturin develop` without `VIRTUAL_ENV` installs the `.so` into whichever venv `uv run` resolves, which is `python/runtimed/.venv`. The MCP server runs from `python/.venv` and will never see it. Always set `VIRTUAL_ENV` explicitly.
+
+If using the MCP supervisor, `supervisor_rebuild` handles this automatically — it builds into `python/.venv` and restarts the MCP server.
 
 ### Running Python integration tests
 

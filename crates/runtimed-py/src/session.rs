@@ -435,6 +435,30 @@ impl Session {
         ))
     }
 
+    /// Set cell focus (presence dot without cursor position).
+    fn set_focus(&self, cell_id: &str) -> PyResult<()> {
+        let state = self.state.clone();
+        let cell_id = cell_id.to_string();
+        let peer_label = self.peer_label.clone();
+        self.runtime.block_on(async move {
+            session_core::set_focus(&state, peer_label.as_deref(), &cell_id).await
+        })
+    }
+
+    /// Clear cursor presence channel.
+    fn clear_cursor(&self) -> PyResult<()> {
+        let state = self.state.clone();
+        self.runtime
+            .block_on(async move { session_core::clear_cursor(&state).await })
+    }
+
+    /// Clear selection presence channel.
+    fn clear_selection(&self) -> PyResult<()> {
+        let state = self.state.clone();
+        self.runtime
+            .block_on(async move { session_core::clear_selection(&state).await })
+    }
+
     // =========================================================================
     // Save / Metadata
     // =========================================================================

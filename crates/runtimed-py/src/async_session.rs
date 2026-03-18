@@ -547,6 +547,34 @@ impl AsyncSession {
         })
     }
 
+    /// Set cell focus (presence dot without cursor position).
+    fn set_focus<'py>(&self, py: Python<'py>, cell_id: &str) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let peer_label = self.peer_label.clone();
+        let cell_id = cell_id.to_string();
+
+        future_into_py(py, async move {
+            session_core::set_focus(&state, peer_label.as_deref(), &cell_id).await
+        })
+    }
+
+    /// Clear cursor presence channel.
+    fn clear_cursor<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+
+        future_into_py(py, async move { session_core::clear_cursor(&state).await })
+    }
+
+    /// Clear selection presence channel.
+    fn clear_selection<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+
+        future_into_py(
+            py,
+            async move { session_core::clear_selection(&state).await },
+        )
+    }
+
     // =========================================================================
     // Save / Metadata
     // =========================================================================

@@ -1409,6 +1409,11 @@ where
                                     Ok(presence::PresenceMessage::Heartbeat { .. }) => {
                                         room.presence.write().await.mark_seen(peer_id, now_ms);
                                     }
+                                    Ok(presence::PresenceMessage::ClearChannel { channel, .. }) => {
+                                        room.presence.write().await.clear_channel(peer_id, channel);
+                                        let bytes = presence::encode_clear_channel(peer_id, channel);
+                                        let _ = room.presence_tx.send((peer_id.to_string(), bytes));
+                                    }
                                     Ok(_) => {
                                         // Snapshot/Left from a client — ignore
                                     }

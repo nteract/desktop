@@ -403,6 +403,9 @@ async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
                         PresenceMessage::Heartbeat { peer_id } => {
                             state.presence.mark_seen(&peer_id, now_ms);
                         }
+                        PresenceMessage::ClearChannel { peer_id, channel } => {
+                            state.presence.clear_channel(&peer_id, channel);
+                        }
                     }
                 }
                 Err(e) => {

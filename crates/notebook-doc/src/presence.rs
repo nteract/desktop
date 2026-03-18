@@ -43,6 +43,7 @@ pub const MAX_PRESENCE_FRAME_SIZE: usize = 4 * 1024;
 pub enum Channel {
     Cursor,
     Selection,
+    Focus,
     KernelState,
     Custom,
 }
@@ -55,6 +56,16 @@ pub struct CursorPosition {
     pub cell_id: String,
     pub line: u32,
     pub column: u32,
+}
+
+/// Cell-level focus without a cursor position.
+///
+/// Used for operations that act on a cell (execute, move, clear outputs,
+/// change type) where showing a cursor position would be misleading.
+/// The frontend renders a presence dot on the cell but no editor cursor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CellFocus {
+    pub cell_id: String,
 }
 
 /// Selection range within a cell.
@@ -119,6 +130,7 @@ pub struct KernelStateData {
 pub enum ChannelData {
     Cursor(CursorPosition),
     Selection(SelectionRange),
+    Focus(CellFocus),
     KernelState(KernelStateData),
     Custom(Vec<u8>),
 }
@@ -129,6 +141,7 @@ impl ChannelData {
         match self {
             Self::Cursor(_) => Channel::Cursor,
             Self::Selection(_) => Channel::Selection,
+            Self::Focus(_) => Channel::Focus,
             Self::KernelState(_) => Channel::KernelState,
             Self::Custom(_) => Channel::Custom,
         }
@@ -164,6 +177,10 @@ pub enum PresenceMessage {
     },
     Heartbeat {
         peer_id: String,
+    },
+    ClearChannel {
+        peer_id: String,
+        channel: Channel,
     },
 }
 
@@ -241,6 +258,36 @@ pub fn encode_selection_update_labeled(
         data: ChannelData::Selection(sel.clone()),
     })
     .expect("CBOR encoding of selection should not fail")
+}
+
+/// Encode a focus update message (cell-level presence without cursor).
+pub fn encode_focus_update(peer_id: &str, cell_id: &str) -> Vec<u8> {
+    encode_focus_update_labeled(peer_id, None, cell_id)
+}
+
+/// Encode a focus update with an optional peer label.
+pub fn encode_focus_update_labeled(
+    peer_id: &str,
+    peer_label: Option<&str>,
+    cell_id: &str,
+) -> Vec<u8> {
+    encode_message(&PresenceMessage::Update {
+        peer_id: peer_id.to_string(),
+        peer_label: peer_label.map(|s| s.to_string()),
+        data: ChannelData::Focus(CellFocus {
+            cell_id: cell_id.to_string(),
+        }),
+    })
+    .expect("CBOR encoding of focus should not fail")
+}
+
+/// Encode a clear-channel message (remove a single channel from a peer).
+pub fn encode_clear_channel(peer_id: &str, channel: Channel) -> Vec<u8> {
+    encode_message(&PresenceMessage::ClearChannel {
+        peer_id: peer_id.to_string(),
+        channel,
+    })
+    .expect("CBOR encoding of clear_channel should not fail")
 }
 
 /// Encode a kernel state update message (daemon-owned).
@@ -373,6 +420,16 @@ impl PresenceState {
             peer.last_seen_ms = now_ms;
         }
         // Ignore heartbeats from unknown peers (they should send an update first).
+    }
+
+    /// Remove a single channel from a peer's presence.
+    /// Returns true if the channel existed and was removed.
+    pub fn clear_channel(&mut self, peer_id: &str, channel: Channel) -> bool {
+        if let Some(peer) = self.peers.get_mut(peer_id) {
+            peer.channels.remove(&channel).is_some()
+        } else {
+            false
+        }
     }
 
     /// Remove a peer (explicit disconnect).
@@ -958,6 +1015,221 @@ mod tests {
 
         let custom = ChannelData::Custom(vec![1, 2, 3]);
         assert_eq!(custom.channel(), Channel::Custom);
+
+        let focus = ChannelData::Focus(CellFocus {
+            cell_id: "c1".into(),
+        });
+        assert_eq!(focus.channel(), Channel::Focus);
+    }
+
+    // ── Focus tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_focus_roundtrip() {
+        let encoded = encode_focus_update("peer-1", "cell-abc");
+        let msg = decode_message(&encoded).unwrap();
+        match msg {
+            PresenceMessage::Update {
+                peer_id,
+                peer_label,
+                data,
+            } => {
+                assert_eq!(peer_id, "peer-1");
+                assert_eq!(peer_label, None);
+                assert_eq!(
+                    data,
+                    ChannelData::Focus(CellFocus {
+                        cell_id: "cell-abc".into()
+                    })
+                );
+            }
+            _ => panic!("expected Update"),
+        }
+    }
+
+    #[test]
+    fn test_focus_labeled_roundtrip() {
+        let encoded = encode_focus_update_labeled("agent-1", Some("Claude"), "cell-xyz");
+        let msg = decode_message(&encoded).unwrap();
+        match msg {
+            PresenceMessage::Update {
+                peer_id,
+                peer_label,
+                data,
+            } => {
+                assert_eq!(peer_id, "agent-1");
+                assert_eq!(peer_label, Some("Claude".to_string()));
+                assert_eq!(
+                    data,
+                    ChannelData::Focus(CellFocus {
+                        cell_id: "cell-xyz".into()
+                    })
+                );
+            }
+            _ => panic!("expected Update"),
+        }
+    }
+
+    #[test]
+    fn test_focus_update_is_compact() {
+        let encoded = encode_focus_update("p1", "c1");
+        // Focus has fewer fields than cursor (no line/column), should be very small.
+        assert!(
+            encoded.len() < 80,
+            "focus update should be compact, got {} bytes",
+            encoded.len()
+        );
+    }
+
+    // ── ClearChannel tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_clear_channel_roundtrip() {
+        let encoded = encode_clear_channel("peer-1", Channel::Cursor);
+        let msg = decode_message(&encoded).unwrap();
+        match msg {
+            PresenceMessage::ClearChannel { peer_id, channel } => {
+                assert_eq!(peer_id, "peer-1");
+                assert_eq!(channel, Channel::Cursor);
+            }
+            _ => panic!("expected ClearChannel"),
+        }
+    }
+
+    #[test]
+    fn test_clear_channel_selection_roundtrip() {
+        let encoded = encode_clear_channel("peer-2", Channel::Selection);
+        let msg = decode_message(&encoded).unwrap();
+        match msg {
+            PresenceMessage::ClearChannel { peer_id, channel } => {
+                assert_eq!(peer_id, "peer-2");
+                assert_eq!(channel, Channel::Selection);
+            }
+            _ => panic!("expected ClearChannel"),
+        }
+    }
+
+    #[test]
+    fn test_clear_channel_focus_roundtrip() {
+        let encoded = encode_clear_channel("peer-3", Channel::Focus);
+        let msg = decode_message(&encoded).unwrap();
+        match msg {
+            PresenceMessage::ClearChannel { peer_id, channel } => {
+                assert_eq!(peer_id, "peer-3");
+                assert_eq!(channel, Channel::Focus);
+            }
+            _ => panic!("expected ClearChannel"),
+        }
+    }
+
+    #[test]
+    fn test_clear_channel_compact() {
+        let encoded = encode_clear_channel("p1", Channel::Cursor);
+        assert!(
+            encoded.len() < 60,
+            "clear_channel should be compact, got {} bytes",
+            encoded.len()
+        );
+    }
+
+    #[test]
+    fn test_state_clear_channel() {
+        let mut state = PresenceState::new();
+        let cursor = ChannelData::Cursor(CursorPosition {
+            cell_id: "c1".into(),
+            line: 1,
+            column: 0,
+        });
+        let sel = ChannelData::Selection(SelectionRange {
+            cell_id: "c1".into(),
+            anchor_line: 0,
+            anchor_col: 0,
+            head_line: 3,
+            head_col: 10,
+        });
+        state.update_peer("peer-1", "human", cursor, 1000);
+        state.update_peer("peer-1", "human", sel, 1000);
+        assert_eq!(state.get_peer("peer-1").unwrap().channels.len(), 2);
+
+        // Clear cursor channel
+        assert!(state.clear_channel("peer-1", Channel::Cursor));
+        let peer = state.get_peer("peer-1").unwrap();
+        assert_eq!(peer.channels.len(), 1);
+        assert!(!peer.channels.contains_key(&Channel::Cursor));
+        assert!(peer.channels.contains_key(&Channel::Selection));
+    }
+
+    #[test]
+    fn test_state_clear_channel_nonexistent() {
+        let mut state = PresenceState::new();
+        // Unknown peer
+        assert!(!state.clear_channel("ghost", Channel::Cursor));
+
+        // Known peer, missing channel
+        let cursor = ChannelData::Cursor(CursorPosition {
+            cell_id: "c1".into(),
+            line: 0,
+            column: 0,
+        });
+        state.update_peer("peer-1", "human", cursor, 1000);
+        assert!(!state.clear_channel("peer-1", Channel::Selection));
+        assert_eq!(state.get_peer("peer-1").unwrap().channels.len(), 1);
+    }
+
+    #[test]
+    fn test_snapshot_after_clear() {
+        let mut state = PresenceState::new();
+        let cursor = ChannelData::Cursor(CursorPosition {
+            cell_id: "c1".into(),
+            line: 5,
+            column: 3,
+        });
+        let sel = ChannelData::Selection(SelectionRange {
+            cell_id: "c1".into(),
+            anchor_line: 0,
+            anchor_col: 0,
+            head_line: 2,
+            head_col: 8,
+        });
+        state.update_peer("peer-1", "human", cursor, 1000);
+        state.update_peer("peer-1", "human", sel, 1000);
+
+        // Clear selection, snapshot should only have cursor
+        state.clear_channel("peer-1", Channel::Selection);
+        let snapshot_bytes = state.encode_snapshot("daemon");
+        let msg = decode_message(&snapshot_bytes).unwrap();
+        match msg {
+            PresenceMessage::Snapshot { peers, .. } => {
+                assert_eq!(peers.len(), 1);
+                assert_eq!(peers[0].channels.len(), 1);
+                assert_eq!(peers[0].channels[0].channel(), Channel::Cursor);
+            }
+            _ => panic!("expected Snapshot"),
+        }
+    }
+
+    #[test]
+    fn test_focus_in_snapshot() {
+        let mut state = PresenceState::new();
+        let focus = ChannelData::Focus(CellFocus {
+            cell_id: "cell-a".into(),
+        });
+        state.update_peer("agent", "Claude", focus, 1000);
+
+        let snapshot_bytes = state.encode_snapshot("daemon");
+        let msg = decode_message(&snapshot_bytes).unwrap();
+        match msg {
+            PresenceMessage::Snapshot { peers, .. } => {
+                assert_eq!(peers.len(), 1);
+                assert_eq!(peers[0].peer_id, "agent");
+                assert_eq!(peers[0].channels.len(), 1);
+                match &peers[0].channels[0] {
+                    ChannelData::Focus(f) => assert_eq!(f.cell_id, "cell-a"),
+                    _ => panic!("expected Focus"),
+                }
+            }
+            _ => panic!("expected Snapshot"),
+        }
     }
 
     #[test]

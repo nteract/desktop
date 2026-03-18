@@ -1369,6 +1369,31 @@ export class NotebookHandle {
 if (Symbol.dispose) NotebookHandle.prototype[Symbol.dispose] = NotebookHandle.prototype.free;
 
 /**
+ * Encode a clear-channel message as a presence frame payload (CBOR).
+ * Removes a single presence channel (e.g. cursor or selection) for this peer.
+ * @param {string} peer_id
+ * @param {string} channel
+ * @returns {Uint8Array}
+ */
+export function encode_clear_channel_presence(peer_id, channel) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passStringToWasm0(peer_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(channel, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len1 = WASM_VECTOR_LEN;
+        wasm.encode_clear_channel_presence(retptr, ptr0, len0, ptr1, len1);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v3 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export4(r0, r1 * 1, 1);
+        return v3;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
  * Encode a cursor position as a presence frame payload (CBOR).
  *
  * The frontend should prepend the frame type byte (0x04) and send
@@ -1387,6 +1412,31 @@ export function encode_cursor_presence(peer_id, cell_id, line, column) {
         const ptr1 = passStringToWasm0(cell_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len1 = WASM_VECTOR_LEN;
         wasm.encode_cursor_presence(retptr, ptr0, len0, ptr1, len1, line, column);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v3 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export4(r0, r1 * 1, 1);
+        return v3;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+ * Encode a cell focus as a presence frame payload (CBOR).
+ * Focus means "I'm on this cell" without an editor cursor position.
+ * @param {string} peer_id
+ * @param {string} cell_id
+ * @returns {Uint8Array}
+ */
+export function encode_focus_presence(peer_id, cell_id) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passStringToWasm0(peer_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(cell_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len1 = WASM_VECTOR_LEN;
+        wasm.encode_focus_presence(retptr, ptr0, len0, ptr1, len1);
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
         var v3 = getArrayU8FromWasm0(r0, r1).slice();

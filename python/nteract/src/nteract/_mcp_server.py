@@ -873,6 +873,7 @@ async def set_cell(
     # Update source if provided
     if source is not None:
         await session.set_source(cell_id=cell_id, source=source)
+        await _send_edit_cursor(session, cell_id, source, len(source))
 
     # Update cell type if provided
     if cell_type is not None:
@@ -911,6 +912,12 @@ async def _send_cell_cursor(
     """Send cursor presence on a cell (best-effort, errors silently ignored)."""
     with contextlib.suppress(Exception):
         await session.set_cursor(cell_id=cell_id, line=line, column=column)
+
+
+async def _send_cell_focus(session: runtimed.AsyncSession, cell_id: str) -> None:
+    """Send focus presence on a cell (best-effort, errors silently ignored)."""
+    with contextlib.suppress(Exception):
+        await session.set_focus(cell_id=cell_id)
 
 
 def _format_edit_diff(cell_id: str, old_text: str, new_text: str) -> str:
@@ -1027,7 +1034,7 @@ async def get_cell(
 ) -> list[ContentItem]:
     """Get a cell's source and outputs by ID."""
     session = await _get_session()
-    await _send_cell_cursor(session, cell_id)
+    await _send_cell_focus(session, cell_id)
     cell = await session.get_cell(cell_id=cell_id)
     if cell is None:
         return [TextContent(type="text", text=f'Cell "{cell_id}" not found')]
@@ -1182,6 +1189,7 @@ async def _execute_cell_internal(
 ) -> list[ContentItem]:
     """Internal execution with streaming and partial results."""
     session = await _get_session()
+    await _send_cell_focus(session, cell_id)
     events: list[Any] = []  # list[runtimed.ExecutionEvent]
     complete = False
 
@@ -1263,7 +1271,7 @@ async def resource_cell(cell_id: str) -> str:
         return "Error: No active session"
 
     try:
-        await _send_cell_cursor(_session, cell_id)
+        await _send_cell_focus(_session, cell_id)
         cell = await _session.get_cell(cell_id=cell_id)
         if cell is None:
             return f"Error: Cell {cell_id} not found"
@@ -1284,7 +1292,7 @@ async def resource_cell_by_index(index: int) -> str:
         if index < 0 or index >= len(cell_ids):
             return f"Error: Index {index} out of range (notebook has {len(cell_ids)} cells)"
         cell_id = cell_ids[index]
-        await _send_cell_cursor(_session, cell_id)
+        await _send_cell_focus(_session, cell_id)
         cell = await _session.get_cell(cell_id=cell_id)
         if cell is None:
             return f"Error: Cell at index {index} not found"
@@ -1301,7 +1309,7 @@ async def resource_cell_outputs(cell_id: str) -> str:
         return "Error: No active session"
 
     try:
-        await _send_cell_cursor(_session, cell_id)
+        await _send_cell_focus(_session, cell_id)
         cell = await _session.get_cell(cell_id=cell_id)
         if cell is None:
             return f"Error: Cell {cell_id} not found"

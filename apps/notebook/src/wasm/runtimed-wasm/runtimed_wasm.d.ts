@@ -366,12 +366,24 @@ export class NotebookHandle {
 }
 
 /**
+ * Encode a clear-channel message as a presence frame payload (CBOR).
+ * Removes a single presence channel (e.g. cursor or selection) for this peer.
+ */
+export function encode_clear_channel_presence(peer_id: string, channel: string): Uint8Array;
+
+/**
  * Encode a cursor position as a presence frame payload (CBOR).
  *
  * The frontend should prepend the frame type byte (0x04) and send
  * via `invoke("send_frame", { frameData })`.
  */
 export function encode_cursor_presence(peer_id: string, cell_id: string, line: number, column: number): Uint8Array;
+
+/**
+ * Encode a cell focus as a presence frame payload (CBOR).
+ * Focus means "I'm on this cell" without an editor cursor position.
+ */
+export function encode_focus_presence(peer_id: string, cell_id: string): Uint8Array;
 
 /**
  * Encode a selection range as a presence frame payload (CBOR).
@@ -450,6 +462,8 @@ export interface InitOutput {
     readonly notebookhandle_receive_frame: (a: number, b: number, c: number) => number;
     readonly encode_cursor_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly encode_selection_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
+    readonly encode_focus_presence: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly encode_clear_channel_presence: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly __wbindgen_export: (a: number, b: number) => number;
     readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export3: (a: number) => void;

@@ -39,7 +39,7 @@ interface SelectionData {
 }
 
 interface ChannelEntry {
-  channel: "cursor" | "selection" | "kernel_state" | "custom";
+  channel: "cursor" | "selection" | "focus" | "kernel_state" | "custom";
   data: unknown;
 }
 
@@ -71,11 +71,18 @@ interface PresenceHeartbeat {
   peer_id: string;
 }
 
+interface PresenceClearChannel {
+  type: "clear_channel";
+  peer_id: string;
+  channel: string;
+}
+
 type PresenceMessage =
   | PresenceUpdate
   | PresenceSnapshot
   | PresenceLeft
-  | PresenceHeartbeat;
+  | PresenceHeartbeat
+  | PresenceClearChannel;
 
 // ── Peer state ───────────────────────────────────────────────────────
 
@@ -85,6 +92,7 @@ export interface PeerCursorInfo {
   color: string;
   cursor?: CursorData;
   selection?: SelectionData;
+  focus?: { cell_id: string };
 }
 
 // ── Registry state ───────────────────────────────────────────────────
@@ -115,6 +123,17 @@ export function registerEditor(cellId: string, view: EditorView): void {
  */
 export function unregisterEditor(cellId: string): void {
   editors.delete(cellId);
+  for (const peer of peers.values()) {
+    if (peer.cursor?.cell_id === cellId) {
+      peer.cursor = undefined;
+    }
+    if (peer.selection?.cell_id === cellId) {
+      peer.selection = undefined;
+    }
+    if (peer.focus?.cell_id === cellId) {
+      peer.focus = undefined;
+    }
+  }
 }
 
 // ── Dispatch helpers ─────────────────────────────────────────────────
@@ -201,6 +220,11 @@ function handlePresence(payload: unknown): void {
         if (peer.cursor && peer.cursor.cell_id !== data.cell_id) {
           affectedCells.add(peer.cursor.cell_id);
         }
+        // Cursor replaces focus
+        if (peer.focus) {
+          affectedCells.add(peer.focus.cell_id);
+          peer.focus = undefined;
+        }
         peer.cursor = data;
         affectedCells.add(data.cell_id);
       } else if (msg.channel === "selection") {
@@ -209,6 +233,18 @@ function handlePresence(payload: unknown): void {
           affectedCells.add(peer.selection.cell_id);
         }
         peer.selection = data;
+        affectedCells.add(data.cell_id);
+      } else if (msg.channel === "focus") {
+        const data = msg.data as { cell_id: string };
+        // Focus replaces cursor
+        if (peer.cursor) {
+          affectedCells.add(peer.cursor.cell_id);
+          peer.cursor = undefined;
+        }
+        if (peer.focus && peer.focus.cell_id !== data.cell_id) {
+          affectedCells.add(peer.focus.cell_id);
+        }
+        peer.focus = data;
         affectedCells.add(data.cell_id);
       }
 
@@ -225,6 +261,7 @@ function handlePresence(payload: unknown): void {
       for (const peer of peers.values()) {
         if (peer.cursor) affectedCells.add(peer.cursor.cell_id);
         if (peer.selection) affectedCells.add(peer.selection.cell_id);
+        if (peer.focus) affectedCells.add(peer.focus.cell_id);
       }
 
       peers.clear();
@@ -245,6 +282,9 @@ function handlePresence(payload: unknown): void {
           } else if (ch.channel === "selection") {
             peer.selection = ch.data as SelectionData;
             affectedCells.add(peer.selection.cell_id);
+          } else if (ch.channel === "focus") {
+            peer.focus = ch.data as { cell_id: string };
+            affectedCells.add(peer.focus.cell_id);
           }
         }
 
@@ -262,8 +302,27 @@ function handlePresence(payload: unknown): void {
       const affectedCells = new Set<string>();
       if (peer.cursor) affectedCells.add(peer.cursor.cell_id);
       if (peer.selection) affectedCells.add(peer.selection.cell_id);
+      if (peer.focus) affectedCells.add(peer.focus.cell_id);
 
       peers.delete(msg.peer_id);
+      dispatchToAffectedCells(affectedCells);
+      break;
+    }
+
+    case "clear_channel": {
+      const peer = peers.get(msg.peer_id);
+      if (!peer) return;
+      const affectedCells = new Set<string>();
+      if (msg.channel === "cursor" && peer.cursor) {
+        affectedCells.add(peer.cursor.cell_id);
+        peer.cursor = undefined;
+      } else if (msg.channel === "selection" && peer.selection) {
+        affectedCells.add(peer.selection.cell_id);
+        peer.selection = undefined;
+      } else if (msg.channel === "focus" && peer.focus) {
+        affectedCells.add(peer.focus.cell_id);
+        peer.focus = undefined;
+      }
       dispatchToAffectedCells(affectedCells);
       break;
     }
@@ -344,7 +403,7 @@ export function getPeersForCell(cellId: string): PeerCursorInfo[] {
   const result: PeerCursorInfo[] = [];
   for (const peer of peers.values()) {
     if (peer.peerId === localPeerId) continue;
-    if (peer.cursor?.cell_id === cellId) {
+    if (peer.cursor?.cell_id === cellId || peer.focus?.cell_id === cellId) {
       result.push(peer);
     }
   }

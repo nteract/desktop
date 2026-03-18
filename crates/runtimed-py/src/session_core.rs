@@ -536,8 +536,14 @@ pub(crate) async fn create_cell(
             .map_err(to_py_err)?;
     }
 
-    // Emit presence on the new cell
-    emit_cursor_presence(state, &cell_id, 0, 0).await;
+    // Emit presence at end of new source
+    let (last_line, last_col) = source
+        .lines()
+        .enumerate()
+        .last()
+        .map(|(i, line)| (i as u32, line.len() as u32))
+        .unwrap_or((0, 0));
+    emit_cursor_presence(state, &cell_id, last_line, last_col).await;
 
     Ok(cell_id)
 }
@@ -567,6 +573,7 @@ pub(crate) async fn set_source(
         .map(|(i, line)| (i as u32, line.len() as u32))
         .unwrap_or((0, 0));
     emit_cursor_presence(state, cell_id, last_line, last_col).await;
+    emit_clear_channel(state, notebook_doc::presence::Channel::Selection).await;
 
     Ok(())
 }
@@ -603,6 +610,7 @@ pub(crate) async fn append_source(
     };
 
     emit_cursor_presence(state, cell_id, last_line, last_col).await;
+    emit_clear_channel(state, notebook_doc::presence::Channel::Selection).await;
 
     Ok(())
 }
@@ -613,16 +621,22 @@ pub(crate) async fn set_cell_type(
     cell_id: &str,
     cell_type: &str,
 ) -> PyResult<()> {
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    {
+        let st = state.lock().await;
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
 
-    // Synchronous — direct doc mutation via DocHandle
-    handle
-        .set_cell_type(cell_id, cell_type)
-        .map_err(to_py_err)?;
+        // Synchronous — direct doc mutation via DocHandle
+        handle
+            .set_cell_type(cell_id, cell_type)
+            .map_err(to_py_err)?;
+    }
+
+    // Emit focus presence — cell-level operation, no cursor position
+    emit_focus_presence(state, cell_id).await;
+
     Ok(())
 }
 
@@ -771,14 +785,21 @@ pub(crate) async fn get_cell_position(
 
 /// Delete a cell.
 pub(crate) async fn delete_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) -> PyResult<()> {
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    {
+        let st = state.lock().await;
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
 
-    // Synchronous — direct doc mutation via DocHandle
-    handle.delete_cell(cell_id).map_err(to_py_err)?;
+        // Synchronous — direct doc mutation via DocHandle
+        handle.delete_cell(cell_id).map_err(to_py_err)?;
+    }
+
+    // Cell is gone — clear any stale cursor and selection
+    emit_clear_channel(state, notebook_doc::presence::Channel::Cursor).await;
+    emit_clear_channel(state, notebook_doc::presence::Channel::Selection).await;
+
     Ok(())
 }
 
@@ -801,8 +822,8 @@ pub(crate) async fn move_cell(
             .map_err(to_py_err)?;
     }
 
-    // Emit presence on the moved cell
-    emit_cursor_presence(state, cell_id, 0, 0).await;
+    // Emit focus presence — cell-level operation, no cursor position
+    emit_focus_presence(state, cell_id).await;
 
     Ok(cell_id.to_string())
 }
@@ -827,8 +848,8 @@ pub(crate) async fn clear_outputs(state: &Arc<Mutex<SessionState>>, cell_id: &st
 
     match response {
         NotebookResponse::OutputsCleared { .. } => {
-            // Emit presence on the cleared cell
-            emit_cursor_presence(state, cell_id, 0, 0).await;
+            // Emit focus presence — cell-level operation on outputs, not source
+            emit_focus_presence(state, cell_id).await;
             Ok(())
         }
         NotebookResponse::Error { error } => Err(to_py_err(error)),
@@ -859,8 +880,8 @@ pub(crate) async fn execute_cell(
         }
     }
 
-    // Emit presence on the cell being executed
-    emit_cursor_presence(state, cell_id, 0, 0).await;
+    // Emit focus presence — running the cell, not editing it
+    emit_focus_presence(state, cell_id).await;
 
     let timeout = std::time::Duration::from_secs_f64(timeout_secs);
     let result = tokio::time::timeout(timeout, async {
@@ -918,24 +939,30 @@ pub(crate) async fn run(
 
 /// Queue a cell for execution without waiting for the result.
 pub(crate) async fn queue_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) -> PyResult<()> {
-    let st = state.lock().await;
+    let response = {
+        let st = state.lock().await;
 
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
 
-    handle.confirm_sync().await.map_err(to_py_err)?;
+        handle.confirm_sync().await.map_err(to_py_err)?;
 
-    let response = handle
-        .send_request(NotebookRequest::ExecuteCell {
-            cell_id: cell_id.to_string(),
-        })
-        .await
-        .map_err(to_py_err)?;
+        handle
+            .send_request(NotebookRequest::ExecuteCell {
+                cell_id: cell_id.to_string(),
+            })
+            .await
+            .map_err(to_py_err)?
+    };
 
     match response {
-        NotebookResponse::CellQueued { .. } => Ok(()),
+        NotebookResponse::CellQueued { .. } => {
+            // Emit focus presence — queuing cell for execution
+            emit_focus_presence(state, cell_id).await;
+            Ok(())
+        }
         NotebookResponse::Error { error } => Err(to_py_err(error)),
         other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
     }
@@ -1058,36 +1085,32 @@ pub(crate) async fn run_all_cells(
         }
     }
 
-    let (response, last_code_cell_id) = {
+    let response = {
         let st = state.lock().await;
         let handle = st
             .handle
             .as_ref()
             .ok_or_else(|| to_py_err("Not connected"))?;
 
-        // Get last code cell ID before queuing (for presence)
-        let cells = handle.get_cells();
-        let last_code_cell_id = cells
-            .iter()
-            .rev()
-            .find(|c| c.cell_type == "code")
-            .map(|c| c.id.clone());
-
         handle.confirm_sync().await.map_err(to_py_err)?;
 
-        let response = handle
+        handle
             .send_request(NotebookRequest::RunAllCells {})
             .await
-            .map_err(to_py_err)?;
-
-        (response, last_code_cell_id)
+            .map_err(to_py_err)?
     };
 
     match response {
         NotebookResponse::AllCellsQueued { count } => {
-            // Emit presence on last code cell
-            if let Some(cell_id) = last_code_cell_id {
-                emit_cursor_presence(state, &cell_id, 0, 0).await;
+            // Focus on the last cell — gives a visual anchor for where execution ends
+            if count > 0 {
+                let last_cell_id = {
+                    let st = state.lock().await;
+                    st.handle.as_ref().and_then(|h| h.last_cell_id())
+                };
+                if let Some(cell_id) = last_cell_id {
+                    emit_focus_presence(state, &cell_id).await;
+                }
             }
             Ok(count)
         }
@@ -1220,6 +1243,95 @@ async fn emit_cursor_presence_internal(
     };
     handle.send_presence(data).await?;
     Ok(())
+}
+
+/// Internal helper to emit focus presence (best-effort).
+pub(crate) async fn emit_focus_presence(state: &Arc<Mutex<SessionState>>, cell_id: &str) {
+    let _ = emit_focus_presence_internal(state, cell_id).await;
+}
+
+async fn emit_focus_presence_internal(
+    state: &Arc<Mutex<SessionState>>,
+    cell_id: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (data, handle) = {
+        let st = state.lock().await;
+        let peer_label = st.peer_label.clone();
+        let data = notebook_doc::presence::encode_focus_update_labeled(
+            "local",
+            peer_label.as_deref(),
+            cell_id,
+        );
+        let handle = st.handle.clone().ok_or("Not connected")?;
+        (data, handle)
+    };
+    handle.send_presence(data).await?;
+    Ok(())
+}
+
+/// Internal helper to clear a presence channel (best-effort).
+pub(crate) async fn emit_clear_channel(
+    state: &Arc<Mutex<SessionState>>,
+    channel: notebook_doc::presence::Channel,
+) {
+    let _ = emit_clear_channel_internal(state, channel).await;
+}
+
+async fn emit_clear_channel_internal(
+    state: &Arc<Mutex<SessionState>>,
+    channel: notebook_doc::presence::Channel,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (data, handle) = {
+        let st = state.lock().await;
+        let data = notebook_doc::presence::encode_clear_channel("local", channel);
+        let handle = st.handle.clone().ok_or("Not connected")?;
+        (data, handle)
+    };
+    handle.send_presence(data).await?;
+    Ok(())
+}
+
+/// Set cell focus (presence dot without cursor position).
+pub(crate) async fn set_focus(
+    state: &Arc<Mutex<SessionState>>,
+    peer_label: Option<&str>,
+    cell_id: &str,
+) -> PyResult<()> {
+    let data = notebook_doc::presence::encode_focus_update_labeled("local", peer_label, cell_id);
+    let st = state.lock().await;
+    let handle = st
+        .handle
+        .as_ref()
+        .ok_or_else(|| to_py_err("Not connected"))?;
+    handle.send_presence(data).await.map_err(to_py_err)
+}
+
+/// Clear cursor presence channel.
+pub(crate) async fn clear_cursor(state: &Arc<Mutex<SessionState>>) -> PyResult<()> {
+    let data = notebook_doc::presence::encode_clear_channel(
+        "local",
+        notebook_doc::presence::Channel::Cursor,
+    );
+    let st = state.lock().await;
+    let handle = st
+        .handle
+        .as_ref()
+        .ok_or_else(|| to_py_err("Not connected"))?;
+    handle.send_presence(data).await.map_err(to_py_err)
+}
+
+/// Clear selection presence channel.
+pub(crate) async fn clear_selection(state: &Arc<Mutex<SessionState>>) -> PyResult<()> {
+    let data = notebook_doc::presence::encode_clear_channel(
+        "local",
+        notebook_doc::presence::Channel::Selection,
+    );
+    let st = state.lock().await;
+    let handle = st
+        .handle
+        .as_ref()
+        .ok_or_else(|| to_py_err("Not connected"))?;
+    handle.send_presence(data).await.map_err(to_py_err)
 }
 
 // =========================================================================

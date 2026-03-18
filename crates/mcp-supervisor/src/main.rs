@@ -196,6 +196,12 @@ fn run_maturin_develop(project_root: &Path) -> bool {
     // Route stdout to null — the supervisor uses stdout for MCP transport,
     // so maturin output would corrupt the JSON-RPC stream. Stderr goes to
     // our stderr (which is the supervisor's log stream).
+    //
+    // We run maturin from python/runtimed (where it's a dev dependency),
+    // but set VIRTUAL_ENV to python/.venv so the .so is installed where
+    // the MCP server actually runs from. Without this, maturin installs
+    // into python/runtimed/.venv (the test-only venv) and the MCP server
+    // never sees the updated bindings.
     let status = std::process::Command::new("uv")
         .args([
             "run",
@@ -204,6 +210,10 @@ fn run_maturin_develop(project_root: &Path) -> bool {
             "maturin",
             "develop",
         ])
+        .env(
+            "VIRTUAL_ENV",
+            project_root.join("python/.venv").to_string_lossy().as_ref(),
+        )
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .status();
