@@ -1,0 +1,16 @@
+{
+  "context_servers": {
+    "supervisor": {
+      "command": "./target/debug/mcp-supervisor",
+      "args": [],
+      "env": {
+        "RUNTIMED_DEV": "1",
+      },
+    },
+  },
+  "languages": {
+    "Python": {
+      "language_servers": ["!pyright", "!basedpyright", "..."],
+    },
+  },
+}
