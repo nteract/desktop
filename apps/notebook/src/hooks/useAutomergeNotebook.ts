@@ -7,6 +7,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getBlobPort, refreshBlobPort } from "../lib/blob-port";
 import { frame_types, sendFrame } from "../lib/frame-types";
+import { Subject, debounceTime } from "rxjs";
 import { createFramePipeline } from "../lib/frame-pipeline";
 import { logger } from "../lib/logger";
 import {
@@ -114,52 +115,19 @@ export function useAutomergeNotebook() {
     }
   }, []);
 
-  // Debounced sync for source updates — batches rapid keystrokes into a
-  // single IPC call. Structural mutations (add/delete/move cell) still use
-  // syncToRelay directly for immediate consistency.
-  const pendingSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+  // RxJS subjects for debounced outbound sync pipelines.
+  // Subjects are stable refs — subscriptions are managed in useEffect.
 
-  const debouncedSyncToRelay = useCallback(
-    (handle: NotebookHandle) => {
-      if (pendingSyncTimerRef.current) {
-        clearTimeout(pendingSyncTimerRef.current);
-      }
-      pendingSyncTimerRef.current = setTimeout(() => {
-        pendingSyncTimerRef.current = null;
-        syncToRelay(handle);
-      }, 20);
-    },
-    [syncToRelay],
-  );
+  // Source sync (20ms debounce): batches rapid keystrokes into a single IPC
+  // call. Structural mutations (add/delete/move) still use syncToRelay
+  // directly for immediate consistency.
+  const sourceSync$ = useRef(new Subject<void>());
 
-  // Debounced sync reply for inbound frames — coalesces multiple receives
-  // into a single outbound reply. The Automerge sync protocol is safe to
-  // batch: receive,receive,receive → generate covers all received changes.
+  // Sync reply (50ms debounce): coalesces multiple inbound receives into a
+  // single outbound reply. The Automerge sync protocol is safe to batch:
+  // receive,receive,receive → generate covers all received changes.
   // Matches automerge-repo's syncDebounceRate pattern (they use 100ms).
-  const pendingSyncReplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
-
-  const scheduleSyncReply = useCallback(() => {
-    if (pendingSyncReplyTimerRef.current) {
-      clearTimeout(pendingSyncReplyTimerRef.current);
-    }
-    pendingSyncReplyTimerRef.current = setTimeout(() => {
-      pendingSyncReplyTimerRef.current = null;
-      // Read handle at fire time — not capture time — to avoid
-      // use-after-free if bootstrap() replaced/freed the handle.
-      const handle = handleRef.current;
-      if (!handle) return;
-      const reply = handle.generate_sync_reply();
-      if (reply) {
-        sendFrame(frame_types.AUTOMERGE_SYNC, reply).catch((e: unknown) =>
-          logger.warn("[automerge-notebook] sync reply failed:", e),
-        );
-      }
-    }, 50);
-  }, []);
+  const syncReply$ = useRef(new Subject<void>());
 
   /**
    * Synchronously re-read cells from WASM after a local mutation.
@@ -278,8 +246,32 @@ export function useAutomergeNotebook() {
       setIsLoading,
       materializeCells,
       outputCache: outputCacheRef.current,
-      onSyncApplied: scheduleSyncReply,
+      onSyncApplied: () => syncReply$.current.next(),
     });
+
+    // ── Debounced outbound sync pipelines (RxJS) ────────────────────
+
+    // Source sync: 20ms debounce for batching rapid keystrokes.
+    const sourceSyncSub = sourceSync$.current
+      .pipe(debounceTime(20))
+      .subscribe(() => {
+        const handle = handleRef.current;
+        if (handle) syncToRelay(handle);
+      });
+
+    // Sync reply: 50ms debounce for coalescing inbound frame replies.
+    const syncReplySub = syncReply$.current
+      .pipe(debounceTime(50))
+      .subscribe(() => {
+        const handle = handleRef.current;
+        if (!handle) return;
+        const reply = handle.generate_sync_reply();
+        if (reply) {
+          sendFrame(frame_types.AUTOMERGE_SYNC, reply).catch((e: unknown) =>
+            logger.warn("[automerge-notebook] sync reply failed:", e),
+          );
+        }
+      });
 
     // ── Bulk output clearing (run-all / restart-and-run-all) ─────────
     const unlistenClearOutputs = webview.listen<string[]>(
@@ -300,29 +292,22 @@ export function useAutomergeNotebook() {
     return () => {
       cancelled = true;
       frameSub.unsubscribe();
+      // Unsubscribe debounce pipelines (cancels pending timers)
+      sourceSyncSub.unsubscribe();
+      syncReplySub.unsubscribe();
       unlistenReady.then((fn) => fn()).catch(() => {});
       unlistenFileOpened.then((fn) => fn()).catch(() => {});
       unlistenClearOutputs.then((fn) => fn()).catch(() => {});
-      // Flush any pending debounced sync before teardown
-      if (pendingSyncTimerRef.current) {
-        clearTimeout(pendingSyncTimerRef.current);
-        pendingSyncTimerRef.current = null;
-        if (handleRef.current) syncToRelay(handleRef.current);
-      }
-      // Flush any pending sync reply before teardown
-      if (pendingSyncReplyTimerRef.current) {
-        clearTimeout(pendingSyncReplyTimerRef.current);
-        pendingSyncReplyTimerRef.current = null;
-        if (handleRef.current) {
-          const reply = handleRef.current.generate_sync_reply();
-          if (reply) {
-            sendFrame(frame_types.AUTOMERGE_SYNC, reply).catch((e: unknown) =>
-              logger.warn(
-                "[automerge-notebook] teardown sync reply failed:",
-                e,
-              ),
-            );
-          }
+      // Flush any pending sync before teardown — unsubscribing the
+      // debounce pipelines above cancels their timers, so we do a
+      // final sync + reply here to avoid dropping in-flight changes.
+      if (handleRef.current) {
+        syncToRelay(handleRef.current);
+        const reply = handleRef.current.generate_sync_reply();
+        if (reply) {
+          sendFrame(frame_types.AUTOMERGE_SYNC, reply).catch((e: unknown) =>
+            logger.warn("[automerge-notebook] teardown sync reply failed:", e),
+          );
         }
       }
       // Free WASM handle.
@@ -331,30 +316,27 @@ export function useAutomergeNotebook() {
       handleRef.current?.free();
       handleRef.current = null;
     };
-  }, [bootstrap, materializeCells, scheduleSyncReply, syncToRelay]);
+  }, [bootstrap, materializeCells, syncToRelay]);
 
   // ── Cell mutations ─────────────────────────────────────────────────
 
-  const updateCellSource = useCallback(
-    (cellId: string, source: string) => {
-      const handle = handleRef.current;
-      if (!handle || awaitingInitialSyncRef.current) return;
+  const updateCellSource = useCallback((cellId: string, source: string) => {
+    const handle = handleRef.current;
+    if (!handle || awaitingInitialSyncRef.current) return;
 
-      // Mutate WASM (instant, local-first)
-      const updated = handle.update_source(cellId, source);
-      if (!updated) return;
+    // Mutate WASM (instant, local-first)
+    const updated = handle.update_source(cellId, source);
+    if (!updated) return;
 
-      // Fast-path: update only the affected cell in the store — triggers only
-      // that cell's subscribers, not all cells.
-      updateCellById(cellId, (c) => ({ ...c, source }));
+    // Fast-path: update only the affected cell in the store — triggers only
+    // that cell's subscribers, not all cells.
+    updateCellById(cellId, (c) => ({ ...c, source }));
 
-      // Debounced sync to daemon — batches rapid keystrokes
-      debouncedSyncToRelay(handle);
+    // Debounced sync to daemon — batches rapid keystrokes
+    sourceSync$.current.next();
 
-      setDirty(true);
-    },
-    [debouncedSyncToRelay],
-  );
+    setDirty(true);
+  }, []);
 
   const clearCellOutputs = useCallback((cellId: string) => {
     updateCellById(cellId, (c) =>
@@ -468,13 +450,9 @@ export function useAutomergeNotebook() {
     const handle = handleRef.current;
     if (!handle) return;
 
-    // Cancel pending debounced sync
-    if (pendingSyncTimerRef.current) {
-      clearTimeout(pendingSyncTimerRef.current);
-      pendingSyncTimerRef.current = null;
-    }
-
-    // Generate and send sync message, awaiting the IPC
+    // Generate and send sync message immediately, bypassing the debounce.
+    // Any pending debounced emission becomes a no-op (generate_sync_message
+    // returns null when there's nothing new to sync).
     const msg = handle.generate_sync_message();
     if (msg) {
       await sendFrame(frame_types.AUTOMERGE_SYNC, msg);
