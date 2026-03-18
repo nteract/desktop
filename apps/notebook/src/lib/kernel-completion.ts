@@ -34,6 +34,10 @@ async function kernelCompletionSource(
   const word = context.matchBefore(/[\w.]+/);
   if (!word && !context.explicit) return null;
 
+  // Debounce: wait 150ms, bail if the user has typed again
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  if (context.aborted) return null;
+
   const code = context.state.doc.toString();
   const cursorPos = context.pos;
 
@@ -43,6 +47,8 @@ async function kernelCompletionSource(
       cursorPos,
     });
 
+    // Discard stale response if the user has moved on
+    if (context.aborted) return null;
     if (!result.items || result.items.length === 0) return null;
 
     return {
@@ -62,4 +68,5 @@ async function kernelCompletionSource(
  */
 export const kernelCompletionExtension: Extension = autocompletion({
   override: [kernelCompletionSource],
+  activateOnTypingDelay: 150,
 });
