@@ -500,6 +500,35 @@ export class NotebookHandle {
         }
     }
     /**
+     * Generate a sync reply after one or more inbound frames have been applied.
+     *
+     * This is the same operation as `generate_sync_message()` but named to
+     * communicate the intended usage: the frontend should call this on a
+     * debounce timer after processing inbound sync frames, rather than
+     * replying to every frame individually.
+     *
+     * Safe to call after multiple `receive_frame()` calls — each receive
+     * applies changes cumulatively, and one generate covers everything.
+     * The Automerge sync protocol converges regardless of reply timing.
+     * @returns {Uint8Array | undefined}
+     */
+    generate_sync_reply() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.notebookhandle_generate_sync_reply(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            let v1;
+            if (r0 !== 0) {
+                v1 = getArrayU8FromWasm0(r0, r1).slice();
+                wasm.__wbindgen_export4(r0, r1 * 1, 1);
+            }
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Get the actor identity label for this document.
      * @returns {string}
      */
@@ -855,14 +884,13 @@ export class NotebookHandle {
      * `[frame_type_byte, ...payload]`.
      *
      * Returns a JS array of `FrameEvent` objects directly via `serde-wasm-bindgen`
-     * (no JSON string intermediate). Usually one event, but sync frames may produce
-     * both a `sync_applied` and a `sync_reply` if the local doc needs to send a
-     * response.
+     * (no JSON string intermediate). Sync frames return a single `sync_applied`
+     * event with an optional `CellChangeset`.
      *
-     * When a `SyncReply` event is returned, its `reply` field contains raw
-     * Automerge sync bytes (no frame type prefix). The frontend must prepend
-     * the frame type byte (`0x00` for AutomergeSync) to form a complete typed
-     * frame, then send it back via `invoke("send_frame", { frameData })`.
+     * **Sync replies are NOT generated here.** The frontend must call
+     * `generate_sync_reply()` on a debounce timer to send replies back to the
+     * daemon. This avoids an IPC-per-frame amplification loop — multiple
+     * inbound frames coalesce into a single outbound reply.
      *
      * Returns `undefined` if the frame is empty or cannot be processed.
      * @param {Uint8Array} frame_bytes
