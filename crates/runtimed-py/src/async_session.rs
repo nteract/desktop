@@ -381,6 +381,65 @@ impl AsyncSession {
         future_into_py(py, async move { session_core::get_cells(&state).await })
     }
 
+    /// Get a cell's source without materializing all cells.
+    fn get_cell_source<'py>(&self, py: Python<'py>, cell_id: &str) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let cell_id = cell_id.to_string();
+        future_into_py(py, async move {
+            session_core::get_cell_source(&state, &cell_id).await
+        })
+    }
+
+    /// Get a cell's type without materializing all cells.
+    fn get_cell_type<'py>(&self, py: Python<'py>, cell_id: &str) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let cell_id = cell_id.to_string();
+        future_into_py(py, async move {
+            session_core::get_cell_type(&state, &cell_id).await
+        })
+    }
+
+    /// Get a cell's raw outputs without blob resolution.
+    fn get_cell_outputs<'py>(&self, py: Python<'py>, cell_id: &str) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let cell_id = cell_id.to_string();
+        future_into_py(py, async move {
+            session_core::get_cell_outputs(&state, &cell_id).await
+        })
+    }
+
+    /// Get a cell's execution count without materializing all cells.
+    fn get_cell_execution_count<'py>(
+        &self,
+        py: Python<'py>,
+        cell_id: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let cell_id = cell_id.to_string();
+        future_into_py(py, async move {
+            session_core::get_cell_execution_count(&state, &cell_id).await
+        })
+    }
+
+    /// Get all cell IDs in document order.
+    fn get_cell_ids<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future_into_py(py, async move { session_core::get_cell_ids(&state).await })
+    }
+
+    /// Get a cell's position (fractional index) without materializing all cells.
+    fn get_cell_position<'py>(
+        &self,
+        py: Python<'py>,
+        cell_id: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let cell_id = cell_id.to_string();
+        future_into_py(py, async move {
+            session_core::get_cell_position(&state, &cell_id).await
+        })
+    }
+
     /// Delete a cell from the document.
     fn delete_cell<'py>(&self, py: Python<'py>, cell_id: &str) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);

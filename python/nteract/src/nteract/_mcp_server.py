@@ -880,15 +880,13 @@ async def set_cell(
 
     # If nothing was changed, return current cell state
     if source is None and cell_type is None:
-        cell = await session.get_cell(cell_id=cell_id)
         return TextContent(type="text", text=f'Cell "{cell_id}" unchanged (no updates specified)')
 
     if and_run:
-        # Re-fetch cell to check type after potential change
-        cell = await session.get_cell(cell_id=cell_id)
-        if cell is None:
+        ct = await session.get_cell_type(cell_id=cell_id)
+        if ct is None:
             return TextContent(type="text", text=f'Cell "{cell_id}" not found')
-        if cell.cell_type == "code":
+        if ct == "code":
             return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
 
     return TextContent(type="text", text=f'Cell "{cell_id}" updated')
@@ -1284,12 +1282,15 @@ async def resource_cell_by_index(index: int) -> str:
         return "Error: No active session"
 
     try:
-        cells = await _session.get_cells()
-        if index < 0 or index >= len(cells):
-            return f"Error: Index {index} out of range (notebook has {len(cells)} cells)"
-        cell = cells[index]
-        await _send_cell_cursor(_session, cell.id)
-        status = await _get_single_cell_status(_session, cell.id)
+        cell_ids = await _session.get_cell_ids()
+        if index < 0 or index >= len(cell_ids):
+            return f"Error: Index {index} out of range (notebook has {len(cell_ids)} cells)"
+        cell_id = cell_ids[index]
+        await _send_cell_cursor(_session, cell_id)
+        cell = await _session.get_cell(cell_id=cell_id)
+        if cell is None:
+            return f"Error: Cell at index {index} not found"
+        status = await _get_single_cell_status(_session, cell_id)
         return _format_cell(cell, status=status)
     except Exception as e:
         return f"Error: {e}"
