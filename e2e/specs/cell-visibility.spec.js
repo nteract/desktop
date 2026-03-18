@@ -175,4 +175,59 @@ describe("Cell Visibility Toggles", () => {
     await output.waitForExist({ timeout: 5000 });
     expect(await output.isExisting()).toBe(true);
   });
+
+  it("should show error count on hidden cell chip when cell has error output", async () => {
+    const codeCell = await $('[data-cell-type="code"]');
+
+    // Focus editor and type code that raises an error
+    const editor = await codeCell.$('.cm-content[contenteditable="true"]');
+    await editor.click();
+    await browser.pause(200);
+    const modKey = process.platform === "darwin" ? "Meta" : "Control";
+    await browser.keys([modKey, "a"]);
+    await browser.pause(100);
+    await typeSlowly("raise ValueError('test error')");
+
+    // Execute with Shift+Enter
+    await browser.keys(["Shift", "Enter"]);
+
+    // Wait for error output to appear
+    await browser.waitUntil(
+      async () => {
+        const errorOutput = await codeCell.$('[data-slot="ansi-error-output"]');
+        return await errorOutput.isExisting();
+      },
+      {
+        timeout: 30000,
+        interval: 500,
+        timeoutMsg: "Error output did not appear",
+      },
+    );
+
+    // Hide source
+    await codeCell.moveTo();
+    await browser.pause(300);
+    const hideSourceButton = await codeCell.$('button[title="Hide source"]');
+    await hideSourceButton.waitForClickable({ timeout: 5000 });
+    await hideSourceButton.click();
+    await browser.pause(300);
+
+    // Hide outputs
+    await codeCell.moveTo();
+    await browser.pause(300);
+    const hideOutputButton = await codeCell.$('button[title="Hide outputs"]');
+    await hideOutputButton.waitForClickable({ timeout: 5000 });
+    await hideOutputButton.click();
+    await browser.pause(300);
+
+    // The chip should show "1 error"
+    const cellHiddenChip = await codeCell.$('button[title="Show cell"]');
+    expect(await cellHiddenChip.isExisting()).toBe(true);
+    const chipText = await cellHiddenChip.getText();
+    expect(chipText).toContain("1 error");
+
+    // Restore cell for subsequent tests
+    await cellHiddenChip.click();
+    await browser.pause(300);
+  });
 });

@@ -399,14 +399,26 @@ function NotebookViewContent({
     const cells = getNotebookCellsSnapshot();
     const groups = new Map<
       string,
-      { count: number; isFirst: boolean; groupCellIds: string[] }
+      {
+        count: number;
+        isFirst: boolean;
+        groupCellIds: string[];
+        errorCount: number;
+      }
     >();
     let i = 0;
     while (i < cells.length) {
       if (isCellFullyHidden(cells[i])) {
         const groupCellIds: string[] = [];
+        let groupErrorCount = 0;
         while (i < cells.length && isCellFullyHidden(cells[i])) {
-          groupCellIds.push(cells[i].id);
+          const c = cells[i];
+          groupCellIds.push(c.id);
+          if (c.cell_type === "code") {
+            groupErrorCount += c.outputs.filter(
+              (o) => o.output_type === "error",
+            ).length;
+          }
           i++;
         }
         for (let j = 0; j < groupCellIds.length; j++) {
@@ -414,6 +426,7 @@ function NotebookViewContent({
             count: groupCellIds.length,
             isFirst: j === 0,
             groupCellIds,
+            errorCount: groupErrorCount,
           });
         }
       } else {
@@ -574,6 +587,7 @@ function NotebookViewContent({
                 : undefined
             }
             hiddenGroupCount={hiddenGroups.get(cell.id)?.count}
+            hiddenGroupErrorCount={hiddenGroups.get(cell.id)?.errorCount}
             isGroupExecuting={
               hiddenGroups
                 .get(cell.id)

@@ -122,6 +122,8 @@ interface CodeCellProps {
   onExpandHiddenGroup?: () => void;
   /** Whether any cell in a hidden group is currently executing */
   isGroupExecuting?: boolean;
+  /** Number of error outputs across all cells in a hidden group */
+  hiddenGroupErrorCount?: number;
 }
 
 export const CodeCell = memo(function CodeCell({
@@ -151,6 +153,7 @@ export const CodeCell = memo(function CodeCell({
   hiddenGroupCount,
   onExpandHiddenGroup,
   isGroupExecuting,
+  hiddenGroupErrorCount,
 }: CodeCellProps) {
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
@@ -413,6 +416,13 @@ export const CodeCell = memo(function CodeCell({
                       ? `${hiddenGroupCount} cells hidden`
                       : "Cell hidden"}
                   </span>
+                  {hiddenGroupErrorCount ? (
+                    <span className="text-destructive font-medium">
+                      {hiddenGroupErrorCount === 1
+                        ? "1 error"
+                        : `${hiddenGroupErrorCount} errors`}
+                    </span>
+                  ) : null}
                   <ChevronRight className="h-3 w-3" />
                 </button>
               </div>
