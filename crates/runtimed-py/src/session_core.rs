@@ -1021,8 +1021,7 @@ pub(crate) async fn collect_outputs(
 
         handle.confirm_sync().await.map_err(to_py_err)?;
 
-        let cells = handle.get_cells();
-        let snapshot = cells.into_iter().find(|c| c.id == cell_id).ok_or_else(|| {
+        let snapshot = handle.get_cell(cell_id).ok_or_else(|| {
             to_py_err(format!(
                 "Cell not found in doc after execution: {}",
                 cell_id
@@ -1327,20 +1326,17 @@ pub(crate) async fn get_cell_metadata(
     state: &Arc<Mutex<SessionState>>,
     cell_id: &str,
 ) -> PyResult<Option<String>> {
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    let handle = {
+        let st = state.lock().await;
+        st.handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?
+            .clone()
+    };
 
-    // Synchronous — read from watch snapshot via DocHandle
-    let cells = handle.get_cells();
-    let cell = cells.into_iter().find(|c| c.id == cell_id);
-
-    match cell {
-        Some(c) => Ok(Some(
-            serde_json::to_string(&c.metadata)
-                .map_err(|e| to_py_err(format!("Serialize: {}", e)))?,
+    match handle.get_cell_metadata(cell_id) {
+        Some(metadata) => Ok(Some(
+            serde_json::to_string(&metadata).map_err(|e| to_py_err(format!("Serialize: {}", e)))?,
         )),
         None => Ok(None),
     }

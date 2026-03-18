@@ -947,10 +947,9 @@ async def replace_match(
     from nteract._editing import replace_match as _replace_match
 
     session = await _get_session()
-    cell = await session.get_cell(cell_id=cell_id)
-    if cell is None:
+    source = await session.get_cell_source(cell_id=cell_id)
+    if source is None:
         return TextContent(type="text", text=f'Cell "{cell_id}" not found')
-    source = cell.source
 
     try:
         result = _replace_match(source, match, content, context_before, context_after)
@@ -997,10 +996,9 @@ async def replace_regex(
     from nteract._editing import replace_regex as _replace_regex
 
     session = await _get_session()
-    cell = await session.get_cell(cell_id=cell_id)
-    if cell is None:
+    source = await session.get_cell_source(cell_id=cell_id)
+    if source is None:
         return TextContent(type="text", text=f'Cell "{cell_id}" not found')
-    source = cell.source
 
     try:
         result = _replace_regex(source, pattern, content)
