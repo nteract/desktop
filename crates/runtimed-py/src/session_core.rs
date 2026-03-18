@@ -58,9 +58,6 @@ pub(crate) struct SessionState {
     pub peer_label: Option<String>,
     /// Actor label for Automerge provenance (e.g., "agent:claude:ab12cd34")
     pub actor_label: Option<String>,
-    /// Updated notebook_id after the daemon re-keys an ephemeral room on save.
-    /// When set, this overrides the original notebook_id on Session/AsyncSession.
-    pub notebook_id_override: Option<String>,
 }
 
 impl SessionState {
@@ -78,7 +75,6 @@ impl SessionState {
             settings: None,
             peer_label: None,
             actor_label: None,
-            notebook_id_override: None,
         }
     }
 }
@@ -167,6 +163,33 @@ pub(crate) async fn connect(state: &Arc<Mutex<SessionState>>, notebook_id: &str)
     Ok(())
 }
 
+/// Spawn a background task that listens for `RoomRenamed` broadcasts
+/// and updates the `notebook_id_override` when another peer re-keys the room.
+///
+/// This ensures `Session.notebook_id` / `AsyncSession.notebook_id` stays
+/// correct even when a different peer saves an ephemeral notebook.
+pub(crate) fn spawn_rekey_watcher(
+    broadcast_rx: &BroadcastReceiver,
+    notebook_id_override: Arc<std::sync::Mutex<Option<String>>>,
+) {
+    let mut rx = broadcast_rx.resubscribe();
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Some(NotebookBroadcast::RoomRenamed { new_notebook_id }) => {
+                    log::info!(
+                        "[session] Room re-keyed by peer, new notebook_id: {}",
+                        new_notebook_id
+                    );
+                    *notebook_id_override.lock().unwrap() = Some(new_notebook_id);
+                }
+                Some(_) => continue,
+                None => break, // channel closed
+            }
+        }
+    });
+}
+
 /// Connect and open an existing notebook file.
 ///
 /// Returns (notebook_id, populated SessionState, NotebookConnectionInfo).
@@ -204,7 +227,6 @@ pub(crate) async fn connect_open(
         settings,
         peer_label: None, // Set by caller (Session/AsyncSession)
         actor_label: actor_label.map(String::from),
-        notebook_id_override: None,
     };
 
     Ok((notebook_id, state, connection_info))
@@ -249,7 +271,6 @@ pub(crate) async fn connect_create(
         settings,
         peer_label: None, // Set by caller (Session/AsyncSession)
         actor_label: actor_label.map(String::from),
-        notebook_id_override: None,
     };
 
     Ok((notebook_id, state, connection_info))
@@ -1390,8 +1411,6 @@ pub(crate) async fn save(
     state: &Arc<Mutex<SessionState>>,
     path: Option<&str>,
 ) -> PyResult<SaveResult> {
-    // Clone the handle so we can release the lock before the async request,
-    // then re-lock to update notebook_id_override if needed.
     let handle = {
         let st = state.lock().await;
         st.handle
@@ -1417,18 +1436,10 @@ pub(crate) async fn save(
         NotebookResponse::NotebookSaved {
             path: saved_path,
             new_notebook_id,
-        } => {
-            // If the daemon re-keyed the room (ephemeral → file-path),
-            // store the new ID so the Session/AsyncSession getter reflects it.
-            if new_notebook_id.is_some() {
-                let mut st = state.lock().await;
-                st.notebook_id_override = new_notebook_id.clone();
-            }
-            Ok(SaveResult {
-                path: saved_path,
-                new_notebook_id,
-            })
-        }
+        } => Ok(SaveResult {
+            path: saved_path,
+            new_notebook_id,
+        }),
         NotebookResponse::Error { error } => Err(to_py_err(error)),
         other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
     }
