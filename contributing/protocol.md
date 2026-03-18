@@ -161,7 +161,7 @@ Both sides use the same Rust `automerge = "0.7"` crate, which guarantees schema 
 User types in cell
   → React calls WASM handle.update_source(cell_id, text)
   → WASM applies mutation locally (instant)
-  → handle.generate_sync_message() → sync bytes
+  → debouncedSyncToRelay (20ms batch) → handle.generate_sync_message() → sync bytes
   → Frontend prepends 0x00 type byte → invoke("send_frame", { frameData })
   → Tauri send_frame dispatches by type → relay pipes to daemon socket
   → Daemon applies sync, updates canonical doc
@@ -169,9 +169,27 @@ User types in cell
   → Relay receives, emits "notebook:frame" Tauri event (raw typed bytes)
   → Frontend useAutomergeNotebook listener → WASM handle.receive_frame(bytes)
   → WASM demuxes by first byte, applies sync, returns FrameEvent[]
-  → sync_applied event → materializeCells() updates React state if doc changed
+  → FrameEvent::SyncApplied includes a CellChangeset (field-level diff)
+  → scheduleMaterialize coalesces within 32ms, then dispatches:
+      - structural change (cells added/removed/reordered) → full materializeCells()
+      - output changes (blob manifests need async fetch) → full materializeCells()
+      - source/metadata/exec_count only → per-cell materializeCellFromWasm() via O(1) accessors
+  → React state updated via split cell store (only affected cells re-render)
   → sync_reply event → prepend 0x00, invoke("send_frame", { frameData }) back to daemon
 ```
+
+### CellChangeset
+
+The WASM module computes a structural diff after each sync by walking `doc.diff(before, after)` patches (in `notebook-doc/src/diff.rs`). This produces a `CellChangeset`:
+
+- **`changed`**: cells that existed before and after, with per-field flags (`source`, `outputs`, `execution_count`, `metadata`, `position`, `cell_type`, `resolved_assets`)
+- **`added`**: new cell IDs
+- **`removed`**: deleted cell IDs
+- **`order_changed`**: whether any position was modified or cells were added/removed
+
+Cost is O(delta), not O(doc). Multiple changesets within a throttle window are merged via `mergeChangesets()` (union on field flags, dedup on added/removed).
+
+This is the key primitive that makes the sync pipeline incremental — the frontend knows exactly which cells changed and which fields, avoiding full-notebook materialization on every frame.
 
 ## Request / Response
 
@@ -233,10 +251,16 @@ Broadcasts are daemon-initiated messages pushed to all connected clients for a n
 | `ExecutionDone { cell_id }` | Cell execution completed |
 | `QueueChanged { executing, queued }` | Execution queue state changed |
 | `KernelError { error }` | Kernel crashed or failed to launch |
-| `Comm { msg_type, ... }` | Jupyter comm message (widget open/msg/close) |
-| `FileChanged` | External file change merged into the doc |
+| `OutputsCleared { cell_id }` | Cell outputs cleared |
+| `Comm { msg_type, content, buffers }` | Jupyter comm message (widget open/msg/close) |
+| `CommSync { comms }` | Full widget state snapshot for newly connected clients |
+| `FileChanged` | External file change merged into the doc (signal only — data arrives via sync) |
 | `EnvProgress { env_type, phase }` | Environment setup progress (`phase` is a flattened `EnvProgressPhase`) |
 | `EnvSyncState { in_sync, diff }` | Notebook dependencies drifted from launched kernel config |
+| `RoomRenamed { new_notebook_id }` | Untitled notebook saved — room re-keyed from UUID to file path |
+| `NotebookAutosaved { path }` | Daemon autosaved `.ipynb` to disk — frontend clears dirty flag |
+
+Currently 15 variants. Five carry data that also arrives via Automerge sync and are planned for removal (#761): `Output`, `OutputsCleared`, `DisplayUpdate`, `CommSync`, and `Comm` for `comm_open`/`comm_msg(update)`/`comm_close` (the `Comm` variant would be renamed to `CommCustom` and restricted to `method: "custom"` only). This would reduce the surface to ~10 variants.
 
 ### Broadcast flow
 
@@ -280,28 +304,63 @@ All dispatch is synchronous and in-process — no serialization or Tauri event l
 
 ## Output Storage
 
-Cell outputs use a blob manifest system rather than inline data. When the daemon receives output from a kernel:
+Cell outputs use a two-tier blob manifest system rather than inline data. When the daemon receives output from a kernel:
 
-1. Binary content (images, plots) is stored in a content-addressed blob store
-2. The Automerge doc stores a manifest referencing the blob by hash
-3. Clients resolve blobs from the daemon's HTTP blob server (`get_blob_port()`)
-4. This keeps large binary data out of the sync protocol
+1. The output is converted to nbformat JSON, then a **manifest** is created (`output_store.rs`)
+2. Each MIME type's content becomes a `ContentRef`: `Inline` for < 8KB, `Blob { hash, size }` for ≥ 8KB
+3. Large binary content (images, plots) is stored in a content-addressed **blob store** (`blob_store.rs`, SHA-256 hashes, `~/.cache/runt/blobs/`)
+4. The manifest itself is stored in the blob store → produces a 64-char hex manifest hash
+5. The Automerge doc stores only the manifest hash in `cell.outputs[]`
+6. Clients resolve manifests and blobs from the daemon's HTTP blob server (`GET /blob/{hash}` on a dynamic port)
+
+This keeps the CRDT small: a cell with 50 outputs adds ~3.2KB to the doc (50 × 64 bytes), regardless of output content size.
+
+Stream outputs (stdout/stderr) are special: text is fed through a terminal emulator (`stream_terminals`) for carriage return and ANSI escape handling before manifest creation. `upsert_stream_output` updates in-place when consecutive stream outputs arrive.
+
+## Notebook Lifecycle
+
+**Autosave:** The daemon autosaves `.ipynb` on a debounce (2s quiet, 10s max). `NotebookAutosaved` broadcast clears the frontend dirty flag. Explicit save (Cmd+S) additionally formats cells.
+
+**Room re-keying:** When an untitled notebook is first saved, `rekey_ephemeral_room()` atomically changes the room key from a UUID to the canonical file path. `RoomRenamed` broadcast tells all peers to update their `notebook_id` for reconnection.
+
+**Crash recovery:** Untitled notebooks persist their Automerge doc to `notebook-docs/{hash}.automerge`. Before overwriting on reopen, the daemon snapshots to `notebook-docs/snapshots/`. `runt recover` exports snapshots to `.ipynb`.
+
+**Multi-window:** Multiple windows join the same room as separate Automerge peers. Each gets sync frames and broadcasts independently. The daemon tracks `active_peers` per room for eviction.
+
+## Architectural Direction
+
+The current protocol has widget state (`CommState`, `CommSync`) as a parallel system alongside the CRDT. Issue #761 tracks moving widget state into `doc.comms/` in the Automerge document, which would:
+
+- Eliminate `CommSync` (new clients get widgets via normal sync)
+- Eliminate `Output`, `OutputsCleared`, `DisplayUpdate` broadcasts (doc sync carries the data)
+- Simplify Output widget capture (daemon writes to `doc.comms[widget_id].outputs` instead of custom messages)
+- Reduce `CommState` to just the output capture routing logic
+
+The implementation is phased: #808 (schema + dual-write) → #809 (clients read from doc) → #810 (eliminate parallel paths) → #811 (blob unification + `update_comm` request).
 
 ## Key Source Files
 
 | File | Role |
 |------|------|
-| `crates/notebook-protocol/src/connection.rs` | Frame protocol implementation (length-prefixed, typed frames, handshake) |
-| `crates/notebook-protocol/src/protocol.rs` | Canonical message type definitions (Request, Response, Broadcast enums) — shared crate |
-| `crates/runtimed/src/protocol.rs` | Daemon-internal protocol types, plus re-exports from `notebook-protocol` |
+| `crates/notebook-protocol/src/connection.rs` | Frame protocol: length-prefixed typed frames, handshake, preamble |
+| `crates/notebook-protocol/src/protocol.rs` | Canonical wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, `CommSnapshot` |
+| `crates/runtimed/src/protocol.rs` | Daemon-internal types (`Request`, `Response`, `BlobRequest`), re-exports from `notebook-protocol` |
 | `crates/notebook-sync/src/relay.rs` | Relay handle for notebook sync connections |
 | `crates/notebook-sync/src/connect.rs` | Connection setup (`connect_open_relay`, `connect_create_relay`) |
-| `crates/runtimed/src/notebook_sync_server.rs` | Daemon-side room management, kernel dispatch, sync loop |
-| `crates/runtimed/src/kernel_manager.rs` | Kernel process lifecycle, execution queue, output interception |
-| `crates/notebook/src/lib.rs` | Tauri commands and relay tasks (pipes sync bytes, emits events) |
-| `crates/runtimed-wasm/src/lib.rs` | WASM bindings for local-first cell mutations |
-| `crates/notebook-doc/src/lib.rs` | Shared Automerge document schema and operations |
+| `crates/notebook-sync/src/handle.rs` | `DocHandle` — sync infrastructure, per-cell accessors for Python clients |
+| `crates/runtimed/src/notebook_sync_server.rs` | `NotebookRoom`, room lifecycle, autosave debouncer, re-keying, sync loop |
+| `crates/runtimed/src/kernel_manager.rs` | Kernel process lifecycle, execution queue, IOPub output routing |
+| `crates/runtimed/src/comm_state.rs` | Widget comm state + Output widget capture routing |
+| `crates/runtimed/src/output_store.rs` | Output manifest creation, blob inlining threshold |
+| `crates/runtimed/src/blob_store.rs` | Content-addressed blob storage |
+| `crates/notebook/src/lib.rs` | Tauri commands and relay tasks (transparent byte pipe) |
+| `crates/runtimed-wasm/src/lib.rs` | WASM bindings: cell mutations, sync, per-cell accessors, `CellChangeset` |
+| `crates/notebook-doc/src/lib.rs` | `NotebookDoc`: Automerge schema, cell CRUD, output writes, per-cell accessors |
+| `crates/notebook-doc/src/diff.rs` | `CellChangeset`: structural diff from Automerge patches |
 | `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00–0x04) |
 | `apps/notebook/src/lib/frame-types.ts` | TypeScript mirror of frame type constants |
-| `apps/notebook/src/hooks/useAutomergeNotebook.ts` | Frontend sync integration (WASM handle, sync loop, cell materialization) |
-| `apps/notebook/src/hooks/useDaemonKernel.ts` | Frontend broadcast handling (kernel status, outputs, environment) |
+| `apps/notebook/src/hooks/useAutomergeNotebook.ts` | WASM handle owner, `scheduleMaterialize`, `CellChangeset` dispatch |
+| `apps/notebook/src/hooks/useDaemonKernel.ts` | Kernel execution, widget comm routing, broadcast handling |
+| `apps/notebook/src/lib/materialize-cells.ts` | `materializeCellFromWasm()` (per-cell) + `cellSnapshotsToNotebookCells()` (full) |
+| `apps/notebook/src/lib/notebook-cells.ts` | Split cell store: `useCell(id)`, `useCellIds()`, per-cell subscriptions |
+| `apps/notebook/src/lib/notebook-frame-bus.ts` | In-memory sync pub/sub for broadcasts and presence |
