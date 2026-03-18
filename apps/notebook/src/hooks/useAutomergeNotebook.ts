@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
+
 import {
   open as openDialog,
   save as saveDialog,
@@ -7,8 +7,9 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getBlobPort, refreshBlobPort } from "../lib/blob-port";
 import { frame_types, sendFrame } from "../lib/frame-types";
-import { Subject, debounceTime } from "rxjs";
+import { Subject, debounceTime, merge, switchMap, from } from "rxjs";
 import { createFramePipeline } from "../lib/frame-pipeline";
+import { fromTauriEvent } from "../lib/tauri-rx";
 import { logger } from "../lib/logger";
 import {
   type CellSnapshot,
@@ -204,32 +205,37 @@ export function useAutomergeNotebook() {
       }
     });
 
-    const webview = getCurrentWebview();
-
-    // On (re)connect, create a fresh empty handle and let sync deliver
-    // everything. We must NOT reset_sync_state() on an existing handle —
-    // that creates an infinite loop of 85-byte sync messages that never
-    // converge (the WASM keeps re-requesting content it already has).
-    const unlistenReady = webview.listen("daemon:ready", async () => {
-      if (cancelled) return;
-      refreshBlobPort(); // Update blob-port store for new daemon session
-      awaitingInitialSyncRef.current = true;
-      setIsLoading(true);
-      await bootstrap();
-    });
-
-    // Different file opened in this window — need a fresh handle since the
-    // old handle's doc has the previous notebook's content.
-    const unlistenFileOpened = webview.listen(
-      "notebook:file-opened",
-      async () => {
-        if (cancelled) return;
-        awaitingInitialSyncRef.current = true;
-        setIsLoading(true);
-        resetNotebookCells();
-        await bootstrap();
-      },
-    );
+    // ── Daemon lifecycle (RxJS) ─────────────────────────────────────
+    //
+    // daemon:ready (reconnect) and notebook:file-opened (new file in this
+    // window) both require a fresh bootstrap. Merged into one observable
+    // so the switchMap cancels any in-flight bootstrap when a new event
+    // arrives (e.g. rapid file-open, file-open during reconnect).
+    const lifecycleSub = merge(
+      fromTauriEvent("daemon:ready"),
+      fromTauriEvent("notebook:file-opened"),
+    )
+      .pipe(
+        switchMap(() => {
+          // The Tauri event name isn't carried through merge, but we can
+          // distinguish by checking: daemon:ready always refreshes the
+          // blob port, file-opened always resets cells. Doing both is
+          // safe and idempotent, so we just do both unconditionally.
+          refreshBlobPort();
+          resetNotebookCells();
+          awaitingInitialSyncRef.current = true;
+          setIsLoading(true);
+          return from(
+            bootstrap().catch((err: unknown) => {
+              logger.error(
+                "[automerge-notebook] lifecycle bootstrap failed:",
+                err,
+              );
+            }),
+          );
+        }),
+      )
+      .subscribe();
 
     // ── Inbound frame pipeline (RxJS) ───────────────────────────────
     //
@@ -274,30 +280,27 @@ export function useAutomergeNotebook() {
       });
 
     // ── Bulk output clearing (run-all / restart-and-run-all) ─────────
-    const unlistenClearOutputs = webview.listen<string[]>(
+    const unlistenClearOutputs = fromTauriEvent<string[]>(
       "cells:outputs_cleared",
-      (event) => {
-        if (cancelled) return;
-        const clearedIds = new Set(event.payload);
-        updateNotebookCells((prev) =>
-          prev.map((c) =>
-            clearedIds.has(c.id) && c.cell_type === "code"
-              ? { ...c, outputs: [], execution_count: null }
-              : c,
-          ),
-        );
-      },
-    );
+    ).subscribe((payload) => {
+      const clearedIds = new Set(payload);
+      updateNotebookCells((prev) =>
+        prev.map((c) =>
+          clearedIds.has(c.id) && c.cell_type === "code"
+            ? { ...c, outputs: [], execution_count: null }
+            : c,
+        ),
+      );
+    });
 
     return () => {
       cancelled = true;
       frameSub.unsubscribe();
+      lifecycleSub.unsubscribe();
       // Unsubscribe debounce pipelines (cancels pending timers)
       sourceSyncSub.unsubscribe();
       syncReplySub.unsubscribe();
-      unlistenReady.then((fn) => fn()).catch(() => {});
-      unlistenFileOpened.then((fn) => fn()).catch(() => {});
-      unlistenClearOutputs.then((fn) => fn()).catch(() => {});
+      unlistenClearOutputs.unsubscribe();
       // Flush any pending sync before teardown — unsubscribing the
       // debounce pipelines above cancels their timers, so we do a
       // final sync + reply here to avoid dropping in-flight changes.
