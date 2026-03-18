@@ -1882,4 +1882,44 @@ mod tests {
         let b = make_actor_label("Claude");
         assert_ne!(a, b, "each call should produce a unique session suffix");
     }
+
+    /// Regression test: spawn_rekey_watcher must work when called OUTSIDE
+    /// of `runtime.block_on()` — the sync Session API calls it after
+    /// `block_on` returns. Previously it used `tokio::spawn` which panics
+    /// without an active runtime context. The fix uses `handle.spawn()`.
+    #[test]
+    fn test_spawn_rekey_watcher_outside_block_on() {
+        use notebook_protocol::protocol::NotebookBroadcast;
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        // Create a broadcast channel (capacity 16 is fine for tests)
+        let (tx, rx) = tokio::sync::broadcast::channel::<NotebookBroadcast>(16);
+        let broadcast_rx = notebook_sync::BroadcastReceiver::new(rx);
+
+        let override_arc = Arc::new(std::sync::Mutex::new(None::<String>));
+
+        // This is the critical call — it must NOT panic when called
+        // outside of block_on, using only the runtime handle.
+        spawn_rekey_watcher(&broadcast_rx, Arc::clone(&override_arc), runtime.handle());
+
+        // Send a RoomRenamed broadcast and verify the override is updated
+        let new_id = "notebooks/test.ipynb".to_string();
+        tx.send(NotebookBroadcast::RoomRenamed {
+            new_notebook_id: new_id.clone(),
+        })
+        .unwrap();
+
+        // Give the spawned task a moment to process
+        runtime.block_on(async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        });
+
+        let override_val = override_arc.lock().unwrap();
+        assert_eq!(
+            override_val.as_deref(),
+            Some("notebooks/test.ipynb"),
+            "spawn_rekey_watcher should update notebook_id_override on RoomRenamed"
+        );
+    }
 }
