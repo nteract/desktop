@@ -137,6 +137,7 @@ fn cmd_dev(notebook: Option<&str>, skip_install: bool, skip_build: bool) {
         println!("Skipping pnpm install (--skip-install)");
     } else {
         ensure_pnpm_install();
+        ensure_python_env();
     }
 
     if skip_build {
@@ -304,6 +305,109 @@ fn pnpm_install_reason() -> Option<&'static str> {
 
 fn modified_time(path: &Path) -> Option<std::time::SystemTime> {
     fs::metadata(path).ok()?.modified().ok()
+}
+
+/// Ensure the Python workspace venv is synced (`uv sync --directory python`).
+///
+/// This installs all workspace members (nteract, runtimed) and their
+/// dependencies (mcp, pydantic, etc.) into `python/.venv`. Needed for:
+/// - `maturin develop` (installs into this venv)
+/// - `uv run --no-sync` (expects deps to be present)
+/// - Editor type-checking / LSP (needs the venv to resolve imports)
+fn ensure_python_env() {
+    let python_dir = Path::new("python");
+    if !python_dir.exists() {
+        return;
+    }
+    if Command::new("uv").arg("--version").output().is_err() {
+        println!("Skipping Python env sync (uv not found).");
+        return;
+    }
+
+    if let Some(reason) = python_sync_reason() {
+        println!("Syncing Python workspace ({reason})...");
+        let status = Command::new("uv")
+            .args(["sync", "--directory", "python"])
+            .status();
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(s) => {
+                eprintln!("Warning: uv sync failed (exit {})", s.code().unwrap_or(-1));
+            }
+            Err(e) => {
+                eprintln!("Warning: failed to run uv sync: {e}");
+            }
+        }
+    } else {
+        println!("Skipping Python env sync (venv is up to date).");
+    }
+}
+
+fn python_sync_reason() -> Option<&'static str> {
+    let venv_marker = Path::new("python/.venv/pyvenv.cfg");
+    if !venv_marker.exists() {
+        return Some("missing .venv");
+    }
+
+    let Some(venv_time) = modified_time(venv_marker) else {
+        return Some("could not read .venv timestamp");
+    };
+
+    for manifest in [
+        Path::new("python/uv.lock"),
+        Path::new("python/pyproject.toml"),
+        Path::new("python/nteract/pyproject.toml"),
+        Path::new("python/runtimed/pyproject.toml"),
+    ] {
+        if let Some(manifest_time) = modified_time(manifest) {
+            if manifest_time > venv_time {
+                return Some("pyproject.toml or uv.lock changed");
+            }
+        }
+    }
+
+    None
+}
+
+/// Ensure `maturin develop` has been run so the native `runtimed` extension
+/// is installed into `python/.venv`.
+///
+/// Unlike `uv sync` (which builds a release wheel), `maturin develop` builds
+/// a debug `.so` and symlinks it — faster to compile and always reflects the
+/// latest Rust source.
+fn ensure_maturin_develop() {
+    let python_dir = Path::new("python");
+    if !python_dir.exists() {
+        return;
+    }
+    if Command::new("uv").arg("--version").output().is_err() {
+        println!("Skipping maturin develop (uv not found).");
+        return;
+    }
+
+    println!("Building runtimed Python bindings (maturin develop)...");
+    let status = Command::new("uv")
+        .args([
+            "run",
+            "--directory",
+            "python/runtimed",
+            "maturin",
+            "develop",
+        ])
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            eprintln!(
+                "Warning: maturin develop failed (exit {})",
+                s.code().unwrap_or(-1)
+            );
+        }
+        Err(e) => {
+            eprintln!("Warning: failed to run maturin develop: {e}");
+        }
+    }
 }
 
 fn cmd_build(rust_only: bool) {
@@ -604,6 +708,9 @@ fn cmd_install_daemon() {
 /// This enables isolated daemon instances per git worktree, useful when
 /// developing/testing daemon code across multiple worktrees simultaneously.
 fn cmd_mcp(print_config: bool) {
+    ensure_python_env();
+    ensure_maturin_develop();
+
     if print_config {
         // Build the supervisor, then run it with --print-config
         // For now, print the config pointing at the binary
@@ -713,26 +820,9 @@ fn cmd_dev_mcp(print_config: bool) {
         path
     };
 
-    // Step 3: Build runtimed-py via maturin develop
-    println!("Building runtimed Python bindings (maturin develop)...");
-    let maturin_status = Command::new("uv")
-        .args([
-            "run",
-            "--directory",
-            "python/runtimed",
-            "maturin",
-            "develop",
-        ])
-        .status()
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to run maturin develop: {e}");
-            eprintln!("Make sure uv and maturin are installed: uv tool install maturin");
-            exit(1);
-        });
-    if !maturin_status.success() {
-        eprintln!("maturin develop failed");
-        exit(maturin_status.code().unwrap_or(1));
-    }
+    // Step 3: Sync Python workspace + build native bindings
+    ensure_python_env();
+    ensure_maturin_develop();
 
     // Step 4: Print config or launch
     let python_dir = fs::canonicalize("python").unwrap_or_else(|e| {
