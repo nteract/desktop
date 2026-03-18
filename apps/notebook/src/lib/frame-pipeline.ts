@@ -155,6 +155,11 @@ export function createFramePipeline(deps: FramePipelineDeps): Subscription {
   // the pipeline resends sync to recover from lost/consumed messages.
   const retrySync$ = new Subject<void>();
 
+  // Arm the retry timer immediately — if no sync_applied arrives at all
+  // (e.g., all frames dropped before reaching WASM), this ensures we
+  // still retry after SYNC_RETRY_MS rather than hanging indefinitely.
+  retrySync$.next();
+
   // ── Source: Tauri frames → WASM demux → individual FrameEvents ────
 
   const frameEvents$ = fromTauriEvent<number[]>("notebook:frame").pipe(

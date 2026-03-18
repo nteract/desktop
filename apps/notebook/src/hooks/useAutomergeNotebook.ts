@@ -200,7 +200,12 @@ export function useAutomergeNotebook() {
       onSyncApplied: () => syncReply$.current.next(),
       retrySyncToRelay: () => {
         const handle = handleRef.current;
-        if (handle) syncToRelay(handle);
+        if (!handle) return;
+        // Reset sync state so generate_sync_message() produces a fresh
+        // request instead of returning null (which it does when the
+        // handle believes it's already in sync with the peer).
+        handle.reset_sync_state();
+        syncToRelay(handle);
       },
     });
 
