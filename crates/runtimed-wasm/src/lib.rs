@@ -71,11 +71,6 @@ pub enum FrameEvent {
         #[serde(skip_serializing_if = "Vec::is_empty")]
         attributions: Vec<TextAttribution>,
     },
-    /// A sync message was generated in response; frontend should send it back.
-    SyncReply {
-        /// The sync message bytes to send to the daemon.
-        reply: Vec<u8>,
-    },
     /// Broadcast event from the daemon (kernel status, output, etc.)
     Broadcast {
         /// The broadcast payload (parsed from JSON frame, passed through as-is).
@@ -695,6 +690,22 @@ impl NotebookHandle {
             .map(|msg| msg.encode())
     }
 
+    /// Generate a sync reply after one or more inbound frames have been applied.
+    ///
+    /// This is the same operation as `generate_sync_message()` but named to
+    /// communicate the intended usage: the frontend should call this on a
+    /// debounce timer after processing inbound sync frames, rather than
+    /// replying to every frame individually.
+    ///
+    /// Safe to call after multiple `receive_frame()` calls — each receive
+    /// applies changes cumulatively, and one generate covers everything.
+    /// The Automerge sync protocol converges regardless of reply timing.
+    pub fn generate_sync_reply(&mut self) -> Option<Vec<u8>> {
+        self.doc
+            .generate_sync_message(&mut self.sync_state)
+            .map(|msg| msg.encode())
+    }
+
     /// Receive and apply a sync message from the daemon (via the Tauri relay pipe).
     ///
     /// Returns true if the document changed (caller should re-read cells).
@@ -731,14 +742,13 @@ impl NotebookHandle {
     /// `[frame_type_byte, ...payload]`.
     ///
     /// Returns a JS array of `FrameEvent` objects directly via `serde-wasm-bindgen`
-    /// (no JSON string intermediate). Usually one event, but sync frames may produce
-    /// both a `sync_applied` and a `sync_reply` if the local doc needs to send a
-    /// response.
+    /// (no JSON string intermediate). Sync frames return a single `sync_applied`
+    /// event with an optional `CellChangeset`.
     ///
-    /// When a `SyncReply` event is returned, its `reply` field contains raw
-    /// Automerge sync bytes (no frame type prefix). The frontend must prepend
-    /// the frame type byte (`0x00` for AutomergeSync) to form a complete typed
-    /// frame, then send it back via `invoke("send_frame", { frameData })`.
+    /// **Sync replies are NOT generated here.** The frontend must call
+    /// `generate_sync_reply()` on a debounce timer to send replies back to the
+    /// daemon. This avoids an IPC-per-frame amplification loop — multiple
+    /// inbound frames coalesce into a single outbound reply.
     ///
     /// Returns `undefined` if the frame is empty or cannot be processed.
     pub fn receive_frame(&mut self, frame_bytes: &[u8]) -> JsValue {
@@ -782,13 +792,6 @@ impl NotebookHandle {
                     changeset,
                     attributions,
                 });
-
-                // The sync protocol may need a reply
-                if let Some(reply_msg) = self.doc.generate_sync_message(&mut self.sync_state) {
-                    events.push(FrameEvent::SyncReply {
-                        reply: reply_msg.encode(),
-                    });
-                }
             }
             frame_types::BROADCAST => {
                 // Parse JSON broadcast payload

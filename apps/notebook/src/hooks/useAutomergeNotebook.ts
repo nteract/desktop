@@ -207,6 +207,34 @@ export function useAutomergeNotebook() {
     [syncToRelay],
   );
 
+  // Debounced sync reply for inbound frames — coalesces multiple receives
+  // into a single outbound reply. The Automerge sync protocol is safe to
+  // batch: receive,receive,receive → generate covers all received changes.
+  // Matches automerge-repo's syncDebounceRate pattern (they use 100ms).
+  const pendingSyncReplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+
+  const scheduleSyncReply = useCallback((handle: NotebookHandle) => {
+    if (pendingSyncReplyTimerRef.current) {
+      clearTimeout(pendingSyncReplyTimerRef.current);
+    }
+    pendingSyncReplyTimerRef.current = setTimeout(() => {
+      pendingSyncReplyTimerRef.current = null;
+      const reply = handle.generate_sync_reply();
+      if (reply) {
+        const frameData = new Uint8Array(1 + reply.length);
+        frameData[0] = frame_types.AUTOMERGE_SYNC;
+        frameData.set(reply, 1);
+        invoke("send_frame", {
+          frameData: Array.from(frameData),
+        }).catch((e: unknown) =>
+          logger.warn("[automerge-notebook] sync reply failed:", e),
+        );
+      }
+    }, 50);
+  }, []);
+
   /**
    * Synchronously re-read cells from WASM after a local mutation.
    * Uses cache-only output resolution (no blob fetches).
@@ -415,7 +443,6 @@ export function useAutomergeNotebook() {
               deleted: number;
               actors: string[];
             }>;
-            reply?: Uint8Array;
             payload?: unknown;
           }>;
 
@@ -444,21 +471,9 @@ export function useAutomergeNotebook() {
                     attributions: frameEvent.attributions,
                   });
                 }
-                break;
-              }
-              case "sync_reply": {
-                // WASM generated a sync response — send it back to the daemon
-                if (frameEvent.reply) {
-                  const reply = frameEvent.reply;
-                  const replyData = new Uint8Array(1 + reply.length);
-                  replyData[0] = frame_types.AUTOMERGE_SYNC;
-                  replyData.set(reply, 1);
-                  invoke("send_frame", {
-                    frameData: Array.from(replyData),
-                  }).catch((e: unknown) =>
-                    logger.warn("[automerge-notebook] sync reply failed:", e),
-                  );
-                }
+                // Schedule a debounced sync reply — multiple inbound frames
+                // coalesce into a single outbound reply per 50ms window.
+                scheduleSyncReply(handle);
                 break;
               }
               case "broadcast": {
@@ -509,6 +524,22 @@ export function useAutomergeNotebook() {
         pendingSyncTimerRef.current = null;
         if (handleRef.current) syncToRelay(handleRef.current);
       }
+      // Flush any pending sync reply before teardown
+      if (pendingSyncReplyTimerRef.current) {
+        clearTimeout(pendingSyncReplyTimerRef.current);
+        pendingSyncReplyTimerRef.current = null;
+        if (handleRef.current) {
+          const reply = handleRef.current.generate_sync_reply();
+          if (reply) {
+            const frameData = new Uint8Array(1 + reply.length);
+            frameData[0] = frame_types.AUTOMERGE_SYNC;
+            frameData.set(reply, 1);
+            invoke("send_frame", {
+              frameData: Array.from(frameData),
+            }).catch(() => {});
+          }
+        }
+      }
       // Cancel pending materialize timer
       if (pendingMaterializeTimerRef.current) {
         clearTimeout(pendingMaterializeTimerRef.current);
@@ -525,6 +556,7 @@ export function useAutomergeNotebook() {
     materializeCells,
     refreshBlobPort,
     scheduleMaterialize,
+    scheduleSyncReply,
     syncToRelay,
   ]);
 

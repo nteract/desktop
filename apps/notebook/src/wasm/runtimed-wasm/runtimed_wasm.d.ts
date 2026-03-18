@@ -126,6 +126,19 @@ export class NotebookHandle {
      */
     generate_sync_message(): Uint8Array | undefined;
     /**
+     * Generate a sync reply after one or more inbound frames have been applied.
+     *
+     * This is the same operation as `generate_sync_message()` but named to
+     * communicate the intended usage: the frontend should call this on a
+     * debounce timer after processing inbound sync frames, rather than
+     * replying to every frame individually.
+     *
+     * Safe to call after multiple `receive_frame()` calls — each receive
+     * applies changes cumulatively, and one generate covers everything.
+     * The Automerge sync protocol converges regardless of reply timing.
+     */
+    generate_sync_reply(): Uint8Array | undefined;
+    /**
      * Get the actor identity label for this document.
      */
     get_actor_id(): string;
@@ -224,14 +237,13 @@ export class NotebookHandle {
      * `[frame_type_byte, ...payload]`.
      *
      * Returns a JS array of `FrameEvent` objects directly via `serde-wasm-bindgen`
-     * (no JSON string intermediate). Usually one event, but sync frames may produce
-     * both a `sync_applied` and a `sync_reply` if the local doc needs to send a
-     * response.
+     * (no JSON string intermediate). Sync frames return a single `sync_applied`
+     * event with an optional `CellChangeset`.
      *
-     * When a `SyncReply` event is returned, its `reply` field contains raw
-     * Automerge sync bytes (no frame type prefix). The frontend must prepend
-     * the frame type byte (`0x00` for AutomergeSync) to form a complete typed
-     * frame, then send it back via `invoke("send_frame", { frameData })`.
+     * **Sync replies are NOT generated here.** The frontend must call
+     * `generate_sync_reply()` on a debounce timer to send replies back to the
+     * daemon. This avoids an IPC-per-frame amplification loop — multiple
+     * inbound frames coalesce into a single outbound reply.
      *
      * Returns `undefined` if the frame is empty or cannot be processed.
      */
@@ -464,6 +476,7 @@ export interface InitOutput {
     readonly encode_selection_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
     readonly encode_focus_presence: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly encode_clear_channel_presence: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly notebookhandle_generate_sync_reply: (a: number, b: number) => void;
     readonly __wbindgen_export: (a: number, b: number) => number;
     readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export3: (a: number) => void;

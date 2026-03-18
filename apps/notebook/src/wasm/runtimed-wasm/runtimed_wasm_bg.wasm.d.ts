@@ -71,6 +71,7 @@ export const encode_cursor_presence: (a: number, b: number, c: number, d: number
 export const encode_selection_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
 export const encode_focus_presence: (a: number, b: number, c: number, d: number, e: number) => void;
 export const encode_clear_channel_presence: (a: number, b: number, c: number, d: number, e: number) => void;
+export const notebookhandle_generate_sync_reply: (a: number, b: number) => void;
 export const __wbindgen_export: (a: number, b: number) => number;
 export const __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_export3: (a: number) => void;
