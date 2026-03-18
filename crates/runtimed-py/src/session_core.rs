@@ -595,10 +595,8 @@ pub(crate) async fn get_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) ->
         let blob_base_url = st.blob_base_url.clone();
         let blob_store_path = st.blob_store_path.clone();
 
-        let cells = handle.get_cells();
-        let snapshot = cells
-            .into_iter()
-            .find(|c| c.id == cell_id)
+        let snapshot = handle
+            .get_cell(cell_id)
             .ok_or_else(|| to_py_err(format!("Cell not found: {}", cell_id)))?;
 
         (snapshot, blob_base_url, blob_store_path)
