@@ -421,4 +421,9 @@ async function materializeFromBatch(
       if (cell) updateCellById(cellId, () => cell);
     }
   }
+
+  // Always refresh notebook-level metadata after any sync batch.
+  // The Automerge doc may contain metadata-only changes (e.g. dependency
+  // additions via MCP) that don't appear in the cell changeset.
+  notifyMetadataChanged();
 }
