@@ -652,7 +652,11 @@ fn value_to_string(value: &Value) -> String {
 /// - The HTTP blob server serves correct Content-Type with real bytes
 /// - Future binary formats (Arrow IPC, Parquet) work without changes
 fn is_binary_mime(mime: &str) -> bool {
-    if mime.starts_with("image/") || mime.starts_with("audio/") || mime.starts_with("video/") {
+    if mime.starts_with("image/") {
+        // SVG is plain XML text in Jupyter, not base64-encoded binary.
+        return !mime.ends_with("+xml");
+    }
+    if mime.starts_with("audio/") || mime.starts_with("video/") {
         return true;
     }
 
@@ -988,5 +992,113 @@ mod tests {
         let resolved = resolve_manifest(&manifest_json, &store).await.unwrap();
 
         assert_eq!(resolved["text"], "line 1\nline 2\n");
+    }
+
+    // ── Binary blob tests ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_from_binary_always_uses_blob() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        // Even tiny binary data should go to blob (no inline threshold)
+        let tiny_png = b"\x89PNG\r\n\x1a\n";
+        let content_ref = ContentRef::from_binary(tiny_png, "image/png", &store)
+            .await
+            .unwrap();
+
+        assert!(
+            !content_ref.is_inline(),
+            "Binary content should always use blob, never inline"
+        );
+        if let ContentRef::Blob { size, .. } = &content_ref {
+            assert_eq!(*size, tiny_png.len() as u64);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_binary_round_trip_base64() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        // Known bytes → store as blob → resolve back as base64
+        let raw_bytes: Vec<u8> = (0..=255).collect();
+        let content_ref = ContentRef::from_binary(&raw_bytes, "image/png", &store)
+            .await
+            .unwrap();
+
+        let base64_result = content_ref.resolve_binary_as_base64(&store).await.unwrap();
+
+        // Decode the base64 and verify it matches the original bytes
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&base64_result)
+            .unwrap();
+        assert_eq!(decoded, raw_bytes);
+    }
+
+    #[tokio::test]
+    async fn test_binary_display_data_round_trip() {
+        let dir = TempDir::new().unwrap();
+        let store = test_store(&dir);
+
+        // Simulate what the kernel sends: base64-encoded PNG in a display_data
+        let raw_pixels = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        let base64_from_kernel = base64::engine::general_purpose::STANDARD.encode(&raw_pixels);
+
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "text/plain": "<Figure>",
+                "image/png": base64_from_kernel
+            },
+            "metadata": {}
+        });
+
+        // Create manifest (should base64-decode the PNG and store raw bytes)
+        let manifest_json = create_manifest(&output, &store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+
+        // Resolve manifest (should base64-encode raw bytes back for nbformat)
+        let resolved = resolve_manifest(&manifest_json, &store).await.unwrap();
+
+        assert_eq!(resolved["output_type"], "display_data");
+        assert_eq!(resolved["data"]["text/plain"], "<Figure>");
+        // The resolved base64 should match what the kernel originally sent
+        assert_eq!(resolved["data"]["image/png"], base64_from_kernel);
+    }
+
+    #[test]
+    fn test_is_binary_mime() {
+        // Binary image types
+        assert!(is_binary_mime("image/png"));
+        assert!(is_binary_mime("image/jpeg"));
+        assert!(is_binary_mime("image/gif"));
+        assert!(is_binary_mime("image/webp"));
+
+        // SVG is text (plain XML in Jupyter)
+        assert!(!is_binary_mime("image/svg+xml"));
+
+        // Audio/video
+        assert!(is_binary_mime("audio/mpeg"));
+        assert!(is_binary_mime("video/mp4"));
+
+        // Binary application types
+        assert!(is_binary_mime("application/pdf"));
+        assert!(is_binary_mime("application/octet-stream"));
+        assert!(is_binary_mime("application/vnd.apache.arrow.stream"));
+        assert!(is_binary_mime("application/wasm"));
+
+        // Text-like application types
+        assert!(!is_binary_mime("application/json"));
+        assert!(!is_binary_mime("application/javascript"));
+        assert!(!is_binary_mime("application/xml"));
+        assert!(!is_binary_mime("application/vnd.vegalite.v5+json"));
+        assert!(!is_binary_mime("application/xhtml+xml"));
+
+        // Text types
+        assert!(!is_binary_mime("text/plain"));
+        assert!(!is_binary_mime("text/html"));
+        assert!(!is_binary_mime("text/latex"));
     }
 }

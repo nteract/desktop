@@ -24,7 +24,11 @@ fn is_blob_hash(s: &str) -> bool {
 /// Must match the Rust `is_binary_mime` in `output_store.rs` and the
 /// TypeScript `isBinaryMime` in `manifest-resolution.ts`.
 fn is_binary_mime(mime: &str) -> bool {
-    if mime.starts_with("image/") || mime.starts_with("audio/") || mime.starts_with("video/") {
+    if mime.starts_with("image/") {
+        // SVG is plain XML text in Jupyter, not base64-encoded binary.
+        return !mime.ends_with("+xml");
+    }
+    if mime.starts_with("audio/") || mime.starts_with("video/") {
         return true;
     }
 

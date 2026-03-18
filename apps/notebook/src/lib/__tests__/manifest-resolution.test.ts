@@ -90,7 +90,10 @@ describe("isBinaryMime", () => {
     expect(isBinaryMime("image/jpeg")).toBe(true);
     expect(isBinaryMime("image/gif")).toBe(true);
     expect(isBinaryMime("image/webp")).toBe(true);
-    expect(isBinaryMime("image/svg+xml")).toBe(true);
+  });
+
+  it("returns false for SVG (plain XML text in Jupyter)", () => {
+    expect(isBinaryMime("image/svg+xml")).toBe(false);
   });
 
   it("returns true for audio/video types", () => {

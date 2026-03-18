@@ -16,11 +16,11 @@ export function isManifestHash(s: string): boolean {
  * directly (e.g., `<img src="http://...">`) instead of base64 data URIs.
  */
 export function isBinaryMime(mime: string): boolean {
-  if (
-    mime.startsWith("image/") ||
-    mime.startsWith("audio/") ||
-    mime.startsWith("video/")
-  ) {
+  if (mime.startsWith("image/")) {
+    // SVG is plain XML text in Jupyter, not base64-encoded binary.
+    return !mime.endsWith("+xml");
+  }
+  if (mime.startsWith("audio/") || mime.startsWith("video/")) {
     return true;
   }
 
