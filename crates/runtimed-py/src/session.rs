@@ -325,6 +325,36 @@ impl Session {
         self.runtime.block_on(session_core::get_cells(&self.state))
     }
 
+    /// Get a cell's source without materializing all cells.
+    fn get_cell_source(&self, cell_id: &str) -> PyResult<Option<String>> {
+        self.runtime
+            .block_on(session_core::get_cell_source(&self.state, cell_id))
+    }
+
+    /// Get a cell's type without materializing all cells.
+    fn get_cell_type(&self, cell_id: &str) -> PyResult<Option<String>> {
+        self.runtime
+            .block_on(session_core::get_cell_type(&self.state, cell_id))
+    }
+
+    /// Get a cell's raw outputs without blob resolution.
+    fn get_cell_outputs(&self, cell_id: &str) -> PyResult<Option<Vec<String>>> {
+        self.runtime
+            .block_on(session_core::get_cell_outputs(&self.state, cell_id))
+    }
+
+    /// Get a cell's execution count.
+    fn get_cell_execution_count(&self, cell_id: &str) -> PyResult<Option<String>> {
+        self.runtime
+            .block_on(session_core::get_cell_execution_count(&self.state, cell_id))
+    }
+
+    /// Get all cell IDs in document order.
+    fn get_cell_ids(&self) -> PyResult<Vec<String>> {
+        self.runtime
+            .block_on(session_core::get_cell_ids(&self.state))
+    }
+
     /// Delete a cell from the document.
     fn delete_cell(&self, cell_id: &str) -> PyResult<()> {
         self.runtime

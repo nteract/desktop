@@ -378,6 +378,72 @@ impl DocHandle {
         snapshot.cells.iter().find(|c| c.id == cell_id).cloned()
     }
 
+    /// Get the ordered list of cell IDs from the latest snapshot.
+    pub fn get_cell_ids(&self) -> Vec<String> {
+        let snapshot = self.snapshot_rx.borrow();
+        snapshot.cells.iter().map(|c| c.id.clone()).collect()
+    }
+
+    /// Get a single cell's source text without cloning the full snapshot.
+    pub fn get_cell_source(&self, cell_id: &str) -> Option<String> {
+        let snapshot = self.snapshot_rx.borrow();
+        snapshot
+            .cells
+            .iter()
+            .find(|c| c.id == cell_id)
+            .map(|c| c.source.clone())
+    }
+
+    /// Get a single cell's type ("code", "markdown", or "raw").
+    pub fn get_cell_type(&self, cell_id: &str) -> Option<String> {
+        let snapshot = self.snapshot_rx.borrow();
+        snapshot
+            .cells
+            .iter()
+            .find(|c| c.id == cell_id)
+            .map(|c| c.cell_type.clone())
+    }
+
+    /// Get a single cell's JSON-encoded outputs.
+    pub fn get_cell_outputs(&self, cell_id: &str) -> Option<Vec<String>> {
+        let snapshot = self.snapshot_rx.borrow();
+        snapshot
+            .cells
+            .iter()
+            .find(|c| c.id == cell_id)
+            .map(|c| c.outputs.clone())
+    }
+
+    /// Get a single cell's execution count (e.g. "5" or "null").
+    pub fn get_cell_execution_count(&self, cell_id: &str) -> Option<String> {
+        let snapshot = self.snapshot_rx.borrow();
+        snapshot
+            .cells
+            .iter()
+            .find(|c| c.id == cell_id)
+            .map(|c| c.execution_count.clone())
+    }
+
+    /// Get a single cell's metadata as a JSON value.
+    pub fn get_cell_metadata(&self, cell_id: &str) -> Option<serde_json::Value> {
+        let snapshot = self.snapshot_rx.borrow();
+        snapshot
+            .cells
+            .iter()
+            .find(|c| c.id == cell_id)
+            .map(|c| c.metadata.clone())
+    }
+
+    /// Get a single cell's fractional-index position string.
+    pub fn get_cell_position(&self, cell_id: &str) -> Option<String> {
+        let snapshot = self.snapshot_rx.borrow();
+        snapshot
+            .cells
+            .iter()
+            .find(|c| c.id == cell_id)
+            .map(|c| c.position.clone())
+    }
+
     /// Set a cell's execution count.
     pub fn set_execution_count(&self, cell_id: &str, count: &str) -> Result<bool, SyncError> {
         self.with_notebook_doc(|doc| doc.set_execution_count(cell_id, count))

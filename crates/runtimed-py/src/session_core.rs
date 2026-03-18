@@ -641,6 +641,68 @@ pub(crate) async fn get_cells(state: &Arc<Mutex<SessionState>>) -> PyResult<Vec<
     Ok(cells)
 }
 
+/// Get a cell's source text without materializing all cells.
+pub(crate) async fn get_cell_source(
+    state: &Arc<Mutex<SessionState>>,
+    cell_id: &str,
+) -> PyResult<Option<String>> {
+    let st = state.lock().await;
+    let handle = st
+        .handle
+        .as_ref()
+        .ok_or_else(|| to_py_err("Not connected"))?;
+    Ok(handle.get_cell_source(cell_id))
+}
+
+/// Get a cell's type (e.g. "code", "markdown") without materializing all cells.
+pub(crate) async fn get_cell_type(
+    state: &Arc<Mutex<SessionState>>,
+    cell_id: &str,
+) -> PyResult<Option<String>> {
+    let st = state.lock().await;
+    let handle = st
+        .handle
+        .as_ref()
+        .ok_or_else(|| to_py_err("Not connected"))?;
+    Ok(handle.get_cell_type(cell_id))
+}
+
+/// Get a cell's raw output strings without blob resolution.
+pub(crate) async fn get_cell_outputs(
+    state: &Arc<Mutex<SessionState>>,
+    cell_id: &str,
+) -> PyResult<Option<Vec<String>>> {
+    let st = state.lock().await;
+    let handle = st
+        .handle
+        .as_ref()
+        .ok_or_else(|| to_py_err("Not connected"))?;
+    Ok(handle.get_cell_outputs(cell_id))
+}
+
+/// Get a cell's execution count without materializing all cells.
+pub(crate) async fn get_cell_execution_count(
+    state: &Arc<Mutex<SessionState>>,
+    cell_id: &str,
+) -> PyResult<Option<String>> {
+    let st = state.lock().await;
+    let handle = st
+        .handle
+        .as_ref()
+        .ok_or_else(|| to_py_err("Not connected"))?;
+    Ok(handle.get_cell_execution_count(cell_id))
+}
+
+/// Get all cell IDs in document order without materializing full cell data.
+pub(crate) async fn get_cell_ids(state: &Arc<Mutex<SessionState>>) -> PyResult<Vec<String>> {
+    let st = state.lock().await;
+    let handle = st
+        .handle
+        .as_ref()
+        .ok_or_else(|| to_py_err("Not connected"))?;
+    Ok(handle.get_cell_ids())
+}
+
 /// Delete a cell.
 pub(crate) async fn delete_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) -> PyResult<()> {
     let st = state.lock().await;
