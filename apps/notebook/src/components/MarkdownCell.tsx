@@ -10,7 +10,7 @@ import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
 import { textAttributionExtension } from "@/components/editor/text-attribution";
 import { IsolatedFrame, type IsolatedFrameHandle } from "@/components/isolated";
-import { isDarkMode as detectDarkMode } from "@/lib/dark-mode";
+import { useDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
@@ -197,19 +197,7 @@ export const MarkdownCell = memo(function MarkdownCell({
     };
   }, [cell.id, editing]);
 
-  // Track dark mode state for iframe theme sync
-  const [darkMode, setDarkMode] = useState(() => detectDarkMode());
-
-  useEffect(() => {
-    const observer = new MutationObserver(() => {
-      setDarkMode(detectDarkMode());
-    });
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class", "data-theme", "data-mode"],
-    });
-    return () => observer.disconnect();
-  }, []);
+  const darkMode = useDarkMode();
 
   const blobPort = useBlobPort();
 

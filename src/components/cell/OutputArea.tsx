@@ -1,12 +1,5 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
-import {
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, useCallback, useEffect, useId, useRef } from "react";
 import {
   CommBridgeManager,
   type IframeToParentMessage,
@@ -22,7 +15,7 @@ import {
   MediaRouter,
 } from "@/components/outputs/media-router";
 import { useWidgetStore } from "@/components/widgets/widget-store-context";
-import { isDarkMode as detectDarkMode } from "@/lib/dark-mode";
+import { useDarkMode } from "@/lib/dark-mode";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { highlightTextInDom } from "@/lib/highlight-text";
 import { OutputErrorFallback } from "@/lib/output-error-fallback";
@@ -304,25 +297,10 @@ export function OutputArea({
   const searchQueryRef = useRef(searchQuery);
   searchQueryRef.current = searchQuery;
 
-  // Track dark mode state and observe changes
-  const [darkMode, setDarkMode] = useState(() => detectDarkMode());
+  const darkMode = useDarkMode();
   // Ref for reading current darkMode in callbacks without adding to deps
   const darkModeRef = useRef(darkMode);
   darkModeRef.current = darkMode;
-
-  useEffect(() => {
-    // Update dark mode when document class changes
-    const observer = new MutationObserver(() => {
-      setDarkMode(detectDarkMode());
-    });
-
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class", "data-theme", "data-mode"],
-    });
-
-    return () => observer.disconnect();
-  }, []);
 
   // Get widget store context (may be null if not in provider)
   const widgetContext = useWidgetStore();

@@ -494,9 +494,22 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
       }
 
       // --- Resize Observer ---
-      const resizeObserver = new ResizeObserver(function(entries) {
-        const height = document.body.scrollHeight;
-        send('resize', { height: height });
+      // Gate with __REACT_RENDERER_ACTIVE__ so the bootstrap observer
+      // stops firing once the React renderer creates its own observer.
+      // Use rAF to collapse multiple resize callbacks per frame into one
+      // postMessage (avoids "ResizeObserver loop completed with undelivered
+      // notifications" errors when many iframes resize simultaneously).
+      var resizeRafPending = false;
+      var resizeObserver = new ResizeObserver(function(entries) {
+        if (window.__REACT_RENDERER_ACTIVE__) return;
+        if (resizeRafPending) return;
+        resizeRafPending = true;
+        requestAnimationFrame(function() {
+          resizeRafPending = false;
+          if (window.__REACT_RENDERER_ACTIVE__) return;
+          var height = document.body.scrollHeight;
+          send('resize', { height: height });
+        });
       });
       resizeObserver.observe(document.body);
 

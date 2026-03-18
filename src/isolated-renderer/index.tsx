@@ -336,11 +336,20 @@ export function init() {
   );
 
   // Set up resize observer
+  // Use rAF to collapse multiple resize callbacks per frame into one
+  // postMessage (avoids "ResizeObserver loop completed with undelivered
+  // notifications" errors when many iframes resize simultaneously).
+  let resizeRafPending = false;
   const resizeObserver = new ResizeObserver(() => {
-    window.parent.postMessage(
-      { type: "resize", payload: { height: document.body.scrollHeight } },
-      "*",
-    );
+    if (resizeRafPending) return;
+    resizeRafPending = true;
+    requestAnimationFrame(() => {
+      resizeRafPending = false;
+      window.parent.postMessage(
+        { type: "resize", payload: { height: document.body.scrollHeight } },
+        "*",
+      );
+    });
   });
   resizeObserver.observe(document.body);
 
