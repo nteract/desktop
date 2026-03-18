@@ -9,6 +9,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getBlobPort, refreshBlobPort, resetBlobPort } from "../lib/blob-port";
 import {
   isKernelStatus,
   KERNEL_STATUS,
@@ -22,10 +23,7 @@ import type {
   JupyterMessage,
   JupyterOutput,
 } from "../types";
-import {
-  fetchBlobPortWithRetry,
-  resolveOutputString,
-} from "./useManifestResolver";
+import { resolveOutputString } from "./useManifestResolver";
 
 /** Kernel status from daemon */
 export type DaemonKernelStatus = KernelStatus;
@@ -98,9 +96,6 @@ export function useDaemonKernel({
     };
   } | null>(null);
 
-  // Store blob port in ref for use in event handlers
-  const blobPortRef = useRef<number>(0);
-
   // Timer ref for throttling transient busy states
   // Ignores busy if it disappears within the threshold (e.g., from completions)
   const busyTimerRef = useRef<number | null>(null);
@@ -134,16 +129,7 @@ export function useDaemonKernel({
     let cancelled = false;
     const webview = getCurrentWebview();
 
-    // Helper to refresh blob port (called on mount, reconnect, and daemon:ready)
-    const refreshBlobPort = () => {
-      fetchBlobPortWithRetry().then((port) => {
-        if (port && !cancelled) {
-          blobPortRef.current = port;
-        }
-      });
-    };
-
-    // Fetch blob port for manifest resolution
+    // Ensure blob port is fresh on mount
     refreshBlobPort();
 
     const unsubscribeBroadcast = subscribeBroadcast((payload) => {
@@ -224,14 +210,10 @@ export function useDaemonKernel({
 
           // Helper to resolve with retry if port is unavailable or stale
           const resolveWithRetry = async (retried = false) => {
-            let port = blobPortRef.current;
+            let port = getBlobPort();
             // If port not yet available, try to fetch it
             if (!port) {
-              const freshPort = await fetchBlobPortWithRetry();
-              if (freshPort) {
-                blobPortRef.current = freshPort;
-                port = freshPort;
-              }
+              port = await refreshBlobPort();
             }
             if (!port) {
               logger.error(
@@ -248,7 +230,7 @@ export function useDaemonKernel({
               logger.debug(
                 "[daemon-kernel] Output resolution failed, refreshing port",
               );
-              blobPortRef.current = 0;
+              resetBlobPort();
               await resolveWithRetry(true);
             } else {
               logger.error(
@@ -469,7 +451,7 @@ export function useDaemonKernel({
         setQueueState({ executing: null, queued: [] });
         setEnvSyncState(null);
         // Reset blob port so next output triggers fresh fetch
-        blobPortRef.current = 0;
+        resetBlobPort();
 
         // Attempt to reconnect to the daemon
         try {
@@ -488,7 +470,7 @@ export function useDaemonKernel({
     const unlistenReady = webview.listen("daemon:ready", () => {
       if (cancelled) return;
       logger.debug("[daemon-kernel] Daemon ready");
-      refreshBlobPort();
+      refreshBlobPort(); // Update blob-port store for new daemon session
       fetchKernelInfo();
     });
 

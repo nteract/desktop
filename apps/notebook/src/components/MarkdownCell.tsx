@@ -14,11 +14,11 @@ import { useDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
-import { useBlobPort } from "../hooks/useManifestResolver";
 import {
   registerAttributionEditor,
   unregisterAttributionEditor,
 } from "../lib/attribution-registry";
+import { useBlobPort } from "../lib/blob-port";
 import { registerEditor, unregisterEditor } from "../lib/cursor-registry";
 import { logger } from "../lib/logger";
 import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";

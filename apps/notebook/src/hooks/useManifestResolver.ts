@@ -1,74 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef } from "react";
+import { useBlobPort } from "../lib/blob-port";
 import { logger } from "../lib/logger";
 import type { OutputManifest } from "../lib/manifest-resolution";
 import { isManifestHash, resolveManifest } from "../lib/manifest-resolution";
 import type { JupyterOutput } from "../types";
-
-let sharedBlobPort: number | null = null;
-let sharedBlobPortPromise: Promise<number | null> | null = null;
-
-/**
- * Fetch blob port with retry logic.
- */
-export async function fetchBlobPortWithRetry(
-  maxAttempts = 5,
-  delayMs = 500,
-): Promise<number | null> {
-  if (sharedBlobPort !== null) {
-    return sharedBlobPort;
-  }
-
-  if (sharedBlobPortPromise) {
-    return sharedBlobPortPromise;
-  }
-
-  sharedBlobPortPromise = (async () => {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        const port = await invoke<number>("get_blob_port");
-        sharedBlobPort = port;
-        return port;
-      } catch (e) {
-        if (attempt < maxAttempts) {
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
-        } else {
-          logger.warn(
-            `[manifest-resolver] Failed to get blob port after ${maxAttempts} attempts:`,
-            e,
-          );
-        }
-      }
-    }
-    return null;
-  })();
-
-  try {
-    return await sharedBlobPortPromise;
-  } finally {
-    sharedBlobPortPromise = null;
-  }
-}
-
-export function useBlobPort() {
-  const [blobPort, setBlobPort] = useState<number | null>(sharedBlobPort);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    fetchBlobPortWithRetry().then((port) => {
-      if (!cancelled) {
-        setBlobPort(port);
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return blobPort;
-}
 
 /**
  * Resolve an output string to a JupyterOutput.

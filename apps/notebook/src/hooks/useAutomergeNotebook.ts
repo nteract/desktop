@@ -5,6 +5,7 @@ import {
   save as saveDialog,
 } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getBlobPort, refreshBlobPort } from "../lib/blob-port";
 import { frame_types, sendFrame } from "../lib/frame-types";
 import { logger } from "../lib/logger";
 import {
@@ -125,19 +126,11 @@ export function useAutomergeNotebook() {
   // Output manifest cache (shared with materialize-cells utilities).
   const outputCacheRef = useRef<Map<string, JupyterOutput>>(new Map());
 
-  // Blob port for manifest resolution.
-  const blobPortPromiseRef = useRef<Promise<number | null> | null>(null);
-
-  const refreshBlobPort = useCallback(() => {
-    blobPortPromiseRef.current = invoke<number>("get_blob_port").catch((e) => {
-      logger.warn("[automerge-notebook] Failed to get blob port:", e);
-      return null;
-    });
-  }, []);
-
+  // Blob port is managed by the blob-port store (lib/blob-port.ts).
+  // Refresh on mount; daemon:ready handler refreshes on reconnect.
   useEffect(() => {
     refreshBlobPort();
-  }, [refreshBlobPort]);
+  }, []);
 
   // Clear dirty state when daemon autosaves the notebook to disk.
   useEffect(() => {
@@ -159,9 +152,7 @@ export function useAutomergeNotebook() {
   const materializeCells = useCallback(async (handle: NotebookHandle) => {
     const json = handle.get_cells_json();
     const snapshots: CellSnapshot[] = JSON.parse(json);
-    const blobPort = blobPortPromiseRef.current
-      ? await blobPortPromiseRef.current
-      : null;
+    const blobPort = getBlobPort();
     const newCells = await cellSnapshotsToNotebookCells(
       snapshots,
       blobPort,
@@ -298,9 +289,6 @@ export function useAutomergeNotebook() {
         // fast synchronous path; cache misses resolve the individual cell's
         // outputs asynchronously (without serializing the entire document).
         const cache = outputCacheRef.current;
-        // Defer blobPort resolution until a cache miss actually needs it.
-        let blobPort: number | null = null;
-        let blobPortResolved = false;
 
         for (const { cell_id: cellId, fields } of cs.changed) {
           if (fields.outputs) {
@@ -323,11 +311,9 @@ export function useAutomergeNotebook() {
               // Cache miss — resolve this cell's outputs async (fetch
               // manifests from blob store) without re-serializing the
               // entire document.
-              if (!blobPortResolved) {
-                blobPort = blobPortPromiseRef.current
-                  ? await blobPortPromiseRef.current
-                  : null;
-                blobPortResolved = true;
+              let blobPort = getBlobPort();
+              if (blobPort === null) {
+                blobPort = await refreshBlobPort();
               }
               const resolved = (
                 await Promise.all(
@@ -435,7 +421,7 @@ export function useAutomergeNotebook() {
     // converge (the WASM keeps re-requesting content it already has).
     const unlistenReady = webview.listen("daemon:ready", async () => {
       if (cancelled) return;
-      refreshBlobPort();
+      refreshBlobPort(); // Update blob-port store for new daemon session
       awaitingInitialSyncRef.current = true;
       setIsLoading(true);
       await bootstrap();
@@ -595,7 +581,6 @@ export function useAutomergeNotebook() {
   }, [
     bootstrap,
     materializeCells,
-    refreshBlobPort,
     scheduleMaterialize,
     scheduleSyncReply,
     syncToRelay,
