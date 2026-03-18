@@ -502,6 +502,20 @@ pub(crate) async fn interrupt(state: &Arc<Mutex<SessionState>>) -> PyResult<()> 
 // Cell operations
 // =========================================================================
 
+/// Compute the (line, column) position at the end of a source string.
+///
+/// Unlike `str::lines()` which drops a trailing empty line, this correctly
+/// returns (N, 0) when the source ends with '\n'.
+fn end_of_source_position(source: &str) -> (u32, u32) {
+    let line = source.as_bytes().iter().filter(|&&b| b == b'\n').count() as u32;
+    if source.is_empty() || source.ends_with('\n') {
+        (line, 0)
+    } else {
+        let col = source.rsplit('\n').next().unwrap_or(source).len() as u32;
+        (line, col)
+    }
+}
+
 /// Create a new cell with source (atomic operation).
 pub(crate) async fn create_cell(
     state: &Arc<Mutex<SessionState>>,
@@ -537,12 +551,7 @@ pub(crate) async fn create_cell(
     }
 
     // Emit presence at end of new source
-    let (last_line, last_col) = source
-        .lines()
-        .enumerate()
-        .last()
-        .map(|(i, line)| (i as u32, line.len() as u32))
-        .unwrap_or((0, 0));
+    let (last_line, last_col) = end_of_source_position(source);
     emit_cursor_presence(state, &cell_id, last_line, last_col).await;
 
     Ok(cell_id)
@@ -566,12 +575,7 @@ pub(crate) async fn set_source(
     }
 
     // Emit presence at end of new source (single pass, no allocation)
-    let (last_line, last_col) = source
-        .lines()
-        .enumerate()
-        .last()
-        .map(|(i, line)| (i as u32, line.len() as u32))
-        .unwrap_or((0, 0));
+    let (last_line, last_col) = end_of_source_position(source);
     emit_cursor_presence(state, cell_id, last_line, last_col).await;
     emit_clear_channel(state, notebook_doc::presence::Channel::Selection).await;
 
@@ -601,12 +605,7 @@ pub(crate) async fn append_source(
             .get_cell(cell_id)
             .ok_or_else(|| to_py_err(format!("Cell {} not found", cell_id)))?;
 
-        cell.source
-            .lines()
-            .enumerate()
-            .last()
-            .map(|(i, line)| (i as u32, line.len() as u32))
-            .unwrap_or((0, 0))
+        end_of_source_position(&cell.source)
     };
 
     emit_cursor_presence(state, cell_id, last_line, last_col).await;
@@ -1102,13 +1101,22 @@ pub(crate) async fn run_all_cells(
 
     match response {
         NotebookResponse::AllCellsQueued { count } => {
-            // Focus on the last cell — gives a visual anchor for where execution ends
+            // Focus on the last code cell — gives a visual anchor for where execution ends.
+            // RunAllCells only queues code cells, so focusing the last code cell (not the
+            // last cell overall, which might be markdown/raw) is more accurate.
             if count > 0 {
-                let last_cell_id = {
+                let last_code_cell_id = {
                     let st = state.lock().await;
-                    st.handle.as_ref().and_then(|h| h.last_cell_id())
+                    st.handle.as_ref().and_then(|h| {
+                        let cells = h.get_cells();
+                        cells
+                            .iter()
+                            .rev()
+                            .find(|c| c.cell_type == "code")
+                            .map(|c| c.id.clone())
+                    })
                 };
-                if let Some(cell_id) = last_cell_id {
+                if let Some(cell_id) = last_code_cell_id {
                     emit_focus_presence(state, &cell_id).await;
                 }
             }

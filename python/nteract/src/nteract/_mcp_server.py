@@ -873,11 +873,15 @@ async def set_cell(
     # Update source if provided
     if source is not None:
         await session.set_source(cell_id=cell_id, source=source)
-        await _send_edit_cursor(session, cell_id, source, len(source))
 
     # Update cell type if provided
     if cell_type is not None:
         await session.set_cell_type(cell_id=cell_id, cell_type=cell_type)
+
+    # If source was changed, ensure the final presence is cursor-at-end (not focus
+    # from set_cell_type, which would clear the cursor on the frontend).
+    if source is not None:
+        await _send_edit_cursor(session, cell_id, source, len(source))
 
     # If nothing was changed, return current cell state
     if source is None and cell_type is None:
