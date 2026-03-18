@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use kernel_env::EnvProgressPhase;
 use notebook_protocol::protocol::NotebookBroadcast;
 use notebook_sync::BroadcastReceiver;
 
@@ -314,9 +315,79 @@ async fn broadcast_to_event(
                 error_message: Some(status),
             })
         }
+        NotebookBroadcast::EnvProgress { env_type, phase } => {
+            if !event_types.is_empty() && !event_types.contains("env_progress") {
+                return None;
+            }
+            let message = env_progress_message(&phase);
+            Some(ExecutionEvent {
+                event_type: "env_progress".to_string(),
+                cell_id: String::new(),
+                output: None,
+                output_index: None,
+                execution_count: None,
+                error_message: Some(format!("[{}] {}", env_type, message)),
+            })
+        }
         _ => {
             // Ignore other broadcast types (QueueChanged, Comm, etc.)
             None
         }
+    }
+}
+
+/// Convert an EnvProgressPhase to a human-readable status message.
+pub(crate) fn env_progress_message(phase: &EnvProgressPhase) -> String {
+    match phase {
+        EnvProgressPhase::Starting { .. } => "Preparing environment...".to_string(),
+        EnvProgressPhase::CacheHit { .. } => "Using cached environment".to_string(),
+        EnvProgressPhase::FetchingRepodata { channels } => {
+            format!("Fetching package index ({})", channels.join(", "))
+        }
+        EnvProgressPhase::RepodataComplete { record_count, .. } => {
+            format!("Loaded {} packages", record_count)
+        }
+        EnvProgressPhase::Solving { spec_count } => {
+            format!("Solving dependencies ({} specs)", spec_count)
+        }
+        EnvProgressPhase::SolveComplete { package_count, .. } => {
+            format!("Resolved {} packages", package_count)
+        }
+        EnvProgressPhase::Installing { total } => format!("Installing {} packages...", total),
+        EnvProgressPhase::DownloadProgress {
+            completed,
+            total,
+            current_package,
+            bytes_per_second,
+            ..
+        } => {
+            let speed = format_bytes_per_sec(*bytes_per_second);
+            format!(
+                "Downloading {}/{} {} @ {}",
+                completed, total, current_package, speed
+            )
+        }
+        EnvProgressPhase::LinkProgress {
+            completed,
+            total,
+            current_package,
+        } => format!("Installing {}/{} {}", completed, total, current_package),
+        EnvProgressPhase::InstallComplete { .. } => "Installation complete".to_string(),
+        EnvProgressPhase::CreatingVenv => "Creating virtual environment...".to_string(),
+        EnvProgressPhase::InstallingPackages { packages } => {
+            format!("Installing {} packages...", packages.len())
+        }
+        EnvProgressPhase::Ready { .. } => "Environment ready".to_string(),
+        EnvProgressPhase::Error { message } => format!("Environment error: {}", message),
+    }
+}
+
+fn format_bytes_per_sec(bps: f64) -> String {
+    if bps >= 1_048_576.0 {
+        format!("{:.1} MiB/s", bps / 1_048_576.0)
+    } else if bps >= 1024.0 {
+        format!("{:.1} KiB/s", bps / 1024.0)
+    } else {
+        format!("{:.0} B/s", bps)
     }
 }

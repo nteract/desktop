@@ -626,9 +626,20 @@ async def create_notebook(
             f" Defaults to {os.getcwd()}"
         ),
     ] = os.getcwd(),
+    dependencies: Annotated[
+        list[str] | None,
+        Field(
+            description="Python packages to pre-install (e.g. ['pandas', 'requests'])."
+            " Set before kernel launch so the first start includes them."
+        ),
+    ] = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Create a new empty notebook. The kernel starts automatically.
+    """Create a new notebook with optional pre-installed dependencies.
+
+    The kernel starts automatically. If dependencies are provided, they are
+    added to notebook metadata before the kernel launches, so the environment
+    is prepared on first start (no restart needed).
 
     Call save_notebook(path) to persist to disk.
     """
@@ -644,9 +655,21 @@ async def create_notebook(
         runtime=runtime, working_dir=working_dir, peer_label=_peer_label()
     )
     session = _session
+
+    if dependencies and runtime == "python":
+        # Add dependencies to notebook metadata
+        for dep in dependencies:
+            await session.add_uv_dependency(dep)
+
+        # The daemon may have auto-launched a kernel (without these deps).
+        # Restart to ensure the kernel picks up the inline deps.
+        with contextlib.suppress(Exception):
+            await session.restart_kernel(wait_for_ready=True)
+
     return {
         "notebook_id": session.notebook_id,
         "runtime": runtime,
+        "dependencies": dependencies or [],
     }
 
 
@@ -689,11 +712,26 @@ async def interrupt_kernel() -> dict[str, Any]:
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def restart_kernel() -> dict[str, Any]:
-    """Restart kernel, clearing all state. Use after dependency changes."""
+async def restart_kernel(ctx: Context | None = None) -> dict[str, Any]:
+    """Restart kernel, clearing all state. Use after dependency changes.
+
+    Reports environment preparation progress (package downloads, installs)
+    via MCP log notifications while waiting. Times out after 120s.
+    """
     session = await _get_session()
-    await session.restart_kernel(wait_for_ready=True)
-    return {"restarted": True, "env_source": await session.env_source()}
+    progress_messages: list[str] = await session.restart_kernel(wait_for_ready=True)
+
+    # Send progress messages as MCP log notifications (retroactively)
+    if ctx and progress_messages:
+        for msg in progress_messages:
+            with contextlib.suppress(Exception):
+                await ctx.info(msg)
+
+    return {
+        "restarted": True,
+        "env_source": await session.env_source(),
+        "progress": progress_messages,
+    }
 
 
 # =============================================================================

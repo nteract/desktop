@@ -261,8 +261,11 @@ impl Session {
     ///
     /// Args:
     ///     wait_for_ready: If True, wait for kernel to report idle (default: True).
+    ///
+    /// Returns:
+    ///     List of progress messages emitted during environment preparation.
     #[pyo3(signature = (wait_for_ready=true))]
-    fn restart_kernel(&self, wait_for_ready: bool) -> PyResult<()> {
+    fn restart_kernel(&self, wait_for_ready: bool) -> PyResult<Vec<String>> {
         self.runtime
             .block_on(session_core::restart_kernel(&self.state, wait_for_ready))
     }
