@@ -12,8 +12,6 @@ These are copy-paste-ready commands. **All commands that interact with the dev d
 # ── Dev daemon env vars (required for ALL dev commands) ────────────
 export RUNTIMED_DEV=1
 export RUNTIMED_WORKSPACE_PATH="$(pwd)"
-# RUNTIMED_WORKSPACE_NAME is optional — cosmetic label for the debug banner.
-# Falls back to .context/workspace-description if unset.
 ```
 
 ### Interacting with the dev daemon
@@ -412,9 +410,9 @@ The **Tauri relay** (`NotebookSyncClient` in `crates/runtimed/src/notebook_sync_
 
 Cells are stored in an Automerge Map keyed by cell ID, with a `position` field (fractional index hex string) for ordering. `move_cell` updates only the position field — no delete/re-insert. `get_cells()` returns cells sorted by position with cell ID as tiebreaker.
 
-Mutation flow: React → WASM `handle.add_cell_after()` → `handle.generate_sync_message()` → prepend `0x00` type byte → `invoke("send_frame", { frameData })` → relay pipe → daemon.
+Mutation flow: React → WASM `handle.add_cell_after()` → `handle.generate_sync_message()` → `sendFrame(frame_types.AUTOMERGE_SYNC, msg)` (binary IPC via `frame-types.ts` helper, no `Array.from`) → relay pipe → daemon.
 
-Incoming sync: daemon → relay pipe → `notebook:frame` event → WASM `handle.receive_frame()` → demux by type byte → returns `FrameEvent[]` with `CellChangeset` → incremental cell updates → React state. Broadcasts and presence are re-emitted via an in-memory frame bus (`notebook-frame-bus.ts`) for downstream hooks.
+Incoming sync: daemon → relay pipe → `notebook:frame` event → WASM `handle.receive_frame()` → demux by type byte → returns `FrameEvent[]` with `CellChangeset` → incremental cell updates → React state. The frontend calls `handle.generate_sync_reply()` on a 50ms debounce timer (`scheduleSyncReply`) to batch multiple inbound frames into a single outbound reply. Broadcasts and presence are re-emitted via an in-memory frame bus (`notebook-frame-bus.ts`) for downstream hooks.
 
 The `runtimed-wasm` crate compiles from the same `automerge = "0.7"` as the daemon. This is critical — the JS `@automerge/automerge` package creates `Object(Text)` CRDTs for all string fields, but Rust uses scalar `Str` for metadata fields (`id`, `cell_type`, `execution_count`). Using the same Rust code in WASM guarantees schema compatibility.
 
@@ -443,7 +441,7 @@ The sync pipeline avoids full-notebook re-reads on every change. Each layer is d
 
 2. **`scheduleMaterialize()`** — coalesces multiple sync frames within a 32ms window via `mergeChangesets()`. Dispatches:
    - Structural changes (cells added/removed/reordered) → full materialization
-   - Output changes (blob manifests need async fetch) → full materialization
+   - Output changes → per-cell cache-aware resolution: cache hits use `materializeCellFromWasm()` (fast sync path); cache misses resolve just that cell's outputs async via `resolveOutput()`, not the full document
    - Source/metadata/execution_count only → per-cell `materializeCellFromWasm()` via O(1) WASM accessors
 
 3. **Split cell store** — `Map<id, NotebookCell>` with per-cell subscriptions. `useCell(id)` re-renders only when that specific cell changes. `useCellIds()` re-renders only on structural changes.
@@ -627,4 +625,5 @@ Dependencies are signed with HMAC-SHA256 using a per-machine key at `~/.config/r
 | `apps/notebook/src/lib/materialize-cells.ts` | `materializeCellFromWasm()` (per-cell) + `cellSnapshotsToNotebookCells()` (full) |
 | `apps/notebook/src/lib/notebook-cells.ts` | Split cell store — `useCell(id)`, `useCellIds()`, per-cell subscriptions |
 | `apps/notebook/src/lib/notebook-frame-bus.ts` | In-memory sync pub/sub for broadcasts and presence (no Tauri event hop) |
+| `apps/notebook/src/lib/frame-types.ts` | Frame type constants + `sendFrame()` binary IPC helper |
 | `src/components/widgets/widget-store.ts` | `WidgetStore` — per-model subscriptions, IPY_MODEL_ resolution |

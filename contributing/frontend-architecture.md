@@ -150,11 +150,13 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
 │                          │             (frame bus)  │  (frame bus)
 │                   ┌──────┴──────┐             │     │       │   │
 │                   │ structural? │             ▼     │       │   │
-│                   │  outputs?   │     ┌──────────────┐      │   │
+│                   │             │     ┌──────────────┐      │   │
 │                   └──┬──────┬───┘     │useDaemonKernel│     │   │
 │             full ◄───┘      └───► per-cell            │     │   │
 │          materialize-     materialize-  useEnvProgress │     │   │
 │          Cells()          CellFromWasm  └──────┬───────┘     │   │
+│                      (cache-aware for          │      │      │   │
+│                       output changes)          │      │      │   │
 │                   │           │                │      ▼      │   │
 │                   ▼           ▼                │  usePresence │   │
 │             ┌────────────────────┐             │      │      │   │
@@ -176,7 +178,7 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
 
 2. **scheduleMaterialize** — Coalesces sync frames within a 32ms window via `mergeChangesets()`, then dispatches:
    - **Structural changes** (cells added/removed/reordered) → full `cellSnapshotsToNotebookCells()` from `get_cells_json()`
-   - **Output changes** (blob manifests need async fetch) → full materialization
+   - **Output changes** → per-cell cache-aware resolution: cache hits use fast sync path via `materializeCellFromWasm()`; cache misses resolve just that cell async
    - **Source/metadata/execution_count only** → per-cell `materializeCellFromWasm()` using O(1) WASM accessors (`get_cell_source()`, `get_cell_type()`, etc.)
 
 3. **Split cell store** (`notebook-cells.ts`) — `Map<id, NotebookCell>` + ordered ID list with independent subscriber channels:
@@ -214,6 +216,6 @@ The `CellChangeset` from WASM (`notebook-doc/src/diff.rs`) has TypeScript mirror
 | `apps/notebook/src/lib/materialize-cells.ts` | WASM → React conversion |
 | `apps/notebook/src/lib/notebook-frame-bus.ts` | In-memory pub/sub for broadcast and presence dispatch |
 | `apps/notebook/src/hooks/usePresence.ts` | Remote presence tracking |
-| `apps/notebook/src/lib/frame-types.ts` | Frame type constants (mirrors Rust) |
+| `apps/notebook/src/lib/frame-types.ts` | Frame type constants + `sendFrame()` binary IPC helper |
 | `src/components/outputs/media-router.tsx` | Output type dispatch |
 | `src/components/editor/codemirror-editor.tsx` | Main editor |

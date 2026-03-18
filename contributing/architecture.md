@@ -54,7 +54,7 @@ Editing is local-first for responsiveness. Execution is always against synced st
 **Incremental sync pipeline:**
 - WASM `receive_frame()` computes a `CellChangeset` (in `notebook-doc/src/diff.rs`) by walking Automerge patches — O(delta), not O(doc)
 - The changeset carries per-field flags (`source`, `outputs`, `execution_count`, `cell_type`, `metadata`, `position`, `resolved_assets`) per changed cell, plus lists of added/removed cell IDs
-- `scheduleMaterialize` coalesces changesets within a 32ms window, then dispatches: structural changes → full materialization; field-only changes → per-cell `materializeCellFromWasm()` using O(1) WASM accessors
+- `scheduleMaterialize` coalesces changesets within a 32ms window, then dispatches: structural changes → full materialization; output changes → per-cell cache-aware resolution (cache hits use `materializeCellFromWasm()`, cache misses resolve just that cell async); source/metadata-only → per-cell `materializeCellFromWasm()` via O(1) WASM accessors
 - The split cell store (`notebook-cells.ts`) provides per-cell React subscriptions — `useCell(id)` re-renders only when that specific cell changes
 
 **Per-cell accessors** (O(1) Automerge map lookups, available on `NotebookDoc`, `NotebookHandle`, and `DocHandle`):
@@ -190,8 +190,9 @@ The frontend now owns a local Automerge doc via `runtimed-wasm` WASM bindings, m
 - `crates/notebook-sync/src/relay.rs` — `RelayHandle`: relay API for forwarding typed frames between WASM and daemon
 - `crates/notebook-sync/src/connect.rs` — `connect_open_relay()`, `connect_create_relay()`: transparent byte pipe setup
 - `crates/runtimed-wasm/src/lib.rs` — WASM bindings: local Automerge peer, frame demux, per-cell accessors, `CellChangeset`
-- `crates/notebook/src/lib.rs` — Tauri commands and relay tasks (`send_frame`, `setup_sync_receivers`)
+- `crates/notebook/src/lib.rs` — Tauri commands and relay tasks (`send_frame` accepts raw binary via `tauri::ipc::Request`, `setup_sync_receivers`)
 - `crates/notebook-doc/src/frame_types.rs` — Shared frame type constants (0x00–0x04)
+- `apps/notebook/src/lib/frame-types.ts` — Frame type constants + `sendFrame()` binary IPC helper
 - `apps/notebook/src/hooks/useAutomergeNotebook.ts` — WASM handle owner, `scheduleMaterialize`, `CellChangeset` dispatch
 - `apps/notebook/src/lib/materialize-cells.ts` — `materializeCellFromWasm()` (per-cell) + `cellSnapshotsToNotebookCells()` (full)
 - `apps/notebook/src/lib/notebook-cells.ts` — Split cell store: `useCell(id)`, `useCellIds()`, per-cell subscriptions

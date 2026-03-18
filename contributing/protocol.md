@@ -162,7 +162,7 @@ User types in cell
   → React calls WASM handle.update_source(cell_id, text)
   → WASM applies mutation locally (instant)
   → debouncedSyncToRelay (20ms batch) → handle.generate_sync_message() → sync bytes
-  → Frontend prepends 0x00 type byte → invoke("send_frame", { frameData })
+  → sendFrame(frame_types.AUTOMERGE_SYNC, msg) → raw binary via tauri::ipc::Request
   → Tauri send_frame dispatches by type → relay pipes to daemon socket
   → Daemon applies sync, updates canonical doc
   → Daemon generates response sync message → frame type 0x00
@@ -172,10 +172,10 @@ User types in cell
   → FrameEvent::SyncApplied includes a CellChangeset (field-level diff)
   → scheduleMaterialize coalesces within 32ms, then dispatches:
       - structural change (cells added/removed/reordered) → full materializeCells()
-      - output changes (blob manifests need async fetch) → full materializeCells()
+      - output changes → per-cell cache-aware resolution (cache hits use materializeCellFromWasm(), cache misses resolve just that cell async)
       - source/metadata/exec_count only → per-cell materializeCellFromWasm() via O(1) accessors
   → React state updated via split cell store (only affected cells re-render)
-  → sync_reply event → prepend 0x00, invoke("send_frame", { frameData }) back to daemon
+  → scheduleSyncReply → 50ms debounce → handle.generate_sync_reply() → sendFrame() (one reply per window)
 ```
 
 ### CellChangeset
@@ -287,7 +287,7 @@ The relay and frontend use these Tauri events for cross-process communication:
 | `daemon:ready` | Relay → Frontend | `DaemonReadyPayload` | Connection established, ready to bootstrap |
 | `daemon:disconnected` | Relay → Frontend | — | Connection to daemon lost |
 
-Outgoing frames from the frontend use `invoke("send_frame", { frameData })` where `frameData` is `number[]` with the first byte as the frame type. Only `0x00` (AutomergeSync) and `0x04` (Presence) are valid outgoing types.
+Outgoing frames from the frontend use `sendFrame(frameType, payload)` where `payload` is `Uint8Array` passed as raw binary via `tauri::ipc::Request`. Only `0x00` (AutomergeSync) and `0x04` (Presence) are valid outgoing types.
 
 ### In-memory frame bus
 
@@ -358,7 +358,7 @@ The implementation is phased: #808 (schema + dual-write) → #809 (clients read 
 | `crates/notebook-doc/src/lib.rs` | `NotebookDoc`: Automerge schema, cell CRUD, output writes, per-cell accessors |
 | `crates/notebook-doc/src/diff.rs` | `CellChangeset`: structural diff from Automerge patches |
 | `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00–0x04) |
-| `apps/notebook/src/lib/frame-types.ts` | TypeScript mirror of frame type constants |
+| `apps/notebook/src/lib/frame-types.ts` | Frame type constants + `sendFrame()` binary IPC helper |
 | `apps/notebook/src/hooks/useAutomergeNotebook.ts` | WASM handle owner, `scheduleMaterialize`, `CellChangeset` dispatch |
 | `apps/notebook/src/hooks/useDaemonKernel.ts` | Kernel execution, widget comm routing, broadcast handling |
 | `apps/notebook/src/lib/materialize-cells.ts` | `materializeCellFromWasm()` (per-cell) + `cellSnapshotsToNotebookCells()` (full) |
