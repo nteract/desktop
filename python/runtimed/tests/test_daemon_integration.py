@@ -548,6 +548,185 @@ class TestDocumentFirstExecution:
 
 
 # ============================================================================
+# Per-cell accessor tests
+# ============================================================================
+
+
+class TestPerCellAccessors:
+    """Test per-cell accessors that skip full materialization.
+
+    These methods read individual fields from the snapshot watch channel
+    without cloning all CellSnapshots — O(1) per field instead of O(n_cells).
+    """
+
+    def test_get_cell_ids(self, session):
+        """get_cell_ids returns ordered cell IDs."""
+        id1 = session.create_cell("a = 1")
+        id2 = session.create_cell("b = 2")
+        id3 = session.create_cell("c = 3")
+
+        cell_ids = session.get_cell_ids()
+        assert id1 in cell_ids
+        assert id2 in cell_ids
+        assert id3 in cell_ids
+        # Order should match creation order
+        assert cell_ids.index(id1) < cell_ids.index(id2) < cell_ids.index(id3)
+
+    def test_get_cell_source(self, session):
+        """get_cell_source returns just the source string."""
+        cell_id = session.create_cell("x = 42")
+        source = session.get_cell_source(cell_id)
+        assert source == "x = 42"
+
+    def test_get_cell_source_after_update(self, session):
+        """get_cell_source reflects source updates."""
+        cell_id = session.create_cell("original")
+        session.set_source(cell_id, "updated")
+
+        wait_for_sync(
+            lambda: session.get_cell_source(cell_id) == "updated",
+            description="source update",
+        )
+        source = session.get_cell_source(cell_id)
+        assert source == "updated"
+
+    def test_get_cell_source_nonexistent(self, session):
+        """get_cell_source returns None for missing cells."""
+        result = session.get_cell_source("cell-does-not-exist")
+        assert result is None
+
+    def test_get_cell_type(self, session):
+        """get_cell_type returns the cell type string."""
+        code_id = session.create_cell("x = 1", cell_type="code")
+        md_id = session.create_cell("# Title", cell_type="markdown")
+
+        assert session.get_cell_type(code_id) == "code"
+        assert session.get_cell_type(md_id) == "markdown"
+
+    def test_get_cell_type_nonexistent(self, session):
+        """get_cell_type returns None for missing cells."""
+        result = session.get_cell_type("cell-does-not-exist")
+        assert result is None
+
+    def test_get_cell_execution_count(self, session):
+        """get_cell_execution_count returns the execution count string."""
+        cell_id = session.create_cell("x = 1")
+        # Before execution, should be "null"
+        ec = session.get_cell_execution_count(cell_id)
+        assert ec == "null"
+
+    def test_get_cell_execution_count_nonexistent(self, session):
+        """get_cell_execution_count returns None for missing cells."""
+        result = session.get_cell_execution_count("cell-does-not-exist")
+        assert result is None
+
+    def test_get_cell_outputs(self, session):
+        """get_cell_outputs returns raw output strings."""
+        cell_id = session.create_cell("x = 1")
+        outputs = session.get_cell_outputs(cell_id)
+        assert outputs is not None
+        assert isinstance(outputs, list)
+        assert len(outputs) == 0  # No outputs before execution
+
+    def test_get_cell_outputs_nonexistent(self, session):
+        """get_cell_outputs returns None for missing cells."""
+        result = session.get_cell_outputs("cell-does-not-exist")
+        assert result is None
+
+    def test_get_cell_position(self, session):
+        """get_cell_position returns a position string."""
+        cell_id = session.create_cell("x = 1")
+        pos = session.get_cell_position(cell_id)
+        assert pos is not None
+        assert isinstance(pos, str)
+        assert len(pos) > 0
+
+    def test_get_cell_position_ordering(self, session):
+        """Cell positions maintain insertion order."""
+        id1 = session.create_cell("a")
+        id2 = session.create_cell("b")
+        id3 = session.create_cell("c")
+
+        p1 = session.get_cell_position(id1)
+        p2 = session.get_cell_position(id2)
+        p3 = session.get_cell_position(id3)
+
+        assert p1 < p2 < p3
+
+    def test_accessors_consistent_with_get_cell(self, session):
+        """Per-cell accessors return same data as get_cell."""
+        cell_id = session.create_cell("hello = 'world'", cell_type="code")
+        cell = session.get_cell(cell_id)
+
+        assert session.get_cell_source(cell_id) == cell.source
+        assert session.get_cell_type(cell_id) == cell.cell_type
+        assert session.get_cell_position(cell_id) is not None
+
+
+class TestAsyncPerCellAccessors:
+    """Test per-cell accessors with AsyncSession."""
+
+    @pytest.mark.asyncio
+    async def test_async_get_cell_ids(self, async_session):
+        """get_cell_ids returns ordered cell IDs."""
+        id1 = await async_session.create_cell("a = 1")
+        id2 = await async_session.create_cell("b = 2")
+
+        cell_ids = await async_session.get_cell_ids()
+        assert id1 in cell_ids
+        assert id2 in cell_ids
+        assert cell_ids.index(id1) < cell_ids.index(id2)
+
+    @pytest.mark.asyncio
+    async def test_async_get_cell_source(self, async_session):
+        """get_cell_source returns just the source string."""
+        cell_id = await async_session.create_cell("x = 42")
+        source = await async_session.get_cell_source(cell_id)
+        assert source == "x = 42"
+
+    @pytest.mark.asyncio
+    async def test_async_get_cell_source_nonexistent(self, async_session):
+        """get_cell_source returns None for missing cells."""
+        result = await async_session.get_cell_source("cell-does-not-exist")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_async_get_cell_type(self, async_session):
+        """get_cell_type returns the cell type string."""
+        code_id = await async_session.create_cell("x = 1", cell_type="code")
+        md_id = await async_session.create_cell("# Title", cell_type="markdown")
+
+        assert await async_session.get_cell_type(code_id) == "code"
+        assert await async_session.get_cell_type(md_id) == "markdown"
+
+    @pytest.mark.asyncio
+    async def test_async_get_cell_outputs(self, async_session):
+        """get_cell_outputs returns raw output strings."""
+        cell_id = await async_session.create_cell("x = 1")
+        outputs = await async_session.get_cell_outputs(cell_id)
+        assert outputs is not None
+        assert isinstance(outputs, list)
+        assert len(outputs) == 0
+
+    @pytest.mark.asyncio
+    async def test_async_get_cell_position(self, async_session):
+        """get_cell_position returns a position string."""
+        cell_id = await async_session.create_cell("x = 1")
+        pos = await async_session.get_cell_position(cell_id)
+        assert pos is not None
+        assert len(pos) > 0
+
+    @pytest.mark.asyncio
+    async def test_async_accessors_consistent(self, async_session):
+        """Per-cell accessors return same data as get_cell."""
+        cell_id = await async_session.create_cell("hello = 'world'")
+        cell = await async_session.get_cell(cell_id)
+
+        assert await async_session.get_cell_source(cell_id) == cell.source
+        assert await async_session.get_cell_type(cell_id) == cell.cell_type
+
+
+# ============================================================================
 # Cell metadata tests
 # ============================================================================
 
