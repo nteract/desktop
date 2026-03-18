@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { debounceTime, from, merge, Subject, switchMap } from "rxjs";
+import { debounceTime, from, Subject, switchMap } from "rxjs";
 import { getBlobPort, refreshBlobPort } from "../lib/blob-port";
 import { createFramePipeline } from "../lib/frame-pipeline";
 import { frame_types, sendFrame } from "../lib/frame-types";
@@ -166,12 +166,9 @@ export function useAutomergeNotebook() {
       }
     });
 
-    // Daemon lifecycle — daemon:ready + file-opened both need fresh bootstrap.
-    // switchMap cancels any in-flight bootstrap on rapid events.
-    const lifecycleSub = merge(
-      fromTauriEvent("daemon:ready"),
-      fromTauriEvent("notebook:file-opened"),
-    )
+    // Daemon lifecycle — daemon:ready triggers a fresh bootstrap.
+    // switchMap cancels any in-flight bootstrap on rapid reconnects.
+    const lifecycleSub = fromTauriEvent("daemon:ready")
       .pipe(
         switchMap(() => {
           refreshBlobPort();
@@ -201,6 +198,10 @@ export function useAutomergeNotebook() {
       materializeCells,
       outputCache: outputCacheRef.current,
       onSyncApplied: () => syncReply$.current.next(),
+      retrySyncToRelay: () => {
+        const handle = handleRef.current;
+        if (handle) syncToRelay(handle);
+      },
     });
 
     // Source sync: 20ms debounce for batching rapid keystrokes.

@@ -30,6 +30,8 @@ import {
   Subject,
   Subscription,
   share,
+  switchMap,
+  timer,
 } from "rxjs";
 
 import type { JupyterOutput } from "../types";
@@ -59,6 +61,9 @@ export { mergeChangesets } from "./cell-changeset";
 
 /** Coalescing window for incoming sync frames (ms). */
 const COALESCE_MS = 32;
+
+/** Timeout before retrying sync if initial sync hasn't produced cells (ms). */
+const SYNC_RETRY_MS = 3000;
 
 // ── Internal types ──────────────────────────────────────────────────
 
@@ -118,6 +123,13 @@ export interface FramePipelineDeps {
    * `debounceTime` operator).
    */
   onSyncApplied: () => void;
+
+  /**
+   * Resend the initial sync message. Called by the retry timer when
+   * the first sync exchange didn't produce cells within SYNC_RETRY_MS.
+   * The empty WASM handle's sync message requests the full document.
+   */
+  retrySyncToRelay: () => void;
 }
 
 // ── Pipeline factory ────────────────────────────────────────────────
@@ -137,6 +149,11 @@ export function createFramePipeline(deps: FramePipelineDeps): Subscription {
   // Subject bridging sync_applied events into the coalescing buffer.
   // Each emission is a CellChangeset (incremental) or null (needs full).
   const materialize$ = new Subject<CellChangeset | null>();
+
+  // Subject for the sync retry timer. Each emission restarts the timer.
+  // If SYNC_RETRY_MS elapses without a successful initial sync (changed:true),
+  // the pipeline resends sync to recover from lost/consumed messages.
+  const retrySync$ = new Subject<void>();
 
   // ── Source: Tauri frames → WASM demux → individual FrameEvents ────
 
@@ -176,13 +193,13 @@ export function createFramePipeline(deps: FramePipelineDeps): Subscription {
 
           // ── Initial sync: materialize immediately (no coalescing) ──
           if (deps.getAwaitingInitialSync()) {
-            deps.setAwaitingInitialSync(false);
-            deps.setIsLoading(false);
             if (e.changed) {
+              // Sync delivered actual document content — clear the gate
+              // and materialize. This is the success path.
+              deps.setAwaitingInitialSync(false);
+              deps.setIsLoading(false);
               const handle = deps.getHandle();
               if (handle) {
-                // Return a promise so concatMap waits for materialization
-                // to complete before signaling the sync reply.
                 return from(
                   deps
                     .materializeCells(handle)
@@ -200,6 +217,12 @@ export function createFramePipeline(deps: FramePipelineDeps): Subscription {
                 );
               }
             }
+            // changed:false — Automerge sync protocol handshake round
+            // (exchanging heads/bloom filters, no actual content yet).
+            // Keep awaitingInitialSync=true and isLoading=true so the
+            // user sees the loading state until real content arrives.
+            // Restart the retry timer in case the exchange stalls.
+            retrySync$.next();
             deps.onSyncApplied();
             return EMPTY;
           }
@@ -213,6 +236,25 @@ export function createFramePipeline(deps: FramePipelineDeps): Subscription {
         }),
       )
       .subscribe(),
+  );
+
+  // ── Sync retry timer ──────────────────────────────────────────────
+  //
+  // If the initial sync exchange doesn't produce cells within
+  // SYNC_RETRY_MS (e.g., the daemon's response was consumed by a stale
+  // handle during save-as, or the initial sync message was lost), resend
+  // the sync message. The empty WASM handle requests the full document.
+  // switchMap restarts the timer on each changed:false handshake round.
+  subscription.add(
+    retrySync$
+      .pipe(
+        switchMap(() => timer(SYNC_RETRY_MS)),
+        filter(() => deps.getAwaitingInitialSync()),
+      )
+      .subscribe(() => {
+        logger.info("[frame-pipeline] Retrying sync after timeout");
+        deps.retrySyncToRelay();
+      }),
   );
 
   // ── Coalescing buffer → materialization ────────────────────────────
