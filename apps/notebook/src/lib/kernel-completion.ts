@@ -34,10 +34,6 @@ async function kernelCompletionSource(
   const word = context.matchBefore(/[\w.]+/);
   if (!word && !context.explicit) return null;
 
-  // Debounce: wait 150ms, bail if the user has typed again
-  await new Promise((resolve) => setTimeout(resolve, 150));
-  if (context.aborted) return null;
-
   const code = context.state.doc.toString();
   const cursorPos = context.pos;
 
