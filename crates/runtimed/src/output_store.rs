@@ -18,6 +18,7 @@
 use std::collections::HashMap;
 use std::io;
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -91,6 +92,44 @@ impl ContentRef {
     /// Returns true if the content is inlined.
     pub fn is_inline(&self) -> bool {
         matches!(self, ContentRef::Inline { .. })
+    }
+
+    /// Create a ContentRef from raw binary data, always using the blob store.
+    ///
+    /// Binary content (images, Arrow IPC, etc.) skips the inline threshold
+    /// and is always stored as a blob. The raw bytes are stored directly —
+    /// no base64 encoding — so the blob store holds the actual binary content
+    /// and the HTTP server can serve it with the correct Content-Type.
+    pub async fn from_binary(
+        data: &[u8],
+        media_type: &str,
+        blob_store: &BlobStore,
+    ) -> io::Result<Self> {
+        let hash = blob_store.put(data, media_type).await?;
+        Ok(ContentRef::Blob {
+            blob: hash,
+            size: data.len() as u64,
+        })
+    }
+
+    /// Resolve a ContentRef that holds binary content, returning base64.
+    ///
+    /// For inline content, returns the string as-is (it's already base64
+    /// from the Jupyter wire protocol, kept inline for small images).
+    /// For blob content, reads the raw bytes and base64-encodes them.
+    ///
+    /// Used by `resolve_data_bundle` for binary MIME types to reconstruct
+    /// the Jupyter nbformat representation (base64 strings for images).
+    pub async fn resolve_binary_as_base64(&self, blob_store: &BlobStore) -> io::Result<String> {
+        match self {
+            ContentRef::Inline { inline } => Ok(inline.clone()),
+            ContentRef::Blob { blob, .. } => {
+                let data = blob_store.get(blob).await?.ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, format!("blob not found: {}", blob))
+                })?;
+                Ok(base64::engine::general_purpose::STANDARD.encode(&data))
+            }
+        }
     }
 }
 
@@ -378,9 +417,22 @@ async fn convert_value_to_content_refs(
     let mut result = HashMap::new();
     if let Value::Object(map) = data {
         for (mime_type, value) in map {
-            let content_str = value_to_string(value);
-            let content_ref =
-                ContentRef::from_data(&content_str, mime_type, blob_store, threshold).await?;
+            let content_ref = if is_binary_mime(mime_type) {
+                // Binary MIME type: base64-decode → store raw bytes in blob.
+                let base64_str = value_to_string(value);
+                let raw_bytes = base64::engine::general_purpose::STANDARD
+                    .decode(&base64_str)
+                    .map_err(|e| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("base64 decode failed for {}: {}", mime_type, e),
+                        )
+                    })?;
+                ContentRef::from_binary(&raw_bytes, mime_type, blob_store).await?
+            } else {
+                let content_str = value_to_string(value);
+                ContentRef::from_data(&content_str, mime_type, blob_store, threshold).await?
+            };
             result.insert(mime_type.clone(), content_ref);
         }
     }
@@ -476,6 +528,10 @@ pub async fn resolve_manifest(manifest_json: &str, blob_store: &BlobStore) -> io
 // =============================================================================
 
 /// Convert a Jupyter data bundle (MIME type -> content) to ContentRefs.
+///
+/// Binary MIME types (images, Arrow IPC, etc.) are base64-decoded and stored
+/// as raw bytes in the blob store. Text MIME types use the existing
+/// inline/blob threshold logic.
 async fn convert_data_bundle(
     data: Option<&Value>,
     blob_store: &BlobStore,
@@ -485,10 +541,26 @@ async fn convert_data_bundle(
 
     if let Some(Value::Object(map)) = data {
         for (mime_type, value) in map {
-            let content_str = value_to_string(value);
-            // Use the MIME type as the blob media type
-            let content_ref =
-                ContentRef::from_data(&content_str, mime_type, blob_store, threshold).await?;
+            let content_ref = if is_binary_mime(mime_type) {
+                // Binary MIME type: base64-decode → store raw bytes in blob.
+                // Jupyter sends image data as base64 strings on the wire.
+                // We decode to actual bytes so the blob store holds real
+                // binary content and the HTTP server serves it correctly.
+                let base64_str = value_to_string(value);
+                let raw_bytes = base64::engine::general_purpose::STANDARD
+                    .decode(&base64_str)
+                    .map_err(|e| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("base64 decode failed for {}: {}", mime_type, e),
+                        )
+                    })?;
+                ContentRef::from_binary(&raw_bytes, mime_type, blob_store).await?
+            } else {
+                // Text MIME type: store as-is with inline/blob threshold.
+                let content_str = value_to_string(value);
+                ContentRef::from_data(&content_str, mime_type, blob_store, threshold).await?
+            };
             result.insert(mime_type.clone(), content_ref);
         }
     }
@@ -497,6 +569,10 @@ async fn convert_data_bundle(
 }
 
 /// Resolve a data bundle of ContentRefs back to string values.
+///
+/// Binary MIME types are resolved via `resolve_binary_as_base64` which
+/// reads raw bytes from the blob store and base64-encodes them for the
+/// Jupyter nbformat representation (used when saving .ipynb to disk).
 async fn resolve_data_bundle(
     data: HashMap<String, ContentRef>,
     blob_store: &BlobStore,
@@ -504,11 +580,17 @@ async fn resolve_data_bundle(
     let mut result = HashMap::new();
 
     for (mime_type, content_ref) in data {
-        let content = content_ref.resolve(blob_store).await?;
-        // Try to parse as JSON for structured MIME types, otherwise use as string
-        let value = if mime_type.ends_with("+json") || mime_type == "application/json" {
+        let value = if is_binary_mime(&mime_type) {
+            // Binary: read raw bytes from blob → base64-encode for nbformat
+            let base64_str = content_ref.resolve_binary_as_base64(blob_store).await?;
+            Value::String(base64_str)
+        } else if mime_type.ends_with("+json") || mime_type == "application/json" {
+            // JSON: parse into structured Value
+            let content = content_ref.resolve(blob_store).await?;
             serde_json::from_str(&content).unwrap_or(Value::String(content))
         } else {
+            // Text: return as string
+            let content = content_ref.resolve(blob_store).await?;
             Value::String(content)
         };
         result.insert(mime_type, value);
@@ -560,6 +642,40 @@ fn value_to_string(value: &Value) -> String {
         Value::String(s) => s.clone(),
         _ => serde_json::to_string(value).unwrap_or_default(),
     }
+}
+
+/// Check if a MIME type represents binary content.
+///
+/// Binary MIME types are base64-encoded on the Jupyter wire protocol.
+/// We decode them to raw bytes before storing in the blob store so that:
+/// - The blob store holds actual binary content (33% smaller than base64)
+/// - The HTTP blob server serves correct Content-Type with real bytes
+/// - Future binary formats (Arrow IPC, Parquet) work without changes
+fn is_binary_mime(mime: &str) -> bool {
+    if mime.starts_with("image/") || mime.starts_with("audio/") || mime.starts_with("video/") {
+        return true;
+    }
+
+    // application/* is binary by default, with carve-outs for text-like formats.
+    if mime.starts_with("application/") {
+        let subtype = &mime["application/".len()..];
+        // Text-like application types that should NOT be treated as binary
+        let is_text = subtype == "json"
+            || subtype == "javascript"
+            || subtype == "ecmascript"
+            || subtype == "xml"
+            || subtype == "xhtml+xml"
+            || subtype == "mathml+xml"
+            || subtype == "sql"
+            || subtype == "graphql"
+            || subtype == "x-latex"
+            || subtype == "x-tex"
+            || subtype.ends_with("+json")
+            || subtype.ends_with("+xml");
+        return !is_text;
+    }
+
+    false
 }
 
 #[cfg(test)]

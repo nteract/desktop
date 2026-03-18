@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type ContentRef,
+  isBinaryMime,
   isManifestHash,
   type OutputManifest,
   resolveContentRef,
@@ -80,6 +81,47 @@ describe("isManifestHash", () => {
 });
 
 // ---------------------------------------------------------------------------
+// isBinaryMime
+// ---------------------------------------------------------------------------
+
+describe("isBinaryMime", () => {
+  it("returns true for image types", () => {
+    expect(isBinaryMime("image/png")).toBe(true);
+    expect(isBinaryMime("image/jpeg")).toBe(true);
+    expect(isBinaryMime("image/gif")).toBe(true);
+    expect(isBinaryMime("image/webp")).toBe(true);
+    expect(isBinaryMime("image/svg+xml")).toBe(true);
+  });
+
+  it("returns true for audio/video types", () => {
+    expect(isBinaryMime("audio/mpeg")).toBe(true);
+    expect(isBinaryMime("video/mp4")).toBe(true);
+  });
+
+  it("returns true for binary application types", () => {
+    expect(isBinaryMime("application/pdf")).toBe(true);
+    expect(isBinaryMime("application/octet-stream")).toBe(true);
+    expect(isBinaryMime("application/vnd.apache.arrow.stream")).toBe(true);
+    expect(isBinaryMime("application/vnd.apache.parquet")).toBe(true);
+    expect(isBinaryMime("application/wasm")).toBe(true);
+  });
+
+  it("returns false for text-like application types", () => {
+    expect(isBinaryMime("application/json")).toBe(false);
+    expect(isBinaryMime("application/javascript")).toBe(false);
+    expect(isBinaryMime("application/xml")).toBe(false);
+    expect(isBinaryMime("application/vnd.vegalite.v5+json")).toBe(false);
+    expect(isBinaryMime("application/xhtml+xml")).toBe(false);
+  });
+
+  it("returns false for text types", () => {
+    expect(isBinaryMime("text/plain")).toBe(false);
+    expect(isBinaryMime("text/html")).toBe(false);
+    expect(isBinaryMime("text/latex")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // resolveContentRef
 // ---------------------------------------------------------------------------
 
@@ -99,7 +141,7 @@ describe("resolveContentRef", () => {
     expect(result).toBe("");
   });
 
-  it("fetches blob content from the blob store", async () => {
+  it("fetches text blob content from the blob store", async () => {
     const blobHash = "abc123";
     const ref: ContentRef = { blob: blobHash, size: 42 };
 
@@ -107,11 +149,37 @@ describe("resolveContentRef", () => {
       new Response("fetched content", { status: 200 }),
     );
 
-    const result = await resolveContentRef(ref, blobPort);
+    // Text MIME type: fetches content as text
+    const result = await resolveContentRef(ref, blobPort, "text/plain");
     expect(result).toBe("fetched content");
     expect(mockFetch).toHaveBeenCalledWith(
       `http://127.0.0.1:${blobPort}/blob/${blobHash}`,
     );
+  });
+
+  it("returns blob URL for binary MIME types without fetching", async () => {
+    const ref: ContentRef = { blob: "pnghash", size: 5000 };
+
+    const result = await resolveContentRef(ref, blobPort, "image/png");
+    expect(result).toBe("http://127.0.0.1:9876/blob/pnghash");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("returns blob URL for application/pdf", async () => {
+    const ref: ContentRef = { blob: "pdfhash", size: 10000 };
+
+    const result = await resolveContentRef(ref, blobPort, "application/pdf");
+    expect(result).toBe("http://127.0.0.1:9876/blob/pdfhash");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("fetches blob content when no mimeType is provided", async () => {
+    const ref: ContentRef = { blob: "hash123", size: 5 };
+    mockFetch.mockResolvedValueOnce(new Response("ok", { status: 200 }));
+
+    const result = await resolveContentRef(ref, blobPort);
+    expect(result).toBe("ok");
+    expect(mockFetch).toHaveBeenCalled();
   });
 
   it("throws on non-OK response from blob store", async () => {
@@ -119,19 +187,17 @@ describe("resolveContentRef", () => {
 
     mockFetch.mockResolvedValueOnce(new Response("not found", { status: 404 }));
 
-    await expect(resolveContentRef(ref, blobPort)).rejects.toThrow(
-      "Failed to fetch blob deadbeef: 404",
-    );
+    await expect(
+      resolveContentRef(ref, blobPort, "text/plain"),
+    ).rejects.toThrow("Failed to fetch blob deadbeef: 404");
   });
 
   it("uses the correct port in the URL", async () => {
     const ref: ContentRef = { blob: "hash123", size: 5 };
-    mockFetch.mockResolvedValueOnce(new Response("ok", { status: 200 }));
 
-    await resolveContentRef(ref, 5555);
-    expect(mockFetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:5555/blob/hash123",
-    );
+    // Binary MIME: uses port in the URL
+    const result = await resolveContentRef(ref, 5555, "image/jpeg");
+    expect(result).toBe("http://127.0.0.1:5555/blob/hash123");
   });
 });
 
@@ -197,32 +263,26 @@ describe("resolveDataBundle", () => {
     expect(result["text/plain"]).toBe(jsonString);
   });
 
-  it("resolves blob refs by fetching from the store", async () => {
+  it("resolves binary blob refs to URLs without fetching", async () => {
     const data: Record<string, ContentRef> = {
       "image/png": { blob: "pnghash", size: 100 },
     };
 
-    mockFetch.mockResolvedValueOnce(
-      new Response("base64pngdata", { status: 200 }),
-    );
-
     const result = await resolveDataBundle(data, blobPort);
-    expect(result["image/png"]).toBe("base64pngdata");
+    expect(result["image/png"]).toBe("http://127.0.0.1:9876/blob/pnghash");
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it("handles mixed inline and blob refs", async () => {
+  it("handles mixed inline text and binary blob refs", async () => {
     const data: Record<string, ContentRef> = {
       "text/plain": { inline: "fallback text" },
       "image/png": { blob: "pnghash", size: 200 },
     };
 
-    mockFetch.mockResolvedValueOnce(
-      new Response("pngblobcontent", { status: 200 }),
-    );
-
     const result = await resolveDataBundle(data, blobPort);
     expect(result["text/plain"]).toBe("fallback text");
-    expect(result["image/png"]).toBe("pngblobcontent");
+    expect(result["image/png"]).toBe("http://127.0.0.1:9876/blob/pnghash");
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it("handles empty data bundle", async () => {
@@ -277,7 +337,7 @@ describe("resolveManifest", () => {
       });
     });
 
-    it("resolves blob refs in data", async () => {
+    it("resolves binary blob refs to URLs", async () => {
       const manifest: OutputManifest = {
         output_type: "display_data",
         data: {
@@ -285,17 +345,14 @@ describe("resolveManifest", () => {
         },
       };
 
-      mockFetch.mockResolvedValueOnce(
-        new Response("base64png", { status: 200 }),
-      );
-
       const output = await resolveManifest(manifest, blobPort);
       expect(output).toEqual({
         output_type: "display_data",
-        data: { "image/png": "base64png" },
+        data: { "image/png": "http://127.0.0.1:9876/blob/pnghash" },
         metadata: {},
         display_id: undefined,
       });
+      expect(mockFetch).not.toHaveBeenCalled();
     });
   });
 
