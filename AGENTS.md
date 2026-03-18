@@ -4,6 +4,88 @@
 
 This document provides guidance for AI agents working in this repository.
 
+## Quick Recipes (Common Dev Tasks)
+
+These are copy-paste-ready commands. **All commands that interact with the dev daemon require two env vars.** Without them you'll hit the system daemon and cause problems.
+
+```bash
+# ── Dev daemon env vars (required for ALL dev commands) ────────────
+export RUNTIMED_DEV=1
+export RUNTIMED_WORKSPACE_PATH="$(pwd)"
+# RUNTIMED_WORKSPACE_NAME is optional — cosmetic label for the debug banner.
+# Falls back to .context/workspace-description if unset.
+```
+
+### Interacting with the dev daemon
+
+```bash
+# Check status (MUST use env vars or you'll see the system daemon)
+RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH=$(pwd) ./target/debug/runt daemon status
+
+# Tail logs
+RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH=$(pwd) ./target/debug/runt daemon logs -f
+
+# List running notebooks
+RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH=$(pwd) ./target/debug/runt ps
+```
+
+### Rebuilding Python bindings (runtimed-py)
+
+The Python package `runtimed` wraps the Rust `runtimed-py` crate via PyO3. After changing Rust code in `crates/runtimed-py/`, rebuild into the correct venv:
+
+```bash
+# Install maturin into the runtimed venv (one-time)
+cd python/runtimed && uv pip install maturin
+
+# Rebuild the native extension into the runtimed test venv
+cd crates/runtimed-py && VIRTUAL_ENV=../../python/runtimed/.venv ../../python/runtimed/.venv/bin/maturin develop
+```
+
+**Common mistake:** Running `maturin develop` without `VIRTUAL_ENV` pointing at the right venv installs the `.so` somewhere tests can't find it. The test venv is `python/runtimed/.venv`.
+
+### Running Python integration tests
+
+```bash
+# Run against the dev daemon (must be running)
+RUNTIMED_SOCKET_PATH="$(RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH=$(pwd) ./target/debug/runt daemon status --json | python3 -c 'import sys,json; print(json.load(sys.stdin)["socket_path"])')" \
+  python/runtimed/.venv/bin/python -m pytest python/runtimed/tests/test_daemon_integration.py -v
+
+# Run a specific test class
+# ... add -k "TestClassName" to the above
+
+# Unit tests only (no daemon needed)
+python/runtimed/.venv/bin/python -m pytest python/runtimed/tests/test_session_unit.py -v
+```
+
+### Running the notebook app (dev mode)
+
+```bash
+# Terminal 1: Start dev daemon
+cargo xtask dev-daemon
+
+# Terminal 2: Start the app (MUST have env vars to avoid clobbering system daemon)
+RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH=$(pwd) cargo xtask notebook
+```
+
+### WASM rebuild (after changing notebook-doc or runtimed-wasm)
+
+```bash
+wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm
+# Commit the output — WASM artifacts are checked into the repo
+```
+
+### Key contributing docs
+
+Before diving into a subsystem, read the relevant guide:
+
+| Task | Read first |
+|------|-----------|
+| Python bindings / MCP | `contributing/runtimed.md` § Python Bindings |
+| Running tests | `contributing/testing.md` |
+| Frontend architecture | `contributing/frontend-architecture.md` |
+| Daemon development | `contributing/runtimed.md` |
+| Environment management | `contributing/environments.md` |
+
 ## Code Formatting (Required Before Committing)
 
 Run this command before every commit. CI will reject PRs that fail formatting checks.
