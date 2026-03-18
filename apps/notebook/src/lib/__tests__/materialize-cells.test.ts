@@ -4,7 +4,6 @@ import {
   type CellSnapshot,
   cellSnapshotsToNotebookCells,
   cellSnapshotsToNotebookCellsSync,
-  mergeConsecutiveStreams,
   resolveOutput,
 } from "../materialize-cells";
 
@@ -30,30 +29,6 @@ afterEach(() => {
 
 function streamOutput(name: "stdout" | "stderr", text: string): JupyterOutput {
   return { output_type: "stream", name, text };
-}
-
-function executeResult(
-  data: Record<string, unknown>,
-  executionCount?: number | null,
-): JupyterOutput {
-  return {
-    output_type: "execute_result",
-    data,
-    metadata: {},
-    execution_count: executionCount ?? null,
-  };
-}
-
-function displayData(data: Record<string, unknown>): JupyterOutput {
-  return { output_type: "display_data", data, metadata: {} };
-}
-
-function errorOutput(
-  ename: string,
-  evalue: string,
-  traceback: string[],
-): JupyterOutput {
-  return { output_type: "error", ename, evalue, traceback };
 }
 
 function codeSnapshot(
@@ -101,147 +76,6 @@ function rawSnapshot(id: string, source: string): CellSnapshot {
     metadata: {},
   };
 }
-
-// ---------------------------------------------------------------------------
-// mergeConsecutiveStreams
-// ---------------------------------------------------------------------------
-
-describe("mergeConsecutiveStreams", () => {
-  it("returns empty array for empty input", () => {
-    expect(mergeConsecutiveStreams([])).toEqual([]);
-  });
-
-  it("passes through a single stream output unchanged", () => {
-    const outputs = [streamOutput("stdout", "hello\n")];
-    const merged = mergeConsecutiveStreams(outputs);
-    expect(merged).toHaveLength(1);
-    expect(merged[0]).toEqual(streamOutput("stdout", "hello\n"));
-  });
-
-  it("merges consecutive stdout streams", () => {
-    const outputs = [
-      streamOutput("stdout", "line1\n"),
-      streamOutput("stdout", "line2\n"),
-      streamOutput("stdout", "line3\n"),
-    ];
-    const merged = mergeConsecutiveStreams(outputs);
-    expect(merged).toHaveLength(1);
-    expect(merged[0]).toEqual(streamOutput("stdout", "line1\nline2\nline3\n"));
-  });
-
-  it("merges consecutive stderr streams", () => {
-    const outputs = [
-      streamOutput("stderr", "warn1 "),
-      streamOutput("stderr", "warn2"),
-    ];
-    const merged = mergeConsecutiveStreams(outputs);
-    expect(merged).toHaveLength(1);
-    expect(merged[0]).toEqual(streamOutput("stderr", "warn1 warn2"));
-  });
-
-  it("does NOT merge stdout and stderr", () => {
-    const outputs = [
-      streamOutput("stdout", "out\n"),
-      streamOutput("stderr", "err\n"),
-    ];
-    const merged = mergeConsecutiveStreams(outputs);
-    expect(merged).toHaveLength(2);
-    expect(merged[0]).toEqual(streamOutput("stdout", "out\n"));
-    expect(merged[1]).toEqual(streamOutput("stderr", "err\n"));
-  });
-
-  it("does NOT merge streams separated by a non-stream output", () => {
-    const outputs = [
-      streamOutput("stdout", "before\n"),
-      displayData({ "text/plain": "interruption" }),
-      streamOutput("stdout", "after\n"),
-    ];
-    const merged = mergeConsecutiveStreams(outputs);
-    expect(merged).toHaveLength(3);
-    expect(merged[0]).toEqual(streamOutput("stdout", "before\n"));
-    expect(merged[2]).toEqual(streamOutput("stdout", "after\n"));
-  });
-
-  it("handles interleaved stdout and stderr", () => {
-    const outputs = [
-      streamOutput("stdout", "out1\n"),
-      streamOutput("stdout", "out2\n"),
-      streamOutput("stderr", "err1\n"),
-      streamOutput("stderr", "err2\n"),
-      streamOutput("stdout", "out3\n"),
-    ];
-    const merged = mergeConsecutiveStreams(outputs);
-    expect(merged).toHaveLength(3);
-    expect(merged[0]).toEqual(streamOutput("stdout", "out1\nout2\n"));
-    expect(merged[1]).toEqual(streamOutput("stderr", "err1\nerr2\n"));
-    expect(merged[2]).toEqual(streamOutput("stdout", "out3\n"));
-  });
-
-  it("handles array text format by joining before merge", () => {
-    // The function handles both string and string[] text formats
-    const outputs: JupyterOutput[] = [
-      { output_type: "stream", name: "stdout", text: "part1" as string },
-      { output_type: "stream", name: "stdout", text: "part2" as string },
-    ];
-    const merged = mergeConsecutiveStreams(outputs);
-    expect(merged).toHaveLength(1);
-    if (merged[0].output_type === "stream") {
-      expect(merged[0].text).toBe("part1part2");
-    }
-  });
-
-  it("passes through non-stream outputs untouched", () => {
-    const outputs = [
-      executeResult({ "text/plain": "42" }, 1),
-      displayData({ "image/png": "base64..." }),
-      errorOutput("Error", "boom", ["traceback"]),
-    ];
-    const merged = mergeConsecutiveStreams(outputs);
-    expect(merged).toHaveLength(3);
-    expect(merged).toEqual(outputs);
-  });
-
-  it("handles a complex mixed sequence", () => {
-    const outputs = [
-      streamOutput("stdout", "a"),
-      streamOutput("stdout", "b"),
-      executeResult({ "text/plain": "1" }, 1),
-      streamOutput("stderr", "e1"),
-      streamOutput("stderr", "e2"),
-      streamOutput("stdout", "c"),
-      errorOutput("Err", "x", []),
-      streamOutput("stdout", "d"),
-      streamOutput("stdout", "e"),
-    ];
-    const merged = mergeConsecutiveStreams(outputs);
-    expect(merged).toHaveLength(6);
-    expect(merged[0]).toEqual(streamOutput("stdout", "ab"));
-    expect(merged[1]).toEqual(executeResult({ "text/plain": "1" }, 1));
-    expect(merged[2]).toEqual(streamOutput("stderr", "e1e2"));
-    expect(merged[3]).toEqual(streamOutput("stdout", "c"));
-    expect(merged[4]).toEqual(errorOutput("Err", "x", []));
-    expect(merged[5]).toEqual(streamOutput("stdout", "de"));
-  });
-
-  it("preserves empty stream text", () => {
-    const outputs = [
-      streamOutput("stdout", ""),
-      streamOutput("stdout", "text"),
-    ];
-    const merged = mergeConsecutiveStreams(outputs);
-    expect(merged).toHaveLength(1);
-    if (merged[0].output_type === "stream") {
-      expect(merged[0].text).toBe("text");
-    }
-  });
-
-  it("does not mutate the input array", () => {
-    const outputs = [streamOutput("stdout", "a"), streamOutput("stdout", "b")];
-    const original = [...outputs];
-    mergeConsecutiveStreams(outputs);
-    expect(outputs).toEqual(original);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // resolveOutput
@@ -584,7 +418,7 @@ describe("cellSnapshotsToNotebookCells", () => {
     }
   });
 
-  it("merges consecutive streams in code cell outputs", async () => {
+  it("passes through consecutive streams without merging (daemon consolidates)", async () => {
     const out1 = JSON.stringify({
       output_type: "stream",
       name: "stdout",
@@ -597,13 +431,21 @@ describe("cellSnapshotsToNotebookCells", () => {
     });
     const snap = codeSnapshot("c1", "print(...)", [out1, out2], "1");
 
+    // The daemon's StreamTerminals consolidates streams via terminal
+    // emulation before writing to the Automerge doc. The frontend no
+    // longer merges — it passes outputs through as-is.
     const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
     if (cells[0].cell_type === "code") {
-      expect(cells[0].outputs).toHaveLength(1);
+      expect(cells[0].outputs).toHaveLength(2);
       expect(cells[0].outputs[0]).toEqual({
         output_type: "stream",
         name: "stdout",
-        text: "line1\nline2\n",
+        text: "line1\n",
+      });
+      expect(cells[0].outputs[1]).toEqual({
+        output_type: "stream",
+        name: "stdout",
+        text: "line2\n",
       });
     }
   });

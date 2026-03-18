@@ -11,7 +11,9 @@ import {
   type CellSnapshot,
   cellSnapshotsToNotebookCells,
   cellSnapshotsToNotebookCellsSync,
+  isManifestHash,
   materializeCellFromWasm,
+  resolveOutput,
 } from "../lib/materialize-cells";
 import {
   getCellById,
@@ -287,30 +289,66 @@ export function useAutomergeNotebook() {
           return;
         }
 
-        // Split changed cells: outputs need async blob fetches via full
-        // materialization; source/metadata-only can use the fast sync path.
-        const hasOutputChanges = cs.changed.some((c) => c.fields.outputs);
+        // Per-cell materialization. For cells with output changes, check
+        // whether all outputs are already in the cache. Cache hits use the
+        // fast synchronous path; cache misses resolve the individual cell's
+        // outputs asynchronously (without serializing the entire document).
+        const cache = outputCacheRef.current;
+        const blobPort = blobPortPromiseRef.current
+          ? await blobPortPromiseRef.current
+          : null;
 
-        if (hasOutputChanges) {
-          // At least one cell has new outputs (likely blob manifest hashes
-          // not yet in cache). Full materialization resolves them via fetch.
-          await materializeCells(handle);
-          return;
-        }
+        for (const { cell_id: cellId, fields } of cs.changed) {
+          if (fields.outputs) {
+            // Check if every output for this cell is already cached.
+            const rawOutputs: string[] = handle.get_cell_outputs(cellId) ?? [];
+            const allCached = rawOutputs.every(
+              (o) => cache.has(o) || !isManifestHash(o),
+            );
 
-        // Fast path: no output changes — per-cell sync materialization.
-        if (cs.changed.length > 0) {
-          const cache = outputCacheRef.current;
-          for (const { cell_id: cellId } of cs.changed) {
+            if (allCached) {
+              // All outputs resolved from cache — fast sync path.
+              const cell = materializeCellFromWasm(
+                handle,
+                cellId,
+                cache,
+                getCellById(cellId),
+              );
+              if (cell) updateCellById(cellId, () => cell);
+            } else {
+              // Cache miss — resolve this cell's outputs async (fetch
+              // manifests from blob store) without re-serializing the
+              // entire document.
+              const resolved = (
+                await Promise.all(
+                  rawOutputs.map((o) => resolveOutput(o, blobPort, cache)),
+                )
+              ).filter((o): o is JupyterOutput => o !== null);
+
+              const ecStr = handle.get_cell_execution_count(cellId);
+              const ec =
+                !ecStr || ecStr === "null" ? null : Number.parseInt(ecStr, 10);
+              const source = handle.get_cell_source(cellId) ?? "";
+              const metadata = handle.get_cell_metadata(cellId) ?? {};
+
+              updateCellById(cellId, () => ({
+                id: cellId,
+                cell_type: "code" as const,
+                source,
+                execution_count: Number.isNaN(ec) ? null : ec,
+                outputs: resolved,
+                metadata,
+              }));
+            }
+          } else {
+            // No output changes — always use fast sync path.
             const cell = materializeCellFromWasm(
               handle,
               cellId,
               cache,
               getCellById(cellId),
             );
-            if (cell) {
-              updateCellById(cellId, () => cell);
-            }
+            if (cell) updateCellById(cellId, () => cell);
           }
         }
       }, 32);

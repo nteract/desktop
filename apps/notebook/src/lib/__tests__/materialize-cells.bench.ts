@@ -3,7 +3,6 @@ import type { JupyterOutput } from "../../types";
 import {
   type CellSnapshot,
   cellSnapshotsToNotebookCellsSync,
-  mergeConsecutiveStreams,
 } from "../materialize-cells";
 
 // ── Test data generators ──────────────────────────────────────────────
@@ -124,35 +123,6 @@ describe("per-output JSON.parse", () => {
     for (const json of outputJsons) {
       cachedOutputs.get(json);
     }
-  });
-});
-
-// ── Benchmarks: mergeConsecutiveStreams ────────────────────────────────
-
-describe("mergeConsecutiveStreams", () => {
-  // Simulate rapid stdout output from a print loop
-  const streamOutputs: JupyterOutput[] = Array.from(
-    { length: 200 },
-    (_, i) => ({
-      output_type: "stream" as const,
-      name: "stdout" as const,
-      text: `line ${i}: ${Array.from({ length: 80 }, () => "x").join("")}\n`,
-    }),
-  );
-
-  bench("merge 200 consecutive stdout streams", () => {
-    mergeConsecutiveStreams(streamOutputs);
-  });
-
-  // Mixed stdout/stderr
-  const mixedOutputs: JupyterOutput[] = Array.from({ length: 100 }, (_, i) => ({
-    output_type: "stream" as const,
-    name: (i % 3 === 0 ? "stderr" : "stdout") as "stdout" | "stderr",
-    text: `output ${i}\n`,
-  }));
-
-  bench("merge 100 mixed stdout/stderr streams", () => {
-    mergeConsecutiveStreams(mixedOutputs);
   });
 });
 

@@ -84,35 +84,6 @@ export async function resolveOutput(
 }
 
 /**
- * Merge consecutive stream outputs sharing the same name (stdout/stderr).
- * Handles both `string` and `string[]` text formats.
- */
-export function mergeConsecutiveStreams(
-  outputs: JupyterOutput[],
-): JupyterOutput[] {
-  return outputs.reduce<JupyterOutput[]>((merged, output) => {
-    if (output.output_type === "stream" && merged.length > 0) {
-      const last = merged[merged.length - 1];
-      if (last.output_type === "stream" && last.name === output.name) {
-        const lastText = Array.isArray(last.text)
-          ? last.text.join("")
-          : last.text;
-        const outputText = Array.isArray(output.text)
-          ? output.text.join("")
-          : output.text;
-        merged[merged.length - 1] = {
-          ...last,
-          text: lastText + outputText,
-        };
-        return merged;
-      }
-    }
-    merged.push(output);
-    return merged;
-  }, []);
-}
-
-/**
  * Synchronous cell materialization for local mutations.
  *
  * Uses cache-only output resolution (no blob fetches). Safe to call when:
@@ -162,14 +133,12 @@ export function cellSnapshotsToNotebookCellsSync(
         })
         .filter((o): o is JupyterOutput => o !== null);
 
-      const outputs = mergeConsecutiveStreams(resolvedOutputs);
-
       return {
         id: snap.id,
         cell_type: "code" as const,
         source: snap.source,
         execution_count: Number.isNaN(executionCount) ? null : executionCount,
-        outputs,
+        outputs: resolvedOutputs,
         metadata,
       };
     }
@@ -223,15 +192,12 @@ export async function cellSnapshotsToNotebookCells(
           )
         ).filter((o): o is JupyterOutput => o !== null);
 
-        // Merge consecutive stream outputs as a fallback for unmerged data
-        const outputs = mergeConsecutiveStreams(resolvedOutputs);
-
         return {
           id: snap.id,
           cell_type: "code" as const,
           source: snap.source,
           execution_count: Number.isNaN(executionCount) ? null : executionCount,
-          outputs,
+          outputs: resolvedOutputs,
           metadata,
         };
       }
@@ -299,12 +265,24 @@ export function materializeCellFromWasm(
       })
       .filter((o): o is JupyterOutput => o !== null);
 
+    // Preserve the previous outputs array if every element is referentially
+    // identical (all cache hits, same order, same length). This lets
+    // cellsEqual() short-circuit on === checks and skip React re-renders.
+    const prevOutputs =
+      previousCell?.cell_type === "code" ? previousCell.outputs : undefined;
+    const outputs =
+      prevOutputs &&
+      prevOutputs.length === resolvedOutputs.length &&
+      prevOutputs.every((o, i) => o === resolvedOutputs[i])
+        ? prevOutputs
+        : resolvedOutputs;
+
     return {
       id: cellId,
       cell_type: "code",
       source,
       execution_count: Number.isNaN(executionCount) ? null : executionCount,
-      outputs: mergeConsecutiveStreams(resolvedOutputs),
+      outputs,
       metadata,
     };
   }
