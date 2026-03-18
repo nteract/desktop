@@ -155,7 +155,11 @@ impl AsyncSession {
 
             let override_arc = Arc::new(std::sync::Mutex::new(None));
             if let Some(ref rx) = state.broadcast_rx {
-                session_core::spawn_rekey_watcher(rx, Arc::clone(&override_arc));
+                session_core::spawn_rekey_watcher(
+                    rx,
+                    Arc::clone(&override_arc),
+                    &tokio::runtime::Handle::current(),
+                );
             }
 
             Ok(AsyncSession {
@@ -217,7 +221,11 @@ impl AsyncSession {
 
             let override_arc = Arc::new(std::sync::Mutex::new(None));
             if let Some(ref rx) = state.broadcast_rx {
-                session_core::spawn_rekey_watcher(rx, Arc::clone(&override_arc));
+                session_core::spawn_rekey_watcher(
+                    rx,
+                    Arc::clone(&override_arc),
+                    &tokio::runtime::Handle::current(),
+                );
             }
 
             Ok(AsyncSession {
@@ -245,7 +253,11 @@ impl AsyncSession {
             {
                 let st = state.lock().await;
                 if let Some(ref rx) = st.broadcast_rx {
-                    session_core::spawn_rekey_watcher(rx, override_arc);
+                    session_core::spawn_rekey_watcher(
+                        rx,
+                        override_arc,
+                        &tokio::runtime::Handle::current(),
+                    );
                 }
             }
             Ok(())

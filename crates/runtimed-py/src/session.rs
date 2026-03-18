@@ -151,7 +151,7 @@ impl Session {
 
         let override_arc = Arc::new(std::sync::Mutex::new(None));
         if let Some(ref rx) = state.broadcast_rx {
-            session_core::spawn_rekey_watcher(rx, Arc::clone(&override_arc));
+            session_core::spawn_rekey_watcher(rx, Arc::clone(&override_arc), runtime.handle());
         }
 
         Ok(Self {
@@ -213,7 +213,7 @@ impl Session {
 
         let override_arc = Arc::new(std::sync::Mutex::new(None));
         if let Some(ref rx) = state.broadcast_rx {
-            session_core::spawn_rekey_watcher(rx, Arc::clone(&override_arc));
+            session_core::spawn_rekey_watcher(rx, Arc::clone(&override_arc), rt.handle());
         }
 
         Ok(Self {
@@ -239,7 +239,11 @@ impl Session {
         self.runtime.block_on(async {
             let st = self.state.lock().await;
             if let Some(ref rx) = st.broadcast_rx {
-                session_core::spawn_rekey_watcher(rx, Arc::clone(&self.notebook_id_override));
+                session_core::spawn_rekey_watcher(
+                    rx,
+                    Arc::clone(&self.notebook_id_override),
+                    self.runtime.handle(),
+                );
             }
         });
         Ok(())

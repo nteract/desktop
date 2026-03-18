@@ -171,9 +171,10 @@ pub(crate) async fn connect(state: &Arc<Mutex<SessionState>>, notebook_id: &str)
 pub(crate) fn spawn_rekey_watcher(
     broadcast_rx: &BroadcastReceiver,
     notebook_id_override: Arc<std::sync::Mutex<Option<String>>>,
+    handle: &tokio::runtime::Handle,
 ) {
     let mut rx = broadcast_rx.resubscribe();
-    tokio::spawn(async move {
+    handle.spawn(async move {
         loop {
             match rx.recv().await {
                 Some(NotebookBroadcast::RoomRenamed { new_notebook_id }) => {
