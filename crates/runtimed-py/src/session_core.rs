@@ -521,16 +521,13 @@ pub(crate) async fn create_cell(
         // Determine after_cell_id from index.
         // None → append at end; Some(0) → prepend; Some(i) → after cell i-1.
         // Out-of-range indices are clamped to append.
-        let after_cell_id = if let Some(0) = index {
-            None
-        } else {
-            let cell_ids = handle.get_cell_ids();
-            match index {
-                None => cell_ids.last().cloned(),
-                Some(i) => {
-                    let clamped = i.min(cell_ids.len());
-                    cell_ids.get(clamped.saturating_sub(1)).cloned()
-                }
+        let after_cell_id = match index {
+            Some(0) => None,
+            None => handle.last_cell_id(),
+            Some(i) => {
+                let cell_ids = handle.get_cell_ids();
+                let clamped = i.min(cell_ids.len());
+                cell_ids.get(clamped.saturating_sub(1)).cloned()
             }
         };
 

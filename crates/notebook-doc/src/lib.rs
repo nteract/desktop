@@ -828,15 +828,49 @@ impl NotebookDoc {
     }
 
     /// Get the ID of the last cell in document order.
-    /// Lightweight — only reads position strings, not cell contents.
+    /// Single-pass O(n) — tracks the max position without sorting.
     pub fn last_cell_id(&self) -> Option<String> {
-        self.get_cell_positions().last().map(|(_, id)| id.clone())
+        let cells_id = self.cells_map_id()?;
+        let mut best: Option<(String, String)> = None;
+        for key in self.doc.keys(&cells_id) {
+            let cell_obj = match self.cell_obj_id(&cells_id, &key) {
+                Some(id) => id,
+                None => continue,
+            };
+            let position =
+                read_str(&self.doc, &cell_obj, "position").unwrap_or_else(|| "80".to_string());
+            let is_greater = match &best {
+                Some((bp, bid)) => (&position, &key) > (bp, bid),
+                None => true,
+            };
+            if is_greater {
+                best = Some((position, key));
+            }
+        }
+        best.map(|(_, id)| id)
     }
 
     /// Get the ID of the first cell in document order.
-    /// Lightweight — only reads position strings, not cell contents.
+    /// Single-pass O(n) — tracks the min position without sorting.
     pub fn first_cell_id(&self) -> Option<String> {
-        self.get_cell_positions().first().map(|(_, id)| id.clone())
+        let cells_id = self.cells_map_id()?;
+        let mut best: Option<(String, String)> = None;
+        for key in self.doc.keys(&cells_id) {
+            let cell_obj = match self.cell_obj_id(&cells_id, &key) {
+                Some(id) => id,
+                None => continue,
+            };
+            let position =
+                read_str(&self.doc, &cell_obj, "position").unwrap_or_else(|| "80".to_string());
+            let is_less = match &best {
+                Some((bp, bid)) => (&position, &key) < (bp, bid),
+                None => true,
+            };
+            if is_less {
+                best = Some((position, key));
+            }
+        }
+        best.map(|(_, id)| id)
     }
 
     /// Get a cell's source text (O(1) lookup).
@@ -895,10 +929,10 @@ impl NotebookDoc {
         let after_cell_id = if clamped == 0 {
             None
         } else {
-            ids.get(clamped - 1).cloned()
+            ids.get(clamped - 1).map(|s| s.as_str())
         };
 
-        self.add_cell_after(cell_id, cell_type, after_cell_id.as_deref())?;
+        self.add_cell_after(cell_id, cell_type, after_cell_id)?;
         Ok(())
     }
 
