@@ -2,6 +2,7 @@ import type { EditorView, KeyBinding } from "@codemirror/view";
 import { ChevronRight, Code2, EyeOff, Trash2, X } from "lucide-react";
 import {
   lazy,
+  memo,
   Suspense,
   useCallback,
   useEffect,
@@ -123,7 +124,7 @@ interface CodeCellProps {
   isGroupExecuting?: boolean;
 }
 
-export function CodeCell({
+export const CodeCell = memo(function CodeCell({
   cell,
   language = "python",
   isFocused,
@@ -326,6 +327,8 @@ export function CodeCell({
     handleExecuteWithClear();
   }, [handleExecuteWithClear]);
 
+  const handleLinkClick = useCallback((url: string) => openUrl(url), []);
+
   const gutterContent = bothHidden ? null : (
     <CompactExecutionButton
       count={cell.execution_count}
@@ -484,7 +487,7 @@ export function CodeCell({
               preloadIframe
               searchQuery={searchQuery}
               onSearchMatchCount={onSearchMatchCount}
-              onLinkClick={(url) => openUrl(url)}
+              onLinkClick={handleLinkClick}
             />
           )
         }
@@ -518,4 +521,4 @@ export function CodeCell({
       )}
     </>
   );
-}
+});

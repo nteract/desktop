@@ -1,6 +1,6 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
 import { Pencil, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import {
   CodeMirrorEditor,
@@ -27,6 +27,9 @@ import { presenceSenderExtension } from "../lib/presence-sender";
 import type { MarkdownCell as MarkdownCellType } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 
+const handleIframeError = (err: { message: string; stack?: string }) =>
+  logger.error("[MarkdownCell] iframe error:", err);
+
 interface MarkdownCellProps {
   cell: MarkdownCellType;
   isFocused: boolean;
@@ -46,7 +49,7 @@ interface MarkdownCellProps {
   isDragging?: boolean;
 }
 
-export function MarkdownCell({
+export const MarkdownCell = memo(function MarkdownCell({
   cell,
   isFocused,
   searchQuery,
@@ -480,7 +483,7 @@ export function MarkdownCell({
             onReady={handleFrameReady}
             onLinkClick={handleLinkClick}
             onDoubleClick={handleDoubleClick}
-            onError={(err) => logger.error("[MarkdownCell] iframe error:", err)}
+            onError={handleIframeError}
             className="w-full"
           />
         </div>
@@ -498,4 +501,4 @@ export function MarkdownCell({
       </div>
     </CellContainer>
   );
-}
+});

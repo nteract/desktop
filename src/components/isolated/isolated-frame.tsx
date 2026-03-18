@@ -252,6 +252,25 @@ export const IsolatedFrame = forwardRef<
   // Track initial darkMode for blob URL (don't recreate blob on theme change)
   const initialDarkModeRef = useRef(darkMode);
 
+  // Stable refs for callback props — avoids tearing down the message
+  // handler when callers pass unstable (inline) callbacks.
+  const onReadyRef = useRef(onReady);
+  const onResizeRef = useRef(onResize);
+  const onLinkClickRef = useRef(onLinkClick);
+  const onDoubleClickRef = useRef(onDoubleClick);
+  const onWidgetUpdateRef = useRef(onWidgetUpdate);
+  const onErrorRef = useRef(onError);
+  const onMessageRef = useRef(onMessage);
+
+  // Sync refs during render so effects always see the latest callbacks.
+  onReadyRef.current = onReady;
+  onResizeRef.current = onResize;
+  onLinkClickRef.current = onLinkClick;
+  onDoubleClickRef.current = onDoubleClick;
+  onWidgetUpdateRef.current = onWidgetUpdate;
+  onErrorRef.current = onError;
+  onMessageRef.current = onMessage;
+
   // Create blob URL on mount (only once, with initial darkMode)
   useEffect(() => {
     const url = createFrameBlobUrl({ darkMode: initialDarkModeRef.current });
@@ -281,9 +300,12 @@ export const IsolatedFrame = forwardRef<
   // Surface provider errors to consumers
   useEffect(() => {
     if (providerError && !providerLoading) {
-      onError?.({ message: providerError.message, stack: providerError.stack });
+      onErrorRef.current?.({
+        message: providerError.message,
+        stack: providerError.stack,
+      });
     }
-  }, [providerError, providerLoading, onError]);
+  }, [providerError, providerLoading]);
 
   // Send a message to the iframe
   // Uses ref to check ready state to avoid stale closure issues
@@ -329,7 +351,7 @@ export const IsolatedFrame = forwardRef<
       }
 
       // Call generic message handler
-      onMessage?.(data);
+      onMessageRef.current?.(data);
 
       // Handle specific message types
       switch (data.type) {
@@ -374,7 +396,7 @@ export const IsolatedFrame = forwardRef<
         case "renderer_ready":
           // React renderer bundle is initialized
           setIsReady(true);
-          onReady?.();
+          onReadyRef.current?.();
           // Render initial content if provided
           if (initialContent) {
             iframeRef.current?.contentWindow?.postMessage(
@@ -390,7 +412,7 @@ export const IsolatedFrame = forwardRef<
               ? Math.max(minHeight, data.payload.height)
               : Math.max(minHeight, Math.min(maxHeight, data.payload.height));
             setHeight(newHeight);
-            onResize?.(newHeight);
+            onResizeRef.current?.(newHeight);
           }
           break;
 
@@ -402,29 +424,35 @@ export const IsolatedFrame = forwardRef<
               ? Math.max(minHeight, data.payload.height)
               : Math.max(minHeight, Math.min(maxHeight, data.payload.height));
             setHeight(newHeight);
-            onResize?.(newHeight);
+            onResizeRef.current?.(newHeight);
           }
           break;
 
         case "link_click":
           if (data.payload?.url) {
-            onLinkClick?.(data.payload.url, data.payload.newTab ?? false);
+            onLinkClickRef.current?.(
+              data.payload.url,
+              data.payload.newTab ?? false,
+            );
           }
           break;
 
         case "dblclick":
-          onDoubleClick?.();
+          onDoubleClickRef.current?.();
           break;
 
         case "widget_update":
           if (data.payload?.commId && data.payload?.state) {
-            onWidgetUpdate?.(data.payload.commId, data.payload.state);
+            onWidgetUpdateRef.current?.(
+              data.payload.commId,
+              data.payload.state,
+            );
           }
           break;
 
         case "error":
           if (data.payload) {
-            onError?.(data.payload);
+            onErrorRef.current?.(data.payload);
           }
           break;
 
@@ -435,7 +463,9 @@ export const IsolatedFrame = forwardRef<
               "[IsolatedFrame] Bundle eval failed:",
               data.payload.error,
             );
-            onError?.({ message: `Bundle eval failed: ${data.payload.error}` });
+            onErrorRef.current?.({
+              message: `Bundle eval failed: ${data.payload.error}`,
+            });
           }
           break;
       }
@@ -443,19 +473,7 @@ export const IsolatedFrame = forwardRef<
 
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [
-    initialContent,
-    minHeight,
-    maxHeight,
-    autoHeight,
-    onReady,
-    onResize,
-    onLinkClick,
-    onDoubleClick,
-    onWidgetUpdate,
-    onError,
-    onMessage,
-  ]);
+  }, [initialContent, minHeight, maxHeight, autoHeight]);
 
   // Inject renderer when iframe is ready AND bundle props are available
   useEffect(() => {

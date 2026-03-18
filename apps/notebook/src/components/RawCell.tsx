@@ -1,6 +1,6 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
 import { Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import {
   CodeMirrorEditor,
@@ -37,7 +37,7 @@ interface RawCellProps {
   isDragging?: boolean;
 }
 
-export function RawCell({
+export const RawCell = memo(function RawCell({
   cell,
   isFocused,
   searchQuery,
@@ -225,4 +225,4 @@ export function RawCell({
       </div>
     </CellContainer>
   );
-}
+});

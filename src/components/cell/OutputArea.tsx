@@ -28,6 +28,9 @@ import { highlightTextInDom } from "@/lib/highlight-text";
 import { OutputErrorFallback } from "@/lib/output-error-fallback";
 import { cn } from "@/lib/utils";
 
+const handleIframeError = (err: { message: string; stack?: string }) =>
+  console.error("[OutputArea] iframe error:", err);
+
 /**
  * Jupyter output types based on the nbformat spec.
  */
@@ -528,9 +531,7 @@ export function OutputArea({
                 onLinkClick={onLinkClick}
                 onWidgetUpdate={onWidgetUpdate}
                 onMessage={handleIframeMessage}
-                onError={(err) =>
-                  console.error("[OutputArea] iframe error:", err)
-                }
+                onError={handleIframeError}
               />
             </div>
           )}
