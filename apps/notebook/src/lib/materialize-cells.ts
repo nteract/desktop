@@ -84,6 +84,26 @@ export async function resolveOutput(
 }
 
 /**
+ * Return the previous outputs array if every element is referentially
+ * identical to the resolved outputs. This lets `cellsEqual()` short-circuit
+ * on `===` checks and skip React re-renders for cells whose outputs
+ * haven't actually changed (all cache hits, same order, same length).
+ */
+export function reuseOutputsIfUnchanged(
+  resolvedOutputs: JupyterOutput[],
+  previousOutputs: JupyterOutput[] | undefined,
+): JupyterOutput[] {
+  if (
+    previousOutputs &&
+    previousOutputs.length === resolvedOutputs.length &&
+    previousOutputs.every((o, i) => o === resolvedOutputs[i])
+  ) {
+    return previousOutputs;
+  }
+  return resolvedOutputs;
+}
+
+/**
  * Synchronous cell materialization for local mutations.
  *
  * Uses cache-only output resolution (no blob fetches). Safe to call when:
@@ -265,17 +285,9 @@ export function materializeCellFromWasm(
       })
       .filter((o): o is JupyterOutput => o !== null);
 
-    // Preserve the previous outputs array if every element is referentially
-    // identical (all cache hits, same order, same length). This lets
-    // cellsEqual() short-circuit on === checks and skip React re-renders.
     const prevOutputs =
       previousCell?.cell_type === "code" ? previousCell.outputs : undefined;
-    const outputs =
-      prevOutputs &&
-      prevOutputs.length === resolvedOutputs.length &&
-      prevOutputs.every((o, i) => o === resolvedOutputs[i])
-        ? prevOutputs
-        : resolvedOutputs;
+    const outputs = reuseOutputsIfUnchanged(resolvedOutputs, prevOutputs);
 
     return {
       id: cellId,

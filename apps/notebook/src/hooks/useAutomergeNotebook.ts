@@ -257,7 +257,7 @@ export function useAutomergeNotebook() {
   const pendingChangesetRef = useRef<CellChangeset | null>(null);
 
   const scheduleMaterialize = useCallback(
-    (handle: NotebookHandle, changeset?: CellChangeset) => {
+    (_handle: NotebookHandle, changeset?: CellChangeset) => {
       if (changeset) {
         // Merge into accumulated changeset for this coalescing window.
         pendingChangesetRef.current = pendingChangesetRef.current
@@ -270,6 +270,10 @@ export function useAutomergeNotebook() {
       if (pendingMaterializeTimerRef.current) return;
       pendingMaterializeTimerRef.current = setTimeout(async () => {
         pendingMaterializeTimerRef.current = null;
+        // Read handle at fire time — not capture time — to avoid
+        // use-after-free if bootstrap() replaced/freed the handle.
+        const handle = handleRef.current;
+        if (!handle) return;
         const needsFull = pendingFullMaterializeRef.current;
         const cs = pendingChangesetRef.current;
         pendingFullMaterializeRef.current = false;
@@ -294,9 +298,9 @@ export function useAutomergeNotebook() {
         // fast synchronous path; cache misses resolve the individual cell's
         // outputs asynchronously (without serializing the entire document).
         const cache = outputCacheRef.current;
-        const blobPort = blobPortPromiseRef.current
-          ? await blobPortPromiseRef.current
-          : null;
+        // Defer blobPort resolution until a cache miss actually needs it.
+        let blobPort: number | null = null;
+        let blobPortResolved = false;
 
         for (const { cell_id: cellId, fields } of cs.changed) {
           if (fields.outputs) {
@@ -319,6 +323,12 @@ export function useAutomergeNotebook() {
               // Cache miss — resolve this cell's outputs async (fetch
               // manifests from blob store) without re-serializing the
               // entire document.
+              if (!blobPortResolved) {
+                blobPort = blobPortPromiseRef.current
+                  ? await blobPortPromiseRef.current
+                  : null;
+                blobPortResolved = true;
+              }
               const resolved = (
                 await Promise.all(
                   rawOutputs.map((o) => resolveOutput(o, blobPort, cache)),

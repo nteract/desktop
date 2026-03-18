@@ -5,6 +5,7 @@ import {
   cellSnapshotsToNotebookCells,
   cellSnapshotsToNotebookCellsSync,
   resolveOutput,
+  reuseOutputsIfUnchanged,
 } from "../materialize-cells";
 
 // ---------------------------------------------------------------------------
@@ -76,6 +77,82 @@ function rawSnapshot(id: string, source: string): CellSnapshot {
     metadata: {},
   };
 }
+
+// ---------------------------------------------------------------------------
+// reuseOutputsIfUnchanged
+// ---------------------------------------------------------------------------
+
+describe("reuseOutputsIfUnchanged", () => {
+  it("returns previous array when all elements are referentially identical", () => {
+    const a: JupyterOutput = {
+      output_type: "stream",
+      name: "stdout",
+      text: "hello",
+    };
+    const b: JupyterOutput = {
+      output_type: "stream",
+      name: "stderr",
+      text: "err",
+    };
+    const previous = [a, b];
+    const resolved = [a, b]; // same references, different array
+
+    const result = reuseOutputsIfUnchanged(resolved, previous);
+    expect(result).toBe(previous); // same array reference
+  });
+
+  it("returns resolved array when an element differs", () => {
+    const a: JupyterOutput = {
+      output_type: "stream",
+      name: "stdout",
+      text: "hello",
+    };
+    const b: JupyterOutput = {
+      output_type: "stream",
+      name: "stdout",
+      text: "hello",
+    };
+    const previous = [a];
+    const resolved = [b]; // same content, different object
+
+    const result = reuseOutputsIfUnchanged(resolved, previous);
+    expect(result).toBe(resolved);
+    expect(result).not.toBe(previous);
+  });
+
+  it("returns resolved array when lengths differ", () => {
+    const a: JupyterOutput = {
+      output_type: "stream",
+      name: "stdout",
+      text: "hello",
+    };
+    const previous = [a];
+    const resolved = [a, a];
+
+    const result = reuseOutputsIfUnchanged(resolved, previous);
+    expect(result).toBe(resolved);
+  });
+
+  it("returns resolved array when previous is undefined", () => {
+    const a: JupyterOutput = {
+      output_type: "stream",
+      name: "stdout",
+      text: "hello",
+    };
+    const resolved = [a];
+
+    const result = reuseOutputsIfUnchanged(resolved, undefined);
+    expect(result).toBe(resolved);
+  });
+
+  it("returns previous for empty arrays", () => {
+    const previous: JupyterOutput[] = [];
+    const resolved: JupyterOutput[] = [];
+
+    const result = reuseOutputsIfUnchanged(resolved, previous);
+    expect(result).toBe(previous);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // resolveOutput
