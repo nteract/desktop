@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+
 /**
  * Frame type constants matching `notebook_doc::frame_types` in Rust.
  *
@@ -17,3 +19,21 @@ export const frame_types = {
   /** Presence (CBOR, see notebook_doc::presence). */
   PRESENCE: 0x04,
 } as const;
+
+/**
+ * Send a typed frame to the daemon via the Tauri relay.
+ *
+ * Prepends the frame type byte to the payload and sends the resulting
+ * `Uint8Array` as a raw binary IPC payload — no JSON serialization.
+ * The Rust `send_frame` command accepts `tauri::ipc::Request` and
+ * extracts the bytes directly from `InvokeBody::Raw`.
+ */
+export function sendFrame(
+  frameType: number,
+  payload: Uint8Array,
+): Promise<void> {
+  const frame = new Uint8Array(1 + payload.length);
+  frame[0] = frameType;
+  frame.set(payload, 1);
+  return invoke("send_frame", frame);
+}

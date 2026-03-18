@@ -5,7 +5,7 @@ import {
   save as saveDialog,
 } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { frame_types } from "../lib/frame-types";
+import { frame_types, sendFrame } from "../lib/frame-types";
 import { logger } from "../lib/logger";
 import {
   type CellSnapshot,
@@ -175,13 +175,7 @@ export function useAutomergeNotebook() {
   const syncToRelay = useCallback((handle: NotebookHandle) => {
     const msg = handle.generate_sync_message();
     if (msg) {
-      // Prepend frame type byte for the unified send_frame command
-      const frameData = new Uint8Array(1 + msg.length);
-      frameData[0] = frame_types.AUTOMERGE_SYNC;
-      frameData.set(msg, 1);
-      invoke("send_frame", {
-        frameData: Array.from(frameData),
-      }).catch((e: unknown) =>
+      sendFrame(frame_types.AUTOMERGE_SYNC, msg).catch((e: unknown) =>
         logger.warn("[automerge-notebook] sync to relay failed:", e),
       );
     }
@@ -215,20 +209,19 @@ export function useAutomergeNotebook() {
     null,
   );
 
-  const scheduleSyncReply = useCallback((handle: NotebookHandle) => {
+  const scheduleSyncReply = useCallback(() => {
     if (pendingSyncReplyTimerRef.current) {
       clearTimeout(pendingSyncReplyTimerRef.current);
     }
     pendingSyncReplyTimerRef.current = setTimeout(() => {
       pendingSyncReplyTimerRef.current = null;
+      // Read handle at fire time — not capture time — to avoid
+      // use-after-free if bootstrap() replaced/freed the handle.
+      const handle = handleRef.current;
+      if (!handle) return;
       const reply = handle.generate_sync_reply();
       if (reply) {
-        const frameData = new Uint8Array(1 + reply.length);
-        frameData[0] = frame_types.AUTOMERGE_SYNC;
-        frameData.set(reply, 1);
-        invoke("send_frame", {
-          frameData: Array.from(frameData),
-        }).catch((e: unknown) =>
+        sendFrame(frame_types.AUTOMERGE_SYNC, reply).catch((e: unknown) =>
           logger.warn("[automerge-notebook] sync reply failed:", e),
         );
       }
@@ -473,7 +466,7 @@ export function useAutomergeNotebook() {
                 }
                 // Schedule a debounced sync reply — multiple inbound frames
                 // coalesce into a single outbound reply per 50ms window.
-                scheduleSyncReply(handle);
+                scheduleSyncReply();
                 break;
               }
               case "broadcast": {
@@ -531,12 +524,12 @@ export function useAutomergeNotebook() {
         if (handleRef.current) {
           const reply = handleRef.current.generate_sync_reply();
           if (reply) {
-            const frameData = new Uint8Array(1 + reply.length);
-            frameData[0] = frame_types.AUTOMERGE_SYNC;
-            frameData.set(reply, 1);
-            invoke("send_frame", {
-              frameData: Array.from(frameData),
-            }).catch(() => {});
+            sendFrame(frame_types.AUTOMERGE_SYNC, reply).catch((e: unknown) =>
+              logger.warn(
+                "[automerge-notebook] teardown sync reply failed:",
+                e,
+              ),
+            );
           }
         }
       }
@@ -704,12 +697,7 @@ export function useAutomergeNotebook() {
     // Generate and send sync message, awaiting the IPC
     const msg = handle.generate_sync_message();
     if (msg) {
-      const frameData = new Uint8Array(1 + msg.length);
-      frameData[0] = frame_types.AUTOMERGE_SYNC;
-      frameData.set(msg, 1);
-      await invoke("send_frame", {
-        frameData: Array.from(frameData),
-      });
+      await sendFrame(frame_types.AUTOMERGE_SYNC, msg);
     }
   }, []);
 

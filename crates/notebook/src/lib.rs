@@ -2536,17 +2536,44 @@ async fn reconnect_to_daemon(
 /// Supported outgoing types:
 /// - 0x00: AutomergeSync (forwarded via RelayHandle::forward_frame)
 /// - 0x04: Presence (forwarded via RelayHandle::forward_frame)
+///
+/// Accepts raw binary via `tauri::ipc::Request` — the frontend passes a
+/// `Uint8Array` directly as the invoke payload, bypassing JSON serialization.
 #[tauri::command]
 async fn send_frame(
+    request: tauri::ipc::Request<'_>,
     window: tauri::Window,
-    frame_data: Vec<u8>,
     registry: tauri::State<'_, WindowNotebookRegistry>,
+) -> Result<(), String> {
+    let frame_data = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes.as_slice(),
+        tauri::ipc::InvokeBody::Json(value) => {
+            // Backward compatibility: accept JSON array of bytes.
+            // This path is slower and should be removed once all callers
+            // migrate to raw binary.
+            warn!("[send_frame] Received JSON payload — callers should send Uint8Array directly");
+            return match serde_json::from_value::<Vec<u8>>(
+                value.get("frameData").cloned().unwrap_or(value.clone()),
+            ) {
+                Ok(bytes) => send_frame_bytes(&bytes, &window, &registry).await,
+                Err(e) => Err(format!("Failed to parse JSON frame data: {}", e)),
+            };
+        }
+    };
+
+    send_frame_bytes(frame_data, &window, &registry).await
+}
+
+async fn send_frame_bytes(
+    frame_data: &[u8],
+    window: &tauri::Window,
+    registry: &tauri::State<'_, WindowNotebookRegistry>,
 ) -> Result<(), String> {
     if frame_data.is_empty() {
         return Err("Empty frame".to_string());
     }
 
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
+    let notebook_sync = notebook_sync_for_window(window, registry.inner())?;
     let guard = notebook_sync.lock().await;
     let handle = guard.as_ref().ok_or("Not connected to daemon")?;
 

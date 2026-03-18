@@ -1,7 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useMemo, useSyncExternalStore } from "react";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
-import { frame_types } from "./frame-types";
+import { frame_types, sendFrame } from "./frame-types";
 import { logger } from "./logger";
 
 // ---------------------------------------------------------------------------
@@ -241,12 +240,7 @@ async function syncToRelay(): Promise<void> {
   if (!_handle) return;
   const msg = _handle.generate_sync_message();
   if (msg) {
-    const frameData = new Uint8Array(1 + msg.length);
-    frameData[0] = frame_types.AUTOMERGE_SYNC;
-    frameData.set(msg, 1);
-    await invoke("send_frame", {
-      frameData: Array.from(frameData),
-    });
+    await sendFrame(frame_types.AUTOMERGE_SYNC, msg);
   }
 }
 

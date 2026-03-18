@@ -1,6 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { frame_types } from "../lib/frame-types";
+import { frame_types, sendFrame } from "../lib/frame-types";
 import { logger } from "../lib/logger";
 import { subscribePresence } from "../lib/notebook-frame-bus";
 import {
@@ -184,11 +183,8 @@ export function usePresence(peerId: string | null) {
     (cellId: string, line: number, column: number) => {
       if (!peerId) return;
       const payload = encode_cursor_presence(peerId, cellId, line, column);
-      const frameData = new Uint8Array(1 + payload.length);
-      frameData[0] = frame_types.PRESENCE;
-      frameData.set(payload, 1);
-      invoke("send_frame", { frameData: Array.from(frameData) }).catch(
-        (e: unknown) => logger.warn("[presence] send cursor failed:", e),
+      sendFrame(frame_types.PRESENCE, payload).catch((e: unknown) =>
+        logger.warn("[presence] send cursor failed:", e),
       );
     },
     [peerId],
@@ -211,11 +207,8 @@ export function usePresence(peerId: string | null) {
         headLine,
         headCol,
       );
-      const frameData = new Uint8Array(1 + payload.length);
-      frameData[0] = frame_types.PRESENCE;
-      frameData.set(payload, 1);
-      invoke("send_frame", { frameData: Array.from(frameData) }).catch(
-        (e: unknown) => logger.warn("[presence] send selection failed:", e),
+      sendFrame(frame_types.PRESENCE, payload).catch((e: unknown) =>
+        logger.warn("[presence] send selection failed:", e),
       );
     },
     [peerId],
