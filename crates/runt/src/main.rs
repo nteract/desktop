@@ -1474,7 +1474,7 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                     "env": {
                         "RUNTIMED_DEV": std::env::var("RUNTIMED_DEV").ok(),
                         "RUNTIMED_WORKSPACE_PATH": std::env::var("RUNTIMED_WORKSPACE_PATH").ok(),
-                        "RUNTIMED_WORKSPACE_NAME": std::env::var("RUNTIMED_WORKSPACE_NAME").ok(),
+
                         "RUNTIMED_VITE_PORT": std::env::var("RUNTIMED_VITE_PORT").ok(),
                     },
                     "blob_url": daemon_info.as_ref()

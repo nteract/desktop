@@ -833,10 +833,6 @@ fn cmd_dev_daemon(release: bool) {
     if let Ok(path) = env::var("CONDUCTOR_WORKSPACE_PATH") {
         cmd.env("RUNTIMED_WORKSPACE_PATH", &path);
     }
-    if let Ok(name) = env::var("CONDUCTOR_WORKSPACE_NAME") {
-        cmd.env("RUNTIMED_WORKSPACE_NAME", &name);
-    }
-
     let status = cmd.status().unwrap_or_else(|e| {
         eprintln!("Failed to run runtimed: {e}");
         exit(1);
@@ -1361,14 +1357,6 @@ fn apply_worktree_env(command: &mut Command, force_dev_mode: bool) {
     } else if force_dev_mode {
         if let Some(path) = runt_workspace::get_workspace_path() {
             command.env("RUNTIMED_WORKSPACE_PATH", path);
-        }
-    }
-
-    if let Ok(name) = env::var("CONDUCTOR_WORKSPACE_NAME") {
-        command.env("RUNTIMED_WORKSPACE_NAME", name);
-    } else if force_dev_mode {
-        if let Some(name) = runt_workspace::get_workspace_name() {
-            command.env("RUNTIMED_WORKSPACE_NAME", name);
         }
     }
 }

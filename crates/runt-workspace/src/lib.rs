@@ -476,15 +476,10 @@ pub fn get_workspace_path() -> Option<PathBuf> {
     detect_worktree_root()
 }
 
-/// Get the workspace name for display.
-///
-/// Uses `RUNTIMED_WORKSPACE_NAME` if available, otherwise reads from
-/// `.context/workspace-description` file in the worktree.
+/// Read the workspace description from `.context/workspace-description`
+/// in the worktree directory. Returns `None` if the file doesn't exist
+/// or the worktree path is not set.
 pub fn get_workspace_name() -> Option<String> {
-    if let Ok(name) = std::env::var("RUNTIMED_WORKSPACE_NAME") {
-        return Some(name);
-    }
-    // Fallback: read .context/workspace-description
     get_workspace_path()
         .and_then(|p| std::fs::read_to_string(p.join(".context/workspace-description")).ok())
         .map(|s| s.trim().to_string())

@@ -209,7 +209,6 @@ When working in a Conductor workspace developing nteract/desktop, the xtask comm
 | Conductor Variable | Translated To | Purpose |
 |-------------------|---------------|---------|
 | `CONDUCTOR_WORKSPACE_PATH` | `RUNTIMED_WORKSPACE_PATH` | Daemon state isolated to `<cache>/runt-nightly/worktrees/{hash}/` |
-| `CONDUCTOR_WORKSPACE_NAME` | `RUNTIMED_WORKSPACE_NAME` | Human-readable workspace name for display |
 | `CONDUCTOR_PORT` | (used directly) | Vite dev server port (avoids conflicts between workspaces) |
 
 **Important:** The translation only happens when running `cargo xtask dev`, `cargo xtask notebook`, or `cargo xtask dev-daemon`. This allows using Conductor for unrelated projects without interfering with the system daemon.
