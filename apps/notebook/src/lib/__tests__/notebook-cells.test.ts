@@ -172,6 +172,187 @@ describe("subscriber notifications", () => {
   });
 });
 
+describe("cell diffing in replaceNotebookCells", () => {
+  it("preserves referential identity for unchanged cells", () => {
+    const cells = [codeCell("a", "x = 1"), codeCell("b", "y = 2")];
+    replaceNotebookCells(cells);
+    const ref1 = getCellById("a");
+    const ref2 = getCellById("b");
+
+    // Replace with structurally identical cells (new objects)
+    replaceNotebookCells([codeCell("a", "x = 1"), codeCell("b", "y = 2")]);
+    const ref1After = getCellById("a");
+    const ref2After = getCellById("b");
+
+    // Old references should be preserved — same object, not just equal
+    expect(ref1After).toBe(ref1);
+    expect(ref2After).toBe(ref2);
+  });
+
+  it("replaces reference when source changes", () => {
+    replaceNotebookCells([codeCell("a", "x = 1")]);
+    const ref1 = getCellById("a");
+
+    replaceNotebookCells([codeCell("a", "x = 2")]);
+    const ref2 = getCellById("a");
+
+    expect(ref2).not.toBe(ref1);
+    expect(ref2?.source).toBe("x = 2");
+  });
+
+  it("replaces reference when execution_count changes", () => {
+    const cell: NotebookCell = {
+      cell_type: "code",
+      id: "a",
+      source: "1+1",
+      execution_count: null,
+      outputs: [],
+      metadata: {},
+    };
+    replaceNotebookCells([cell]);
+    const ref1 = getCellById("a");
+
+    replaceNotebookCells([{ ...cell, execution_count: 1 }]);
+    const ref2 = getCellById("a");
+
+    expect(ref2).not.toBe(ref1);
+    expect(ref2?.cell_type === "code" && ref2.execution_count).toBe(1);
+  });
+
+  it("replaces reference when outputs change", () => {
+    const output = {
+      output_type: "stream" as const,
+      name: "stdout" as const,
+      text: "hello",
+    };
+    const cell: NotebookCell = {
+      cell_type: "code",
+      id: "a",
+      source: "print('hello')",
+      execution_count: 1,
+      outputs: [],
+      metadata: {},
+    };
+    replaceNotebookCells([cell]);
+    const ref1 = getCellById("a");
+
+    replaceNotebookCells([{ ...cell, outputs: [output] }]);
+    const ref2 = getCellById("a");
+
+    expect(ref2).not.toBe(ref1);
+  });
+
+  it("preserves reference when outputs are referentially equal", () => {
+    const output = {
+      output_type: "stream" as const,
+      name: "stdout" as const,
+      text: "hello",
+    };
+    const cell: NotebookCell = {
+      cell_type: "code",
+      id: "a",
+      source: "print('hello')",
+      execution_count: 1,
+      outputs: [output],
+      metadata: {},
+    };
+    replaceNotebookCells([cell]);
+    const ref1 = getCellById("a");
+
+    // Same output object reference — cell should be preserved
+    replaceNotebookCells([{ ...cell, outputs: [output] }]);
+    const ref2 = getCellById("a");
+
+    expect(ref2).toBe(ref1);
+  });
+
+  it("replaces reference when metadata changes", () => {
+    replaceNotebookCells([
+      { ...codeCell("a"), metadata: { collapsed: false } },
+    ]);
+    const ref1 = getCellById("a");
+
+    replaceNotebookCells([{ ...codeCell("a"), metadata: { collapsed: true } }]);
+    const ref2 = getCellById("a");
+
+    expect(ref2).not.toBe(ref1);
+  });
+
+  it("preserves reference for markdown with identical resolvedAssets", () => {
+    const assets = { "image.png": "sha256:abc" };
+    const cell: NotebookCell = {
+      cell_type: "markdown",
+      id: "m1",
+      source: "# Hello",
+      metadata: {},
+      resolvedAssets: assets,
+    };
+    replaceNotebookCells([cell]);
+    const ref1 = getCellById("m1");
+
+    // New object with same key/values — shallow compare should match
+    replaceNotebookCells([
+      { ...cell, resolvedAssets: { "image.png": "sha256:abc" } },
+    ]);
+    const ref2 = getCellById("m1");
+
+    expect(ref2).toBe(ref1);
+  });
+
+  it("only changes reference for the cell that changed", () => {
+    replaceNotebookCells([
+      codeCell("a", "unchanged"),
+      codeCell("b", "will change"),
+      codeCell("c", "unchanged"),
+    ]);
+    const refA = getCellById("a");
+    const refB = getCellById("b");
+    const refC = getCellById("c");
+
+    replaceNotebookCells([
+      codeCell("a", "unchanged"),
+      codeCell("b", "changed!"),
+      codeCell("c", "unchanged"),
+    ]);
+
+    expect(getCellById("a")).toBe(refA);
+    expect(getCellById("b")).not.toBe(refB);
+    expect(getCellById("b")?.source).toBe("changed!");
+    expect(getCellById("c")).toBe(refC);
+  });
+
+  it("handles cell addition without breaking existing refs", () => {
+    replaceNotebookCells([codeCell("a", "keep")]);
+    const refA = getCellById("a");
+
+    replaceNotebookCells([codeCell("a", "keep"), codeCell("b", "new")]);
+
+    expect(getCellById("a")).toBe(refA);
+    expect(getCellById("b")?.source).toBe("new");
+    expect(getNotebookCellsSnapshot()).toHaveLength(2);
+  });
+
+  it("handles cell removal", () => {
+    replaceNotebookCells([codeCell("a", "keep"), codeCell("b", "remove")]);
+
+    replaceNotebookCells([codeCell("a", "keep")]);
+
+    expect(getNotebookCellsSnapshot()).toHaveLength(1);
+    expect(getCellById("b")).toBeUndefined();
+  });
+
+  it("handles cell type change", () => {
+    replaceNotebookCells([codeCell("a", "# Title")]);
+    const ref1 = getCellById("a");
+
+    replaceNotebookCells([markdownCell("a", "# Title")]);
+    const ref2 = getCellById("a");
+
+    expect(ref2).not.toBe(ref1);
+    expect(ref2?.cell_type).toBe("markdown");
+  });
+});
+
 describe("mixed cell types", () => {
   it("stores code, markdown, and raw cells", () => {
     const cells: NotebookCell[] = [
