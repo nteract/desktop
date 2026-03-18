@@ -1126,6 +1126,7 @@ function AppContent() {
               onSetChannels={setCondaChannels}
               onSetPython={setCondaPython}
               onSyncNow={condaDerivedSyncState ? handleSyncDeps : syncCondaNow}
+              onRetryLaunch={tryStartKernel}
               envProgress={envProgress.envType === "conda" ? envProgress : null}
               onResetProgress={envProgress.reset}
               environmentYmlInfo={environmentYmlInfo}

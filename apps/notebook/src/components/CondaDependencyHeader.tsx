@@ -32,6 +32,8 @@ interface CondaDependencyHeaderProps {
   onSetChannels: (channels: string[]) => Promise<void>;
   onSetPython: (python: string | null) => Promise<void>;
   onSyncNow: () => Promise<boolean>;
+  /** Re-launch kernel (used for retry after env creation failure) */
+  onRetryLaunch?: () => Promise<boolean>;
   /** Environment preparation progress state */
   envProgress?: EnvProgressState | null;
   /** Callback to reset/dismiss error state */
@@ -61,6 +63,7 @@ export function CondaDependencyHeader({
   onSetChannels,
   onSetPython,
   onSyncNow,
+  onRetryLaunch,
   envProgress,
   onResetProgress,
   environmentYmlInfo,
@@ -186,11 +189,12 @@ export function CondaDependencyHeader({
               <div className="flex items-center gap-1 shrink-0">
                 <button
                   type="button"
+                  disabled={syncing || loading}
                   onClick={() => {
                     onResetProgress?.();
-                    onSyncNow();
+                    (onRetryLaunch ?? onSyncNow)();
                   }}
-                  className="flex items-center gap-1 rounded bg-red-600 px-2 py-0.5 text-white text-xs font-medium hover:bg-red-700 transition-colors"
+                  className="flex items-center gap-1 rounded bg-red-600 px-2 py-0.5 text-white text-xs font-medium hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   title="Retry environment creation"
                 >
                   <RefreshCw className="h-3 w-3" />
