@@ -1,8 +1,10 @@
 [package]
 name = "mcp-supervisor"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 description = "Inkwell — MCP supervisor that proxies to the nteract MCP server with auto-restart, file watching, and daemon management"
+repository.workspace = true
+license.workspace = true
 publish = false
 
 [[bin]]

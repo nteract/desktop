@@ -1,9 +1,10 @@
 [package]
 name = "notebook-doc"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 description = "Shared Automerge notebook document types and operations, used by both runtimed (daemon) and runtimed-wasm (frontend)"
-license = "BSD-3-Clause"
+repository.workspace = true
+license.workspace = true
 
 [dependencies]
 automerge = "0.7"
