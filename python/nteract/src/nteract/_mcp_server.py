@@ -528,7 +528,7 @@ if not _no_show:
                 description="Notebook ID to show. Defaults to current session's notebook.",
             ),
         ] = None,
-    ) -> str:
+    ) -> dict[str, Any]:
         """Open the notebook in the nteract desktop app.
 
         The notebook must be currently running in the daemon. If no notebook_id
@@ -560,7 +560,7 @@ if not _no_show:
             )
 
         runtimed.show_notebook_app(target)
-        return f"Opened notebook in nteract: {target}"
+        return {"notebook_id": target, "opened": True}
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
@@ -681,6 +681,7 @@ async def save_notebook(path: str | None = None) -> dict[str, Any]:
     file path, so no disconnect/reconnect is needed.
     """
     session = await _get_session()
+    old_notebook_id = session.notebook_id
 
     try:
         saved_path = await session.save(path)
@@ -694,7 +695,11 @@ async def save_notebook(path: str | None = None) -> dict[str, Any]:
             ) from e
         raise
 
-    return {"path": saved_path, "notebook_id": session.notebook_id}
+    new_notebook_id = session.notebook_id
+    result: dict[str, Any] = {"path": saved_path, "notebook_id": new_notebook_id}
+    if old_notebook_id != new_notebook_id:
+        result["previous_notebook_id"] = old_notebook_id
+    return result
 
 
 # =============================================================================
