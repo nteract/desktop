@@ -524,12 +524,12 @@ pub(crate) async fn create_cell(
         let after_cell_id = if let Some(0) = index {
             None
         } else {
-            let cells = handle.get_cells();
+            let cell_ids = handle.get_cell_ids();
             match index {
-                None => cells.last().map(|c| c.id.clone()),
+                None => cell_ids.last().cloned(),
                 Some(i) => {
-                    let clamped = i.min(cells.len());
-                    cells.get(clamped.saturating_sub(1)).map(|c| c.id.clone())
+                    let clamped = i.min(cell_ids.len());
+                    cell_ids.get(clamped.saturating_sub(1)).cloned()
                 }
             }
         };

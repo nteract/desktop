@@ -821,24 +821,22 @@ impl NotebookDoc {
     ///
     /// O(n log n) for the sort, but avoids serializing cell contents.
     pub fn get_cell_ids(&self) -> Vec<String> {
-        let cells_id = match self.cells_map_id() {
-            Some(id) => id,
-            None => return vec![],
-        };
+        self.get_cell_positions()
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect()
+    }
 
-        let mut pairs: Vec<(String, String)> = self
-            .doc
-            .keys(&cells_id)
-            .filter_map(|key| {
-                let cell_obj = self.cell_obj_id(&cells_id, &key)?;
-                let position =
-                    read_str(&self.doc, &cell_obj, "position").unwrap_or_else(|| "80".to_string());
-                Some((position, key))
-            })
-            .collect();
+    /// Get the ID of the last cell in document order.
+    /// Lightweight — only reads position strings, not cell contents.
+    pub fn last_cell_id(&self) -> Option<String> {
+        self.get_cell_positions().last().map(|(_, id)| id.clone())
+    }
 
-        pairs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-        pairs.into_iter().map(|(_, id)| id).collect()
+    /// Get the ID of the first cell in document order.
+    /// Lightweight — only reads position strings, not cell contents.
+    pub fn first_cell_id(&self) -> Option<String> {
+        self.get_cell_positions().first().map(|(_, id)| id.clone())
     }
 
     /// Get a cell's source text (O(1) lookup).
@@ -891,16 +889,16 @@ impl NotebookDoc {
         cell_type: &str,
     ) -> Result<(), AutomergeError> {
         // Convert index to after_cell_id. Indices greater than the current cell
-        // count are treated as "insert at end" by clamping to cells.len().
-        let cells = self.get_cells();
-        let clamped = index.min(cells.len());
+        // count are treated as "insert at end" by clamping to ids.len().
+        let ids = self.get_cell_ids(); // lightweight, position-sorted
+        let clamped = index.min(ids.len());
         let after_cell_id = if clamped == 0 {
             None
         } else {
-            cells.get(clamped - 1).map(|c| c.id.as_str())
+            ids.get(clamped - 1).cloned()
         };
 
-        self.add_cell_after(cell_id, cell_type, after_cell_id)?;
+        self.add_cell_after(cell_id, cell_type, after_cell_id.as_deref())?;
         Ok(())
     }
 
@@ -1728,53 +1726,72 @@ impl NotebookDoc {
             })
     }
 
+    /// Get (position, cell_id) pairs sorted by position.
+    /// Lightweight — only reads position strings, skips source/outputs/metadata.
+    fn get_cell_positions(&self) -> Vec<(String, String)> {
+        let cells_id = match self.cells_map_id() {
+            Some(id) => id,
+            None => return vec![],
+        };
+
+        let mut pairs: Vec<(String, String)> = self
+            .doc
+            .keys(&cells_id)
+            .filter_map(|key| {
+                let cell_obj = self.cell_obj_id(&cells_id, &key)?;
+                let position =
+                    read_str(&self.doc, &cell_obj, "position").unwrap_or_else(|| "80".to_string());
+                Some((position, key))
+            })
+            .collect();
+
+        pairs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        pairs
+    }
+
     /// Compute a position for a new cell.
     ///
     /// - `after_cell_id = None` → insert at start (before first cell)
     /// - `after_cell_id = Some(id)` → insert after that cell
     fn compute_position(&self, after_cell_id: Option<&str>) -> FractionalIndex {
-        let cells = self.get_cells(); // sorted by position
+        let pairs = self.get_cell_positions(); // (position, cell_id) sorted
 
         match after_cell_id {
             None => {
                 // Insert at start
-                cells
+                pairs
                     .first()
-                    .map(|c| {
-                        FractionalIndex::new_before(&FractionalIndex::from_hex_string(&c.position))
+                    .map(|(pos, _)| {
+                        FractionalIndex::new_before(&FractionalIndex::from_hex_string(pos))
                     })
                     .unwrap_or_default()
             }
             Some(after_id) => {
-                let idx = cells.iter().position(|c| c.id == after_id);
+                let idx = pairs.iter().position(|(_, id)| id == after_id);
                 match idx {
-                    Some(i) if i + 1 < cells.len() => {
+                    Some(i) if i + 1 < pairs.len() => {
                         // Insert between after and next
                         FractionalIndex::new_between(
-                            &FractionalIndex::from_hex_string(&cells[i].position),
-                            &FractionalIndex::from_hex_string(&cells[i + 1].position),
+                            &FractionalIndex::from_hex_string(&pairs[i].0),
+                            &FractionalIndex::from_hex_string(&pairs[i + 1].0),
                         )
                         .unwrap_or_else(|| {
                             // Fallback: insert after if between fails
                             FractionalIndex::new_after(&FractionalIndex::from_hex_string(
-                                &cells[i].position,
+                                &pairs[i].0,
                             ))
                         })
                     }
                     Some(i) => {
                         // Insert at end (after the last cell)
-                        FractionalIndex::new_after(&FractionalIndex::from_hex_string(
-                            &cells[i].position,
-                        ))
+                        FractionalIndex::new_after(&FractionalIndex::from_hex_string(&pairs[i].0))
                     }
                     None => {
                         // after_cell_id not found: insert at end (after the last cell)
-                        cells
+                        pairs
                             .last()
-                            .map(|c| {
-                                FractionalIndex::new_after(&FractionalIndex::from_hex_string(
-                                    &c.position,
-                                ))
+                            .map(|(pos, _)| {
+                                FractionalIndex::new_after(&FractionalIndex::from_hex_string(pos))
                             })
                             .unwrap_or_default()
                     }

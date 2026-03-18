@@ -384,6 +384,18 @@ impl DocHandle {
         snapshot.cells.iter().map(|c| c.id.clone()).collect()
     }
 
+    /// Get the ID of the last cell in document order, or `None` if empty.
+    pub fn last_cell_id(&self) -> Option<String> {
+        let snapshot = self.snapshot_rx.borrow();
+        snapshot.cells.last().map(|c| c.id.clone())
+    }
+
+    /// Get the ID of the first cell in document order, or `None` if empty.
+    pub fn first_cell_id(&self) -> Option<String> {
+        let snapshot = self.snapshot_rx.borrow();
+        snapshot.cells.first().map(|c| c.id.clone())
+    }
+
     /// Get a single cell's source text without cloning the full snapshot.
     pub fn get_cell_source(&self, cell_id: &str) -> Option<String> {
         let snapshot = self.snapshot_rx.borrow();
