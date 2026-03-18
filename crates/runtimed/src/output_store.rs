@@ -657,8 +657,7 @@ fn is_binary_mime(mime: &str) -> bool {
     }
 
     // application/* is binary by default, with carve-outs for text-like formats.
-    if mime.starts_with("application/") {
-        let subtype = &mime["application/".len()..];
+    if let Some(subtype) = mime.strip_prefix("application/") {
         // Text-like application types that should NOT be treated as binary
         let is_text = subtype == "json"
             || subtype == "javascript"

@@ -6,11 +6,46 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use base64::Engine as _;
+
 use crate::output::Output;
 
 /// Check if a string looks like a blob hash (64 hex characters).
 fn is_blob_hash(s: &str) -> bool {
     s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Check if a MIME type represents binary content.
+///
+/// Binary MIME types are stored as raw bytes in the blob store (decoded
+/// from Jupyter's base64 wire format). When resolving, we read the raw
+/// bytes and base64-encode them back to a string for the Output struct.
+///
+/// Must match the Rust `is_binary_mime` in `output_store.rs` and the
+/// TypeScript `isBinaryMime` in `manifest-resolution.ts`.
+fn is_binary_mime(mime: &str) -> bool {
+    if mime.starts_with("image/") || mime.starts_with("audio/") || mime.starts_with("video/") {
+        return true;
+    }
+
+    // application/* is binary by default, with carve-outs for text-like formats.
+    if let Some(subtype) = mime.strip_prefix("application/") {
+        let is_text = subtype == "json"
+            || subtype == "javascript"
+            || subtype == "ecmascript"
+            || subtype == "xml"
+            || subtype == "xhtml+xml"
+            || subtype == "mathml+xml"
+            || subtype == "sql"
+            || subtype == "graphql"
+            || subtype == "x-latex"
+            || subtype == "x-tex"
+            || subtype.ends_with("+json")
+            || subtype.ends_with("+xml");
+        return !is_text;
+    }
+
+    false
 }
 
 /// Resolve an output string to an Output.
@@ -36,7 +71,8 @@ pub async fn resolve_output_string(
     if is_blob_hash(output_str) {
         log::debug!("[output_resolver] Detected blob hash: {}", output_str);
 
-        // First try: read directly from disk (most reliable)
+        // First try: read directly from disk (most reliable).
+        // Manifests are always JSON text, so read_to_string is correct here.
         if let Some(store_path) = blob_store_path {
             let prefix = &output_str[..2];
             let rest = &output_str[2..];
@@ -66,7 +102,7 @@ pub async fn resolve_output_string(
 
         // Second try: fetch from blob server
         if let Some(base_url) = blob_base_url {
-            let url = format!("{}/blobs/{}", base_url, output_str);
+            let url = format!("{}/blob/{}", base_url, output_str);
             if let Ok(response) = reqwest::get(&url).await {
                 if response.status().is_success() {
                     if let Ok(manifest) = response.json::<serde_json::Value>().await {
@@ -119,7 +155,8 @@ pub async fn resolve_output_with_type(
     if is_blob_hash(output_json) {
         log::debug!("[output_resolver] Detected blob hash: {}", output_json);
 
-        // First try: read directly from disk (most reliable)
+        // First try: read directly from disk (most reliable).
+        // Manifests are always JSON text, so read_to_string is correct here.
         if let Some(store_path) = blob_store_path {
             let prefix = &output_json[..2];
             let rest = &output_json[2..];
@@ -145,7 +182,7 @@ pub async fn resolve_output_with_type(
 
         // Second try: fetch from blob server
         if let Some(base_url) = blob_base_url {
-            let url = format!("{}/blobs/{}", base_url, output_json);
+            let url = format!("{}/blob/{}", base_url, output_json);
             if let Ok(response) = reqwest::get(&url).await {
                 if response.status().is_success() {
                     if let Ok(manifest) = response.json::<serde_json::Value>().await {
@@ -229,6 +266,10 @@ pub fn output_from_json(output_type: &str, json: &serde_json::Value) -> Option<O
 ///
 /// The manifest has a format like:
 /// {"output_type": "stream", "name": "stdout", "text": {"inline": "..."}}
+///
+/// For display_data/execute_result, each MIME type's content ref is resolved
+/// according to its type: binary MIME types read raw bytes from the blob store
+/// and base64-encode them; text MIME types read as UTF-8 strings.
 pub async fn output_from_manifest(
     output_type: &str,
     manifest: &serde_json::Value,
@@ -239,7 +280,7 @@ pub async fn output_from_manifest(
         "stream" => {
             let name = manifest.get("name")?.as_str()?;
             let text_ref = manifest.get("text")?;
-            let text = resolve_content_ref(text_ref, blob_base_url, blob_store_path).await?;
+            let text = resolve_content_ref(text_ref, blob_base_url, blob_store_path, None).await?;
             Some(Output::stream(name, &text))
         }
         "display_data" | "execute_result" => {
@@ -247,8 +288,13 @@ pub async fn output_from_manifest(
             let mut output_data = HashMap::new();
 
             for (mime_type, content_ref) in data_map {
-                if let Some(content) =
-                    resolve_content_ref(content_ref, blob_base_url, blob_store_path).await
+                if let Some(content) = resolve_content_ref(
+                    content_ref,
+                    blob_base_url,
+                    blob_store_path,
+                    Some(mime_type.as_str()),
+                )
+                .await
                 {
                     output_data.insert(mime_type.clone(), content);
                 }
@@ -275,7 +321,8 @@ pub async fn output_from_manifest(
             } else {
                 // Content reference - resolve it and parse as JSON array
                 let tb_str =
-                    resolve_content_ref(traceback_val, blob_base_url, blob_store_path).await?;
+                    resolve_content_ref(traceback_val, blob_base_url, blob_store_path, None)
+                        .await?;
                 serde_json::from_str::<Vec<String>>(&tb_str).ok()?
             };
 
@@ -288,37 +335,63 @@ pub async fn output_from_manifest(
 /// Resolve a content reference from a blob manifest.
 ///
 /// Content refs can be:
-/// - {"inline": "actual content"} - content is inline
-/// - {"blob": "hash"} - content is in blob store
+/// - `{"inline": "actual content"}` — content is inline
+/// - `{"blob": "hash", "size": N}` — content is in the blob store
+///
+/// For binary MIME types (images, etc.), the blob store holds raw bytes
+/// (decoded from Jupyter's base64 wire format). This function reads the
+/// raw bytes and base64-encodes them so the Output struct always contains
+/// base64 strings for binary content (matching Jupyter conventions).
+///
+/// For text MIME types, the blob store holds UTF-8 text which is returned
+/// as-is.
 pub async fn resolve_content_ref(
     content_ref: &serde_json::Value,
     blob_base_url: &Option<String>,
     blob_store_path: &Option<PathBuf>,
+    mime_type: Option<&str>,
 ) -> Option<String> {
     if let Some(inline) = content_ref.get("inline") {
         return inline.as_str().map(|s| s.to_string());
     }
 
-    if let Some(blob_hash) = content_ref.get("blob").and_then(|v| v.as_str()) {
-        // First try: read directly from disk
-        if let Some(store_path) = blob_store_path {
-            if blob_hash.len() >= 2 {
-                let prefix = &blob_hash[..2];
-                let rest = &blob_hash[2..];
-                let blob_path = store_path.join(prefix).join(rest);
+    let blob_hash = content_ref.get("blob").and_then(|v| v.as_str())?;
+    let binary = mime_type.is_some_and(is_binary_mime);
 
+    // First try: read directly from disk
+    if let Some(store_path) = blob_store_path {
+        if blob_hash.len() >= 2 {
+            let prefix = &blob_hash[..2];
+            let rest = &blob_hash[2..];
+            let blob_path = store_path.join(prefix).join(rest);
+
+            if binary {
+                // Binary: read raw bytes and base64-encode
+                if let Ok(bytes) = tokio::fs::read(&blob_path).await {
+                    return Some(base64::engine::general_purpose::STANDARD.encode(&bytes));
+                }
+            } else {
+                // Text: read as UTF-8 string
                 if let Ok(contents) = tokio::fs::read_to_string(&blob_path).await {
                     return Some(contents);
                 }
             }
         }
+    }
 
-        // Second try: fetch from server
-        if let Some(base_url) = blob_base_url {
-            let url = format!("{}/blobs/{}", base_url, blob_hash);
+    // Second try: fetch from blob server
+    if let Some(base_url) = blob_base_url {
+        let url = format!("{}/blob/{}", base_url, blob_hash);
 
-            if let Ok(response) = reqwest::get(&url).await {
-                if response.status().is_success() {
+        if let Ok(response) = reqwest::get(&url).await {
+            if response.status().is_success() {
+                if binary {
+                    // Binary: read raw bytes and base64-encode
+                    if let Ok(bytes) = response.bytes().await {
+                        return Some(base64::engine::general_purpose::STANDARD.encode(&bytes));
+                    }
+                } else {
+                    // Text: read as UTF-8 string
                     return response.text().await.ok();
                 }
             }
