@@ -1,53 +1,9 @@
 import { describe, expect, it } from "vitest";
-
-// ---------------------------------------------------------------------------
-// CellChangeset types — mirrors the Rust `notebook_doc::diff` types.
-// Duplicated here from useAutomergeNotebook.ts because those are module-private.
-// If we ever extract them to a shared module, these tests should import from there.
-// ---------------------------------------------------------------------------
-
-interface ChangedFields {
-  source?: boolean;
-  outputs?: boolean;
-  execution_count?: boolean;
-  cell_type?: boolean;
-  metadata?: boolean;
-  position?: boolean;
-  resolved_assets?: boolean;
-}
-
-interface ChangedCell {
-  cell_id: string;
-  fields: ChangedFields;
-}
-
-interface CellChangeset {
-  changed: ChangedCell[];
-  added: string[];
-  removed: string[];
-  order_changed: boolean;
-}
-
-/** Merge two CellChangesets (same logic as in useAutomergeNotebook.ts). */
-function mergeChangesets(a: CellChangeset, b: CellChangeset): CellChangeset {
-  const changedMap = new Map<string, ChangedFields>();
-  for (const c of [...a.changed, ...b.changed]) {
-    const existing = changedMap.get(c.cell_id);
-    if (existing) {
-      for (const [key, val] of Object.entries(c.fields)) {
-        if (val) (existing as Record<string, boolean>)[key] = true;
-      }
-    } else {
-      changedMap.set(c.cell_id, { ...c.fields });
-    }
-  }
-  return {
-    changed: [...changedMap].map(([cell_id, fields]) => ({ cell_id, fields })),
-    added: [...new Set([...a.added, ...b.added])],
-    removed: [...new Set([...a.removed, ...b.removed])],
-    order_changed: a.order_changed || b.order_changed,
-  };
-}
+import {
+  type CellChangeset,
+  type ChangedFields,
+  mergeChangesets,
+} from "../frame-pipeline";
 
 // ---------------------------------------------------------------------------
 // Helpers

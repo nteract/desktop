@@ -7,17 +7,14 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getBlobPort, refreshBlobPort } from "../lib/blob-port";
 import { frame_types, sendFrame } from "../lib/frame-types";
+import { createFramePipeline } from "../lib/frame-pipeline";
 import { logger } from "../lib/logger";
 import {
   type CellSnapshot,
   cellSnapshotsToNotebookCells,
   cellSnapshotsToNotebookCellsSync,
-  isManifestHash,
-  materializeCellFromWasm,
-  resolveOutput,
 } from "../lib/materialize-cells";
 import {
-  getCellById,
   getNotebookCellsSnapshot,
   replaceNotebookCells,
   resetNotebookCells,
@@ -25,15 +22,8 @@ import {
   updateNotebookCells,
   useCellIds,
 } from "../lib/notebook-cells";
-import {
-  emitBroadcast,
-  emitPresence,
-  subscribeBroadcast,
-} from "../lib/notebook-frame-bus";
-import {
-  notifyMetadataChanged,
-  setNotebookHandle,
-} from "../lib/notebook-metadata";
+import { subscribeBroadcast } from "../lib/notebook-frame-bus";
+import { setNotebookHandle } from "../lib/notebook-metadata";
 import type { DaemonBroadcast, JupyterOutput } from "../types";
 import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
@@ -45,56 +35,6 @@ import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 const wasmReady: Promise<void> = init().then(() => {
   logger.info("[automerge-notebook] WASM initialized");
 });
-
-// ---------------------------------------------------------------------------
-// CellChangeset types — mirrors the Rust `notebook_doc::diff` types
-// serialized from WASM via serde-wasm-bindgen.
-// ---------------------------------------------------------------------------
-
-/** Which fields changed on a cell (only `true` fields are present in the JS object). */
-interface ChangedFields {
-  source?: boolean;
-  outputs?: boolean;
-  execution_count?: boolean;
-  cell_type?: boolean;
-  metadata?: boolean;
-  position?: boolean;
-  resolved_assets?: boolean;
-}
-
-interface ChangedCell {
-  cell_id: string;
-  fields: ChangedFields;
-}
-
-/** Structural diff between two Automerge head sets, produced by WASM `diff_cells`. */
-interface CellChangeset {
-  changed: ChangedCell[];
-  added: string[];
-  removed: string[];
-  order_changed: boolean;
-}
-
-/** Merge two CellChangesets (for coalescing frames across the throttle window). */
-function mergeChangesets(a: CellChangeset, b: CellChangeset): CellChangeset {
-  const changedMap = new Map<string, ChangedFields>();
-  for (const c of [...a.changed, ...b.changed]) {
-    const existing = changedMap.get(c.cell_id);
-    if (existing) {
-      for (const [key, val] of Object.entries(c.fields)) {
-        if (val) (existing as Record<string, boolean>)[key] = true;
-      }
-    } else {
-      changedMap.set(c.cell_id, { ...c.fields });
-    }
-  }
-  return {
-    changed: [...changedMap].map(([cell_id, fields]) => ({ cell_id, fields })),
-    added: [...new Set([...a.added, ...b.added])],
-    removed: [...new Set([...a.removed, ...b.removed])],
-    order_changed: a.order_changed || b.order_changed,
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Hook
@@ -235,123 +175,6 @@ export function useAutomergeNotebook() {
     replaceNotebookCells(newCells);
   }, []);
 
-  // Coalescing timer for incoming sync frames — when an agent is active,
-  // frames arrive rapidly. Instead of materializing on every frame, batch
-  // into a single materialization per ~32ms window.
-  //
-  // Tracks a CellChangeset that accumulates across frames. If any frame
-  // arrives without a changeset, falls back to full materialization.
-  const pendingMaterializeTimerRef = useRef<ReturnType<
-    typeof setTimeout
-  > | null>(null);
-  const pendingFullMaterializeRef = useRef(false);
-  const pendingChangesetRef = useRef<CellChangeset | null>(null);
-
-  const scheduleMaterialize = useCallback(
-    (_handle: NotebookHandle, changeset?: CellChangeset) => {
-      if (changeset) {
-        // Merge into accumulated changeset for this coalescing window.
-        pendingChangesetRef.current = pendingChangesetRef.current
-          ? mergeChangesets(pendingChangesetRef.current, changeset)
-          : changeset;
-      } else {
-        // No changeset — can't do incremental, need full materialization.
-        pendingFullMaterializeRef.current = true;
-      }
-      if (pendingMaterializeTimerRef.current) return;
-      pendingMaterializeTimerRef.current = setTimeout(async () => {
-        pendingMaterializeTimerRef.current = null;
-        // Read handle at fire time — not capture time — to avoid
-        // use-after-free if bootstrap() replaced/freed the handle.
-        const handle = handleRef.current;
-        if (!handle) return;
-        const needsFull = pendingFullMaterializeRef.current;
-        const cs = pendingChangesetRef.current;
-        pendingFullMaterializeRef.current = false;
-        pendingChangesetRef.current = null;
-
-        if (needsFull || !cs) {
-          await materializeCells(handle);
-          notifyMetadataChanged();
-          return;
-        }
-
-        // Structural changes (cells added/removed/reordered) require full
-        // materialization — the cell ID list and ordering need updating.
-        if (cs.added.length > 0 || cs.removed.length > 0 || cs.order_changed) {
-          await materializeCells(handle);
-          notifyMetadataChanged();
-          return;
-        }
-
-        // Per-cell materialization. For cells with output changes, check
-        // whether all outputs are already in the cache. Cache hits use the
-        // fast synchronous path; cache misses resolve the individual cell's
-        // outputs asynchronously (without serializing the entire document).
-        const cache = outputCacheRef.current;
-
-        for (const { cell_id: cellId, fields } of cs.changed) {
-          if (fields.outputs) {
-            // Check if every output for this cell is already cached.
-            const rawOutputs: string[] = handle.get_cell_outputs(cellId) ?? [];
-            const allCached = rawOutputs.every(
-              (o) => cache.has(o) || !isManifestHash(o),
-            );
-
-            if (allCached) {
-              // All outputs resolved from cache — fast sync path.
-              const cell = materializeCellFromWasm(
-                handle,
-                cellId,
-                cache,
-                getCellById(cellId),
-              );
-              if (cell) updateCellById(cellId, () => cell);
-            } else {
-              // Cache miss — resolve this cell's outputs async (fetch
-              // manifests from blob store) without re-serializing the
-              // entire document.
-              let blobPort = getBlobPort();
-              if (blobPort === null) {
-                blobPort = await refreshBlobPort();
-              }
-              const resolved = (
-                await Promise.all(
-                  rawOutputs.map((o) => resolveOutput(o, blobPort, cache)),
-                )
-              ).filter((o): o is JupyterOutput => o !== null);
-
-              const ecStr = handle.get_cell_execution_count(cellId);
-              const ec =
-                !ecStr || ecStr === "null" ? null : Number.parseInt(ecStr, 10);
-              const source = handle.get_cell_source(cellId) ?? "";
-              const metadata = handle.get_cell_metadata(cellId) ?? {};
-
-              updateCellById(cellId, () => ({
-                id: cellId,
-                cell_type: "code" as const,
-                source,
-                execution_count: Number.isNaN(ec) ? null : ec,
-                outputs: resolved,
-                metadata,
-              }));
-            }
-          } else {
-            // No output changes — always use fast sync path.
-            const cell = materializeCellFromWasm(
-              handle,
-              cellId,
-              cache,
-              getCellById(cellId),
-            );
-            if (cell) updateCellById(cellId, () => cell);
-          }
-        }
-      }, 32);
-    },
-    [materializeCells],
-  );
-
   // ── Bootstrap ──────────────────────────────────────────────────────
 
   /**
@@ -440,88 +263,23 @@ export function useAutomergeNotebook() {
       },
     );
 
-    // ── Incoming frames from daemon (unified pipe) ──────────────────
+    // ── Inbound frame pipeline (RxJS) ───────────────────────────────
     //
     // All frame types (AutomergeSync, Broadcast, Presence) arrive through
-    // one event. The WASM handle.receive_frame() demuxes by the first byte,
-    // applies sync internally, and returns typed FrameEvent JSON.
-    //
-    // Broadcasts and presence are dispatched via the frame bus (in-memory
-    // pub/sub) to useDaemonKernel, useEnvProgress, and usePresence.
-    const unlistenFrame = webview.listen<number[]>(
-      "notebook:frame",
-      async (event) => {
-        if (cancelled) return;
-        const handle = handleRef.current;
-        if (!handle) return;
-        try {
-          const bytes = new Uint8Array(event.payload);
-          const result = handle.receive_frame(bytes);
-          if (!result || !Array.isArray(result)) return;
-
-          const events = result as Array<{
-            type: string;
-            changed?: boolean;
-            changeset?: CellChangeset;
-            attributions?: Array<{
-              cell_id: string;
-              index: number;
-              text: string;
-              deleted: number;
-              actors: string[];
-            }>;
-            payload?: unknown;
-          }>;
-
-          for (const frameEvent of events) {
-            switch (frameEvent.type) {
-              case "sync_applied": {
-                if (awaitingInitialSyncRef.current) {
-                  awaitingInitialSyncRef.current = false;
-                  setIsLoading(false);
-                  // Initial sync: materialize immediately (no throttle)
-                  if (frameEvent.changed) {
-                    await materializeCells(handle);
-                    notifyMetadataChanged();
-                  }
-                } else if (frameEvent.changed) {
-                  // Use the WASM-computed CellChangeset for surgical updates.
-                  // Falls back to full materialization if changeset is absent.
-                  scheduleMaterialize(handle, frameEvent.changeset);
-                }
-                if (
-                  frameEvent.attributions &&
-                  frameEvent.attributions.length > 0
-                ) {
-                  emitBroadcast({
-                    type: "text_attribution",
-                    attributions: frameEvent.attributions,
-                  });
-                }
-                // Schedule a debounced sync reply — multiple inbound frames
-                // coalesce into a single outbound reply per 50ms window.
-                scheduleSyncReply();
-                break;
-              }
-              case "broadcast": {
-                if (frameEvent.payload) {
-                  emitBroadcast(frameEvent.payload);
-                }
-                break;
-              }
-              case "presence": {
-                if (frameEvent.payload) {
-                  emitPresence(frameEvent.payload);
-                }
-                break;
-              }
-            }
-          }
-        } catch (e) {
-          logger.warn("[automerge-notebook] receive frame failed:", e);
-        }
+    // one Tauri event. The RxJS pipeline owns WASM demux, coalescing,
+    // materialization, and fan-out to the frame bus. Replaces the old
+    // imperative listener + scheduleMaterialize + 3 timer/accumulator refs.
+    const frameSub = createFramePipeline({
+      getHandle: () => handleRef.current,
+      getAwaitingInitialSync: () => awaitingInitialSyncRef.current,
+      setAwaitingInitialSync: (v) => {
+        awaitingInitialSyncRef.current = v;
       },
-    );
+      setIsLoading,
+      materializeCells,
+      outputCache: outputCacheRef.current,
+      onSyncApplied: scheduleSyncReply,
+    });
 
     // ── Bulk output clearing (run-all / restart-and-run-all) ─────────
     const unlistenClearOutputs = webview.listen<string[]>(
@@ -541,9 +299,9 @@ export function useAutomergeNotebook() {
 
     return () => {
       cancelled = true;
+      frameSub.unsubscribe();
       unlistenReady.then((fn) => fn()).catch(() => {});
       unlistenFileOpened.then((fn) => fn()).catch(() => {});
-      unlistenFrame.then((fn) => fn()).catch(() => {});
       unlistenClearOutputs.then((fn) => fn()).catch(() => {});
       // Flush any pending debounced sync before teardown
       if (pendingSyncTimerRef.current) {
@@ -567,24 +325,13 @@ export function useAutomergeNotebook() {
           }
         }
       }
-      // Cancel pending materialize timer
-      if (pendingMaterializeTimerRef.current) {
-        clearTimeout(pendingMaterializeTimerRef.current);
-        pendingMaterializeTimerRef.current = null;
-      }
       // Free WASM handle.
       resetNotebookCells();
       setNotebookHandle(null);
       handleRef.current?.free();
       handleRef.current = null;
     };
-  }, [
-    bootstrap,
-    materializeCells,
-    scheduleMaterialize,
-    scheduleSyncReply,
-    syncToRelay,
-  ]);
+  }, [bootstrap, materializeCells, scheduleSyncReply, syncToRelay]);
 
   // ── Cell mutations ─────────────────────────────────────────────────
 

@@ -1,0 +1,25 @@
+# Voice substitutions for nteract desktop project
+# Usage: voice --sub-file .voice-subs "your text here"
+
+nteract=en-ter-act
+RxJS=R X J S
+rxjs=R X J S
+useAutomergeNotebook=use automerge notebook
+useEffect=use effect
+useState=use state
+useCallback=use callback
+useRef=use ref
+useSyncExternalStore=use sync external store
+useMemo=use memo
+fromTauriEvent=from tauri event
+debounceTime=debounce time
+bufferTime=buffer time
+switchMap=switch map
+mergeMap=merge map
+WASM=wasm
+wasm=wasm
+PRs=P Rs
+PR=P R
+tsconfig=T S config
+vitest=vye test
+TypeScript=typescript
