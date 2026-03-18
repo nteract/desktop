@@ -421,4 +421,9 @@ async function materializeFromBatch(
       if (cell) updateCellById(cellId, () => cell);
     }
   }
+
+  // Always notify metadata — a sync batch may contain metadata-only
+  // changes (e.g. add_dependency) that produce an empty cell changeset.
+  // Without this, the dependency chip UI won't re-render.
+  notifyMetadataChanged();
 }
