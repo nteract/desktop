@@ -17,13 +17,11 @@ import type {
 interface DependencyHeaderProps {
   dependencies: string[];
   requiresPython: string | null;
-  prerelease: string | null;
   loading: boolean;
   syncedWhileRunning: boolean;
   needsKernelRestart: boolean;
   onAdd: (pkg: string) => Promise<void>;
   onRemove: (pkg: string) => Promise<void>;
-  onSetPrerelease?: (prerelease: string | null) => Promise<void>;
   // Environment sync state
   syncState?: EnvSyncState | null;
   onSyncNow?: () => Promise<boolean>;
@@ -43,13 +41,11 @@ interface DependencyHeaderProps {
 export function DependencyHeader({
   dependencies,
   requiresPython,
-  prerelease,
   loading,
   syncedWhileRunning,
   needsKernelRestart,
   onAdd,
   onRemove,
-  onSetPrerelease,
   syncState,
   onSyncNow,
   pyprojectInfo,
@@ -261,34 +257,6 @@ export function DependencyHeader({
         {requiresPython && (
           <div className="mb-2 text-xs text-muted-foreground">
             Python: <span className="font-mono">{requiresPython}</span>
-          </div>
-        )}
-
-        {/* Prerelease strategy dropdown (hidden when using project env) */}
-        {!isUsingProjectEnv && onSetPrerelease && (
-          <div className="mb-2 flex items-center gap-2 text-xs">
-            <label
-              htmlFor="prerelease-select"
-              className="text-muted-foreground"
-            >
-              Prereleases:
-            </label>
-            <select
-              id="prerelease-select"
-              value={prerelease ?? ""}
-              onChange={(e) => onSetPrerelease(e.target.value || null)}
-              disabled={loading}
-              className="rounded border bg-background px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
-            >
-              <option value="">Default (if-necessary-or-explicit)</option>
-              <option value="allow">Allow all</option>
-              <option value="disallow">Disallow</option>
-              <option value="if-necessary">If necessary</option>
-              <option value="explicit">Explicit only</option>
-              <option value="if-necessary-or-explicit">
-                If necessary or explicit
-              </option>
-            </select>
           </div>
         )}
 
