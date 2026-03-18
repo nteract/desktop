@@ -21,14 +21,14 @@
  */
 
 import {
-  EMPTY,
-  Subject,
-  Subscription,
-  from,
   bufferTime,
   concatMap,
+  EMPTY,
   filter,
+  from,
   mergeMap,
+  Subject,
+  Subscription,
   share,
 } from "rxjs";
 

@@ -1,15 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Subject, debounceTime, merge, switchMap, from } from "rxjs";
+import { debounceTime, from, merge, Subject, switchMap } from "rxjs";
 import { getBlobPort, refreshBlobPort } from "../lib/blob-port";
-import { frame_types, sendFrame } from "../lib/frame-types";
 import { createFramePipeline } from "../lib/frame-pipeline";
-import {
-  saveNotebook,
-  openNotebookFile,
-  cloneNotebookFile,
-} from "../lib/notebook-file-ops";
-import { fromTauriEvent } from "../lib/tauri-rx";
+import { frame_types, sendFrame } from "../lib/frame-types";
 import { logger } from "../lib/logger";
 import {
   type CellSnapshot,
@@ -24,8 +18,14 @@ import {
   updateNotebookCells,
   useCellIds,
 } from "../lib/notebook-cells";
+import {
+  cloneNotebookFile,
+  openNotebookFile,
+  saveNotebook,
+} from "../lib/notebook-file-ops";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
 import { setNotebookHandle } from "../lib/notebook-metadata";
+import { fromTauriEvent } from "../lib/tauri-rx";
 import type { DaemonBroadcast, JupyterOutput } from "../types";
 import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
@@ -118,11 +118,10 @@ export function useAutomergeNotebook() {
    * After the mutation callback runs, re-materializes and syncs.
    */
   const commitMutation = useCallback(
-    (mutate: (handle: NotebookHandle) => boolean | void) => {
+    (mutate: (handle: NotebookHandle) => boolean) => {
       const handle = handleRef.current;
       if (!handle || awaitingInitialSyncRef.current) return false;
-      const result = mutate(handle);
-      if (result === false) return false;
+      if (!mutate(handle)) return false;
       rematerializeCellsSync(handle);
       syncToRelay(handle);
       setDirty(true);
@@ -336,6 +335,7 @@ export function useAutomergeNotebook() {
     (cellId: string, afterCellId?: string | null) => {
       commitMutation((handle) => {
         handle.move_cell(cellId, afterCellId ?? null);
+        return true;
       });
     },
     [commitMutation],
@@ -345,8 +345,7 @@ export function useAutomergeNotebook() {
     (cellId: string) => {
       commitMutation((handle) => {
         if (handle.cell_count() <= 1) return false;
-        const deleted = handle.delete_cell(cellId);
-        if (!deleted) return false;
+        return !!handle.delete_cell(cellId);
       });
     },
     [commitMutation],
@@ -355,8 +354,7 @@ export function useAutomergeNotebook() {
   const setCellSourceHidden = useCallback(
     (cellId: string, hidden: boolean) => {
       commitMutation((handle) => {
-        const updated = handle.set_cell_source_hidden(cellId, hidden);
-        if (!updated) return false;
+        return !!handle.set_cell_source_hidden(cellId, hidden);
       });
     },
     [commitMutation],
@@ -365,8 +363,7 @@ export function useAutomergeNotebook() {
   const setCellOutputsHidden = useCallback(
     (cellId: string, hidden: boolean) => {
       commitMutation((handle) => {
-        const updated = handle.set_cell_outputs_hidden(cellId, hidden);
-        if (!updated) return false;
+        return !!handle.set_cell_outputs_hidden(cellId, hidden);
       });
     },
     [commitMutation],
