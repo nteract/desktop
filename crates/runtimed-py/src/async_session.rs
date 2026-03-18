@@ -424,6 +424,19 @@ impl AsyncSession {
         future_into_py(py, async move { session_core::get_cell_ids(&state).await })
     }
 
+    /// Get a cell's position (fractional index) without materializing all cells.
+    fn get_cell_position<'py>(
+        &self,
+        py: Python<'py>,
+        cell_id: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let cell_id = cell_id.to_string();
+        future_into_py(py, async move {
+            session_core::get_cell_position(&state, &cell_id).await
+        })
+    }
+
     /// Delete a cell from the document.
     fn delete_cell<'py>(&self, py: Python<'py>, cell_id: &str) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);

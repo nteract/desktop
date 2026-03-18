@@ -644,11 +644,13 @@ pub(crate) async fn get_cell_source(
     state: &Arc<Mutex<SessionState>>,
     cell_id: &str,
 ) -> PyResult<Option<String>> {
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    let handle = {
+        let st = state.lock().await;
+        st.handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?
+            .clone()
+    };
     Ok(handle.get_cell_source(cell_id))
 }
 
@@ -657,11 +659,13 @@ pub(crate) async fn get_cell_type(
     state: &Arc<Mutex<SessionState>>,
     cell_id: &str,
 ) -> PyResult<Option<String>> {
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    let handle = {
+        let st = state.lock().await;
+        st.handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?
+            .clone()
+    };
     Ok(handle.get_cell_type(cell_id))
 }
 
@@ -670,11 +674,13 @@ pub(crate) async fn get_cell_outputs(
     state: &Arc<Mutex<SessionState>>,
     cell_id: &str,
 ) -> PyResult<Option<Vec<String>>> {
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    let handle = {
+        let st = state.lock().await;
+        st.handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?
+            .clone()
+    };
     Ok(handle.get_cell_outputs(cell_id))
 }
 
@@ -683,22 +689,41 @@ pub(crate) async fn get_cell_execution_count(
     state: &Arc<Mutex<SessionState>>,
     cell_id: &str,
 ) -> PyResult<Option<String>> {
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    let handle = {
+        let st = state.lock().await;
+        st.handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?
+            .clone()
+    };
     Ok(handle.get_cell_execution_count(cell_id))
 }
 
 /// Get all cell IDs in document order without materializing full cell data.
 pub(crate) async fn get_cell_ids(state: &Arc<Mutex<SessionState>>) -> PyResult<Vec<String>> {
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    let handle = {
+        let st = state.lock().await;
+        st.handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?
+            .clone()
+    };
     Ok(handle.get_cell_ids())
+}
+
+/// Get a cell's fractional-index position string without materializing all cells.
+pub(crate) async fn get_cell_position(
+    state: &Arc<Mutex<SessionState>>,
+    cell_id: &str,
+) -> PyResult<Option<String>> {
+    let handle = {
+        let st = state.lock().await;
+        st.handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?
+            .clone()
+    };
+    Ok(handle.get_cell_position(cell_id))
 }
 
 /// Delete a cell.

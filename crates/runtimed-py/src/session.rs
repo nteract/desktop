@@ -355,6 +355,12 @@ impl Session {
             .block_on(session_core::get_cell_ids(&self.state))
     }
 
+    /// Get a cell's position (fractional index) without materializing all cells.
+    fn get_cell_position(&self, cell_id: &str) -> PyResult<Option<String>> {
+        self.runtime
+            .block_on(session_core::get_cell_position(&self.state, cell_id))
+    }
+
     /// Delete a cell from the document.
     fn delete_cell(&self, cell_id: &str) -> PyResult<()> {
         self.runtime
