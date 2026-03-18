@@ -639,6 +639,18 @@ async fn setup_sync_receivers(
     let sync_generation_for_cleanup = sync_generation.clone();
     tokio::spawn(async move {
         while let Some(frame_bytes) = raw_frame_rx.recv().await {
+            // Stop forwarding if a newer connection has replaced this one.
+            // Without this check, frames from the old room can interleave
+            // with the new connection's frames on the notebook:frame event
+            // channel, causing the frontend to feed them to the wrong WASM
+            // handle (stale Automerge document).
+            if sync_generation_for_cleanup.load(Ordering::SeqCst) != current_generation {
+                info!(
+                    "[notebook-sync] Stale relay for {} (gen {} superseded) — stopping frame emission",
+                    notebook_id_for_relay, current_generation,
+                );
+                break;
+            }
             if let Err(e) =
                 emit_to_label::<_, _, _>(&window, window.label(), "notebook:frame", &frame_bytes)
             {
