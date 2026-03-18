@@ -35,6 +35,10 @@ pub struct Session {
     runtime: Runtime,
     state: Arc<Mutex<SessionState>>,
     notebook_id: String,
+    /// Re-keyed notebook ID after saving an ephemeral room.
+    /// Stored outside `SessionState` (behind a lightweight `std::sync::Mutex`)
+    /// so the `notebook_id` getter never contends with the async `tokio::sync::Mutex`.
+    notebook_id_override: Arc<std::sync::Mutex<Option<String>>>,
     peer_label: Option<String>,
 }
 
@@ -64,6 +68,7 @@ impl Session {
             runtime,
             state: Arc::new(Mutex::new(state)),
             notebook_id,
+            notebook_id_override: Arc::new(std::sync::Mutex::new(None)),
             peer_label,
         })
     }
@@ -72,11 +77,11 @@ impl Session {
     /// After saving an ephemeral notebook, this reflects the new file-path ID.
     #[getter]
     fn notebook_id(&self) -> String {
-        // Check if save() updated the ID via the daemon re-keying the room
-        if let Ok(st) = self.state.try_lock() {
-            if let Some(ref id) = st.notebook_id_override {
-                return id.clone();
-            }
+        // If save() re-keyed the room, return the new file-path ID.
+        // This lock is a std::sync::Mutex (not tokio), so it never contends
+        // with async SessionState operations.
+        if let Some(ref id) = *self.notebook_id_override.lock().unwrap() {
+            return id.clone();
         }
         self.notebook_id.clone()
     }
@@ -148,6 +153,7 @@ impl Session {
             runtime,
             state: Arc::new(Mutex::new(state)),
             notebook_id,
+            notebook_id_override: Arc::new(std::sync::Mutex::new(None)),
             peer_label,
         })
     }
@@ -204,19 +210,18 @@ impl Session {
             runtime: rt,
             state: Arc::new(Mutex::new(state)),
             notebook_id,
+            notebook_id_override: Arc::new(std::sync::Mutex::new(None)),
             peer_label,
         })
     }
 
     /// Connect to the daemon.
     fn connect(&self) -> PyResult<()> {
-        // Use the override ID if save() re-keyed the room, otherwise the original.
         let effective_id = self
-            .runtime
-            .block_on(async {
-                let st = self.state.lock().await;
-                st.notebook_id_override.clone()
-            })
+            .notebook_id_override
+            .lock()
+            .unwrap()
+            .clone()
             .unwrap_or_else(|| self.notebook_id.clone());
         self.runtime
             .block_on(session_core::connect(&self.state, &effective_id))
@@ -476,11 +481,10 @@ impl Session {
         let result = self
             .runtime
             .block_on(session_core::save(&self.state, path))?;
-        // If the daemon re-keyed the room, update self.notebook_id so that
-        // future reconnects (connect() calls) use the new file-path ID
-        // instead of the stale UUID.
+        // If the daemon re-keyed the room (ephemeral → file-path),
+        // store the new ID so the notebook_id getter reflects it.
         if let Some(new_id) = result.new_notebook_id {
-            self.notebook_id = new_id;
+            *self.notebook_id_override.lock().unwrap() = Some(new_id);
         }
         Ok(result.path)
     }

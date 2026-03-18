@@ -34,6 +34,10 @@ use crate::subscription::EventSubscription;
 pub struct AsyncSession {
     state: Arc<Mutex<SessionState>>,
     notebook_id: String,
+    /// Re-keyed notebook ID after saving an ephemeral room.
+    /// Stored outside `SessionState` (behind a lightweight `std::sync::Mutex`)
+    /// so the `notebook_id` getter never contends with the async `tokio::sync::Mutex`.
+    notebook_id_override: Arc<std::sync::Mutex<Option<String>>>,
     peer_label: Option<String>,
 }
 
@@ -59,6 +63,7 @@ impl AsyncSession {
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
             notebook_id,
+            notebook_id_override: Arc::new(std::sync::Mutex::new(None)),
             peer_label,
         })
     }
@@ -67,11 +72,11 @@ impl AsyncSession {
     /// After saving an ephemeral notebook, this reflects the new file-path ID.
     #[getter]
     fn notebook_id(&self) -> String {
-        // Check if save() updated the ID via the daemon re-keying the room
-        if let Ok(st) = self.state.try_lock() {
-            if let Some(ref id) = st.notebook_id_override {
-                return id.clone();
-            }
+        // If save() re-keyed the room, return the new file-path ID.
+        // This lock is a std::sync::Mutex (not tokio), so it never contends
+        // with async SessionState operations.
+        if let Some(ref id) = *self.notebook_id_override.lock().unwrap() {
+            return id.clone();
         }
         self.notebook_id.clone()
     }
@@ -151,6 +156,7 @@ impl AsyncSession {
             Ok(AsyncSession {
                 state: Arc::new(Mutex::new(state)),
                 notebook_id,
+                notebook_id_override: Arc::new(std::sync::Mutex::new(None)),
                 peer_label,
             })
         })
@@ -207,6 +213,7 @@ impl AsyncSession {
             Ok(AsyncSession {
                 state: Arc::new(Mutex::new(state)),
                 notebook_id,
+                notebook_id_override: Arc::new(std::sync::Mutex::new(None)),
                 peer_label,
             })
         })
@@ -215,13 +222,13 @@ impl AsyncSession {
     /// Connect to the daemon.
     fn connect<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
-        let notebook_id = self.notebook_id.clone();
+        let effective_id = self
+            .notebook_id_override
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| self.notebook_id.clone());
         future_into_py(py, async move {
-            // Use the override ID if save() re-keyed the room, otherwise the original.
-            let effective_id = {
-                let st = state.lock().await;
-                st.notebook_id_override.clone().unwrap_or(notebook_id)
-            };
             session_core::connect(&state, &effective_id).await
         })
     }
@@ -588,17 +595,23 @@ impl AsyncSession {
     #[pyo3(signature = (path=None))]
     fn save<'py>(&self, py: Python<'py>, path: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
-        let notebook_id = self.notebook_id.clone();
+        let override_arc = Arc::clone(&self.notebook_id_override);
+        let effective_id = self
+            .notebook_id_override
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| self.notebook_id.clone());
         let path = path.map(|s| s.to_string());
 
         future_into_py(py, async move {
-            // Use the override ID if save() previously re-keyed the room.
-            let effective_id = {
-                let st = state.lock().await;
-                st.notebook_id_override.clone().unwrap_or(notebook_id)
-            };
             session_core::connect(&state, &effective_id).await?;
             let result = session_core::save(&state, path.as_deref()).await?;
+            // If the daemon re-keyed the room (ephemeral → file-path),
+            // store the new ID so the notebook_id getter reflects it.
+            if let Some(ref new_id) = result.new_notebook_id {
+                *override_arc.lock().unwrap() = Some(new_id.clone());
+            }
             Ok(result.path)
         })
     }
