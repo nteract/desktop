@@ -149,11 +149,16 @@ impl Session {
 
         state.peer_label = peer_label.clone();
 
+        let override_arc = Arc::new(std::sync::Mutex::new(None));
+        if let Some(ref rx) = state.broadcast_rx {
+            session_core::spawn_rekey_watcher(rx, Arc::clone(&override_arc));
+        }
+
         Ok(Self {
             runtime,
             state: Arc::new(Mutex::new(state)),
             notebook_id,
-            notebook_id_override: Arc::new(std::sync::Mutex::new(None)),
+            notebook_id_override: override_arc,
             peer_label,
         })
     }
@@ -206,11 +211,16 @@ impl Session {
 
         state.peer_label = peer_label.clone();
 
+        let override_arc = Arc::new(std::sync::Mutex::new(None));
+        if let Some(ref rx) = state.broadcast_rx {
+            session_core::spawn_rekey_watcher(rx, Arc::clone(&override_arc));
+        }
+
         Ok(Self {
             runtime: rt,
             state: Arc::new(Mutex::new(state)),
             notebook_id,
-            notebook_id_override: Arc::new(std::sync::Mutex::new(None)),
+            notebook_id_override: override_arc,
             peer_label,
         })
     }
@@ -224,7 +234,15 @@ impl Session {
             .clone()
             .unwrap_or_else(|| self.notebook_id.clone());
         self.runtime
-            .block_on(session_core::connect(&self.state, &effective_id))
+            .block_on(session_core::connect(&self.state, &effective_id))?;
+        // Spawn background task to update notebook_id if a peer re-keys the room
+        self.runtime.block_on(async {
+            let st = self.state.lock().await;
+            if let Some(ref rx) = st.broadcast_rx {
+                session_core::spawn_rekey_watcher(rx, Arc::clone(&self.notebook_id_override));
+            }
+        });
+        Ok(())
     }
 
     // =========================================================================

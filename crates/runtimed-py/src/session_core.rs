@@ -163,6 +163,33 @@ pub(crate) async fn connect(state: &Arc<Mutex<SessionState>>, notebook_id: &str)
     Ok(())
 }
 
+/// Spawn a background task that listens for `RoomRenamed` broadcasts
+/// and updates the `notebook_id_override` when another peer re-keys the room.
+///
+/// This ensures `Session.notebook_id` / `AsyncSession.notebook_id` stays
+/// correct even when a different peer saves an ephemeral notebook.
+pub(crate) fn spawn_rekey_watcher(
+    broadcast_rx: &BroadcastReceiver,
+    notebook_id_override: Arc<std::sync::Mutex<Option<String>>>,
+) {
+    let mut rx = broadcast_rx.resubscribe();
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Some(NotebookBroadcast::RoomRenamed { new_notebook_id }) => {
+                    log::info!(
+                        "[session] Room re-keyed by peer, new notebook_id: {}",
+                        new_notebook_id
+                    );
+                    *notebook_id_override.lock().unwrap() = Some(new_notebook_id);
+                }
+                Some(_) => continue,
+                None => break, // channel closed
+            }
+        }
+    });
+}
+
 /// Connect and open an existing notebook file.
 ///
 /// Returns (notebook_id, populated SessionState, NotebookConnectionInfo).

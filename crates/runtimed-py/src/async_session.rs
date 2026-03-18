@@ -153,10 +153,15 @@ impl AsyncSession {
 
             state.peer_label = peer_label.clone();
 
+            let override_arc = Arc::new(std::sync::Mutex::new(None));
+            if let Some(ref rx) = state.broadcast_rx {
+                session_core::spawn_rekey_watcher(rx, Arc::clone(&override_arc));
+            }
+
             Ok(AsyncSession {
                 state: Arc::new(Mutex::new(state)),
                 notebook_id,
-                notebook_id_override: Arc::new(std::sync::Mutex::new(None)),
+                notebook_id_override: override_arc,
                 peer_label,
             })
         })
@@ -210,10 +215,15 @@ impl AsyncSession {
 
             state.peer_label = peer_label.clone();
 
+            let override_arc = Arc::new(std::sync::Mutex::new(None));
+            if let Some(ref rx) = state.broadcast_rx {
+                session_core::spawn_rekey_watcher(rx, Arc::clone(&override_arc));
+            }
+
             Ok(AsyncSession {
                 state: Arc::new(Mutex::new(state)),
                 notebook_id,
-                notebook_id_override: Arc::new(std::sync::Mutex::new(None)),
+                notebook_id_override: override_arc,
                 peer_label,
             })
         })
@@ -222,6 +232,7 @@ impl AsyncSession {
     /// Connect to the daemon.
     fn connect<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
+        let override_arc = Arc::clone(&self.notebook_id_override);
         let effective_id = self
             .notebook_id_override
             .lock()
@@ -229,7 +240,15 @@ impl AsyncSession {
             .clone()
             .unwrap_or_else(|| self.notebook_id.clone());
         future_into_py(py, async move {
-            session_core::connect(&state, &effective_id).await
+            session_core::connect(&state, &effective_id).await?;
+            // Spawn background task to update notebook_id if a peer re-keys the room
+            {
+                let st = state.lock().await;
+                if let Some(ref rx) = st.broadcast_rx {
+                    session_core::spawn_rekey_watcher(rx, override_arc);
+                }
+            }
+            Ok(())
         })
     }
 
