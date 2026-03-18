@@ -271,6 +271,9 @@ impl AsyncSession {
     ///
     /// Args:
     ///     wait_for_ready: If True, wait for kernel to report idle (default: True).
+    ///
+    /// Returns:
+    ///     List of progress messages emitted during environment preparation.
     #[pyo3(signature = (wait_for_ready=true))]
     fn restart_kernel<'py>(
         &self,

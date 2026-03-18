@@ -340,10 +340,13 @@ pub(crate) async fn shutdown_kernel(state: &Arc<Mutex<SessionState>>) -> PyResul
 }
 
 /// Restart the kernel with auto environment detection.
+///
+/// Returns a list of progress messages emitted during environment
+/// preparation (e.g. "Installing 3 packages..."). Empty if cached.
 pub(crate) async fn restart_kernel(
     state: &Arc<Mutex<SessionState>>,
     wait_for_ready: bool,
-) -> PyResult<()> {
+) -> PyResult<Vec<String>> {
     // Shutdown
     {
         let mut st = state.lock().await;
@@ -368,25 +371,68 @@ pub(crate) async fn restart_kernel(
         }
     }
 
-    // Start with auto env detection, passing stored notebook_path
-    {
-        let mut st = state.lock().await;
+    // Clone handle and resubscribe broadcast_rx so we can release the lock
+    // before the potentially long-running LaunchKernel request.
+    let (handle, resolved_path, mut progress_rx) = {
+        let st = state.lock().await;
         let handle = st
             .handle
             .as_ref()
-            .ok_or_else(|| to_py_err("Not connected"))?;
-
+            .ok_or_else(|| to_py_err("Not connected"))?
+            .clone();
         let resolved_path = st.notebook_path.clone();
+        let progress_rx = st.broadcast_rx.as_ref().map(|rx| rx.resubscribe());
+        (handle, resolved_path, progress_rx)
+    };
+    // Lock is now released — other operations can proceed.
 
-        let response = handle
-            .send_request(NotebookRequest::LaunchKernel {
-                kernel_type: "python".to_string(),
-                env_source: "auto".to_string(),
-                notebook_path: resolved_path,
-            })
+    // Send LaunchKernel with a timeout, collecting progress messages concurrently.
+    let mut progress_messages: Vec<String> = Vec::new();
+    let launch_timeout = std::time::Duration::from_secs(120);
+
+    let launch_fut = handle.send_request(NotebookRequest::LaunchKernel {
+        kernel_type: "python".to_string(),
+        env_source: "auto".to_string(),
+        notebook_path: resolved_path,
+    });
+
+    let response = if let Some(ref mut prx) = progress_rx {
+        // Race between launch response and progress events
+        tokio::pin!(launch_fut);
+        let deadline = tokio::time::Instant::now() + launch_timeout;
+        loop {
+            tokio::select! {
+                resp = &mut launch_fut => {
+                    break resp.map_err(to_py_err)?;
+                }
+                msg = prx.recv() => {
+                    if let Some(NotebookBroadcast::EnvProgress { env_type, phase }) = msg {
+                        let text = crate::subscription::env_progress_message(&phase);
+                        progress_messages.push(format!("[{}] {}", env_type, text));
+                    }
+                    // Continue waiting for launch response
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    return Err(to_py_err(
+                        "Kernel restart timed out after 120s (environment may still be installing)"
+                    ));
+                }
+            }
+        }
+    } else {
+        tokio::time::timeout(launch_timeout, launch_fut)
             .await
-            .map_err(to_py_err)?;
+            .map_err(|_| {
+                to_py_err(
+                    "Kernel restart timed out after 120s (environment may still be installing)",
+                )
+            })?
+            .map_err(to_py_err)?
+    };
 
+    // Re-acquire lock to update state
+    {
+        let mut st = state.lock().await;
         match response {
             NotebookResponse::KernelLaunched {
                 kernel_type: actual_type,
@@ -417,7 +463,7 @@ pub(crate) async fn restart_kernel(
                     Ok(Some(NotebookBroadcast::KernelStatus { status, .. }))
                         if status == "idle" =>
                     {
-                        return Ok(());
+                        return Ok(progress_messages);
                     }
                     Ok(Some(_)) => continue,
                     Ok(None) => return Err(to_py_err("Broadcast channel closed")),
@@ -427,7 +473,7 @@ pub(crate) async fn restart_kernel(
         }
     }
 
-    Ok(())
+    Ok(progress_messages)
 }
 
 /// Interrupt the currently executing cell.
