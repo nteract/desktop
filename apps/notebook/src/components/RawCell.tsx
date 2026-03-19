@@ -27,7 +27,6 @@ interface RawCellProps {
   isFocused: boolean;
   searchQuery?: string;
   onFocus: () => void;
-  onUpdateSource: (source: string) => void;
   onDelete: () => void;
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
@@ -43,7 +42,6 @@ export const RawCell = memo(function RawCell({
   isFocused,
   searchQuery,
   onFocus,
-  onUpdateSource: _onUpdateSource,
   onDelete,
   onFocusPrevious,
   onFocusNext,

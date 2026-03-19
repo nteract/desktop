@@ -98,7 +98,6 @@ interface CodeCellProps {
   searchActiveOffset?: number;
   onSearchMatchCount?: (count: number) => void;
   onFocus: () => void;
-  onUpdateSource: (source: string) => void;
   onExecute: () => void;
   onInterrupt: () => void;
   onDelete: () => void;
@@ -137,7 +136,6 @@ export const CodeCell = memo(function CodeCell({
   searchActiveOffset = -1,
   onSearchMatchCount,
   onFocus,
-  onUpdateSource: _onUpdateSource,
   onExecute,
   onInterrupt,
   onDelete,
@@ -176,7 +174,7 @@ export const CodeCell = memo(function CodeCell({
 
   // Register EditorView with the cursor registry for remote cursor rendering.
   // We use a ref + polling approach because the EditorView is created async
-  // by useCodeMirror and isn't available on first render.
+  // by CodeMirrorEditor and isn't available on first render.
   const registeredViewRef = useRef<EditorView | null>(null);
   useEffect(() => {
     const tryRegister = () => {

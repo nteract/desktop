@@ -50,7 +50,6 @@ interface NotebookViewProps {
   searchQuery?: string;
   searchCurrentMatch?: FindMatch | null;
   onFocusCell: (cellId: string) => void;
-  onUpdateCellSource: (cellId: string, source: string) => void;
   onExecuteCell: (cellId: string) => void;
   onInterruptKernel: () => void;
   onDeleteCell: (cellId: string) => void;
@@ -324,7 +323,6 @@ function NotebookViewContent({
   searchQuery,
   searchCurrentMatch,
   onFocusCell,
-  onUpdateCellSource,
   onExecuteCell,
   onInterruptKernel,
   onDeleteCell,
@@ -565,7 +563,6 @@ function NotebookViewContent({
                 : undefined
             }
             onFocus={() => onFocusCell(cell.id)}
-            onUpdateSource={(source) => onUpdateCellSource(cell.id, source)}
             onExecute={() => onExecuteCell(cell.id)}
             onInterrupt={onInterruptKernel}
             onDelete={() => onDeleteCell(cell.id)}
@@ -621,7 +618,6 @@ function NotebookViewContent({
             isPreviousCellFromFocused={cell.id === previousCellId}
             searchQuery={searchQuery}
             onFocus={() => onFocusCell(cell.id)}
-            onUpdateSource={(source) => onUpdateCellSource(cell.id, source)}
             onDelete={() => onDeleteCell(cell.id)}
             onFocusPrevious={onFocusPrevious}
             onFocusNext={onFocusNext}
@@ -642,7 +638,6 @@ function NotebookViewContent({
           isPreviousCellFromFocused={cell.id === previousCellId}
           searchQuery={searchQuery}
           onFocus={() => onFocusCell(cell.id)}
-          onUpdateSource={(source) => onUpdateCellSource(cell.id, source)}
           onDelete={() => onDeleteCell(cell.id)}
           onFocusPrevious={onFocusPrevious}
           onFocusNext={onFocusNext}
@@ -663,7 +658,6 @@ function NotebookViewContent({
       searchCurrentMatch,
       cellIds,
       onFocusCell,
-      onUpdateCellSource,
       onExecuteCell,
       onInterruptKernel,
       onDeleteCell,

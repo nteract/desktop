@@ -113,7 +113,6 @@ function AppContent() {
     isLoading,
     focusedCellId,
     setFocusedCellId,
-    updateCellSource,
     addCell,
     moveCell,
     deleteCell,
@@ -1198,7 +1197,6 @@ function AppContent() {
             searchQuery={globalFind.query}
             searchCurrentMatch={globalFind.currentMatch}
             onFocusCell={setFocusedCellId}
-            onUpdateCellSource={updateCellSource}
             onExecuteCell={handleExecuteCell}
             onInterruptKernel={interruptKernel}
             onDeleteCell={deleteCell}

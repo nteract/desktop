@@ -1876,7 +1876,7 @@ impl Daemon {
 
             // Log status
             let (available, warming) = self.uv_pool.lock().await.stats();
-            info!(
+            debug!(
                 "[runtimed] UV pool: {}/{} available, {} warming",
                 available, self.config.uv_pool_size, warming
             );
@@ -1960,7 +1960,7 @@ impl Daemon {
 
             // Log status
             let (available, warming) = self.conda_pool.lock().await.stats();
-            info!(
+            debug!(
                 "[runtimed] Conda pool: {}/{} available, {} warming",
                 available, self.config.conda_pool_size, warming
             );
