@@ -166,10 +166,13 @@ hot-reloads when source files change.
 
 ```bash
 # Build and run the supervisor (starts daemon if needed)
-cargo xtask mcp
+cargo xtask run-mcp
+
+# Run with release-optimized daemon (for perf testing)
+cargo xtask run-mcp --release
 
 # Or print config JSON for your MCP client
-cargo xtask mcp --print-config
+cargo xtask run-mcp --print-config
 ```
 
 For `.zed/settings.json` (gitignored, per-developer):
@@ -192,9 +195,10 @@ tools in addition to the standard nteract notebook tools:
 
 | Tool | Purpose |
 |------|---------|
-| `supervisor_status` | Check child process, daemon, restart count, last error |
+| `supervisor_status` | Check child process, daemon, build mode, restart count, last error |
 | `supervisor_restart` | Restart child (`target="child"`) or daemon (`target="daemon"`) |
 | `supervisor_rebuild` | Run `maturin develop` to rebuild Rust Python bindings, then restart |
+| `supervisor_set_mode` | Switch daemon between `"debug"` and `"release"` builds at runtime (no editor restart needed) |
 | `supervisor_logs` | Tail the daemon log file |
 | `supervisor_start_vite` | Start the Vite dev server for hot-reload frontend development. Returns the port number. If already running, returns the existing port. |
 | `supervisor_stop` | Stop a managed process by name (e.g. `"vite"`). |
@@ -220,10 +224,16 @@ MCP tools may or may not be available depending on your session:
 
 - **Inkwell active** → all supervisor + nteract tools available
 - **nteract MCP only** (no supervisor) → nteract tools only, no `supervisor_*`
-- **No MCP server** → use `cargo xtask dev-mcp` or `cargo xtask mcp` to set one up
+- **No MCP server** → use `cargo xtask dev-mcp` or `cargo xtask run-mcp` to set one up
 - **Dev daemon not running** → Inkwell starts it automatically; for manual control use `cargo xtask dev-daemon`
 
 See `contributing/development.md` for the full MCP development workflow.
+
+## Build System (`cargo xtask`)
+
+All build, lint, and dev commands go through `cargo xtask`. **Run `cargo xtask help` at the start of each session** to see the current command list — it's the source of truth and changes as the project evolves.
+
+**Always run `cargo xtask lint` before committing.** The `--fix` flag auto-fixes formatting and also runs clippy (check-only). CI rejects PRs that fail any lint check.
 
 ## Contributing Guidelines
 

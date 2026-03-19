@@ -1482,7 +1482,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Initialize release mode from env var (can be toggled at runtime via supervisor_set_mode)
-    if std::env::var("RUNTIMED_RELEASE").map_or(false, |v| v == "1") {
+    if std::env::var("RUNTIMED_RELEASE").is_ok_and(|v| v == "1") {
         RELEASE_MODE.store(true, Ordering::Relaxed);
         info!("Starting in release mode (RUNTIMED_RELEASE=1)");
     }

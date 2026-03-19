@@ -54,7 +54,7 @@ fn main() {
             let print_config = args.iter().any(|a| a == "--print-config");
             cmd_dev_mcp(print_config);
         }
-        "mcp" => {
+        "run-mcp" | "mcp" => {
             let print_config = args.iter().any(|a| a == "--print-config");
             let release = args.iter().any(|a| a == "--release");
             cmd_mcp(print_config, release);
@@ -99,10 +99,10 @@ Daemon:
   dev-daemon [--release]     Build and run runtimed in per-worktree dev mode
 
 MCP:
-  mcp [--release]            MCP supervisor (proxy + daemon + auto-restart)
-  mcp --print-config         Print MCP client config JSON (for Claude, Zed, etc.)
-  dev-mcp                    Build Python bindings and launch nteract MCP server
-  dev-mcp --print-config     Print MCP client config JSON (for Claude, Zed, etc.)
+  run-mcp [--release]        Build and run the Inkwell MCP supervisor (proxy + daemon + auto-restart)
+  run-mcp --print-config     Print MCP client config JSON (for Zed, Claude, etc.)
+  dev-mcp                    Build Python bindings and launch nteract MCP server directly (no supervisor)
+  dev-mcp --print-config     Print MCP client config JSON (for Zed, Claude, etc.)
 
 Linting:
   lint                       Check formatting and linting (Rust, JS/TS, Python)
@@ -758,18 +758,22 @@ fn cmd_mcp(print_config: bool, release: bool) {
             eprintln!("Failed to resolve supervisor binary path: {e}");
             exit(1);
         });
-        let mut env = serde_json::json!({
-            "RUNTIMED_DEV": "1"
-        });
-        if release {
-            env.as_object_mut()
-                .unwrap()
-                .insert("RUNTIMED_RELEASE".to_string(), serde_json::json!("1"));
-        }
-        let config = serde_json::json!({
-            "command": binary_path.to_string_lossy(),
-            "env": env
-        });
+        let config = if release {
+            serde_json::json!({
+                "command": binary_path.to_string_lossy(),
+                "env": {
+                    "RUNTIMED_DEV": "1",
+                    "RUNTIMED_RELEASE": "1"
+                }
+            })
+        } else {
+            serde_json::json!({
+                "command": binary_path.to_string_lossy(),
+                "env": {
+                    "RUNTIMED_DEV": "1"
+                }
+            })
+        };
         println!(
             "{}",
             serde_json::to_string_pretty(&config).unwrap_or_else(|e| {
@@ -1216,24 +1220,22 @@ fn cmd_lint(fix: bool) {
     }
     println!();
 
-    // Rust clippy (check-only, no auto-fix available)
-    if !fix {
-        println!("=== Rust clippy ===");
-        if !run_cmd_ok(
-            "cargo",
-            &[
-                "clippy",
-                "--workspace",
-                "--all-targets",
-                "--",
-                "-D",
-                "warnings",
-            ],
-        ) {
-            failed = true;
-        }
-        println!();
+    // Rust clippy (always check-only — clippy doesn't auto-fix)
+    println!("=== Rust clippy ===");
+    if !run_cmd_ok(
+        "cargo",
+        &[
+            "clippy",
+            "--workspace",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    ) {
+        failed = true;
     }
+    println!();
 
     // JavaScript/TypeScript with Biome
     println!("=== JavaScript/TypeScript (Biome) ===");
