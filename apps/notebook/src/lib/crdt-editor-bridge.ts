@@ -144,6 +144,17 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
 
       isProcessingOutbound = true;
       try {
+        // Collect all changes first, then apply in reverse order (end → start)
+        // so that earlier positions aren't shifted by later splices.
+        // iterChanges reports fromA/toA in pre-transaction coordinates;
+        // applying ascending would mis-apply when a single transaction
+        // contains multiple separated edits (multi-cursor, replace-all, IME).
+        const changes: Array<{
+          fromA: number;
+          toA: number;
+          inserted: string;
+        }> = [];
+
         for (const tr of outboundTxs) {
           tr.changes.iterChanges(
             (
@@ -153,11 +164,25 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
               _toB: number,
               inserted,
             ) => {
-              const deleteCount = toA - fromA;
-              const insertText = inserted.toString();
-              handle.splice_source(cellId, fromA, deleteCount, insertText);
+              changes.push({
+                fromA,
+                toA,
+                inserted: inserted.toString(),
+              });
             },
           );
+        }
+
+        // Apply end → start so positions stay valid.
+        for (let i = changes.length - 1; i >= 0; i--) {
+          const { fromA, toA, inserted } = changes[i];
+          const deleteCount = toA - fromA;
+          const ok = handle.splice_source(cellId, fromA, deleteCount, inserted);
+          if (!ok) {
+            // Cell was deleted or handle is stale — abort remaining splices
+            // and resync the editor from the WASM handle on next inbound.
+            break;
+          }
         }
 
         // Read the full source back from WASM for the cell store.
@@ -194,27 +219,24 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
       // cumulative (each change's index is relative to the doc state
       // after the previous dispatch), matching Automerge's patch ordering.
       for (const change of changes) {
+        const docLen = view.state.doc.length;
         const spec: ChangeSpec[] = [];
+
+        // Clamp indices to document bounds to prevent CM dispatch errors
+        // if the editor state has diverged from the CRDT.
+        const from = Math.min(change.index, docLen);
 
         if (change.deleted > 0 && change.text.length > 0) {
           // Replace: delete + insert at same position
-          spec.push({
-            from: change.index,
-            to: change.index + change.deleted,
-            insert: change.text,
-          });
+          const to = Math.min(from + change.deleted, docLen);
+          spec.push({ from, to, insert: change.text });
         } else if (change.deleted > 0) {
           // Pure deletion
-          spec.push({
-            from: change.index,
-            to: change.index + change.deleted,
-          });
+          const to = Math.min(from + change.deleted, docLen);
+          spec.push({ from, to });
         } else if (change.text.length > 0) {
           // Pure insertion
-          spec.push({
-            from: change.index,
-            insert: change.text,
-          });
+          spec.push({ from, insert: change.text });
         }
 
         if (spec.length > 0) {

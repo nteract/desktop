@@ -1,7 +1,7 @@
 {
   "context_servers": {
     "supervisor": {
-      "command": "./target/release/mcp-supervisor",
+      "command": "./target/debug/mcp-supervisor",
       "args": [],
       "env": {
         "RUNTIMED_DEV": "1",

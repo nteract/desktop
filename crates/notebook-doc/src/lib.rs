@@ -1160,8 +1160,11 @@ impl NotebookDoc {
             None => return Ok(false),
         };
 
+        let delete_count: isize = delete_count
+            .try_into()
+            .map_err(|_| AutomergeError::InvalidIndex(delete_count))?;
         self.doc
-            .splice_text(&source_id, index, delete_count as isize, text)?;
+            .splice_text(&source_id, index, delete_count, text)?;
         Ok(true)
     }
 

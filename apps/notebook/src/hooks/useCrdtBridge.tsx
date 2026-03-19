@@ -29,6 +29,7 @@ import {
   createCrdtBridge,
   type RemoteChange,
 } from "../lib/crdt-editor-bridge";
+import { logger } from "../lib/logger";
 import { updateCellById } from "../lib/notebook-cells";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
@@ -142,7 +143,7 @@ export function useCrdtBridge(cellId: string): {
         }>;
       };
 
-      console.debug(
+      logger.debug(
         `[crdt-bridge] text_attribution broadcast received: ${event.attributions.length} attrs, looking for cell ${cellId.slice(0, 8)}`,
         event.attributions.map(
           (a) =>
@@ -163,7 +164,7 @@ export function useCrdtBridge(cellId: string): {
 
       if (changes.length > 0) {
         const view = bridge.getView();
-        console.debug(
+        logger.debug(
           `[crdt-bridge] Applying ${changes.length} remote changes to cell ${cellId.slice(0, 8)}, view=${view ? "attached" : "NULL"}`,
           changes,
         );

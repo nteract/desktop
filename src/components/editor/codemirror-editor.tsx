@@ -216,9 +216,10 @@ export const CodeMirrorEditor = forwardRef<
         // When the language is "ipython", check if the first line changed
         // to a different cell magic and reconfigure the language extension.
         if (languageRef.current === "ipython") {
-          const { extension: newLangExt, cellMagic } = getIPythonExtension(
-            vu.state.doc.toString(),
-          );
+          // Only read the first line — magic detection is O(1) vs O(n) toString().
+          const firstLine = vu.state.doc.line(1).text;
+          const { extension: newLangExt, cellMagic } =
+            getIPythonExtension(firstLine);
           const magicKey = cellMagic ?? "";
           if (magicKey !== (lastMagicRef.current ?? "")) {
             lastMagicRef.current = magicKey;
