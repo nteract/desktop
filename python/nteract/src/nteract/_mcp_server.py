@@ -73,15 +73,15 @@ def _peer_label() -> str:
 
 # Session state - single active session at a time
 _session: runtimed.AsyncSession | None = None
-_daemon_client: runtimed.DaemonClient | None = None
+_client: runtimed.AsyncClient | None = None
 
 
-def _get_daemon_client() -> runtimed.DaemonClient:
-    """Get or create the daemon client."""
-    global _daemon_client
-    if _daemon_client is None:
-        _daemon_client = runtimed.DaemonClient()
-    return _daemon_client
+def _get_client() -> runtimed.AsyncClient:
+    """Get or create the async client."""
+    global _client
+    if _client is None:
+        _client = runtimed.AsyncClient()
+    return _client
 
 
 async def _get_session() -> runtimed.AsyncSession:
@@ -504,8 +504,8 @@ async def list_active_notebooks() -> list[dict[str, Any]]:
     Returns notebooks currently open by users or other agents.
     Use join_notebook(notebook_id) to connect to one.
     """
-    client = _get_daemon_client()
-    rooms = client.list_rooms()
+    client = _get_client()
+    rooms = await client.list_rooms()
     return [
         {
             "notebook_id": room["notebook_id"],
@@ -544,8 +544,8 @@ if not _no_show:
                     "Use list_active_notebooks() to find a notebook_id, or connect to one first."
                 )
 
-        client = _get_daemon_client()
-        rooms = client.list_rooms()
+        client = _get_client()
+        rooms = await client.list_rooms()
         room_ids = {room["notebook_id"] for room in rooms}
         if target not in room_ids:
             raise ValueError(
@@ -583,9 +583,9 @@ async def join_notebook(
             await _session.close()
 
     # Join existing session
-    _session = runtimed.AsyncSession(notebook_id=notebook_id, peer_label=_peer_label())
+    client = _get_client()
+    _session = await client.join_notebook(notebook_id, peer_label=_peer_label())
     session = _session
-    await session.connect()
 
     return {
         "notebook_id": session.notebook_id,
@@ -607,7 +607,8 @@ async def open_notebook(path: str, ctx: Context | None = None) -> dict[str, Any]
         with contextlib.suppress(Exception):
             await _session.close()
 
-    _session = await runtimed.AsyncSession.open_notebook(path, peer_label=_peer_label())
+    client = _get_client()
+    _session = await client.open_notebook(path, peer_label=_peer_label())
     session = _session
     return {
         "notebook_id": session.notebook_id,
@@ -651,7 +652,8 @@ async def create_notebook(
         with contextlib.suppress(Exception):
             await _session.close()
 
-    _session = await runtimed.AsyncSession.create_notebook(
+    client = _get_client()
+    _session = await client.create_notebook(
         runtime=runtime, working_dir=working_dir, peer_label=_peer_label()
     )
     session = _session
@@ -1359,8 +1361,8 @@ async def resource_status() -> str:
 async def resource_rooms() -> str:
     """Get all active notebook rooms as JSON."""
     try:
-        client = _get_daemon_client()
-        rooms = client.list_rooms()
+        client = _get_client()
+        rooms = await client.list_rooms()
         return json.dumps([dict(room) for room in rooms])
     except Exception as e:
         return json.dumps({"error": str(e)})

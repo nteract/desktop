@@ -136,12 +136,22 @@ pub(crate) fn get_metadata_env_type(snapshot: &NotebookMetadataSnapshot) -> Opti
 ///
 /// Populates the state with handle, broadcast_rx, and blob paths.
 pub(crate) async fn connect(state: &Arc<Mutex<SessionState>>, notebook_id: &str) -> PyResult<()> {
+    let socket_path = get_socket_path();
+    connect_with_socket(state, notebook_id, socket_path).await
+}
+
+/// Connect to the daemon using a specific socket path.
+///
+/// Populates the state with handle, broadcast_rx, and blob paths.
+pub(crate) async fn connect_with_socket(
+    state: &Arc<Mutex<SessionState>>,
+    notebook_id: &str,
+    socket_path: PathBuf,
+) -> PyResult<()> {
     let mut st = state.lock().await;
     if st.handle.is_some() {
         return Ok(());
     }
-
-    let socket_path = get_socket_path();
 
     let result = notebook_sync::connect::connect(socket_path.clone(), notebook_id.to_string())
         .await
