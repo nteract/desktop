@@ -1310,6 +1310,33 @@ export class NotebookHandle {
         }
     }
     /**
+     * Splice a cell's source at a specific position (character-level, no diff).
+     * @param {string} cell_id
+     * @param {number} index
+     * @param {number} delete_count
+     * @param {string} text
+     * @returns {boolean}
+     */
+    splice_source(cell_id, index, delete_count, text) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(cell_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(text, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len1 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_splice_source(retptr, this.__wbg_ptr, ptr0, len0, index, delete_count, ptr1, len1);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return r0 !== 0;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Update cell metadata at a specific path (e.g., ["jupyter", "source_hidden"]).
      *
      * Creates intermediate objects if they don't exist.

@@ -444,7 +444,7 @@ export const CodeCell = memo(function CodeCell({
             ) : (
               <CodeMirrorEditor
                 ref={editorRef}
-                value={cell.source}
+                initialValue={cell.source}
                 language={language}
                 onValueChange={onUpdateSource}
                 keyMap={keyMap}

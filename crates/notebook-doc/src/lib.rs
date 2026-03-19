@@ -1134,6 +1134,37 @@ impl NotebookDoc {
         Ok(true)
     }
 
+    /// Splice a cell's source text at a specific position.
+    ///
+    /// Performs a character-level positional splice on the source Text CRDT:
+    /// deletes `delete_count` characters starting at `index`, then inserts
+    /// `text` at that position. This is the primitive that CodeMirror's
+    /// `iterChanges` maps to directly — no Myers diff overhead.
+    pub fn splice_source(
+        &mut self,
+        cell_id: &str,
+        index: usize,
+        delete_count: usize,
+        text: &str,
+    ) -> Result<bool, AutomergeError> {
+        let cells_id = match self.cells_map_id() {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
+            Some(o) => o,
+            None => return Ok(false),
+        };
+        let source_id = match self.text_id(&cell_obj, "source") {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+
+        self.doc
+            .splice_text(&source_id, index, delete_count as isize, text)?;
+        Ok(true)
+    }
+
     /// Append text to a cell's source without diffing.
     ///
     /// Unlike `update_source` which replaces the entire text (using Myers diff

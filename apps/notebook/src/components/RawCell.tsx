@@ -212,7 +212,7 @@ export const RawCell = memo(function RawCell({
       <div>
         <CodeMirrorEditor
           ref={editorRef}
-          value={cell.source}
+          initialValue={cell.source}
           language={language}
           lineWrapping
           onValueChange={onUpdateSource}

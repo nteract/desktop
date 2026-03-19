@@ -357,6 +357,10 @@ export class NotebookHandle {
      */
     set_uv_requires_python(requires_python?: string | null): void;
     /**
+     * Splice a cell's source at a specific position (character-level, no diff).
+     */
+    splice_source(cell_id: string, index: number, delete_count: number, text: string): boolean;
+    /**
      * Update cell metadata at a specific path (e.g., ["jupyter", "source_hidden"]).
      *
      * Creates intermediate objects if they don't exist.
@@ -440,6 +444,7 @@ export interface InitOutput {
     readonly notebookhandle_move_cell: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_delete_cell: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_update_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly notebookhandle_splice_source: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
     readonly notebookhandle_append_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_get_metadata: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_get_metadata_snapshot_json: (a: number, b: number) => void;

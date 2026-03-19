@@ -432,7 +432,7 @@ export const MarkdownCell = memo(function MarkdownCell({
         <div>
           <CodeMirrorEditor
             ref={editorRef}
-            value={cell.source}
+            initialValue={cell.source}
             language="markdown"
             lineWrapping
             onValueChange={onUpdateSource}
