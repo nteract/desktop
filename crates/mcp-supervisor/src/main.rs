@@ -1262,10 +1262,11 @@ impl ServerHandler for Supervisor {
                         if old_runt.exists() {
                             info!("Stopping unmanaged daemon via runt CLI...");
                             let mut stop_cmd = std::process::Command::new(&old_runt);
-                            stop_cmd.args(["daemon", "stop"]).env("RUNTIMED_DEV", "1");
-                            if let Some(workspace) = runt_workspace::get_workspace_path() {
-                                stop_cmd.env("RUNTIMED_WORKSPACE_PATH", &workspace);
-                            }
+                            stop_cmd
+                                .args(["daemon", "stop"])
+                                .env("RUNTIMED_DEV", "1")
+                                // Always target this worktree's daemon — never the system daemon.
+                                .env("RUNTIMED_WORKSPACE_PATH", &project_root);
                             let _ = stop_cmd.status();
                             // Give it a moment to release the socket
                             std::thread::sleep(Duration::from_secs(2));
