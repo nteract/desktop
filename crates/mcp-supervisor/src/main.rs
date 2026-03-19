@@ -42,13 +42,29 @@ use tracing::{error, info, warn};
 // Daemon management
 // ---------------------------------------------------------------------------
 
+/// Whether to use release-mode binaries (set RUNTIMED_RELEASE=1).
+fn use_release_binaries() -> bool {
+    std::env::var("RUNTIMED_RELEASE").map_or(false, |v| v == "1")
+}
+
+/// Resolve the path to a Cargo-built binary, respecting release mode.
+fn cargo_binary(project_root: &Path, name: &str) -> std::path::PathBuf {
+    let profile = if use_release_binaries() {
+        "release"
+    } else {
+        "debug"
+    };
+    let bin_name = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
+    project_root.join("target").join(profile).join(bin_name)
+}
+
 /// Check if the dev daemon is running and get its socket path.
 fn daemon_status(project_root: &Path) -> Option<DaemonInfo> {
-    let runt = if cfg!(windows) {
-        project_root.join("target/debug/runt.exe")
-    } else {
-        project_root.join("target/debug/runt")
-    };
+    let runt = cargo_binary(project_root, "runt");
 
     if !runt.exists() {
         return None;
@@ -80,11 +96,7 @@ struct DaemonInfo {
 
 /// Start the dev daemon as a background process. Returns the child handle.
 fn start_daemon(project_root: &Path) -> Option<std::process::Child> {
-    let runtimed = if cfg!(windows) {
-        project_root.join("target/debug/runtimed.exe")
-    } else {
-        project_root.join("target/debug/runtimed")
-    };
+    let runtimed = cargo_binary(project_root, "runtimed");
 
     if !runtimed.exists() {
         error!("runtimed binary not found at {}", runtimed.display());
