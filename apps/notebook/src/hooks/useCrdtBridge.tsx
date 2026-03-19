@@ -142,6 +142,14 @@ export function useCrdtBridge(cellId: string): {
         }>;
       };
 
+      console.debug(
+        `[crdt-bridge] text_attribution broadcast received: ${event.attributions.length} attrs, looking for cell ${cellId.slice(0, 8)}`,
+        event.attributions.map(
+          (a) =>
+            `${a.cell_id.slice(0, 8)}: idx=${a.index} del=${a.deleted} text="${a.text.slice(0, 20)}"`,
+        ),
+      );
+
       // Filter to attributions for this cell.
       const changes: RemoteChange[] = [];
       for (const attr of event.attributions) {
@@ -154,6 +162,11 @@ export function useCrdtBridge(cellId: string): {
       }
 
       if (changes.length > 0) {
+        const view = bridge.getView();
+        console.debug(
+          `[crdt-bridge] Applying ${changes.length} remote changes to cell ${cellId.slice(0, 8)}, view=${view ? "attached" : "NULL"}`,
+          changes,
+        );
         bridge.applyRemoteChanges(changes);
       }
     });
