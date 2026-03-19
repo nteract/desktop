@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -42,9 +43,13 @@ use tracing::{error, info, warn};
 // Daemon management
 // ---------------------------------------------------------------------------
 
-/// Whether to use release-mode binaries (set RUNTIMED_RELEASE=1).
+/// Global flag for release-mode binaries. Initialized from `RUNTIMED_RELEASE=1`
+/// and toggled at runtime by the `supervisor_set_mode` MCP tool.
+static RELEASE_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Whether to use release-mode binaries.
 fn use_release_binaries() -> bool {
-    std::env::var("RUNTIMED_RELEASE").map_or(false, |v| v == "1")
+    RELEASE_MODE.load(Ordering::Relaxed)
 }
 
 /// Resolve the path to a Cargo-built binary, respecting release mode.
@@ -528,6 +533,12 @@ impl Supervisor {
             socket_path: state.socket_path.clone(),
             project_root: state.project_root.to_string_lossy().to_string(),
             daemon_managed: state.daemon_child.is_some(),
+            build_mode: if use_release_binaries() {
+                "release"
+            } else {
+                "debug"
+            }
+            .to_string(),
             managed_processes,
         }
     }
@@ -804,6 +815,8 @@ struct SupervisorStatus {
     project_root: String,
     /// Whether the supervisor started (and manages) the daemon.
     daemon_managed: bool,
+    /// Current build mode for daemon binaries: "debug" or "release".
+    build_mode: String,
     /// Status of managed long-running processes (vite, app, etc.).
     managed_processes: HashMap<String, ManagedProcessStatus>,
 }
@@ -842,6 +855,13 @@ struct StopProcessParams {
 // The supervisor_status tool schema — no input params needed.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct EmptyParams {}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[allow(dead_code)] // `mode` is read via serde deserialization, not directly
+struct SetModeParams {
+    /// The build mode: "debug" or "release".
+    mode: String,
+}
 
 /// MCP ServerHandler that proxies to the nteract child + injects supervisor tools.
 impl ServerHandler for Supervisor {
@@ -928,6 +948,17 @@ impl ServerHandler for Supervisor {
             "supervisor_stop",
             "Stop a managed process by name (e.g. 'vite').",
             serde_json::to_value(schemars::schema_for!(StopProcessParams))
+                .unwrap()
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+        ));
+        tools.push(Tool::new(
+            "supervisor_set_mode",
+            "Switch the daemon between debug and release builds at runtime. \
+             Stops the current daemon, flips the binary path, and restarts. \
+             Use mode='debug' or mode='release'. No settings.json change needed.",
+            serde_json::to_value(schemars::schema_for!(SetModeParams))
                 .unwrap()
                 .as_object()
                 .cloned()
@@ -1154,6 +1185,80 @@ impl ServerHandler for Supervisor {
                     )])),
                 }
             }
+            "supervisor_set_mode" => {
+                let mode = request
+                    .arguments
+                    .as_ref()
+                    .and_then(|args| args.get("mode"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+
+                let new_release = match mode {
+                    "release" => true,
+                    "debug" => false,
+                    other => {
+                        return Ok(CallToolResult::success(vec![Content::text(format!(
+                            "Unknown mode '{other}'. Use 'debug' or 'release'."
+                        ))]));
+                    }
+                };
+
+                let old_release = RELEASE_MODE.swap(new_release, Ordering::Relaxed);
+                if old_release == new_release {
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Already in {mode} mode, no change needed."
+                    ))]));
+                }
+
+                info!(
+                    "Switching daemon mode: {} → {mode}",
+                    if old_release { "release" } else { "debug" }
+                );
+
+                // Check that the target binary exists before stopping anything
+                let project_root = {
+                    let state = self.state.read().await;
+                    state.project_root.clone()
+                };
+                let target_binary = cargo_binary(&project_root, "runtimed");
+                if !target_binary.exists() {
+                    // Roll back
+                    RELEASE_MODE.store(old_release, Ordering::Relaxed);
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Cannot switch to {mode} mode: binary not found at {}. \
+                         Build it first with: cargo build {} -p runtimed",
+                        target_binary.display(),
+                        if new_release { "--release" } else { "" }
+                    ))]));
+                }
+
+                // Stop the current daemon
+                {
+                    let mut state = self.state.write().await;
+                    if let Some(ref mut child) = state.daemon_child {
+                        info!("Stopping daemon for mode switch...");
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                    state.daemon_child = start_daemon(&project_root);
+                }
+
+                if !wait_for_daemon(&project_root, Duration::from_secs(30)) {
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Switched to {mode} mode but daemon did not become ready within 30s"
+                    ))]));
+                }
+
+                // Restart the MCP child so it reconnects to the new daemon
+                match self.restart_child().await {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Switched to {mode} mode. Daemon and MCP server restarted."
+                    ))])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Switched to {mode} mode. Daemon restarted but MCP server failed: {e}"
+                    ))])),
+                }
+            }
             // Everything else → forward to child
             _ => self.forward_tool_call(request).await,
         }
@@ -1374,6 +1479,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_env_filter(env_filter)
             .with_writer(std::io::stderr)
             .init();
+    }
+
+    // Initialize release mode from env var (can be toggled at runtime via supervisor_set_mode)
+    if std::env::var("RUNTIMED_RELEASE").map_or(false, |v| v == "1") {
+        RELEASE_MODE.store(true, Ordering::Relaxed);
+        info!("Starting in release mode (RUNTIMED_RELEASE=1)");
     }
 
     let project_root = resolve_project_root();
