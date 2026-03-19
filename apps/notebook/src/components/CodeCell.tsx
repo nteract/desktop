@@ -27,6 +27,7 @@ import { cn } from "@/lib/utils";
 import type { CellPagePayload, MimeBundle } from "../App";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
+import { useCrdtBridge } from "../hooks/useCrdtBridge";
 import {
   registerAttributionEditor,
   unregisterAttributionEditor,
@@ -158,6 +159,7 @@ export const CodeCell = memo(function CodeCell({
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
   const presence = usePresenceContext();
+  const { extension: crdtBridgeExt } = useCrdtBridge(cell.id);
 
   // Check cell metadata for visibility (JupyterLab convention)
   const isSourceHidden =
@@ -307,9 +309,10 @@ export const CodeCell = memo(function CodeCell({
     ];
   }, [cell.id, presence]);
 
-  // CodeMirror extensions: kernel completion + tab completion + search highlighting + remote cursors + presence sender
+  // CodeMirror extensions: CRDT bridge + kernel completion + tab completion + search highlighting + remote cursors + presence sender
   const editorExtensions = useMemo(
     () => [
+      crdtBridgeExt,
       kernelCompletionExtension,
       tabCompletionKeymap,
       ...searchHighlight(searchQuery || "", searchActiveOffset),
@@ -318,6 +321,7 @@ export const CodeCell = memo(function CodeCell({
       ...presenceSenderExt,
     ],
     [
+      crdtBridgeExt,
       searchQuery,
       searchActiveOffset,
       remoteCursorsExt,
@@ -446,7 +450,6 @@ export const CodeCell = memo(function CodeCell({
                 ref={editorRef}
                 initialValue={cell.source}
                 language={language}
-                onValueChange={onUpdateSource}
                 keyMap={keyMap}
                 extensions={editorExtensions}
                 placeholder="Enter code..."

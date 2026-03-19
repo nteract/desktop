@@ -628,8 +628,8 @@ Deno.test(
 
     // Frontend types
     frontend.splice_source("c1", 0, 0, "print('hi')");
-    // Daemon writes notebook-level metadata (doesn't touch source)
-    daemon.set_metadata("runtime", "python");
+    // Daemon writes a non-source change (doesn't touch source)
+    daemon.add_uv_dependency("numpy");
 
     // Sync both ways
     syncHandles(frontend, daemon);
@@ -743,18 +743,15 @@ Deno.test("non-source sync: metadata change does not alter source", () => {
   const daemon = NotebookHandle.load(frontend.save());
   syncHandles(frontend, daemon);
 
-  // Daemon writes notebook-level metadata (no source change)
-  daemon.set_metadata("runtime", "python");
+  // Daemon writes a non-source change
+  daemon.add_uv_dependency("numpy");
 
-  // Full sync — metadata arrives at frontend
+  // Full sync — change arrives at frontend
   syncHandles(daemon, frontend);
 
   // Source must be unchanged on both sides
   assertEquals(getSource(frontend, "c1"), "hello");
   assertEquals(getSource(daemon, "c1"), "hello");
-
-  // Metadata arrived
-  assertEquals(frontend.get_metadata("runtime"), "python");
   frontend.free();
   daemon.free();
 });
@@ -1186,7 +1183,7 @@ Deno.test("regression: typing 'import time' survives concurrent sync", () => {
       // Daemon might write metadata (simulating non-source CRDT changes
       // that would trigger materialization in the real app)
       if (i === 9) {
-        daemon.set_metadata("last_execution", "now");
+        daemon.add_uv_dependency("requests");
       }
     }
   }
@@ -1218,9 +1215,9 @@ Deno.test(
     // Sync
     syncHandles(frontend, daemon);
 
-    // Daemon writes metadata (simulating a non-source change like an output
-    // broadcast that would trigger materialization in the real app)
-    daemon.set_metadata("kernel_status", "idle");
+    // Daemon writes a non-source change (simulating an output broadcast
+    // that would trigger materialization in the real app)
+    daemon.add_uv_dependency("pandas");
 
     // Sync — daemon's metadata change arrives at frontend
     syncHandles(frontend, daemon);

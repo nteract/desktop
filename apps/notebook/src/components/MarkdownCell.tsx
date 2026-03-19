@@ -14,6 +14,7 @@ import { useDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
+import { useCrdtBridge } from "../hooks/useCrdtBridge";
 import {
   registerAttributionEditor,
   unregisterAttributionEditor,
@@ -54,7 +55,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   isFocused,
   searchQuery,
   onFocus,
-  onUpdateSource,
+  onUpdateSource: _onUpdateSource,
   onDelete,
   onFocusPrevious,
   onFocusNext,
@@ -143,6 +144,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   const [editing, setEditing] = useState(cell.source === "");
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const presence = usePresenceContext();
+  const { extension: crdtBridgeExt } = useCrdtBridge(cell.id);
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const viewRef = useRef<HTMLDivElement>(null);
 
@@ -435,10 +437,9 @@ export const MarkdownCell = memo(function MarkdownCell({
             initialValue={cell.source}
             language="markdown"
             lineWrapping
-            onValueChange={onUpdateSource}
             onBlur={handleBlur}
             keyMap={keyMap}
-            extensions={searchExtensions}
+            extensions={[crdtBridgeExt, ...searchExtensions]}
             placeholder="Enter markdown..."
             className="min-h-[2rem]"
             autoFocus={editing}

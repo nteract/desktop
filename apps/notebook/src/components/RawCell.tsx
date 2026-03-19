@@ -11,6 +11,7 @@ import { searchHighlight } from "@/components/editor/search-highlight";
 import { textAttributionExtension } from "@/components/editor/text-attribution";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
+import { useCrdtBridge } from "../hooks/useCrdtBridge";
 import {
   registerAttributionEditor,
   unregisterAttributionEditor,
@@ -42,7 +43,7 @@ export const RawCell = memo(function RawCell({
   isFocused,
   searchQuery,
   onFocus,
-  onUpdateSource,
+  onUpdateSource: _onUpdateSource,
   onDelete,
   onFocusPrevious,
   onFocusNext,
@@ -54,6 +55,7 @@ export const RawCell = memo(function RawCell({
 }: RawCellProps) {
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const presence = usePresenceContext();
+  const { extension: crdtBridgeExt } = useCrdtBridge(cell.id);
 
   // Register EditorView with the cursor registry for presence support
   const registeredViewRef = useRef<EditorView | null>(null);
@@ -215,9 +217,8 @@ export const RawCell = memo(function RawCell({
           initialValue={cell.source}
           language={language}
           lineWrapping
-          onValueChange={onUpdateSource}
           keyMap={keyMap}
-          extensions={searchExtensions}
+          extensions={[crdtBridgeExt, ...searchExtensions]}
           placeholder="Enter raw content..."
           className="min-h-[2rem]"
           autoFocus={isFocused}
