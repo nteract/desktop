@@ -69,11 +69,7 @@ function syncHandles(a: Handle, b: Handle, maxRounds = 20) {
 }
 
 /** Create a handle with one code cell, optionally pre-populated with source. */
-function makeHandle(
-  nbId: string,
-  cellId: string,
-  source = "",
-): Handle {
+function makeHandle(nbId: string, cellId: string, source = ""): Handle {
   const h = new NotebookHandle(nbId);
   h.add_cell(0, cellId, "code");
   if (source) {
@@ -199,15 +195,18 @@ Deno.test("splice_source: replace entire content", () => {
 
 // ── 2. Boundary conditions ───────────────────────────────────────────
 
-Deno.test("splice_source: insert into truly empty cell (never had source)", () => {
-  const h = new NotebookHandle("boundary-1");
-  h.add_cell(0, "c1", "code");
-  // Cell source is "" by default
-  assertEquals(getSource(h, "c1"), "");
-  h.splice_source("c1", 0, 0, "x");
-  assertEquals(getSource(h, "c1"), "x");
-  h.free();
-});
+Deno.test(
+  "splice_source: insert into truly empty cell (never had source)",
+  () => {
+    const h = new NotebookHandle("boundary-1");
+    h.add_cell(0, "c1", "code");
+    // Cell source is "" by default
+    assertEquals(getSource(h, "c1"), "");
+    h.splice_source("c1", 0, 0, "x");
+    assertEquals(getSource(h, "c1"), "x");
+    h.free();
+  },
+);
 
 Deno.test("splice_source: single character insert then delete", () => {
   const h = makeHandle("boundary-2", "c1");
@@ -245,28 +244,32 @@ Deno.test("splice_source: empty cell ID returns false", () => {
 
 // ── 4. Sequential rapid splices (simulating typing) ──────────────────
 
-Deno.test("splice_source: simulate typing 'import time' character by character", () => {
-  const h = makeHandle("typing-1", "c1");
-  const text = "import time";
-  for (let i = 0; i < text.length; i++) {
-    h.splice_source("c1", i, 0, text[i]);
-  }
-  assertEquals(getSource(h, "c1"), "import time");
-  h.free();
-});
+Deno.test(
+  "splice_source: simulate typing 'import time' character by character",
+  () => {
+    const h = makeHandle("typing-1", "c1");
+    const text = "import time";
+    for (let i = 0; i < text.length; i++) {
+      h.splice_source("c1", i, 0, text[i]);
+    }
+    assertEquals(getSource(h, "c1"), "import time");
+    h.free();
+  },
+);
 
 Deno.test("splice_source: simulate typing with backspace corrections", () => {
   const h = makeHandle("typing-2", "c1");
-  // Type "improt" (typo)
+  // Type "improt" (typo — 'r' and 'o' transposed)
   for (const ch of "improt") {
     const len = getSource(h, "c1").length;
     h.splice_source("c1", len, 0, ch);
   }
   assertEquals(getSource(h, "c1"), "improt");
-  // Backspace twice (delete 'o' then 't' — wait, we need to delete from end)
-  h.splice_source("c1", 5, 1, ""); // delete 't' at index 5
-  h.splice_source("c1", 4, 1, ""); // delete 'o' at index 4
-  assertEquals(getSource(h, "c1"), "impr");
+  // Backspace three times from end to get back to "imp"
+  h.splice_source("c1", 5, 1, ""); // delete 't' at index 5 → "impro"
+  h.splice_source("c1", 4, 1, ""); // delete 'o' at index 4 → "impr"
+  h.splice_source("c1", 3, 1, ""); // delete 'r' at index 3 → "imp"
+  assertEquals(getSource(h, "c1"), "imp");
   // Retype correctly
   for (const ch of "ort") {
     const len = getSource(h, "c1").length;
@@ -384,50 +387,56 @@ Deno.test("splice_source: sync many rapid splices", () => {
 
 // ── 6. Concurrent edits: splice_source vs update_source ──────────────
 
-Deno.test("concurrent: splice_source on A, update_source on B, non-overlapping", () => {
-  const a = makeHandle("conc-1", "c1", "hello world");
-  const b = NotebookHandle.load(a.save());
-  syncHandles(a, b);
+Deno.test(
+  "concurrent: splice_source on A, update_source on B, non-overlapping",
+  () => {
+    const a = makeHandle("conc-1", "c1", "hello world");
+    const b = NotebookHandle.load(a.save());
+    syncHandles(a, b);
 
-  // A modifies the beginning via splice
-  a.splice_source("c1", 0, 5, "HELLO");
-  // B modifies the end via update_source (Myers diff)
-  b.update_source("c1", "hello WORLD");
+    // A modifies the beginning via splice
+    a.splice_source("c1", 0, 5, "HELLO");
+    // B modifies the end via update_source (Myers diff)
+    b.update_source("c1", "hello WORLD");
 
-  syncHandles(a, b);
+    syncHandles(a, b);
 
-  // Both changes should merge — CRDT merges non-overlapping edits
-  assertEquals(getSource(a, "c1"), "HELLO WORLD");
-  assertEquals(getSource(b, "c1"), "HELLO WORLD");
-  a.free();
-  b.free();
-});
+    // Both changes should merge — CRDT merges non-overlapping edits
+    assertEquals(getSource(a, "c1"), "HELLO WORLD");
+    assertEquals(getSource(b, "c1"), "HELLO WORLD");
+    a.free();
+    b.free();
+  },
+);
 
-Deno.test("concurrent: splice_source on A, update_source on B, overlapping region", () => {
-  const a = makeHandle("conc-2", "c1", "abcdef");
-  const b = NotebookHandle.load(a.save());
-  syncHandles(a, b);
+Deno.test(
+  "concurrent: splice_source on A, update_source on B, overlapping region",
+  () => {
+    const a = makeHandle("conc-2", "c1", "abcdef");
+    const b = NotebookHandle.load(a.save());
+    syncHandles(a, b);
 
-  // A replaces "cd" with "XX" via splice
-  a.splice_source("c1", 2, 2, "XX");
-  // B replaces "cd" with "YY" via update_source
-  b.update_source("c1", "abYYef");
+    // A replaces "cd" with "XX" via splice
+    a.splice_source("c1", 2, 2, "XX");
+    // B replaces "cd" with "YY" via update_source
+    b.update_source("c1", "abYYef");
 
-  syncHandles(a, b);
+    syncHandles(a, b);
 
-  // Both should converge — Automerge will interleave or pick one
-  const sourceA = getSource(a, "c1");
-  const sourceB = getSource(b, "c1");
-  assertEquals(sourceA, sourceB); // Must converge
-  // The exact result depends on Automerge's conflict resolution,
-  // but both peers must agree.
-  assert(
-    sourceA.startsWith("ab") && sourceA.endsWith("ef"),
-    `Expected "ab...ef" but got "${sourceA}"`,
-  );
-  a.free();
-  b.free();
-});
+    // Both should converge — Automerge will interleave or pick one
+    const sourceA = getSource(a, "c1");
+    const sourceB = getSource(b, "c1");
+    assertEquals(sourceA, sourceB); // Must converge
+    // The exact result depends on Automerge's conflict resolution,
+    // but both peers must agree.
+    assert(
+      sourceA.startsWith("ab") && sourceA.endsWith("ef"),
+      `Expected "ab...ef" but got "${sourceA}"`,
+    );
+    a.free();
+    b.free();
+  },
+);
 
 // ── 7. Concurrent character-level edits at different positions ────────
 
@@ -610,141 +619,142 @@ Deno.test("interleaved: type a few chars, sync, type more, sync", () => {
   daemon.free();
 });
 
-Deno.test("interleaved: frontend types while daemon writes outputs (no source conflict)", () => {
-  const frontend = makeHandle("interleave-2", "c1");
-  const daemon = NotebookHandle.load(frontend.save());
-  syncHandles(frontend, daemon);
+Deno.test(
+  "interleaved: frontend types while daemon writes metadata (no source conflict)",
+  () => {
+    const frontend = makeHandle("interleave-2", "c1");
+    const daemon = NotebookHandle.load(frontend.save());
+    syncHandles(frontend, daemon);
 
-  // Frontend types
-  frontend.splice_source("c1", 0, 0, "print('hi')");
-  // Daemon writes an output (doesn't touch source)
-  daemon.append_output(
-    "c1",
-    '{"output_type":"stream","name":"stdout","text":"hi\\n"}',
-  );
+    // Frontend types
+    frontend.splice_source("c1", 0, 0, "print('hi')");
+    // Daemon writes notebook-level metadata (doesn't touch source)
+    daemon.set_metadata("runtime", "python");
 
-  // Sync both ways
-  syncHandles(frontend, daemon);
+    // Sync both ways
+    syncHandles(frontend, daemon);
 
-  // Source should be intact on both sides
-  assertEquals(getSource(frontend, "c1"), "print('hi')");
-  assertEquals(getSource(daemon, "c1"), "print('hi')");
-  frontend.free();
-  daemon.free();
-});
+    // Source should be intact on both sides
+    assertEquals(getSource(frontend, "c1"), "print('hi')");
+    assertEquals(getSource(daemon, "c1"), "print('hi')");
+    frontend.free();
+    daemon.free();
+  },
+);
 
 // ── 10. Text attributions ────────────────────────────────────────────
 
-Deno.test("attributions: splice_source produces insert attribution on sync", () => {
-  const frontend = makeHandle("attr-1", "c1", "hello");
-  const daemon = NotebookHandle.load(frontend.save());
-  syncHandles(frontend, daemon);
+Deno.test(
+  "attributions: splice_source produces insert attribution on sync",
+  () => {
+    const frontend = makeHandle("attr-1", "c1", "hello");
+    const daemon = NotebookHandle.load(frontend.save());
+    syncHandles(frontend, daemon);
 
-  // Frontend inserts " world"
-  frontend.splice_source("c1", 5, 0, " world");
+    // Frontend inserts " world"
+    frontend.splice_source("c1", 5, 0, " world");
 
-  // Sync via frame to get attribution events
-  const events = syncViaFrame(frontend, daemon);
-  assertExists(events);
+    // Sync via frame to get attribution events
+    const events = syncViaFrame(frontend, daemon);
+    assertExists(events);
 
-  const syncEvent = events.find(
+    const syncEvent = events.find(
+      // deno-lint-ignore no-explicit-any
+      (e: any) => e.type === "sync_applied" && e.changed,
+    );
+    assertExists(syncEvent);
+    assert(Array.isArray(syncEvent.attributions));
+    assert(syncEvent.attributions.length > 0);
+
+    // Find the attribution for our cell
     // deno-lint-ignore no-explicit-any
-    (e: any) => e.type === "sync_applied" && e.changed,
-  );
-  assertExists(syncEvent);
-  assert(Array.isArray(syncEvent.attributions));
-  assert(syncEvent.attributions.length > 0);
+    const attr = syncEvent.attributions.find((a: any) => a.cell_id === "c1");
+    assertExists(attr);
+    assertEquals(attr.text, " world");
+    assertEquals(attr.index, 5);
+    assertEquals(attr.deleted, 0);
+    frontend.free();
+    daemon.free();
+  },
+);
 
-  // Find the attribution for our cell
-  // deno-lint-ignore no-explicit-any
-  const attr = syncEvent.attributions.find((a: any) => a.cell_id === "c1");
-  assertExists(attr);
-  assertEquals(attr.text, " world");
-  assertEquals(attr.index, 5);
-  assertEquals(attr.deleted, 0);
-  frontend.free();
-  daemon.free();
-});
+Deno.test(
+  "attributions: splice_source deletion produces delete attribution",
+  () => {
+    const frontend = makeHandle("attr-2", "c1", "hello world");
+    const daemon = NotebookHandle.load(frontend.save());
+    syncHandles(frontend, daemon);
 
-Deno.test("attributions: splice_source deletion produces delete attribution", () => {
-  const frontend = makeHandle("attr-2", "c1", "hello world");
-  const daemon = NotebookHandle.load(frontend.save());
-  syncHandles(frontend, daemon);
+    // Frontend deletes " world"
+    frontend.splice_source("c1", 5, 6, "");
 
-  // Frontend deletes " world"
-  frontend.splice_source("c1", 5, 6, "");
+    const events = syncViaFrame(frontend, daemon);
+    assertExists(events);
 
-  const events = syncViaFrame(frontend, daemon);
-  assertExists(events);
+    const syncEvent = events.find(
+      // deno-lint-ignore no-explicit-any
+      (e: any) => e.type === "sync_applied" && e.changed,
+    );
+    assertExists(syncEvent);
 
-  const syncEvent = events.find(
     // deno-lint-ignore no-explicit-any
-    (e: any) => e.type === "sync_applied" && e.changed,
-  );
-  assertExists(syncEvent);
+    const attr = syncEvent.attributions.find((a: any) => a.cell_id === "c1");
+    assertExists(attr);
+    assertEquals(attr.deleted, 6);
+    assertEquals(attr.text, "");
+    assertEquals(attr.index, 5);
+    frontend.free();
+    daemon.free();
+  },
+);
 
-  // deno-lint-ignore no-explicit-any
-  const attr = syncEvent.attributions.find((a: any) => a.cell_id === "c1");
-  assertExists(attr);
-  assertEquals(attr.deleted, 6);
-  assertEquals(attr.text, "");
-  assertEquals(attr.index, 5);
-  frontend.free();
-  daemon.free();
-});
+Deno.test(
+  "attributions: multiple splices produce multiple attributions",
+  () => {
+    const frontend = makeHandle("attr-3", "c1");
+    const daemon = NotebookHandle.load(frontend.save());
+    syncHandles(frontend, daemon);
 
-Deno.test("attributions: multiple splices produce multiple attributions", () => {
-  const frontend = makeHandle("attr-3", "c1");
-  const daemon = NotebookHandle.load(frontend.save());
-  syncHandles(frontend, daemon);
+    // Type three characters
+    frontend.splice_source("c1", 0, 0, "a");
+    frontend.splice_source("c1", 1, 0, "b");
+    frontend.splice_source("c1", 2, 0, "c");
 
-  // Type three characters
-  frontend.splice_source("c1", 0, 0, "a");
-  frontend.splice_source("c1", 1, 0, "b");
-  frontend.splice_source("c1", 2, 0, "c");
+    const events = syncViaFrame(frontend, daemon);
+    assertExists(events);
 
-  const events = syncViaFrame(frontend, daemon);
-  assertExists(events);
+    const syncEvent = events.find(
+      // deno-lint-ignore no-explicit-any
+      (e: any) => e.type === "sync_applied" && e.changed,
+    );
+    assertExists(syncEvent);
+    assert(syncEvent.attributions.length > 0);
 
-  const syncEvent = events.find(
-    // deno-lint-ignore no-explicit-any
-    (e: any) => e.type === "sync_applied" && e.changed,
-  );
-  assertExists(syncEvent);
-  assert(syncEvent.attributions.length > 0);
+    // The attributions might be coalesced into one insert or kept separate
+    // — either way, the daemon doc should have the full text.
+    assertEquals(getSource(daemon, "c1"), "abc");
+    frontend.free();
+    daemon.free();
+  },
+);
 
-  // The attributions might be coalesced into one insert or kept separate
-  // — either way, the daemon doc should have the full text.
-  assertEquals(getSource(daemon, "c1"), "abc");
-  frontend.free();
-  daemon.free();
-});
-
-Deno.test("attributions: no attribution for non-source changes", () => {
+Deno.test("non-source sync: metadata change does not alter source", () => {
   const frontend = makeHandle("attr-4", "c1", "hello");
   const daemon = NotebookHandle.load(frontend.save());
   syncHandles(frontend, daemon);
 
-  // Daemon writes output (no source change)
-  daemon.append_output(
-    "c1",
-    '{"output_type":"stream","name":"stdout","text":"out"}',
-  );
+  // Daemon writes notebook-level metadata (no source change)
+  daemon.set_metadata("runtime", "python");
 
-  const events = syncViaFrame(daemon, frontend);
-  assertExists(events);
+  // Full sync — metadata arrives at frontend
+  syncHandles(daemon, frontend);
 
-  const syncEvent = events.find(
-    // deno-lint-ignore no-explicit-any
-    (e: any) => e.type === "sync_applied" && e.changed,
-  );
-  assertExists(syncEvent);
-  // No text attributions — output change doesn't produce source attributions
-  const sourceAttrs = (syncEvent.attributions ?? []).filter(
-    // deno-lint-ignore no-explicit-any
-    (a: any) => a.cell_id === "c1",
-  );
-  assertEquals(sourceAttrs.length, 0);
+  // Source must be unchanged on both sides
+  assertEquals(getSource(frontend, "c1"), "hello");
+  assertEquals(getSource(daemon, "c1"), "hello");
+
+  // Metadata arrived
+  assertEquals(frontend.get_metadata("runtime"), "python");
   frontend.free();
   daemon.free();
 });
@@ -1146,8 +1156,9 @@ Deno.test("changeset: splice_source does NOT flag outputs", () => {
   );
   assertExists(changedCell);
   assertEquals(changedCell.fields.source, true);
-  assertEquals(changedCell.fields.outputs, false);
-  assertEquals(changedCell.fields.execution_count, false);
+  // ChangedFields serialization omits false values — absent means unchanged
+  assertEquals(changedCell.fields.outputs, undefined);
+  assertEquals(changedCell.fields.execution_count, undefined);
   daemon.free();
   frontend.free();
 });
@@ -1157,7 +1168,7 @@ Deno.test("changeset: splice_source does NOT flag outputs", () => {
 // User types while daemon sync triggers materialization.
 
 Deno.test("regression: typing 'import time' survives concurrent sync", () => {
-  // Frontend types code. Daemon sends back output changes (not source).
+  // Frontend types code. Daemon makes non-source changes concurrently.
   // After sync, the frontend's source should be intact.
   const frontend = makeHandle("regression-1", "c1");
   const daemon = NotebookHandle.load(frontend.save());
@@ -1172,11 +1183,10 @@ Deno.test("regression: typing 'import time' survives concurrent sync", () => {
     // Every 5 characters, sync (simulating debounced sync)
     if (i % 5 === 4) {
       syncHandles(frontend, daemon);
-      // Daemon might write outputs or execution state
+      // Daemon might write metadata (simulating non-source CRDT changes
+      // that would trigger materialization in the real app)
       if (i === 9) {
-        // Simulate kernel status change (execution_count update)
-        // This modifies the CRDT but not the source
-        daemon.set_execution_count("c1", 1);
+        daemon.set_metadata("last_execution", "now");
       }
     }
   }
@@ -1192,43 +1202,44 @@ Deno.test("regression: typing 'import time' survives concurrent sync", () => {
   daemon.free();
 });
 
-Deno.test("regression: rapid typing with output broadcasts doesn't corrupt", () => {
-  const frontend = makeHandle("regression-2", "c1");
-  const daemon = NotebookHandle.load(frontend.save());
-  syncHandles(frontend, daemon);
+Deno.test(
+  "regression: rapid typing with concurrent non-source changes doesn't corrupt",
+  () => {
+    const frontend = makeHandle("regression-2", "c1");
+    const daemon = NotebookHandle.load(frontend.save());
+    syncHandles(frontend, daemon);
 
-  // Type the first line
-  const line1 = "import time";
-  for (let i = 0; i < line1.length; i++) {
-    frontend.splice_source("c1", i, 0, line1[i]);
-  }
+    // Type the first line
+    const line1 = "import time";
+    for (let i = 0; i < line1.length; i++) {
+      frontend.splice_source("c1", i, 0, line1[i]);
+    }
 
-  // Sync
-  syncHandles(frontend, daemon);
+    // Sync
+    syncHandles(frontend, daemon);
 
-  // Daemon writes an output (simulating a broadcast from a previous execution)
-  daemon.append_output(
-    "c1",
-    '{"output_type":"stream","name":"stdout","text":"previous output\\n"}',
-  );
+    // Daemon writes metadata (simulating a non-source change like an output
+    // broadcast that would trigger materialization in the real app)
+    daemon.set_metadata("kernel_status", "idle");
 
-  // Sync — daemon's output change arrives at frontend
-  syncHandles(frontend, daemon);
+    // Sync — daemon's metadata change arrives at frontend
+    syncHandles(frontend, daemon);
 
-  // Frontend continues typing (this is the critical moment — in the old code,
-  // the materialization of the output change could trigger a stale value prop)
-  const line2 = "\ntime.sleep(0)";
-  const offset = getSource(frontend, "c1").length;
-  for (let i = 0; i < line2.length; i++) {
-    frontend.splice_source("c1", offset + i, 0, line2[i]);
-  }
+    // Frontend continues typing (this is the critical moment — in the old code,
+    // the materialization of a non-source change could trigger a stale value prop)
+    const line2 = "\ntime.sleep(0)";
+    const offset = getSource(frontend, "c1").length;
+    for (let i = 0; i < line2.length; i++) {
+      frontend.splice_source("c1", offset + i, 0, line2[i]);
+    }
 
-  syncHandles(frontend, daemon);
+    syncHandles(frontend, daemon);
 
-  const expected = "import time\ntime.sleep(0)";
-  assertEquals(getSource(frontend, "c1"), expected);
-  assertEquals(getSource(daemon, "c1"), expected);
+    const expected = "import time\ntime.sleep(0)";
+    assertEquals(getSource(frontend, "c1"), expected);
+    assertEquals(getSource(daemon, "c1"), expected);
 
-  frontend.free();
-  daemon.free();
-});
+    frontend.free();
+    daemon.free();
+  },
+);

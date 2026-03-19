@@ -15,23 +15,23 @@
  * sync to the daemon.
  */
 
+import type { Extension } from "@codemirror/state";
 import {
   createContext,
+  type ReactNode,
   useContext,
   useEffect,
   useMemo,
   useRef,
-  type ReactNode,
 } from "react";
 import {
-  createCrdtBridge,
   type CrdtBridge,
+  createCrdtBridge,
   type RemoteChange,
 } from "../lib/crdt-editor-bridge";
-import { subscribeBroadcast } from "../lib/notebook-frame-bus";
 import { updateCellById } from "../lib/notebook-cells";
+import { subscribeBroadcast } from "../lib/notebook-frame-bus";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
-import type { Extension } from "@codemirror/state";
 
 // ── Context ──────────────────────────────────────────────────────────
 
