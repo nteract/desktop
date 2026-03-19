@@ -778,6 +778,33 @@ export class NotebookHandle {
         }
     }
     /**
+     * Return a stable fingerprint of the notebook metadata.
+     *
+     * Returns a cached JSON string suitable for equality comparison.
+     * The cache is invalidated in `receive_frame` when the Automerge
+     * doc actually changes (heads differ) and on all local metadata
+     * mutation methods.
+     *
+     * Returns undefined if no metadata is present.
+     * @returns {string | undefined}
+     */
+    get_metadata_fingerprint() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.notebookhandle_get_metadata_fingerprint(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            let v1;
+            if (r0 !== 0) {
+                v1 = getStringFromWasm0(r0, r1).slice();
+                wasm.__wbindgen_export4(r0, r1 * 1, 1);
+            }
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Get the full typed metadata as a native JS object.
      *
      * Returns the `NotebookMetadataSnapshot` as a JS object via serde-wasm-bindgen,

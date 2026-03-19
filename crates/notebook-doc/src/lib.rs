@@ -338,6 +338,21 @@ impl NotebookDoc {
         self.get_metadata_snapshot()?.detect_runtime()
     }
 
+    /// Return a stable fingerprint of the notebook metadata.
+    ///
+    /// This is a cheap JSON serialization of the metadata snapshot, suitable
+    /// for equality comparison. Consumers can compare fingerprints across sync
+    /// batches to detect whether metadata actually changed — avoiding the cost
+    /// of deserializing the full snapshot when it hasn't.
+    ///
+    /// Deterministic because `RuntMetadata.extra` uses `BTreeMap` (sorted keys).
+    ///
+    /// Returns `None` if no metadata is present.
+    pub fn get_metadata_fingerprint(&self) -> Option<String> {
+        let snapshot = self.get_metadata_snapshot()?;
+        serde_json::to_string(&snapshot).ok()
+    }
+
     // ── UV dependency convenience methods ─────────────────────────
 
     /// Add a UV dependency, deduplicating by package name (case-insensitive).

@@ -58,7 +58,7 @@ pub struct RuntMetadata {
     /// Preserves fields we don't model (e.g. from newer schema versions or extensions)
     /// through deserialization → serialization round-trips.
     #[serde(flatten)]
-    pub extra: std::collections::HashMap<String, serde_json::Value>,
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// UV inline dependency metadata (`metadata.runt.uv`).
@@ -203,7 +203,7 @@ impl NotebookMetadataSnapshot {
                     deno: None,
                     trust_signature: None,
                     trust_timestamp: None,
-                    extra: std::collections::HashMap::new(),
+                    extra: std::collections::BTreeMap::new(),
                 }
             });
 
@@ -478,7 +478,7 @@ impl RuntMetadata {
             deno: None,
             trust_signature: None,
             trust_timestamp: None,
-            extra: std::collections::HashMap::new(),
+            extra: std::collections::BTreeMap::new(),
         }
     }
 
@@ -496,7 +496,7 @@ impl RuntMetadata {
             deno: None,
             trust_signature: None,
             trust_timestamp: None,
-            extra: std::collections::HashMap::new(),
+            extra: std::collections::BTreeMap::new(),
         }
     }
 
@@ -515,7 +515,7 @@ impl RuntMetadata {
             }),
             trust_signature: None,
             trust_timestamp: None,
-            extra: std::collections::HashMap::new(),
+            extra: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -532,7 +532,7 @@ impl Default for RuntMetadata {
             deno: None,
             trust_signature: None,
             trust_timestamp: None,
-            extra: std::collections::HashMap::new(),
+            extra: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -616,7 +616,7 @@ mod tests {
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
-                extra: std::collections::HashMap::new(),
+                extra: std::collections::BTreeMap::new(),
             },
         };
 
@@ -723,7 +723,7 @@ mod tests {
             deno: None,
             trust_signature: None,
             trust_timestamp: None,
-            extra: std::collections::HashMap::new(),
+            extra: std::collections::BTreeMap::new(),
         };
         let json = serde_json::to_value(&meta).unwrap();
         // None fields should not appear in JSON

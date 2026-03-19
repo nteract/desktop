@@ -16,6 +16,7 @@ import { logger } from "./logger";
 
 let _handle: NotebookHandle | null = null;
 let _snapshotCache: NotebookMetadataSnapshot | null = null;
+let _fingerprint: string | null = null;
 const _subscribers = new Set<() => void>();
 
 /**
@@ -30,13 +31,32 @@ function readSnapshot(): NotebookMetadataSnapshot | null {
 }
 
 /**
- * Notify all useSyncExternalStore subscribers that the doc changed.
- * Call this after any operation that mutates the Automerge document:
- * - setNotebookHandle (bootstrap / reconnect)
- * - receive_sync_message (incoming daemon sync)
- * - set_metadata (local writes)
+ * Notify subscribers that the Automerge doc may have changed.
+ *
+ * Uses a fingerprint (cheap JSON string from WASM) to detect whether
+ * metadata actually changed. If the fingerprint is identical, this is
+ * a no-op — no snapshot deserialization, no subscriber notifications.
+ *
+ * This is called on every sync batch (including cell-only changes),
+ * so the fingerprint gate is critical for avoiding unnecessary work
+ * during high-frequency output streaming.
  */
 export function notifyMetadataChanged(): void {
+  const newFingerprint = _handle?.get_metadata_fingerprint() ?? null;
+  if (newFingerprint === _fingerprint) return;
+  _fingerprint = newFingerprint;
+  _snapshotCache = readSnapshot();
+  for (const cb of _subscribers) cb();
+}
+
+/**
+ * Force-notify all subscribers regardless of fingerprint.
+ *
+ * Used by setNotebookHandle (bootstrap/reconnect) where the handle
+ * itself changed and the old fingerprint is meaningless.
+ */
+function forceNotifyMetadataChanged(): void {
+  _fingerprint = _handle?.get_metadata_fingerprint() ?? null;
   _snapshotCache = readSnapshot();
   for (const cb of _subscribers) cb();
 }
@@ -47,7 +67,7 @@ export function notifyMetadataChanged(): void {
  */
 export function setNotebookHandle(handle: NotebookHandle | null): void {
   _handle = handle;
-  notifyMetadataChanged();
+  forceNotifyMetadataChanged();
 }
 
 /**
