@@ -911,12 +911,16 @@ async def set_cells_source_hidden(
 ) -> TextContent:
     """Hide or show the source (code input) of one or more cells."""
     session = await _get_session()
+    not_found: list[str] = []
     for cell_id in cell_ids:
-        await session.set_cell_source_hidden(cell_id=cell_id, hidden=hidden)
-    return TextContent(
-        type="text",
-        text=f"Set source_hidden={hidden} on {len(cell_ids)} cell(s)",
-    )
+        ok = await session.set_cell_source_hidden(cell_id=cell_id, hidden=hidden)
+        if not ok:
+            not_found.append(cell_id)
+    updated = len(cell_ids) - len(not_found)
+    msg = f"Set source_hidden={hidden} on {updated} cell(s)"
+    if not_found:
+        msg += f"; not found: {not_found}"
+    return TextContent(type="text", text=msg)
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
@@ -926,12 +930,16 @@ async def set_cells_outputs_hidden(
 ) -> TextContent:
     """Hide or show the outputs of one or more cells."""
     session = await _get_session()
+    not_found: list[str] = []
     for cell_id in cell_ids:
-        await session.set_cell_outputs_hidden(cell_id=cell_id, hidden=hidden)
-    return TextContent(
-        type="text",
-        text=f"Set outputs_hidden={hidden} on {len(cell_ids)} cell(s)",
-    )
+        ok = await session.set_cell_outputs_hidden(cell_id=cell_id, hidden=hidden)
+        if not ok:
+            not_found.append(cell_id)
+    updated = len(cell_ids) - len(not_found)
+    msg = f"Set outputs_hidden={hidden} on {updated} cell(s)"
+    if not_found:
+        msg += f"; not found: {not_found}"
+    return TextContent(type="text", text=msg)
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
@@ -941,9 +949,10 @@ async def add_cell_tags(
 ) -> TextContent:
     """Add tags to a cell's metadata. Existing tags are preserved."""
     session = await _get_session()
-    cell = await session.get_cell(cell_id=cell_id)
-    if cell is None:
-        return TextContent(type="text", text=f'Cell "{cell_id}" not found')
+    try:
+        cell = await session.get_cell(cell_id=cell_id)
+    except Exception as e:
+        return TextContent(type="text", text=str(e))
     existing: list[str] = list(cell.metadata.get("tags", []))
     merged = existing + [t for t in tags if t not in existing]
     await session.set_cell_tags(cell_id=cell_id, tags=merged)
@@ -957,9 +966,10 @@ async def remove_cell_tags(
 ) -> TextContent:
     """Remove tags from a cell's metadata."""
     session = await _get_session()
-    cell = await session.get_cell(cell_id=cell_id)
-    if cell is None:
-        return TextContent(type="text", text=f'Cell "{cell_id}" not found')
+    try:
+        cell = await session.get_cell(cell_id=cell_id)
+    except Exception as e:
+        return TextContent(type="text", text=str(e))
     existing: list[str] = list(cell.metadata.get("tags", []))
     filtered = [t for t in existing if t not in tags]
     await session.set_cell_tags(cell_id=cell_id, tags=filtered)

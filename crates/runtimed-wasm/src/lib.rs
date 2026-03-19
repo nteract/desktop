@@ -851,6 +851,14 @@ impl NotebookHandle {
 
                 if changed {
                     // Invalidate cached fingerprint — metadata may have changed.
+                    // TODO: This invalidates on ANY doc change (including cell/output
+                    // streaming), which forces re-serialization ~30/sec during active
+                    // execution. The frontend's fingerprint comparison still saves the
+                    // expensive work (snapshot deserialization + subscriber notifications),
+                    // but ideally we'd only invalidate when non-cell patches exist.
+                    // Options: extend CellChangeset with a `metadata_changed` flag,
+                    // or compare the new fingerprint to the cached one here and keep
+                    // the cache if metadata didn't actually change.
                     self.metadata_fingerprint_cache = None;
                 }
 
