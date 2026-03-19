@@ -281,6 +281,11 @@ export function materializeCellFromWasm(
             return null;
           }
         }
+        logger.debug(
+          "[materialize-cells] materializeCellFromWasm: uncached manifest hash dropped for cell %s: %s",
+          cellId,
+          outputStr.slice(0, 16),
+        );
         return null;
       })
       .filter((o): o is JupyterOutput => o !== null);

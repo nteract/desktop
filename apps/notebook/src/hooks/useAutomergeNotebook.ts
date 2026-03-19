@@ -82,7 +82,10 @@ export function useAutomergeNotebook() {
   const materializeCells = useCallback(async (handle: NotebookHandle) => {
     const json = handle.get_cells_json();
     const snapshots: CellSnapshot[] = JSON.parse(json);
-    const blobPort = getBlobPort();
+    let blobPort = getBlobPort();
+    if (blobPort === null) {
+      blobPort = await refreshBlobPort();
+    }
     const newCells = await cellSnapshotsToNotebookCells(
       snapshots,
       blobPort,
