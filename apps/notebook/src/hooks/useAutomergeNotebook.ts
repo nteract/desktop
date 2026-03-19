@@ -288,25 +288,33 @@ export function useAutomergeNotebook() {
     setDirty(true);
   }, []);
 
-  const clearCellOutputs = useCallback((cellId: string) => {
+  /**
+   * Clear outputs for a local UI action (Ctrl-Enter, menu clear).
+   * Writes to the CRDT first so the store stays in sync with the
+   * source of truth, then updates the store for instant feedback.
+   */
+  const clearOutputsLocal = useCallback((cellId: string) => {
     const handle = handleRef.current;
-    if (!handle) return;
+    if (handle) {
+      handle.clear_outputs(cellId);
+      handle.set_execution_count(cellId, "null");
+      sourceSync$.current.next();
+      setDirty(true);
+    }
 
-    // Clear outputs in the CRDT (not the store directly).
-    // The store is updated via the normal materialization pipeline
-    // when the CRDT change is processed, eliminating the race between
-    // optimistic store writes and materialization.
-    handle.clear_outputs(cellId);
-    handle.set_execution_count(cellId, "null");
+    // Store write for instant visual feedback. Safe because the CRDT
+    // agrees (or will agree once materialization catches up).
+    updateCellById(cellId, (c) =>
+      c.cell_type === "code" ? { ...c, outputs: [], execution_count: null } : c,
+    );
+  }, []);
 
-    // Trigger sync so the daemon sees the clear immediately.
-    sourceSync$.current.next();
-    setDirty(true);
-
-    // Also update the store directly for instant visual feedback.
-    // This is safe now because the CRDT is the source of truth —
-    // materialization will write the same empty outputs, so there's
-    // no race. The store write just makes the UI snappier.
+  /**
+   * Apply a daemon output-clear into the store. Store-only —
+   * the daemon already wrote to the CRDT, so we just update the
+   * local store. No CRDT mutation, no sync, no dirty flag.
+   */
+  const clearOutputsFromDaemon = useCallback((cellId: string) => {
     updateCellById(cellId, (c) =>
       c.cell_type === "code" ? { ...c, outputs: [], execution_count: null } : c,
     );
@@ -450,18 +458,18 @@ export function useAutomergeNotebook() {
     [],
   );
 
-  const setExecutionCount = useCallback((cellId: string, count: number) => {
-    const handle = handleRef.current;
-    if (handle) {
-      handle.set_execution_count(cellId, String(count));
-      sourceSync$.current.next();
-      setDirty(true);
-    }
-    // Also update the store directly for instant visual feedback.
-    updateCellById(cellId, (c) =>
-      c.cell_type === "code" ? { ...c, execution_count: count } : c,
-    );
-  }, []);
+  /**
+   * Apply a daemon execution-count update into the store. Store-only —
+   * the daemon already wrote to the CRDT.
+   */
+  const applyExecutionCountFromDaemon = useCallback(
+    (cellId: string, count: number) => {
+      updateCellById(cellId, (c) =>
+        c.cell_type === "code" ? { ...c, execution_count: count } : c,
+      );
+    },
+    [],
+  );
 
   // ── Public interface ───────────────────────────────────────────────
 
@@ -478,7 +486,8 @@ export function useAutomergeNotebook() {
     focusedCellId,
     setFocusedCellId,
     updateCellSource,
-    clearCellOutputs,
+    clearOutputsLocal,
+    clearOutputsFromDaemon,
     addCell,
     moveCell,
     deleteCell,
@@ -488,7 +497,7 @@ export function useAutomergeNotebook() {
     dirty,
     setDirty,
     updateOutputByDisplayId,
-    setExecutionCount,
+    applyExecutionCountFromDaemon,
     setCellSourceHidden,
     setCellOutputsHidden,
     flushSync,

@@ -123,8 +123,9 @@ function AppContent() {
     setDirty,
 
     updateOutputByDisplayId,
-    setExecutionCount,
-    clearCellOutputs,
+    applyExecutionCountFromDaemon,
+    clearOutputsLocal,
+    clearOutputsFromDaemon,
     setCellSourceHidden,
     setCellOutputsHidden,
     flushSync,
@@ -234,9 +235,9 @@ function AppContent() {
 
   const handleExecutionCount = useCallback(
     (cellId: string, count: number) => {
-      setExecutionCount(cellId, count);
+      applyExecutionCountFromDaemon(cellId, count);
     },
-    [setExecutionCount],
+    [applyExecutionCountFromDaemon],
   );
 
   // Execution completion is handled by the daemon queue via broadcast events
@@ -279,7 +280,7 @@ function AppContent() {
     onExecutionCount: handleExecutionCount,
     onExecutionDone: handleExecutionDone,
     onUpdateDisplayData: updateOutputByDisplayId,
-    onClearOutputs: clearCellOutputs, // Handle broadcast from other windows
+    onClearOutputs: clearOutputsFromDaemon, // Handle broadcast from other windows
     onCommMessage: handleCommMessage, // Route comm messages to widget store
   });
 
@@ -497,7 +498,7 @@ function AppContent() {
 
     // Clear all outputs locally (immediate feedback)
     for (const cell of codeCells) {
-      clearCellOutputs(cell.id);
+      clearOutputsLocal(cell.id);
     }
 
     // Clear outputs via daemon for cross-window sync
@@ -521,7 +522,7 @@ function AppContent() {
       logger.warn("[App] restartAndRunAll: no kernel available");
     }
   }, [
-    clearCellOutputs,
+    clearOutputsLocal,
     clearOutputs,
     flushSync,
     shutdownKernel,
@@ -570,7 +571,7 @@ function AppContent() {
       await flushSync();
 
       // Clear outputs immediately so user sees feedback
-      clearCellOutputs(cellId);
+      clearOutputsLocal(cellId);
 
       // Broadcast clear to other windows
       await clearOutputs(cellId);
@@ -590,7 +591,7 @@ function AppContent() {
       }
     },
     [
-      clearCellOutputs,
+      clearOutputsLocal,
       clearOutputs,
       flushSync,
       kernelStatus,
@@ -632,7 +633,7 @@ function AppContent() {
 
     // Clear all outputs first (local for immediate feedback)
     for (const cell of codeCells) {
-      clearCellOutputs(cell.id);
+      clearOutputsLocal(cell.id);
     }
 
     // Await all daemon clears to ensure ordering before queueing
@@ -657,7 +658,7 @@ function AppContent() {
   }, [
     kernelStatus,
     tryStartKernel,
-    clearCellOutputs,
+    clearOutputsLocal,
     clearOutputs,
     flushSync,
     daemonRunAllCells,
@@ -791,13 +792,13 @@ function AppContent() {
         (c) => c.id === focusedCellId,
       );
       if (!cell || cell.cell_type !== "code") return;
-      clearCellOutputs(focusedCellId);
+      clearOutputsLocal(focusedCellId);
       await clearOutputs(focusedCellId);
     });
     return () => {
       unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
     };
-  }, [focusedCellId, clearCellOutputs, clearOutputs]);
+  }, [focusedCellId, clearOutputsLocal, clearOutputs]);
 
   // Cell menu: Clear All Outputs
   useEffect(() => {
@@ -809,7 +810,7 @@ function AppContent() {
           (c) => c.cell_type === "code",
         );
         for (const cell of codeCells) {
-          clearCellOutputs(cell.id);
+          clearOutputsLocal(cell.id);
         }
         await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
       },
@@ -817,7 +818,7 @@ function AppContent() {
     return () => {
       unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
     };
-  }, [clearCellOutputs, clearOutputs]);
+  }, [clearOutputsLocal, clearOutputs]);
 
   // Kernel menu: Run All Cells
   useEffect(() => {
