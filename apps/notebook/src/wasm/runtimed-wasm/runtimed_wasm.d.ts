@@ -83,6 +83,10 @@ export class NotebookHandle {
      */
     clear_conda_section(): void;
     /**
+     * Clear all outputs from a cell in the CRDT.
+     */
+    clear_outputs(cell_id: string): boolean;
+    /**
      * Clear the UV section entirely (deps + requires-python).
      */
     clear_uv_section(): void;
@@ -327,6 +331,10 @@ export class NotebookHandle {
      */
     set_conda_python(python?: string | null): void;
     /**
+     * Set the execution count for a cell. Pass "null" or a number string like "5".
+     */
+    set_execution_count(cell_id: string, count: string): boolean;
+    /**
      * Set a metadata value (legacy string API).
      */
     set_metadata(key: string, value: string): void;
@@ -445,6 +453,8 @@ export interface InitOutput {
     readonly notebookhandle_delete_cell: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_update_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_splice_source: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+    readonly notebookhandle_clear_outputs: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_set_execution_count: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_append_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_get_metadata: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_get_metadata_snapshot_json: (a: number, b: number) => void;

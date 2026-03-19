@@ -289,6 +289,24 @@ export function useAutomergeNotebook() {
   }, []);
 
   const clearCellOutputs = useCallback((cellId: string) => {
+    const handle = handleRef.current;
+    if (!handle) return;
+
+    // Clear outputs in the CRDT (not the store directly).
+    // The store is updated via the normal materialization pipeline
+    // when the CRDT change is processed, eliminating the race between
+    // optimistic store writes and materialization.
+    handle.clear_outputs(cellId);
+    handle.set_execution_count(cellId, "null");
+
+    // Trigger sync so the daemon sees the clear immediately.
+    sourceSync$.current.next();
+    setDirty(true);
+
+    // Also update the store directly for instant visual feedback.
+    // This is safe now because the CRDT is the source of truth —
+    // materialization will write the same empty outputs, so there's
+    // no race. The store write just makes the UI snappier.
     updateCellById(cellId, (c) =>
       c.cell_type === "code" ? { ...c, outputs: [], execution_count: null } : c,
     );
@@ -433,6 +451,13 @@ export function useAutomergeNotebook() {
   );
 
   const setExecutionCount = useCallback((cellId: string, count: number) => {
+    const handle = handleRef.current;
+    if (handle) {
+      handle.set_execution_count(cellId, String(count));
+      sourceSync$.current.next();
+      setDirty(true);
+    }
+    // Also update the store directly for instant visual feedback.
     updateCellById(cellId, (c) =>
       c.cell_type === "code" ? { ...c, execution_count: count } : c,
     );

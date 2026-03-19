@@ -36,6 +36,8 @@ export const notebookhandle_move_cell: (a: number, b: number, c: number, d: numb
 export const notebookhandle_delete_cell: (a: number, b: number, c: number, d: number) => void;
 export const notebookhandle_update_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const notebookhandle_splice_source: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+export const notebookhandle_clear_outputs: (a: number, b: number, c: number, d: number) => void;
+export const notebookhandle_set_execution_count: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const notebookhandle_append_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const notebookhandle_get_metadata: (a: number, b: number, c: number, d: number) => void;
 export const notebookhandle_get_metadata_snapshot_json: (a: number, b: number) => void;
