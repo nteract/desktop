@@ -154,19 +154,24 @@ export const CodeMirrorEditor = forwardRef<
     }, [theme]);
 
     // ── Language extension ────────────────────────────────────────────
+    //
+    // For IPython cells, magic detection (%%bash, %%sql, etc.) must
+    // re-run when the document changes — not just on mount. We compute
+    // the initial extension here, then reconfigure dynamically via an
+    // updateListener added to the EditorView (see the mount effect).
 
     const langExtension = useMemo(() => {
       if (language === "ipython") {
-        // IPython magic detection needs the current source to detect
-        // %%bash, %%sql, etc. Read from the view if available, otherwise
-        // fall back to initialValue.
-        const source = viewRef.current
-          ? viewRef.current.state.doc.toString()
-          : initialValue;
-        return getIPythonExtension(source).extension;
+        return getIPythonExtension(initialValue).extension;
       }
       return getLanguageExtension(language);
     }, [language, initialValue]);
+
+    // Track the last-detected magic so we only reconfigure when it changes.
+    const lastMagicRef = useRef<string | null>(null);
+    // Store the language prop in a ref so the updateListener closure stays fresh.
+    const languageRef = useRef(language);
+    languageRef.current = language;
 
     // ── Theme extension ──────────────────────────────────────────────
 
@@ -205,6 +210,22 @@ export const CodeMirrorEditor = forwardRef<
 
         if (hasLocalEdit && onValueChangeRef.current) {
           onValueChangeRef.current(vu.state.doc.toString());
+        }
+
+        // ── IPython magic re-detection ─────────────────────────────
+        // When the language is "ipython", check if the first line changed
+        // to a different cell magic and reconfigure the language extension.
+        if (languageRef.current === "ipython") {
+          const { extension: newLangExt, cellMagic } = getIPythonExtension(
+            vu.state.doc.toString(),
+          );
+          const magicKey = cellMagic ?? "";
+          if (magicKey !== (lastMagicRef.current ?? "")) {
+            lastMagicRef.current = magicKey;
+            vu.view.dispatch({
+              effects: langCompartment.current.reconfigure(newLangExt),
+            });
+          }
         }
       });
 

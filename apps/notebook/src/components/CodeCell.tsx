@@ -137,7 +137,7 @@ export const CodeCell = memo(function CodeCell({
   searchActiveOffset = -1,
   onSearchMatchCount,
   onFocus,
-  onUpdateSource,
+  onUpdateSource: _onUpdateSource,
   onExecute,
   onInterrupt,
   onDelete,
@@ -159,7 +159,7 @@ export const CodeCell = memo(function CodeCell({
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
   const presence = usePresenceContext();
-  const { extension: crdtBridgeExt } = useCrdtBridge(cell.id);
+  const { extension: crdtBridgeExt, bridge } = useCrdtBridge(cell.id);
 
   // Check cell metadata for visibility (JupyterLab convention)
   const isSourceHidden =
@@ -278,12 +278,12 @@ export const CodeCell = memo(function CodeCell({
     [],
   );
 
-  // Handle history selection - replace cell content
+  // Handle history selection - replace cell content via CRDT bridge
   const handleHistorySelect = useCallback(
     (source: string) => {
-      onUpdateSource(source);
+      bridge.replaceSource(source);
     },
-    [onUpdateSource],
+    [bridge],
   );
 
   // Merge navigation keybindings (navigation bindings take precedence for Shift-Enter)

@@ -83,6 +83,18 @@ export interface CrdtBridge {
    * differs from the editor's current content.
    */
   applyFullSource: (source: string) => void;
+  /**
+   * Imperatively replace the cell source end-to-end: CRDT + CM + store + sync.
+   *
+   * Use for commands that set the entire source from outside the editor
+   * (history search recall, MCP set_cell, undo-to-checkpoint, etc.).
+   * Unlike `applyFullSource` (CM-only), this updates the Automerge doc
+   * via `update_source` (Myers diff), dispatches to CM, writes to the
+   * cell store, and triggers sync to the daemon.
+   *
+   * Returns false if the handle is unavailable (bootstrap in progress).
+   */
+  replaceSource: (source: string) => boolean;
   /** Get the current EditorView (null if not yet attached). */
   getView: () => EditorView | null;
 }
@@ -239,10 +251,31 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
     }
   }
 
+  function replaceSource(source: string): boolean {
+    const handle = getHandle();
+    if (!handle) return false;
+
+    // 1. Update the CRDT via full-text Myers diff (correct for bulk replacement).
+    const updated = handle.update_source(cellId, source);
+    if (!updated) return false;
+
+    // 2. Update CodeMirror (reconcile-annotated so the outbound path skips it).
+    applyFullSource(source);
+
+    // 3. Update the cell store for non-CM consumers.
+    onSourceChanged(source);
+
+    // 4. Trigger sync to daemon.
+    onSyncNeeded();
+
+    return true;
+  }
+
   return {
     extension: plugin,
     applyRemoteChanges,
     applyFullSource,
+    replaceSource,
     getView: () => currentView,
   };
 }
