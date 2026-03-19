@@ -977,7 +977,12 @@ async def replace_match(
     # Show cursor at edit location before applying
     await _send_edit_cursor(session, cell_id, source, result.span.start)
 
-    await session.set_source(cell_id=cell_id, source=result.new_source)
+    await session.splice_source(
+        cell_id=cell_id,
+        index=result.span.start,
+        delete_count=result.span.end - result.span.start,
+        text=content,
+    )
 
     # Move cursor to end of replacement
     end_offset = result.span.start + len(content)
@@ -1026,7 +1031,12 @@ async def replace_regex(
     # Show cursor at edit location before applying
     await _send_edit_cursor(session, cell_id, source, result.span.start)
 
-    await session.set_source(cell_id=cell_id, source=result.new_source)
+    await session.splice_source(
+        cell_id=cell_id,
+        index=result.span.start,
+        delete_count=result.span.end - result.span.start,
+        text=content,
+    )
 
     # Move cursor to end of replacement
     end_offset = result.span.start + len(content)
