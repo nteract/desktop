@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::daemon_paths::get_socket_path;
-use crate::error::to_py_err;
+use crate::error::{emit_deprecation_warning, to_py_err};
 use crate::event_stream::ExecutionEventStream;
 use crate::session_core::{self, SessionState};
 use crate::subscription::EventSubscription;
@@ -41,6 +41,84 @@ pub struct AsyncSession {
     peer_label: Option<String>,
 }
 
+impl AsyncSession {
+    /// Create a pre-connected AsyncSession from a notebook_id and SessionState.
+    /// Used by AsyncClient.open_notebook() / AsyncClient.create_notebook() / AsyncClient.join_notebook().
+    pub(crate) fn from_state(
+        notebook_id: String,
+        state: SessionState,
+        peer_label: Option<String>,
+    ) -> Self {
+        let override_arc = Arc::new(std::sync::Mutex::new(None));
+        if let Some(ref rx) = state.broadcast_rx {
+            session_core::spawn_rekey_watcher(
+                rx,
+                Arc::clone(&override_arc),
+                &tokio::runtime::Handle::current(),
+            );
+        }
+        Self {
+            state: Arc::new(Mutex::new(state)),
+            notebook_id,
+            notebook_id_override: override_arc,
+            peer_label,
+        }
+    }
+
+    /// Async helper for open_notebook (no deprecation warning).
+    pub(crate) async fn open_notebook_async(
+        socket_path: PathBuf,
+        path: String,
+        peer_label: Option<String>,
+    ) -> PyResult<Self> {
+        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
+        let (notebook_id, mut state, _info) =
+            session_core::connect_open(socket_path, &path, actor_label.as_deref()).await?;
+        state.peer_label = peer_label.clone();
+        Ok(Self::from_state(notebook_id, state, peer_label))
+    }
+
+    /// Async helper for create_notebook (no deprecation warning).
+    pub(crate) async fn create_notebook_async(
+        socket_path: PathBuf,
+        runtime: String,
+        working_dir: Option<PathBuf>,
+        peer_label: Option<String>,
+    ) -> PyResult<Self> {
+        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
+        let (notebook_id, mut state, _info) = session_core::connect_create(
+            socket_path,
+            &runtime,
+            working_dir,
+            actor_label.as_deref(),
+        )
+        .await?;
+        state.peer_label = peer_label.clone();
+        Ok(Self::from_state(notebook_id, state, peer_label))
+    }
+
+    /// Async helper for join_notebook (no deprecation warning).
+    pub(crate) async fn join_notebook_async(
+        socket_path: PathBuf,
+        notebook_id: String,
+        peer_label: Option<String>,
+    ) -> PyResult<Self> {
+        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
+        let mut state = SessionState::new();
+        state.peer_label = peer_label.clone();
+        state.actor_label = actor_label;
+
+        let state_arc = Arc::new(Mutex::new(state));
+        session_core::connect_with_socket(&state_arc, &notebook_id, socket_path).await?;
+
+        let state = Arc::try_unwrap(state_arc)
+            .map_err(|_| to_py_err("Failed to unwrap session state"))?
+            .into_inner();
+
+        Ok(Self::from_state(notebook_id, state, peer_label))
+    }
+}
+
 #[pymethods]
 impl AsyncSession {
     /// Create a new async session.
@@ -50,7 +128,12 @@ impl AsyncSession {
     ///     peer_label: Optional label for collaborative presence.
     #[new]
     #[pyo3(signature = (notebook_id=None, peer_label=None))]
-    fn new(notebook_id: Option<String>, peer_label: Option<String>) -> PyResult<Self> {
+    fn new(
+        py: Python<'_>,
+        notebook_id: Option<String>,
+        peer_label: Option<String>,
+    ) -> PyResult<Self> {
+        emit_deprecation_warning(py, "AsyncSession() is deprecated. Use AsyncClient().open_notebook() or AsyncClient().create_notebook() instead.")?;
         let notebook_id =
             notebook_id.unwrap_or_else(|| format!("agent-session-{}", uuid::Uuid::new_v4()));
 
@@ -143,31 +226,11 @@ impl AsyncSession {
         path: &str,
         peer_label: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        emit_deprecation_warning(py, "AsyncSession.open_notebook() is deprecated. Use AsyncClient().open_notebook() instead.")?;
         let path = path.to_string();
-        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
-
+        let socket_path = get_socket_path();
         future_into_py(py, async move {
-            let socket_path = get_socket_path();
-            let (notebook_id, mut state, _info) =
-                session_core::connect_open(socket_path, &path, actor_label.as_deref()).await?;
-
-            state.peer_label = peer_label.clone();
-
-            let override_arc = Arc::new(std::sync::Mutex::new(None));
-            if let Some(ref rx) = state.broadcast_rx {
-                session_core::spawn_rekey_watcher(
-                    rx,
-                    Arc::clone(&override_arc),
-                    &tokio::runtime::Handle::current(),
-                );
-            }
-
-            Ok(AsyncSession {
-                state: Arc::new(Mutex::new(state)),
-                notebook_id,
-                notebook_id_override: override_arc,
-                peer_label,
-            })
+            Self::open_notebook_async(socket_path, path, peer_label).await
         })
     }
 
@@ -186,7 +249,7 @@ impl AsyncSession {
         working_dir: Option<&str>,
         peer_label: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
+        emit_deprecation_warning(py, "AsyncSession.create_notebook() is deprecated. Use AsyncClient().create_notebook() instead.")?;
         // Validate working_dir if provided
         if let Some(wd) = working_dir {
             let path = std::path::Path::new(wd);
@@ -206,34 +269,10 @@ impl AsyncSession {
 
         let runtime = runtime.to_string();
         let working_dir_buf = working_dir.map(PathBuf::from);
+        let socket_path = get_socket_path();
 
         future_into_py(py, async move {
-            let socket_path = get_socket_path();
-            let (notebook_id, mut state, _info) = session_core::connect_create(
-                socket_path,
-                &runtime,
-                working_dir_buf,
-                actor_label.as_deref(),
-            )
-            .await?;
-
-            state.peer_label = peer_label.clone();
-
-            let override_arc = Arc::new(std::sync::Mutex::new(None));
-            if let Some(ref rx) = state.broadcast_rx {
-                session_core::spawn_rekey_watcher(
-                    rx,
-                    Arc::clone(&override_arc),
-                    &tokio::runtime::Handle::current(),
-                );
-            }
-
-            Ok(AsyncSession {
-                state: Arc::new(Mutex::new(state)),
-                notebook_id,
-                notebook_id_override: override_arc,
-                peer_label,
-            })
+            Self::create_notebook_async(socket_path, runtime, working_dir_buf, peer_label).await
         })
     }
 

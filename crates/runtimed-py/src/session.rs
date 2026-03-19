@@ -42,6 +42,126 @@ pub struct Session {
     peer_label: Option<String>,
 }
 
+use crate::error::emit_deprecation_warning;
+
+impl Session {
+    /// Open a notebook without deprecation warning (used by Client).
+    pub(crate) fn open_notebook_inner(path: &str, peer_label: Option<String>) -> PyResult<Self> {
+        let socket_path = get_socket_path();
+        Self::open_notebook_with_socket(socket_path, path, peer_label)
+    }
+
+    /// Open a notebook with a specific socket path (used by Client).
+    pub(crate) fn open_notebook_with_socket(
+        socket_path: PathBuf,
+        path: &str,
+        peer_label: Option<String>,
+    ) -> PyResult<Self> {
+        let runtime = Runtime::new().map_err(to_py_err)?;
+        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
+
+        let (notebook_id, mut state, _info) = runtime.block_on(session_core::connect_open(
+            socket_path,
+            path,
+            actor_label.as_deref(),
+        ))?;
+
+        state.peer_label = peer_label.clone();
+        drop(runtime);
+
+        Self::from_state(notebook_id, state, peer_label)
+    }
+
+    /// Create a notebook without deprecation warning (used by Client).
+    pub(crate) fn create_notebook_with_socket(
+        socket_path: PathBuf,
+        runtime_type: &str,
+        working_dir: Option<&str>,
+        peer_label: Option<String>,
+    ) -> PyResult<Self> {
+        if let Some(wd) = working_dir {
+            let path = std::path::Path::new(wd);
+            if !path.exists() {
+                return Err(pyo3::exceptions::PyFileNotFoundError::new_err(format!(
+                    "working_dir does not exist: {}",
+                    wd
+                )));
+            }
+            if !path.is_dir() {
+                return Err(pyo3::exceptions::PyNotADirectoryError::new_err(format!(
+                    "working_dir is not a directory: {}",
+                    wd
+                )));
+            }
+        }
+
+        let rt = Runtime::new().map_err(to_py_err)?;
+        let working_dir_buf = working_dir.map(PathBuf::from);
+        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
+
+        let (notebook_id, mut state, _info) = rt.block_on(session_core::connect_create(
+            socket_path,
+            runtime_type,
+            working_dir_buf,
+            actor_label.as_deref(),
+        ))?;
+
+        state.peer_label = peer_label.clone();
+        drop(rt);
+
+        Self::from_state(notebook_id, state, peer_label)
+    }
+
+    /// Join an existing notebook room by ID (used by Client).
+    pub(crate) fn join_notebook_with_socket(
+        socket_path: PathBuf,
+        notebook_id: &str,
+        peer_label: Option<String>,
+    ) -> PyResult<Self> {
+        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
+
+        let mut state = SessionState::new();
+        state.peer_label = peer_label.clone();
+        state.actor_label = actor_label;
+
+        let rt = Runtime::new().map_err(to_py_err)?;
+        let state_arc = Arc::new(Mutex::new(state));
+        rt.block_on(session_core::connect_with_socket(
+            &state_arc,
+            notebook_id,
+            socket_path,
+        ))?;
+
+        let state = Arc::try_unwrap(state_arc)
+            .map_err(|_| to_py_err("Failed to unwrap session state"))?
+            .into_inner();
+
+        drop(rt);
+        Self::from_state(notebook_id.to_string(), state, peer_label)
+    }
+
+    /// Create a pre-connected Session from a notebook_id and SessionState.
+    /// Used by Client.open_notebook() / Client.create_notebook() / Client.join_notebook().
+    pub(crate) fn from_state(
+        notebook_id: String,
+        state: SessionState,
+        peer_label: Option<String>,
+    ) -> PyResult<Self> {
+        let runtime = Runtime::new().map_err(to_py_err)?;
+        let override_arc = Arc::new(std::sync::Mutex::new(None));
+        if let Some(ref rx) = state.broadcast_rx {
+            session_core::spawn_rekey_watcher(rx, Arc::clone(&override_arc), runtime.handle());
+        }
+        Ok(Self {
+            runtime,
+            state: Arc::new(Mutex::new(state)),
+            notebook_id,
+            notebook_id_override: override_arc,
+            peer_label,
+        })
+    }
+}
+
 #[pymethods]
 impl Session {
     /// Create a new session.
@@ -53,7 +173,12 @@ impl Session {
     ///                  will share the same kernel.
     #[new]
     #[pyo3(signature = (notebook_id=None, peer_label=None))]
-    fn new(notebook_id: Option<String>, peer_label: Option<String>) -> PyResult<Self> {
+    fn new(
+        py: Python<'_>,
+        notebook_id: Option<String>,
+        peer_label: Option<String>,
+    ) -> PyResult<Self> {
+        emit_deprecation_warning(py, "Session() is deprecated. Use Client().open_notebook() or Client().create_notebook() instead.")?;
         let runtime = Runtime::new().map_err(to_py_err)?;
         let notebook_id =
             notebook_id.unwrap_or_else(|| format!("agent-session-{}", uuid::Uuid::new_v4()));
@@ -136,31 +261,12 @@ impl Session {
     ///     RuntimedError: If the file cannot be opened or parsed.
     #[staticmethod]
     #[pyo3(signature = (path, peer_label=None))]
-    fn open_notebook(path: &str, peer_label: Option<String>) -> PyResult<Self> {
-        let runtime = Runtime::new().map_err(to_py_err)?;
-        let socket_path = get_socket_path();
-        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
-
-        let (notebook_id, mut state, _info) = runtime.block_on(session_core::connect_open(
-            socket_path,
-            path,
-            actor_label.as_deref(),
-        ))?;
-
-        state.peer_label = peer_label.clone();
-
-        let override_arc = Arc::new(std::sync::Mutex::new(None));
-        if let Some(ref rx) = state.broadcast_rx {
-            session_core::spawn_rekey_watcher(rx, Arc::clone(&override_arc), runtime.handle());
-        }
-
-        Ok(Self {
-            runtime,
-            state: Arc::new(Mutex::new(state)),
-            notebook_id,
-            notebook_id_override: override_arc,
-            peer_label,
-        })
+    fn open_notebook(py: Python<'_>, path: &str, peer_label: Option<String>) -> PyResult<Self> {
+        emit_deprecation_warning(
+            py,
+            "Session.open_notebook() is deprecated. Use Client().open_notebook() instead.",
+        )?;
+        Self::open_notebook_inner(path, peer_label)
     }
 
     /// Create a new notebook.
@@ -176,53 +282,17 @@ impl Session {
     #[staticmethod]
     #[pyo3(signature = (runtime="python", working_dir=None, peer_label=None))]
     fn create_notebook(
+        py: Python<'_>,
         runtime: &str,
         working_dir: Option<&str>,
         peer_label: Option<String>,
     ) -> PyResult<Self> {
-        // Validate working_dir if provided
-        if let Some(wd) = working_dir {
-            let path = std::path::Path::new(wd);
-            if !path.exists() {
-                return Err(pyo3::exceptions::PyFileNotFoundError::new_err(format!(
-                    "working_dir does not exist: {}",
-                    wd
-                )));
-            }
-            if !path.is_dir() {
-                return Err(pyo3::exceptions::PyNotADirectoryError::new_err(format!(
-                    "working_dir is not a directory: {}",
-                    wd
-                )));
-            }
-        }
-
-        let rt = Runtime::new().map_err(to_py_err)?;
+        emit_deprecation_warning(
+            py,
+            "Session.create_notebook() is deprecated. Use Client().create_notebook() instead.",
+        )?;
         let socket_path = get_socket_path();
-        let working_dir_buf = working_dir.map(PathBuf::from);
-        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
-
-        let (notebook_id, mut state, _info) = rt.block_on(session_core::connect_create(
-            socket_path,
-            runtime,
-            working_dir_buf,
-            actor_label.as_deref(),
-        ))?;
-
-        state.peer_label = peer_label.clone();
-
-        let override_arc = Arc::new(std::sync::Mutex::new(None));
-        if let Some(ref rx) = state.broadcast_rx {
-            session_core::spawn_rekey_watcher(rx, Arc::clone(&override_arc), rt.handle());
-        }
-
-        Ok(Self {
-            runtime: rt,
-            state: Arc::new(Mutex::new(state)),
-            notebook_id,
-            notebook_id_override: override_arc,
-            peer_label,
-        })
+        Self::create_notebook_with_socket(socket_path, runtime, working_dir, peer_label)
     }
 
     /// Connect to the daemon.

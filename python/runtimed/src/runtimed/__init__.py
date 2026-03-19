@@ -4,8 +4,10 @@ from importlib.metadata import PackageNotFoundError, version
 
 # Native daemon client (PyO3 bindings)
 from runtimed.runtimed import (
+    AsyncClient,
     AsyncSession,
     Cell,
+    Client,
     CompletionItem,
     CompletionResult,
     DaemonClient,
@@ -22,10 +24,12 @@ from runtimed.runtimed import (
 )
 
 __all__ = [
-    # Daemon client API - sync
+    # New API (recommended)
+    "Client",
+    "AsyncClient",
+    # Legacy API (deprecated, kept for backwards compatibility)
     "DaemonClient",
     "Session",
-    # Daemon client API - async
     "AsyncSession",
     # Output types
     "Cell",

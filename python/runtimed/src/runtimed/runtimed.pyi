@@ -281,7 +281,97 @@ class EventIteratorSubscription:
     def close(self) -> None: ...
 
 # ---------------------------------------------------------------------------
-# DaemonClient
+# Client (recommended sync API)
+# ---------------------------------------------------------------------------
+
+class Client:
+    """Synchronous client for the runtimed daemon.
+
+    Primary entry point for the runtimed Python API. Creates pre-connected
+    sessions for notebook operations and provides daemon-level operations.
+
+    Example::
+
+        client = Client()
+        session = client.open_notebook("/path/to/notebook.ipynb")
+        cell_ids = session.get_cell_ids()
+    """
+
+    def __init__(
+        self,
+        socket_path: str | None = None,
+        peer_label: str | None = None,
+    ) -> None: ...
+    def ping(self) -> bool: ...
+    def is_running(self) -> bool: ...
+    def status(self) -> dict[str, Any]: ...
+    def list_rooms(self) -> list[dict[str, Any]]: ...
+    def flush_pool(self) -> None: ...
+    def shutdown(self) -> None: ...
+    def open_notebook(
+        self,
+        path: str,
+        peer_label: str | None = None,
+    ) -> Session: ...
+    def create_notebook(
+        self,
+        runtime: str = "python",
+        working_dir: str | None = None,
+        peer_label: str | None = None,
+    ) -> Session: ...
+    def join_notebook(
+        self,
+        notebook_id: str,
+        peer_label: str | None = None,
+    ) -> Session: ...
+
+# ---------------------------------------------------------------------------
+# AsyncClient (recommended async API)
+# ---------------------------------------------------------------------------
+
+class AsyncClient:
+    """Async client for the runtimed daemon.
+
+    Primary entry point for the async runtimed Python API. Creates pre-connected
+    async sessions for notebook operations and provides daemon-level operations.
+
+    Example::
+
+        client = AsyncClient()
+        session = await client.open_notebook("/path/to/notebook.ipynb")
+        cell_ids = await session.get_cell_ids()
+    """
+
+    def __init__(
+        self,
+        socket_path: str | None = None,
+        peer_label: str | None = None,
+    ) -> None: ...
+    def ping(self) -> Coroutine[Any, Any, bool]: ...
+    def is_running(self) -> Coroutine[Any, Any, bool]: ...
+    def status(self) -> Coroutine[Any, Any, dict[str, Any]]: ...
+    def list_rooms(self) -> Coroutine[Any, Any, list[dict[str, Any]]]: ...
+    def flush_pool(self) -> Coroutine[Any, Any, None]: ...
+    def shutdown(self) -> Coroutine[Any, Any, None]: ...
+    def open_notebook(
+        self,
+        path: str,
+        peer_label: str | None = None,
+    ) -> Coroutine[Any, Any, AsyncSession]: ...
+    def create_notebook(
+        self,
+        runtime: str = "python",
+        working_dir: str | None = None,
+        peer_label: str | None = None,
+    ) -> Coroutine[Any, Any, AsyncSession]: ...
+    def join_notebook(
+        self,
+        notebook_id: str,
+        peer_label: str | None = None,
+    ) -> Coroutine[Any, Any, AsyncSession]: ...
+
+# ---------------------------------------------------------------------------
+# DaemonClient (deprecated, use Client or AsyncClient)
 # ---------------------------------------------------------------------------
 
 class DaemonClient:

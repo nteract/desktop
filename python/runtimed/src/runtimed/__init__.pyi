@@ -1,10 +1,16 @@
 """Type stubs for the runtimed package."""
 
 from runtimed.runtimed import (
+    AsyncClient as AsyncClient,
+)
+from runtimed.runtimed import (
     AsyncSession as AsyncSession,
 )
 from runtimed.runtimed import (
     Cell as Cell,
+)
+from runtimed.runtimed import (
+    Client as Client,
 )
 from runtimed.runtimed import (
     CompletionItem as CompletionItem,
@@ -64,6 +70,8 @@ from runtimed.runtimed import (
 __version__: str
 
 __all__ = [
+    "Client",
+    "AsyncClient",
     "DaemonClient",
     "Session",
     "AsyncSession",

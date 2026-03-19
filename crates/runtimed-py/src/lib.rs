@@ -12,6 +12,7 @@
 use pyo3::prelude::*;
 use std::path::PathBuf;
 
+mod async_client;
 mod async_session;
 mod client;
 mod daemon_paths;
@@ -23,8 +24,9 @@ mod session;
 mod session_core;
 mod subscription;
 
+use async_client::AsyncClient;
 use async_session::AsyncSession;
-use client::DaemonClient;
+use client::{Client, DaemonClient};
 use error::RuntimedError;
 use event_stream::{ExecutionEventIterator, ExecutionEventStream};
 use output::{
@@ -63,11 +65,15 @@ fn default_socket_path() -> String {
 /// Python module for runtimed daemon client.
 #[pymodule]
 fn runtimed(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Core classes - sync API
+    // Core classes - new API (recommended)
+    m.add_class::<Client>()?;
+    m.add_class::<AsyncClient>()?;
+
+    // Core classes - sync API (deprecated, use Client instead)
     m.add_class::<DaemonClient>()?;
     m.add_class::<Session>()?;
 
-    // Core classes - async API
+    // Core classes - async API (deprecated, use AsyncClient instead)
     m.add_class::<AsyncSession>()?;
 
     // Iterator types for streaming execution
