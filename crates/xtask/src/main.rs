@@ -62,6 +62,7 @@ fn main() {
             let fix = args.iter().any(|a| a == "--fix");
             cmd_lint(fix);
         }
+        "wasm" => cmd_wasm(),
         "--help" | "-h" | "help" => print_help(),
         cmd => {
             eprintln!("Unknown command: {cmd}");
@@ -107,6 +108,7 @@ Linting:
   lint --fix                 Auto-fix formatting and linting issues
 
 Other:
+  wasm                       Rebuild runtimed-wasm (wasm-pack build)
   icons [source.png]         Generate icon variants
   help                       Show this help
 "
@@ -499,6 +501,22 @@ fn cmd_build_e2e() {
 
     println!("Build complete: ./target/debug/notebook");
     println!("Run with: ./target/debug/notebook --webdriver-port 4444");
+}
+
+fn cmd_wasm() {
+    println!("Building runtimed-wasm...");
+    run_cmd(
+        "wasm-pack",
+        &[
+            "build",
+            "crates/runtimed-wasm",
+            "--target",
+            "web",
+            "--out-dir",
+            "../../apps/notebook/src/wasm/runtimed-wasm",
+        ],
+    );
+    println!("WASM build complete. Output: apps/notebook/src/wasm/runtimed-wasm/");
 }
 
 fn cmd_icons(source: Option<&str>) {
