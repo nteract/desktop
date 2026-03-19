@@ -456,7 +456,7 @@ class Session:
     def splice_source(self, cell_id: str, index: int, delete_count: int, text: str) -> None:
         """Splice a cell's source at a specific position (character-level, no diff).
 
-        Deletes `delete_count` characters starting at `index`, then inserts `text`.
+        Deletes ``delete_count`` characters starting at ``index``, then inserts ``text``.
         This is the fast path for surgical edits — no Myers diff overhead.
         """
         ...
@@ -637,7 +637,7 @@ class AsyncSession:
     ) -> Coroutine[Any, Any, None]:
         """Splice a cell's source at a specific position (character-level, no diff).
 
-        Deletes `delete_count` characters starting at `index`, then inserts `text`.
+        Deletes ``delete_count`` characters starting at ``index``, then inserts ``text``.
         This is the fast path for surgical edits — no Myers diff overhead.
         """
         ...

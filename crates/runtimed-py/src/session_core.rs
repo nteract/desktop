@@ -640,8 +640,9 @@ pub(crate) async fn splice_source(
             .get_cell(cell_id)
             .ok_or_else(|| to_py_err(format!("Cell {} not found", cell_id)))?;
 
-        // Position the cursor at the end of the inserted text
-        let cursor_index = index + text.len();
+        // Position the cursor at the end of the inserted text.
+        // Use char count (not byte length) — Automerge indices are character-based.
+        let cursor_index = index + text.chars().count();
         index_to_line_col(&cell.source, cursor_index)
     };
 
@@ -651,15 +652,22 @@ pub(crate) async fn splice_source(
     Ok(())
 }
 
-/// Convert a byte index in a string to (line, col) — both 0-based, u32 for presence API.
-fn index_to_line_col(source: &str, index: usize) -> (u32, u32) {
-    let clamped = index.min(source.len());
-    let prefix = &source[..clamped];
-    let line = prefix.matches('\n').count() as u32;
-    let col = match prefix.rfind('\n') {
-        Some(nl) => (clamped - nl - 1) as u32,
-        None => clamped as u32,
-    };
+/// Convert a character index in a string to (line, col) — both 0-based, u32 for presence API.
+/// Uses character counting (not byte offsets) to handle multi-byte UTF-8 correctly.
+fn index_to_line_col(source: &str, char_index: usize) -> (u32, u32) {
+    let mut line: u32 = 0;
+    let mut col: u32 = 0;
+    for (i, ch) in source.chars().enumerate() {
+        if i >= char_index {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+    }
     (line, col)
 }
 
