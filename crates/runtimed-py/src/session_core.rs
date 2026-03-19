@@ -614,6 +614,55 @@ pub(crate) async fn set_source(
     Ok(())
 }
 
+/// Splice a cell's source at a specific position (character-level, no diff).
+/// Deletes `delete_count` characters starting at `index`, then inserts `text`.
+pub(crate) async fn splice_source(
+    state: &Arc<Mutex<SessionState>>,
+    cell_id: &str,
+    index: usize,
+    delete_count: usize,
+    text: &str,
+) -> PyResult<()> {
+    let (last_line, last_col) = {
+        let st = state.lock().await;
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
+
+        // Synchronous — direct doc mutation via DocHandle
+        handle
+            .splice_source(cell_id, index, delete_count, text)
+            .map_err(to_py_err)?;
+
+        // Read back the full source to compute cursor position at splice point
+        let cell = handle
+            .get_cell(cell_id)
+            .ok_or_else(|| to_py_err(format!("Cell {} not found", cell_id)))?;
+
+        // Position the cursor at the end of the inserted text
+        let cursor_index = index + text.len();
+        index_to_line_col(&cell.source, cursor_index)
+    };
+
+    emit_cursor_presence(state, cell_id, last_line, last_col).await;
+    emit_clear_channel(state, notebook_doc::presence::Channel::Selection).await;
+
+    Ok(())
+}
+
+/// Convert a byte index in a string to (line, col) — both 0-based, u32 for presence API.
+fn index_to_line_col(source: &str, index: usize) -> (u32, u32) {
+    let clamped = index.min(source.len());
+    let prefix = &source[..clamped];
+    let line = prefix.matches('\n').count() as u32;
+    let col = match prefix.rfind('\n') {
+        Some(nl) => (clamped - nl - 1) as u32,
+        None => clamped as u32,
+    };
+    (line, col)
+}
+
 /// Append text to a cell's source.
 pub(crate) async fn append_source(
     state: &Arc<Mutex<SessionState>>,

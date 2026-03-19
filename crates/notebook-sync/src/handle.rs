@@ -286,6 +286,19 @@ impl DocHandle {
         self.with_notebook_doc(|nd| nd.append_source(cell_id, text))
     }
 
+    /// Splice a cell's source at a specific position (character-level, no diff).
+    /// Deletes `delete_count` characters starting at `index`, then inserts `text`.
+    /// Returns true if cell was found.
+    pub fn splice_source(
+        &self,
+        cell_id: &str,
+        index: usize,
+        delete_count: usize,
+        text: &str,
+    ) -> Result<bool, SyncError> {
+        self.with_notebook_doc(|nd| nd.splice_source(cell_id, index, delete_count, text))
+    }
+
     /// Set a cell's type. Valid values: "code", "markdown", "raw". Returns true if cell was found.
     pub fn set_cell_type(&self, cell_id: &str, cell_type: &str) -> Result<bool, SyncError> {
         self.with_notebook_doc(|nd| nd.set_cell_type(cell_id, cell_type))

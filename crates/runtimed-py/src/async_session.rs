@@ -409,6 +409,33 @@ impl AsyncSession {
         })
     }
 
+    /// Splice a cell's source at a specific position (character-level, no diff).
+    ///
+    /// Deletes `delete_count` characters starting at `index`, then inserts `text`.
+    /// This is the fast path for surgical edits — no Myers diff overhead.
+    ///
+    /// Args:
+    ///     cell_id: The cell to edit.
+    ///     index: Character index where the splice starts.
+    ///     delete_count: Number of characters to delete at index.
+    ///     text: Text to insert at index (after deletion).
+    fn splice_source<'py>(
+        &self,
+        py: Python<'py>,
+        cell_id: &str,
+        index: usize,
+        delete_count: usize,
+        text: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let cell_id = cell_id.to_string();
+        let text = text.to_string();
+
+        future_into_py(py, async move {
+            session_core::splice_source(&state, &cell_id, index, delete_count, &text).await
+        })
+    }
+
     /// Append text to a cell's source (efficient for streaming tokens).
     fn append_source<'py>(
         &self,

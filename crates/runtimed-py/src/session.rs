@@ -402,6 +402,26 @@ impl Session {
             .block_on(session_core::set_source(&self.state, cell_id, source))
     }
 
+    /// Splice a cell's source at a specific position (character-level, no diff).
+    ///
+    /// Deletes `delete_count` characters starting at `index`, then inserts `text`.
+    /// This is the fast path for surgical edits — no Myers diff overhead.
+    fn splice_source(
+        &self,
+        cell_id: &str,
+        index: usize,
+        delete_count: usize,
+        text: &str,
+    ) -> PyResult<()> {
+        self.runtime.block_on(session_core::splice_source(
+            &self.state,
+            cell_id,
+            index,
+            delete_count,
+            text,
+        ))
+    }
+
     /// Append text to a cell's source (efficient for streaming tokens).
     fn append_source(&self, cell_id: &str, text: &str) -> PyResult<()> {
         self.runtime
