@@ -1,10 +1,10 @@
+import { Annotation, type Extension, Compartment } from "@codemirror/state";
 import {
   EditorView,
   type KeyBinding,
   keymap,
   placeholder as placeholderExt,
 } from "@codemirror/view";
-import { type Extension, useCodeMirror } from "@uiw/react-codemirror";
 import {
   forwardRef,
   useCallback,
@@ -33,12 +33,19 @@ export interface CodeMirrorEditorRef {
   getEditor: () => EditorView | null;
 }
 
+/**
+ * Annotation marking a transaction as an external (inbound) change.
+ * The editor's updateListener skips the onValueChange callback for these.
+ * The CRDT bridge annotates reconcile transactions with this.
+ */
+export const externalChangeAnnotation = Annotation.define<boolean>();
+
 export interface CodeMirrorEditorProps {
-  /** Current editor content */
-  value: string;
+  /** Initial editor content (used on mount; ongoing sync handled by CRDT bridge extension) */
+  initialValue?: string;
   /** Language for syntax highlighting */
   language?: SupportedLanguage;
-  /** Callback when content changes */
+  /** Callback when content changes (for non-CRDT consumers; CRDT bridge handles sync directly) */
   onValueChange?: (value: string) => void;
   /** Auto-focus on mount */
   autoFocus?: boolean;
@@ -67,20 +74,15 @@ export interface CodeMirrorEditorProps {
 }
 
 /**
- * CodeMirror 6 editor component for notebook cells
+ * CodeMirror 6 editor component for notebook cells.
  *
- * Provides syntax highlighting, key bindings, and a clean API
- * for integration with notebook cell components.
+ * Manages an EditorView directly — no wrapper library. The editor is
+ * **uncontrolled**: `initialValue` sets content on mount; ongoing source
+ * sync is handled by the CRDT bridge extension (passed in `extensions`).
  *
- * @example
- * ```tsx
- * <CodeMirrorEditor
- *   value={source}
- *   language="python"
- *   onValueChange={setSource}
- *   placeholder="Enter code..."
- * />
- * ```
+ * The optional `onValueChange` callback fires on every local document
+ * change for consumers that need it (e.g., non-CRDT editors). It does
+ * NOT fire for inbound CRDT changes (reconcile-annotated transactions).
  */
 export const CodeMirrorEditor = forwardRef<
   CodeMirrorEditorRef,
@@ -88,7 +90,7 @@ export const CodeMirrorEditor = forwardRef<
 >(
   (
     {
-      value,
+      initialValue = "",
       language = "python",
       onValueChange,
       autoFocus = false,
@@ -106,8 +108,21 @@ export const CodeMirrorEditor = forwardRef<
     },
     ref,
   ) => {
-    const editorRef = useRef<HTMLDivElement | null>(null);
-    const editorViewRef = useRef<EditorView | null>(null);
+    const containerRef = useRef<HTMLDivElement | null>(null);
+    const viewRef = useRef<EditorView | null>(null);
+
+    // Stable refs for callbacks so the updateListener closure doesn't go stale.
+    const onValueChangeRef = useRef(onValueChange);
+    onValueChangeRef.current = onValueChange;
+
+    // Compartments for dynamic reconfiguration without recreating the view.
+    const langCompartment = useRef(new Compartment());
+    const themeCompartment = useRef(new Compartment());
+    const keymapCompartment = useRef(new Compartment());
+    const placeholderCompartment = useRef(new Compartment());
+    const lineWrappingCompartment = useRef(new Compartment());
+    const readOnlyCompartment = useRef(new Compartment());
+    const additionalCompartment = useRef(new Compartment());
 
     // Track dark mode state for "system" theme
     const [isDark, setIsDark] = useState(() =>
@@ -118,16 +133,12 @@ export const CodeMirrorEditor = forwardRef<
     useEffect(() => {
       if (theme !== "system") return;
 
-      // Check initial state
       setIsDark(isDarkMode());
 
-      // Listen for system preference changes
       const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
       const handleMediaChange = () => setIsDark(isDarkMode());
       mediaQuery.addEventListener("change", handleMediaChange);
 
-      // Observe document changes (for site-level dark mode toggle)
-      // Watch class, style (for color-scheme), and data attributes
       const observer = new MutationObserver(() => {
         setIsDark(isDarkMode());
       });
@@ -142,119 +153,211 @@ export const CodeMirrorEditor = forwardRef<
       };
     }, [theme]);
 
-    // For IPython, detect cell magics and switch to appropriate language mode
+    // ── Language extension ────────────────────────────────────────────
+    //
+    // For IPython cells, magic detection (%%bash, %%sql, etc.) must
+    // re-run when the document changes — not just on mount. We compute
+    // the initial extension here, then reconfigure dynamically via an
+    // updateListener added to the EditorView (see the mount effect).
+
     const langExtension = useMemo(() => {
       if (language === "ipython") {
-        return getIPythonExtension(value).extension;
+        return getIPythonExtension(initialValue).extension;
       }
       return getLanguageExtension(language);
-    }, [language, value]);
+    }, [language, initialValue]);
 
-    // Determine which theme to use
+    // Track the last-detected magic so we only reconfigure when it changes.
+    const lastMagicRef = useRef<string | null>(null);
+    // Store the language prop in a ref so the updateListener closure stays fresh.
+    const languageRef = useRef(language);
+    languageRef.current = language;
+
+    // ── Theme extension ──────────────────────────────────────────────
+
     const themeExtension = useMemo(() => {
       if (theme === "light") return lightTheme;
       if (theme === "dark") return darkTheme;
-      // "system" - use detected state
       return isDark ? darkTheme : lightTheme;
     }, [theme, isDark]);
 
-    const extensions = useMemo(() => {
-      const exts: Extension[] = [
-        ...baseExtensions,
-        langExtension,
-        themeExtension,
+    // ── Max height ───────────────────────────────────────────────────
+
+    const maxHeightTheme = useMemo((): Extension[] => {
+      if (!maxHeight) return [];
+      return [
+        EditorView.theme({
+          "&": { maxHeight },
+          ".cm-scroller": { overflow: "auto" },
+        }),
       ];
+    }, [maxHeight]);
 
-      if (keyMap && keyMap.length > 0) {
-        exts.unshift(keymap.of(keyMap));
-      }
+    // ── Create EditorView on mount ───────────────────────────────────
 
-      if (placeholder) {
-        exts.push(placeholderExt(placeholder));
-      }
-
-      if (lineWrapping) {
-        exts.push(EditorView.lineWrapping);
-      }
-
-      if (readOnly) {
-        exts.push(EditorView.editable.of(false));
-      }
-
-      if (additionalExtensions) {
-        exts.push(...additionalExtensions);
-      }
-
-      return exts;
-    }, [
-      baseExtensions,
-      langExtension,
-      themeExtension,
-      keyMap,
-      placeholder,
-      lineWrapping,
-      readOnly,
-      additionalExtensions,
-    ]);
-
-    const handleChange = useCallback(
-      (val: string) => {
-        onValueChange?.(val);
-      },
-      [onValueChange],
-    );
-
-    const handleFocus = useCallback(() => {
-      onFocus?.();
-    }, [onFocus]);
-
-    const { setContainer, view } = useCodeMirror({
-      container: editorRef.current,
-      basicSetup: false,
-      indentWithTab: false,
-      extensions,
-      maxHeight,
-      value,
-      onChange: handleChange,
-      autoFocus,
-    });
-
-    // Store the editor view reference (kept for backwards compat with getEditor)
     useEffect(() => {
-      editorViewRef.current = view || null;
-    }, [view]);
+      const container = containerRef.current;
+      if (!container) return;
 
-    // Expose methods via ref - depends on `view` so handle updates when view is ready
+      const updateListener = EditorView.updateListener.of((vu) => {
+        if (!vu.docChanged) return;
+
+        // Fire onValueChange only for local edits — skip transactions
+        // annotated as external (inbound CRDT reconcile changes).
+        const hasLocalEdit = vu.transactions.some(
+          (tr) => tr.docChanged && !tr.annotation(externalChangeAnnotation),
+        );
+
+        if (hasLocalEdit && onValueChangeRef.current) {
+          onValueChangeRef.current(vu.state.doc.toString());
+        }
+
+        // ── IPython magic re-detection ─────────────────────────────
+        // When the language is "ipython", check if the first line changed
+        // to a different cell magic and reconfigure the language extension.
+        if (languageRef.current === "ipython") {
+          // Only read the first line — magic detection is O(1) vs O(n) toString().
+          const firstLine = vu.state.doc.line(1).text;
+          const { extension: newLangExt, cellMagic } =
+            getIPythonExtension(firstLine);
+          const magicKey = cellMagic ?? "";
+          if (magicKey !== (lastMagicRef.current ?? "")) {
+            lastMagicRef.current = magicKey;
+            vu.view.dispatch({
+              effects: langCompartment.current.reconfigure(newLangExt),
+            });
+          }
+        }
+      });
+
+      const view = new EditorView({
+        doc: initialValue,
+        extensions: [
+          // Custom keymaps first — highest precedence (Shift-Enter, etc.)
+          keymapCompartment.current.of(
+            keyMap && keyMap.length > 0 ? keymap.of(keyMap) : [],
+          ),
+          ...baseExtensions,
+          langCompartment.current.of(langExtension),
+          themeCompartment.current.of(themeExtension),
+          placeholderCompartment.current.of(
+            placeholder ? placeholderExt(placeholder) : [],
+          ),
+          lineWrappingCompartment.current.of(
+            lineWrapping ? EditorView.lineWrapping : [],
+          ),
+          readOnlyCompartment.current.of(
+            readOnly ? EditorView.editable.of(false) : [],
+          ),
+          additionalCompartment.current.of(additionalExtensions ?? []),
+          ...maxHeightTheme,
+          updateListener,
+        ],
+        parent: container,
+      });
+
+      viewRef.current = view;
+
+      if (autoFocus) {
+        // Defer focus to the next frame so the DOM is settled.
+        requestAnimationFrame(() => view.focus());
+      }
+
+      return () => {
+        viewRef.current = null;
+        view.destroy();
+      };
+      // EditorView is created once on mount. Dynamic props are reconfigured
+      // via compartments in the effects below.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // ── Dynamic reconfiguration via compartments ─────────────────────
+
+    useEffect(() => {
+      viewRef.current?.dispatch({
+        effects: langCompartment.current.reconfigure(langExtension),
+      });
+    }, [langExtension]);
+
+    useEffect(() => {
+      viewRef.current?.dispatch({
+        effects: themeCompartment.current.reconfigure(themeExtension),
+      });
+    }, [themeExtension]);
+
+    useEffect(() => {
+      viewRef.current?.dispatch({
+        effects: keymapCompartment.current.reconfigure(
+          keyMap && keyMap.length > 0 ? keymap.of(keyMap) : [],
+        ),
+      });
+    }, [keyMap]);
+
+    useEffect(() => {
+      viewRef.current?.dispatch({
+        effects: placeholderCompartment.current.reconfigure(
+          placeholder ? placeholderExt(placeholder) : [],
+        ),
+      });
+    }, [placeholder]);
+
+    useEffect(() => {
+      viewRef.current?.dispatch({
+        effects: lineWrappingCompartment.current.reconfigure(
+          lineWrapping ? EditorView.lineWrapping : [],
+        ),
+      });
+    }, [lineWrapping]);
+
+    useEffect(() => {
+      viewRef.current?.dispatch({
+        effects: readOnlyCompartment.current.reconfigure(
+          readOnly ? EditorView.editable.of(false) : [],
+        ),
+      });
+    }, [readOnly]);
+
+    useEffect(() => {
+      viewRef.current?.dispatch({
+        effects: additionalCompartment.current.reconfigure(
+          additionalExtensions ?? [],
+        ),
+      });
+    }, [additionalExtensions]);
+
+    // ── Imperative handle ────────────────────────────────────────────
+
     useImperativeHandle(
       ref,
       () => ({
         focus: () => {
-          view?.focus();
+          viewRef.current?.focus();
         },
         setCursorPosition: (position: "start" | "end") => {
+          const view = viewRef.current;
           if (view) {
-            const doc = view.state.doc;
-            const pos = position === "start" ? 0 : doc.length;
+            const pos = position === "start" ? 0 : view.state.doc.length;
             view.dispatch({
               selection: { anchor: pos, head: pos },
               scrollIntoView: true,
             });
           }
         },
-        getEditor: () => view || null,
+        getEditor: () => viewRef.current,
       }),
-      [view],
+      [],
     );
 
-    useEffect(() => {
-      if (editorRef.current) {
-        setContainer(editorRef.current);
-      }
-    }, [setContainer]);
+    // ── Focus / blur via DOM events on the wrapper ───────────────────
+
+    const handleFocus = useCallback(() => {
+      onFocus?.();
+    }, [onFocus]);
 
     return (
       <div
-        ref={editorRef}
+        ref={containerRef}
         onBlur={onBlur}
         onFocus={handleFocus}
         className={cn("text-sm", className)}

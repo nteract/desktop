@@ -29,6 +29,7 @@ import { UntrustedBanner } from "./components/UntrustedBanner";
 import { PresenceProvider } from "./contexts/PresenceContext";
 import { useAutomergeNotebook } from "./hooks/useAutomergeNotebook";
 import { useCondaDependencies } from "./hooks/useCondaDependencies";
+import { CrdtBridgeProvider } from "./hooks/useCrdtBridge";
 import { useDaemonKernel } from "./hooks/useDaemonKernel";
 import { useDenoDependencies } from "./hooks/useDenoDependencies";
 import { type EnvSyncState, useDependencies } from "./hooks/useDependencies";
@@ -112,7 +113,6 @@ function AppContent() {
     isLoading,
     focusedCellId,
     setFocusedCellId,
-    updateCellSource,
     addCell,
     moveCell,
     deleteCell,
@@ -120,6 +120,7 @@ function AppContent() {
     openNotebook,
     cloneNotebook,
     dirty,
+    setDirty,
 
     updateOutputByDisplayId,
     setExecutionCount,
@@ -127,6 +128,8 @@ function AppContent() {
     setCellSourceHidden,
     setCellOutputsHidden,
     flushSync,
+    getHandle,
+    triggerSync,
   } = useAutomergeNotebook();
 
   // Global find (Cmd+F)
@@ -1179,27 +1182,32 @@ function AppContent() {
           loading={trustLoading}
           daemonMode={true}
         />
-        <NotebookView
-          cellIds={cellIds}
-          isLoading={isLoading}
-          focusedCellId={focusedCellId}
-          executingCellIds={executingCellIds}
-          pagePayloads={pagePayloads}
-          runtime={runtime}
-          searchQuery={globalFind.query}
-          searchCurrentMatch={globalFind.currentMatch}
-          onFocusCell={setFocusedCellId}
-          onUpdateCellSource={updateCellSource}
-          onExecuteCell={handleExecuteCell}
-          onInterruptKernel={interruptKernel}
-          onDeleteCell={deleteCell}
-          onAddCell={handleAddCell}
-          onMoveCell={moveCell}
-          onClearPagePayload={clearPagePayload}
-          onReportOutputMatchCount={globalFind.reportOutputMatchCount}
-          onSetCellSourceHidden={setCellSourceHidden}
-          onSetCellOutputsHidden={setCellOutputsHidden}
-        />
+        <CrdtBridgeProvider
+          getHandle={getHandle}
+          onSyncNeeded={triggerSync}
+          setDirty={setDirty}
+        >
+          <NotebookView
+            cellIds={cellIds}
+            isLoading={isLoading}
+            focusedCellId={focusedCellId}
+            executingCellIds={executingCellIds}
+            pagePayloads={pagePayloads}
+            runtime={runtime}
+            searchQuery={globalFind.query}
+            searchCurrentMatch={globalFind.currentMatch}
+            onFocusCell={setFocusedCellId}
+            onExecuteCell={handleExecuteCell}
+            onInterruptKernel={interruptKernel}
+            onDeleteCell={deleteCell}
+            onAddCell={handleAddCell}
+            onMoveCell={moveCell}
+            onClearPagePayload={clearPagePayload}
+            onReportOutputMatchCount={globalFind.reportOutputMatchCount}
+            onSetCellSourceHidden={setCellSourceHidden}
+            onSetCellOutputsHidden={setCellOutputsHidden}
+          />
+        </CrdtBridgeProvider>
       </div>
     </PresenceProvider>
   );

@@ -30,7 +30,6 @@
     "@tauri-apps/plugin-shell": "^2.3.5",
     "@tauri-apps/plugin-updater": "^2.10.0",
     "@uiw/codemirror-theme-github": "^4.25.4",
-    "@uiw/react-codemirror": "^4.25.4",
     "@uiw/react-json-view": "^2.0.0-alpha.41",
     "ansi-to-react": "^6.2.6",
     "class-variance-authority": "^0.7.1",

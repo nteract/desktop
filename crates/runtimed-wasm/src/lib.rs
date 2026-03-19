@@ -383,6 +383,19 @@ impl NotebookHandle {
             .map_err(|e| JsError::new(&format!("update_source failed: {}", e)))
     }
 
+    /// Splice a cell's source at a specific position (character-level, no diff).
+    pub fn splice_source(
+        &mut self,
+        cell_id: &str,
+        index: usize,
+        delete_count: usize,
+        text: &str,
+    ) -> Result<bool, JsError> {
+        self.doc
+            .splice_source(cell_id, index, delete_count, text)
+            .map_err(|e| JsError::new(&format!("splice_source failed: {}", e)))
+    }
+
     /// Append text to a cell's source (optimized for streaming, no diff).
     pub fn append_source(&mut self, cell_id: &str, text: &str) -> Result<bool, JsError> {
         self.doc

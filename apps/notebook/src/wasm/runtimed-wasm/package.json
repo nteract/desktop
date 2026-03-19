@@ -4,6 +4,10 @@
   "description": "WASM bindings for runtimed notebook document operations, compiled from the same automerge crate as the daemon",
   "version": "0.1.0",
   "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nteract/desktop"
+  },
   "files": [
     "runtimed_wasm_bg.wasm",
     "runtimed_wasm.js",

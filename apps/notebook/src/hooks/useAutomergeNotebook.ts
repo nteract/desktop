@@ -440,6 +440,13 @@ export function useAutomergeNotebook() {
 
   // ── Public interface ───────────────────────────────────────────────
 
+  // ── CRDT bridge deps ───────────────────────────────────────────────
+  // Stable getter for the WASM handle (reads ref at call time).
+  const getHandle = useCallback(() => handleRef.current, []);
+  // Trigger a debounced sync to the daemon (same Subject the old
+  // updateCellSource used via sourceSync$).
+  const triggerSync = useCallback(() => sourceSync$.current.next(), []);
+
   return {
     cellIds,
     isLoading,
@@ -454,10 +461,14 @@ export function useAutomergeNotebook() {
     openNotebook,
     cloneNotebook,
     dirty,
+    setDirty,
     updateOutputByDisplayId,
     setExecutionCount,
     setCellSourceHidden,
     setCellOutputsHidden,
     flushSync,
+    // CRDT bridge context deps
+    getHandle,
+    triggerSync,
   };
 }

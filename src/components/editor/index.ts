@@ -2,6 +2,7 @@ export {
   CodeMirrorEditor,
   type CodeMirrorEditorProps,
   type CodeMirrorEditorRef,
+  externalChangeAnnotation,
 } from "./codemirror-editor";
 export {
   coreSetup,

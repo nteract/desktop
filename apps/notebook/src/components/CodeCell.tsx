@@ -27,6 +27,7 @@ import { cn } from "@/lib/utils";
 import type { CellPagePayload, MimeBundle } from "../App";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
+import { useCrdtBridge } from "../hooks/useCrdtBridge";
 import {
   registerAttributionEditor,
   unregisterAttributionEditor,
@@ -97,7 +98,6 @@ interface CodeCellProps {
   searchActiveOffset?: number;
   onSearchMatchCount?: (count: number) => void;
   onFocus: () => void;
-  onUpdateSource: (source: string) => void;
   onExecute: () => void;
   onInterrupt: () => void;
   onDelete: () => void;
@@ -136,7 +136,6 @@ export const CodeCell = memo(function CodeCell({
   searchActiveOffset = -1,
   onSearchMatchCount,
   onFocus,
-  onUpdateSource,
   onExecute,
   onInterrupt,
   onDelete,
@@ -158,6 +157,7 @@ export const CodeCell = memo(function CodeCell({
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
   const presence = usePresenceContext();
+  const { extension: crdtBridgeExt, bridge } = useCrdtBridge(cell.id);
 
   // Check cell metadata for visibility (JupyterLab convention)
   const isSourceHidden =
@@ -174,7 +174,7 @@ export const CodeCell = memo(function CodeCell({
 
   // Register EditorView with the cursor registry for remote cursor rendering.
   // We use a ref + polling approach because the EditorView is created async
-  // by useCodeMirror and isn't available on first render.
+  // by CodeMirrorEditor and isn't available on first render.
   const registeredViewRef = useRef<EditorView | null>(null);
   useEffect(() => {
     const tryRegister = () => {
@@ -276,12 +276,12 @@ export const CodeCell = memo(function CodeCell({
     [],
   );
 
-  // Handle history selection - replace cell content
+  // Handle history selection - replace cell content via CRDT bridge
   const handleHistorySelect = useCallback(
     (source: string) => {
-      onUpdateSource(source);
+      bridge.replaceSource(source);
     },
-    [onUpdateSource],
+    [bridge],
   );
 
   // Merge navigation keybindings (navigation bindings take precedence for Shift-Enter)
@@ -307,9 +307,10 @@ export const CodeCell = memo(function CodeCell({
     ];
   }, [cell.id, presence]);
 
-  // CodeMirror extensions: kernel completion + tab completion + search highlighting + remote cursors + presence sender
+  // CodeMirror extensions: CRDT bridge + kernel completion + tab completion + search highlighting + remote cursors + presence sender
   const editorExtensions = useMemo(
     () => [
+      crdtBridgeExt,
       kernelCompletionExtension,
       tabCompletionKeymap,
       ...searchHighlight(searchQuery || "", searchActiveOffset),
@@ -318,6 +319,7 @@ export const CodeCell = memo(function CodeCell({
       ...presenceSenderExt,
     ],
     [
+      crdtBridgeExt,
       searchQuery,
       searchActiveOffset,
       remoteCursorsExt,
@@ -444,9 +446,8 @@ export const CodeCell = memo(function CodeCell({
             ) : (
               <CodeMirrorEditor
                 ref={editorRef}
-                value={cell.source}
+                initialValue={cell.source}
                 language={language}
-                onValueChange={onUpdateSource}
                 keyMap={keyMap}
                 extensions={editorExtensions}
                 placeholder="Enter code..."
