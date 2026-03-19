@@ -1203,7 +1203,7 @@ impl ServerHandler for Supervisor {
                     }
                 };
 
-                let old_release = RELEASE_MODE.swap(new_release, Ordering::Relaxed);
+                let old_release = RELEASE_MODE.load(Ordering::Relaxed);
                 if old_release == new_release {
                     return Ok(CallToolResult::success(vec![Content::text(format!(
                         "Already in {mode} mode, no change needed."
@@ -1215,37 +1215,77 @@ impl ServerHandler for Supervisor {
                     if old_release { "release" } else { "debug" }
                 );
 
-                // Check that the target binary exists before stopping anything
                 let project_root = {
                     let state = self.state.read().await;
                     state.project_root.clone()
                 };
-                let target_binary = cargo_binary(&project_root, "runtimed");
-                if !target_binary.exists() {
-                    // Roll back
+
+                // Validate both target binaries exist before stopping anything.
+                // wait_for_daemon uses `runt` to probe status, so both are needed.
+                RELEASE_MODE.store(new_release, Ordering::Relaxed);
+                let target_runtimed = cargo_binary(&project_root, "runtimed");
+                let target_runt = cargo_binary(&project_root, "runt");
+                let profile_flag = if new_release { "--release " } else { "" };
+
+                if !target_runtimed.exists() || !target_runt.exists() {
                     RELEASE_MODE.store(old_release, Ordering::Relaxed);
+                    let mut missing = Vec::new();
+                    if !target_runtimed.exists() {
+                        missing.push(format!("runtimed: {}", target_runtimed.display()));
+                    }
+                    if !target_runt.exists() {
+                        missing.push(format!("runt: {}", target_runt.display()));
+                    }
                     return Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Cannot switch to {mode} mode: binary not found at {}. \
-                         Build it first with: cargo build {} -p runtimed",
-                        target_binary.display(),
-                        if new_release { "--release" } else { "" }
+                        "Cannot switch to {mode} mode — missing binaries:\n  {}\n\
+                         Build them first with: cargo build {}-p runtimed -p runt-cli",
+                        missing.join("\n  "),
+                        profile_flag
                     ))]));
                 }
 
-                // Stop the current daemon
+                // Stop the current daemon. If we manage it, kill the child directly.
+                // If it was already running (unmanaged), stop it via `runt daemon stop`
+                // using the OLD mode's binary so the CLI matches the running daemon.
                 {
                     let mut state = self.state.write().await;
                     if let Some(ref mut child) = state.daemon_child {
-                        info!("Stopping daemon for mode switch...");
+                        info!("Stopping managed daemon for mode switch...");
                         let _ = child.kill();
                         let _ = child.wait();
+                        state.daemon_child = None;
+                    } else {
+                        // Unmanaged daemon — stop via runt CLI (old mode binary)
+                        RELEASE_MODE.store(old_release, Ordering::Relaxed);
+                        let old_runt = cargo_binary(&project_root, "runt");
+                        RELEASE_MODE.store(new_release, Ordering::Relaxed);
+                        if old_runt.exists() {
+                            info!("Stopping unmanaged daemon via runt CLI...");
+                            let mut stop_cmd = std::process::Command::new(&old_runt);
+                            stop_cmd.args(["daemon", "stop"]).env("RUNTIMED_DEV", "1");
+                            if let Some(workspace) = runt_workspace::get_workspace_path() {
+                                stop_cmd.env("RUNTIMED_WORKSPACE_PATH", &workspace);
+                            }
+                            let _ = stop_cmd.status();
+                            // Give it a moment to release the socket
+                            std::thread::sleep(Duration::from_secs(2));
+                        }
                     }
+                }
+
+                // Start the new daemon (now using the new mode's binary)
+                {
+                    let mut state = self.state.write().await;
                     state.daemon_child = start_daemon(&project_root);
                 }
 
                 if !wait_for_daemon(&project_root, Duration::from_secs(30)) {
+                    // Roll back on failure
+                    RELEASE_MODE.store(old_release, Ordering::Relaxed);
                     return Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Switched to {mode} mode but daemon did not become ready within 30s"
+                        "Failed to switch to {mode} mode — daemon did not become ready within 30s. \
+                         Rolled back to {} mode.",
+                        if old_release { "release" } else { "debug" }
                     ))]));
                 }
 
@@ -1254,9 +1294,13 @@ impl ServerHandler for Supervisor {
                     Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
                         "Switched to {mode} mode. Daemon and MCP server restarted."
                     ))])),
-                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Switched to {mode} mode. Daemon restarted but MCP server failed: {e}"
-                    ))])),
+                    Err(e) => {
+                        // Daemon is running in new mode but child failed — don't roll back
+                        // the daemon, just report the child failure
+                        Ok(CallToolResult::success(vec![Content::text(format!(
+                            "Switched to {mode} mode. Daemon restarted but MCP server failed: {e}"
+                        ))]))
+                    }
                 }
             }
             // Everything else → forward to child
