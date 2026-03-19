@@ -902,6 +902,70 @@ async def set_cell(
     return TextContent(type="text", text=f'Cell "{cell_id}" updated')
 
 
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+async def set_cells_source_hidden(
+    cell_ids: Annotated[list[str], Field(description="IDs of cells to update")],
+    hidden: Annotated[bool, Field(description="True to hide source, False to show")],
+) -> TextContent:
+    """Hide or show the source (code input) of one or more cells."""
+    session = await _get_session()
+    for cell_id in cell_ids:
+        await session.set_cell_source_hidden(cell_id=cell_id, hidden=hidden)
+    return TextContent(
+        type="text",
+        text=f"Set source_hidden={hidden} on {len(cell_ids)} cell(s)",
+    )
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+async def set_cells_outputs_hidden(
+    cell_ids: Annotated[list[str], Field(description="IDs of cells to update")],
+    hidden: Annotated[bool, Field(description="True to hide outputs, False to show")],
+) -> TextContent:
+    """Hide or show the outputs of one or more cells."""
+    session = await _get_session()
+    for cell_id in cell_ids:
+        await session.set_cell_outputs_hidden(cell_id=cell_id, hidden=hidden)
+    return TextContent(
+        type="text",
+        text=f"Set outputs_hidden={hidden} on {len(cell_ids)} cell(s)",
+    )
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+async def add_cell_tags(
+    cell_id: Annotated[str, Field(description="ID of the cell")],
+    tags: Annotated[list[str], Field(description="Tags to add")],
+) -> TextContent:
+    """Add tags to a cell's metadata. Existing tags are preserved."""
+    session = await _get_session()
+    meta_json = await session.get_cell_metadata(cell_id=cell_id)
+    existing: list[str] = []
+    if meta_json:
+        meta = json.loads(meta_json)
+        existing = list(meta.get("tags", []))
+    merged = existing + [t for t in tags if t not in existing]
+    await session.set_cell_tags(cell_id=cell_id, tags=merged)
+    return TextContent(type="text", text=f"Tags for {cell_id}: {merged}")
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+async def remove_cell_tags(
+    cell_id: Annotated[str, Field(description="ID of the cell")],
+    tags: Annotated[list[str], Field(description="Tags to remove")],
+) -> TextContent:
+    """Remove tags from a cell's metadata."""
+    session = await _get_session()
+    meta_json = await session.get_cell_metadata(cell_id=cell_id)
+    existing: list[str] = []
+    if meta_json:
+        meta = json.loads(meta_json)
+        existing = list(meta.get("tags", []))
+    filtered = [t for t in existing if t not in tags]
+    await session.set_cell_tags(cell_id=cell_id, tags=filtered)
+    return TextContent(type="text", text=f"Tags for {cell_id}: {filtered}")
+
+
 async def _send_edit_cursor(
     session: runtimed.AsyncSession, cell_id: str, source: str, offset: int
 ) -> None:
