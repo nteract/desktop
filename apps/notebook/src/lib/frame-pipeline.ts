@@ -398,8 +398,18 @@ async function materializeFromBatch(
         const ecStr = handle.get_cell_execution_count(cellId);
         const ec =
           !ecStr || ecStr === "null" ? null : Number.parseInt(ecStr, 10);
-        const source = handle.get_cell_source(cellId) ?? "";
         const metadata = handle.get_cell_metadata(cellId) ?? {};
+
+        // Preserve the store's source when the changeset says source didn't
+        // change. Reading from WASM after the await is unsafe — the user may
+        // have typed more keystrokes, and the WASM doc could reflect a CRDT
+        // merge that diverges from CodeMirror's state. Using the stale WASM
+        // source would arm @uiw/react-codemirror's typing latch to overwrite
+        // the editor with the stale value on the next typing pause.
+        const existingCell = getCellById(cellId);
+        const source = fields.source
+          ? (handle.get_cell_source(cellId) ?? "")
+          : (existingCell?.source ?? handle.get_cell_source(cellId) ?? "");
 
         updateCellById(cellId, () => ({
           id: cellId,

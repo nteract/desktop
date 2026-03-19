@@ -206,6 +206,7 @@ export function updateCellById(
   const cell = _cellMap.get(id);
   if (!cell) return;
   const updated = updater(cell);
+  if (cellsEqual(cell, updated)) return;
   _cellMap.set(id, updated);
   emitCellChange(id);
   if (updated.source !== cell.source) {
