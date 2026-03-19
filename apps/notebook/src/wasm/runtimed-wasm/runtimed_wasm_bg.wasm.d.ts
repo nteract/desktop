@@ -44,6 +44,7 @@ export const notebookhandle_get_metadata_snapshot_json: (a: number, b: number) =
 export const notebookhandle_get_metadata_snapshot: (a: number) => number;
 export const notebookhandle_get_metadata_value: (a: number, b: number, c: number) => number;
 export const notebookhandle_detect_runtime: (a: number, b: number) => void;
+export const notebookhandle_get_metadata_fingerprint: (a: number, b: number) => void;
 export const notebookhandle_set_metadata: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const notebookhandle_set_metadata_snapshot_value: (a: number, b: number, c: number) => void;
 export const notebookhandle_set_metadata_value: (a: number, b: number, c: number, d: number, e: number) => void;

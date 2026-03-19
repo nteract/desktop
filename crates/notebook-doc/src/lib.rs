@@ -338,6 +338,21 @@ impl NotebookDoc {
         self.get_metadata_snapshot()?.detect_runtime()
     }
 
+    /// Return a stable fingerprint of the notebook metadata.
+    ///
+    /// This is a cheap JSON serialization of the metadata snapshot, suitable
+    /// for equality comparison. Consumers can compare fingerprints across sync
+    /// batches to detect whether metadata actually changed — avoiding the cost
+    /// of deserializing the full snapshot when it hasn't.
+    ///
+    /// Deterministic because `RuntMetadata.extra` uses `BTreeMap` (sorted keys).
+    ///
+    /// Returns `None` if no metadata is present.
+    pub fn get_metadata_fingerprint(&self) -> Option<String> {
+        let snapshot = self.get_metadata_snapshot()?;
+        serde_json::to_string(&snapshot).ok()
+    }
+
     // ── UV dependency convenience methods ─────────────────────────
 
     /// Add a UV dependency, deduplicating by package name (case-insensitive).
@@ -4149,5 +4164,76 @@ mod tests {
         assert_eq!(doc.get_cell_execution_count("nonexistent"), None);
         assert_eq!(doc.get_cell_metadata("nonexistent"), None);
         assert_eq!(doc.get_cell_position("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_metadata_fingerprint_stable_when_unchanged() {
+        let mut doc = NotebookDoc::new("nb-fp-stable");
+
+        let snapshot = metadata::NotebookMetadataSnapshot {
+            kernelspec: Some(metadata::KernelspecSnapshot {
+                name: "python3".to_string(),
+                display_name: "Python 3".to_string(),
+                language: Some("python".to_string()),
+            }),
+            language_info: None,
+            runt: metadata::RuntMetadata::default(),
+        };
+
+        doc.set_metadata_snapshot(&snapshot).unwrap();
+
+        let fp1 = doc.get_metadata_fingerprint();
+        let fp2 = doc.get_metadata_fingerprint();
+        assert!(fp1.is_some());
+        assert_eq!(fp1, fp2);
+    }
+
+    #[test]
+    fn test_metadata_fingerprint_changes_on_metadata_update() {
+        let mut doc = NotebookDoc::new("nb-fp-change");
+
+        let snapshot = metadata::NotebookMetadataSnapshot {
+            kernelspec: Some(metadata::KernelspecSnapshot {
+                name: "python3".to_string(),
+                display_name: "Python 3".to_string(),
+                language: Some("python".to_string()),
+            }),
+            language_info: None,
+            runt: metadata::RuntMetadata::default(),
+        };
+
+        doc.set_metadata_snapshot(&snapshot).unwrap();
+
+        let fp_before = doc.get_metadata_fingerprint().unwrap();
+
+        doc.add_uv_dependency("pandas>=2.0").unwrap();
+
+        let fp_after = doc.get_metadata_fingerprint().unwrap();
+        assert_ne!(fp_before, fp_after);
+    }
+
+    #[test]
+    fn test_metadata_fingerprint_stable_across_cell_changes() {
+        let mut doc = NotebookDoc::new("nb-fp-cells");
+
+        let snapshot = metadata::NotebookMetadataSnapshot {
+            kernelspec: Some(metadata::KernelspecSnapshot {
+                name: "python3".to_string(),
+                display_name: "Python 3".to_string(),
+                language: Some("python".to_string()),
+            }),
+            language_info: None,
+            runt: metadata::RuntMetadata::default(),
+        };
+
+        doc.set_metadata_snapshot(&snapshot).unwrap();
+
+        let fp_before = doc.get_metadata_fingerprint().unwrap();
+
+        doc.add_cell_after("cell-1", "code", None).unwrap();
+        doc.update_source("cell-1", "print('hello')").unwrap();
+
+        let fp_after = doc.get_metadata_fingerprint().unwrap();
+        assert_eq!(fp_before, fp_after);
     }
 }

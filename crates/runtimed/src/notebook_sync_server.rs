@@ -4809,7 +4809,7 @@ fn build_new_notebook_metadata(
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
-                extra: std::collections::HashMap::new(),
+                extra: std::collections::BTreeMap::new(),
             },
         ),
         _ => {
@@ -4854,7 +4854,7 @@ fn build_new_notebook_metadata(
                     deno: None,
                     trust_signature: None,
                     trust_timestamp: None,
-                    extra: std::collections::HashMap::new(),
+                    extra: std::collections::BTreeMap::new(),
                 },
             )
         }
@@ -5556,7 +5556,7 @@ mod tests {
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
-                extra: std::collections::HashMap::new(),
+                extra: std::collections::BTreeMap::new(),
             },
         }
     }
@@ -5578,7 +5578,7 @@ mod tests {
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
-                extra: std::collections::HashMap::new(),
+                extra: std::collections::BTreeMap::new(),
             },
         }
     }
@@ -5596,7 +5596,7 @@ mod tests {
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
-                extra: std::collections::HashMap::new(),
+                extra: std::collections::BTreeMap::new(),
             },
         }
     }
@@ -5651,7 +5651,7 @@ mod tests {
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
-                extra: std::collections::HashMap::new(),
+                extra: std::collections::BTreeMap::new(),
             },
         };
         assert_eq!(check_inline_deps(&snapshot), Some("uv:inline".to_string()));
@@ -5680,7 +5680,7 @@ mod tests {
                 }),
                 trust_signature: None,
                 trust_timestamp: None,
-                extra: std::collections::HashMap::new(),
+                extra: std::collections::BTreeMap::new(),
             },
         };
         assert_eq!(check_inline_deps(&snapshot), Some("deno".to_string()));
