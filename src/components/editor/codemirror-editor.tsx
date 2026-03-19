@@ -232,12 +232,13 @@ export const CodeMirrorEditor = forwardRef<
       const view = new EditorView({
         doc: initialValue,
         extensions: [
-          ...baseExtensions,
-          langCompartment.current.of(langExtension),
-          themeCompartment.current.of(themeExtension),
+          // Custom keymaps first — highest precedence (Shift-Enter, etc.)
           keymapCompartment.current.of(
             keyMap && keyMap.length > 0 ? keymap.of(keyMap) : [],
           ),
+          ...baseExtensions,
+          langCompartment.current.of(langExtension),
+          themeCompartment.current.of(themeExtension),
           placeholderCompartment.current.of(
             placeholder ? placeholderExt(placeholder) : [],
           ),
