@@ -2430,7 +2430,12 @@ async fn rekey_ephemeral_room(
                 if let Some(interloper) = interloper {
                     tokio::spawn(async move {
                         if let Some(mut kernel) = interloper.kernel.lock().await.take() {
-                            let _ = kernel.shutdown().await;
+                            if let Err(e) = kernel.shutdown().await {
+                                warn!(
+                                    "[notebook-sync] Failed to shut down interloper kernel: {}",
+                                    e
+                                );
+                            }
                         }
                         if let Some(tx) = interloper.watcher_shutdown_tx.lock().await.take() {
                             let _ = tx.send(());
