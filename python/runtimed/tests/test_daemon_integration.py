@@ -1283,6 +1283,7 @@ FIXTURES_DIR = (
 )
 
 
+@pytest.mark.timeout(300)
 class TestProjectFileDetection:
     """Test project file auto-detection via notebook_path walk-up.
 
@@ -1290,8 +1291,12 @@ class TestProjectFileDetection:
     walks up from the notebook directory looking for project files
     (pyproject.toml, pixi.toml, environment.yml). The closest match wins.
 
-    These tests use fixture notebooks copied to a temp dir to avoid
-    the repo root pyproject.toml interfering with walk-up detection.
+    These tests use real fixture notebooks copied to a temp directory
+    (outside the repo tree) so the repo root pyproject.toml doesn't
+    interfere with walk-up detection.
+
+    Timeout is 300s because uv:pyproject kernels install real packages
+    via `uv run --with ipykernel`.
     """
 
     @pytest.fixture(scope="class")
@@ -1313,7 +1318,13 @@ class TestProjectFileDetection:
         """
         notebook_path = str(isolated_fixtures / "pyproject-project" / "5-pyproject.ipynb")
 
-        # Set python kernelspec using typed API
+        # Shutdown the auto-launched kernel so we can re-launch with
+        # the notebook_path for project file detection.
+        try:
+            session.shutdown_kernel()
+        except Exception:
+            pass
+
         _set_python_kernelspec(session)
 
         start_kernel_with_retry(
@@ -1336,6 +1347,13 @@ class TestProjectFileDetection:
         is used to launch the kernel.
         """
         notebook_path = str(isolated_fixtures / "pixi-project" / "6-pixi.ipynb")
+
+        # Shutdown the auto-launched kernel so we can re-launch with
+        # the notebook_path for project file detection.
+        try:
+            session.shutdown_kernel()
+        except Exception:
+            pass
 
         _set_python_kernelspec(session)
 
@@ -1360,6 +1378,13 @@ class TestProjectFileDetection:
         """
         notebook_path = str(isolated_fixtures / "conda-env-project" / "7-environment-yml.ipynb")
 
+        # Shutdown the auto-launched kernel so we can re-launch with
+        # the notebook_path for project file detection.
+        try:
+            session.shutdown_kernel()
+        except Exception:
+            pass
+
         _set_python_kernelspec(session)
 
         start_kernel_with_retry(
@@ -1371,6 +1396,7 @@ class TestProjectFileDetection:
 
         assert session.env_source == "conda:env_yml"
 
+        # Kernel should be functional
         result = session.run("import sys; print(sys.prefix)")
         assert result.success, f"Kernel failed in env_yml env: {result.stderr}"
 
