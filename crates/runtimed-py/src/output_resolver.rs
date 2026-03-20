@@ -291,7 +291,7 @@ pub fn output_from_json(output_type: &str, json: &serde_json::Value) -> Option<O
 /// raw-JSON path since the data came from the wire, not the blob store.)
 fn json_data_to_datavalues(data: &serde_json::Map<String, Value>) -> HashMap<String, DataValue> {
     let mut output_data = HashMap::new();
-    let mut image_descriptions: Vec<String> = Vec::new();
+    let mut has_image = false;
 
     for (mime, value) in data {
         let dv = match mime_kind(mime) {
@@ -301,9 +301,7 @@ fn json_data_to_datavalues(data: &serde_json::Map<String, Value>) -> HashMap<Str
                     match base64::engine::general_purpose::STANDARD.decode(s) {
                         Ok(bytes) => {
                             if mime.starts_with("image/") {
-                                let size_kb = bytes.len() / 1024;
-                                image_descriptions
-                                    .push(format!("📊 Image output ({}, {} KB)", mime, size_kb));
+                                has_image = true;
                             }
                             DataValue::Binary(bytes)
                         }
@@ -336,13 +334,23 @@ fn json_data_to_datavalues(data: &serde_json::Map<String, Value>) -> HashMap<Str
         output_data.insert(mime.clone(), dv);
     }
 
-    // Synthesize text/llm+plain for binary images
-    if !image_descriptions.is_empty() && !output_data.contains_key("text/llm+plain") {
+    // Synthesize text/llm+plain for binary images (raw-JSON path has no blob URL)
+    if has_image && !output_data.contains_key("text/llm+plain") {
         let mut parts: Vec<String> = Vec::new();
         if let Some(DataValue::Text(ref plain)) = output_data.get("text/plain") {
             parts.push(plain.clone());
         }
-        parts.extend(image_descriptions);
+        for (mime, dv) in &output_data {
+            if let DataValue::Binary(bytes) = dv {
+                if mime.starts_with("image/") {
+                    parts.push(format!(
+                        "📊 Image output ({}, {} KB)",
+                        mime,
+                        bytes.len() / 1024
+                    ));
+                }
+            }
+        }
         output_data.insert(
             "text/llm+plain".to_string(),
             DataValue::Text(parts.join("\n")),
@@ -397,17 +405,14 @@ pub async fn output_from_manifest(
                             let mut desc =
                                 format!("📊 Image output ({}, {} KB)", mime_type, size_kb);
                             if let (Some(hash), Some(base_url)) = (blob_hash, blob_base_url) {
-                                desc.push_str(&format!(
-                                    "\nTo view: curl -s {}/blob/{} -o /tmp/output.png && cat /tmp/output.png",
-                                    base_url, hash
-                                ));
+                                desc.push_str(&format!("\n{}/blob/{}", base_url, hash));
                             } else if let (Some(hash), Some(store_path)) =
                                 (blob_hash, blob_store_path)
                             {
                                 let prefix = &hash[..2];
                                 let rest = &hash[2..];
                                 let path = store_path.join(prefix).join(rest);
-                                desc.push_str(&format!("\nFile: {}", path.display()));
+                                desc.push_str(&format!("\n{}", path.display()));
                             }
                             image_descriptions.push(desc);
                         }
