@@ -574,7 +574,7 @@ impl RoomKernel {
                         cmd.args(["-Xfrozen_modules=off", "-m", "ipykernel_launcher", "-f"]);
                         cmd.arg(&connection_file_path);
                         cmd.stdout(Stdio::null());
-                        cmd.stderr(Stdio::null());
+                        cmd.stderr(Stdio::piped());
 
                         // Set VIRTUAL_ENV so uv knows which environment to target
                         cmd.env("VIRTUAL_ENV", &pooled_env.venv_path);
@@ -609,7 +609,7 @@ impl RoomKernel {
                         ]);
                         cmd.arg(&connection_file_path);
                         cmd.stdout(Stdio::null());
-                        cmd.stderr(Stdio::null());
+                        cmd.stderr(Stdio::piped());
                         cmd
                     }
                     "conda:inline" => {
@@ -627,7 +627,7 @@ impl RoomKernel {
                         cmd.args(["-Xfrozen_modules=off", "-m", "ipykernel_launcher", "-f"]);
                         cmd.arg(&connection_file_path);
                         cmd.stdout(Stdio::null());
-                        cmd.stderr(Stdio::null());
+                        cmd.stderr(Stdio::piped());
                         cmd
                     }
                     _ => {
@@ -646,7 +646,7 @@ impl RoomKernel {
                         cmd.args(["-Xfrozen_modules=off", "-m", "ipykernel_launcher", "-f"]);
                         cmd.arg(&connection_file_path);
                         cmd.stdout(Stdio::null());
-                        cmd.stderr(Stdio::null());
+                        cmd.stderr(Stdio::piped());
 
                         // Set VIRTUAL_ENV and add uv to PATH for UV prewarmed environments
                         if pooled_env.env_type == EnvType::Uv {
@@ -669,7 +669,7 @@ impl RoomKernel {
                 cmd.args(["jupyter", "--kernel", "--conn"]);
                 cmd.arg(&connection_file_path);
                 cmd.stdout(Stdio::null());
-                cmd.stderr(Stdio::null());
+                cmd.stderr(Stdio::piped());
                 cmd
             }
             _ => {
@@ -690,6 +690,24 @@ impl RoomKernel {
 
         let mut process = cmd.kill_on_drop(true).spawn()?;
 
+        // Capture kernel stderr for diagnostics — log errors/warnings at warn level,
+        // everything else at debug to avoid flooding logs with uv's verbose output
+        if let Some(stderr) = process.stderr.take() {
+            let kid = kernel_id.clone();
+            tokio::spawn(async move {
+                use tokio::io::{AsyncBufReadExt, BufReader};
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let lower = line.to_ascii_lowercase();
+                    if lower.contains("error") || lower.contains("traceback") {
+                        warn!("[kernel-stderr:{}] {}", kid, line);
+                    } else {
+                        debug!("[kernel-stderr:{}] {}", kid, line);
+                    }
+                }
+            });
+        }
+
         #[cfg(unix)]
         {
             self.process_group_id = process.id().map(|pid| pid as i32);
@@ -699,8 +717,37 @@ impl RoomKernel {
         }
         self.kernel_id = Some(kernel_id.clone());
 
+        info!(
+            "[kernel-manager] Spawned kernel process (pid={:?}, kernel_id={})",
+            process.id(),
+            kernel_id
+        );
+
         // Small delay to let the kernel start
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Early crash detection: check if process exited during startup
+        match process.try_wait() {
+            Ok(Some(exit_status)) => {
+                error!(
+                    "[kernel-manager] Kernel process exited immediately: {} (kernel_id={})",
+                    exit_status, kernel_id
+                );
+                return Err(anyhow::anyhow!(
+                    "Kernel process exited immediately: {}",
+                    exit_status
+                ));
+            }
+            Ok(None) => {
+                // Process still running — good
+            }
+            Err(e) => {
+                warn!(
+                    "[kernel-manager] Could not check kernel process status: {}",
+                    e
+                );
+            }
+        }
 
         self.session_id = Uuid::new_v4().to_string();
 
@@ -713,18 +760,22 @@ impl RoomKernel {
         let (cmd_tx, cmd_rx) = mpsc::channel::<QueueCommand>(100);
         self.cmd_tx = Some(cmd_tx.clone());
 
-        // Spawn process watcher - detects immediate process exit (e.g., os._exit(1))
+        // Spawn process watcher - detects process exit and signals via oneshot
         let process_cmd_tx = cmd_tx.clone();
+        let (died_tx, died_rx) = tokio::sync::oneshot::channel::<String>();
         let process_watcher_task = tokio::spawn(async move {
             let status = process.wait().await;
-            match status {
+            let msg = match status {
                 Ok(exit_status) => {
                     warn!("[kernel-manager] Kernel process exited: {}", exit_status);
+                    format!("Kernel process exited: {}", exit_status)
                 }
                 Err(e) => {
                     error!("[kernel-manager] Error waiting for kernel process: {}", e);
+                    format!("Error waiting for kernel process: {}", e)
                 }
-            }
+            };
+            let _ = died_tx.send(msg);
             let _ = process_cmd_tx.try_send(QueueCommand::KernelDied);
         });
         // Store immediately so early-return error paths can clean it up
@@ -1407,33 +1458,38 @@ impl RoomKernel {
         )
         .await?;
 
-        // Verify kernel is alive
+        // Verify kernel is alive — race kernel_info_reply against process death
         let request: JupyterMessage = KernelInfoRequest::default().into();
         shell.send(request).await?;
 
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(30), shell.read()).await;
+        let reply = tokio::select! {
+            result = tokio::time::timeout(std::time::Duration::from_secs(30), shell.read()) => {
+                match result {
+                    Ok(Ok(msg)) => Ok(msg),
+                    Ok(Err(e)) => Err(anyhow::anyhow!("Kernel did not respond: {}", e)),
+                    Err(_) => Err(anyhow::anyhow!("Kernel did not respond within 30s")),
+                }
+            }
+            died_msg = died_rx => {
+                let msg = died_msg.unwrap_or_else(|_| "unknown".to_string());
+                Err(anyhow::anyhow!("Kernel process died before responding: {}", msg))
+            }
+        };
+
         match reply {
-            Ok(Ok(msg)) => {
+            Ok(msg) => {
                 info!(
                     "[kernel-manager] Kernel alive: got {} reply",
                     msg.header.msg_type
                 );
             }
-            Ok(Err(e)) => {
-                error!("[kernel-manager] Error reading kernel_info_reply: {}", e);
+            Err(e) => {
+                error!("[kernel-manager] {}", e);
                 // Abort process watcher to kill orphaned kernel
                 if let Some(task) = self.process_watcher_task.take() {
                     task.abort();
                 }
-                return Err(anyhow::anyhow!("Kernel did not respond: {}", e));
-            }
-            Err(_) => {
-                error!("[kernel-manager] Timeout waiting for kernel_info_reply");
-                // Abort process watcher to kill orphaned kernel
-                if let Some(task) = self.process_watcher_task.take() {
-                    task.abort();
-                }
-                return Err(anyhow::anyhow!("Kernel did not respond within 30s"));
+                return Err(e);
             }
         }
 

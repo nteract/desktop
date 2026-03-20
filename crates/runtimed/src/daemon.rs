@@ -194,13 +194,16 @@ impl Pool {
     fn take(&mut self) -> Option<PooledEnv> {
         self.prune_stale();
 
-        // Try to get a valid environment, skipping any with missing paths
+        // Try to get a valid environment, skipping any with missing paths or missing warmup
         while let Some(entry) = self.available.pop_front() {
-            if entry.env.venv_path.exists() && entry.env.python_path.exists() {
+            if entry.env.venv_path.exists()
+                && entry.env.python_path.exists()
+                && entry.env.venv_path.join(".warmed").exists()
+            {
                 return Some(entry.env);
             }
             warn!(
-                "[runtimed] Skipping env with missing path: {:?}",
+                "[runtimed] Skipping env with missing path or warmup marker: {:?}",
                 entry.env.venv_path
             );
         }
@@ -2245,36 +2248,51 @@ impl Daemon {
         }
 
         // Run warmup script
-        self.warmup_conda_env(&python_path, &env_path).await;
+        let warmup_ok = self.warmup_conda_env(&python_path, &env_path).await;
 
-        // Add to pool and check if we're clearing a previous error state
-        let had_errors = {
-            let mut pool = self.conda_pool.lock().await;
-            let had = pool.failure_state.consecutive_failures > 0;
-            pool.add(PooledEnv {
-                env_type: EnvType::Conda,
-                venv_path: env_path.clone(),
-                python_path,
-            });
-            had
-        };
+        if warmup_ok {
+            // Add to pool and check if we're clearing a previous error state
+            let had_errors = {
+                let mut pool = self.conda_pool.lock().await;
+                let had = pool.failure_state.consecutive_failures > 0;
+                pool.add(PooledEnv {
+                    env_type: EnvType::Conda,
+                    venv_path: env_path.clone(),
+                    python_path,
+                });
+                had
+            };
 
-        info!(
-            "[runtimed] Conda environment ready: {:?} (pool: {}/{})",
-            env_path,
-            self.conda_pool.lock().await.stats().0,
-            self.config.conda_pool_size
-        );
+            info!(
+                "[runtimed] Conda environment ready: {:?} (pool: {}/{})",
+                env_path,
+                self.conda_pool.lock().await.stats().0,
+                self.config.conda_pool_size
+            );
 
-        // Broadcast cleared state if we recovered from errors
-        if had_errors {
-            info!("[runtimed] Conda pool recovered from error state");
+            // Broadcast cleared state if we recovered from errors
+            if had_errors {
+                info!("[runtimed] Conda pool recovered from error state");
+                self.broadcast_pool_state().await;
+            }
+        } else {
+            // Clean up failed env and record failure
+            let _ = tokio::fs::remove_dir_all(&env_path).await;
+            self.conda_pool
+                .lock()
+                .await
+                .warming_failed_with_error(Some(PackageInstallError {
+                    failed_package: None,
+                    error_message: "Conda warmup script failed (ipykernel may not be installed)"
+                        .into(),
+                }));
             self.broadcast_pool_state().await;
         }
     }
 
     /// Warm up a conda environment by running Python to trigger .pyc compilation.
-    async fn warmup_conda_env(&self, python_path: &PathBuf, env_path: &PathBuf) {
+    /// Returns `true` if warmup succeeded (ipykernel imports work).
+    async fn warmup_conda_env(&self, python_path: &PathBuf, env_path: &PathBuf) -> bool {
         let warmup_script = r#"
 import ipykernel
 import IPython
@@ -2302,20 +2320,24 @@ print("warmup complete")
                 // Create marker file
                 tokio::fs::write(env_path.join(".warmed"), "").await.ok();
                 info!("[runtimed] Conda warmup complete for {:?}", env_path);
+                true
             }
             Ok(Ok(output)) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                warn!(
+                error!(
                     "[runtimed] Conda warmup failed for {:?}: {}",
                     env_path,
                     stderr.lines().take(3).collect::<Vec<_>>().join(" | ")
                 );
+                false
             }
             Ok(Err(e)) => {
-                warn!("[runtimed] Failed to run conda warmup: {}", e);
+                error!("[runtimed] Failed to run conda warmup: {}", e);
+                false
             }
             Err(_) => {
-                warn!("[runtimed] Conda warmup timed out");
+                error!("[runtimed] Conda warmup timed out");
+                false
             }
         }
     }
@@ -2573,36 +2595,60 @@ print("warmup complete")
         )
         .await;
 
-        match warmup_result {
+        let warmup_ok = match warmup_result {
             Ok(Ok(output)) if output.status.success() => {
                 // Create marker file
                 tokio::fs::write(venv_path.join(".warmed"), "").await.ok();
+                true
             }
-            Ok(_) => {
-                warn!("[runtimed] Warmup script failed, continuing anyway");
+            Ok(Ok(output)) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                error!(
+                    "[runtimed] UV warmup failed, NOT adding to pool: {}",
+                    stderr.lines().take(3).collect::<Vec<_>>().join(" | ")
+                );
+                false
+            }
+            Ok(Err(e)) => {
+                error!("[runtimed] Failed to run UV warmup: {}", e);
+                false
             }
             Err(_) => {
-                warn!("[runtimed] Warmup script timed out, continuing anyway");
+                error!("[runtimed] UV warmup timed out, NOT adding to pool");
+                false
             }
-        }
-
-        info!("[runtimed] UV environment ready at {:?}", venv_path);
-
-        // Add to pool and check if we're clearing a previous error state
-        let had_errors = {
-            let mut pool = self.uv_pool.lock().await;
-            let had = pool.failure_state.consecutive_failures > 0;
-            pool.add(PooledEnv {
-                env_type: EnvType::Uv,
-                venv_path,
-                python_path,
-            });
-            had
         };
 
-        // Broadcast cleared state if we recovered from errors
-        if had_errors {
-            info!("[runtimed] UV pool recovered from error state");
+        if warmup_ok {
+            info!("[runtimed] UV environment ready at {:?}", venv_path);
+
+            // Add to pool and check if we're clearing a previous error state
+            let had_errors = {
+                let mut pool = self.uv_pool.lock().await;
+                let had = pool.failure_state.consecutive_failures > 0;
+                pool.add(PooledEnv {
+                    env_type: EnvType::Uv,
+                    venv_path,
+                    python_path,
+                });
+                had
+            };
+
+            // Broadcast cleared state if we recovered from errors
+            if had_errors {
+                info!("[runtimed] UV pool recovered from error state");
+                self.broadcast_pool_state().await;
+            }
+        } else {
+            // Clean up failed env and record failure
+            let _ = tokio::fs::remove_dir_all(&venv_path).await;
+            self.uv_pool
+                .lock()
+                .await
+                .warming_failed_with_error(Some(PackageInstallError {
+                    failed_package: None,
+                    error_message: "Warmup script failed (ipykernel may not be installed)".into(),
+                }));
             self.broadcast_pool_state().await;
         }
     }
@@ -2629,6 +2675,9 @@ mod tests {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(&python_path, "").unwrap();
+
+        // Create warmup marker so take() accepts this env
+        std::fs::write(venv_path.join(".warmed"), "").unwrap();
 
         PooledEnv {
             env_type: EnvType::Uv,
@@ -2892,6 +2941,43 @@ mod tests {
         assert_eq!(err.failed_package, Some("scitkit-learn".to_string()));
         assert_eq!(err.consecutive_failures, 1);
         assert!(err.message.contains("scitkit-learn"));
+    }
+
+    #[test]
+    fn test_pool_take_skips_unwarmed() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut pool = Pool::new(3, 3600);
+
+        // Create an env with valid paths but NO .warmed marker
+        let venv_path = temp_dir.path().join("unwarmed-env");
+        std::fs::create_dir_all(&venv_path).unwrap();
+        #[cfg(windows)]
+        let python_path = venv_path.join("Scripts").join("python.exe");
+        #[cfg(not(windows))]
+        let python_path = venv_path.join("bin").join("python");
+        if let Some(parent) = python_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&python_path, "").unwrap();
+
+        let unwarmed_env = PooledEnv {
+            env_type: EnvType::Uv,
+            venv_path,
+            python_path,
+        };
+        pool.add(unwarmed_env);
+
+        // take() should skip the unwarmed env
+        assert!(pool.take().is_none());
+
+        // Add a properly warmed env
+        let warmed_env = create_test_env(&temp_dir, "warmed-env");
+        pool.add(warmed_env.clone());
+
+        // take() should return the warmed env
+        let taken = pool.take();
+        assert!(taken.is_some());
+        assert_eq!(taken.unwrap().venv_path, warmed_env.venv_path);
     }
 
     #[test]
