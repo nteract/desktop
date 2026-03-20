@@ -63,6 +63,10 @@ fn main() {
             let fix = args.iter().any(|a| a == "--fix");
             cmd_lint(fix);
         }
+        "integration" => {
+            let filter = args.iter().find(|a| !a.starts_with('-')).cloned();
+            cmd_integration(filter);
+        }
         "wasm" => cmd_wasm(),
         "--help" | "-h" | "help" => print_help(),
         cmd => {
@@ -108,12 +112,100 @@ Linting:
   lint                       Check formatting and linting (Rust, JS/TS, Python)
   lint --fix                 Auto-fix formatting and linting issues
 
+Testing:
+  integration [filter]       Run Python integration tests with an isolated daemon
+                             Optional filter is passed to pytest -k (e.g. 'test_start_kernel')
+
 Other:
   wasm                       Rebuild runtimed-wasm (wasm-pack build)
   icons [source.png]         Generate icon variants
   help                       Show this help
 "
     );
+}
+
+/// Run Python integration tests with a fresh isolated daemon.
+///
+/// Builds the daemon binary, spawns it in a temp directory with its own
+/// worktree hash (no singleton conflicts), and runs pytest against it.
+/// The daemon is cleaned up when tests finish.
+fn cmd_integration(filter: Option<String>) {
+    // 1. Build the daemon
+    println!("Building runtimed for integration tests...");
+    let status = Command::new("cargo")
+        .args(["build", "-p", "runtimed"])
+        .status();
+    if !status.map(|s| s.success()).unwrap_or(false) {
+        eprintln!("Failed to build runtimed");
+        exit(1);
+    }
+
+    // 2. Ensure Python env is ready
+    ensure_python_env();
+    ensure_maturin_develop();
+
+    // 3. Create an isolated workspace path so the daemon gets its own
+    //    worktree hash and doesn't conflict with the dev daemon.
+    let workspace_dir =
+        std::env::temp_dir().join(format!("runtimed-integration-{}", std::process::id()));
+    std::fs::create_dir_all(&workspace_dir).unwrap_or_else(|e| {
+        eprintln!("Failed to create temp workspace: {e}");
+        exit(1);
+    });
+
+    // 4. Build pytest args
+    let binary = std::fs::canonicalize("target/debug/runtimed").unwrap_or_else(|e| {
+        eprintln!("Failed to resolve runtimed binary: {e}");
+        exit(1);
+    });
+
+    let mut pytest_args = vec![
+        "run".to_string(),
+        "pytest".to_string(),
+        "python/runtimed/tests/test_daemon_integration.py".to_string(),
+        "-v".to_string(),
+        "--timeout=120".to_string(),
+        "--tb=short".to_string(),
+        "--durations=15".to_string(),
+    ];
+    if let Some(ref f) = filter {
+        pytest_args.push("-k".to_string());
+        pytest_args.push(f.clone());
+    }
+
+    println!("Running integration tests...");
+    println!("  Daemon binary: {}", binary.display());
+    println!("  Workspace: {}", workspace_dir.display());
+    if let Some(ref f) = filter {
+        println!("  Filter: {f}");
+    }
+    println!();
+
+    // 5. Run pytest with CI mode env vars
+    let status = Command::new("uv")
+        .args(&pytest_args)
+        .env("RUNTIMED_INTEGRATION_TEST", "1")
+        .env("RUNTIMED_BINARY", &binary)
+        .env("RUNTIMED_WORKSPACE_PATH", &workspace_dir)
+        .env("RUNTIMED_LOG_LEVEL", "info")
+        .status();
+
+    // 6. Cleanup temp workspace
+    let _ = std::fs::remove_dir_all(&workspace_dir);
+
+    match status {
+        Ok(s) if s.success() => {
+            println!("\nAll integration tests passed!");
+        }
+        Ok(s) => {
+            eprintln!("\nSome integration tests failed.");
+            exit(s.code().unwrap_or(1));
+        }
+        Err(e) => {
+            eprintln!("Failed to run pytest: {e}");
+            exit(1);
+        }
+    }
 }
 
 /// Check that an external tool is available in PATH, exit with install instructions if not.
