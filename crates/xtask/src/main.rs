@@ -1425,7 +1425,42 @@ fn run_cmd(cmd: &str, args: &[&str]) {
     }
 }
 
+/// Check that the WASM binary is a real WebAssembly file, not an unresolved
+/// Git LFS pointer. A pointer file starts with "version https://git-lfs"
+/// and is ~130 bytes; the real WASM starts with the magic bytes `\0asm`.
+fn ensure_wasm_resolved() {
+    let wasm = Path::new("apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm");
+    let bytes = match fs::read(wasm) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("Error: failed to read {}: {e}", wasm.display());
+            eprintln!("       The frontend build requires this WASM file.");
+            eprintln!();
+            eprintln!("  If you just cloned:  git lfs install && git lfs pull");
+            eprintln!("  To rebuild from source:  wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm");
+            exit(1);
+        }
+    };
+    if bytes.starts_with(b"\0asm") {
+        return; // real WebAssembly binary
+    }
+    if bytes.starts_with(b"version https://git-lfs") {
+        eprintln!("Error: runtimed_wasm_bg.wasm is a Git LFS pointer, not the actual binary.");
+    } else {
+        eprintln!("Error: runtimed_wasm_bg.wasm is not a valid WebAssembly binary.");
+    }
+    eprintln!("       The frontend build will fail without the real file.");
+    eprintln!();
+    eprintln!("  Fix:  git lfs install && git lfs pull");
+    eprintln!();
+    eprintln!("  If you don't have git-lfs:");
+    eprintln!("    macOS:  brew install git-lfs");
+    eprintln!("    Linux:  sudo apt install git-lfs  (or see https://git-lfs.com)");
+    exit(1);
+}
+
 fn run_frontend_build(debug_bundle: bool) {
+    ensure_wasm_resolved();
     let mut command = Command::new("pnpm");
     command.arg("build");
     if debug_bundle {
