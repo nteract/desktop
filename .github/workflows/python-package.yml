@@ -13,8 +13,10 @@ on:
       - "python-v*"
   pull_request:
     paths:
+      - "pyproject.toml"
       - "python/runtimed/**"
       - "python/nteract/**"
+      - "python/gremlin/**"
       - "crates/runtimed-py/**"
       - "crates/runtimed/**"
       - ".github/workflows/python-package.yml"

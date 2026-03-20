@@ -41,13 +41,16 @@ class Output:
         ...
 
     @property
-    def data(self) -> dict[str, str | bytes | dict] | None:
+    def data(self) -> dict[str, str | bytes | dict[str, Any] | list[Any]] | None:
         """For display_data/execute_result: mime type -> typed content.
 
         Values are typed by MIME category:
         - Text mimes (text/*, image/svg+xml) → ``str``
         - Binary mimes (image/png, audio/*, …) → ``bytes`` (raw, not base64)
-        - JSON mimes (application/json, *+json) → ``dict``
+        - JSON mimes (application/json, *+json) → ``dict`` (typically),
+          or ``list`` in rare cases. The Jupyter protocol specifies JSON
+          MIME data as objects, but the implementation accepts any valid
+          JSON value for robustness.
         """
         ...
 
