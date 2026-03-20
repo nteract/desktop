@@ -1235,7 +1235,13 @@ async def get_all_cells(
     if format == "rich":
         items: list[ContentItem] = []
         for cell in cells:
-            items.extend(_cell_to_content(cell, status=cell_status.get(cell.id)))
+            for item in _cell_to_content(cell, status=cell_status.get(cell.id)):
+                # Skip images in bulk view — they blow up response size.
+                # Use get_cell() to inspect individual cells with images.
+                if isinstance(item, ImageContent):
+                    items.append(TextContent(type="text", text=f"[image: {item.mimeType}]"))
+                else:
+                    items.append(item)
         return items
 
     # Default summary format - compact one-line-per-cell
