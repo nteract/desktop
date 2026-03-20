@@ -276,11 +276,22 @@ export interface PoolError {
   retry_in_secs: number;
 }
 
-/** Pool state broadcast from daemon. */
+/** Pool state from daemon PoolDoc (Automerge sync). */
 export interface PoolStateEvent {
-  event: "pool_state";
-  /** Error info for UV pool (null if healthy). */
-  uv_error: PoolError | null;
-  /** Error info for Conda pool (null if healthy). */
-  conda_error: PoolError | null;
+  /** UV pool: available prewarmed environments. */
+  uv_available: number;
+  /** UV pool: environments currently warming. */
+  uv_warming: number;
+  /** UV pool: target pool size. */
+  uv_pool_size: number;
+  /** UV pool error (null if healthy). */
+  uv_error: string | null;
+  /** Conda pool: available prewarmed environments. */
+  conda_available: number;
+  /** Conda pool: environments currently warming. */
+  conda_warming: number;
+  /** Conda pool: target pool size. */
+  conda_pool_size: number;
+  /** Conda pool error (null if healthy). */
+  conda_error: string | null;
 }

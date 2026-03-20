@@ -22,21 +22,9 @@ function PoolErrorItem({ envType, error, onDismiss }: PoolErrorItemProps) {
     >
       <div className="flex items-center gap-2 min-w-0">
         <AlertTriangle className="h-3 w-3 flex-shrink-0" />
-        <span className="font-medium flex-shrink-0">
-          Invalid or unavailable package
-        </span>
-        {error.failed_package && (
-          <>
-            <span className="text-amber-200 flex-shrink-0">—</span>
-            <code className="bg-amber-700/50 px-1 rounded text-amber-100 flex-shrink-0">
-              {error.failed_package}
-            </code>
-          </>
-        )}
+        <span className="font-medium flex-shrink-0">{envType} pool error</span>
         <span className="text-amber-200 flex-shrink-0">—</span>
-        <span className="text-amber-100">
-          Check package name in {envType.toLowerCase()} settings.
-        </span>
+        <span className="text-amber-100 truncate">{error.message}</span>
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
         <button

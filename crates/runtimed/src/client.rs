@@ -711,6 +711,197 @@ pub async fn subscribe_pool_state(
     Ok(rx)
 }
 
+/// Connect to the daemon's PoolDoc via Automerge sync and return a receiver
+/// that yields [`crate::pool_doc::PoolState`] snapshots whenever the pool
+/// state changes.
+///
+/// Unlike `subscribe_pool_state` (legacy broadcast subscription), this uses
+/// the standard Automerge sync protocol — the client maintains a local doc
+/// that converges with the daemon's PoolDoc. State is read from the local
+/// doc after each sync round, so it's always consistent.
+///
+/// The first snapshot is sent after initial sync completes (immediate state).
+/// Subsequent snapshots are sent whenever the daemon pushes a sync message
+/// (pool state changed).
+///
+/// # Example
+///
+/// ```ignore
+/// let mut rx = sync_pool_state().await?;
+/// while let Some(state) = rx.recv().await {
+///     println!("UV: {}/{} available", state.uv.available, state.uv.pool_size);
+///     if let Some(err) = &state.uv.error {
+///         eprintln!("UV error: {}", err);
+///     }
+/// }
+/// ```
+pub async fn sync_pool_state(
+) -> Result<tokio::sync::mpsc::Receiver<crate::pool_doc::PoolState>, ClientError> {
+    use automerge::{sync, sync::SyncDoc, AutoCommit, ReadDoc, ROOT};
+
+    let socket_path = default_socket_path();
+    let connect_timeout = Duration::from_secs(2);
+
+    #[cfg(unix)]
+    let stream = {
+        let connect_result = tokio::time::timeout(
+            connect_timeout,
+            tokio::net::UnixStream::connect(&socket_path),
+        )
+        .await;
+
+        match connect_result {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => return Err(ClientError::ConnectionFailed(e)),
+            Err(_) => return Err(ClientError::Timeout),
+        }
+    };
+
+    #[cfg(windows)]
+    let stream = {
+        let pipe_name = socket_path.to_string_lossy().to_string();
+        let connect_result = tokio::time::timeout(connect_timeout, async {
+            let mut attempts = 0;
+            loop {
+                match ClientOptions::new().open(&pipe_name) {
+                    Ok(client) => return Ok(client),
+                    Err(_) if attempts < 5 => {
+                        attempts += 1;
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        })
+        .await;
+
+        match connect_result {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => return Err(ClientError::ConnectionFailed(e)),
+            Err(_) => return Err(ClientError::Timeout),
+        }
+    };
+
+    // Send preamble + handshake
+    let mut stream = stream;
+    connection::send_preamble(&mut stream)
+        .await
+        .map_err(|e| ClientError::ProtocolError(format!("preamble: {}", e)))?;
+    connection::send_json_frame(&mut stream, &Handshake::PoolStateSync)
+        .await
+        .map_err(|e| ClientError::ProtocolError(format!("handshake: {}", e)))?;
+
+    // Create a channel to forward pool state snapshots
+    let (tx, rx) = tokio::sync::mpsc::channel(16);
+
+    // Spawn a task that maintains a local Automerge doc synced with the daemon's PoolDoc
+    tokio::spawn(async move {
+        let mut doc = AutoCommit::new();
+        let mut peer_state = sync::State::new();
+        let mut last_snapshot: Option<crate::pool_doc::PoolState> = None;
+
+        // Helper: read pool state from the local doc and send if changed
+        let read_and_send =
+            |doc: &AutoCommit,
+             last: &mut Option<crate::pool_doc::PoolState>,
+             tx: &tokio::sync::mpsc::Sender<crate::pool_doc::PoolState>| {
+                // Read uv/ and conda/ from the local doc
+                let state = read_pool_state_from_doc(doc);
+                if let Some(ref state) = state {
+                    if last.as_ref() != Some(state) {
+                        *last = Some(state.clone());
+                        // Best-effort send — if receiver dropped, we'll notice next loop
+                        let _ = tx.try_send(state.clone());
+                    }
+                }
+            };
+
+        let (mut reader, mut writer) = tokio::io::split(stream);
+
+        loop {
+            match connection::recv_frame(&mut reader).await {
+                Ok(Some(data)) => {
+                    // Decode and apply the sync message
+                    let message = match sync::Message::decode(&data) {
+                        Ok(msg) => msg,
+                        Err(e) => {
+                            warn!("[pool-sync-client] Decode error: {}", e);
+                            break;
+                        }
+                    };
+
+                    if let Err(e) = doc.sync().receive_sync_message(&mut peer_state, message) {
+                        warn!("[pool-sync-client] Sync error: {}", e);
+                        break;
+                    }
+
+                    // Send our reply (ACK) so the server knows our state
+                    if let Some(reply) = doc.sync().generate_sync_message(&mut peer_state) {
+                        if connection::send_frame(&mut writer, &reply.encode())
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+
+                    // Read state from doc and send if changed
+                    read_and_send(&doc, &mut last_snapshot, &tx);
+                }
+                Ok(None) => break, // Connection closed
+                Err(e) => {
+                    warn!("[pool-sync-client] Frame error: {}", e);
+                    break;
+                }
+            }
+        }
+    });
+
+    Ok(rx)
+}
+
+/// Read pool state from a local Automerge doc (client-side copy of PoolDoc).
+fn read_pool_state_from_doc(doc: &automerge::AutoCommit) -> Option<crate::pool_doc::PoolState> {
+    use automerge::{ReadDoc, ROOT};
+
+    let read_runtime = |key: &str| -> Option<crate::pool_doc::RuntimePoolState> {
+        let (_, obj_id) = doc.get(ROOT, key).ok()??;
+
+        let available = doc
+            .get(&obj_id, "available")
+            .ok()?
+            .and_then(|(v, _)| v.to_u64())
+            .unwrap_or(0);
+        let warming = doc
+            .get(&obj_id, "warming")
+            .ok()?
+            .and_then(|(v, _)| v.to_u64())
+            .unwrap_or(0);
+        let pool_size = doc
+            .get(&obj_id, "pool_size")
+            .ok()?
+            .and_then(|(v, _)| v.to_u64())
+            .unwrap_or(0);
+        let error = doc
+            .get(&obj_id, "error")
+            .ok()
+            .flatten()
+            .and_then(|(v, _)| v.to_str().map(|s| s.to_string()));
+
+        Some(crate::pool_doc::RuntimePoolState {
+            available,
+            warming,
+            pool_size,
+            error,
+        })
+    };
+
+    Some(crate::pool_doc::PoolState {
+        uv: read_runtime("uv")?,
+        conda: read_runtime("conda")?,
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

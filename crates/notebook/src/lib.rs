@@ -3330,21 +3330,53 @@ async fn run_settings_sync(app: tauri::AppHandle) {
 /// and emits Tauri events to all windows when pool errors occur or clear.
 ///
 /// Reconnects automatically after 5s if the connection drops.
+/// Serializable pool state event emitted to the frontend.
+///
+/// Carries the full pool snapshot (counts + errors) from the PoolDoc.
+/// Replaces the legacy `DaemonBroadcast::PoolState` which only carried errors.
+#[derive(serde::Serialize, Clone, Debug)]
+struct PoolStateEvent {
+    uv_available: u64,
+    uv_warming: u64,
+    uv_pool_size: u64,
+    uv_error: Option<String>,
+    conda_available: u64,
+    conda_warming: u64,
+    conda_pool_size: u64,
+    conda_error: Option<String>,
+}
+
+impl From<&runtimed::pool_doc::PoolState> for PoolStateEvent {
+    fn from(state: &runtimed::pool_doc::PoolState) -> Self {
+        Self {
+            uv_available: state.uv.available,
+            uv_warming: state.uv.warming,
+            uv_pool_size: state.uv.pool_size,
+            uv_error: state.uv.error.clone(),
+            conda_available: state.conda.available,
+            conda_warming: state.conda.warming,
+            conda_pool_size: state.conda.pool_size,
+            conda_error: state.conda.error.clone(),
+        }
+    }
+}
+
 async fn run_pool_state_sync(app: tauri::AppHandle) {
     use tauri::Emitter;
 
     loop {
-        match runtimed::client::subscribe_pool_state().await {
+        match runtimed::client::sync_pool_state().await {
             Ok(mut rx) => {
-                log::info!("[pool-state-sync] Connected to pool state subscription");
+                log::info!("[pool-state-sync] Connected via PoolDoc Automerge sync");
 
-                while let Some(broadcast) = rx.recv().await {
-                    if let Err(e) = app.emit("pool:state", &broadcast) {
+                while let Some(state) = rx.recv().await {
+                    let event = PoolStateEvent::from(&state);
+                    if let Err(e) = app.emit("pool:state", &event) {
                         log::warn!("[pool-state-sync] Failed to emit pool:state: {}", e);
                     }
                 }
 
-                log::warn!("[pool-state-sync] Disconnected from pool state subscription");
+                log::warn!("[pool-state-sync] Disconnected from PoolDoc sync");
             }
             Err(e) => {
                 log::info!(
