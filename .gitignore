@@ -54,6 +54,16 @@ crates/notebook/fixtures/**/uv.lock
 # Agent workspace context (per-worktree state)
 .context/
 
+# Override global gitignore for .claude — rules and skills are project docs
+!.claude/
+!.claude/rules/
+!.claude/rules/**
+!.claude/skills/
+!.claude/skills/**
+# Keep settings local (not shared)
+.claude/settings.json
+.claude/settings.local.json
+
 # E2E test screenshots
 e2e-screenshots/
 

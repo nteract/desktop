@@ -55,7 +55,8 @@ documentation:
   - changed-files:
     - any-glob-to-any-file:
       - 'docs/**'
-      - 'contributing/**'
+      - '.claude/rules/**'
+      - '.claude/skills/**'
       - 'AGENTS.md'
       - 'CLAUDE.md'
       - 'README.md'

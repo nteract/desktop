@@ -96,7 +96,7 @@ nteract/desktop
 │   ├── runtimed/          # PyPI: runtimed (Python bindings for daemon)
 │   └── nteract/           # PyPI: nteract (MCP server)
 ├── docs/                   # User-facing documentation
-└── contributing/           # Developer guides
+└── .claude/                # Agent rules and skills (auto-loaded)
 ```
 
 ## Development
@@ -170,13 +170,7 @@ The underlying Rust libraries are published to crates.io:
 
 ## Contributing
 
-See the `contributing/` directory for detailed guides:
-
-- [Development workflow](contributing/development.md) — build commands, dev daemon, Zed tasks
-- [Architecture](contributing/architecture.md) — runtime principles, daemon, state, sync
-- [Protocol](contributing/protocol.md) — wire protocol, magic bytes preamble, version negotiation
-- [Releasing](contributing/releasing.md) — versioning scheme, release procedures, tag conventions
-- [Testing](contributing/testing.md) — Vitest, Rust, Python, E2E
+Developer guides live in `.claude/rules/` (architecture, conventions) and `.claude/skills/` (testing, building, releasing). These auto-load for Claude agents; for Codex or human contributors, see `AGENTS.md` for essentials and run `cargo xtask help` for commands.
 
 ## License
 

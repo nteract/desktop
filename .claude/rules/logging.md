@@ -1,10 +1,14 @@
-# Logging Guidelines
+---
+paths:
+  - crates/runtimed/src/**
+  - apps/notebook/src/**
+---
 
-This guide covers logging conventions for contributors working on the nteract desktop codebase.
+# Logging Guidelines
 
 ## Rust Logging
 
-We use the `log` crate with `env_logger`. Import log macros at the top of your file:
+Use the `log` crate with `env_logger`. Import log macros at the top of your file:
 
 ```rust
 use log::{debug, info, warn, error};
@@ -29,10 +33,10 @@ use log::{debug, info, warn, error};
 ### Prefixes
 
 Use consistent prefixes for filtering:
-- `[runtimed]` - Daemon core operations
-- `[notebook-sync]` - Automerge sync server
-- `[kernel-manager]` - Kernel lifecycle and execution
-- `[comm_*]` - Widget communication
+- `[runtimed]` -- Daemon core operations
+- `[notebook-sync]` -- Automerge sync server
+- `[kernel-manager]` -- Kernel lifecycle and execution
+- `[comm_*]` -- Widget communication
 
 ### Enabling Debug Logs
 
@@ -46,7 +50,7 @@ RUST_LOG=runtimed::notebook_sync_server=debug cargo xtask dev-daemon
 
 ## TypeScript Logging
 
-Use the `logger` utility from `apps/notebook/src/lib/logger.ts` instead of raw `console.*`. The codebase uses relative imports from within the notebook app:
+Use the `logger` utility from `apps/notebook/src/lib/logger.ts` instead of raw `console.*`:
 
 ```typescript
 import { logger } from "../lib/logger";
@@ -59,8 +63,8 @@ logger.error("[component] Failure:", error);
 
 ### Log Level Behavior
 
-- `logger.debug()` - Suppressed in production unless debug mode is enabled
-- `logger.info()`, `logger.warn()`, `logger.error()` - Always enabled
+- `logger.debug()` -- Suppressed in production unless debug mode is enabled
+- `logger.info()`, `logger.warn()`, `logger.error()` -- Always enabled
 
 ### What NOT to Log at Info Level
 
@@ -96,9 +100,7 @@ Before adding a log statement, ask:
 
 ## Review Checklist
 
-When reviewing PRs that add logging:
-
-- [ ] Appropriate log level (not info for internal details)
-- [ ] Consistent prefix format `[component-name]`
-- [ ] No sensitive data (full file paths, large JSON)
-- [ ] Uses `logger` utility in TypeScript, not raw `console.*`
+- Appropriate log level (not info for internal details)
+- Consistent prefix format `[component-name]`
+- No sensitive data (full file paths, large JSON)
+- Uses `logger` utility in TypeScript, not raw `console.*`
