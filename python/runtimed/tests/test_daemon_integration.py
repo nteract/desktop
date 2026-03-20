@@ -246,7 +246,7 @@ def daemon_health_check(daemon_process):
             f"Mode: {mode}"
         )
 
-    print(f"[health] All checks passed", file=sys.stderr)
+    print("[health] All checks passed", file=sys.stderr)
     print(f"{'=' * 60}", file=sys.stderr)
 
 
@@ -391,12 +391,9 @@ def daemon_process():
                                 file=sys.stderr,
                             )
                             break
-                if not conda_ready:
-                    if conda_env_ready_pattern.search(log_contents):
-                        conda_ready = True
-                        print(
-                            f"[test] Conda pool ready after {i + 1}s (env ready)", file=sys.stderr
-                        )
+                if not conda_ready and conda_env_ready_pattern.search(log_contents):
+                    conda_ready = True
+                    print(f"[test] Conda pool ready after {i + 1}s (env ready)", file=sys.stderr)
             except Exception:
                 pass
             if uv_ready and conda_ready:
