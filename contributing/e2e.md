@@ -20,7 +20,7 @@ The `e2e/dev.sh` script handles everything:
 # Step by step:
 ./e2e/dev.sh build       # Build with WebDriver support (embeds frontend)
 ./e2e/dev.sh start       # Start app with WebDriver server (foreground)
-./e2e/dev.sh test        # Smoke test (notebook-execution only)
+./e2e/dev.sh test        # Smoke test (smoke.spec.js only)
 ./e2e/dev.sh test all    # All non-fixture specs
 ./e2e/dev.sh stop        # Stop the running app
 ```
@@ -35,7 +35,7 @@ Fixture tests open a specific notebook and get a fresh app instance per test:
 # Run a single fixture test
 ./e2e/dev.sh test-fixture \
   crates/notebook/fixtures/audit-test/1-vanilla.ipynb \
-  e2e/specs/vanilla-startup.spec.js
+  e2e/specs/prewarmed-uv.spec.js
 
 # Run all fixture tests (fresh app per test, exits 1 if any fail)
 ./e2e/dev.sh test-fixtures
@@ -50,11 +50,13 @@ Fixture tests open a specific notebook and get a fresh app instance per test:
 | `start` | Start app with WebDriver server (foreground) |
 | `stop` | Stop the running app |
 | `restart` | Stop + start |
-| `test [spec\|all]` | Run E2E tests (default: notebook-execution only) |
+| `test [spec\|all]` | Run E2E tests (default: smoke.spec.js only) |
 | `test-fixture <nb> <spec>` | Run a fixture test (fresh app per test) |
 | `test-fixtures` | Run all fixture tests |
+| `test-untitled-pyproject` | Test untitled notebook with pyproject.toml (CWD = fixture dir) |
 | `cycle` | Build + start + test in one shot |
 | `status` | Check if WebDriver server is running |
+| `daemon` | Check if E2E daemon is running |
 | `session` | Create a session and print ID |
 | `exec 'js'` | Execute JS in the app |
 
@@ -100,23 +102,18 @@ Use a regular test when:
 
 | Notebook | Spec | What it tests |
 |----------|------|---------------|
-| `1-vanilla.ipynb` | `vanilla-startup.spec.js` | UV prewarmed env startup |
-| `1-vanilla.ipynb` | `settings-panel.spec.js` | Settings panel UI (daemon-independent) |
-| `2-uv-inline.ipynb` | `uv-inline-deps.spec.js` | UV inline dependency resolution |
-| `2-uv-inline.ipynb` | `deps-panel.spec.js` | UV deps panel UI |
-| `2-uv-inline.ipynb` | `trust-decline.spec.js` | Trust dialog rejection |
-| `3-conda-inline.ipynb` | `conda-inline-deps.spec.js` | Conda inline dependency resolution |
-| `3-conda-inline.ipynb` | `conda-deps-panel.spec.js` | Conda deps panel UI |
-| `4-both-deps.ipynb` | `both-deps-panel.spec.js` | Dual UV + Conda deps |
-| `5-pyproject.ipynb` | `pyproject-startup.spec.js` | pyproject.toml environment detection |
-| `6-pixi.ipynb` | `pixi-env-detection.spec.js` | pixi.toml environment detection |
-| `7-environment-yml.ipynb` | `environment-yml-detection.spec.js` | environment.yml detection |
-| `8-multi-cell.ipynb` | `run-all-cells.spec.js` | Run All / Restart & Run All |
-| `9-html-output.ipynb` | `iframe-isolation.spec.js` | Iframe sandbox security |
-| `10-deno.ipynb` | `deno-runtime.spec.js` | Deno kernel start + TypeScript execution |
-| `1-vanilla.ipynb` | `save-dirty-state.spec.js` | Save button dirty state indicator |
-| `11-rich-outputs.ipynb` | `rich-outputs.spec.js` | Rich output rendering (PNG, HTML, DataFrame, ANSI) |
-| `12-error-outputs.ipynb` | `error-handling.spec.js` | Error traceback rendering |
+| `1-vanilla.ipynb` | `prewarmed-uv.spec.js` | UV prewarmed environment pool |
+| `2-uv-inline.ipynb` | `uv-inline.spec.js` | UV inline dependency resolution |
+| `2-uv-inline.ipynb` | `trust-dialog-dismiss.spec.js` | Trust dialog dismiss flow |
+| `3-conda-inline.ipynb` | `conda-inline.spec.js` | Conda inline dependency resolution |
+| `10-deno.ipynb` | `deno.spec.js` | Deno kernel start + TypeScript execution |
+| `pyproject-project/5-pyproject.ipynb` | `uv-pyproject.spec.js` | pyproject.toml environment detection |
+| *(untitled)* | `untitled-pyproject.spec.js` | pyproject.toml detection from CWD (requires `test-untitled-pyproject`) |
+
+**Regular specs** (run against default app, not fixtures):
+- `smoke.spec.js` — Basic cell execution and output
+- `tab-completion.spec.js` — Tab completion in code cells
+- `cell-visibility.spec.js` — Source/output visibility toggles
 
 Multiple specs can reuse the same fixture notebook — each gets its own fresh app instance.
 
@@ -201,7 +198,7 @@ import {
 | Helper | What it does |
 |--------|-------------|
 | `waitForAppReady()` | Waits for the toolbar to appear (15s). Use in every `before()` hook. |
-| `waitForKernelReady()` | Waits for kernel to reach `idle` or `busy` (30s). Superset of `waitForAppReady()`. |
+| `waitForKernelReady()` | Waits for kernel to reach `idle` or `busy` (60s). Superset of `waitForAppReady()`. |
 | `executeFirstCell()` | Focuses the first code cell's editor and hits Shift+Enter. Returns the cell element. |
 | `waitForCellOutput(cell, timeout?)` | Waits for stream output to appear in a cell. Returns the text. |
 | `waitForOutputContaining(cell, text, timeout?)` | Waits for stream output containing specific text. Returns the full text. |
@@ -212,6 +209,12 @@ import {
 | `typeSlowly(text, delay?)` | Types character-by-character (30ms default). Use for CodeMirror input. |
 | `findButton(patterns[])` | Tries CSS selectors in order, returns first match or null. |
 | `setupCodeCell()` | Finds or creates a code cell, focuses editor, selects all. Returns the cell. |
+| `waitForNotebookSynced(timeout?)` | Waits for Automerge sync + cells rendered (`data-notebook-synced` attribute). |
+| `waitForCodeCells(expectedCount, timeout?)` | Waits for a specific number of code cells to load. |
+| `isUvManagedEnv(path)` | Checks if a Python path is from a UV-managed environment. |
+| `isCondaManagedEnv(path)` | Checks if a Python path is from a Conda-managed environment. |
+| `isSystemPythonEnv(path)` | Checks if a Python path is from system Python. |
+| `isManagedEnv(path)` | Checks if a Python path is from any runt-managed environment. |
 
 Platform note: `MOD_KEY` is `"Meta"` on macOS, `"Control"` on Linux. Used internally by `executeFirstCell()` and `setupCodeCell()`.
 
@@ -407,11 +410,6 @@ await browser.keys(["Shift", "Enter"]); // execute
 | `run-all-button` | Run all cells | `NotebookToolbar` |
 | `restart-run-all-button` | Restart & run all | `NotebookToolbar` |
 | `deps-toggle` | Toggle deps panel | `NotebookToolbar` |
-| `settings-panel` | Settings panel container | `NotebookToolbar` |
-| `settings-theme-group` | Theme button group | `NotebookToolbar` |
-| `settings-runtime-group` | Runtime button group | `NotebookToolbar` |
-| `settings-python-env-group` | Python env button group | `NotebookToolbar` |
-| `execute-button` | Run cell button | `CodeCell` |
 | `trust-dialog` | Trust dialog overlay | `TrustDialog` |
 | `trust-approve-button` | "Trust & Install" button | `TrustDialog` |
 | `trust-decline-button` | "Don't Trust" button | `TrustDialog` |
@@ -440,7 +438,6 @@ await browser.keys(["Shift", "Enter"]); // execute
 | `.cm-content[contenteditable="true"]` | CodeMirror editor |
 | `iframe[sandbox]` | Isolated output iframe |
 | `iframe[title="Isolated output frame"]` | Named isolated iframe |
-| `[aria-label="Settings"]` | Settings gear button |
 
 ### Adding New `data-testid` Attributes
 
@@ -519,7 +516,7 @@ Configuration is in `e2e/wdio.conf.js`:
 | Operation | Timeout | Notes |
 |-----------|---------|-------|
 | App load (`waitForAppReady`) | 15s | Toolbar mounting |
-| Kernel startup (`waitForKernelReady`) | 30s | First kernel start can be slow |
+| Kernel startup (`waitForKernelReady`) | 60s | First kernel start can be slow |
 | Cell execution | 120s (default) | Environment creation on first run |
 | Element appear | 5s | DOM rendering |
 | Button clickable | 5s | React hydration |
@@ -584,7 +581,7 @@ Paths are relative to the project root. `dev.sh` will list available fixtures an
 
 ```bash
 # Correct:
-./e2e/dev.sh test-fixture crates/notebook/fixtures/audit-test/1-vanilla.ipynb e2e/specs/vanilla-startup.spec.js
+./e2e/dev.sh test-fixture crates/notebook/fixtures/audit-test/1-vanilla.ipynb e2e/specs/prewarmed-uv.spec.js
 
 # Wrong — don't use absolute paths or paths from other directories:
 ./e2e/dev.sh test-fixture /Users/me/runt/crates/notebook/fixtures/audit-test/1-vanilla.ipynb ...
