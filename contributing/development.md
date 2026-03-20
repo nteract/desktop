@@ -14,8 +14,8 @@
 | Run with notebook | `cargo xtask run path/to/notebook.ipynb` |
 | Build release .app | `cargo xtask build-app` |
 | Build release DMG | `cargo xtask build-dmg` |
-| MCP supervisor (Inkwell) | `cargo xtask mcp` |
-| MCP config JSON | `cargo xtask mcp --print-config` |
+| MCP supervisor (Inkwell) | `cargo xtask run-mcp` |
+| MCP config JSON | `cargo xtask run-mcp --print-config` |
 | MCP server (no supervisor) | `cargo xtask dev-mcp` |
 | Lint (check mode) | `cargo xtask lint` |
 | Lint (auto-fix) | `cargo xtask lint --fix` |
@@ -261,6 +261,40 @@ The [nteract MCP server](https://github.com/nteract/nteract) lets AI agents
 (Claude, Zed, etc.) interact with notebooks via the daemon. There are two ways
 to run it locally.
 
+### Python environment
+
+The Python workspace root is the **repo root** — `pyproject.toml` and `.venv`
+both live there, not inside `python/`.
+
+| Venv | Location | Purpose |
+|------|----------|---------|
+| Workspace venv | `.venv` (repo root) | MCP server, `uv run nteract`, `maturin develop` target |
+| Test venv | `python/runtimed/.venv` | Isolated `pytest` runs for the `runtimed` bindings |
+
+**Sync the workspace** (installs nteract + runtimed + deps into `.venv`):
+
+```bash
+uv sync            # from repo root
+```
+
+**Build the native runtimed extension** (from `crates/runtimed-py`):
+
+```bash
+cd crates/runtimed-py
+VIRTUAL_ENV=../../.venv maturin develop
+```
+
+The `VIRTUAL_ENV` override ensures the `.so` is installed into the workspace
+venv (where the MCP server runs), not into `python/runtimed/.venv` (the
+test-only venv).
+
+**Run the MCP server manually** (after `uv sync` + `maturin develop`):
+
+```bash
+uv run nteract                     # from repo root
+uv run --directory . nteract       # equivalent, explicit
+```
+
 ### Inkwell supervisor (recommended)
 
 The **Inkwell** MCP supervisor (`crates/mcp-supervisor/`) is a stable Rust
@@ -269,20 +303,21 @@ lifecycle, auto-restart on crash, and hot-reload on file changes — one command
 everything works:
 
 ```bash
-cargo xtask mcp
+cargo xtask run-mcp
 ```
 
 This:
 1. Starts the dev daemon if not running
-2. Builds Python bindings via `maturin develop` if needed
-3. Spawns the nteract MCP server as a child process
-4. Proxies all tool calls + injects `supervisor_*` management tools
-5. Watches source files and hot-reloads on changes
+2. Runs `uv sync` if the venv is stale
+3. Builds Python bindings via `maturin develop` into `.venv`
+4. Spawns the nteract MCP server as a child process
+5. Proxies all tool calls + injects `supervisor_*` management tools
+6. Watches source files and hot-reloads on changes
 
 For your MCP client config (Zed, Claude Desktop, etc.):
 
 ```bash
-cargo xtask mcp --print-config
+cargo xtask run-mcp --print-config
 ```
 
 Or configure `.zed/settings.json` directly (gitignored):
@@ -307,7 +342,7 @@ These tools are always available, even when the Python child is down:
 |------|---------|
 | `supervisor_status` | Child process, daemon, restart count, last error |
 | `supervisor_restart` | Restart child or daemon |
-| `supervisor_rebuild` | `maturin develop` + restart (after Rust changes) |
+| `supervisor_rebuild` | `maturin develop` into `.venv` + restart (after Rust changes) |
 | `supervisor_logs` | Tail the daemon log file |
 | `supervisor_start_vite` | Start the Vite dev server for hot-reload frontend development |
 | `supervisor_stop` | Stop a managed process by name (e.g. `"vite"`) |
@@ -339,9 +374,13 @@ cargo xtask dev-mcp
 
 The MCP server is a pure Python package (`python/nteract/`) that depends on
 `runtimed` (PyO3 bindings in `python/runtimed/`, built from
-`crates/runtimed-py/`). The Inkwell supervisor (`crates/mcp-supervisor/`) uses
-the `rmcp` Rust SDK to act as both an MCP server (facing the client) and an MCP
-client (facing the Python child process).
+`crates/runtimed-py/`). Both are workspace members of the repo-root
+`pyproject.toml`, so `uv sync` installs them into `.venv` at the repo root.
+
+The Inkwell supervisor (`crates/mcp-supervisor/`) uses the `rmcp` Rust SDK to
+act as both an MCP server (facing the client) and an MCP client (facing the
+Python child process). It spawns the child via `uv run --directory . nteract`
+from the repo root.
 
 ## Before You Commit
 

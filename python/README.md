@@ -1,33 +1,36 @@
 # Python Packages
 
-Development home for nteract Python packages.
+Development home for nteract Python packages. The UV workspace root (`pyproject.toml` and `.venv`) lives at the **repo root**, with three workspace members:
 
 | Package | Description |
 |---------|-------------|
-| `runtimed/` | Low-level Python bindings for the runtimed daemon (maturin/PyO3) |
-| `nteract/` | MCP server for AI agents — composes runtimed primitives |
+| `python/runtimed/` | Low-level Python bindings for the runtimed daemon (maturin/PyO3) |
+| `python/nteract/` | MCP server for AI agents — composes runtimed primitives |
+| `python/gremlin/` | Autonomous notebook agent for stress testing |
 
-## Dev Setup (local runtimed + nteract)
+## Dev Setup
 
-To run the nteract MCP server against a locally-built runtimed (e.g., for testing presence, new protocol features):
+The virtual environment lives at the repo root (`.venv`), not inside `python/`.
 
 ```bash
-cd runtimed
-
-# 1. Build runtimed from Rust source
-uv run --reinstall-package runtimed maturin develop
-
-# 2. Install local nteract (editable, without re-resolving runtimed from PyPI)
-uv pip install --no-deps -e ../nteract
-
-# 3. Install nteract's other dependencies
-uv pip install "mcp>=1.26.0" "httpx>=0.27.0,<1.0" "pydantic>=2.0"
-
-# 4. Verify both packages are local
-uv run python -c "import runtimed, nteract; print('ok')"
+# From the repo root — creates .venv and installs all workspace members
+uv sync
 ```
 
-After this, the runtimed venv has both the local Rust build and the local nteract source.
+### Building runtimed from Rust source
+
+The Rust bindings live in `crates/runtimed-py/`. To build them into the repo-root `.venv`:
+
+```bash
+cd crates/runtimed-py && VIRTUAL_ENV=../../.venv uv run --directory ../../python/runtimed maturin develop
+```
+
+Verify everything is wired up:
+
+```bash
+# From the repo root
+uv run python -c "import runtimed, nteract; print('ok')"
+```
 
 ## Running the MCP Server (Dev)
 
@@ -35,10 +38,12 @@ After this, the runtimed venv has both the local Rust build and the local nterac
 # Find your dev daemon socket (from repo root)
 RUNTIMED_DEV=1 ./target/debug/runt daemon status
 
-# Run the MCP server (from python/runtimed/)
+# Run the MCP server (from repo root)
 RUNTIMED_SOCKET_PATH=~/Library/Caches/runt-nightly/worktrees/<hash>/runtimed.sock \
-    uv run --no-sync nteract
+    uv run nteract
 ```
+
+`uv run --no-sync nteract` also works from the repo root if you want to skip dependency resolution.
 
 For Zed MCP config:
 
@@ -49,17 +54,15 @@ For Zed MCP config:
   "env": {
     "RUNTIMED_SOCKET_PATH": "/Users/<you>/Library/Caches/runt-nightly/worktrees/<hash>/runtimed.sock"
   },
-  "working_directory": "/path/to/desktop/python/runtimed"
+  "working_directory": "/path/to/desktop"
 }
 ```
-
-The `--no-sync` flag prevents uv from re-resolving dependencies and overwriting the local runtimed build.
 
 ## Running Demos
 
 ```bash
-# From python/runtimed/
-RUNTIMED_SOCKET_PATH=... uv run python demos/presence_cursor.py <notebook_id>
+# From the repo root
+RUNTIMED_SOCKET_PATH=... uv run python python/runtimed/demos/presence_cursor.py <notebook_id>
 ```
 
 ## Rebuilding After Rust Changes
@@ -67,6 +70,5 @@ RUNTIMED_SOCKET_PATH=... uv run python demos/presence_cursor.py <notebook_id>
 If you change code in `crates/runtimed-py/` or `crates/runtimed/`:
 
 ```bash
-cd python/runtimed
-uv run --reinstall-package runtimed maturin develop
+cd crates/runtimed-py && VIRTUAL_ENV=../../.venv uv run --directory ../../python/runtimed maturin develop
 ```

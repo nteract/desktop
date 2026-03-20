@@ -250,9 +250,25 @@ The `runtimed-py` crate provides Python bindings for interacting with the daemon
 
 ### Installation
 
+There are **two Python virtual environments** in the repo:
+
+| Venv | Path (from repo root) | Purpose |
+|------|-----------------------|---------|
+| Workspace venv | `.venv` | Used by the MCP server and day-to-day development |
+| Test venv | `python/runtimed/.venv` | Isolated env for `pytest` runs |
+
+Install into the **workspace venv** (MCP server, general use):
+
 ```bash
 cd crates/runtimed-py
-maturin develop
+VIRTUAL_ENV=../../.venv maturin develop
+```
+
+Install into the **test venv** (pytest):
+
+```bash
+cd crates/runtimed-py
+VIRTUAL_ENV=../../python/runtimed/.venv maturin develop
 ```
 
 ### Basic Usage
@@ -267,6 +283,15 @@ session.start_kernel()
 result = session.run("print('hello')")
 print(result.stdout)  # "hello\n"
 print(result.outputs)  # [Output(stream, stdout: "hello\n")]
+
+# Rich output (e.g. display(Image(...)))
+result = session.run("from IPython.display import Image, display; display(Image(filename='photo.png'))")
+for output in result.outputs:
+    for mime, value in output.data.items():
+        print(mime, type(value))
+        # image/png  <class 'bytes'>       — raw binary, NOT base64
+        # text/llm+plain  <class 'str'>    — synthesized blob URL for LLM consumers
+        # text/plain <class 'str'>
 
 # Get cell with outputs (includes historical outputs from other clients)
 cell = session.get_cell(result.cell_id)
@@ -285,6 +310,30 @@ print(cell.position)  # fractional index string e.g. "80", "C0"
 ```
 
 **Prefer per-cell accessors** (`get_cell_source`, `get_cell_type`, `get_cell_ids`) over `get_cells()` when you only need one cell or one field. `get_cells()` materializes every cell's source, outputs, and metadata.
+
+### Output.data Typing
+
+`Output.data` is a `dict[str, str | bytes | dict]`. The value type depends on the MIME type:
+
+| MIME category | Example | Python type | Notes |
+|---------------|---------|-------------|-------|
+| Binary image | `image/png`, `image/jpeg` | `bytes` | Raw binary data (not base64-encoded) |
+| JSON | `application/json` | `dict` | Parsed JSON object |
+| Text | `text/plain`, `text/html` | `str` | UTF-8 string |
+| LLM hint | `text/llm+plain` | `str` | Synthesized blob URL (see below) |
+
+### `text/llm+plain` Synthesis
+
+When an output contains a binary image MIME (e.g. `image/png`), the daemon automatically synthesizes a `text/llm+plain` entry in `Output.data`. Its value is the blob URL pointing to the image in the daemon's blob store. This lets LLM-based consumers reference the image without decoding binary data:
+
+```python
+result = session.run("display(Image(filename='chart.png'))")
+output = result.outputs[0]
+
+output.data["image/png"]        # b'\x89PNG\r\n...'  (raw bytes)
+output.data["text/llm+plain"]   # 'http://localhost:<port>/blobs/<hash>'  (blob URL)
+output.data["text/plain"]       # '<IPython.core.display.Image object>'
+```
 
 ### Socket Path Configuration
 

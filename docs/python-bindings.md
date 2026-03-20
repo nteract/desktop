@@ -8,10 +8,30 @@ The `runtimed` Python package provides programmatic access to the notebook daemo
 # From PyPI
 pip install runtimed
 
-# From source
+# From source (inside the python/runtimed package directory)
 cd python/runtimed
 uv run maturin develop
 ```
+
+### Building from `crates/runtimed-py`
+
+When working on the Rust bindings directly, run maturin from the crate directory and point `VIRTUAL_ENV` at the workspace venv:
+
+```bash
+cd crates/runtimed-py
+VIRTUAL_ENV=../../.venv uv run --directory ../../python/runtimed maturin develop
+```
+
+### Two virtual environments
+
+The repo uses two venvs:
+
+| Venv | Path (from repo root) | Purpose |
+|------|-----------------------|---------|
+| Workspace | `.venv` | Main development venv. The native extension is installed here via `maturin develop`. |
+| Test | `python/runtimed/.venv` | Isolated venv for `pytest` / CI. Created automatically by `uv run` inside `python/runtimed/`. |
+
+`VIRTUAL_ENV=../../.venv` in the maturin command above ensures the compiled `.so` lands in the workspace venv rather than the test venv.
 
 ## Quick Start
 
@@ -320,12 +340,14 @@ env = await session.env_source()             # str | None
 notebook_id = session.notebook_id  # str
 ```
 
-## DaemonClient API
+## Client API
 
-The `DaemonClient` class provides low-level access to daemon operations.
+The `Client` class provides daemon-level operations and is a factory for connected sessions.
+
+> **Note:** `DaemonClient` is deprecated. Use `Client` (or `AsyncClient` for async code) instead.
 
 ```python
-client = runtimed.DaemonClient()
+client = runtimed.Client()
 
 # Health checks
 client.ping()         # True if daemon responding
@@ -352,6 +374,11 @@ rooms = client.list_rooms()
 #     'env_source': 'uv:prewarmed'
 #   }
 # ]
+
+# Session factory methods
+session = client.open_notebook("/path/to/notebook.ipynb")
+session = client.create_notebook(runtime="python", working_dir="/path/to/project")
+session = client.join_notebook("existing-notebook-id")
 
 # Operations
 client.flush_pool()   # Clear and rebuild environment pool
@@ -407,13 +434,40 @@ for output in result.outputs:
     print(output.text)  # The text content
 
     # For display_data/execute_result
-    print(output.data)  # Dict[str, str] of MIME type -> content
+    print(output.data)  # Dict[str, str | bytes | dict] of MIME type -> content
 
     # For errors
     print(output.ename)      # Exception class name
     print(output.evalue)     # Exception message
     print(output.traceback)  # List of traceback lines
 ```
+
+#### `Output.data` value types
+
+Values in the `output.data` dict are typed by MIME category — not always `str`:
+
+| MIME category | Python type | Examples |
+|---------------|-------------|----------|
+| Text | `str` | `text/plain`, `text/html`, `text/markdown`, `image/svg+xml`, `application/javascript` |
+| Binary | `bytes` | `image/png`, `image/jpeg`, `audio/*`, `video/*` |
+| JSON | `dict` (or `list`) | `application/json`, `application/vnd.dataresource+json`, any `*+json` |
+
+Binary MIME types are returned as **raw bytes** — no base64 encoding. This means you can write them directly to a file or pass them to an image library without decoding:
+
+```python
+result = session.execute_cell(cell_id)
+for output in result.display_data:
+    if "image/png" in output.data:
+        png_bytes = output.data["image/png"]  # bytes, not base64
+        with open("plot.png", "wb") as f:
+            f.write(png_bytes)
+
+    if "application/json" in output.data:
+        obj = output.data["application/json"]  # dict, not a JSON string
+        print(obj["key"])
+```
+
+The output resolver also synthesizes a `text/llm+plain` entry for outputs that contain binary images. This provides an LLM-friendly text description including the image MIME type, size, and blob URL — useful for agent workflows that cannot consume raw image bytes.
 
 ### Cell
 
