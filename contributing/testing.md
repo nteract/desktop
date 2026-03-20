@@ -7,7 +7,7 @@ This guide covers all test types in the codebase. For E2E tests specifically, se
 | Type | Location | Command | Framework |
 |------|----------|---------|-----------|
 | E2E | `e2e/specs/` | `./e2e/dev.sh test` | WebdriverIO + Mocha |
-| Frontend unit | `src/**/__tests__/` | `pnpm test` | Vitest + jsdom |
+| Frontend unit | `src/**/__tests__/`, `apps/notebook/src/**/__tests__/` | `pnpm test` | Vitest + jsdom |
 | Rust unit | inline `#[cfg(test)]` | `cargo test` | built-in |
 | CLI behavior | `crates/runt/tests/*.hone` | `cargo hone test` | Hone (not yet published) |
 | Python | `python/runtimed/tests/` | `pytest` | pytest |
