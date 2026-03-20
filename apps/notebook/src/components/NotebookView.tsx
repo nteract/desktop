@@ -16,9 +16,15 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS as DndCSS } from "@dnd-kit/utilities";
-import { Plus, RotateCcw, X } from "lucide-react";
+import { Code, LetterText, Plus, RotateCcw, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
@@ -61,7 +67,7 @@ interface NotebookViewProps {
   onSetCellOutputsHidden?: (cellId: string, hidden: boolean) => void;
 }
 
-function AddCellButtons({
+function CellAdder({
   afterCellId,
   onAdd,
 }: {
@@ -69,37 +75,40 @@ function AddCellButtons({
   onAdd: (type: "code" | "markdown", afterCellId?: string | null) => void;
 }) {
   return (
-    <div className="group/betweener flex h-4 w-full items-center select-none">
-      {/* Gutter spacer - matches cell gutter: action area + ribbon */}
-      <div className="flex h-full flex-shrink-0">
-        <div className="w-10" />
-        <div className="w-1 bg-gray-200 dark:bg-gray-700" />
-      </div>
-      {/* Content area with centered buttons */}
-      <div className="flex-1 relative flex items-center justify-center">
-        {/* Thin line appears on hover */}
-        <div className="absolute inset-x-0 h-px bg-transparent group-hover/betweener:bg-border transition-colors" />
-        {/* Buttons appear on hover */}
-        <div className="flex items-center gap-1 opacity-0 group-hover/betweener:opacity-100 transition-opacity z-10 bg-background px-2 select-none">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-5 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground select-none"
-            onClick={() => onAdd("code", afterCellId)}
-          >
-            <Plus className="h-3 w-3" />
-            Code
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-5 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground select-none"
-            onClick={() => onAdd("markdown", afterCellId)}
-          >
-            <Plus className="h-3 w-3" />
-            Markdown
-          </Button>
+    <div className="group/adder flex h-5 w-full items-center select-none">
+      {/* Gutter area - holds the + button */}
+      <div className="flex h-full flex-shrink-0 items-center">
+        <div className="flex w-10 items-center justify-end pr-1">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="flex h-4 w-4 items-center justify-center rounded-full border border-transparent text-muted-foreground/40 opacity-0 transition-all hover:border-border hover:bg-muted hover:text-foreground group-hover/adder:opacity-100"
+              >
+                <Plus className="h-3 w-3" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              side="right"
+              align="start"
+              className="min-w-[140px]"
+            >
+              <DropdownMenuItem onClick={() => onAdd("code", afterCellId)}>
+                <Code className="h-4 w-4" />
+                Code
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onAdd("markdown", afterCellId)}>
+                <LetterText className="h-4 w-4" />
+                Markdown
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
+        <div className="w-1" />
+      </div>
+      {/* Thin line across content area */}
+      <div className="flex-1 relative flex items-center">
+        <div className="absolute inset-x-0 h-px bg-transparent group-hover/adder:bg-border transition-colors" />
       </div>
     </div>
   );
@@ -290,7 +299,7 @@ function SortableCell({
 
   return (
     <div ref={setNodeRef} style={style}>
-      {index === 0 && <AddCellButtons afterCellId={null} onAdd={onAddCell} />}
+      {index === 0 && <CellAdder afterCellId={null} onAdd={onAddCell} />}
       <ErrorBoundary
         fallback={(error, resetErrorBoundary) => (
           <CellErrorFallback
@@ -308,7 +317,7 @@ function SortableCell({
           isDragging={isDragging}
         />
       </ErrorBoundary>
-      <AddCellButtons afterCellId={cellId} onAdd={onAddCell} />
+      <CellAdder afterCellId={cellId} onAdd={onAddCell} />
     </div>
   );
 }
