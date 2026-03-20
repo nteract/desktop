@@ -309,7 +309,7 @@ Two-character prefix directories prevent filesystem bottlenecks.
 }
 ```
 
-### API (async)
+### API
 
 ```rust
 pub struct BlobStore { root: PathBuf }
@@ -318,7 +318,7 @@ impl BlobStore {
     pub async fn put(&self, data: &[u8], media_type: &str) -> io::Result<String>;
     pub async fn get(&self, hash: &str) -> io::Result<Option<Vec<u8>>>;
     pub async fn get_meta(&self, hash: &str) -> io::Result<Option<BlobMeta>>;
-    pub async fn exists(&self, hash: &str) -> bool;
+    pub fn exists(&self, hash: &str) -> bool;
     pub async fn delete(&self, hash: &str) -> io::Result<bool>;
     pub async fn list(&self) -> io::Result<Vec<String>>;
 }
@@ -699,7 +699,7 @@ The MIME classification logic (`mime_kind()`) is shared conceptually with the Ty
 | File | Role |
 |------|------|
 | `crates/runtimed/src/output_store.rs` | Manifest construction, ContentRef, inlining threshold |
-| `crates/runtimed/src/blob_server.rs` | Add `GET /output/{id}` endpoint |
+| `crates/runtimed/src/blob_server.rs` | HTTP read server (`GET /blob/{hash}`, `GET /health`) |
 | `crates/runtimed/src/kernel_manager.rs` | iopub listener constructs manifests and stores blobs |
 | `crates/runtimed-py/src/output_resolver.rs` | Python bindings: manifest resolution, MIME typing, `text/llm+plain` synthesis |
 | `src/components/cell/OutputArea.tsx` | Fetch manifests, resolve blob URLs |

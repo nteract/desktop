@@ -324,14 +324,14 @@ print(cell.position)  # fractional index string e.g. "80", "C0"
 
 ### `text/llm+plain` Synthesis
 
-When an output contains a binary image MIME (e.g. `image/png`), the daemon automatically synthesizes a `text/llm+plain` entry in `Output.data`. Its value is the blob URL pointing to the image in the daemon's blob store. This lets LLM-based consumers reference the image without decoding binary data:
+When an output contains a binary image MIME (e.g. `image/png`), the daemon automatically synthesizes a `text/llm+plain` entry in `Output.data`. Its value is a multi-line description that combines any existing `text/plain`, image metadata (MIME type and size), and the blob URL. This lets LLM-based consumers reference the image without decoding binary data:
 
 ```python
 result = session.run("display(Image(filename='chart.png'))")
 output = result.outputs[0]
 
 output.data["image/png"]        # b'\x89PNG\r\n...'  (raw bytes)
-output.data["text/llm+plain"]   # 'http://localhost:<port>/blobs/<hash>'  (blob URL)
+output.data["text/llm+plain"]   # '<IPython.core.display.Image object>\n📊 Image output (image/png, 42 KB)\nhttp://localhost:<port>/blob/<hash>'
 output.data["text/plain"]       # '<IPython.core.display.Image object>'
 ```
 
