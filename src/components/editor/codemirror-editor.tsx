@@ -272,6 +272,14 @@ export const CodeMirrorEditor = forwardRef<
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    // Focus when autoFocus becomes true after mount (e.g. notebook
+    // auto-seeds a cell then sets focusedCellId).
+    useEffect(() => {
+      if (autoFocus && viewRef.current && !viewRef.current.hasFocus) {
+        requestAnimationFrame(() => viewRef.current?.focus());
+      }
+    }, [autoFocus]);
+
     // ── Dynamic reconfiguration via compartments ─────────────────────
 
     useEffect(() => {

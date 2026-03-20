@@ -1284,7 +1284,7 @@ impl Daemon {
 
     /// Handle a CreateNotebook connection.
     ///
-    /// Daemon creates empty room with one code cell, generates env_id as notebook_id.
+    /// Daemon creates empty room with zero cells, generates env_id as notebook_id.
     /// Returns NotebookConnectionInfo, then continues as normal notebook sync.
     async fn handle_create_notebook<S>(
         self: Arc<Self>,

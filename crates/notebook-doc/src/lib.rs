@@ -4123,6 +4123,55 @@ mod tests {
         assert_eq!(actors, vec!["human:tab-1", "runtimed"]);
     }
 
+    /// Validates the local-first empty notebook flow: daemon creates a doc
+    /// with metadata but zero cells, frontend creates a cell locally, then
+    /// sync converges so both sides have the cell.
+    #[test]
+    fn test_frontend_creates_cell_syncs_to_empty_daemon() {
+        use automerge::sync;
+
+        // Daemon creates doc with metadata but 0 cells
+        let mut daemon = NotebookDoc::new_with_actor("nb", "runtimed");
+        assert_eq!(daemon.cell_count(), 0);
+
+        // Frontend starts empty
+        let mut frontend = NotebookDoc::empty_with_actor("human:tab-1");
+
+        let mut ds = sync::State::new();
+        let mut fs = sync::State::new();
+
+        // Initial sync: frontend gets daemon's schema/metadata
+        for _ in 0..10 {
+            if let Some(m) = daemon.generate_sync_message(&mut ds) {
+                frontend.receive_sync_message(&mut fs, m).unwrap();
+            }
+            if let Some(m) = frontend.generate_sync_message(&mut fs) {
+                daemon.receive_sync_message(&mut ds, m).unwrap();
+            }
+        }
+        assert_eq!(frontend.cell_count(), 0);
+        assert_eq!(daemon.cell_count(), 0);
+
+        // Frontend creates a cell locally (like the autoseed effect)
+        frontend.add_cell(0, "cell-1", "code").unwrap();
+        assert_eq!(frontend.cell_count(), 1);
+
+        // Sync again — frontend's cell should reach the daemon
+        for _ in 0..10 {
+            if let Some(m) = frontend.generate_sync_message(&mut fs) {
+                daemon.receive_sync_message(&mut ds, m).unwrap();
+            }
+            if let Some(m) = daemon.generate_sync_message(&mut ds) {
+                frontend.receive_sync_message(&mut fs, m).unwrap();
+            }
+        }
+
+        // Both should have the cell
+        assert_eq!(daemon.cell_count(), 1);
+        assert_eq!(frontend.cell_count(), 1);
+        assert_eq!(daemon.get_cells()[0].id, "cell-1");
+    }
+
     #[test]
     fn test_per_cell_accessors() {
         let mut doc = NotebookDoc::new("nb-accessors");

@@ -205,13 +205,13 @@ export function createFramePipeline(deps: FramePipelineDeps): Subscription {
               // Sync delivered actual document content — clear the gate
               // and materialize. This is the success path.
               deps.setAwaitingInitialSync(false);
-              deps.setIsLoading(false);
               const handle = deps.getHandle();
               if (handle) {
                 return from(
                   deps
                     .materializeCells(handle)
                     .then(() => {
+                      deps.setIsLoading(false);
                       notifyMetadataChanged();
                       deps.onSyncApplied();
                     })
@@ -220,10 +220,12 @@ export function createFramePipeline(deps: FramePipelineDeps): Subscription {
                         "[frame-pipeline] initial materialize failed:",
                         err,
                       );
+                      deps.setIsLoading(false);
                       deps.onSyncApplied();
                     }),
                 );
               }
+              deps.setIsLoading(false); // Fallback if no handle
             }
             // changed:false — Automerge sync protocol handshake round
             // (exchanging heads/bloom filters, no actual content yet).

@@ -2318,25 +2318,23 @@ class TestCreateNotebook:
     """Test Client.create_notebook() - daemon-owned creation."""
 
     def test_create_python_notebook(self, client):
-        """Creating Python notebook returns session with one empty cell."""
+        """Creating Python notebook returns session with zero cells."""
         session = client.create_notebook(runtime="python")
         assert session.is_connected
 
         # notebook_id is UUID (not a path)
         assert len(session.notebook_id) == 36  # UUID format
 
-        # Has one empty code cell
+        # Has zero cells (frontend creates the first cell locally)
         cells = session.get_cells()
-        assert len(cells) == 1
-        assert cells[0].cell_type == "code"
-        assert cells[0].source == ""
+        assert len(cells) == 0
 
     def test_create_notebook_returns_connection_info(self, client):
         """NotebookConnectionInfo is available for created notebooks."""
         session = client.create_notebook(runtime="python")
         info = session.connection_info
         assert info is not None
-        assert info.cell_count == 1
+        assert info.cell_count == 0
         assert info.notebook_id == session.notebook_id
         # New notebooks don't need trust approval
         assert info.needs_trust_approval is False
@@ -2346,9 +2344,9 @@ class TestCreateNotebook:
         session = client.create_notebook(runtime="deno")
         assert session.is_connected
 
-        # Has one empty code cell
+        # Has zero cells (frontend creates the first cell locally)
         cells = session.get_cells()
-        assert len(cells) == 1
+        assert len(cells) == 0
 
     def test_create_notebook_with_working_dir(self, client, tmp_path):
         """working_dir is used for project file detection."""

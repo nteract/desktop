@@ -5031,13 +5031,8 @@ pub fn create_empty_notebook(
     let env_id = env_id
         .map(|s| s.to_string())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let cell_id = uuid::Uuid::new_v4().to_string();
-
-    // Add a single empty code cell
-    doc.add_cell(0, &cell_id, "code")
-        .map_err(|e| format!("Failed to add cell: {}", e))?;
-
-    // Build metadata based on runtime
+    // Build metadata based on runtime (no cells — the frontend creates the
+    // first cell locally via the CRDT so the user gets instant autofocus)
     let metadata_snapshot = build_new_notebook_metadata(runtime, &env_id, default_python_env);
 
     doc.set_metadata_snapshot(&metadata_snapshot)
@@ -7030,11 +7025,8 @@ mod tests {
         let env_id = result.unwrap();
         assert!(!env_id.is_empty(), "Should generate an env_id");
 
-        // Should have exactly one cell
-        assert_eq!(doc.cell_count(), 1);
-        let cells = doc.get_cells();
-        assert_eq!(cells[0].cell_type, "code");
-        assert!(cells[0].source.is_empty());
+        // Should have zero cells (frontend creates the first cell locally)
+        assert_eq!(doc.cell_count(), 0);
     }
 
     #[test]
@@ -7048,7 +7040,7 @@ mod tests {
         );
 
         assert!(result.is_ok());
-        assert_eq!(doc.cell_count(), 1);
+        assert_eq!(doc.cell_count(), 0);
 
         // Check metadata was set correctly
         let metadata = doc.get_metadata_snapshot();

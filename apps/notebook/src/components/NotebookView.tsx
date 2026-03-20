@@ -489,6 +489,25 @@ function NotebookViewContent({
     }
   }, [focusedCellId]);
 
+  // ── Auto-seed first cell for empty notebooks ───────────────────────
+  // For new notebooks the daemon creates zero cells. Once sync completes
+  // (isLoading becomes false), we create the first code cell locally via
+  // the CRDT so the user gets an instant focused editor. The ref guard
+  // ensures we only seed once even if the effect re-fires before React
+  // processes the focusedCellId update from onAddCell.
+  const didAutoSeed = useRef(false);
+  useEffect(() => {
+    if (isLoading || focusedCellId !== null) return;
+    if (cellIds.length === 0) {
+      if (!didAutoSeed.current) {
+        didAutoSeed.current = true;
+        onAddCell("code");
+      }
+    } else {
+      onFocusCell(cellIds[0]);
+    }
+  }, [isLoading, cellIds, focusedCellId, onFocusCell, onAddCell]);
+
   const renderCell = useCallback(
     (
       cell: NotebookCell,
