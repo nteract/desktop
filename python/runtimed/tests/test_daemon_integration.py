@@ -384,156 +384,6 @@ def two_sessions(client):
 
 
 # ============================================================================
-# Basic connectivity tests
-# ============================================================================
-
-
-class TestBasicConnectivity:
-    """Test basic daemon connectivity."""
-
-    def test_session_connect(self, session):
-        """Session can connect to daemon."""
-        assert session.is_connected
-
-    def test_session_repr(self, session):
-        """Session has useful repr."""
-        r = repr(session)
-        assert "Session" in r
-        assert session.notebook_id in r
-
-
-# ============================================================================
-# Document-first execution tests
-# ============================================================================
-
-
-class TestDocumentFirstExecution:
-    """Test document-first execution pattern.
-
-    These tests verify the architectural principle that execution reads
-    from the automerge document rather than receiving code directly.
-    """
-
-    def test_create_cell(self, session):
-        """Can create a cell in the document."""
-        cell_id = session.create_cell("x = 1")
-
-        assert cell_id.startswith("cell-")
-
-        # Verify cell exists in document
-        cell = session.get_cell(cell_id)
-        assert cell.id == cell_id
-        assert cell.source == "x = 1"
-        assert cell.cell_type == "code"
-
-    def test_update_cell_source(self, session):
-        """Can update cell source in document."""
-        cell_id = session.create_cell("original")
-        session.set_source(cell_id, "updated")
-
-        cell = session.get_cell(cell_id)
-        assert cell.source == "updated"
-
-    def test_get_cells(self, session):
-        """Can list all cells in document."""
-        # Create a few cells
-        cell_ids = [
-            session.create_cell("a = 1"),
-            session.create_cell("b = 2"),
-            session.create_cell("c = 3"),
-        ]
-
-        cells = session.get_cells()
-        assert len(cells) >= 3
-
-        found_ids = {c.id for c in cells}
-        for cid in cell_ids:
-            assert cid in found_ids
-
-    def test_delete_cell(self, session):
-        """Can delete a cell from document."""
-        cell_id = session.create_cell("to_delete")
-        session.delete_cell(cell_id)
-
-        with pytest.raises(runtimed.RuntimedError, match="not found"):
-            session.get_cell(cell_id)
-
-    def test_execute_cell_reads_from_document(self, session):
-        """execute_cell reads source from the synced document.
-
-        This is the core architectural test: execution uses ExecuteCell
-        which reads from the automerge doc, not QueueCell which bypasses it.
-        """
-        start_kernel_with_retry(session)
-
-        # Create cell with source in document
-        cell_id = session.create_cell("result = 2 + 2; print(result)")
-
-        # Execute - daemon reads from document
-        result = session.execute_cell(cell_id)
-
-        assert result.success
-        assert "4" in result.stdout
-        assert result.cell_id == cell_id
-        assert result.execution_count is not None
-
-    def test_queue_cell_fires_execution(self, session):
-        """queue_cell fires execution without waiting.
-
-        This tests the fire-and-forget pattern where you queue execution
-        and then poll get_cell() for results.
-        """
-        start_kernel_with_retry(session)
-
-        # Create and queue execution
-        cell_id = session.create_cell("queued_var = 'queued'")
-        session.queue_cell(cell_id)
-
-        # Poll until the queued cell has executed (execution_count gets set)
-        def queued_cell_executed():
-            cell = session.get_cell(cell_id)
-            return cell.execution_count is not None
-
-        wait_for_sync(queued_cell_executed, description="queued cell execution")
-
-        # Verify it ran by executing another cell that uses the variable
-        cell2 = session.create_cell("print(queued_var)")
-        result = session.execute_cell(cell2)
-
-        assert result.success
-        assert "queued" in result.stdout
-
-    def test_execution_error_captured(self, session):
-        """Execution errors are captured in result."""
-        start_kernel_with_retry(session)
-
-        cell_id = session.create_cell("raise ValueError('test error')")
-        result = session.execute_cell(cell_id)
-
-        assert not result.success
-        assert result.error is not None
-        assert "ValueError" in result.error.ename
-
-    def test_multiple_executions(self, session):
-        """Can execute multiple cells sequentially."""
-        start_kernel_with_retry(session)
-
-        # Execute multiple cells, building up state
-        cell1 = session.create_cell("x = 10")
-        r1 = session.execute_cell(cell1)
-        assert r1.success
-
-        cell2 = session.create_cell("y = x * 2")
-        r2 = session.execute_cell(cell2)
-        assert r2.success
-
-        cell3 = session.create_cell("print(f'y = {y}')")
-        r3 = session.execute_cell(cell3)
-        assert r3.success
-        assert "y = 20" in r3.stdout
-
-
-# ============================================================================
 # Per-cell accessor tests
 # ============================================================================
 
@@ -647,69 +497,6 @@ class TestPerCellAccessors:
         assert session.get_cell_source(cell_id) == cell.source
         assert session.get_cell_type(cell_id) == cell.cell_type
         assert session.get_cell_position(cell_id) is not None
-
-
-class TestAsyncPerCellAccessors:
-    """Test per-cell accessors with AsyncSession."""
-
-    @pytest.mark.asyncio
-    async def test_async_get_cell_ids(self, async_session):
-        """get_cell_ids returns ordered cell IDs."""
-        id1 = await async_session.create_cell("a = 1")
-        id2 = await async_session.create_cell("b = 2")
-
-        cell_ids = await async_session.get_cell_ids()
-        assert id1 in cell_ids
-        assert id2 in cell_ids
-        assert cell_ids.index(id1) < cell_ids.index(id2)
-
-    @pytest.mark.asyncio
-    async def test_async_get_cell_source(self, async_session):
-        """get_cell_source returns just the source string."""
-        cell_id = await async_session.create_cell("x = 42")
-        source = await async_session.get_cell_source(cell_id)
-        assert source == "x = 42"
-
-    @pytest.mark.asyncio
-    async def test_async_get_cell_source_nonexistent(self, async_session):
-        """get_cell_source returns None for missing cells."""
-        result = await async_session.get_cell_source("cell-does-not-exist")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_async_get_cell_type(self, async_session):
-        """get_cell_type returns the cell type string."""
-        code_id = await async_session.create_cell("x = 1", cell_type="code")
-        md_id = await async_session.create_cell("# Title", cell_type="markdown")
-
-        assert await async_session.get_cell_type(code_id) == "code"
-        assert await async_session.get_cell_type(md_id) == "markdown"
-
-    @pytest.mark.asyncio
-    async def test_async_get_cell_outputs(self, async_session):
-        """get_cell_outputs returns raw output strings."""
-        cell_id = await async_session.create_cell("x = 1")
-        outputs = await async_session.get_cell_outputs(cell_id)
-        assert outputs is not None
-        assert isinstance(outputs, list)
-        assert len(outputs) == 0
-
-    @pytest.mark.asyncio
-    async def test_async_get_cell_position(self, async_session):
-        """get_cell_position returns a position string."""
-        cell_id = await async_session.create_cell("x = 1")
-        pos = await async_session.get_cell_position(cell_id)
-        assert pos is not None
-        assert len(pos) > 0
-
-    @pytest.mark.asyncio
-    async def test_async_accessors_consistent(self, async_session):
-        """Per-cell accessors return same data as get_cell."""
-        cell_id = await async_session.create_cell("hello = 'world'")
-        cell = await async_session.get_cell(cell_id)
-
-        assert await async_session.get_cell_source(cell_id) == cell.source
-        assert await async_session.get_cell_type(cell_id) == cell.cell_type
 
 
 # ============================================================================
@@ -829,196 +616,6 @@ class TestCellMetadata:
 
         cell = s2.get_cell(cell_id)
         assert cell.tags == ["important"]
-
-
-# ============================================================================
-# Multi-client synchronization tests
-# ============================================================================
-
-
-class TestMultiClientSync:
-    """Test multi-client scenarios where two sessions share a notebook.
-
-    These tests verify that automerge sync works correctly when multiple
-    clients are connected to the same notebook.
-    """
-
-    def test_two_sessions_same_notebook(self, two_sessions):
-        """Two sessions can connect to the same notebook."""
-        s1, s2 = two_sessions
-
-        assert s1.is_connected
-        assert s2.is_connected
-        assert s1.notebook_id == s2.notebook_id
-
-    def test_cell_created_by_one_visible_to_other(self, two_sessions):
-        """Cell created by session 1 is visible to session 2."""
-        s1, s2 = two_sessions
-
-        # Session 1 creates a cell
-        cell_id = s1.create_cell("shared_var = 42")
-
-        # Poll until session 2 sees the cell with its source content
-        def cell_synced():
-            cells = s2.get_cells()
-            found = [c for c in cells if c.id == cell_id]
-            return len(found) == 1 and found[0].source == "shared_var = 42"
-
-        wait_for_sync(cell_synced, description="cell with source visible to s2")
-
-        cells = s2.get_cells()
-        found = [c for c in cells if c.id == cell_id]
-        assert len(found) == 1
-        assert found[0].source == "shared_var = 42"
-
-    def test_source_update_syncs_between_peers(self, two_sessions):
-        """Source updates sync between peers."""
-        s1, s2 = two_sessions
-
-        # Session 1 creates cell
-        cell_id = s1.create_cell("original")
-
-        # Wait for cell to sync to session 2
-        def cell_visible_to_s2():
-            cells = s2.get_cells()
-            return any(c.id == cell_id for c in cells)
-
-        wait_for_sync(cell_visible_to_s2, description="cell visible to s2")
-
-        # Session 2 updates it
-        s2.set_source(cell_id, "updated by s2")
-
-        # Wait for update to sync back to session 1
-        def update_visible_to_s1():
-            cell = s1.get_cell(cell_id)
-            return cell.source == "updated by s2"
-
-        wait_for_sync(update_visible_to_s1, description="update visible to s1")
-
-        # Final assertion
-        cell = s1.get_cell(cell_id)
-        assert cell.source == "updated by s2"
-
-    def test_shared_kernel_execution(self, two_sessions):
-        """Both sessions share the same kernel and execution state.
-
-        When two sessions connect to the same notebook, they share the
-        daemon's kernel. However, each session tracks its own `kernel_started`
-        flag locally, so both need to call start_kernel() (the second call
-        is a no-op in the daemon but updates local state).
-        """
-        s1, s2 = two_sessions
-
-        # Both sessions need to call start_kernel to update their local state
-        # The daemon only starts one kernel for the notebook
-        start_kernel_with_retry(s1)
-        start_kernel_with_retry(s2)  # No-op in daemon, but updates s2.kernel_started
-
-        # Session 1 sets a variable
-        cell1 = s1.create_cell("shared = 'from s1'")
-        r1 = s1.execute_cell(cell1)
-        assert r1.success
-
-        # Session 2 can access it (same kernel)
-        cell2 = s2.create_cell("print(shared)")
-        r2 = s2.execute_cell(cell2)
-        assert r2.success
-        assert "from s1" in r2.stdout
-
-
-# ============================================================================
-# Kernel lifecycle tests
-# ============================================================================
-
-
-class TestKernelLifecycle:
-    """Test kernel lifecycle management."""
-
-    def test_start_kernel(self, session):
-        """Can start a kernel."""
-        assert not session.kernel_started
-
-        start_kernel_with_retry(session)
-
-        assert session.kernel_started
-        assert session.env_source is not None
-
-    def test_kernel_interrupt(self, session):
-        """Can interrupt a running kernel."""
-        start_kernel_with_retry(session)
-
-        # Start a long-running execution in background
-        session.create_cell("import time; time.sleep(30)")
-
-        # We can't easily test async interrupt without threading,
-        # but we can at least verify the interrupt call doesn't error
-        # when nothing is running
-        session.interrupt()  # Should not raise
-
-    def test_shutdown_kernel(self, session):
-        """Can shutdown the kernel."""
-        start_kernel_with_retry(session)
-        assert session.kernel_started
-
-        session.shutdown_kernel()
-        assert not session.kernel_started
-
-
-# ============================================================================
-# Output type tests
-# ============================================================================
-
-
-class TestOutputTypes:
-    """Test different output types from execution."""
-
-    @pytest.mark.skip(reason="Trailing newline stripped by stream_terminal.rs")
-    def test_stdout_output(self, session):
-        """Captures stdout output."""
-        start_kernel_with_retry(session)
-
-        cell_id = session.create_cell("print('hello stdout')")
-        result = session.execute_cell(cell_id)
-
-        assert result.success
-        assert result.stdout == "hello stdout\n"
-
-    def test_stderr_output(self, session):
-        """Captures stderr output."""
-        start_kernel_with_retry(session)
-
-        cell_id = session.create_cell("import sys; sys.stderr.write('hello stderr\\n')")
-        result = session.execute_cell(cell_id)
-
-        assert result.success
-        assert "hello stderr" in result.stderr
-
-    def test_return_value(self, session):
-        """Captures expression return value."""
-        start_kernel_with_retry(session)
-
-        cell_id = session.create_cell("2 + 2")
-        result = session.execute_cell(cell_id)
-
-        assert result.success
-        # Return value should appear in display_data
-        display = result.display_data
-        assert len(display) > 0
-
-    def test_multiple_outputs(self, session):
-        """Captures multiple outputs from one cell."""
-        start_kernel_with_retry(session)
-
-        cell_id = session.create_cell("""
-print('line 1')
-print('line 2')
-'final value'
-""")
-        result = session.execute_cell(cell_id)
-
-        assert result.success
-        assert "line 1" in result.stdout
-        assert "line 2" in result.stdout
 
 
 # ============================================================================
@@ -1168,50 +765,6 @@ sys.stdout.flush()
         # Should contain green ANSI codes, red should be overwritten
         assert "\x1b[32m" in result.stdout
         assert "Green" in result.stdout
-
-
-# ============================================================================
-# Error handling tests
-# ============================================================================
-
-
-class TestErrorHandling:
-    """Test error handling scenarios."""
-
-    def test_execute_auto_starts_kernel(self, session):
-        """execute_cell auto-starts kernel if not running."""
-        # Don't call start_kernel() - execute_cell should do it automatically
-        cell_id = session.create_cell("x = 42")
-
-        # Should work without explicit start_kernel()
-        result = session.execute_cell(cell_id)
-        assert result.success
-        assert session.kernel_started
-
-        verify_cell = session.create_cell("print(x)")
-        verify_result = session.execute_cell(verify_cell)
-        assert verify_result.success
-        assert "42" in verify_result.stdout
-
-    def test_get_nonexistent_cell(self, session):
-        """Getting nonexistent cell raises error."""
-        with pytest.raises(runtimed.RuntimedError, match="not found"):
-            session.get_cell("cell-does-not-exist")
-
-    def test_syntax_error(self, session):
-        """Syntax errors are captured."""
-        start_kernel_with_retry(session)
-
-        warmup_cell = session.create_cell("warmup = 1")
-        warmup_result = session.execute_cell(warmup_cell)
-        assert warmup_result.success
-
-        cell_id = session.create_cell("if True print('broken')")
-        result = session.execute_cell(cell_id)
-
-        assert not result.success
-        assert result.error is not None
-        assert "SyntaxError" in result.error.ename
 
 
 # ============================================================================
@@ -1656,17 +1209,28 @@ class TestProjectFileDetection:
     walks up from the notebook directory looking for project files
     (pyproject.toml, pixi.toml, environment.yml). The closest match wins.
 
-    These tests use real fixture notebooks from the repo that have
-    project files alongside them.
+    These tests use fixture notebooks copied to a temp dir to avoid
+    the repo root pyproject.toml interfering with walk-up detection.
     """
 
-    def test_pyproject_auto_detection(self, session):
+    @pytest.fixture(scope="class")
+    def isolated_fixtures(self, tmp_path_factory):
+        """Copy fixture directories to temp location outside the repo tree."""
+        import shutil
+
+        tmp = tmp_path_factory.mktemp("fixtures")
+        for subdir in ["pyproject-project", "pixi-project", "conda-env-project"]:
+            if (FIXTURES_DIR / subdir).exists():
+                shutil.copytree(FIXTURES_DIR / subdir, tmp / subdir)
+        return tmp
+
+    def test_pyproject_auto_detection(self, session, isolated_fixtures):
         """notebook_path near pyproject.toml auto-detects uv:pyproject.
 
         Uses `uv run --with ipykernel` to install deps from the fixture
         pyproject.toml (httpx).
         """
-        notebook_path = str(FIXTURES_DIR / "pyproject-project" / "5-pyproject.ipynb")
+        notebook_path = str(isolated_fixtures / "pyproject-project" / "5-pyproject.ipynb")
 
         # Set python kernelspec using typed API
         _set_python_kernelspec(session)
@@ -1684,13 +1248,13 @@ class TestProjectFileDetection:
         result = session.run("import httpx; print(httpx.__version__)")
         assert result.success, f"Failed to import httpx from pyproject env: {result.stderr}"
 
-    def test_pixi_auto_detection(self, session):
+    def test_pixi_auto_detection(self, session, isolated_fixtures):
         """notebook_path near pixi.toml auto-detects conda:pixi.
 
         The conda:pixi env_source is detected, and a pooled conda env
         is used to launch the kernel.
         """
-        notebook_path = str(FIXTURES_DIR / "pixi-project" / "6-pixi.ipynb")
+        notebook_path = str(isolated_fixtures / "pixi-project" / "6-pixi.ipynb")
 
         _set_python_kernelspec(session)
 
@@ -1707,13 +1271,13 @@ class TestProjectFileDetection:
         result = session.run("import sys; print(sys.prefix)")
         assert result.success, f"Kernel failed in pixi env: {result.stderr}"
 
-    def test_environment_yml_auto_detection(self, session):
+    def test_environment_yml_auto_detection(self, session, isolated_fixtures):
         """notebook_path near environment.yml auto-detects conda:env_yml.
 
         The conda:env_yml env_source is detected, and a pooled conda env
         is used to launch the kernel.
         """
-        notebook_path = str(FIXTURES_DIR / "conda-env-project" / "7-environment-yml.ipynb")
+        notebook_path = str(isolated_fixtures / "conda-env-project" / "7-environment-yml.ipynb")
 
         _set_python_kernelspec(session)
 
@@ -1800,8 +1364,8 @@ async def two_async_sessions(async_client):
             pass
 
 
-class TestAsyncBasicConnectivity:
-    """Test basic daemon connectivity with AsyncSession."""
+class TestBasicConnectivity:
+    """Test basic daemon connectivity."""
 
     @pytest.mark.asyncio
     async def test_async_session_connect(self, async_session):
@@ -1816,8 +1380,8 @@ class TestAsyncBasicConnectivity:
         assert async_session.notebook_id in r
 
 
-class TestAsyncDocumentFirstExecution:
-    """Test document-first execution pattern with AsyncSession."""
+class TestDocumentFirstExecution:
+    """Test document-first execution pattern."""
 
     @pytest.mark.asyncio
     async def test_async_create_cell(self, async_session):
@@ -1945,8 +1509,8 @@ class TestAsyncDocumentFirstExecution:
         assert "y = 20" in r3.stdout
 
 
-class TestAsyncMultiClientSync:
-    """Test multi-client scenarios with AsyncSession."""
+class TestMultiClientSync:
+    """Test multi-client scenarios."""
 
     @pytest.mark.asyncio
     async def test_async_two_sessions_same_notebook(self, two_async_sessions):
@@ -1996,8 +1560,8 @@ class TestAsyncMultiClientSync:
         assert "from async s1" in r2.stdout
 
 
-class TestAsyncKernelLifecycle:
-    """Test kernel lifecycle management with AsyncSession."""
+class TestKernelLifecycle:
+    """Test kernel lifecycle management."""
 
     @pytest.mark.asyncio
     async def test_async_start_kernel(self, async_session):
@@ -2025,8 +1589,8 @@ class TestAsyncKernelLifecycle:
         assert not await async_session.kernel_started()
 
 
-class TestAsyncOutputTypes:
-    """Test different output types from execution with AsyncSession."""
+class TestOutputTypes:
+    """Test different output types from execution."""
 
     @pytest.mark.asyncio
     async def test_async_stdout_output(self, async_session):
@@ -2065,8 +1629,8 @@ class TestAsyncOutputTypes:
         assert len(display) > 0
 
 
-class TestAsyncErrorHandling:
-    """Test error handling scenarios with AsyncSession."""
+class TestErrorHandling:
+    """Test error handling scenarios."""
 
     @pytest.mark.asyncio
     async def test_async_get_nonexistent_cell(self, async_session):
@@ -2091,7 +1655,7 @@ class TestAsyncErrorHandling:
         assert "SyntaxError" in result.error.ename
 
 
-class TestAsyncContextManager:
+class TestContextManager:
     """Test async context manager functionality."""
 
     @pytest.mark.asyncio
@@ -2207,27 +1771,6 @@ class TestStreamExecute:
         assert error_found, "Expected an error output with ValueError"
 
 
-class TestSyncStreamExecute:
-    """Test sync Session.stream_execute() returns events as an iterator."""
-
-    def test_sync_stream_execute_yields_events(self, session):
-        """Sync stream_execute() yields events via iterator."""
-        start_kernel_with_retry(session)
-
-        cell_id = session.create_cell("for i in range(3): print(f'line {i}')")
-
-        events = list(session.stream_execute(cell_id))
-
-        # Should have received multiple events
-        assert len(events) >= 2, f"Expected multiple events, got {len(events)}"
-
-        # Should have output and done events
-        output_events = [e for e in events if e.event_type == "output"]
-        done_events = [e for e in events if e.event_type == "done"]
-        assert len(output_events) >= 1
-        assert len(done_events) == 1
-
-
 # ============================================================================
 # Append Source Tests (incremental code writing)
 # ============================================================================
@@ -2305,25 +1848,6 @@ class TestAppendSource:
         cell = await s2.get_cell(cell_id)
         assert "a = 1" in cell.source
         assert "b = 2" in cell.source
-
-
-class TestSyncAppendSource:
-    """Test sync Session.append_source()."""
-
-    def test_sync_append_source_basic(self, session):
-        """Sync append_source() adds text to cell source."""
-        start_kernel_with_retry(session)
-
-        cell_id = session.create_cell("x = 10")
-        session.append_source(cell_id, "\nprint(x * 2)")
-
-        cell = session.get_cell(cell_id)
-        assert "x = 10" in cell.source
-        assert "print(x * 2)" in cell.source
-
-        result = session.execute_cell(cell_id)
-        assert result.success
-        assert "20" in result.stdout
 
 
 # ============================================================================
@@ -2760,22 +2284,25 @@ class TestPresence:
     path works end-to-end without raising.
     """
 
-    def test_set_cursor(self, session):
+    @pytest.mark.asyncio
+    async def test_set_cursor(self, async_session):
         """Can send a cursor position as presence data."""
-        cell_id = session.create_cell("x = 1")
+        cell_id = await async_session.create_cell("x = 1")
         # Should not raise — the daemon receives and relays
-        session.set_cursor(cell_id, line=0, column=0)
+        await async_session.set_cursor(cell_id, line=0, column=0)
 
-    def test_set_cursor_different_positions(self, session):
+    @pytest.mark.asyncio
+    async def test_set_cursor_different_positions(self, async_session):
         """Can send multiple cursor updates (simulates typing)."""
-        cell_id = session.create_cell("hello = 'world'")
+        cell_id = await async_session.create_cell("hello = 'world'")
         for col in range(5):
-            session.set_cursor(cell_id, line=0, column=col)
+            await async_session.set_cursor(cell_id, line=0, column=col)
 
-    def test_set_selection(self, session):
+    @pytest.mark.asyncio
+    async def test_set_selection(self, async_session):
         """Can send a selection range as presence data."""
-        cell_id = session.create_cell("line1\nline2\nline3")
-        session.set_selection(
+        cell_id = await async_session.create_cell("line1\nline2\nline3")
+        await async_session.set_selection(
             cell_id,
             anchor_line=0,
             anchor_col=0,
@@ -2783,116 +2310,112 @@ class TestPresence:
             head_col=5,
         )
 
-    def test_set_cursor_then_selection(self, session):
+    @pytest.mark.asyncio
+    async def test_set_cursor_then_selection(self, async_session):
         """Can send cursor then selection (multiple channels)."""
-        cell_id = session.create_cell("x = 1")
-        session.set_cursor(cell_id, line=0, column=3)
-        session.set_selection(cell_id, anchor_line=0, anchor_col=0, head_line=0, head_col=5)
+        cell_id = await async_session.create_cell("x = 1")
+        await async_session.set_cursor(cell_id, line=0, column=3)
+        await async_session.set_selection(
+            cell_id, anchor_line=0, anchor_col=0, head_line=0, head_col=5
+        )
 
-    def test_set_cursor_not_connected_raises(self):
+    @pytest.mark.asyncio
+    async def test_set_cursor_not_connected_raises(self):
         """set_cursor raises when not connected."""
-        sess = runtimed.Session()
+        sess = runtimed.AsyncSession()
         with pytest.raises(runtimed.RuntimedError):
-            sess.set_cursor("fake-cell", line=0, column=0)
+            await sess.set_cursor("fake-cell", line=0, column=0)
 
-    def test_set_selection_not_connected_raises(self):
+    @pytest.mark.asyncio
+    async def test_set_selection_not_connected_raises(self):
         """set_selection raises when not connected."""
-        sess = runtimed.Session()
+        sess = runtimed.AsyncSession()
         with pytest.raises(runtimed.RuntimedError):
-            sess.set_selection("fake-cell", anchor_line=0, anchor_col=0, head_line=0, head_col=0)
+            await sess.set_selection(
+                "fake-cell", anchor_line=0, anchor_col=0, head_line=0, head_col=0
+            )
 
-    def test_presence_with_two_peers(self, two_sessions):
+    @pytest.mark.asyncio
+    async def test_presence_with_two_peers(self, two_async_sessions):
         """Both peers can send presence without error."""
-        s1, s2 = two_sessions
-        cell_id = s1.create_cell("shared cell")
+        s1, s2 = two_async_sessions
+        cell_id = await s1.create_cell("shared cell")
 
         # Wait for cell to sync to s2
-        wait_for_sync(
-            lambda: len(s2.get_cells()) > 0,
-            description="cell sync to s2",
-        )
+        async def cells_synced():
+            cells = await s2.get_cells()
+            return len(cells) > 0
+
+        await async_wait_for_sync(cells_synced, description="cell sync to s2")
 
         # Both peers send cursor presence
-        s1.set_cursor(cell_id, line=0, column=0)
-        s2.set_cursor(cell_id, line=0, column=5)
+        await s1.set_cursor(cell_id, line=0, column=0)
+        await s2.set_cursor(cell_id, line=0, column=5)
 
-    def test_get_peers_and_remote_cursors(self, two_sessions):
+    @pytest.mark.asyncio
+    async def test_get_peers_and_remote_cursors(self, two_async_sessions):
         """Session B sees Session A's cursor via get_peers/get_remote_cursors."""
-        s1, s2 = two_sessions
-        cell_id = s1.create_cell("shared cell")
+        s1, s2 = two_async_sessions
+        cell_id = await s1.create_cell("shared cell")
 
         # Wait for cell to sync to s2
-        wait_for_sync(
-            lambda: len(s2.get_cells()) > 0,
-            description="cell sync to s2",
-        )
+        async def cells_synced():
+            cells = await s2.get_cells()
+            return len(cells) > 0
+
+        await async_wait_for_sync(cells_synced, description="cell sync to s2")
 
         # Session A sends cursor presence
-        s1.set_cursor(cell_id, line=5, column=10)
+        await s1.set_cursor(cell_id, line=5, column=10)
 
         # Session B should see Session A as a peer
-        wait_for_sync(
-            lambda: len(s2.get_peers()) > 0,
-            description="s2 sees s1 peer",
-        )
-        peers = s2.get_peers()
+        async def s2_sees_peer():
+            peers = await s2.get_peers()
+            return len(peers) > 0
+
+        await async_wait_for_sync(s2_sees_peer, description="s2 sees s1 peer")
+        peers = await s2.get_peers()
         assert len(peers) > 0, "Expected at least one remote peer"
 
         # Session B should see Session A's cursor at (5, 10).
         # Note: create_cell auto-emits presence at (0, 0), so we must wait
         # specifically for the updated cursor position from set_cursor.
-        def _cursor_at_expected_pos():
-            for _, _, cid, ln, col in s2.get_remote_cursors():
+        async def _cursor_at_expected_pos():
+            for _, _, cid, ln, col in await s2.get_remote_cursors():
                 if cid == cell_id and ln == 5 and col == 10:
                     return True
             return False
 
-        wait_for_sync(
+        await async_wait_for_sync(
             _cursor_at_expected_pos,
             description="s2 sees s1 cursor at (5, 10)",
         )
 
-    def test_get_peers_not_connected_raises(self):
-        """get_peers raises when not connected."""
-        sess = runtimed.Session()
-        with pytest.raises(runtimed.RuntimedError):
-            sess.get_peers()
-
-    def test_get_remote_cursors_not_connected_raises(self):
-        """get_remote_cursors raises when not connected."""
-        sess = runtimed.Session()
-        with pytest.raises(runtimed.RuntimedError):
-            sess.get_remote_cursors()
-
-
-class TestAsyncPresence:
-    """Async versions of presence tests."""
-
-    async def test_async_set_cursor(self, async_session):
-        """Can send cursor presence via AsyncSession."""
-        cell_id = await async_session.create_cell("x = 1")
-        await async_session.set_cursor(cell_id, line=0, column=0)
-
-    async def test_async_set_selection(self, async_session):
-        """Can send selection presence via AsyncSession."""
-        cell_id = await async_session.create_cell("line1\nline2")
-        await async_session.set_selection(
-            cell_id,
-            anchor_line=0,
-            anchor_col=0,
-            head_line=1,
-            head_col=5,
-        )
-
-    async def test_async_get_peers(self, async_session):
+    @pytest.mark.asyncio
+    async def test_get_peers(self, async_session):
         """Can query peers via AsyncSession."""
         peers = await async_session.get_peers()
         assert isinstance(peers, list)
 
-    async def test_async_get_remote_cursors(self, async_session):
+    @pytest.mark.asyncio
+    async def test_get_remote_cursors(self, async_session):
         """Can query remote cursors via AsyncSession."""
         cursors = await async_session.get_remote_cursors()
         assert isinstance(cursors, list)
+
+    @pytest.mark.asyncio
+    async def test_get_peers_not_connected_raises(self):
+        """get_peers raises when not connected."""
+        sess = runtimed.AsyncSession()
+        with pytest.raises(runtimed.RuntimedError):
+            await sess.get_peers()
+
+    @pytest.mark.asyncio
+    async def test_get_remote_cursors_not_connected_raises(self):
+        """get_remote_cursors raises when not connected."""
+        sess = runtimed.AsyncSession()
+        with pytest.raises(runtimed.RuntimedError):
+            await sess.get_remote_cursors()
 
 
 if __name__ == "__main__":
