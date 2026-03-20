@@ -765,7 +765,8 @@ impl RoomKernel {
                                     jupyter_protocol::ExecutionState::Busy => "busy",
                                     jupyter_protocol::ExecutionState::Idle => "idle",
                                     jupyter_protocol::ExecutionState::Starting => "starting",
-                                    jupyter_protocol::ExecutionState::Restarting => "restarting",
+                                    // Normalize "restarting" to "starting" — same user-facing meaning
+                                    jupyter_protocol::ExecutionState::Restarting => "starting",
                                     jupyter_protocol::ExecutionState::Terminating
                                     | jupyter_protocol::ExecutionState::Dead => "shutdown",
                                     _ => "unknown",
@@ -776,10 +777,13 @@ impl RoomKernel {
                                     cell_id: cell_id.clone(),
                                 });
 
-                                {
+                                // Only write known statuses to RuntimeStateDoc — skip "unknown"
+                                // to avoid polluting the schema with values clients can't handle.
+                                if status_str != "unknown" {
                                     let mut sd = state_doc_for_iopub.write().await;
-                                    sd.set_kernel_status(status_str);
-                                    let _ = state_changed_for_iopub.send(());
+                                    if sd.set_kernel_status(status_str) {
+                                        let _ = state_changed_for_iopub.send(());
+                                    }
                                 }
 
                                 // Signal execution done when idle
