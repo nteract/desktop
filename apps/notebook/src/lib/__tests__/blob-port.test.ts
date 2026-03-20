@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
