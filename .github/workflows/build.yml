@@ -239,9 +239,6 @@ jobs:
       - name: Run JS benchmarks
         run: pnpm vitest bench --run apps/notebook/src/lib/__tests__/
 
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
       - name: Build external binaries
         shell: bash
         run: |
@@ -255,6 +252,9 @@ jobs:
             cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
             cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
           fi
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Install cargo-binstall
         run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
