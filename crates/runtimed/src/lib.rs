@@ -54,8 +54,8 @@ pub mod terminal_size;
 // Re-export from runt-workspace for backwards compatibility
 pub use runt_workspace::{
     build_channel, cache_namespace, config_namespace, daemon_base_dir, daemon_binary_basename,
-    daemon_launchd_label, daemon_service_basename, desktop_display_name, desktop_product_name,
-    get_workspace_name, get_workspace_path, is_dev_mode, worktree_hash,
+    daemon_launchd_label, daemon_service_basename, default_notebook_log_path, desktop_display_name,
+    desktop_product_name, get_workspace_name, get_workspace_path, is_dev_mode, worktree_hash,
 };
 
 /// Get the default log path for the daemon.

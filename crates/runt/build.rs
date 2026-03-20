@@ -1,9 +1,6 @@
 use std::process::Command;
 
 fn main() {
-    // Capture short commit hash for version-mismatch detection.
-    // This ensures the daemon gets restarted when the binary changes,
-    // even if the crate version (Cargo.toml) hasn't been bumped.
     let commit = Command::new("git")
         .args(["rev-parse", "--short=7", "HEAD"])
         .output()
@@ -26,12 +23,8 @@ fn main() {
         .map(|s| s.trim().to_string());
 
     if let Some(git_dir) = git_dir {
-        // Re-run if git HEAD changes (detects branch switches).
         println!("cargo:rerun-if-changed={}/HEAD", git_dir);
 
-        // Also track the ref that HEAD points to (detects new commits on the
-        // current branch). When HEAD is "ref: refs/heads/main", new commits
-        // update refs/heads/main but NOT HEAD itself.
         if let Ok(head) = std::fs::read_to_string(format!("{}/HEAD", git_dir)) {
             let head = head.trim();
             if let Some(refpath) = head.strip_prefix("ref: ") {
@@ -49,9 +42,6 @@ fn main() {
                 if common_dir != git_dir {
                     println!("cargo:rerun-if-changed={}/{}", common_dir, refpath);
                 }
-
-                // Packed-refs is updated when git packs loose refs or during
-                // fetch/gc. A ref might only exist here, so track it too.
                 println!("cargo:rerun-if-changed={}/packed-refs", common_dir);
             }
         }

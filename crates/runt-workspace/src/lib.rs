@@ -549,6 +549,14 @@ pub fn daemon_base_dir() -> PathBuf {
     base
 }
 
+/// Get the default log path for the notebook app.
+///
+/// In dev mode: `~/.cache/runt/worktrees/{hash}/notebook.log`
+/// Otherwise: `~/.cache/runt/notebook.log`
+pub fn default_notebook_log_path() -> PathBuf {
+    daemon_base_dir().join("notebook.log")
+}
+
 /// Get the default directory for saving notebooks.
 ///
 /// In dev mode with a workspace path: tries `{workspace}/notebooks/` first,

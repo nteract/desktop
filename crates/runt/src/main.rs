@@ -217,6 +217,12 @@ enum Commands {
         #[arg(short = 'n', long, default_value = "50")]
         lines: usize,
     },
+    /// Collect diagnostic logs and system info into an archive
+    Diagnostics {
+        /// Output directory for the archive (default: ~/Desktop)
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+    },
 
     // =========================================================================
     // Development utilities (only shown when RUNTIMED_DEV=1)
@@ -530,6 +536,7 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
         Some(Commands::Logs { follow, lines }) => {
             daemon_command(DaemonCommands::Logs { follow, lines }).await?
         }
+        Some(Commands::Diagnostics { output }) => diagnostics_command(output).await?,
 
         // Development commands (requires RUNTIMED_DEV=1)
         Some(Commands::Dev(dev_cmd)) => {
@@ -2752,6 +2759,171 @@ fn find_bundled_runtimed() -> Option<PathBuf> {
     }
 
     None
+}
+
+// ============================================================================
+// Diagnostics collection
+// ============================================================================
+
+/// Run a command and return its stdout (or stderr on failure) as bytes.
+fn capture_command_output(exe: &Path, args: &[&str]) -> Vec<u8> {
+    match std::process::Command::new(exe).args(args).output() {
+        Ok(output) => {
+            if output.status.success() {
+                output.stdout
+            } else {
+                // Include both stdout and stderr so partial output isn't lost
+                let mut combined = output.stdout;
+                combined.extend_from_slice(&output.stderr);
+                combined
+            }
+        }
+        Err(e) => format!("Failed to run command: {}\n", e).into_bytes(),
+    }
+}
+
+/// Add in-memory bytes as a file entry in a tar archive.
+fn tar_add_bytes<W: std::io::Write>(
+    tar: &mut tar::Builder<W>,
+    name: &str,
+    data: &[u8],
+) -> Result<()> {
+    let mut header = tar::Header::new_gnu();
+    header.set_size(data.len() as u64);
+    header.set_mode(0o644);
+    header.set_mtime(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    );
+    header.set_cksum();
+    tar.append_data(&mut header, name, data)?;
+    Ok(())
+}
+
+/// Collect system information as a JSON object.
+fn collect_system_info() -> serde_json::Value {
+    let os_version = {
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("sw_vers")
+                .arg("-productVersion")
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        }
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::read_to_string("/etc/os-release")
+                .ok()
+                .and_then(|content| {
+                    content
+                        .lines()
+                        .find(|l| l.starts_with("PRETTY_NAME="))
+                        .map(|l| {
+                            l.trim_start_matches("PRETTY_NAME=")
+                                .trim_matches('"')
+                                .to_string()
+                        })
+                })
+                .unwrap_or_else(|| "unknown".to_string())
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            "unknown".to_string()
+        }
+    };
+
+    serde_json::json!({
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "os_version": os_version,
+        "runt_version": env!("CARGO_PKG_VERSION"),
+        "runt_commit": env!("GIT_COMMIT"),
+        "build_channel": format!("{:?}", runt_workspace::build_channel()),
+        "dev_mode": runt_workspace::is_dev_mode(),
+        "workspace_path": runt_workspace::get_workspace_path().map(|p| p.display().to_string()),
+    })
+}
+
+async fn diagnostics_command(output_dir: Option<PathBuf>) -> Result<()> {
+    use colored::Colorize;
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+
+    let timestamp = chrono::Local::now().format("%Y-%m-%d-%H%M%S");
+    let output_dir = output_dir.unwrap_or_else(|| {
+        // Prefer ~/Desktop if it exists, otherwise fall back to the system
+        // temp directory (always exists) so the command never fails on accounts
+        // without a Desktop folder.
+        dirs::desktop_dir()
+            .filter(|p| p.exists())
+            .unwrap_or_else(std::env::temp_dir)
+    });
+    let archive_name = format!("runt-diagnostics-{}.tar.gz", timestamp);
+    let archive_path = output_dir.join(&archive_name);
+
+    print_header("diagnostics", "Collecting diagnostic information...");
+    println!();
+
+    let file = std::fs::File::create(&archive_path).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to create archive at {}: {}",
+            archive_path.display(),
+            e
+        )
+    })?;
+    let enc = GzEncoder::new(file, Compression::default());
+    let mut tar = tar::Builder::new(enc);
+
+    // 1. Daemon log
+    let daemon_log = runtimed::default_log_path();
+    if daemon_log.exists() {
+        tar.append_path_with_name(&daemon_log, "runtimed.log")?;
+        println!("  {} runtimed.log", "✓".green());
+    } else {
+        println!("  {} runtimed.log (not found)", "–".yellow());
+    }
+
+    // 2. Notebook log
+    let notebook_log = runtimed::default_notebook_log_path();
+    if notebook_log.exists() {
+        tar.append_path_with_name(&notebook_log, "notebook.log")?;
+        println!("  {} notebook.log", "✓".green());
+    } else {
+        println!("  {} notebook.log (not found)", "–".yellow());
+    }
+
+    // 3. daemon status --json
+    let exe = std::env::current_exe()?;
+    let status_output = capture_command_output(&exe, &["daemon", "status", "--json"]);
+    tar_add_bytes(&mut tar, "daemon-status.json", &status_output)?;
+    println!("  {} daemon-status.json", "✓".green());
+
+    // 4. doctor --json
+    let doctor_output = capture_command_output(&exe, &["doctor", "--json"]);
+    tar_add_bytes(&mut tar, "doctor.json", &doctor_output)?;
+    println!("  {} doctor.json", "✓".green());
+
+    // 5. system-info.json
+    let system_info = collect_system_info();
+    let system_json = serde_json::to_string_pretty(&system_info)?;
+    tar_add_bytes(&mut tar, "system-info.json", system_json.as_bytes())?;
+    println!("  {} system-info.json", "✓".green());
+
+    // Finalize archive
+    let enc = tar.into_inner()?;
+    enc.finish()?;
+
+    println!();
+    println!(
+        "  Archive saved to: {}",
+        archive_path.display().to_string().bold()
+    );
+    Ok(())
 }
 
 /// Return a colored status icon for display
