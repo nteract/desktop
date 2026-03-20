@@ -2042,7 +2042,7 @@ impl Daemon {
         let match_spec_options = ParseMatchSpecOptions::strict();
         let specs: Vec<MatchSpec> = match (|| -> anyhow::Result<Vec<MatchSpec>> {
             let mut specs = vec![
-                MatchSpec::from_str("python>=3.9", match_spec_options)?,
+                MatchSpec::from_str("python>=3.13", match_spec_options)?,
                 MatchSpec::from_str("ipykernel", match_spec_options)?,
                 MatchSpec::from_str("ipywidgets", match_spec_options)?,
             ];
@@ -2392,6 +2392,8 @@ print("warmup complete")
             tokio::process::Command::new(&uv_path)
                 .arg("venv")
                 .arg(&venv_path)
+                .arg("--python")
+                .arg("3.13")
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .output(),

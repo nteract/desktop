@@ -68,7 +68,7 @@ pub async fn prepare_uv_inline_env(
 ) -> Result<PreparedEnv> {
     let uv_deps = kernel_env::UvDependencies {
         dependencies: deps.to_vec(),
-        requires_python: None,
+        requires_python: Some(">=3.13".to_string()),
         prerelease: prerelease.map(|s| s.to_string()),
     };
 

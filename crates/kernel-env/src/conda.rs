@@ -216,7 +216,7 @@ async fn install_conda_env(
             match_spec_options,
         )?);
     } else {
-        specs.push(MatchSpec::from_str("python>=3.9", match_spec_options)?);
+        specs.push(MatchSpec::from_str("python>=3.13", match_spec_options)?);
     }
 
     specs.push(MatchSpec::from_str("ipykernel", match_spec_options)?);
