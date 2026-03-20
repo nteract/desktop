@@ -433,6 +433,14 @@ impl NotebookHandle {
             .map_err(|e| JsError::new(&format!("clear_outputs failed: {}", e)))
     }
 
+    /// Clear outputs and execution counts from every code cell in the CRDT.
+    /// Returns the IDs of cells that were cleared.
+    pub fn clear_all_outputs(&mut self) -> Result<Vec<String>, JsError> {
+        self.doc
+            .clear_all_outputs()
+            .map_err(|e| JsError::new(&format!("clear_all_outputs failed: {}", e)))
+    }
+
     /// Set the execution count for a cell. Pass "null" or a number string like "5".
     pub fn set_execution_count(&mut self, cell_id: &str, count: &str) -> Result<bool, JsError> {
         self.doc

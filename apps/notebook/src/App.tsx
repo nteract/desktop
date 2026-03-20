@@ -125,6 +125,7 @@ function AppContent() {
     updateOutputByDisplayId,
     applyExecutionCountFromDaemon,
     clearOutputsLocal,
+    clearAllOutputsLocal,
     clearOutputsFromDaemon,
     setCellSourceHidden,
     setCellOutputsHidden,
@@ -822,19 +823,19 @@ function AppContent() {
     const unlistenPromise = webview.listen(
       "menu:clear-all-outputs",
       async () => {
+        // Single WASM call clears all code cells in the CRDT
+        clearAllOutputsLocal();
+        // Tell daemon to clear kernel output tracking for each cell
         const codeCells = getNotebookCellsSnapshot().filter(
           (c) => c.cell_type === "code",
         );
-        for (const cell of codeCells) {
-          clearOutputsLocal(cell.id);
-        }
         await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
       },
     );
     return () => {
       unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
     };
-  }, [clearOutputsLocal, clearOutputs]);
+  }, [clearAllOutputsLocal, clearOutputs]);
 
   // Kernel menu: Run All Cells
   useEffect(() => {

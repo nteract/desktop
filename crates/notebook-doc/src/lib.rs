@@ -1397,6 +1397,21 @@ impl NotebookDoc {
         self.set_outputs(cell_id, &[])
     }
 
+    /// Clear outputs and execution counts from every code cell.
+    /// Returns the IDs of cells that were cleared.
+    pub fn clear_all_outputs(&mut self) -> Result<Vec<String>, AutomergeError> {
+        let cell_ids = self.get_cell_ids();
+        let mut cleared = Vec::new();
+        for cell_id in &cell_ids {
+            if self.get_cell_type(cell_id).as_deref() == Some("code") {
+                self.clear_outputs(cell_id)?;
+                self.set_execution_count(cell_id, "null")?;
+                cleared.push(cell_id.clone());
+            }
+        }
+        Ok(cleared)
+    }
+
     /// Get all outputs from all cells.
     ///
     /// Returns a list of (cell_id, output_index, output_string).

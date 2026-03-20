@@ -313,6 +313,27 @@ export function useAutomergeNotebook() {
   }, []);
 
   /**
+   * Clear outputs from every code cell via a single WASM call.
+   * Updates the CRDT atomically, then refreshes the store.
+   */
+  const clearAllOutputsLocal = useCallback(() => {
+    const handle = handleRef.current;
+    if (!handle) return;
+    const clearedIds: string[] = handle.clear_all_outputs();
+    sourceSync$.current.next();
+    setDirty(true);
+
+    const clearedSet = new Set(clearedIds);
+    updateNotebookCells((prev) =>
+      prev.map((c) =>
+        clearedSet.has(c.id) && c.cell_type === "code"
+          ? { ...c, outputs: [], execution_count: null }
+          : c,
+      ),
+    );
+  }, []);
+
+  /**
    * Apply a daemon output-clear into the store. Store-only —
    * the daemon already wrote to the CRDT, so we just update the
    * local store. No CRDT mutation, no sync, no dirty flag.
@@ -490,6 +511,7 @@ export function useAutomergeNotebook() {
     setFocusedCellId,
     updateCellSource,
     clearOutputsLocal,
+    clearAllOutputsLocal,
     clearOutputsFromDaemon,
     addCell,
     moveCell,
