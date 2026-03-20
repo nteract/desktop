@@ -15,9 +15,15 @@ import sys
 import time
 
 from claude_agent_sdk import (
+    AssistantMessage,
     ClaudeAgentOptions,
     ResultMessage,
     SystemMessage,
+    TextBlock,
+    ThinkingBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
     create_sdk_mcp_server,
     query,
 )
@@ -105,12 +111,7 @@ async def run_agent(
     client = runtimed.AsyncClient()
     session = await client.join_notebook(notebook_id, peer_label=peer_label)
     tools = make_tools(session)
-    log.info(
-        "Connected (is_connected=%s, kernel_started=%s, peer_label=%s)",
-        session.is_connected,
-        session.kernel_started,
-        peer_label,
-    )
+    log.info("Connected to %s (peer_label=%s)", notebook_id, peer_label)
 
     # Log initial state
     try:
@@ -146,12 +147,55 @@ async def run_agent(
     log.info("Starting agent loop (max_turns=%d)", max_turns)
     t0 = time.monotonic()
 
+    turn = 0
     async for msg in query(prompt=prompt, options=opts):
-        if isinstance(msg, SystemMessage) and msg.subtype == "init":
-            model = msg.data.get("model", "unknown")
-            source = msg.data.get("apiKeySource", "unknown")
-            auth = "Claude Max" if source == "none" else f"API ({source})"
-            log.info("Agent init: model=%s auth=%s", model, auth)
+        if isinstance(msg, SystemMessage):
+            if msg.subtype == "init":
+                model = msg.data.get("model", "unknown")
+                source = msg.data.get("apiKeySource", "unknown")
+                auth = "Claude Max" if source == "none" else f"API ({source})"
+                log.info("Agent init: model=%s auth=%s", model, auth)
+            else:
+                log.debug("System: subtype=%s", msg.subtype)
+
+        elif isinstance(msg, AssistantMessage):
+            turn += 1
+            for block in msg.content:
+                if isinstance(block, TextBlock):
+                    log.info("[turn %d] 💬 %s", turn, block.text[:300])
+                elif isinstance(block, ThinkingBlock):
+                    log.debug("[turn %d] 🧠 (thinking %d chars)", turn, len(block.thinking))
+                elif isinstance(block, ToolUseBlock):
+                    # Summarize tool input — truncate large values
+                    args_summary = {}
+                    for k, v in block.input.items():
+                        sv = str(v)
+                        args_summary[k] = sv[:120] + "…" if len(sv) > 120 else sv
+                    log.info("[turn %d] 🔧 %s(%s)", turn, block.name, args_summary)
+                elif isinstance(block, ToolResultBlock):
+                    content = block.content
+                    if isinstance(content, str):
+                        preview = content[:200]
+                    elif isinstance(content, list):
+                        texts = [c.get("text", "") for c in content if isinstance(c, dict)]
+                        preview = " ".join(texts)[:200]
+                    else:
+                        preview = str(content)[:200]
+                    error_tag = " ❌" if block.is_error else ""
+                    log.info("[turn %d]   ← %s%s", turn, preview, error_tag)
+
+        elif isinstance(msg, UserMessage):
+            # Tool results come back as UserMessage
+            content = msg.content
+            if isinstance(content, str):
+                log.debug("[turn %d] 📥 user: %s", turn, content[:200])
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, ToolResultBlock):
+                        preview = str(block.content)[:200] if block.content else "(empty)"
+                        error_tag = " ❌" if block.is_error else ""
+                        log.info("[turn %d]   ← %s%s", turn, preview, error_tag)
+
         elif isinstance(msg, ResultMessage):
             elapsed = time.monotonic() - t0
             log.info(
@@ -167,10 +211,9 @@ async def run_agent(
             print(f"{'=' * 60}")
             if msg.result:
                 print(msg.result)
+
         else:
-            log.debug(
-                "Agent message: type=%s %r", type(msg).__name__, getattr(msg, "subtype", None)
-            )
+            log.debug("Unknown message: %s", type(msg).__name__)
 
 
 def main() -> None:

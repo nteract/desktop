@@ -42,6 +42,8 @@ dev = [
     "ty>=0.0.22",
     "pytest>=8.0",
     "pyzmq>=26.0",
+    "numpy>=1.26",
+    "matplotlib>=3.8",
 ]
 
 [tool.ty.rules]
