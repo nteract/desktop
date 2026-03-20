@@ -43,16 +43,16 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dev tools
-        run: uv sync --project python --only-group dev
+        run: uv sync --only-group dev
 
       - name: Ruff check
-        run: uv run --project python ruff check --config python/pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/
+        run: uv run ruff check --config pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/
 
       - name: Ruff format check
-        run: uv run --project python ruff format --check --config python/pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/
+        run: uv run ruff format --check --config pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/
 
       - name: Type check
-        run: uv run --project python ty check --project python
+        run: uv run ty check python/
 
   nteract-test:
     runs-on: ubuntu-latest

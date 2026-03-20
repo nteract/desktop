@@ -1011,15 +1011,8 @@ impl Session {
     /// and last-saved timestamp — all read from the local Automerge
     /// replica (no daemon round-trip).
     fn get_runtime_state(&self) -> PyResult<crate::output::PyRuntimeState> {
-        let st = self.runtime.block_on(self.state.lock());
-        let handle = st
-            .handle
-            .as_ref()
-            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Not connected"))?;
-        let rs = handle
-            .get_runtime_state()
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{}", e)))?;
-        Ok(rs.into())
+        self.runtime
+            .block_on(session_core::get_runtime_state(&self.state))
     }
 
     /// Execute all code cells in document order. Returns number of cells queued.

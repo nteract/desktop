@@ -35,20 +35,20 @@ There are **two venvs** that matter:
 
 | Venv | Purpose | Used by |
 |------|---------|---------|
-| `python/.venv` | Workspace venv — has both `nteract` and `runtimed` as editable installs | MCP server (`uv run --directory python nteract`) |
+| `.venv` | Workspace venv — has both `nteract` and `runtimed` as editable installs | MCP server (`uv run nteract`) |
 | `python/runtimed/.venv` | Test-only venv — has `runtimed` + `maturin` + test deps | `pytest` integration tests |
 
 ```bash
 # For the MCP server (most common — this is what supervisor_rebuild does):
-cd crates/runtimed-py && VIRTUAL_ENV=../../python/.venv uv run --directory ../../python/runtimed maturin develop
+cd crates/runtimed-py && VIRTUAL_ENV=../../.venv uv run --directory ../../python/runtimed maturin develop
 
 # For integration tests only:
 cd crates/runtimed-py && VIRTUAL_ENV=../../python/runtimed/.venv uv run --directory ../../python/runtimed maturin develop
 ```
 
-**Common mistake:** Running `maturin develop` without `VIRTUAL_ENV` installs the `.so` into whichever venv `uv run` resolves, which is `python/runtimed/.venv`. The MCP server runs from `python/.venv` and will never see it. Always set `VIRTUAL_ENV` explicitly.
+**Common mistake:** Running `maturin develop` without `VIRTUAL_ENV` installs the `.so` into whichever venv `uv run` resolves, which is `python/runtimed/.venv`. The MCP server runs from `.venv` (repo root) and will never see it. Always set `VIRTUAL_ENV` explicitly.
 
-If using the MCP supervisor, `supervisor_rebuild` handles this automatically — it builds into `python/.venv` and restarts the MCP server.
+If using the MCP supervisor, `supervisor_rebuild` handles this automatically — it builds into `.venv` and restarts the MCP server.
 
 ### Running Python integration tests
 

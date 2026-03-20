@@ -212,6 +212,70 @@ class QueueState:
         """Cell IDs waiting in queue."""
         ...
 
+class PyKernelState:
+    """Kernel state from the RuntimeStateDoc."""
+
+    @property
+    def status(self) -> str:
+        """Kernel status: "not_started", "starting", "idle", "busy", "error", "shutdown"."""
+        ...
+    @property
+    def name(self) -> str:
+        """Kernel display name (e.g. "charming-toucan")."""
+        ...
+    @property
+    def language(self) -> str:
+        """Kernel language (e.g. "python", "typescript")."""
+        ...
+    @property
+    def env_source(self) -> str:
+        """Environment source label (e.g. "uv:prewarmed", "conda:pixi")."""
+        ...
+
+class PyEnvState:
+    """Environment sync state from the RuntimeStateDoc."""
+
+    @property
+    def in_sync(self) -> bool:
+        """Whether notebook metadata matches the launched kernel config."""
+        ...
+    @property
+    def added(self) -> list[str]:
+        """Packages in metadata but not in the kernel environment."""
+        ...
+    @property
+    def removed(self) -> list[str]:
+        """Packages in the kernel environment but not in metadata."""
+        ...
+    @property
+    def channels_changed(self) -> bool:
+        """Whether conda channels differ."""
+        ...
+    @property
+    def deno_changed(self) -> bool:
+        """Whether deno config differs."""
+        ...
+
+class PyRuntimeState:
+    """Full runtime state snapshot from the daemon's RuntimeStateDoc."""
+
+    @property
+    def kernel(self) -> PyKernelState:
+        """Kernel state (status, name, language, env_source)."""
+        ...
+    @property
+    def queue(self) -> QueueState:
+        """Execution queue state."""
+        ...
+    @property
+    def env(self) -> PyEnvState:
+        """Environment sync state."""
+        ...
+    @property
+    def last_saved(self) -> str | None:
+        """ISO timestamp of last save, or None."""
+        ...
+
 class HistoryEntry:
     """A single entry from kernel input history."""
 
@@ -557,6 +621,7 @@ class Session:
         unique: bool = True,
     ) -> list[HistoryEntry]: ...
     def get_queue_state(self) -> QueueState: ...
+    def get_runtime_state(self) -> PyRuntimeState: ...
     def run_all_cells(self) -> int: ...
 
     # Context manager
@@ -744,6 +809,7 @@ class AsyncSession:
         unique: bool = True,
     ) -> Coroutine[Any, Any, list[HistoryEntry]]: ...
     def get_queue_state(self) -> Coroutine[Any, Any, QueueState]: ...
+    def get_runtime_state(self) -> Coroutine[Any, Any, PyRuntimeState]: ...
     def run_all_cells(self) -> Coroutine[Any, Any, int]: ...
 
     # Context manager

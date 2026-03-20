@@ -19,7 +19,7 @@ use crate::daemon_paths::get_socket_path;
 use crate::error::to_py_err;
 use crate::output::{
     Cell, CompletionItem, CompletionResult, ExecutionResult, HistoryEntry, NotebookConnectionInfo,
-    Output, QueueState, SyncEnvironmentResult,
+    Output, PyRuntimeState, QueueState, SyncEnvironmentResult,
 };
 use crate::output_resolver;
 
@@ -1894,6 +1894,21 @@ pub(crate) async fn get_history(
         NotebookResponse::Error { error } => Err(to_py_err(error)),
         other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
     }
+}
+
+/// Get the full runtime state from the local Automerge replica (no daemon round-trip).
+pub(crate) async fn get_runtime_state(
+    state: &Arc<Mutex<SessionState>>,
+) -> PyResult<PyRuntimeState> {
+    let st = state.lock().await;
+    let handle = st
+        .handle
+        .as_ref()
+        .ok_or_else(|| to_py_err("Not connected"))?;
+    let rs = handle
+        .get_runtime_state()
+        .map_err(|e| to_py_err(format!("{}", e)))?;
+    Ok(rs.into())
 }
 
 /// Get the execution queue state.

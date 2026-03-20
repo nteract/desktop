@@ -310,16 +310,15 @@ fn modified_time(path: &Path) -> Option<std::time::SystemTime> {
     fs::metadata(path).ok()?.modified().ok()
 }
 
-/// Ensure the Python workspace venv is synced (`uv sync --directory python`).
+/// Ensure the Python workspace venv is synced (`uv sync`).
 ///
 /// This installs all workspace members (nteract, runtimed) and their
-/// dependencies (mcp, pydantic, etc.) into `python/.venv`. Needed for:
+/// dependencies (mcp, pydantic, etc.) into `.venv`. Needed for:
 /// - `maturin develop` (installs into this venv)
 /// - `uv run --no-sync` (expects deps to be present)
 /// - Editor type-checking / LSP (needs the venv to resolve imports)
 fn ensure_python_env() {
-    let python_dir = Path::new("python");
-    if !python_dir.exists() {
+    if !Path::new("pyproject.toml").exists() {
         return;
     }
     if Command::new("uv").arg("--version").output().is_err() {
@@ -329,9 +328,7 @@ fn ensure_python_env() {
 
     if let Some(reason) = python_sync_reason() {
         println!("Syncing Python workspace ({reason})...");
-        let status = Command::new("uv")
-            .args(["sync", "--directory", "python"])
-            .status();
+        let status = Command::new("uv").args(["sync"]).status();
         match status {
             Ok(s) if s.success() => {}
             Ok(s) => {
@@ -347,7 +344,7 @@ fn ensure_python_env() {
 }
 
 fn python_sync_reason() -> Option<&'static str> {
-    let venv_marker = Path::new("python/.venv/pyvenv.cfg");
+    let venv_marker = Path::new(".venv/pyvenv.cfg");
     if !venv_marker.exists() {
         return Some("missing .venv");
     }
@@ -357,8 +354,8 @@ fn python_sync_reason() -> Option<&'static str> {
     };
 
     for manifest in [
-        Path::new("python/uv.lock"),
-        Path::new("python/pyproject.toml"),
+        Path::new("uv.lock"),
+        Path::new("pyproject.toml"),
         Path::new("python/nteract/pyproject.toml"),
         Path::new("python/runtimed/pyproject.toml"),
     ] {
@@ -373,14 +370,13 @@ fn python_sync_reason() -> Option<&'static str> {
 }
 
 /// Ensure `maturin develop` has been run so the native `runtimed` extension
-/// is installed into `python/.venv`.
+/// is installed into `.venv`.
 ///
 /// Unlike `uv sync` (which builds a release wheel), `maturin develop` builds
 /// a debug `.so` and symlinks it — faster to compile and always reflects the
 /// latest Rust source.
 fn ensure_maturin_develop() {
-    let python_dir = Path::new("python");
-    if !python_dir.exists() {
+    if !Path::new("pyproject.toml").exists() {
         return;
     }
     if Command::new("uv").arg("--version").output().is_err() {
@@ -872,15 +868,15 @@ fn cmd_dev_mcp(print_config: bool) {
     ensure_maturin_develop();
 
     // Step 4: Print config or launch
-    let python_dir = fs::canonicalize("python").unwrap_or_else(|e| {
-        eprintln!("Failed to resolve python/ directory: {e}");
+    let workspace_dir = fs::canonicalize(".").unwrap_or_else(|e| {
+        eprintln!("Failed to resolve workspace directory: {e}");
         exit(1);
     });
 
     if print_config {
         let config = serde_json::json!({
             "command": "uv",
-            "args": ["run", "--no-sync", "--directory", python_dir.to_string_lossy(), "nteract"],
+            "args": ["run", "--no-sync", "--directory", workspace_dir.to_string_lossy(), "nteract"],
             "env": {
                 "RUNTIMED_SOCKET_PATH": socket_path
             }
@@ -903,7 +899,7 @@ fn cmd_dev_mcp(print_config: bool) {
                 "run",
                 "--no-sync",
                 "--directory",
-                &python_dir.to_string_lossy(),
+                &workspace_dir.to_string_lossy(),
                 "nteract",
             ])
             .env("RUNTIMED_SOCKET_PATH", &socket_path)
@@ -1261,9 +1257,8 @@ fn cmd_lint(fix: bool) {
     }
     println!();
 
-    // Python with ruff (if uv is available)
-    let python_dir = Path::new("python");
-    if python_dir.exists() {
+    // Python with ruff (if uv is available and pyproject.toml exists at root)
+    if Path::new("pyproject.toml").exists() {
         if Command::new("uv").arg("--version").output().is_ok() {
             println!("=== Python (ruff) ===");
 
@@ -1273,10 +1268,7 @@ fn cmd_lint(fix: bool) {
             } else {
                 vec!["run", "ruff", "check", "."]
             };
-            let check_status = Command::new("uv")
-                .args(&check_args)
-                .current_dir(python_dir)
-                .status();
+            let check_status = Command::new("uv").args(&check_args).status();
             if !check_status.map(|s| s.success()).unwrap_or(false) {
                 failed = true;
             }
@@ -1287,10 +1279,7 @@ fn cmd_lint(fix: bool) {
             } else {
                 vec!["run", "ruff", "format", "--check", "."]
             };
-            let format_status = Command::new("uv")
-                .args(&format_args)
-                .current_dir(python_dir)
-                .status();
+            let format_status = Command::new("uv").args(&format_args).status();
             if !format_status.map(|s| s.success()).unwrap_or(false) {
                 failed = true;
             }

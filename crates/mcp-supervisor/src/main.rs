@@ -215,10 +215,10 @@ fn run_maturin_develop(project_root: &Path) -> bool {
     // our stderr (which is the supervisor's log stream).
     //
     // We run maturin from python/runtimed (where it's a dev dependency),
-    // but set VIRTUAL_ENV to python/.venv so the .so is installed where
-    // the MCP server actually runs from. Without this, maturin installs
-    // into python/runtimed/.venv (the test-only venv) and the MCP server
-    // never sees the updated bindings.
+    // but set VIRTUAL_ENV to .venv (the workspace root venv) so the .so
+    // is installed where the MCP server actually runs from. Without this,
+    // maturin installs into python/runtimed/.venv (the test-only venv)
+    // and the MCP server never sees the updated bindings.
     let status = std::process::Command::new("uv")
         .args([
             "run",
@@ -229,7 +229,7 @@ fn run_maturin_develop(project_root: &Path) -> bool {
         ])
         .env(
             "VIRTUAL_ENV",
-            project_root.join("python/.venv").to_string_lossy().as_ref(),
+            project_root.join(".venv").to_string_lossy().as_ref(),
         )
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
@@ -260,8 +260,6 @@ async fn spawn_nteract_child(
     project_root: &Path,
     socket_path: &str,
 ) -> Result<rmcp::service::RunningService<RoleNteractClient, NteractClientHandler>, String> {
-    let python_dir = project_root.join("python");
-
     let path = augmented_path();
 
     let transport = TokioChildProcess::new(Command::new("uv").configure(|cmd| {
@@ -269,7 +267,7 @@ async fn spawn_nteract_child(
             "run",
             "--no-sync",
             "--directory",
-            &python_dir.to_string_lossy(),
+            &project_root.to_string_lossy(),
             "nteract",
         ])
         .env("RUNTIMED_DEV", "1")

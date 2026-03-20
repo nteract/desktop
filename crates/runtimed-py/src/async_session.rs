@@ -1218,6 +1218,19 @@ impl AsyncSession {
         })
     }
 
+    /// Get the full runtime state from the daemon's RuntimeStateDoc.
+    ///
+    /// Returns kernel status, execution queue, environment sync state,
+    /// and last-saved timestamp — all read from the local Automerge
+    /// replica (no daemon round-trip).
+    fn get_runtime_state<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future_into_py(
+            py,
+            async move { session_core::get_runtime_state(&state).await },
+        )
+    }
+
     /// Get the current execution queue state.
     fn get_queue_state<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
