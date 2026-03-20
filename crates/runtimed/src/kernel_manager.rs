@@ -1891,7 +1891,8 @@ impl RoomKernel {
             queued: vec![],
         });
 
-        // TODO: write to state_doc (requires async — kernel_died is sync)
+        // Note: state_doc writes for kernel_died happen in the async command
+        // processor (notebook_sync_server.rs QueueCommand::KernelDied handler).
         // state_doc.set_kernel_status("error") + set_queue(None, &[])
     }
 
@@ -2128,7 +2129,8 @@ impl RoomKernel {
             queued: vec![],
         });
 
-        // TODO: write to state_doc (requires async — clear_queue is sync)
+        // Note: state_doc writes for clear_queue happen in the async command
+        // processor (notebook_sync_server.rs QueueCommand::CellError handler).
         // state_doc.set_queue(self.executing.as_deref(), &[])
 
         cleared

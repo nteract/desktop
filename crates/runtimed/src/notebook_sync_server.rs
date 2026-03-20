@@ -2187,6 +2187,8 @@ async fn auto_launch_kernel(
                 let room_kernel = room.kernel.clone();
                 let room_presence = room.presence.clone();
                 let room_presence_tx = room.presence_tx.clone();
+                let room_state_doc = room.state_doc.clone();
+                let room_state_changed_tx = room.state_changed_tx.clone();
                 tokio::spawn(async move {
                     use crate::kernel_manager::QueueCommand;
                     while let Some(cmd) = cmd_rx.recv().await {
@@ -2229,6 +2231,12 @@ async fn auto_launch_kernel(
                                         );
                                     }
                                 }
+                                // Write cleared queue to state doc
+                                {
+                                    let mut sd = room_state_doc.write().await;
+                                    sd.set_queue(None, &[]);
+                                    let _ = room_state_changed_tx.send(());
+                                }
                             }
                             QueueCommand::KernelDied => {
                                 warn!("[notebook-sync] Kernel died, unblocking execution queue");
@@ -2242,6 +2250,13 @@ async fn auto_launch_kernel(
                                         None
                                     }
                                 };
+                                // Write error status + cleared queue to state doc
+                                {
+                                    let mut sd = room_state_doc.write().await;
+                                    sd.set_kernel_status("error");
+                                    sd.set_queue(None, &[]);
+                                    let _ = room_state_changed_tx.send(());
+                                }
                                 // Update presence outside the kernel lock
                                 if let Some(es) = env_source {
                                     update_kernel_presence(
@@ -2825,6 +2840,8 @@ async fn handle_notebook_request(
                         let room_kernel = room.kernel.clone();
                         let room_presence = room.presence.clone();
                         let room_presence_tx = room.presence_tx.clone();
+                        let room_state_doc = room.state_doc.clone();
+                        let room_state_changed_tx = room.state_changed_tx.clone();
                         tokio::spawn(async move {
                             use crate::kernel_manager::QueueCommand;
                             while let Some(cmd) = cmd_rx.recv().await {
@@ -2875,6 +2892,12 @@ async fn handle_notebook_request(
                                                 );
                                             }
                                         }
+                                        // Write cleared queue to state doc
+                                        {
+                                            let mut sd = room_state_doc.write().await;
+                                            sd.set_queue(None, &[]);
+                                            let _ = room_state_changed_tx.send(());
+                                        }
                                     }
                                     QueueCommand::KernelDied => {
                                         warn!("[notebook-sync] Kernel died, unblocking execution queue");
@@ -2888,6 +2911,13 @@ async fn handle_notebook_request(
                                                 None
                                             }
                                         };
+                                        // Write error status + cleared queue to state doc
+                                        {
+                                            let mut sd = room_state_doc.write().await;
+                                            sd.set_kernel_status("error");
+                                            sd.set_queue(None, &[]);
+                                            let _ = room_state_changed_tx.send(());
+                                        }
                                         // Update presence outside the kernel lock
                                         if let Some(es) = env_source {
                                             update_kernel_presence(
