@@ -320,6 +320,8 @@ export function useAutomergeNotebook() {
     const handle = handleRef.current;
     if (!handle) return;
     const clearedIds: string[] = handle.clear_all_outputs();
+    if (clearedIds.length === 0) return;
+
     sourceSync$.current.next();
     setDirty(true);
 
