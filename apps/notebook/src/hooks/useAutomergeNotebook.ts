@@ -25,6 +25,7 @@ import {
 } from "../lib/notebook-file-ops";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
 import { setNotebookHandle } from "../lib/notebook-metadata";
+import { resetRuntimeState } from "../lib/runtime-state";
 import { fromTauriEvent } from "../lib/tauri-rx";
 import type { DaemonBroadcast, JupyterOutput } from "../types";
 import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
@@ -176,6 +177,7 @@ export function useAutomergeNotebook() {
         switchMap(() => {
           refreshBlobPort();
           resetNotebookCells();
+          resetRuntimeState();
           awaitingInitialSyncRef.current = true;
           setIsLoading(true);
           return from(
@@ -268,6 +270,7 @@ export function useAutomergeNotebook() {
       }
 
       resetNotebookCells();
+      resetRuntimeState();
       setNotebookHandle(null);
       handleRef.current?.free();
       handleRef.current = null;

@@ -1072,9 +1072,15 @@ pub(crate) async fn collect_outputs(
     //
     // Poll the RuntimeStateDoc queue — when the cell is no longer in
     // `executing` or `queued`, execution is done. Also check for kernel
-    // error/shutdown status. Falls back to ExecutionDone broadcasts if
-    // the RuntimeStateDoc hasn't synced yet (queue is empty but cell
-    // was just submitted).
+    // error/shutdown status.
+    //
+    // IMPORTANT: The RuntimeStateDoc replica may not have synced yet when
+    // we first poll (the daemon writes queue state, then Automerge sync
+    // propagates it). We must see the cell IN the queue at least once
+    // before treating its absence as completion. Otherwise we'd return
+    // immediately with empty outputs.
+    let mut seen_in_queue = false;
+
     loop {
         // Check RuntimeStateDoc queue state
         let cell_done_via_doc = {
@@ -1089,10 +1095,21 @@ pub(crate) async fn collect_outputs(
                         kernel_error = Some("Kernel shut down".to_string());
                         true
                     } else {
-                        // Cell is done when it's not executing and not queued
                         let in_executing = rs.queue.executing.as_deref() == Some(cell_id);
                         let in_queued = rs.queue.queued.iter().any(|id| id == cell_id);
-                        !in_executing && !in_queued
+                        let in_queue = in_executing || in_queued;
+
+                        if in_queue {
+                            seen_in_queue = true;
+                            false // still running
+                        } else if seen_in_queue {
+                            // Was in queue, now gone → done
+                            true
+                        } else {
+                            // Never seen in queue — doc hasn't synced yet.
+                            // Don't treat absence as completion.
+                            false
+                        }
                     }
                 } else {
                     false

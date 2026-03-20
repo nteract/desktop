@@ -204,6 +204,7 @@ async fn connect_with_options_impl(
     let mut doc = AutoCommit::new();
     let mut peer_state = sync::State::new();
     let mut pending_broadcasts = Vec::new();
+    let mut pending_state_sync_frames = Vec::new();
 
     do_initial_sync(
         &mut reader,
@@ -211,6 +212,7 @@ async fn connect_with_options_impl(
         &mut doc,
         &mut peer_state,
         &mut pending_broadcasts,
+        &mut pending_state_sync_frames,
     )
     .await?;
 
@@ -231,6 +233,7 @@ async fn connect_with_options_impl(
         peer_state,
         notebook_id,
         pending_broadcasts,
+        pending_state_sync_frames,
         reader,
         writer,
     )
@@ -280,6 +283,7 @@ async fn connect_open_impl(socket_path: PathBuf, path: PathBuf) -> Result<OpenRe
     let mut doc = AutoCommit::new();
     let mut peer_state = sync::State::new();
     let mut pending_broadcasts = Vec::new();
+    let mut pending_state_sync_frames = Vec::new();
 
     do_initial_sync(
         &mut reader,
@@ -287,6 +291,7 @@ async fn connect_open_impl(socket_path: PathBuf, path: PathBuf) -> Result<OpenRe
         &mut doc,
         &mut peer_state,
         &mut pending_broadcasts,
+        &mut pending_state_sync_frames,
     )
     .await?;
 
@@ -303,6 +308,7 @@ async fn connect_open_impl(socket_path: PathBuf, path: PathBuf) -> Result<OpenRe
         peer_state,
         notebook_id,
         pending_broadcasts,
+        pending_state_sync_frames,
         reader,
         writer,
     )
@@ -368,6 +374,7 @@ async fn connect_create_impl(
     let mut doc = AutoCommit::new();
     let mut peer_state = sync::State::new();
     let mut pending_broadcasts = Vec::new();
+    let mut pending_state_sync_frames = Vec::new();
 
     do_initial_sync(
         &mut reader,
@@ -375,6 +382,7 @@ async fn connect_create_impl(
         &mut doc,
         &mut peer_state,
         &mut pending_broadcasts,
+        &mut pending_state_sync_frames,
     )
     .await?;
 
@@ -391,6 +399,7 @@ async fn connect_create_impl(
         peer_state,
         notebook_id,
         pending_broadcasts,
+        pending_state_sync_frames,
         reader,
         writer,
     )
@@ -415,6 +424,7 @@ fn build_and_spawn<R, W>(
     peer_state: sync::State,
     notebook_id: String,
     pending_broadcasts: Vec<NotebookBroadcast>,
+    pending_state_sync_frames: Vec<Vec<u8>>,
     reader: R,
     writer: W,
 ) -> Result<(DocHandle, crate::BroadcastReceiver), SyncError>
@@ -424,6 +434,16 @@ where
 {
     let mut shared_state = SharedDocState::new(doc, notebook_id.clone());
     shared_state.peer_state = peer_state;
+
+    // Apply any RuntimeStateSync frames buffered during initial sync.
+    // do_initial_sync only has the notebook doc — the RuntimeStateDoc lives
+    // in SharedDocState, so we replay the frames here.
+    for frame_payload in &pending_state_sync_frames {
+        if let Ok(msg) = sync::Message::decode(frame_payload) {
+            let _ = shared_state.receive_state_sync_message(msg);
+        }
+    }
+
     let shared = Arc::new(Mutex::new(shared_state));
 
     let initial_snapshot = {
@@ -678,6 +698,7 @@ async fn do_initial_sync<R, W>(
     doc: &mut AutoCommit,
     peer_state: &mut sync::State,
     pending_broadcasts: &mut Vec<NotebookBroadcast>,
+    pending_state_sync_frames: &mut Vec<Vec<u8>>,
 ) -> Result<(), SyncError>
 where
     R: AsyncRead + Unpin,
@@ -740,6 +761,12 @@ where
                     if let Ok(bc) = serde_json::from_slice::<NotebookBroadcast>(&frame.payload) {
                         pending_broadcasts.push(bc);
                     }
+                }
+                NotebookFrameType::RuntimeStateSync => {
+                    // Buffer RuntimeStateSync frames — they'll be applied to
+                    // SharedDocState after it's created (do_initial_sync only
+                    // has the notebook doc, not the RuntimeStateDoc).
+                    pending_state_sync_frames.push(frame.payload);
                 }
                 _ => {
                     debug!(
