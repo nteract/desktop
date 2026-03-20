@@ -139,7 +139,7 @@ jobs:
           iex (iwr "https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.ps1").Content
 
       - name: Install tauri-cli
-        run: cargo binstall tauri-cli --no-confirm --locked
+        run: cargo binstall tauri-cli --no-confirm --locked --force
 
       - name: Bake PR + commit into version
         id: version

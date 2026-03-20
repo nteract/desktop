@@ -253,7 +253,7 @@ jobs:
         run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
 
       - name: Install Tauri CLI
-        run: cargo binstall tauri-cli --no-confirm --locked
+        run: cargo binstall tauri-cli --no-confirm --locked --force
 
       - name: Import Apple signing certificate
         env:
@@ -422,7 +422,7 @@ jobs:
           iex (iwr "https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.ps1").Content
 
       - name: Install Tauri CLI
-        run: cargo binstall tauri-cli --no-confirm --locked
+        run: cargo binstall tauri-cli --no-confirm --locked --force
 
       - name: Set version in tauri.conf.json
         shell: pwsh
@@ -562,7 +562,7 @@ jobs:
         run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
 
       - name: Install Tauri CLI
-        run: cargo binstall tauri-cli --no-confirm --locked
+        run: cargo binstall tauri-cli --no-confirm --locked --force
 
       - name: Set version in tauri.conf.json
         run: |

@@ -270,7 +270,7 @@ jobs:
         run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
 
       - name: Install tauri-cli and tauri-driver
-        run: cargo binstall tauri-cli tauri-driver --no-confirm --locked
+        run: cargo binstall tauri-cli tauri-driver --no-confirm --locked --force
 
       - name: Upload Linux Rust binaries
         uses: actions/upload-artifact@v4
