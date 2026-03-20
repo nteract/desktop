@@ -285,15 +285,28 @@ pub fn output_from_json(output_type: &str, json: &serde_json::Value) -> Option<O
 /// - Binary MIME types are base64-decoded from Jupyter's wire format → raw bytes
 /// - JSON MIME types are parsed into serde_json::Value → Python dict
 /// - Text MIME types (including SVG) are kept as strings
+///
+/// Also synthesizes `text/llm+plain` for outputs with binary images when
+/// no LLM-friendly text is present. (Note: no blob URL available in the
+/// raw-JSON path since the data came from the wire, not the blob store.)
 fn json_data_to_datavalues(data: &serde_json::Map<String, Value>) -> HashMap<String, DataValue> {
     let mut output_data = HashMap::new();
+    let mut image_descriptions: Vec<String> = Vec::new();
+
     for (mime, value) in data {
         let dv = match mime_kind(mime) {
             MimeKind::Binary => {
                 // Jupyter sends binary data as base64 strings on the wire
                 if let Some(s) = value.as_str() {
                     match base64::engine::general_purpose::STANDARD.decode(s) {
-                        Ok(bytes) => DataValue::Binary(bytes),
+                        Ok(bytes) => {
+                            if mime.starts_with("image/") {
+                                let size_kb = bytes.len() / 1024;
+                                image_descriptions
+                                    .push(format!("📊 Image output ({}, {} KB)", mime, size_kb));
+                            }
+                            DataValue::Binary(bytes)
+                        }
                         Err(_) => DataValue::Text(s.to_string()),
                     }
                 } else {
@@ -322,6 +335,20 @@ fn json_data_to_datavalues(data: &serde_json::Map<String, Value>) -> HashMap<Str
         };
         output_data.insert(mime.clone(), dv);
     }
+
+    // Synthesize text/llm+plain for binary images
+    if !image_descriptions.is_empty() && !output_data.contains_key("text/llm+plain") {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(DataValue::Text(ref plain)) = output_data.get("text/plain") {
+            parts.push(plain.clone());
+        }
+        parts.extend(image_descriptions);
+        output_data.insert(
+            "text/llm+plain".to_string(),
+            DataValue::Text(parts.join("\n")),
+        );
+    }
+
     output_data
 }
 
@@ -350,6 +377,9 @@ pub async fn output_from_manifest(
             let data_map = manifest.get("data")?.as_object()?;
             let mut output_data = HashMap::new();
 
+            // Track binary image blobs for text/llm+plain synthesis
+            let mut image_descriptions: Vec<String> = Vec::new();
+
             for (mime_type, content_ref) in data_map {
                 if let Some(content) = resolve_content_ref(
                     content_ref,
@@ -359,8 +389,47 @@ pub async fn output_from_manifest(
                 )
                 .await
                 {
+                    // Record binary image metadata for LLM description
+                    if let DataValue::Binary(ref bytes) = content {
+                        if mime_type.starts_with("image/") {
+                            let size_kb = bytes.len() / 1024;
+                            let blob_hash = content_ref.get("blob").and_then(|v| v.as_str());
+                            let mut desc =
+                                format!("📊 Image output ({}, {} KB)", mime_type, size_kb);
+                            if let (Some(hash), Some(base_url)) = (blob_hash, blob_base_url) {
+                                desc.push_str(&format!(
+                                    "\nTo view: curl -s {}/blob/{} -o /tmp/output.png && cat /tmp/output.png",
+                                    base_url, hash
+                                ));
+                            } else if let (Some(hash), Some(store_path)) =
+                                (blob_hash, blob_store_path)
+                            {
+                                let prefix = &hash[..2];
+                                let rest = &hash[2..];
+                                let path = store_path.join(prefix).join(rest);
+                                desc.push_str(&format!("\nFile: {}", path.display()));
+                            }
+                            image_descriptions.push(desc);
+                        }
+                    }
+
                     output_data.insert(mime_type.clone(), content);
                 }
+            }
+
+            // Synthesize text/llm+plain if there are binary images and no
+            // existing LLM-friendly text representation
+            if !image_descriptions.is_empty() && !output_data.contains_key("text/llm+plain") {
+                // Combine any existing text/plain with image descriptions
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(DataValue::Text(ref plain)) = output_data.get("text/plain") {
+                    parts.push(plain.clone());
+                }
+                parts.extend(image_descriptions);
+                output_data.insert(
+                    "text/llm+plain".to_string(),
+                    DataValue::Text(parts.join("\n")),
+                );
             }
 
             if output_type == "execute_result" {
