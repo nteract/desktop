@@ -668,3 +668,120 @@ impl ExecutionResult {
         )
     }
 }
+
+// ── Runtime state (from RuntimeStateDoc) ─────────────────────────────
+
+/// Kernel state from the RuntimeStateDoc.
+#[pyclass(get_all, skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyKernelState {
+    /// Kernel status: "not_started", "starting", "idle", "busy", "error", "shutdown"
+    pub status: String,
+    /// Kernel display name (e.g. "charming-toucan")
+    pub name: String,
+    /// Kernel language (e.g. "python", "typescript")
+    pub language: String,
+    /// Environment source label (e.g. "uv:prewarmed", "conda:pixi")
+    pub env_source: String,
+}
+
+#[pymethods]
+impl PyKernelState {
+    fn __repr__(&self) -> String {
+        format!(
+            "KernelState(status={}, env_source={})",
+            self.status, self.env_source
+        )
+    }
+}
+
+/// Environment sync state from the RuntimeStateDoc.
+#[pyclass(get_all, skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyEnvState {
+    /// Whether notebook metadata matches the launched kernel config.
+    pub in_sync: bool,
+    /// Packages in metadata but not in the kernel environment.
+    pub added: Vec<String>,
+    /// Packages in the kernel environment but not in metadata.
+    pub removed: Vec<String>,
+    /// Whether conda channels differ.
+    pub channels_changed: bool,
+    /// Whether deno config differs.
+    pub deno_changed: bool,
+}
+
+#[pymethods]
+impl PyEnvState {
+    fn __repr__(&self) -> String {
+        if self.in_sync {
+            "EnvState(in_sync)".to_string()
+        } else {
+            format!(
+                "EnvState(drift: +{} -{} channels={} deno={})",
+                self.added.len(),
+                self.removed.len(),
+                self.channels_changed,
+                self.deno_changed,
+            )
+        }
+    }
+}
+
+/// Full runtime state snapshot from the daemon's RuntimeStateDoc.
+#[pyclass(get_all, skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyRuntimeState {
+    /// Kernel state (status, name, language, env_source).
+    pub kernel: PyKernelState,
+    /// Execution queue state.
+    pub queue: QueueState,
+    /// Environment sync state.
+    pub env: PyEnvState,
+    /// ISO timestamp of last save, or None.
+    pub last_saved: Option<String>,
+}
+
+#[pymethods]
+impl PyRuntimeState {
+    fn __repr__(&self) -> String {
+        format!(
+            "RuntimeState(kernel={}, queue={}, env={})",
+            self.kernel.status,
+            match &self.queue.executing {
+                Some(id) => format!("executing={}", id),
+                None => format!("idle, queued={}", self.queue.queued.len()),
+            },
+            if self.env.in_sync {
+                "in_sync"
+            } else {
+                "drifted"
+            },
+        )
+    }
+}
+
+impl From<notebook_doc::runtime_state::RuntimeState> for PyRuntimeState {
+    fn from(rs: notebook_doc::runtime_state::RuntimeState) -> Self {
+        Self {
+            kernel: PyKernelState {
+                status: rs.kernel.status,
+                name: rs.kernel.name,
+                language: rs.kernel.language,
+                env_source: rs.kernel.env_source,
+            },
+            queue: QueueState {
+                executing: rs.queue.executing,
+                queued: rs.queue.queued,
+            },
+            env: PyEnvState {
+                in_sync: rs.env.in_sync,
+                added: rs.env.added,
+                removed: rs.env.removed,
+                channels_changed: rs.env.channels_changed,
+                deno_changed: rs.env.deno_changed,
+            },
+            last_saved: rs.last_saved,
+        }
+    }
+}

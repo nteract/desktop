@@ -34,6 +34,7 @@ use std::sync::{Arc, Mutex};
 use automerge::AutoCommit;
 use tokio::sync::{mpsc, oneshot, watch};
 
+use notebook_doc::runtime_state::RuntimeState;
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 
 use crate::error::SyncError;
@@ -135,6 +136,15 @@ impl DocHandle {
     pub fn get_actor_id(&self) -> Result<String, SyncError> {
         let state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
         Ok(notebook_doc::actor_label_from_id(state.doc.get_actor()))
+    }
+
+    /// Read the current runtime state from the synced RuntimeStateDoc.
+    ///
+    /// Returns the latest snapshot of kernel status, queue, env sync,
+    /// and last_saved as seen by this client's Automerge replica.
+    pub fn get_runtime_state(&self) -> Result<RuntimeState, SyncError> {
+        let state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+        Ok(state.state_doc.read_state())
     }
 
     // =====================================================================

@@ -6,8 +6,10 @@
 //! outgoing ones.
 
 use automerge::sync;
+use automerge::sync::SyncDoc;
 use automerge::AutoCommit;
 use notebook_doc::presence::PresenceState;
+use notebook_doc::runtime_state::RuntimeStateDoc;
 
 /// The shared state behind `Arc<Mutex<SharedDocState>>`.
 ///
@@ -26,6 +28,12 @@ pub struct SharedDocState {
 
     /// Incoming presence state from remote peers (cursors, selections, etc.).
     pub(crate) presence: PresenceState,
+
+    /// Runtime state doc — daemon-authoritative, synced read-only.
+    pub(crate) state_doc: RuntimeStateDoc,
+
+    /// Automerge sync protocol state for the RuntimeStateDoc peer.
+    pub(crate) state_peer_state: sync::State,
 }
 
 impl SharedDocState {
@@ -36,6 +44,8 @@ impl SharedDocState {
             peer_state: sync::State::new(),
             notebook_id,
             presence: PresenceState::new(),
+            state_doc: RuntimeStateDoc::new_empty(),
+            state_peer_state: sync::State::new(),
         }
     }
 
@@ -49,7 +59,6 @@ impl SharedDocState {
     ///
     /// Returns `None` if the daemon already has all our changes.
     pub fn generate_sync_message(&mut self) -> Option<sync::Message> {
-        use automerge::sync::SyncDoc;
         self.doc.sync().generate_sync_message(&mut self.peer_state)
     }
 
@@ -58,9 +67,30 @@ impl SharedDocState {
         &mut self,
         message: sync::Message,
     ) -> Result<(), automerge::AutomergeError> {
-        use automerge::sync::SyncDoc;
         self.doc
             .sync()
             .receive_sync_message(&mut self.peer_state, message)
+    }
+
+    // ── RuntimeStateDoc sync ────────────────────────────────────────
+
+    /// Generate an outgoing sync reply for the RuntimeStateDoc.
+    pub fn generate_state_sync_message(&mut self) -> Option<sync::Message> {
+        self.state_doc
+            .doc_mut()
+            .sync()
+            .generate_sync_message(&mut self.state_peer_state)
+    }
+
+    /// Apply an incoming RuntimeStateSync message from the daemon.
+    /// No change stripping — the client is a read-only consumer.
+    pub fn receive_state_sync_message(
+        &mut self,
+        message: sync::Message,
+    ) -> Result<(), automerge::AutomergeError> {
+        self.state_doc
+            .doc_mut()
+            .sync()
+            .receive_sync_message(&mut self.state_peer_state, message)
     }
 }

@@ -1068,46 +1068,75 @@ pub(crate) async fn collect_outputs(
 ) -> PyResult<ExecutionResult> {
     let mut kernel_error: Option<String> = None;
 
-    // Phase 1: Wait for ExecutionDone or KernelError signal via broadcast.
+    // Phase 1: Wait for the cell to leave the execution queue.
+    //
+    // Poll the RuntimeStateDoc queue — when the cell is no longer in
+    // `executing` or `queued`, execution is done. Also check for kernel
+    // error/shutdown status. Falls back to ExecutionDone broadcasts if
+    // the RuntimeStateDoc hasn't synced yet (queue is empty but cell
+    // was just submitted).
     loop {
-        let mut st = state.lock().await;
+        // Check RuntimeStateDoc queue state
+        let cell_done_via_doc = {
+            let st = state.lock().await;
+            if let Some(handle) = st.handle.as_ref() {
+                if let Ok(rs) = handle.get_runtime_state() {
+                    // Kernel error or shutdown → stop waiting
+                    if rs.kernel.status == "error" {
+                        kernel_error = Some("Kernel error".to_string());
+                        true
+                    } else if rs.kernel.status == "shutdown" {
+                        kernel_error = Some("Kernel shut down".to_string());
+                        true
+                    } else {
+                        // Cell is done when it's not executing and not queued
+                        let in_executing = rs.queue.executing.as_deref() == Some(cell_id);
+                        let in_queued = rs.queue.queued.iter().any(|id| id == cell_id);
+                        !in_executing && !in_queued
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
 
-        let broadcast_rx = st
-            .broadcast_rx
-            .as_mut()
-            .ok_or_else(|| to_py_err("Not connected"))?;
+        if cell_done_via_doc {
+            log::debug!(
+                "[session_core] Cell {} left queue (RuntimeStateDoc)",
+                cell_id
+            );
+            break;
+        }
 
-        let broadcast =
-            tokio::time::timeout(std::time::Duration::from_millis(100), broadcast_rx.recv()).await;
-
-        match broadcast {
-            Ok(Some(msg)) => {
-                drop(st);
-
-                match msg {
-                    NotebookBroadcast::ExecutionDone {
+        // Also drain broadcasts for KernelError as a fallback signal
+        {
+            let mut st = state.lock().await;
+            if let Some(broadcast_rx) = st.broadcast_rx.as_mut() {
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(50),
+                    broadcast_rx.recv(),
+                )
+                .await
+                {
+                    Ok(Some(NotebookBroadcast::ExecutionDone {
                         cell_id: msg_cell_id,
-                    } => {
+                    })) => {
                         if msg_cell_id == cell_id {
-                            log::debug!("[session_core] ExecutionDone received for {}", cell_id);
+                            log::debug!("[session_core] ExecutionDone broadcast for {}", cell_id);
                             break;
                         }
                     }
-                    NotebookBroadcast::KernelError { error } => {
+                    Ok(Some(NotebookBroadcast::KernelError { error })) => {
                         log::debug!("[session_core] KernelError: {}", error);
                         kernel_error = Some(error);
                         break;
                     }
-                    _ => {
-                        // Ignore all other broadcasts — doc has the data
-                    }
+                    Ok(Some(_)) => {} // ignore other broadcasts
+                    Ok(None) => return Err(to_py_err("Broadcast channel closed")),
+                    Err(_) => {} // timeout — loop back and re-check doc
                 }
-            }
-            Ok(None) => {
-                return Err(to_py_err("Broadcast channel closed"));
-            }
-            Err(_) => {
-                // Poll timeout — keep waiting for signal
             }
         }
     }

@@ -1005,6 +1005,23 @@ impl Session {
             .block_on(session_core::get_queue_state(&self.state))
     }
 
+    /// Get the full runtime state from the daemon's RuntimeStateDoc.
+    ///
+    /// Returns kernel status, execution queue, environment sync state,
+    /// and last-saved timestamp — all read from the local Automerge
+    /// replica (no daemon round-trip).
+    fn get_runtime_state(&self) -> PyResult<crate::output::PyRuntimeState> {
+        let st = self.runtime.block_on(self.state.lock());
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Not connected"))?;
+        let rs = handle
+            .get_runtime_state()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{}", e)))?;
+        Ok(rs.into())
+    }
+
     /// Execute all code cells in document order. Returns number of cells queued.
     fn run_all_cells(&self) -> PyResult<usize> {
         self.runtime

@@ -31,7 +31,8 @@ use error::RuntimedError;
 use event_stream::{ExecutionEventIterator, ExecutionEventStream};
 use output::{
     Cell, CompletionItem, CompletionResult, ExecutionEvent, ExecutionResult, HistoryEntry,
-    NotebookConnectionInfo, Output, QueueState, SyncEnvironmentResult,
+    NotebookConnectionInfo, Output, PyEnvState, PyKernelState, PyRuntimeState, QueueState,
+    SyncEnvironmentResult,
 };
 use session::Session;
 use subscription::{EventIteratorSubscription, EventSubscription};
@@ -97,6 +98,11 @@ fn runtimed(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CompletionResult>()?;
     m.add_class::<QueueState>()?;
     m.add_class::<HistoryEntry>()?;
+
+    // Runtime state types (from RuntimeStateDoc)
+    m.add_class::<PyRuntimeState>()?;
+    m.add_class::<PyKernelState>()?;
+    m.add_class::<PyEnvState>()?;
 
     // Error type
     m.add("RuntimedError", m.py().get_type::<RuntimedError>())?;
