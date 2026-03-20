@@ -48,6 +48,7 @@ export function CompactExecutionButton({
         "group/exec inline-flex items-center font-mono text-sm tabular-nums",
         "text-muted-foreground hover:text-foreground",
         "transition-colors duration-150",
+        isQueued ? "cursor-default" : "cursor-pointer",
         className,
       )}
       title={
