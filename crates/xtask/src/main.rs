@@ -116,6 +116,52 @@ Other:
     );
 }
 
+/// Check that an external tool is available in PATH, exit with install instructions if not.
+fn require_tool(name: &str, install_hint: &str) {
+    let ok = Command::new(name)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        eprintln!("Error: `{name}` is required but was not found in PATH.");
+        eprintln!();
+        eprintln!("  Install:  {install_hint}");
+        exit(1);
+    }
+}
+
+/// Check that a cargo subcommand (e.g. `cargo tauri`) is available.
+fn require_cargo_subcommand(name: &str, install_hint: &str) {
+    let ok = Command::new("cargo")
+        .args([name, "--version"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        eprintln!("Error: `cargo {name}` is required but was not found.");
+        eprintln!();
+        eprintln!("  Install:  {install_hint}");
+        exit(1);
+    }
+}
+
+const PNPM_INSTALL: &str = "brew install pnpm  (or: npm install -g pnpm)";
+const TAURI_INSTALL: &str = "cargo install tauri-cli";
+const WASM_PACK_INSTALL: &str = "cargo install wasm-pack";
+
+fn require_pnpm() {
+    require_tool("pnpm", PNPM_INSTALL);
+}
+
+fn require_tauri() {
+    require_cargo_subcommand("tauri", TAURI_INSTALL);
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DevOptions<'a> {
     notebook: Option<&'a str>,
@@ -136,6 +182,9 @@ fn parse_dev_options(args: &[String]) -> DevOptions<'_> {
 }
 
 fn cmd_dev(notebook: Option<&str>, skip_install: bool, skip_build: bool) {
+    require_pnpm();
+    require_tauri();
+
     if skip_install {
         println!("Skipping pnpm install (--skip-install)");
     } else {
@@ -176,6 +225,9 @@ fn cmd_dev(notebook: Option<&str>, skip_install: bool, skip_build: bool) {
 }
 
 fn cmd_notebook(notebook: Option<&str>, attach: bool) {
+    require_pnpm();
+    require_tauri();
+
     // Always use dev mode to prevent the Tauri app from auto-installing
     // the dev binary as the system daemon sidecar — that would clobber
     // any running nightly/release daemon and disconnect all open notebooks.
@@ -260,6 +312,8 @@ fn run_notebook_dev_app(notebook: Option<&str>, attach: bool, force_dev_mode: bo
 }
 
 fn cmd_vite() {
+    require_pnpm();
+
     println!("Starting Vite dev server...");
     println!("This server will keep running independently of Tauri.");
     println!("Use `cargo xtask notebook --attach` in another terminal to connect.");
@@ -412,6 +466,11 @@ fn ensure_maturin_develop() {
 }
 
 fn cmd_build(rust_only: bool) {
+    require_tauri();
+    if !rust_only {
+        require_pnpm();
+    }
+
     // Build runtimed daemon binary for bundling (debug mode for faster builds)
     build_runtimed_daemon(false);
 
@@ -484,6 +543,9 @@ fn cmd_run(notebook: Option<&str>) {
 }
 
 fn cmd_build_e2e() {
+    require_pnpm();
+    require_tauri();
+
     // Build runtimed daemon binary for bundling (debug mode for faster builds)
     build_runtimed_daemon(false);
 
@@ -511,6 +573,8 @@ fn cmd_build_e2e() {
 }
 
 fn cmd_wasm() {
+    require_tool("wasm-pack", WASM_PACK_INSTALL);
+
     println!("Building runtimed-wasm...");
     run_cmd(
         "wasm-pack",
@@ -527,6 +591,8 @@ fn cmd_wasm() {
 }
 
 fn cmd_icons(source: Option<&str>) {
+    require_tauri();
+
     let default_source = "crates/notebook/icons/source.png";
     let source_path = source.unwrap_or(default_source);
 
@@ -555,6 +621,9 @@ fn cmd_build_app() {
 }
 
 fn build_with_bundle(bundle: &str) {
+    require_pnpm();
+    require_tauri();
+
     // Generate icons if source exists
     let source_path = "crates/notebook/icons/source.png";
     if Path::new(source_path).exists() {
