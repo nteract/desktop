@@ -172,6 +172,9 @@ function AppContent() {
   // Guard against concurrent Run All / Restart & Run All operations (#982)
   const runAllInFlightRef = useRef(false);
 
+  // Guard against concurrent kernel restart operations
+  const restartInFlightRef = useRef(false);
+
   // Notebook runtime type — reactive read from WASM Automerge doc.
   // Re-renders automatically when metadata changes (bootstrap, sync, writes).
   const detectedRuntime = useDetectRuntime();
@@ -625,8 +628,17 @@ function AppContent() {
 
   // Restart kernel (shutdown then start)
   const handleRestartKernel = useCallback(async () => {
-    await shutdownKernel();
-    await tryStartKernel();
+    if (restartInFlightRef.current) {
+      logger.debug("[App] handleRestartKernel: already in flight, skipping");
+      return;
+    }
+    restartInFlightRef.current = true;
+    try {
+      await shutdownKernel();
+      await tryStartKernel();
+    } finally {
+      restartInFlightRef.current = false;
+    }
   }, [shutdownKernel, tryStartKernel]);
 
   const handleRunAllCells = useCallback(async () => {

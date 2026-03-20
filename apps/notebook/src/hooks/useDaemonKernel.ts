@@ -649,6 +649,49 @@ export function useDaemonKernel({
     [],
   );
 
+  // ── Connection health watchdog ──────────────────────────────────────
+  //
+  // Detects broken daemon connections that the relay didn't catch (e.g.,
+  // daemon restarted during a pending request). If the kernel is supposed
+  // to be active (busy/idle/starting) but the connection is gone, trigger
+  // reconnection automatically so the user doesn't get stuck.
+  useEffect(() => {
+    const HEALTH_CHECK_INTERVAL_MS = 10_000;
+
+    const intervalId = window.setInterval(async () => {
+      // Only check when kernel is expected to be running
+      const status = runtimeState.kernel.status;
+      if (status !== "busy" && status !== "idle" && status !== "starting") {
+        return;
+      }
+
+      try {
+        const connected = await invoke<boolean>("is_daemon_connected");
+        if (!connected) {
+          logger.warn(
+            "[daemon-kernel] Health check: kernel status is '%s' but daemon disconnected, triggering reconnect",
+            status,
+          );
+          resetRuntimeState();
+          resetBlobPort();
+          try {
+            await invoke("reconnect_to_daemon");
+            logger.debug("[daemon-kernel] Health check reconnected");
+            refreshBlobPort();
+          } catch (e) {
+            logger.error("[daemon-kernel] Health check reconnect failed:", e);
+          }
+        }
+      } catch {
+        // invoke failed — window is likely closing, ignore
+      }
+    }, HEALTH_CHECK_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [runtimeState.kernel.status]);
+
   return {
     /** Current kernel status (with busy throttle applied) */
     kernelStatus,
