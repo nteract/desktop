@@ -302,6 +302,9 @@ jobs:
             target/release/binaries/
           retention-days: 1
 
+      - name: Test notebook crate
+        run: cargo test -p notebook --verbose
+
   rust-tests:
     name: Rust Tests (Linux)
     needs: [changes]
@@ -326,7 +329,12 @@ jobs:
           shared-key: ubuntu-test
 
       - name: Run tests
-        run: cargo test --workspace --verbose
+        # Exclude notebook (Tauri app crate) — its build script requires bundled
+        # runtimed/runt binaries. The notebook crate's tests run in build-linux
+        # which builds those binaries first.
+        # Exclude runtimed-wasm — requires wasm-pack (tested in wasm-deno job).
+        # Exclude runtimed-py — requires Python/maturin (tested in runtimed-py-integration job).
+        run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude runtimed-py --verbose
 
   build:
     name: ${{ matrix.platform.name }}
