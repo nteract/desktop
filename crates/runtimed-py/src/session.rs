@@ -67,9 +67,11 @@ impl Session {
         ))?;
 
         state.peer_label = peer_label.clone();
-        drop(runtime);
 
-        Self::from_state(notebook_id, state, peer_label)
+        // Keep the runtime alive — the sync task was spawned on it during
+        // connect_open. Dropping the runtime would cancel the sync task and
+        // break all subsequent daemon requests (start_kernel, execute, etc.).
+        Self::from_state_with_runtime(runtime, notebook_id, state, peer_label)
     }
 
     /// Create a notebook without deprecation warning (used by Client).
@@ -95,11 +97,11 @@ impl Session {
             }
         }
 
-        let rt = Runtime::new().map_err(to_py_err)?;
+        let runtime = Runtime::new().map_err(to_py_err)?;
         let working_dir_buf = working_dir.map(PathBuf::from);
         let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
 
-        let (notebook_id, mut state, _info) = rt.block_on(session_core::connect_create(
+        let (notebook_id, mut state, _info) = runtime.block_on(session_core::connect_create(
             socket_path,
             runtime_type,
             working_dir_buf,
@@ -107,9 +109,8 @@ impl Session {
         ))?;
 
         state.peer_label = peer_label.clone();
-        drop(rt);
 
-        Self::from_state(notebook_id, state, peer_label)
+        Self::from_state_with_runtime(runtime, notebook_id, state, peer_label)
     }
 
     /// Join an existing notebook room by ID (used by Client).
@@ -124,9 +125,9 @@ impl Session {
         state.peer_label = peer_label.clone();
         state.actor_label = actor_label;
 
-        let rt = Runtime::new().map_err(to_py_err)?;
+        let runtime = Runtime::new().map_err(to_py_err)?;
         let state_arc = Arc::new(Mutex::new(state));
-        rt.block_on(session_core::connect_with_socket(
+        runtime.block_on(session_core::connect_with_socket(
             &state_arc,
             notebook_id,
             socket_path,
@@ -136,18 +137,22 @@ impl Session {
             .map_err(|_| to_py_err("Failed to unwrap session state"))?
             .into_inner();
 
-        drop(rt);
-        Self::from_state(notebook_id.to_string(), state, peer_label)
+        Self::from_state_with_runtime(runtime, notebook_id.to_string(), state, peer_label)
     }
 
     /// Create a pre-connected Session from a notebook_id and SessionState.
     /// Used by Client.open_notebook() / Client.create_notebook() / Client.join_notebook().
-    pub(crate) fn from_state(
+    /// Create a Session with a provided runtime.
+    ///
+    /// The runtime MUST be the same one that the sync task was spawned on
+    /// during connect. Dropping that runtime kills the sync task and breaks
+    /// all daemon communication.
+    pub(crate) fn from_state_with_runtime(
+        runtime: Runtime,
         notebook_id: String,
         state: SessionState,
         peer_label: Option<String>,
     ) -> PyResult<Self> {
-        let runtime = Runtime::new().map_err(to_py_err)?;
         let override_arc = Arc::new(std::sync::Mutex::new(None));
         if let Some(ref rx) = state.broadcast_rx {
             session_core::spawn_rekey_watcher(rx, Arc::clone(&override_arc), runtime.handle());
