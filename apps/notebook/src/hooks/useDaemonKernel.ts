@@ -100,8 +100,10 @@ export function useDaemonKernel({
     // Before any kernel launch, env state is default (in_sync: true, empty lists).
     // Return null to indicate "unknown" to consumers, matching prior behavior.
     if (
-      runtimeState.kernel.status === "not_started" &&
-      !runtimeState.kernel.env_source
+      (runtimeState.kernel.status === "not_started" &&
+        !runtimeState.kernel.env_source) ||
+      runtimeState.kernel.status === "shutdown" ||
+      runtimeState.kernel.status === "error"
     ) {
       return null;
     }
@@ -227,20 +229,20 @@ export function useDaemonKernel({
   useEffect(() => {
     const prev = prevQueueRef.current;
     prevQueueRef.current = queueState;
-    if (
-      prev.executing !== queueState.executing ||
-      prev.queued !== queueState.queued
-    ) {
+    const executingChanged = prev.executing !== queueState.executing;
+    let queuedChanged = prev.queued.length !== queueState.queued.length;
+    if (!queuedChanged) {
+      for (let i = 0; i < prev.queued.length; i++) {
+        if (prev.queued[i] !== queueState.queued[i]) {
+          queuedChanged = true;
+          break;
+        }
+      }
+    }
+    if (executingChanged || queuedChanged) {
       callbacksRef.current.onQueueChange?.(queueState);
     }
   }, [queueState]);
-
-  // Fire onKernelError when status transitions to error
-  useEffect(() => {
-    if (kernelStatus === KERNEL_STATUS.ERROR) {
-      callbacksRef.current.onKernelError?.("Kernel error");
-    }
-  }, [kernelStatus]);
 
   // ── Broadcast listener (events only — no state) ──────────────────
 
@@ -408,9 +410,16 @@ export function useDaemonKernel({
 
         case "kernel_status":
         case "queue_changed":
-        case "kernel_error":
         case "env_sync_state":
           break;
+
+        case "kernel_error": {
+          // Still consume this broadcast for the detailed error message.
+          // Status is derived from RuntimeStateDoc, but the error string
+          // only arrives via broadcast.
+          callbacksRef.current.onKernelError?.(broadcast.error);
+          break;
+        }
 
         default: {
           logger.debug(

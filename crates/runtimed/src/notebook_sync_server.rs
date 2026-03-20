@@ -1557,20 +1557,49 @@ where
             }
 
             // RuntimeStateDoc changed — push update to this client
-            _ = state_changed_rx.recv() => {
-                let encoded = {
-                    let mut state_doc = room.state_doc.write().await;
-                    state_doc
-                        .generate_sync_message(&mut state_peer_state)
-                        .map(|msg| msg.encode())
-                };
-                if let Some(encoded) = encoded {
-                    connection::send_typed_frame(
-                        writer,
-                        NotebookFrameType::RuntimeStateSync,
-                        &encoded,
-                    )
-                    .await?;
+            result = state_changed_rx.recv() => {
+                match result {
+                    Ok(()) => {
+                        let encoded = {
+                            let mut state_doc = room.state_doc.write().await;
+                            state_doc
+                                .generate_sync_message(&mut state_peer_state)
+                                .map(|msg| msg.encode())
+                        };
+                        if let Some(encoded) = encoded {
+                            connection::send_typed_frame(
+                                writer,
+                                NotebookFrameType::RuntimeStateSync,
+                                &encoded,
+                            )
+                            .await?;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        log::debug!(
+                            "[notebook-sync] Peer {} lagged {} runtime state updates",
+                            peer_id, n
+                        );
+                        // Send a full sync to catch up
+                        let encoded = {
+                            let mut state_doc = room.state_doc.write().await;
+                            state_doc
+                                .generate_sync_message(&mut state_peer_state)
+                                .map(|msg| msg.encode())
+                        };
+                        if let Some(encoded) = encoded {
+                            connection::send_typed_frame(
+                                writer,
+                                NotebookFrameType::RuntimeStateSync,
+                                &encoded,
+                            )
+                            .await?;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        // State change channel closed — room is being evicted
+                        return Ok(());
+                    }
                 }
             }
 

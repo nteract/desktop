@@ -19,7 +19,7 @@ interface CompactExecutionButtonProps {
  * Compact execution button combining play + execution count into one element.
  *
  * - Never run: `[ ▶ ]` - click to execute
- * - Queued: `[⏳]` - waiting in execution queue
+ * - Queued: `[·]` - breathing dot, waiting in execution queue
  * - Running: `[■]` with pulse - click to stop
  * - Executed: `[1]` - hover to show play, click to re-run
  */
@@ -58,6 +58,7 @@ export function CompactExecutionButton({
             ? "Queued for execution"
             : "Run cell"
       }
+      aria-disabled={isQueued || undefined}
       data-testid="execute-button"
     >
       <span className="opacity-60">[</span>
