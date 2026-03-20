@@ -1,14 +1,14 @@
 /**
  * Hook for daemon-owned kernel execution.
  *
- * This hook provides an interface to the daemon's kernel management,
- * enabling multi-window kernel sharing. The daemon owns the kernel lifecycle
- * and execution queue, broadcasting outputs to all connected windows.
+ * State (kernel status, queue, env sync) is derived from the daemon's
+ * RuntimeStateDoc via `useRuntimeState()`. Broadcasts are only used for
+ * event callbacks (execution lifecycle, outputs, comms).
  */
 
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getBlobPort, refreshBlobPort, resetBlobPort } from "../lib/blob-port";
 import {
   isKernelStatus,
@@ -17,6 +17,7 @@ import {
 } from "../lib/kernel-status";
 import { logger } from "../lib/logger";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
+import { resetRuntimeState, useRuntimeState } from "../lib/runtime-state";
 import type {
   DaemonBroadcast,
   DaemonNotebookResponse,
@@ -73,34 +74,121 @@ export function useDaemonKernel({
   onClearOutputs,
   onCommMessage,
 }: UseDaemonKernelOptions) {
-  const [kernelStatus, setKernelStatus] = useState<DaemonKernelStatus>(
-    KERNEL_STATUS.NOT_STARTED,
+  // ── State from RuntimeStateDoc (daemon-authoritative) ─────────────
+  const runtimeState = useRuntimeState();
+
+  // Derive kernel info from the doc
+  const kernelInfo = useMemo(
+    () => ({
+      kernelType: runtimeState.kernel.language || undefined,
+      envSource: runtimeState.kernel.env_source || undefined,
+    }),
+    [runtimeState.kernel.language, runtimeState.kernel.env_source],
   );
-  const [queueState, setQueueState] = useState<DaemonQueueState>({
-    executing: null,
-    queued: [],
-  });
-  const [kernelInfo, setKernelInfo] = useState<{
-    kernelType?: string;
-    envSource?: string;
-  }>({});
 
-  // Environment sync state - tracks if metadata has drifted from launched config
-  const [envSyncState, setEnvSyncState] = useState<{
-    inSync: boolean;
-    diff?: {
-      added: string[];
-      removed: string[];
-      channelsChanged: boolean;
-      denoChanged: boolean;
+  // Derive queue state from the doc
+  const queueState: DaemonQueueState = useMemo(
+    () => ({
+      executing: runtimeState.queue.executing,
+      queued: runtimeState.queue.queued,
+    }),
+    [runtimeState.queue.executing, runtimeState.queue.queued],
+  );
+
+  // Derive env sync state from the doc
+  const envSyncState = useMemo(() => {
+    // Before any kernel launch, env state is default (in_sync: true, empty lists).
+    // Return null to indicate "unknown" to consumers, matching prior behavior.
+    if (
+      runtimeState.kernel.status === "not_started" &&
+      !runtimeState.kernel.env_source
+    ) {
+      return null;
+    }
+    return {
+      inSync: runtimeState.env.in_sync,
+      diff: runtimeState.env.in_sync
+        ? undefined
+        : {
+            added: runtimeState.env.added,
+            removed: runtimeState.env.removed,
+            channelsChanged: runtimeState.env.channels_changed,
+            denoChanged: runtimeState.env.deno_changed,
+          },
     };
-  } | null>(null);
+  }, [
+    runtimeState.kernel.status,
+    runtimeState.kernel.env_source,
+    runtimeState.env.in_sync,
+    runtimeState.env.added,
+    runtimeState.env.removed,
+    runtimeState.env.channels_changed,
+    runtimeState.env.deno_changed,
+  ]);
 
-  // Timer ref for throttling transient busy states
-  // Ignores busy if it disappears within the threshold (e.g., from completions)
+  // ── Busy throttle ────────────────────────────────────────────────
+  //
+  // The RuntimeStateDoc faithfully records every busy→idle transition
+  // from the kernel, including sub-60ms blips from tab completions.
+  // We apply the same throttle the broadcast path used: only show "busy"
+  // if it persists past a 60ms threshold.
+
+  const rawStatus = runtimeState.kernel.status;
+  const [throttledStatus, setThrottledStatus] = useState<DaemonKernelStatus>(
+    isKernelStatus(rawStatus) ? rawStatus : KERNEL_STATUS.NOT_STARTED,
+  );
   const busyTimerRef = useRef<number | null>(null);
+  const prevRawStatusRef = useRef(rawStatus);
 
-  // Store callbacks in refs to avoid effect re-runs
+  useEffect(() => {
+    const prev = prevRawStatusRef.current;
+    prevRawStatusRef.current = rawStatus;
+
+    // Skip if status didn't actually change
+    if (rawStatus === prev) return;
+
+    if (!isKernelStatus(rawStatus)) return;
+    const status: DaemonKernelStatus = rawStatus;
+
+    if (status === KERNEL_STATUS.BUSY) {
+      // Throttle busy: only show if it persists past threshold
+      if (busyTimerRef.current === null) {
+        busyTimerRef.current = window.setTimeout(() => {
+          busyTimerRef.current = null;
+          setThrottledStatus(KERNEL_STATUS.BUSY);
+        }, 60);
+      }
+    } else if (status === KERNEL_STATUS.IDLE) {
+      // Cancel pending busy transition if idle arrives quickly
+      if (busyTimerRef.current !== null) {
+        clearTimeout(busyTimerRef.current);
+        busyTimerRef.current = null;
+        // Don't update — stay at current status (probably idle already)
+      } else {
+        setThrottledStatus(status);
+      }
+    } else {
+      // Other statuses (starting, error, shutdown, not_started) shown immediately
+      if (busyTimerRef.current !== null) {
+        clearTimeout(busyTimerRef.current);
+        busyTimerRef.current = null;
+      }
+      setThrottledStatus(status);
+    }
+
+    return () => {
+      if (busyTimerRef.current !== null) {
+        clearTimeout(busyTimerRef.current);
+        busyTimerRef.current = null;
+      }
+    };
+  }, [rawStatus]);
+
+  // The externally visible status uses the throttled value
+  const kernelStatus = throttledStatus;
+
+  // ── Callbacks in refs (avoid effect re-runs) ──────────────────────
+
   const callbacksRef = useRef({
     onOutput,
     onExecutionCount,
@@ -124,7 +212,38 @@ export function useDaemonKernel({
     onCommMessage,
   };
 
-  // Listen for daemon broadcasts
+  // ── Fire callbacks when derived state changes ─────────────────────
+
+  const prevThrottledStatusRef = useRef(kernelStatus);
+  useEffect(() => {
+    const prev = prevThrottledStatusRef.current;
+    prevThrottledStatusRef.current = kernelStatus;
+    if (kernelStatus !== prev) {
+      callbacksRef.current.onStatusChange?.(kernelStatus);
+    }
+  }, [kernelStatus]);
+
+  const prevQueueRef = useRef(queueState);
+  useEffect(() => {
+    const prev = prevQueueRef.current;
+    prevQueueRef.current = queueState;
+    if (
+      prev.executing !== queueState.executing ||
+      prev.queued !== queueState.queued
+    ) {
+      callbacksRef.current.onQueueChange?.(queueState);
+    }
+  }, [queueState]);
+
+  // Fire onKernelError when status transitions to error
+  useEffect(() => {
+    if (kernelStatus === KERNEL_STATUS.ERROR) {
+      callbacksRef.current.onKernelError?.("Kernel error");
+    }
+  }, [kernelStatus]);
+
+  // ── Broadcast listener (events only — no state) ──────────────────
+
   useEffect(() => {
     let cancelled = false;
     const webview = getCurrentWebview();
@@ -138,57 +257,7 @@ export function useDaemonKernel({
       const broadcast = payload as DaemonBroadcast;
 
       switch (broadcast.event) {
-        case "kernel_status": {
-          const rawStatus = broadcast.status;
-          if (!isKernelStatus(rawStatus)) {
-            logger.warn(
-              `[daemon-kernel] Ignoring unknown kernel status: ${rawStatus}`,
-            );
-            break;
-          }
-          const status: DaemonKernelStatus = rawStatus;
-
-          if (status === KERNEL_STATUS.BUSY) {
-            // Throttle busy: only show if it persists past threshold
-            // This ignores transient busy states from completions
-            if (busyTimerRef.current === null) {
-              busyTimerRef.current = window.setTimeout(() => {
-                busyTimerRef.current = null;
-                setKernelStatus(KERNEL_STATUS.BUSY);
-                callbacksRef.current.onStatusChange?.(
-                  KERNEL_STATUS.BUSY,
-                  broadcast.cell_id,
-                );
-              }, 60);
-            }
-          } else if (status === KERNEL_STATUS.IDLE) {
-            // Cancel pending busy transition if idle arrives quickly
-            if (busyTimerRef.current !== null) {
-              clearTimeout(busyTimerRef.current);
-              busyTimerRef.current = null;
-              // Don't update - stay at current status (probably idle)
-            } else {
-              // No pending busy, show idle immediately
-              setKernelStatus(status);
-              callbacksRef.current.onStatusChange?.(status, broadcast.cell_id);
-            }
-          } else {
-            // Other statuses (starting, error, shutdown, etc.) shown immediately
-            // Also clear any pending busy timer
-            if (busyTimerRef.current !== null) {
-              clearTimeout(busyTimerRef.current);
-              busyTimerRef.current = null;
-            }
-            setKernelStatus(status);
-            callbacksRef.current.onStatusChange?.(status, broadcast.cell_id);
-
-            // Clear sync state when kernel shuts down
-            if (status === KERNEL_STATUS.SHUTDOWN) {
-              setEnvSyncState(null);
-            }
-          }
-          break;
-        }
+        // ── Events that stay as broadcasts ────────────────────────
 
         case "execution_started": {
           callbacksRef.current.onExecutionCount(
@@ -204,14 +273,11 @@ export function useDaemonKernel({
           // broadcast path is only needed for OutputWidget capture.
           if (!callbacksRef.current.onOutput) break;
 
-          // Resolve output (may be blob hash or raw JSON)
           const cellId = broadcast.cell_id;
           const outputJson = broadcast.output_json;
 
-          // Helper to resolve with retry if port is unavailable or stale
           const resolveWithRetry = async (retried = false) => {
             let port = getBlobPort();
-            // If port not yet available, try to fetch it
             if (!port) {
               port = await refreshBlobPort();
             }
@@ -226,7 +292,6 @@ export function useDaemonKernel({
             if (output) {
               callbacksRef.current.onOutput?.(cellId, output);
             } else if (!retried) {
-              // Resolution failed - port may be stale, refresh and retry once
               logger.debug(
                 "[daemon-kernel] Output resolution failed, refreshing port",
               );
@@ -247,36 +312,15 @@ export function useDaemonKernel({
         }
 
         case "display_update": {
-          // Update an existing output by display_id (e.g., progress bars)
-          const { onUpdateDisplayData } = callbacksRef.current;
-          if (onUpdateDisplayData) {
-            onUpdateDisplayData(
-              broadcast.display_id,
-              broadcast.data,
-              broadcast.metadata,
-            );
+          const { onUpdateDisplayData: cb } = callbacksRef.current;
+          if (cb) {
+            cb(broadcast.display_id, broadcast.data, broadcast.metadata);
           }
           break;
         }
 
         case "execution_done": {
           callbacksRef.current.onExecutionDone(broadcast.cell_id);
-          break;
-        }
-
-        case "queue_changed": {
-          const newState: DaemonQueueState = {
-            executing: broadcast.executing ?? null,
-            queued: broadcast.queued,
-          };
-          setQueueState(newState);
-          callbacksRef.current.onQueueChange?.(newState);
-          break;
-        }
-
-        case "kernel_error": {
-          setKernelStatus(KERNEL_STATUS.ERROR);
-          callbacksRef.current.onKernelError?.(broadcast.error);
           break;
         }
 
@@ -358,33 +402,17 @@ export function useDaemonKernel({
           // Handled by useEnvProgress hook's own frame bus subscriber
           break;
 
-        case "env_sync_state": {
-          // Environment sync state changed - metadata differs from launched config
-          const syncBroadcast = broadcast as {
-            in_sync: boolean;
-            diff?: {
-              added: string[];
-              removed: string[];
-              channels_changed: boolean;
-              deno_changed: boolean;
-            };
-          };
-          setEnvSyncState({
-            inSync: syncBroadcast.in_sync,
-            diff: syncBroadcast.diff
-              ? {
-                  added: syncBroadcast.diff.added,
-                  removed: syncBroadcast.diff.removed,
-                  channelsChanged: syncBroadcast.diff.channels_changed,
-                  denoChanged: syncBroadcast.diff.deno_changed,
-                }
-              : undefined,
-          });
+        // ── State broadcasts — now read from RuntimeStateDoc ─────
+        // Keep cases to avoid "unknown broadcast" log spam, but don't
+        // set state — the RuntimeStateDoc is the source of truth.
+
+        case "kernel_status":
+        case "queue_changed":
+        case "kernel_error":
+        case "env_sync_state":
           break;
-        }
 
         default: {
-          // Log unknown events to help debug unexpected broadcast types
           logger.debug(
             `[daemon-kernel] Unknown broadcast event: ${(broadcast as { event: string }).event}`,
           );
@@ -392,67 +420,20 @@ export function useDaemonKernel({
       }
     });
 
-    // Helper to fetch kernel info with retry for "not_started" status
-    // (kernel may still be auto-launching when daemon:ready fires)
-    const fetchKernelInfo = (retryCount = 0) => {
-      invoke<DaemonNotebookResponse>("get_daemon_kernel_info")
-        .then((response) => {
-          if (cancelled) return;
-          if (response.result === "kernel_info") {
-            if (!isKernelStatus(response.status)) {
-              logger.warn(
-                `[daemon-kernel] Ignoring unknown kernel_info status: ${response.status}`,
-              );
-              return;
-            }
-            const status: DaemonKernelStatus = response.status;
-
-            // If kernel is not started and we haven't retried too many times,
-            // wait a bit and try again (kernel may be auto-launching)
-            if (status === KERNEL_STATUS.NOT_STARTED && retryCount < 5) {
-              setTimeout(() => {
-                if (!cancelled) fetchKernelInfo(retryCount + 1);
-              }, 500);
-              return;
-            }
-
-            logger.debug(
-              "[daemon-kernel] Kernel info:",
-              response.status,
-              response.kernel_type,
-            );
-            setKernelInfo({
-              kernelType: response.kernel_type,
-              envSource: response.env_source,
-            });
-            setKernelStatus(status);
-          }
-        })
-        .catch(() => {
-          // Expected to fail if daemon isn't ready - daemon:ready listener will retry
-        });
-    };
-
-    // Listen for daemon disconnection (e.g., daemon restarted)
+    // Listen for daemon disconnection
     const unlistenDisconnect = webview.listen(
       "daemon:disconnected",
       async () => {
         if (cancelled) return;
         logger.warn("[daemon-kernel] Daemon disconnected, resetting state");
-        setKernelStatus(KERNEL_STATUS.NOT_STARTED);
-        setKernelInfo({});
-        setQueueState({ executing: null, queued: [] });
-        setEnvSyncState(null);
-        // Reset blob port so next output triggers fresh fetch
+        // Reset RuntimeStateDoc store — next sync will repopulate
+        resetRuntimeState();
         resetBlobPort();
 
-        // Attempt to reconnect to the daemon
         try {
           await invoke("reconnect_to_daemon");
           logger.debug("[daemon-kernel] Reconnected to daemon");
-          // After reconnecting, refresh blob port (daemon may have new port) and kernel info
           refreshBlobPort();
-          fetchKernelInfo();
         } catch (e) {
           logger.error("[daemon-kernel] Failed to reconnect:", e);
         }
@@ -463,17 +444,11 @@ export function useDaemonKernel({
     const unlistenReady = webview.listen("daemon:ready", () => {
       if (cancelled) return;
       logger.debug("[daemon-kernel] Daemon ready");
-      refreshBlobPort(); // Update blob-port store for new daemon session
-      fetchKernelInfo();
+      refreshBlobPort();
     });
-
-    // Also try immediately in case daemon is already ready
-    // (handles page reload when daemon is already connected)
-    fetchKernelInfo();
 
     return () => {
       cancelled = true;
-      // Clear pending busy timer
       if (busyTimerRef.current !== null) {
         clearTimeout(busyTimerRef.current);
         busyTimerRef.current = null;
@@ -484,6 +459,8 @@ export function useDaemonKernel({
     };
   }, []);
 
+  // ── Actions ───────────────────────────────────────────────────────
+
   /** Launch a kernel via the daemon */
   const launchKernel = useCallback(
     async (
@@ -492,31 +469,17 @@ export function useDaemonKernel({
       notebookPath?: string,
     ): Promise<DaemonNotebookResponse> => {
       logger.debug("[daemon-kernel] Launching kernel:", kernelType, envSource);
-      setKernelStatus(KERNEL_STATUS.STARTING);
+      // Don't set status manually — the RuntimeStateDoc will update
+      // via sync when the daemon processes the launch.
 
       try {
         const response = await invoke<DaemonNotebookResponse>(
           "launch_kernel_via_daemon",
           { kernelType, envSource, notebookPath },
         );
-
-        if (
-          response.result === "kernel_launched" ||
-          response.result === "kernel_already_running"
-        ) {
-          setKernelInfo({
-            kernelType: response.kernel_type,
-            envSource: response.env_source,
-          });
-          setKernelStatus(KERNEL_STATUS.IDLE);
-        } else if (response.result === "error") {
-          setKernelStatus(KERNEL_STATUS.ERROR);
-        }
-
         return response;
       } catch (e) {
         logger.error("[daemon-kernel] Launch failed:", e);
-        setKernelStatus(KERNEL_STATUS.ERROR);
         throw e;
       }
     },
@@ -528,9 +491,11 @@ export function useDaemonKernel({
     async (cellId: string): Promise<DaemonNotebookResponse> => {
       logger.debug("[daemon-kernel] Executing cell:", cellId);
       try {
-        return await invoke<DaemonNotebookResponse>("execute_cell_via_daemon", {
-          cellId,
-        });
+        const response = await invoke<DaemonNotebookResponse>(
+          "execute_cell_via_daemon",
+          { cellId },
+        );
+        return response;
       } catch (e) {
         logger.error("[daemon-kernel] Execute failed:", e);
         throw e;
@@ -542,14 +507,12 @@ export function useDaemonKernel({
   /** Clear outputs for a cell via the daemon */
   const clearOutputs = useCallback(
     async (cellId: string): Promise<DaemonNotebookResponse> => {
-      logger.debug("[daemon-kernel] Clearing outputs:", cellId);
       try {
-        return await invoke<DaemonNotebookResponse>(
+        const response = await invoke<DaemonNotebookResponse>(
           "clear_outputs_via_daemon",
-          {
-            cellId,
-          },
+          { cellId },
         );
+        return response;
       } catch (e) {
         logger.error("[daemon-kernel] Clear outputs failed:", e);
         throw e;
@@ -558,92 +521,81 @@ export function useDaemonKernel({
     [],
   );
 
-  /** Interrupt kernel execution via the daemon */
-  const interruptKernel =
-    useCallback(async (): Promise<DaemonNotebookResponse> => {
-      logger.debug("[daemon-kernel] Interrupting kernel");
-      try {
-        return await invoke<DaemonNotebookResponse>("interrupt_via_daemon");
-      } catch (e) {
-        logger.error("[daemon-kernel] Interrupt failed:", e);
-        throw e;
-      }
-    }, []);
+  /** Interrupt kernel execution */
+  const interruptKernel = useCallback(async () => {
+    try {
+      const response = await invoke<DaemonNotebookResponse>(
+        "interrupt_via_daemon",
+      );
+      return response;
+    } catch (e) {
+      logger.error("[daemon-kernel] Interrupt failed:", e);
+      throw e;
+    }
+  }, []);
 
-  /** Shutdown the kernel via the daemon */
-  const shutdownKernel =
-    useCallback(async (): Promise<DaemonNotebookResponse> => {
-      logger.info("[daemon-kernel] Shutting down kernel");
-      try {
-        const response = await invoke<DaemonNotebookResponse>(
-          "shutdown_kernel_via_daemon",
-        );
-        setKernelStatus(KERNEL_STATUS.NOT_STARTED);
-        setKernelInfo({});
-        return response;
-      } catch (e) {
-        logger.error("[daemon-kernel] Shutdown failed:", e);
-        throw e;
-      }
-    }, []);
+  /** Shutdown the kernel */
+  const shutdownKernel = useCallback(async () => {
+    try {
+      const response = await invoke<DaemonNotebookResponse>(
+        "shutdown_kernel_via_daemon",
+      );
+      // Don't set status manually — RuntimeStateDoc will update via sync
+      return response;
+    } catch (e) {
+      logger.error("[daemon-kernel] Shutdown failed:", e);
+      throw e;
+    }
+  }, []);
 
   /** Hot-sync environment - install new packages without restart (UV only) */
-  const syncEnvironment =
-    useCallback(async (): Promise<DaemonNotebookResponse> => {
-      logger.info("[daemon-kernel] Syncing environment");
-      try {
-        const response = await invoke<DaemonNotebookResponse>(
-          "sync_environment_via_daemon",
-        );
-        if (response.result === "sync_environment_complete") {
-          logger.info(
-            "[daemon-kernel] Sync complete:",
-            response.synced_packages,
-          );
-        } else if (response.result === "sync_environment_failed") {
-          logger.warn(
-            "[daemon-kernel] Sync failed:",
-            response.error,
-            "needs_restart:",
-            response.needs_restart,
-          );
-        }
-        return response;
-      } catch (e) {
-        logger.error("[daemon-kernel] Sync environment failed:", e);
-        throw e;
+  const syncEnvironment = useCallback(async () => {
+    try {
+      const response = await invoke<DaemonNotebookResponse>(
+        "sync_environment_via_daemon",
+      );
+      if (response.result === "error") {
+        logger.error("[daemon-kernel] Sync env failed:", response.error);
       }
-    }, []);
+      return response;
+    } catch (e) {
+      logger.error("[daemon-kernel] Sync environment failed:", e);
+      throw e;
+    }
+  }, []);
 
-  /** Get current queue state from daemon */
+  /** Refresh queue state from daemon */
   const refreshQueueState = useCallback(async () => {
     try {
       const response = await invoke<DaemonNotebookResponse>(
         "get_daemon_queue_state",
       );
       if (response.result === "queue_state") {
-        setQueueState({
+        // Queue state is now read from RuntimeStateDoc — this is a no-op
+        // for state but kept for backward compatibility.
+        return {
           executing: response.executing ?? null,
           queued: response.queued,
-        });
+        };
       }
     } catch (e) {
-      logger.error("[daemon-kernel] Get queue state failed:", e);
+      logger.error("[daemon-kernel] Refresh queue failed:", e);
     }
-  }, []);
+    return queueState;
+  }, [queueState]);
 
-  /** Run all code cells via the daemon (reads from synced doc) */
-  const runAllCells = useCallback(async (): Promise<DaemonNotebookResponse> => {
+  /** Run all code cells (daemon reads from synced doc) */
+  const runAllCells = useCallback(async () => {
     logger.debug("[daemon-kernel] Running all cells");
     try {
-      return await invoke<DaemonNotebookResponse>("run_all_cells_via_daemon");
+      await invoke<DaemonNotebookResponse>("run_all_cells_via_daemon");
     } catch (e) {
       logger.error("[daemon-kernel] Run all cells failed:", e);
       throw e;
     }
   }, []);
 
-  /** Send a comm message to the kernel via the daemon (for widget interactions) */
+  /** Send a comm message to the kernel (for widget interactions) */
   const sendCommMessage = useCallback(
     async (message: {
       header: Record<string, unknown>;
@@ -661,7 +613,6 @@ export function useDaemonKernel({
           Array.from(new Uint8Array(buf)),
         );
 
-        // Send the full message envelope to preserve header/session
         const fullMessage = {
           header: message.header,
           parent_header: message.parent_header ?? null,
@@ -690,7 +641,7 @@ export function useDaemonKernel({
   );
 
   return {
-    /** Current kernel status */
+    /** Current kernel status (with busy throttle applied) */
     kernelStatus,
     /** Current execution queue state */
     queueState,
