@@ -371,7 +371,7 @@ async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
             // Dual-write env sync to state_doc (borrow before broadcast moves diff)
             {
                 let mut sd = room.state_doc.write().await;
-                match &diff {
+                let changed = match &diff {
                     Some(d) => sd.set_env_sync(
                         false,
                         &d.added,
@@ -381,7 +381,9 @@ async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
                     ),
                     None => sd.set_env_sync(true, &[], &[], false, false),
                 };
-                let _ = room.state_changed_tx.send(());
+                if changed {
+                    let _ = room.state_changed_tx.send(());
+                }
             }
 
             let _ = room
@@ -404,8 +406,9 @@ async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
                     // Dual-write env sync to state_doc (borrow before broadcast moves added)
                     {
                         let mut sd = room.state_doc.write().await;
-                        sd.set_env_sync(false, &added, &[], false, false);
-                        let _ = room.state_changed_tx.send(());
+                        if sd.set_env_sync(false, &added, &[], false, false) {
+                            let _ = room.state_changed_tx.send(());
+                        }
                     }
                     let _ = room
                         .kernel_broadcast_tx
@@ -1252,17 +1255,15 @@ where
         connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &encoded).await?;
     }
 
-    // Phase 1.1: Initial RuntimeStateDoc sync — send runtime state to new peer
-    {
+    // Phase 1.1: Initial RuntimeStateDoc sync — encode inside lock, send outside
+    let initial_state_encoded = {
         let mut state_doc = room.state_doc.write().await;
-        if let Some(msg) = state_doc.generate_sync_message(&mut state_peer_state) {
-            connection::send_typed_frame(
-                writer,
-                NotebookFrameType::RuntimeStateSync,
-                &msg.encode(),
-            )
-            .await?;
-        }
+        state_doc
+            .generate_sync_message(&mut state_peer_state)
+            .map(|msg| msg.encode())
+    };
+    if let Some(encoded) = initial_state_encoded {
+        connection::send_typed_frame(writer, NotebookFrameType::RuntimeStateSync, &encoded).await?;
     }
 
     // Phase 1.5: Send comm state sync for widget reconstruction
@@ -1820,8 +1821,9 @@ async fn auto_launch_kernel(
     // Write "starting" to state_doc before launch begins
     {
         let mut sd = room.state_doc.write().await;
-        sd.set_kernel_status("starting");
-        let _ = room.state_changed_tx.send(());
+        if sd.set_kernel_status("starting") {
+            let _ = room.state_changed_tx.send(());
+        }
     }
 
     // Create new kernel
@@ -2234,8 +2236,9 @@ async fn auto_launch_kernel(
                                 // Write cleared queue to state doc
                                 {
                                     let mut sd = room_state_doc.write().await;
-                                    sd.set_queue(None, &[]);
-                                    let _ = room_state_changed_tx.send(());
+                                    if sd.set_queue(None, &[]) {
+                                        let _ = room_state_changed_tx.send(());
+                                    }
                                 }
                             }
                             QueueCommand::KernelDied => {
@@ -2253,9 +2256,12 @@ async fn auto_launch_kernel(
                                 // Write error status + cleared queue to state doc
                                 {
                                     let mut sd = room_state_doc.write().await;
-                                    sd.set_kernel_status("error");
-                                    sd.set_queue(None, &[]);
-                                    let _ = room_state_changed_tx.send(());
+                                    let mut changed = false;
+                                    changed |= sd.set_kernel_status("error");
+                                    changed |= sd.set_queue(None, &[]);
+                                    if changed {
+                                        let _ = room_state_changed_tx.send(());
+                                    }
                                 }
                                 // Update presence outside the kernel lock
                                 if let Some(es) = env_source {
@@ -2292,9 +2298,12 @@ async fn auto_launch_kernel(
             // Dual-write kernel status + info to state_doc
             {
                 let mut sd = room.state_doc.write().await;
-                sd.set_kernel_status("idle");
-                sd.set_kernel_info(&kt, kernel_type, &es);
-                let _ = room.state_changed_tx.send(());
+                let mut changed = false;
+                changed |= sd.set_kernel_status("idle");
+                changed |= sd.set_kernel_info(&kt, kernel_type, &es);
+                if changed {
+                    let _ = room.state_changed_tx.send(());
+                }
             }
 
             info!(
@@ -2314,8 +2323,9 @@ async fn auto_launch_kernel(
             // Dual-write error to state_doc
             {
                 let mut sd = room.state_doc.write().await;
-                sd.set_kernel_status("error");
-                let _ = room.state_changed_tx.send(());
+                if sd.set_kernel_status("error") {
+                    let _ = room.state_changed_tx.send(());
+                }
             }
         }
     }
@@ -2895,8 +2905,9 @@ async fn handle_notebook_request(
                                         // Write cleared queue to state doc
                                         {
                                             let mut sd = room_state_doc.write().await;
-                                            sd.set_queue(None, &[]);
-                                            let _ = room_state_changed_tx.send(());
+                                            if sd.set_queue(None, &[]) {
+                                                let _ = room_state_changed_tx.send(());
+                                            }
                                         }
                                     }
                                     QueueCommand::KernelDied => {
@@ -2914,9 +2925,12 @@ async fn handle_notebook_request(
                                         // Write error status + cleared queue to state doc
                                         {
                                             let mut sd = room_state_doc.write().await;
-                                            sd.set_kernel_status("error");
-                                            sd.set_queue(None, &[]);
-                                            let _ = room_state_changed_tx.send(());
+                                            let mut changed = false;
+                                            changed |= sd.set_kernel_status("error");
+                                            changed |= sd.set_queue(None, &[]);
+                                            if changed {
+                                                let _ = room_state_changed_tx.send(());
+                                            }
                                         }
                                         // Update presence outside the kernel lock
                                         if let Some(es) = env_source {
@@ -2947,9 +2961,12 @@ async fn handle_notebook_request(
                     // Dual-write kernel status + info to state_doc
                     {
                         let mut sd = room.state_doc.write().await;
-                        sd.set_kernel_status("idle");
-                        sd.set_kernel_info(&kt, &resolved_kernel_type, &es);
-                        let _ = room.state_changed_tx.send(());
+                        let mut changed = false;
+                        changed |= sd.set_kernel_status("idle");
+                        changed |= sd.set_kernel_info(&kt, &resolved_kernel_type, &es);
+                        if changed {
+                            let _ = room.state_changed_tx.send(());
+                        }
                     }
 
                     NotebookResponse::KernelLaunched {
@@ -2962,8 +2979,9 @@ async fn handle_notebook_request(
                     // Dual-write error to state_doc
                     {
                         let mut sd = room.state_doc.write().await;
-                        sd.set_kernel_status("error");
-                        let _ = room.state_changed_tx.send(());
+                        if sd.set_kernel_status("error") {
+                            let _ = room.state_changed_tx.send(());
+                        }
                     }
                     NotebookResponse::Error {
                         error: format!("Failed to launch kernel: {}", e),
@@ -3123,8 +3141,9 @@ async fn handle_notebook_request(
                         // Dual-write shutdown to state_doc
                         {
                             let mut sd = room.state_doc.write().await;
-                            sd.set_kernel_status("shutdown");
-                            let _ = room.state_changed_tx.send(());
+                            if sd.set_kernel_status("shutdown") {
+                                let _ = room.state_changed_tx.send(());
+                            }
                         }
                         NotebookResponse::KernelShuttingDown {}
                     }

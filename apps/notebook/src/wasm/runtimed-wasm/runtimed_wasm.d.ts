@@ -123,7 +123,8 @@ export class NotebookHandle {
     detect_runtime(): string | undefined;
     /**
      * Generate a sync reply for the RuntimeStateDoc.
-     * Called on a debounce timer after receiving runtime state frames.
+     * Called immediately after each `RuntimeStateSyncApplied` event
+     * so the daemon knows which state the client has received.
      */
     generate_runtime_state_sync_reply(): Uint8Array | undefined;
     /**

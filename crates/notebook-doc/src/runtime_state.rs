@@ -105,12 +105,15 @@ pub struct RuntimeState {
 /// updates via Automerge sync — never by direct mutation.
 pub struct RuntimeStateDoc {
     doc: AutoCommit,
-    /// Cached last-written state for dedup (avoids Automerge history bloat).
-    last_state: Option<RuntimeState>,
 }
 
 impl RuntimeStateDoc {
-    /// Create a new `RuntimeStateDoc` with schema scaffolded.
+    /// Create a new `RuntimeStateDoc` for the **daemon** with schema scaffolded.
+    ///
+    /// Sets a deterministic actor ID (`"runtimed:state"`) and scaffolds the
+    /// full schema so that all keys exist before the first sync round.
+    /// Clients must use [`Self::new_empty()`] instead to avoid
+    /// `DuplicateSeqNumber` conflicts from a second doc with the same actor.
     #[allow(clippy::expect_used, clippy::new_without_default)]
     pub fn new() -> Self {
         let mut doc = AutoCommit::new();
@@ -156,9 +159,19 @@ impl RuntimeStateDoc {
         doc.put(&ROOT, "last_saved", ScalarValue::Null)
             .expect("scaffold last_saved");
 
+        Self { doc }
+    }
+
+    /// Create an empty `RuntimeStateDoc` for read-only clients.
+    ///
+    /// The document starts empty with a random actor ID. All state
+    /// arrives via Automerge sync from the daemon. This avoids
+    /// `DuplicateSeqNumber` conflicts that would occur if the client
+    /// scaffolded the same schema with the same actor ID as the daemon.
+    pub fn new_empty() -> Self {
         Self {
-            doc,
-            last_state: None,
+            doc: AutoCommit::new(),
+            // No scaffolding — sync populates everything
         }
     }
 
@@ -283,8 +296,6 @@ impl RuntimeStateDoc {
         self.doc
             .put(&kernel, "status", status)
             .expect("put kernel.status");
-        // Invalidate cache
-        self.last_state = None;
         true
     }
 
@@ -307,7 +318,6 @@ impl RuntimeStateDoc {
         self.doc
             .put(&kernel, "env_source", env_source)
             .expect("put kernel.env_source");
-        self.last_state = None;
         true
     }
 
@@ -339,18 +349,25 @@ impl RuntimeStateDoc {
                 .expect("put queue.executing null"),
         }
 
-        // Replace the entire list — daemon is the sole writer.
+        // Reuse the existing list object to avoid Automerge object churn.
         let list = self
             .doc
-            .put_object(&queue, "queued", ObjType::List)
-            .expect("put queue.queued list");
+            .get(&queue, "queued")
+            .expect("get queue.queued")
+            .map(|(_, id)| id)
+            .expect("queued list must exist");
+        // Clear existing entries (reverse order for stable indices)
+        let len = self.doc.length(&list);
+        for i in (0..len).rev() {
+            self.doc.delete(&list, i).expect("delete queued entry");
+        }
+        // Insert new entries
         for (i, cell_id) in queued.iter().enumerate() {
             self.doc
                 .insert(&list, i, cell_id.as_str())
                 .expect("insert queued cell_id");
         }
 
-        self.last_state = None;
         true
     }
 
@@ -390,10 +407,17 @@ impl RuntimeStateDoc {
             .put(&env, "deno_changed", deno_changed)
             .expect("put env.deno_changed");
 
+        // Reuse existing list objects to avoid Automerge object churn.
         let added_list = self
             .doc
-            .put_object(&env, "added", ObjType::List)
-            .expect("put env.added list");
+            .get(&env, "added")
+            .expect("get env.added")
+            .map(|(_, id)| id)
+            .expect("added list must exist");
+        let len = self.doc.length(&added_list);
+        for i in (0..len).rev() {
+            self.doc.delete(&added_list, i).expect("delete added entry");
+        }
         for (i, pkg) in added.iter().enumerate() {
             self.doc
                 .insert(&added_list, i, pkg.as_str())
@@ -402,15 +426,22 @@ impl RuntimeStateDoc {
 
         let removed_list = self
             .doc
-            .put_object(&env, "removed", ObjType::List)
-            .expect("put env.removed list");
+            .get(&env, "removed")
+            .expect("get env.removed")
+            .map(|(_, id)| id)
+            .expect("removed list must exist");
+        let len = self.doc.length(&removed_list);
+        for i in (0..len).rev() {
+            self.doc
+                .delete(&removed_list, i)
+                .expect("delete removed entry");
+        }
         for (i, pkg) in removed.iter().enumerate() {
             self.doc
                 .insert(&removed_list, i, pkg.as_str())
                 .expect("insert removed pkg");
         }
 
-        self.last_state = None;
         true
     }
 
@@ -452,7 +483,6 @@ impl RuntimeStateDoc {
                 .expect("put last_saved null"),
         }
 
-        self.last_state = None;
         true
     }
 
@@ -677,10 +707,8 @@ mod tests {
         );
         daemon_doc.set_last_saved(Some("2025-01-15T12:00:00Z"));
 
-        // Use a plain AutoCommit for the client — it gets a random actor ID,
-        // avoiding the DuplicateSeqNumber error that occurs when two docs
-        // share the same actor (both RuntimeStateDoc::new() use "runtimed:state").
-        let mut client_doc = AutoCommit::new();
+        // Client uses new_empty() — random actor, no scaffolding.
+        let mut client_doc = RuntimeStateDoc::new_empty();
         let mut daemon_sync = sync::State::new();
         let mut client_sync = sync::State::new();
 
@@ -688,25 +716,24 @@ mod tests {
         for _ in 0..10 {
             if let Some(msg) = daemon_doc.generate_sync_message(&mut daemon_sync) {
                 client_doc
+                    .doc_mut()
                     .sync()
                     .receive_sync_message(&mut client_sync, msg)
                     .expect("client receive");
             }
-            if let Some(msg) = client_doc.sync().generate_sync_message(&mut client_sync) {
+            if let Some(msg) = client_doc
+                .doc_mut()
+                .sync()
+                .generate_sync_message(&mut client_sync)
+            {
                 daemon_doc
                     .receive_sync_message(&mut daemon_sync, msg)
                     .expect("daemon receive");
             }
         }
 
-        // Wrap the raw AutoCommit in a RuntimeStateDoc to use read_state().
-        let client_view = RuntimeStateDoc {
-            doc: client_doc,
-            last_state: None,
-        };
-
         let daemon_state = daemon_doc.read_state();
-        let client_state = client_view.read_state();
+        let client_state = client_doc.read_state();
         assert_eq!(daemon_state, client_state);
         assert_eq!(client_state.kernel.status, "busy");
         assert_eq!(client_state.kernel.name, "charming-toucan");

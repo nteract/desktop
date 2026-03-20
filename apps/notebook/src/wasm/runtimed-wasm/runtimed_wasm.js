@@ -499,7 +499,8 @@ export class NotebookHandle {
     }
     /**
      * Generate a sync reply for the RuntimeStateDoc.
-     * Called on a debounce timer after receiving runtime state frames.
+     * Called immediately after each `RuntimeStateSyncApplied` event
+     * so the daemon knows which state the client has received.
      * @returns {Uint8Array | undefined}
      */
     generate_runtime_state_sync_reply() {

@@ -202,7 +202,7 @@ impl NotebookHandle {
         NotebookHandle {
             doc: NotebookDoc::new(notebook_id),
             sync_state: sync::State::new(),
-            state_doc: RuntimeStateDoc::new(),
+            state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
         }
@@ -215,7 +215,7 @@ impl NotebookHandle {
         NotebookHandle {
             doc: NotebookDoc::empty(),
             sync_state: sync::State::new(),
-            state_doc: RuntimeStateDoc::new(),
+            state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
         }
@@ -229,7 +229,7 @@ impl NotebookHandle {
         NotebookHandle {
             doc: NotebookDoc::empty_with_actor(actor_label),
             sync_state: sync::State::new(),
-            state_doc: RuntimeStateDoc::new(),
+            state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
         }
@@ -242,7 +242,7 @@ impl NotebookHandle {
         Ok(NotebookHandle {
             doc,
             sync_state: sync::State::new(),
-            state_doc: RuntimeStateDoc::new(),
+            state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
         })
@@ -824,7 +824,8 @@ impl NotebookHandle {
     }
 
     /// Generate a sync reply for the RuntimeStateDoc.
-    /// Called on a debounce timer after receiving runtime state frames.
+    /// Called immediately after each `RuntimeStateSyncApplied` event
+    /// so the daemon knows which state the client has received.
     pub fn generate_runtime_state_sync_reply(&mut self) -> Option<Vec<u8>> {
         self.state_doc
             .generate_sync_message(&mut self.state_sync_state)

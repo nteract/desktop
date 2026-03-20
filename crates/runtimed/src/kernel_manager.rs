@@ -489,9 +489,12 @@ impl RoomKernel {
 
         {
             let mut sd = self.state_doc.write().await;
-            sd.set_kernel_status("starting");
-            sd.set_kernel_info(&self.kernel_type, &self.kernel_type, &self.env_source);
-            let _ = self.state_changed_tx.send(());
+            let mut changed = false;
+            changed |= sd.set_kernel_status("starting");
+            changed |= sd.set_kernel_info(&self.kernel_type, &self.kernel_type, &self.env_source);
+            if changed {
+                let _ = self.state_changed_tx.send(());
+            }
         }
 
         // Determine kernel name for connection info
@@ -1692,8 +1695,9 @@ impl RoomKernel {
 
         {
             let mut sd = self.state_doc.write().await;
-            sd.set_kernel_status("idle");
-            let _ = self.state_changed_tx.send(());
+            if sd.set_kernel_status("idle") {
+                let _ = self.state_changed_tx.send(());
+            }
         }
 
         info!("[kernel-manager] Kernel started: {}", kernel_id);
@@ -1734,8 +1738,9 @@ impl RoomKernel {
 
         {
             let mut sd = self.state_doc.write().await;
-            sd.set_queue(self.executing.as_deref(), &self.queued_cells());
-            let _ = self.state_changed_tx.send(());
+            if sd.set_queue(self.executing.as_deref(), &self.queued_cells()) {
+                let _ = self.state_changed_tx.send(());
+            }
         }
 
         // Try to process if nothing executing
@@ -1781,8 +1786,9 @@ impl RoomKernel {
 
         {
             let mut sd = self.state_doc.write().await;
-            sd.set_queue(self.executing.as_deref(), &self.queued_cells());
-            let _ = self.state_changed_tx.send(());
+            if sd.set_queue(self.executing.as_deref(), &self.queued_cells()) {
+                let _ = self.state_changed_tx.send(());
+            }
         }
 
         // Send execute request
@@ -1835,8 +1841,9 @@ impl RoomKernel {
 
             {
                 let mut sd = self.state_doc.write().await;
-                sd.set_queue(None, &self.queued_cells());
-                let _ = self.state_changed_tx.send(());
+                if sd.set_queue(None, &self.queued_cells()) {
+                    let _ = self.state_changed_tx.send(());
+                }
             }
 
             // Process next
@@ -2150,9 +2157,12 @@ impl RoomKernel {
 
         {
             let mut sd = self.state_doc.write().await;
-            sd.set_kernel_status("shutdown");
-            sd.set_queue(None, &[]);
-            let _ = self.state_changed_tx.send(());
+            let mut changed = false;
+            changed |= sd.set_kernel_status("shutdown");
+            changed |= sd.set_queue(None, &[]);
+            if changed {
+                let _ = self.state_changed_tx.send(());
+            }
         }
 
         // Abort tasks
