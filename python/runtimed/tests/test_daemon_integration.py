@@ -424,7 +424,7 @@ def daemon_process():
                     print(f"[test] Daemon logs:\n{logs}", file=sys.stderr)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def client(daemon_process):
     """Create a Client connected to the test daemon."""
     socket_path, _ = daemon_process
@@ -445,6 +445,38 @@ def session(client):
             sess.shutdown_kernel()
     except Exception:
         pass
+
+
+@pytest.fixture(scope="class")
+def shared_session(client):
+    """Shared Python notebook + kernel for test classes that need execution.
+
+    Class-scoped: one kernel per test class instead of one per test.
+    Tests should not depend on clean kernel state between runs.
+    """
+    sess = client.create_notebook(runtime="python")
+    yield sess
+    try:
+        if sess.kernel_started:
+            sess.shutdown_kernel()
+    except Exception:
+        pass
+
+
+@pytest.fixture
+def doc_session(client):
+    """Notebook WITHOUT a kernel — for pure document/CRDT tests.
+
+    Shuts down the auto-launched kernel immediately. Cheap because
+    no kernel process stays running.
+    """
+    sess = client.create_notebook(runtime="python")
+    # Kill the auto-launched kernel — we only need the document
+    try:
+        sess.shutdown_kernel()
+    except Exception:
+        pass
+    yield sess
 
 
 @pytest.fixture
@@ -475,6 +507,11 @@ class TestPerCellAccessors:
     These methods read individual fields from the snapshot watch channel
     without cloning all CellSnapshots — O(1) per field instead of O(n_cells).
     """
+
+    @pytest.fixture
+    def session(self, doc_session):
+        """Use doc_session (no kernel) for pure document tests."""
+        return doc_session
 
     def test_get_cell_ids(self, session):
         """get_cell_ids returns ordered cell IDs."""
@@ -591,6 +628,11 @@ class TestCellMetadata:
     These tests verify that cell metadata can be read, written, and synced
     via the automerge document.
     """
+
+    @pytest.fixture
+    def session(self, doc_session):
+        """Use doc_session (no kernel) for pure document tests."""
+        return doc_session
 
     def test_cell_has_empty_metadata_by_default(self, session):
         """New cells have empty metadata."""
