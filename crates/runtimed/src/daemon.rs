@@ -326,7 +326,12 @@ pub struct Daemon {
     /// Broadcast channel to notify sync connections of settings changes.
     settings_changed: tokio::sync::broadcast::Sender<()>,
     /// Broadcast channel to notify clients of pool state changes (errors, recovery).
+    /// Legacy: replaced by pool_doc for new clients using PoolStateSync handshake.
     pool_state_changed: tokio::sync::broadcast::Sender<DaemonBroadcast>,
+    /// Shared Automerge pool state document (daemon-authoritative, ephemeral).
+    pool_doc: Arc<RwLock<crate::pool_doc::PoolDoc>>,
+    /// Broadcast channel to notify pool sync connections of pool doc changes.
+    pool_doc_changed: tokio::sync::broadcast::Sender<()>,
     /// Content-addressed blob store.
     blob_store: Arc<BlobStore>,
     /// HTTP port for the blob server (set after startup).
@@ -363,6 +368,8 @@ impl Daemon {
 
         let (settings_changed, _) = tokio::sync::broadcast::channel(16);
         let (pool_state_changed, _) = tokio::sync::broadcast::channel(16);
+        let (pool_doc_changed, _) = tokio::sync::broadcast::channel(16);
+        let pool_doc = Arc::new(RwLock::new(crate::pool_doc::PoolDoc::new()));
 
         let blob_store = Arc::new(BlobStore::new(config.blob_store_dir.clone()));
 
@@ -376,6 +383,8 @@ impl Daemon {
             settings: Arc::new(RwLock::new(settings)),
             settings_changed,
             pool_state_changed,
+            pool_doc,
+            pool_doc_changed,
             blob_store,
             blob_port: Mutex::new(None),
             notebook_rooms: Arc::new(Mutex::new(HashMap::new())),
@@ -1053,6 +1062,16 @@ impl Daemon {
             }
             Handshake::Blob => self.handle_blob_connection(stream).await,
             Handshake::PoolStateSubscribe => self.handle_pool_state_subscription(stream).await,
+            Handshake::PoolStateSync => {
+                let (reader, writer) = tokio::io::split(stream);
+                crate::sync_server::handle_pool_sync_connection(
+                    reader,
+                    writer,
+                    self.pool_doc.clone(),
+                    self.pool_doc_changed.subscribe(),
+                )
+                .await
+            }
             Handshake::OpenNotebook { path } => self.handle_open_notebook(stream, path).await,
             Handshake::CreateNotebook {
                 runtime,
@@ -1874,12 +1893,13 @@ impl Daemon {
                 }
             }
 
-            // Log status
+            // Log status + update PoolDoc
             let (available, warming) = self.uv_pool.lock().await.stats();
             debug!(
                 "[runtimed] UV pool: {}/{} available, {} warming",
                 available, self.config.uv_pool_size, warming
             );
+            self.update_pool_doc().await;
 
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         }
@@ -1958,12 +1978,13 @@ impl Daemon {
                 }
             }
 
-            // Log status
+            // Log status + update PoolDoc
             let (available, warming) = self.conda_pool.lock().await.stats();
             debug!(
                 "[runtimed] Conda pool: {}/{} available, {} warming",
                 available, self.config.conda_pool_size, warming
             );
+            self.update_pool_doc().await;
 
             // Wait before checking again
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -2333,14 +2354,46 @@ print("warmup complete")
         let uv_error = self.uv_pool.lock().await.get_error();
         let conda_error = self.conda_pool.lock().await.get_error();
 
-        // Only broadcast if there's something to report or if we're clearing errors
+        // Legacy broadcast for old clients using PoolStateSubscribe
         let broadcast = DaemonBroadcast::PoolState {
             uv_error,
             conda_error,
         };
-
-        // Send to all subscribers (ignore errors if no subscribers)
         let _ = self.pool_state_changed.send(broadcast);
+
+        // Also update the PoolDoc for new clients using PoolStateSync
+        self.update_pool_doc().await;
+    }
+
+    /// Write the current pool state to the PoolDoc and notify sync clients.
+    ///
+    /// Called from both warming loops (every 30s tick) and on error/recovery.
+    /// The PoolDoc deduplicates — if nothing changed, this is a no-op.
+    async fn update_pool_doc(&self) {
+        let (uv_available, uv_warming) = self.uv_pool.lock().await.stats();
+        let uv_error = self.uv_pool.lock().await.get_error();
+        let (conda_available, conda_warming) = self.conda_pool.lock().await.stats();
+        let conda_error = self.conda_pool.lock().await.get_error();
+
+        let state = crate::pool_doc::PoolState {
+            uv: crate::pool_doc::RuntimePoolState {
+                available: uv_available as u64,
+                warming: uv_warming as u64,
+                pool_size: self.config.uv_pool_size as u64,
+                error: uv_error.map(|e| e.message),
+            },
+            conda: crate::pool_doc::RuntimePoolState {
+                available: conda_available as u64,
+                warming: conda_warming as u64,
+                pool_size: self.config.conda_pool_size as u64,
+                error: conda_error.map(|e| e.message),
+            },
+        };
+
+        let changed = self.pool_doc.write().await.update(&state);
+        if changed {
+            let _ = self.pool_doc_changed.send(());
+        }
     }
 
     /// Create a single UV environment and add it to the pool.

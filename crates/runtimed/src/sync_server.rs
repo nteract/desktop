@@ -1,8 +1,12 @@
-//! Automerge sync protocol handler for settings synchronization.
+//! Automerge sync protocol handlers for global documents.
 //!
-//! Handles a single client connection that has already been routed by the
-//! daemon's unified socket. Exchanges Automerge sync messages to keep a
-//! shared settings document in sync across all notebook windows.
+//! Handles client connections that have already been routed by the daemon's
+//! unified socket. Exchanges Automerge sync messages to keep shared documents
+//! in sync across all notebook windows.
+//!
+//! Two handlers:
+//! - `handle_settings_sync_connection` — bidirectional sync for user settings
+//! - `handle_pool_sync_connection` — daemon-authoritative sync for pool state
 
 use std::sync::Arc;
 
@@ -89,6 +93,72 @@ where
             // Another peer changed settings -- push update to this client
             _ = changed_rx.recv() => {
                 let mut doc = settings.write().await;
+                if let Some(msg) = doc.generate_sync_message(&mut peer_state) {
+                    connection::send_frame(&mut writer, &msg.encode()).await?;
+                }
+            }
+        }
+    }
+}
+
+/// Handle a pool state sync connection (daemon-authoritative, read-only for clients).
+///
+/// Same Automerge sync protocol as settings, but the daemon is the sole writer.
+/// Client sync messages are processed (for protocol handshake / ACKs) but any
+/// document mutations from the client are effectively no-ops — the daemon's
+/// writes always win because the client has no meaningful changes to contribute.
+pub async fn handle_pool_sync_connection<R, W>(
+    mut reader: R,
+    mut writer: W,
+    pool_doc: Arc<RwLock<crate::pool_doc::PoolDoc>>,
+    mut changed_rx: broadcast::Receiver<()>,
+) -> anyhow::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut peer_state = sync::State::new();
+    info!("[sync] Pool state client connected");
+
+    // Phase 1: Initial sync — server sends first
+    {
+        let mut doc = pool_doc.write().await;
+        if let Some(msg) = doc.generate_sync_message(&mut peer_state) {
+            connection::send_frame(&mut writer, &msg.encode()).await?;
+        }
+    }
+
+    // Phase 2: Exchange messages until sync is complete, then push on changes
+    loop {
+        tokio::select! {
+            // Incoming message from client (protocol ACKs)
+            result = connection::recv_frame(&mut reader) => {
+                match result? {
+                    Some(data) => {
+                        let message = sync::Message::decode(&data)
+                            .map_err(|e| anyhow::anyhow!("decode error: {}", e))?;
+
+                        let mut doc = pool_doc.write().await;
+                        // Process for sync protocol state, but client can't
+                        // meaningfully mutate pool state — daemon is authoritative.
+                        doc.receive_sync_message(&mut peer_state, message)?;
+
+                        // Send our response (completes handshake)
+                        if let Some(reply) = doc.generate_sync_message(&mut peer_state) {
+                            connection::send_frame(&mut writer, &reply.encode()).await?;
+                        }
+                    }
+                    None => {
+                        // Client disconnected
+                        info!("[sync] Pool state client disconnected");
+                        return Ok(());
+                    }
+                }
+            }
+
+            // Pool state changed — push update to this client
+            _ = changed_rx.recv() => {
+                let mut doc = pool_doc.write().await;
                 if let Some(msg) = doc.generate_sync_message(&mut peer_state) {
                     connection::send_frame(&mut writer, &msg.encode()).await?;
                 }

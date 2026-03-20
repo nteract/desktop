@@ -68,9 +68,16 @@ pub enum Handshake {
     },
     /// Blob store: write blobs, query port.
     Blob,
-    /// Pool state subscription: receive broadcasts when pool errors occur/clear.
+    /// Pool state subscription (legacy): receive broadcasts when pool errors occur/clear.
     /// Read-only channel - server pushes DaemonBroadcast messages to client.
+    /// Deprecated: use PoolStateSync instead.
     PoolStateSubscribe,
+
+    /// Pool state sync: bidirectional Automerge sync of the PoolDoc.
+    /// Daemon-authoritative — clients read pool state (uv/conda availability,
+    /// errors) via the standard Automerge sync protocol. Same pattern as
+    /// SettingsSync but read-only (client writes are ignored).
+    PoolStateSync,
 
     /// Open an existing notebook file. Daemon loads from disk, derives notebook_id.
     ///
