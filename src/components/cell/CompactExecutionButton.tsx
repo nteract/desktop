@@ -64,8 +64,10 @@ export function CompactExecutionButton({
           // Running state: show stop with pulse
           <span className="text-destructive animate-pulse">■</span>
         ) : isQueued ? (
-          // Queued state: show clock icon with subtle animation
-          <span className="text-muted-foreground animate-pulse">⏳</span>
+          // Queued state: small dot with slow breathe animation
+          <span className="flex items-center justify-center">
+            <span className="block h-1.5 w-1.5 rounded-full bg-muted-foreground animate-queue-breathe" />
+          </span>
         ) : count !== null ? (
           // Has count: show count, play on hover
           <>

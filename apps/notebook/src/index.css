@@ -9,83 +9,59 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
-  --color-border: var(--border);
-  --color-input: var(--input);
-  --color-ring: var(--ring);
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-destructive-foreground: var(--destructive-foreground);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
 
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --radius-2xl: calc(var(--radius) + 8px);
-  --radius-3xl: calc(var(--radius) + 12px);
-  --radius-4xl: calc(var(--radius) + 16px);
+    --radius-sm: calc(var(--radius) - 4px);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) + 4px);
+    --radius-2xl: calc(var(--radius) + 8px);
+    --radius-3xl: calc(var(--radius) + 12px);
+    --radius-4xl: calc(var(--radius) + 16px);
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --radius: 0.625rem;
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.145 0 0);
+    --primary: oklch(0.205 0 0);
+    --primary-foreground: oklch(0.985 0 0);
+    --secondary: oklch(0.97 0 0);
+    --secondary-foreground: oklch(0.205 0 0);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --accent: oklch(0.97 0 0);
+    --accent-foreground: oklch(0.205 0 0);
+    --destructive: oklch(0.577 0.245 27.325);
+    --destructive-foreground: oklch(0.577 0.245 27.325);
+    --border: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
+    --ring: oklch(0.708 0 0);
+    --radius: 0.625rem;
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.637 0.237 25.331);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-}
-
-/* Fallback: apply dark theme when system prefers dark and no explicit light class */
-@media (prefers-color-scheme: dark) {
-  :root:not(.light) {
     --background: oklch(0.145 0 0);
     --foreground: oklch(0.985 0 0);
     --card: oklch(0.205 0 0);
@@ -105,149 +81,192 @@
     --border: oklch(1 0 0 / 10%);
     --input: oklch(1 0 0 / 15%);
     --ring: oklch(0.556 0 0);
-  }
+}
+
+/* Fallback: apply dark theme when system prefers dark and no explicit light class */
+@media (prefers-color-scheme: dark) {
+    :root:not(.light) {
+        --background: oklch(0.145 0 0);
+        --foreground: oklch(0.985 0 0);
+        --card: oklch(0.205 0 0);
+        --card-foreground: oklch(0.985 0 0);
+        --popover: oklch(0.205 0 0);
+        --popover-foreground: oklch(0.985 0 0);
+        --primary: oklch(0.922 0 0);
+        --primary-foreground: oklch(0.205 0 0);
+        --secondary: oklch(0.269 0 0);
+        --secondary-foreground: oklch(0.985 0 0);
+        --muted: oklch(0.269 0 0);
+        --muted-foreground: oklch(0.708 0 0);
+        --accent: oklch(0.269 0 0);
+        --accent-foreground: oklch(0.985 0 0);
+        --destructive: oklch(0.704 0.191 22.216);
+        --destructive-foreground: oklch(0.637 0.237 25.331);
+        --border: oklch(1 0 0 / 10%);
+        --input: oklch(1 0 0 / 15%);
+        --ring: oklch(0.556 0 0);
+    }
 }
 
 * {
-  @apply border-border;
+    @apply border-border;
 }
 
 body {
-  @apply bg-background text-foreground;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
-    Ubuntu, Cantarell, sans-serif;
+    @apply bg-background text-foreground;
+    font-family:
+        -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
+        Cantarell, sans-serif;
 }
 
-html, body, #root {
-  height: 100%;
-  overflow: hidden;
+html,
+body,
+#root {
+    height: 100%;
+    overflow: hidden;
 }
 
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+    width: 8px;
+    height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  @apply bg-muted rounded;
+    @apply bg-muted rounded;
 }
 
 ::-webkit-scrollbar-thumb {
-  @apply bg-muted-foreground/30 rounded;
+    @apply bg-muted-foreground/30 rounded;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  @apply bg-muted-foreground/50;
+    @apply bg-muted-foreground/50;
 }
 
 pre,
 code {
-  font-family: "SF Mono", Consolas, Monaco, "Andale Mono", monospace;
+    font-family: "SF Mono", Consolas, Monaco, "Andale Mono", monospace;
 }
 
 /* Page Payload Widget - Zed REPL / Light Table style */
 .cm-page-payload {
-  display: flex;
-  margin: 0.25rem 0;
-  background: var(--muted);
-  border-radius: 0.25rem;
-  max-height: 300px;
-  overflow: hidden;
+    display: flex;
+    margin: 0.25rem 0;
+    background: var(--muted);
+    border-radius: 0.25rem;
+    max-height: 300px;
+    overflow: hidden;
 }
 
 .cm-page-payload-gutter {
-  flex-shrink: 0;
-  display: flex;
-  align-items: flex-start;
-  padding-top: 0.5rem;
-  padding-left: 0.25rem;
-  padding-right: 0.5rem;
+    flex-shrink: 0;
+    display: flex;
+    align-items: flex-start;
+    padding-top: 0.5rem;
+    padding-left: 0.25rem;
+    padding-right: 0.5rem;
 }
 
 .cm-page-payload-dismiss {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 1rem;
-  height: 1rem;
-  border: none;
-  background: transparent;
-  color: var(--muted-foreground);
-  cursor: pointer;
-  border-radius: 0.125rem;
-  font-size: 0.875rem;
-  line-height: 1;
-  opacity: 0.6;
-  transition: opacity 0.15s, color 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1rem;
+    height: 1rem;
+    border: none;
+    background: transparent;
+    color: var(--muted-foreground);
+    cursor: pointer;
+    border-radius: 0.125rem;
+    font-size: 0.875rem;
+    line-height: 1;
+    opacity: 0.6;
+    transition:
+        opacity 0.15s,
+        color 0.15s;
 }
 
 .cm-page-payload-dismiss:hover {
-  opacity: 1;
-  color: var(--foreground);
+    opacity: 1;
+    color: var(--foreground);
 }
 
 .cm-page-payload-content {
-  flex: 1;
-  padding: 0.5rem 0 0.5rem 0.75rem;
-  overflow-y: auto;
-  max-height: 300px;
+    flex: 1;
+    padding: 0.5rem 0 0.5rem 0.75rem;
+    overflow-y: auto;
+    max-height: 300px;
 }
 
 .cm-page-payload-text {
-  margin: 0;
-  font-size: 0.8125rem;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-wrap: break-word;
-  color: var(--foreground);
+    margin: 0;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    color: var(--foreground);
 }
 
 /* Style for HTML content from rich docstrings */
 .cm-page-payload-content h1,
 .cm-page-payload-content h2,
 .cm-page-payload-content h3 {
-  margin-top: 0.75rem;
-  margin-bottom: 0.5rem;
-  font-weight: 600;
-  color: var(--foreground);
+    margin-top: 0.75rem;
+    margin-bottom: 0.5rem;
+    font-weight: 600;
+    color: var(--foreground);
 }
 
 .cm-page-payload-content h1:first-child,
 .cm-page-payload-content h2:first-child,
 .cm-page-payload-content h3:first-child {
-  margin-top: 0;
+    margin-top: 0;
 }
 
 .cm-page-payload-content p {
-  margin: 0.5rem 0;
+    margin: 0.5rem 0;
 }
 
 .cm-page-payload-content code {
-  background: var(--secondary);
-  padding: 0.125rem 0.25rem;
-  border-radius: var(--radius-sm);
-  font-size: 0.8125rem;
+    background: var(--secondary);
+    padding: 0.125rem 0.25rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.8125rem;
 }
 
 .cm-page-payload-content pre code {
-  background: transparent;
-  padding: 0;
+    background: transparent;
+    padding: 0;
 }
 
 .cm-page-payload-content a {
-  color: oklch(0.546 0.245 262.881);
-  text-decoration: underline;
+    color: oklch(0.546 0.245 262.881);
+    text-decoration: underline;
 }
 
 .dark .cm-page-payload-content a {
-  color: oklch(0.707 0.165 254.624);
+    color: oklch(0.707 0.165 254.624);
+}
+
+/* Queued cell: gentle opacity breathe — slower and subtler than animate-pulse */
+@keyframes queue-breathe {
+    0%,
+    100% {
+        opacity: 0.35;
+    }
+    50% {
+        opacity: 0.7;
+    }
+}
+.animate-queue-breathe {
+    animation: queue-breathe 3s ease-in-out infinite;
 }
 
 @layer base {
-  * {
-    @apply border-border outline-ring/50;
-  }
-  body {
-    @apply bg-background text-foreground;
-  }
+    * {
+        @apply border-border outline-ring/50;
+    }
+    body {
+        @apply bg-background text-foreground;
+    }
 }
