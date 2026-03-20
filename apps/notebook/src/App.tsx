@@ -505,13 +505,10 @@ function AppContent() {
       // Flush pending source sync so daemon has latest code
       await flushSync();
 
-      // Clear all outputs locally (immediate feedback)
+      // Clear all outputs via WASM CRDT (syncs to daemon via Automerge)
       for (const cell of codeCells) {
         clearOutputsLocal(cell.id);
       }
-
-      // Clear outputs via daemon for cross-window sync
-      await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
 
       // Shutdown existing kernel
       await shutdownKernel();
@@ -535,7 +532,6 @@ function AppContent() {
     }
   }, [
     clearOutputsLocal,
-    clearOutputs,
     flushSync,
     shutdownKernel,
     tryStartKernel,
@@ -649,13 +645,10 @@ function AppContent() {
       // Flush pending source sync so daemon has latest code
       await flushSync();
 
-      // Clear all outputs first (local for immediate feedback)
+      // Clear all outputs via WASM CRDT (syncs to daemon via Automerge)
       for (const cell of codeCells) {
         clearOutputsLocal(cell.id);
       }
-
-      // Await all daemon clears to ensure ordering before queueing
-      await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
 
       // Start kernel via daemon if not running
       if (kernelStatus === KERNEL_STATUS.NOT_STARTED) {
@@ -680,7 +673,6 @@ function AppContent() {
     kernelStatus,
     tryStartKernel,
     clearOutputsLocal,
-    clearOutputs,
     flushSync,
     daemonRunAllCells,
   ]);
