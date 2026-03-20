@@ -1898,35 +1898,25 @@ class TestStreamExecute:
 
     @pytest.mark.asyncio
     async def test_stream_execute_error_in_output(self, async_session):
-        """stream_execute() captures execution errors as output events.
+        """Execution errors are captured in cell outputs (document state).
 
-        Python errors (ValueError, etc.) are broadcast as Output events
-        with output_type="error" and ename/evalue/traceback fields.
-        KernelError is only for kernel-level failures (crash, launch).
+        We verify via the document (get_cell_outputs) rather than relying
+        on broadcast events, which can be missed under load. The document
+        is the source of truth.
         """
         await async_start_kernel_with_retry(async_session)
 
         cell_id = await async_session.create_cell("raise ValueError('test error')")
 
-        events = []
-        async for event in await async_session.stream_execute(cell_id):
-            events.append(event)
+        # Execute and let it complete
+        result = await async_session.execute_cell(cell_id)
 
-        # Should have output events (error comes through as output)
-        output_events = [e for e in events if e.event_type == "output"]
-        assert len(output_events) >= 1, "Expected at least one output event"
-
-        # The output should contain the error information
-        # Error outputs have output_type="error" with ename/evalue fields
-        error_found = False
-        for event in output_events:
-            if event.output and event.output.output_type == "error":
-                error_found = True
-                assert event.output.ename is not None
-                assert "ValueError" in event.output.ename
-                break
-
-        assert error_found, "Expected an error output with ValueError"
+        # The document should have the error output
+        assert not result.success, "raise ValueError should fail"
+        error_outputs = [o for o in result.outputs if o.output_type == "error"]
+        assert len(error_outputs) >= 1, "Expected error output in cell"
+        assert error_outputs[0].ename == "ValueError"
+        assert "test error" in (error_outputs[0].evalue or "")
 
 
 # ============================================================================
