@@ -5,6 +5,8 @@ interface CompactExecutionButtonProps {
   count: number | null;
   /** Whether the cell is currently executing */
   isExecuting?: boolean;
+  /** Whether the cell is queued for execution */
+  isQueued?: boolean;
   /** Called when user clicks to execute */
   onExecute?: () => void;
   /** Called when user clicks to interrupt */
@@ -17,12 +19,14 @@ interface CompactExecutionButtonProps {
  * Compact execution button combining play + execution count into one element.
  *
  * - Never run: `[ ▶ ]` - click to execute
+ * - Queued: `[⏳]` - waiting in execution queue
  * - Running: `[■]` with pulse - click to stop
  * - Executed: `[1]` - hover to show play, click to re-run
  */
 export function CompactExecutionButton({
   count,
   isExecuting = false,
+  isQueued = false,
   onExecute,
   onInterrupt,
   className,
@@ -45,7 +49,13 @@ export function CompactExecutionButton({
         "transition-colors duration-150",
         className,
       )}
-      title={isExecuting ? "Stop execution" : "Run cell"}
+      title={
+        isExecuting
+          ? "Stop execution"
+          : isQueued
+            ? "Queued for execution"
+            : "Run cell"
+      }
       data-testid="execute-button"
     >
       <span className="opacity-60">[</span>
@@ -53,6 +63,9 @@ export function CompactExecutionButton({
         {isExecuting ? (
           // Running state: show stop with pulse
           <span className="text-destructive animate-pulse">■</span>
+        ) : isQueued ? (
+          // Queued state: show clock icon with subtle animation
+          <span className="text-muted-foreground animate-pulse">⏳</span>
         ) : count !== null ? (
           // Has count: show count, play on hover
           <>

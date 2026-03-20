@@ -45,6 +45,7 @@ interface NotebookViewProps {
   isLoading?: boolean;
   focusedCellId: string | null;
   executingCellIds: Set<string>;
+  queuedCellIds: Set<string>;
   pagePayloads: Map<string, CellPagePayload>;
   runtime?: Runtime;
   searchQuery?: string;
@@ -318,6 +319,7 @@ function NotebookViewContent({
   isLoading = false,
   focusedCellId,
   executingCellIds,
+  queuedCellIds,
   pagePayloads,
   runtime = "python",
   searchQuery,
@@ -487,6 +489,7 @@ function NotebookViewContent({
     ) => {
       const isFocused = cell.id === focusedCellId;
       const isExecuting = executingCellIds.has(cell.id);
+      const isQueued = queuedCellIds.has(cell.id);
 
       // Navigation callbacks — skip cells that are collapsed into a hidden group
       const isVisibleCell = (id: string) => {
@@ -554,6 +557,7 @@ function NotebookViewContent({
             isFocused={isFocused}
             isPreviousCellFromFocused={cell.id === previousCellId}
             isExecuting={isExecuting}
+            isQueued={isQueued}
             pagePayload={pagePayload}
             searchQuery={searchQuery}
             searchActiveOffset={activeSourceOffset}
@@ -652,6 +656,7 @@ function NotebookViewContent({
       focusedCellId,
       previousCellId,
       executingCellIds,
+      queuedCellIds,
       pagePayloads,
       runtime,
       searchQuery,

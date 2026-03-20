@@ -303,12 +303,12 @@ function AppContent() {
     };
   }, [sendCommMessage]);
 
-  // Get executing cell IDs from daemon queue state (as Set for NotebookView)
+  // Split queue state into executing (currently running) and queued (waiting).
+  // Previously these were merged into one Set — now differentiated for UI.
   const executingCellIds = new Set(
-    queueState.executing
-      ? [queueState.executing, ...queueState.queued]
-      : queueState.queued,
+    queueState.executing ? [queueState.executing] : [],
   );
+  const queuedCellIds = new Set(queueState.queued);
 
   // When kernel is running and we know the env source, use it to determine panel type.
   // This handles: both-deps (backend picks based on preference), pixi (auto-detected, no metadata).
@@ -1193,6 +1193,7 @@ function AppContent() {
             isLoading={isLoading}
             focusedCellId={focusedCellId}
             executingCellIds={executingCellIds}
+            queuedCellIds={queuedCellIds}
             pagePayloads={pagePayloads}
             runtime={runtime}
             searchQuery={globalFind.query}

@@ -93,6 +93,7 @@ interface CodeCellProps {
   language?: SupportedLanguage;
   isFocused: boolean;
   isExecuting: boolean;
+  isQueued: boolean;
   pagePayload: CellPagePayload | null;
   searchQuery?: string;
   searchActiveOffset?: number;
@@ -131,6 +132,7 @@ export const CodeCell = memo(function CodeCell({
   language = "python",
   isFocused,
   isExecuting,
+  isQueued,
   pagePayload,
   searchQuery,
   searchActiveOffset = -1,
@@ -338,6 +340,7 @@ export const CodeCell = memo(function CodeCell({
     <CompactExecutionButton
       count={cell.execution_count}
       isExecuting={isExecuting}
+      isQueued={isQueued}
       onExecute={handleExecute}
       onInterrupt={onInterrupt}
     />
