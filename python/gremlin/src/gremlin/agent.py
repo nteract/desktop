@@ -1,10 +1,16 @@
-"""Agent loop and CLI entrypoint for the gremlin stress tester."""
+"""Agent loop and CLI entrypoint for the gremlin.
+
+The gremlin connects to a live notebook and autonomously decides what to do
+based on what it finds. It's designed to run alongside humans and other
+gremlins — everyone edits the same CRDT document in real time.
+"""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
 import logging
+import os
 import sys
 import time
 
@@ -17,44 +23,74 @@ from claude_agent_sdk import (
 )
 
 import runtimed
-from gremlin.tools import ALL_TOOLS, SERVER_NAME, set_session
+from gremlin.tools import SERVER_NAME, make_tools
 
 log = logging.getLogger("gremlin")
 
 SYSTEM_PROMPT = """\
-You are an expert data scientist and visualization artist working in a live
-Jupyter notebook. A human is watching the notebook in real-time in the nteract
-desktop app — every cell you create, edit, or execute appears instantly on
-their screen.
+You are a gremlin — an autonomous agent inside a live Jupyter notebook.
 
-You have tools for full notebook manipulation including surgical text edits
-via replace_match and replace_regex. Use these to fix typos or refine code
-without rewriting entire cells.
+This is a real-time collaborative environment. The notebook you're editing is
+rendered live in the nteract desktop app. Humans and other gremlins may be
+reading and editing the same document at the same time. Every cell you create,
+modify, or execute appears instantly for everyone.
 
-Guidelines:
-- Be decisive. Don't ask for permission — just do it.
-- If execute_cell returns a timeout, the cell is still running. Tell the
-  user and move on rather than retrying immediately.
-- Keep markdown cells concise. Use emoji for section headers.
-- When creating visualizations, use plt.show() and keep figure sizes reasonable.
-- If a cell errors, use replace_match to fix it rather than deleting and
-  recreating.
+## How to operate
+
+1. Start by calling get_cells to see the current notebook state.
+2. Decide what to do based on what you see. Some ideas:
+   - Fix broken code cells (read the error output, patch the source)
+   - Add missing imports or documentation
+   - Execute cells that haven't been run
+   - Clean up empty or redundant cells
+   - Improve code quality (better variable names, add type hints, simplify)
+   - Create new cells that build on existing work
+   - Add visualizations for data that's been computed but not plotted
+   - Reorganize cells into a logical flow
+3. Use surgical edits (replace_match, replace_regex, splice_source) for small
+   fixes — don't rewrite entire cells when a targeted edit will do.
+4. After making changes, execute cells to verify they work.
+5. If something breaks, fix it. If you can't fix it, move on.
+
+## Concurrency rules
+
+- Cells may change between when you read them and when you edit them.
+  If a replace_match fails (0 matches), re-read the cell and retry.
+- Other agents may create or delete cells. If a cell_id doesn't exist
+  anymore, skip it and move on.
+- Don't be precious about your work — someone else might edit or delete
+  what you just created. That's fine.
+
+## Style
+
+- Keep markdown cells short. Use them for section headers or brief notes.
+- When writing code, prefer clarity over cleverness.
+- If the notebook has a theme or direction, follow it. If it's blank,
+  pick something interesting and start building.
+- When you create something, execute it so everyone can see the result.
+
+## What NOT to do
+
+- Don't delete other people's work unless it's clearly broken/empty.
+- Don't add cells that just print "Hello World" or other filler.
+- Don't spend turns asking questions — just act.
+- Don't retry the same failed operation more than twice.
 """
 
 DEFAULT_PROMPT = """\
-Look at the notebook state, then create something impressive:
+You are joining a live notebook session. Look at what's there and respond to it.
 
-1. get_cells to see current state
-2. Clean up any junk (empty cells, errors, gremlin leftovers)
-3. Create a "## Grand Finale" markdown header
-4. Create a stunning multi-panel matplotlib visualization — generative art,
-   fractals, strange attractors, or mathematical beauty. Use colormaps and
-   artistic styling. Keep computation light (no huge arrays).
-5. Execute it
-6. Create a pandas summary cell with fun stats
-7. Execute that too
+Call get_cells to see the current state, then decide what to do. You might:
+- Fix errors you find in existing cells
+- Execute cells that haven't been run yet
+- Improve or extend existing code
+- Add something new that complements what's already there
+- Clean up the notebook structure
 
-Use replace_match to fix any typos rather than rewriting whole cells.
+If the notebook is empty, create something interesting — a small data analysis,
+a visualization, or a computational exploration. Make it self-contained.
+
+Work through the notebook methodically. Read, act, verify.
 """
 
 
@@ -62,18 +98,21 @@ async def run_agent(
     notebook_id: str,
     prompt: str = DEFAULT_PROMPT,
     max_turns: int = 25,
+    peer_label: str | None = None,
 ) -> None:
-    """Connect to a notebook and run the Claude agent loop."""
+    """Connect to a notebook and run the agent loop."""
     log.info("Connecting to notebook %s", notebook_id)
     client = runtimed.AsyncClient()
-    session = await client.join_notebook(notebook_id)
-    set_session(session)
+    session = await client.join_notebook(notebook_id, peer_label=peer_label)
+    tools = make_tools(session)
     log.info(
-        "Connected (is_connected=%s, kernel_started=%s)",
+        "Connected (is_connected=%s, kernel_started=%s, peer_label=%s)",
         session.is_connected,
         session.kernel_started,
+        peer_label,
     )
 
+    # Log initial state
     try:
         rs = await session.get_runtime_state()
         log.info(
@@ -87,13 +126,19 @@ async def run_agent(
     except Exception:
         log.warning("Could not read runtime state", exc_info=True)
 
-    tool_names = [t.name for t in ALL_TOOLS]
+    try:
+        peers = await session.get_peers()
+        log.info("Peers in session: %s", peers)
+    except Exception:
+        log.debug("Could not read peers", exc_info=True)
+
+    tool_names = [t.name for t in tools]
     log.info("Registering %d tools: %s", len(tool_names), ", ".join(tool_names))
 
     opts = ClaudeAgentOptions(
         system_prompt=SYSTEM_PROMPT,
-        mcp_servers={SERVER_NAME: create_sdk_mcp_server(SERVER_NAME, tools=ALL_TOOLS)},
-        allowed_tools=[f"mcp__{SERVER_NAME}__{t.name}" for t in ALL_TOOLS],
+        mcp_servers={SERVER_NAME: create_sdk_mcp_server(SERVER_NAME, tools=tools)},
+        allowed_tools=[f"mcp__{SERVER_NAME}__{t.name}" for t in tools],
         permission_mode="bypassPermissions",
         max_turns=max_turns,
     )
@@ -110,20 +155,19 @@ async def run_agent(
         elif isinstance(msg, ResultMessage):
             elapsed = time.monotonic() - t0
             log.info(
-                "Agent finished: turns=%d cost=$%.4f elapsed=%.1fs",
+                "Finished: turns=%d cost=$%.4f elapsed=%.1fs",
                 msg.num_turns,
                 msg.total_cost_usd,
                 elapsed,
             )
             if msg.result:
-                log.info("Result: %s", msg.result[:200])
+                log.info("Result: %s", msg.result[:300])
             print(f"\n{'=' * 60}")
             print(f"Done: {msg.num_turns} turns, ${msg.total_cost_usd:.4f} ({elapsed:.1f}s)")
             print(f"{'=' * 60}")
             if msg.result:
                 print(msg.result)
         else:
-            # Log other message types at debug level for tracing
             log.debug(
                 "Agent message: type=%s %r", type(msg).__name__, getattr(msg, "subtype", None)
             )
@@ -133,16 +177,21 @@ def main() -> None:
     """CLI entrypoint."""
     parser = argparse.ArgumentParser(
         prog="gremlin",
-        description="Claude-powered notebook stress tester",
+        description="Autonomous notebook agent — reads, reacts, edits live",
     )
     parser.add_argument("notebook_id", help="Notebook ID to connect to")
     parser.add_argument(
         "prompt",
         nargs="?",
         default=DEFAULT_PROMPT,
-        help="Prompt for the agent (default: create something impressive)",
+        help="Custom prompt (default: autonomous mode)",
     )
     parser.add_argument("--max-turns", type=int, default=25, help="Max agent turns")
+    parser.add_argument(
+        "--label",
+        default=None,
+        help="Peer label shown to other collaborators (default: gremlin-<pid>)",
+    )
     parser.add_argument(
         "-v",
         "--verbose",
@@ -163,8 +212,10 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
+    label = args.label or f"gremlin-{os.getpid()}"
+
     try:
-        asyncio.run(run_agent(args.notebook_id, args.prompt, args.max_turns))
+        asyncio.run(run_agent(args.notebook_id, args.prompt, args.max_turns, peer_label=label))
     except KeyboardInterrupt:
         log.info("Interrupted by user")
     except Exception:
