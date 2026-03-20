@@ -2595,10 +2595,12 @@ async fn send_frame_bytes(
     let payload = &frame_data[1..];
 
     match frame_type {
-        frame_types::AUTOMERGE_SYNC | frame_types::PRESENCE => handle
-            .forward_frame(frame_type, payload.to_vec())
-            .await
-            .map_err(|e| format!("send_frame(0x{:02x}): {}", frame_type, e)),
+        frame_types::AUTOMERGE_SYNC | frame_types::PRESENCE | frame_types::RUNTIME_STATE_SYNC => {
+            handle
+                .forward_frame(frame_type, payload.to_vec())
+                .await
+                .map_err(|e| format!("send_frame(0x{:02x}): {}", frame_type, e))
+        }
         _ => Err(format!(
             "Unsupported outgoing frame type: 0x{:02x}",
             frame_type

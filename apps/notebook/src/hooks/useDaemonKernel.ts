@@ -585,10 +585,10 @@ export function useDaemonKernel({
   }, [queueState]);
 
   /** Run all code cells (daemon reads from synced doc) */
-  const runAllCells = useCallback(async () => {
+  const runAllCells = useCallback(async (): Promise<DaemonNotebookResponse> => {
     logger.debug("[daemon-kernel] Running all cells");
     try {
-      await invoke<DaemonNotebookResponse>("run_all_cells_via_daemon");
+      return await invoke<DaemonNotebookResponse>("run_all_cells_via_daemon");
     } catch (e) {
       logger.error("[daemon-kernel] Run all cells failed:", e);
       throw e;
