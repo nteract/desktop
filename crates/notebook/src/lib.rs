@@ -3556,8 +3556,13 @@ pub fn run(
 
     // Capture working directory early for untitled notebook project detection.
     // This must happen before Tauri startup, which may change the CWD.
+    // Filter out "/" — macOS sets CWD to root when launched from Finder/Dock.
+    // Fall back to ~/notebooks (creating it if needed), same as onboarding.
     let working_dir = if notebook_path.is_none() {
-        std::env::current_dir().ok()
+        std::env::current_dir()
+            .ok()
+            .filter(|p| p.parent().is_some())
+            .or_else(|| ensure_notebooks_directory().ok())
     } else {
         None
     };
