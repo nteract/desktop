@@ -14,8 +14,8 @@
 | Run with notebook | `cargo xtask run path/to/notebook.ipynb` |
 | Build release .app | `cargo xtask build-app` |
 | Build release DMG | `cargo xtask build-dmg` |
-| MCP supervisor (Inkwell) | `cargo xtask mcp` |
-| MCP config JSON | `cargo xtask mcp --print-config` |
+| MCP supervisor (Inkwell) | `cargo xtask run-mcp` |
+| MCP config JSON | `cargo xtask run-mcp --print-config` |
 | MCP server (no supervisor) | `cargo xtask dev-mcp` |
 | Lint (check mode) | `cargo xtask lint` |
 | Lint (auto-fix) | `cargo xtask lint --fix` |
@@ -60,7 +60,9 @@ cargo xtask dev --skip-install --skip-build
 
 ### `cargo xtask notebook` — Hot Reload
 
-Best for UI/React development. Uses Vite dev server on port 5174. Changes to React components hot-reload instantly.
+Best for UI/React development. Uses Vite dev server on port `5174` by default
+(overridable via `RUNTIMED_VITE_PORT` or `CONDUCTOR_PORT`). Changes to React
+components hot-reload instantly.
 
 ```bash
 cargo xtask notebook
@@ -269,8 +271,11 @@ lifecycle, auto-restart on crash, and hot-reload on file changes — one command
 everything works:
 
 ```bash
-cargo xtask mcp
+cargo xtask run-mcp
 ```
+
+`cargo xtask mcp` still works as a compatibility alias, but `run-mcp` is the
+canonical command surfaced by `cargo xtask help`.
 
 This:
 1. Starts the dev daemon if not running
@@ -282,7 +287,7 @@ This:
 For your MCP client config (Zed, Claude Desktop, etc.):
 
 ```bash
-cargo xtask mcp --print-config
+cargo xtask run-mcp --print-config
 ```
 
 Or configure `.zed/settings.json` directly (gitignored):
@@ -308,6 +313,7 @@ These tools are always available, even when the Python child is down:
 | `supervisor_status` | Child process, daemon, restart count, last error |
 | `supervisor_restart` | Restart child or daemon |
 | `supervisor_rebuild` | `maturin develop` + restart (after Rust changes) |
+| `supervisor_set_mode` | Switch the managed daemon between debug and release builds |
 | `supervisor_logs` | Tail the daemon log file |
 | `supervisor_start_vite` | Start the Vite dev server for hot-reload frontend development |
 | `supervisor_stop` | Stop a managed process by name (e.g. `"vite"`) |

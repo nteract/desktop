@@ -61,11 +61,16 @@ The daemon provides a single coordinating entity that prewarms environments in t
 
 ## Development Workflow
 
-### Default: Let the notebook start it
+### Default: production auto-manages, dev mode does not
 
-The notebook app automatically tries to connect to or start the daemon on launch. If it's not running, the app falls back to in-process prewarming. You don't need to do anything special.
+The production app automatically connects to the installed daemon and, when
+needed, will install or upgrade it via `ensure_daemon_via_sidecar()` in
+`crates/notebook/src/lib.rs`.
 
-The notebook app calls `ensure_daemon_via_sidecar()` (a private function in `crates/notebook/src/lib.rs`) which takes a `tauri::AppHandle` and a progress callback to start and connect to the daemon.
+Dev builds are intentionally different: when `RUNTIMED_DEV=1` is active, the
+app refuses to auto-install the daemon and instead tells you to start a
+per-worktree daemon yourself with `cargo xtask dev-daemon`. There is no
+in-process prewarming fallback on the current dev path.
 
 ### Install daemon from source
 
@@ -251,9 +256,17 @@ The `runtimed-py` crate provides Python bindings for interacting with the daemon
 ### Installation
 
 ```bash
+# MCP / workspace venv (used by `uv run --directory python nteract`)
 cd crates/runtimed-py
-maturin develop
+VIRTUAL_ENV=../../python/.venv uv run --directory ../../python/runtimed maturin develop
+
+# Test venv (used by `python/runtimed/.venv/bin/python -m pytest ...`)
+cd crates/runtimed-py
+VIRTUAL_ENV=../../python/runtimed/.venv uv run --directory ../../python/runtimed maturin develop
 ```
+
+If you're using the Inkwell supervisor, `supervisor_rebuild` already performs
+the workspace-venv rebuild and restart for you.
 
 ### Basic Usage
 
@@ -299,11 +312,15 @@ session.connect()
 
 **Worktree daemon (for development):**
 ```bash
-# Find your worktree daemon socket
-cat ~/Library/Caches/runt/worktrees/*/daemon.json | grep -A1 worktree_path
+# Start the dev daemon for this worktree
+cargo xtask dev-daemon
 
-# Set the socket path before running Python
-export RUNTIMED_SOCKET_PATH="/Users/you/Library/Caches/runt/worktrees/{hash}/runtimed.sock"
+# Discover the exact socket path for this build channel + worktree
+export RUNTIMED_SOCKET_PATH="$(
+  RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH=$(pwd) ./target/debug/runt daemon status --json \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin)["socket_path"])'
+)"
+
 python your_script.py
 ```
 
@@ -314,8 +331,10 @@ python your_script.py
 cargo xtask dev-daemon
 
 # Find and export the socket path (Terminal 2)
-export RUNTIMED_SOCKET_PATH=$(cat ~/Library/Caches/runt/worktrees/*/daemon.json | \
-  jq -r 'select(.worktree_path == "'$(pwd)'") | .endpoint')
+export RUNTIMED_SOCKET_PATH="$(
+  RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH=$(pwd) ./target/debug/runt daemon status --json \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin)["socket_path"])'
+)"
 
 # Now Python bindings will use the worktree daemon
 python -c "import runtimed; s = runtimed.Session(); s.connect(); print('Connected!')"
@@ -370,11 +389,11 @@ If `session.run()` returns outputs like `Output(stream, stderr: "Failed to parse
 **Fix:** Set `RUNTIMED_SOCKET_PATH` to the correct daemon socket:
 
 ```bash
-# Find your worktree daemon
-cat ~/Library/Caches/runt/worktrees/*/daemon.json | jq -r '.worktree_path + " -> " + .endpoint'
-
-# Export the matching socket path
-export RUNTIMED_SOCKET_PATH="/Users/you/Library/Caches/runt/worktrees/{hash}/runtimed.sock"
+# Export the matching socket path for the current worktree
+export RUNTIMED_SOCKET_PATH="$(
+  RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH=$(pwd) ./target/debug/runt daemon status --json \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin)["socket_path"])'
+)"
 ```
 
 ### Python bindings: get_cell() returns empty outputs

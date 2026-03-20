@@ -91,14 +91,17 @@ async with runtimed.AsyncSession(notebook_id="my-notebook") as session:
     new_position = await session.move_cell(cell_id, after_cell_id="other-id")
 ```
 
-## DaemonClient API
+## Client API
 
 ```python
-client = runtimed.DaemonClient()
+client = runtimed.Client()
 client.ping()        # Health check
 client.status()      # Pool statistics
 client.list_rooms()  # Active notebooks
 ```
+
+`DaemonClient` is still available for backwards compatibility, but `Client` and
+`AsyncClient` are the current entry points.
 
 ## Requirements
 

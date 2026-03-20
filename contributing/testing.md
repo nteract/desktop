@@ -177,17 +177,25 @@ Configuration in `conftest.py` defines markers and daemon detection.
 
 ```bash
 # Unit tests only (fast, no daemon)
-pytest python/runtimed/tests/test_session_unit.py -v
+python/runtimed/.venv/bin/python -m pytest python/runtimed/tests/test_session_unit.py -v
 
 # Skip integration tests
-SKIP_INTEGRATION_TESTS=1 pytest python/runtimed/tests/ -v
+SKIP_INTEGRATION_TESTS=1 python/runtimed/.venv/bin/python -m pytest python/runtimed/tests/ -v
 
 # Integration tests (requires running dev daemon)
-pytest python/runtimed/tests/test_daemon_integration.py -v
+RUNTIMED_SOCKET_PATH="$(
+  RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH=$(pwd) ./target/debug/runt daemon status --json \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin)["socket_path"])'
+)" python/runtimed/.venv/bin/python -m pytest python/runtimed/tests/test_daemon_integration.py -v
 
 # CI mode (spawns its own daemon)
-RUNTIMED_INTEGRATION_TEST=1 pytest python/runtimed/tests/ -v
+RUNTIMED_INTEGRATION_TEST=1 python/runtimed/.venv/bin/python -m pytest python/runtimed/tests/ -v
 ```
+
+The repository keeps two separate Python environments on purpose:
+`python/.venv` for the MCP server and `python/runtimed/.venv` for pytest.
+Use the latter for `python/runtimed/tests/` so your test run sees the same
+extension build and dependencies as CI.
 
 **Writing tests:**
 

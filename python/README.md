@@ -12,12 +12,13 @@ Development home for nteract Python packages.
 To run the nteract MCP server against a locally-built runtimed (e.g., for testing presence, new protocol features):
 
 ```bash
-cd runtimed
+cd ../crates/runtimed-py
 
-# 1. Build runtimed from Rust source
-uv run --reinstall-package runtimed maturin develop
+# 1. Build runtimed from Rust source into the MCP/workspace venv
+VIRTUAL_ENV=../../python/.venv uv run --directory ../../python/runtimed maturin develop
 
 # 2. Install local nteract (editable, without re-resolving runtimed from PyPI)
+cd ../../python/runtimed
 uv pip install --no-deps -e ../nteract
 
 # 3. Install nteract's other dependencies
@@ -27,7 +28,8 @@ uv pip install "mcp>=1.26.0" "httpx>=0.27.0,<1.0" "pydantic>=2.0"
 uv run python -c "import runtimed, nteract; print('ok')"
 ```
 
-After this, the runtimed venv has both the local Rust build and the local nteract source.
+After this, `python/.venv` has both the local Rust build and the local
+`nteract` source.
 
 ## Running the MCP Server (Dev)
 
@@ -67,6 +69,6 @@ RUNTIMED_SOCKET_PATH=... uv run python demos/presence_cursor.py <notebook_id>
 If you change code in `crates/runtimed-py/` or `crates/runtimed/`:
 
 ```bash
-cd python/runtimed
-uv run --reinstall-package runtimed maturin develop
+cd crates/runtimed-py
+VIRTUAL_ENV=../../python/.venv uv run --directory ../../python/runtimed maturin develop
 ```

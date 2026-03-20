@@ -8,7 +8,7 @@ The architecture has two core ideas:
 
 1. **Outputs live outside the CRDT.** Kernel outputs (images, HTML, logs) are write-once blobs from a single actor. Storing them in an Automerge document wastes CRDT history tracking on data that will never be concurrently edited. Instead, outputs go into a content-addressed blob store. The CRDT stores lightweight hash references.
 
-2. **Two levels of output abstraction.** An "output" (the Jupyter-level concept — a display_data, stream, error, etc.) is described by a manifest that references raw content blobs. Small data is inlined in the manifest; large data points to the blob store. `GET /output/{id}` returns the manifest. `GET /blob/{hash}` returns raw bytes. Most renders need only one request.
+2. **Two levels of output abstraction.** An "output" (the Jupyter-level concept — a display_data, stream, error, etc.) is described by a manifest that references raw content blobs. Small data is inlined in the manifest; large data points to the blob store. Both manifests and raw blobs are fetched through `GET /blob/{hash}`; the manifest's media type tells clients what they fetched. Text-like outputs often need one request, while binary outputs typically need two (manifest + blob).
 
 ---
 
@@ -118,7 +118,7 @@ Length-prefixed binary framing over a single Unix socket (Unix) or named pipe (W
 
 ### Settings.json file watcher
 
-The daemon watches `~/.config/nteract/settings.json` for external edits. Changes are debounced (500ms), applied to the Automerge settings doc, persisted as Automerge binary (not back to JSON, to avoid formatting churn), and broadcast to all connected sync clients.
+The daemon watches `~/.config/nteract/settings.json` for external edits. Changes are debounced (500ms), applied to the Automerge settings doc, then persisted both as an Automerge binary (`settings.automerge`) and as a human-readable JSON mirror (plus `settings.schema.json`) so manual edits, fallback reads, and editor tooling stay aligned.
 
 ### Service management
 
@@ -222,7 +222,7 @@ ROOT/
       source: Text              <- Automerge Text CRDT (character-level merging)
       execution_count: Str      <- JSON-encoded i32 or "null"
       outputs/                  <- List of Str
-        [j]: Str                <- JSON-encoded Jupyter output (manifest hash)
+        [j]: Str                <- output manifest hash (64-char hex SHA-256)
       metadata: Str             <- JSON-encoded cell metadata object
   metadata/                     <- Map
     runtime: Str
@@ -233,7 +233,7 @@ Cell ordering uses fractional indexing via the `position` field. Cells are sorte
 
 **Design decisions**:
 - Cell `source` uses `ObjType::Text` for proper concurrent edit merging. `update_source()` uses Automerge's `update_text()` (Myers diff internally) for efficient character-level patches.
-- `outputs` are write-once from a single actor (the kernel), so they don't need CRDT text semantics. Stored as JSON strings now. Phase 6 changes these to output manifest hashes.
+- `outputs` are write-once from a single actor (the kernel), so they don't need CRDT text semantics. They are stored as manifest hashes pointing into the blob store.
 - `execution_count` is a string for JSON serialization consistency.
 
 ### Room architecture
@@ -539,15 +539,24 @@ Save is delegated to the daemon via `NotebookRequest::SaveNotebook`. The daemon:
 
 ## Phase 6: Output store
 
-> **Foundation implemented** (PR #237 adds ContentRef, manifest types, inlining threshold)
+> **Implemented**
 
-Move outputs from inline JSON in the CRDT to the blob store. This solves the CRDT bloat problem from Phase 5 and introduces two-level serving.
+Outputs no longer live inline in the notebook CRDT. The daemon writes an output
+manifest to the blob store, stores the manifest hash in `cell.outputs[]`, and
+the frontend resolves that hash on demand.
 
-### The two levels
+### Serving model
 
-**Level 1 — Blob store** (`GET /blob/{hash}`): Pure content-addressed bytes. Returns raw PNG, text, JSON — whatever was stored. Used for `<img src>`, direct rendering, large data.
+There is a single HTTP surface:
 
-**Level 2 — Output store** (`GET /output/{id}`): Jupyter-aware. Returns structured information about an output — what type it is, what representations are available, and the data itself (inlined for small content, blob-referenced for large content). Used by the frontend to understand what to render.
+- `GET /blob/{hash}` serves immutable content-addressed bytes
+- Manifest blobs use media type `application/x-jupyter-output+json`
+- Binary payload blobs (for example `image/png`) are served as raw bytes with
+  the correct `Content-Type`
+- Text payload blobs are served as UTF-8 text
+
+That means "manifest vs payload" is a convention carried by the manifest hash
+and blob metadata, not a separate `/output/{id}` endpoint.
 
 ### ContentRef
 
@@ -633,7 +642,9 @@ Daemon-side decision at write time. The frontend just checks `inline` vs `blob`.
 
 ### Manifest storage
 
-Manifests are themselves blobs (media type `application/x-jupyter-output+json`), content-addressed. `GET /output/{id}` is a thin view over `GET /blob/{hash}` that validates the media type.
+Manifests are themselves blobs (media type
+`application/x-jupyter-output+json`) and are fetched the same way as any other
+blob: `GET /blob/{manifest_hash}`.
 
 ### Automerge doc integration
 
@@ -650,40 +661,44 @@ The CRDT stores only hashes (~64 bytes each). All output structure and content l
 - Clearing outputs removes hashes (no tombstone inflation from large data)
 - Output history doesn't accumulate in the Automerge change log
 
-### Tauri backend changes
+### Current write/read flow
 
-The iopub listener (from Phase 5) changes what it writes to automerge:
+Daemon write path:
+1. Normalize kernel output into nbformat-style JSON
+2. Inline text-like content smaller than 8 KB, or write larger/binary payloads
+   to the blob store
+3. Write the output manifest itself to the blob store
+4. Append the manifest hash to `cell.outputs[]`
 
-**Before** (Phase 5): `sync_client.append_output(cell_id, json_string)` — full JSON output
-**After** (Phase 6):
-1. For each MIME type / stream text / traceback: size < 8KB -> inline, >= 8KB -> blob store via daemon
-2. Construct output manifest JSON
-3. Store manifest in blob store -> get manifest hash
-4. `sync_client.append_output(cell_id, manifest_hash)` — just the hash
+Frontend read path:
+1. `useManifestResolver()` fetches `GET /blob/{manifest_hash}`
+2. `manifest-resolution.ts` parses the manifest and resolves each `ContentRef`
+3. Binary MIME types resolve to blob URLs such as
+   `http://127.0.0.1:{port}/blob/{blob_hash}`
+4. Text MIME types are fetched and returned as strings
 
-### Frontend changes
+For compatibility during the transition, the frontend still accepts legacy
+inline JSON outputs when a cell output string is not a 64-character hash.
 
-**`OutputArea.tsx`** — the big change. Currently receives `JupyterOutput[]` (parsed JSON). Now receives `string[]` (manifest hashes).
+### MIME-type contract
 
-New rendering flow:
-1. Cell outputs = `["hash1", "hash2", ...]`
-2. For each hash, fetch `GET /output/{hash}` -> manifest JSON
-3. Parse manifest, select MIME type by priority
-4. For `ContentRef::Inline` — use data directly
-5. For `ContentRef::Blob` — `<img src="http://localhost:{port}/blob/{blobHash}">` for images, `fetch()` for HTML/text
+Binary-vs-text classification is shared across the daemon, Python bindings, and
+frontend. In particular:
 
-This needs a loading state per output (while manifest is being fetched) and caching (manifests are immutable, cache aggressively).
-
-**Stream output handling during execution**: The iopub listener still emits `kernel:iopub` events for live display. The frontend renders stream text incrementally from events. When execution finishes, the finalized manifest hash appears in the automerge doc. The frontend transitions from live event-driven display to blob-backed display.
+- `image/svg+xml` is treated as text, not binary
+- `image/*` is binary otherwise
+- `audio/*` and `video/*` are binary
+- `application/*` is binary by default, with `json`, `xml`, `+json`, and
+  `+xml` carve-outs
 
 ### Key files
 
 | File | Role |
 |------|------|
 | `crates/runtimed/src/output_store.rs` | Manifest construction, ContentRef, inlining threshold |
-| `crates/runtimed/src/blob_server.rs` | Add `GET /output/{id}` endpoint |
+| `crates/runtimed/src/blob_server.rs` | Serve immutable `GET /blob/{hash}` and `/health` |
 | `crates/runtimed/src/kernel_manager.rs` | iopub listener constructs manifests and stores blobs |
-| `src/components/cell/OutputArea.tsx` | Fetch manifests, resolve blob URLs |
+| `apps/notebook/src/lib/manifest-resolution.ts` | Resolve manifests and MIME-specific blob/text payloads |
 | `apps/notebook/src/hooks/useManifestResolver.ts` | Hook for fetching/caching output manifests |
 
 ---

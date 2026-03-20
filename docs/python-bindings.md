@@ -8,10 +8,18 @@ The `runtimed` Python package provides programmatic access to the notebook daemo
 # From PyPI
 pip install runtimed
 
-# From source
-cd python/runtimed
-uv run maturin develop
+# From source for the MCP/workspace venv
+cd crates/runtimed-py
+VIRTUAL_ENV=../../python/.venv uv run --directory ../../python/runtimed maturin develop
+
+# From source for the pytest venv
+cd crates/runtimed-py
+VIRTUAL_ENV=../../python/runtimed/.venv uv run --directory ../../python/runtimed maturin develop
 ```
+
+`maturin develop` needs the explicit `VIRTUAL_ENV` because this repository uses
+two different Python environments: `python/.venv` for the MCP server and
+`python/runtimed/.venv` for tests.
 
 ## Quick Start
 
@@ -320,12 +328,14 @@ env = await session.env_source()             # str | None
 notebook_id = session.notebook_id  # str
 ```
 
-## DaemonClient API
+## Client API
 
-The `DaemonClient` class provides low-level access to daemon operations.
+`Client` is the recommended low-level entry point for daemon operations and for
+opening or joining notebooks. `DaemonClient` still exists as a deprecated alias
+for the daemon-only subset of this API.
 
 ```python
-client = runtimed.DaemonClient()
+client = runtimed.Client()
 
 # Health checks
 client.ping()         # True if daemon responding
@@ -356,6 +366,11 @@ rooms = client.list_rooms()
 # Operations
 client.flush_pool()   # Clear and rebuild environment pool
 client.shutdown()     # Stop the daemon
+
+# Notebook operations
+session = client.create_notebook(runtime="python")
+# or
+session = client.open_notebook("/path/to/notebook.ipynb")
 ```
 
 ## Result Types
@@ -515,5 +530,4 @@ Common error scenarios:
 |----------|-------------|
 | `RUNTIMED_WORKSPACE_PATH` | Use dev daemon for this worktree |
 | `RUNTIMED_SOCKET_PATH` | Override daemon socket path |
-
 
