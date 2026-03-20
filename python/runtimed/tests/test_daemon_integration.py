@@ -189,6 +189,67 @@ def _get_socket_path():
     )
 
 
+@pytest.fixture(scope="module", autouse=True)
+def daemon_health_check(daemon_process):
+    """Run a health check on the daemon before any tests execute.
+
+    Reports daemon status (socket path, pool stats, version) and verifies
+    that basic operations work (ping, create_notebook, start_kernel, execute).
+    Fails fast with actionable diagnostics instead of hanging silently.
+    """
+    socket_path, proc = daemon_process
+    mode = "CI (spawned)" if proc is not None else "dev (external)"
+    print(f"\n{'=' * 60}", file=sys.stderr)
+    print(f"[health] Daemon mode: {mode}", file=sys.stderr)
+    print(f"[health] Socket: {socket_path}", file=sys.stderr)
+
+    # 1. Create client and ping
+    try:
+        if socket_path is not None:
+            client = runtimed.Client(socket_path=str(socket_path))
+        else:
+            client = runtimed.Client()
+        assert client.ping(), "Daemon did not respond to ping"
+        print("[health] Ping: OK", file=sys.stderr)
+    except Exception as e:
+        pytest.fail(f"Daemon health check failed at ping: {e}")
+
+    # 2. Pool status
+    try:
+        status = client.status()
+        print(
+            f"[health] Pool: uv={status['uv_available']} conda={status['conda_available']}",
+            file=sys.stderr,
+        )
+        if status["uv_available"] == 0:
+            print("[health] WARNING: no UV environments available", file=sys.stderr)
+    except Exception as e:
+        print(f"[health] WARNING: could not read status: {e}", file=sys.stderr)
+
+    # 3. Create notebook + start kernel + execute
+    try:
+        session = client.create_notebook(runtime="python")
+        print(f"[health] Created notebook: {session.notebook_id}", file=sys.stderr)
+
+        session.start_kernel(kernel_type="python", env_source="uv:prewarmed")
+        print("[health] Kernel started: OK", file=sys.stderr)
+
+        result = session.run("print('health-check-ok')")
+        assert result.success, f"Health check execution failed: {result.stderr}"
+        print("[health] Execute: OK", file=sys.stderr)
+
+        session.shutdown_kernel()
+    except Exception as e:
+        pytest.fail(
+            f"Daemon health check failed at create/execute: {e}\n"
+            f"Socket: {socket_path}\n"
+            f"Mode: {mode}"
+        )
+
+    print(f"[health] All checks passed", file=sys.stderr)
+    print(f"{'=' * 60}", file=sys.stderr)
+
+
 @pytest.fixture(scope="module")
 def daemon_process():
     """Fixture that ensures a daemon is running.
@@ -290,29 +351,52 @@ def daemon_process():
         conda_ready = False
         import re
 
-        # Match "UV pool: N/M available" where N > 0 (works for any pool size)
-        uv_pattern = re.compile(r"UV pool: (\d+)/\d+ available")
-        conda_pattern = re.compile(r"Conda pool: (\d+)/\d+ available")
-        for i in range(120):
+        # Match either format:
+        #   "UV pool: N/M available" (periodic status line)
+        #   "UV environment ready at ..." (per-env completion)
+        uv_pool_pattern = re.compile(r"UV pool: (\d+)/\d+ available")
+        uv_env_ready_pattern = re.compile(r"UV environment ready at")
+        conda_pool_pattern = re.compile(r"Conda pool: (\d+)/\d+ available")
+        conda_env_ready_pattern = re.compile(r"Conda environment ready:")
+        for i in range(150):
             try:
                 log_contents = log_file.read_text()
                 if not uv_ready:
+                    # Check pool summary first
                     for line in log_contents.splitlines():
-                        match = uv_pattern.search(line)
+                        match = uv_pool_pattern.search(line)
                         if match and int(match.group(1)) > 0:
                             uv_ready = True
-                            print(f"[test] UV pool ready after {i + 1}s", file=sys.stderr)
-                            break
-                if not conda_ready:
-                    for line in log_contents.splitlines():
-                        match = conda_pattern.search(line)
-                        if match and int(match.group(1)) > 0:
-                            conda_ready = True
                             print(
-                                f"[test] Conda pool ready after {i + 1}s",
+                                f"[test] UV pool ready after {i + 1}s (pool summary)",
                                 file=sys.stderr,
                             )
                             break
+                if not uv_ready:
+                    # Fall back to counting individual env-ready lines
+                    uv_count = len(uv_env_ready_pattern.findall(log_contents))
+                    if uv_count > 0:
+                        uv_ready = True
+                        print(
+                            f"[test] UV pool ready after {i + 1}s ({uv_count} envs)",
+                            file=sys.stderr,
+                        )
+                if not conda_ready:
+                    for line in log_contents.splitlines():
+                        match = conda_pool_pattern.search(line)
+                        if match and int(match.group(1)) > 0:
+                            conda_ready = True
+                            print(
+                                f"[test] Conda pool ready after {i + 1}s (pool summary)",
+                                file=sys.stderr,
+                            )
+                            break
+                if not conda_ready:
+                    if conda_env_ready_pattern.search(log_contents):
+                        conda_ready = True
+                        print(
+                            f"[test] Conda pool ready after {i + 1}s (env ready)", file=sys.stderr
+                        )
             except Exception:
                 pass
             if uv_ready and conda_ready:
@@ -320,7 +404,7 @@ def daemon_process():
             time.sleep(1)
         else:
             pytest.fail(
-                f"Pools not ready within 120s (uv={uv_ready}, conda={conda_ready}). "
+                f"Pools not ready within 150s (uv={uv_ready}, conda={conda_ready}). "
                 f"Daemon logs:\n{log_file.read_text()}"
             )
 
