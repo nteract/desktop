@@ -16,70 +16,69 @@ import re
 import sys
 from pathlib import Path
 
-
 # ANSI escape code pattern
-ANSI_PATTERN = re.compile(r'\x1b\[[0-9;]*m')
+ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 
 # Error patterns that indicate failures
 ERROR_PATTERNS = [
     # Rust compiler errors
-    r'^error(\[E\d+\])?:',
-    r'^\s*-->\s+\S+:\d+:\d+',  # Rust file:line:col references
+    r"^error(\[E\d+\])?:",
+    r"^\s*-->\s+\S+:\d+:\d+",  # Rust file:line:col references
     # Generic errors
-    r'##\[error\]',
-    r'\bError\b.*failed',
-    r'\bFAILED\b',
-    r'failed to\b',
-    r'error:.*could not compile',
+    r"##\[error\]",
+    r"\bError\b.*failed",
+    r"\bFAILED\b",
+    r"failed to\b",
+    r"error:.*could not compile",
     # npm errors
-    r'npm ERR!',
+    r"npm ERR!",
     # pytest errors
-    r'^FAILED\s+',
-    r'^ERROR\s+',
+    r"^FAILED\s+",
+    r"^ERROR\s+",
     # Exit codes
-    r'exit code \d+',
-    r'exited with code \d+',
+    r"exit code \d+",
+    r"exited with code \d+",
     # Process failures
-    r'Process completed with exit code [1-9]',
+    r"Process completed with exit code [1-9]",
 ]
 
 # Warning patterns (optional inclusion)
 WARNING_PATTERNS = [
-    r'^warning(\[W\d+\])?:',
-    r'\bWarning\b:',
-    r'^\s*Warn\s+',
+    r"^warning(\[W\d+\])?:",
+    r"\bWarning\b:",
+    r"^\s*Warn\s+",
 ]
 
 # Patterns to always include (context markers)
 CONTEXT_PATTERNS = [
-    r'^##\[group\]',
-    r'^##\[endgroup\]',
+    r"^##\[group\]",
+    r"^##\[endgroup\]",
 ]
 
 # Noise patterns to filter out
 NOISE_PATTERNS = [
-    r'^Setting up\s+\S+',  # apt package installation
-    r'^\s*Compiling\s+\S+\s+v\d',  # Successful Rust compiles
-    r'^\s*Downloading\s+',  # Package downloads
-    r'^\s*Installing\s+',  # Package installs (successful)
-    r'^\[command\]/usr/bin/git',  # Git cleanup commands
-    r'^git version',
-    r'Temporarily overriding HOME',
-    r'Adding repository directory to the temporary git global',
-    r'safe\.directory',
+    r"^Setting up\s+\S+",  # apt package installation
+    r"^\s*Compiling\s+\S+\s+v\d",  # Successful Rust compiles
+    r"^\s*Downloading\s+",  # Package downloads
+    r"^\s*Installing\s+",  # Package installs (successful)
+    r"^\[command\]/usr/bin/git",  # Git cleanup commands
+    r"^git version",
+    r"Temporarily overriding HOME",
+    r"Adding repository directory to the temporary git global",
+    r"safe\.directory",
 ]
 
 
 def strip_ansi(text: str) -> str:
     """Remove ANSI escape codes from text."""
-    return ANSI_PATTERN.sub('', text)
+    return ANSI_PATTERN.sub("", text)
 
 
 def strip_timestamp(line: str) -> str:
     """Remove GitHub Actions timestamp prefix from line."""
     # Format: 2026-02-17T00:32:49.7471217Z
-    timestamp_pattern = r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s*'
-    return re.sub(timestamp_pattern, '', line)
+    timestamp_pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s*"
+    return re.sub(timestamp_pattern, "", line)
 
 
 def is_error_line(line: str) -> bool:
@@ -114,19 +113,19 @@ def find_enclosing_group(lines: list[str], error_idx: int) -> tuple[int | None, 
     # Search backwards for ##[group]
     for i in range(error_idx, -1, -1):
         clean = strip_timestamp(strip_ansi(lines[i]))
-        if '##[group]' in clean:
+        if "##[group]" in clean:
             group_start = i
             break
-        if '##[endgroup]' in clean and i != error_idx:
+        if "##[endgroup]" in clean and i != error_idx:
             break  # Hit a different group's end
 
     # Search forwards for ##[endgroup]
     for i in range(error_idx, len(lines)):
         clean = strip_timestamp(strip_ansi(lines[i]))
-        if '##[endgroup]' in clean:
+        if "##[endgroup]" in clean:
             group_end = i
             break
-        if '##[group]' in clean and i != error_idx:
+        if "##[group]" in clean and i != error_idx:
             break  # Hit a different group's start
 
     return group_start, group_end
@@ -152,7 +151,7 @@ def summarize_log(content: str, context_lines: int = 3, include_warnings: bool =
     # Always include header (first few lines before === LOGS ===)
     header_end = 0
     for i, line in enumerate(lines):
-        if '=== LOGS' in line:
+        if "=== LOGS" in line:
             header_end = i + 1
             break
     if header_end > 0:
@@ -212,14 +211,18 @@ def summarize_log(content: str, context_lines: int = 3, include_warnings: bool =
 
         last_end = end
 
-    return '\n'.join(output_lines) + '\n'
+    return "\n".join(output_lines) + "\n"
 
 
-def process_file(input_path: Path, output_path: Path | None,
-                 context_lines: int, include_warnings: bool,
-                 to_stdout: bool) -> None:
+def process_file(
+    input_path: Path,
+    output_path: Path | None,
+    context_lines: int,
+    include_warnings: bool,
+    to_stdout: bool,
+) -> None:
     """Process a single log file."""
-    content = input_path.read_text(encoding='utf-8', errors='replace')
+    content = input_path.read_text(encoding="utf-8", errors="replace")
     summary = summarize_log(content, context_lines, include_warnings)
 
     if to_stdout:
@@ -227,31 +230,38 @@ def process_file(input_path: Path, output_path: Path | None,
         print(summary)
     else:
         if output_path is None:
-            output_path = input_path.with_suffix(input_path.suffix + '.summary')
-        output_path.write_text(summary, encoding='utf-8')
+            output_path = input_path.with_suffix(input_path.suffix + ".summary")
+        output_path.write_text(summary, encoding="utf-8")
 
         # Report size reduction
         original_lines = len(content.splitlines())
         summary_lines = len(summary.splitlines())
         reduction = (1 - summary_lines / original_lines) * 100 if original_lines > 0 else 0
-        print(f"{input_path.name}: {original_lines} -> {summary_lines} lines ({reduction:.0f}% reduction)")
+        print(
+            f"{input_path.name}: {original_lines} -> {summary_lines} lines"
+            f" ({reduction:.0f}% reduction)"
+        )
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Summarize CI logs by extracting errors and context.',
+        description="Summarize CI logs by extracting errors and context.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__
+        epilog=__doc__,
     )
-    parser.add_argument('files', nargs='+', type=Path, help='Log files to summarize')
-    parser.add_argument('--stdout', action='store_true',
-                        help='Print summaries to stdout instead of creating files')
-    parser.add_argument('--include-warnings', action='store_true',
-                        help='Include warning lines in summary')
-    parser.add_argument('--context', type=int, default=3,
-                        help='Lines of context around errors (default: 3)')
-    parser.add_argument('-o', '--output', type=Path,
-                        help='Output file (only valid with single input file)')
+    parser.add_argument("files", nargs="+", type=Path, help="Log files to summarize")
+    parser.add_argument(
+        "--stdout", action="store_true", help="Print summaries to stdout instead of creating files"
+    )
+    parser.add_argument(
+        "--include-warnings", action="store_true", help="Include warning lines in summary"
+    )
+    parser.add_argument(
+        "--context", type=int, default=3, help="Lines of context around errors (default: 3)"
+    )
+    parser.add_argument(
+        "-o", "--output", type=Path, help="Output file (only valid with single input file)"
+    )
 
     args = parser.parse_args()
 
@@ -264,9 +274,8 @@ def main():
             continue
 
         output_path = args.output if len(args.files) == 1 else None
-        process_file(input_path, output_path, args.context,
-                     args.include_warnings, args.stdout)
+        process_file(input_path, output_path, args.context, args.include_warnings, args.stdout)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

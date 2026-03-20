@@ -8,6 +8,13 @@ dependencies = [
     "gremlin ; sys_platform == 'darwin'",
 ]
 
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = []
+
 [tool.uv.workspace]
 members = ["python/runtimed", "python/nteract", "python/gremlin"]
 
