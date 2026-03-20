@@ -9,12 +9,8 @@ authors = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "runtimed>=2.0.0a0,<3.0",
     "claude-agent-sdk>=0.1.0",
 ]
-
-[tool.uv.sources]
-runtimed = { workspace = true }
 
 [project.scripts]
 gremlin = "gremlin.__main__:main"

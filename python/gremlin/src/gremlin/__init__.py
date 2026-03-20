@@ -1,7 +1,8 @@
-"""Gremlin — a Claude-powered notebook stress tester.
+"""Gremlin — an autonomous notebook agent powered by Claude.
 
-Connects to a running notebook via runtimed and uses Claude to
-intelligently (and chaotically) interact with cells.
+Spawns the nteract MCP server as a subprocess and lets Claude
+interact with a live notebook. Designed to run alongside humans
+and other gremlins for stress testing and API evaluation.
 """
 
 __version__ = "0.1.0"
