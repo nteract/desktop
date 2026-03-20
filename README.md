@@ -8,13 +8,12 @@ Built on [runtimelib](https://crates.io/crates/runtimelib) and [jupyter-protocol
 
 Download the latest release from [GitHub Releases](https://github.com/nteract/desktop/releases).
 
-The desktop app bundles everything — `runt` CLI and `runtimed` daemon.
+The desktop app bundles everything — `runt` CLI, `runtimed` daemon, and `sidecar`.
 
-The Python bindings and MCP server are available on PyPI:
+The Python bindings are available on PyPI:
 
 ```bash
 pip install runtimed
-pip install nteract
 ```
 
 ## What's in here
@@ -24,12 +23,8 @@ pip install nteract
 | `nteract` | Desktop notebook editor (Tauri + React) |
 | `runtimed` | Background daemon — environment pools, notebook sync, kernel execution |
 | `runt` | CLI for managing kernels, notebooks, and the daemon |
+| `sidecar` | Viewer for Jupyter kernel outputs |
 | `runtimed` (PyPI) | Python bindings for the daemon |
-| `nteract` (PyPI) | MCP server for AI agent integration with notebooks |
-
-## MCP Server
-
-For AI agent integration with Jupyter notebooks, see the [nteract MCP server](https://github.com/nteract/nteract).
 
 ## Usage
 
@@ -38,7 +33,7 @@ For AI agent integration with Jupyter notebooks, see the [nteract MCP server](ht
 runt notebook path/to/notebook.ipynb
 
 # Interactive console
-runt jupyter console
+runt console
 
 # Daemon management
 runt daemon status
@@ -62,41 +57,25 @@ $ runt notebooks
 ```
 nteract/desktop
 ├── src/                    # Shared UI code (React components, hooks, utilities)
-│   ├── bindings/          # TypeScript types generated from Rust (ts-rs)
 │   ├── components/
 │   │   ├── ui/            # shadcn primitives (button, dialog, etc.)
 │   │   ├── cell/          # Notebook cell components
 │   │   ├── outputs/       # Output renderers (stream, error, display data)
 │   │   ├── editor/        # CodeMirror editor
-│   │   ├── isolated/      # Iframe security isolation (IsolatedFrame, CommBridgeManager)
 │   │   └── widgets/       # ipywidgets controls
-│   ├── hooks/             # Shared hooks (useSyncedSettings, useTheme)
-│   ├── isolated-renderer/ # Code that runs inside isolated iframes
-│   ├── lib/               # Shared utilities (cn(), dark-mode, error-boundary)
-│   └── styles/            # Global stylesheets
+│   └── lib/
+│       └── utils.ts       # cn() and other utilities
 ├── apps/                   # App entry points
-│   └── notebook/          # Notebook Tauri frontend
+│   ├── notebook/          # Notebook Tauri frontend
+│   └── sidecar/           # Sidecar WebView frontend
 ├── crates/                 # Rust code
 │   ├── runt/              # CLI binary
 │   ├── runtimed/          # Background daemon
-│   ├── runtimed-py/       # Python bindings for the daemon
-│   ├── runtimed-wasm/     # WASM Automerge bindings for frontend (same automerge crate as daemon)
 │   ├── notebook/          # Notebook Tauri app
-│   ├── notebook-doc/      # Shared Automerge document operations (cells, metadata, sync)
-│   ├── notebook-protocol/ # Notebook wire protocol types
-│   ├── notebook-sync/     # Notebook sync layer
-│   ├── tauri-jupyter/     # Shared Tauri/Jupyter utilities
-│   ├── kernel-launch/     # Shared kernel launching API
-│   ├── kernel-env/        # Environment progress reporting
-│   ├── runt-trust/        # HMAC trust verification
-│   ├── runt-workspace/    # Workspace detection utilities
-│   ├── xtask/             # Build automation tasks
-│   └── mcp-supervisor/    # Inkwell MCP supervisor for dev workflows
-├── python/                 # Python packages
-│   ├── runtimed/          # PyPI: runtimed (Python bindings for daemon)
-│   └── nteract/           # PyPI: nteract (MCP server)
-├── docs/                   # User-facing documentation
-└── .claude/                # Agent rules and skills (auto-loaded)
+│   ├── sidecar/           # Sidecar wry/tao app
+│   └── tauri-jupyter/     # Shared Tauri/Jupyter utilities
+├── docs/                   # Architecture documentation
+└── contributing/           # Developer guides
 ```
 
 ## Development
@@ -111,52 +90,43 @@ nteract/desktop
 
 **Linux only:** Install GTK/WebKit dev libraries:
 ```bash
-sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev \
-  libssl-dev libayatana-appindicator3-dev librsvg2-dev
+sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
 ```
 
 ### Quick start
 
 ```bash
-cargo xtask dev
+pnpm install
+cargo xtask build
 ```
 
 ### Development workflows
 
 | Workflow | Command | Use when |
 |----------|---------|----------|
-| One-shot setup + dev | `cargo xtask dev` | First-time setup plus daemon + app in one command |
-| Hot reload | `cargo xtask notebook` | Iterating on React UI |
+| Hot reload | `cargo xtask dev` | Iterating on React UI |
 | Standalone Vite | `cargo xtask vite` | Multi-window testing (Vite survives window closes) |
-| Attach to Vite | `cargo xtask notebook --attach` | Connect Tauri to already-running Vite |
+| Attach to Vite | `cargo xtask dev --attach` | Connect Tauri to already-running Vite |
 | Debug build | `cargo xtask build` | Full debug build (frontend + rust) |
-| E2E debug build | `cargo xtask build-e2e` | Debug build with built-in WebDriver server |
 | Rust-only build | `cargo xtask build --rust-only` | Rebuild rust, reuse existing frontend |
 | Run bundled | `cargo xtask run notebook.ipynb` | Run standalone binary |
-| Lint (check) | `cargo xtask lint` | Check formatting and linting across Rust, JS/TS, Python |
-| Lint (fix) | `cargo xtask lint --fix` | Auto-fix formatting and linting |
-| Dev daemon | `cargo xtask dev-daemon` | Run per-worktree dev daemon |
-| Install daemon | `cargo xtask install-daemon` | Install daemon into the running service |
 | Release .app | `cargo xtask build-app` | Testing app bundle locally |
 | Release DMG | `cargo xtask build-dmg` | Distribution (usually CI) |
-| Generate icons | `cargo xtask icons [source.png]` | Generate icon variants from source image |
-
-`cargo xtask dev` runs the first-time bootstrap (`pnpm install` + `cargo xtask build`),
-starts the per-worktree dev daemon, waits for it to be ready, and then launches the
-notebook app. For repeat launches, use `cargo xtask dev --skip-install --skip-build`.
 
 ### Build order
 
-The UI must be built before Rust because `crates/notebook` embeds assets from `apps/notebook/dist/` via Tauri.
+The UI must be built before Rust because:
+- `crates/sidecar` embeds assets from `apps/sidecar/dist/` at compile time via [rust-embed](https://crates.io/crates/rust-embed)
+- `crates/notebook` embeds assets from `apps/notebook/dist/` via Tauri
 
 ### Common commands
 
 ```bash
-pnpm build                          # Build notebook UI
+pnpm build                          # Build all UIs
 cargo test                          # Run Rust tests
 pnpm test:run                       # Run JS tests
 cargo fmt                           # Format Rust
-npx @biomejs/biome check --fix apps/notebook/src/ e2e/  # Lint + format JS/TS
+npx @biomejs/biome check --fix apps/notebook/src/ e2e/  # Format JS
 cargo clippy --all-targets -- -D warnings               # Lint Rust
 ```
 
@@ -167,10 +137,6 @@ The underlying Rust libraries are published to crates.io:
 - [`jupyter-protocol`](https://crates.io/crates/jupyter-protocol) — Jupyter messaging protocol
 - [`runtimelib`](https://crates.io/crates/runtimelib) — Jupyter kernel interactions over ZeroMQ
 - [`nbformat`](https://crates.io/crates/nbformat) — Notebook parsing
-
-## Contributing
-
-Developer guides live in `.claude/rules/` (architecture, conventions) and `.claude/skills/` (testing, building, releasing). These auto-load for Claude agents; for Codex or human contributors, see `AGENTS.md` for essentials and run `cargo xtask help` for commands.
 
 ## License
 
