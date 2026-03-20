@@ -662,7 +662,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nteract-dist
-          path: python/nteract/dist
+          path: dist
           if-no-files-found: error
 
   build-python-wheels:
