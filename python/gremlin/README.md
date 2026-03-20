@@ -21,30 +21,30 @@ This architecture means the gremlin exercises the **exact same code path** that 
 # From the repo root, with the dev daemon running:
 
 # Auto-discover socket path
-.venv/bin/python -m gremlin <notebook_id>
+uv run gremlin <notebook_id>
 
 # Explicit socket path
-RUNTIMED_SOCKET_PATH=<path> .venv/bin/python -m gremlin <notebook_id>
+RUNTIMED_SOCKET_PATH=<path> uv run gremlin <notebook_id>
 
 # Custom prompt
-.venv/bin/python -m gremlin <notebook_id> "Fix all the errors and add type hints"
+uv run gremlin <notebook_id> "Fix all the errors and add type hints"
 
 # Verbose logging (info / debug)
-.venv/bin/python -m gremlin -v <notebook_id>
-.venv/bin/python -m gremlin -vv <notebook_id>
+uv run gremlin -v <notebook_id>
+uv run gremlin -vv <notebook_id>
 
 # Limit turns
-.venv/bin/python -m gremlin --max-turns 10 <notebook_id>
+uv run gremlin --max-turns 10 <notebook_id>
+
+# Or via python -m (equivalent)
+uv run python -m gremlin <notebook_id>
 ```
 
 ## Finding notebook IDs
 
 ```bash
 # List active notebooks via the daemon
-RUNTIMED_SOCKET_PATH=<path> .venv/bin/python -c "
-import runtimed
-print(runtimed.Client().list_rooms())
-"
+uv run python -c "import runtimed; print(runtimed.Client().list_rooms())"
 ```
 
 ## Requirements
@@ -52,3 +52,4 @@ print(runtimed.Client().list_rooms())
 - Claude Max subscription (no API key needed) via `claude-agent-sdk`
 - A running `runtimed` dev daemon
 - The `nteract` package installed in the workspace venv (it is by default)
+- Install the agents dependency group: `uv sync --group agents`

@@ -44,8 +44,10 @@ dev = [
     "pyzmq>=26.0",
     "numpy>=1.26",
     "matplotlib>=3.8",
-    "claude-agent-sdk>=0.1.0",
     "pydantic-ai>=0.2.0",
+]
+agents = [
+    "claude-agent-sdk>=0.1.0",
 ]
 
 [tool.ty.rules]
@@ -58,6 +60,12 @@ include = ["**/tests/**"]
 [tool.ty.overrides.rules]
 unresolved-attribute = "ignore"
 invalid-assignment = "ignore"
+
+# Gremlin depends on claude-agent-sdk which is macOS-only (not in CI)
+[[tool.ty.overrides]]
+include = ["python/gremlin/**"]
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
 
 
 
