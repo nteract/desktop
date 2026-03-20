@@ -31,7 +31,7 @@ const presenceSubscribers = new Set<PresenceSubscriber>();
  * Subscribe to broadcast events. Returns an unsubscribe function.
  *
  * Broadcasts include kernel_status, KernelLaunched, env_progress,
- * file_changed, and other daemon lifecycle events scoped to the notebook room.
+ * and other daemon lifecycle events scoped to the notebook room.
  */
 export function subscribeBroadcast(cb: BroadcastSubscriber): () => void {
   broadcastSubscribers.add(cb);

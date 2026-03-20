@@ -779,7 +779,6 @@ Broadcast types (see `NotebookBroadcast` in `crates/notebook-protocol/src/protoc
 - `KernelError { error }` — launch failure or crash
 - `Comm { msg_type, content, buffers }` — ipywidgets protocol (comm_open/msg/close)
 - `CommSync { comms }` — initial widget state for newly connected clients
-- `FileChanged` — External file changes detected and merged into the Automerge doc (signal only — actual data arrives via sync frames)
 - `EnvProgress { env_type, phase }` — rich environment setup progress (repodata, solve, download, link)
 - `EnvSyncState { in_sync, diff }` — notebook metadata vs launched config drift
 

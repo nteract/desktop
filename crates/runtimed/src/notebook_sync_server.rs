@@ -5282,11 +5282,6 @@ pub(crate) fn spawn_notebook_file_watcher(
                                 // Notify peers of the change — actual data
                                 // arrives via Automerge sync frames
                                 let _ = room.changed_tx.send(());
-
-                                // Signal that external file changes were merged
-                                let _ = room
-                                    .kernel_broadcast_tx
-                                    .send(NotebookBroadcast::FileChanged);
                             }
                         }
                         Err(errs) => {

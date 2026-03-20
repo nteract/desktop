@@ -383,13 +383,6 @@ export function useDaemonKernel({
           break;
         }
 
-        case "file_changed": {
-          // Signal only — actual data arrives via Automerge sync frames,
-          // which triggers notifyMetadataChanged() automatically.
-          logger.info("[daemon-kernel] External file changes detected");
-          break;
-        }
-
         default: {
           // Log unknown events to help debug unexpected broadcast types
           logger.debug(

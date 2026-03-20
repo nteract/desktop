@@ -506,10 +506,6 @@ pub enum NotebookBroadcast {
         comms: Vec<CommSnapshot>,
     },
 
-    /// External file changes were detected and merged into the Automerge doc.
-    /// This is a signal only — the actual data arrives via Automerge sync frames.
-    FileChanged,
-
     /// Environment progress update during kernel launch.
     ///
     /// Carries rich progress phases (repodata, solve, download, link)

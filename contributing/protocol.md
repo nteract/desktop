@@ -254,7 +254,6 @@ Broadcasts are daemon-initiated messages pushed to all connected clients for a n
 | `OutputsCleared { cell_id }` | Cell outputs cleared |
 | `Comm { msg_type, content, buffers }` | Jupyter comm message (widget open/msg/close) |
 | `CommSync { comms }` | Full widget state snapshot for newly connected clients |
-| `FileChanged` | External file change merged into the doc (signal only — data arrives via sync) |
 | `EnvProgress { env_type, phase }` | Environment setup progress (`phase` is a flattened `EnvProgressPhase`) |
 | `EnvSyncState { in_sync, diff }` | Notebook dependencies drifted from launched kernel config |
 | `RoomRenamed { new_notebook_id }` | Untitled notebook saved — room re-keyed from UUID to file path |
