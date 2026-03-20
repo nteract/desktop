@@ -127,38 +127,19 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
-      - name: Cache tauri-cli binary (Unix)
+      - name: Install cargo-binstall (Unix)
         if: runner.os != 'Windows'
-        uses: actions/cache@v5
-        with:
-          path: ~/.cargo/bin
-          key: cargo-bin-${{ inputs.target_os }}-tauri-cli-${{ hashFiles('rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-bin-${{ inputs.target_os }}-tauri-cli-
+        run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
 
-      - name: Cache tauri-cli binary (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/cache@v5
-        with:
-          path: ~\.cargo\bin
-          key: cargo-bin-${{ inputs.target_os }}-tauri-cli-${{ hashFiles('rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-bin-${{ inputs.target_os }}-tauri-cli-
-
-      - name: Install tauri-cli (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          if ! command -v cargo-tauri &> /dev/null; then
-            cargo install tauri-cli --locked
-          fi
-
-      - name: Install tauri-cli (Windows)
+      - name: Install cargo-binstall (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          if (!(Get-Command cargo-tauri -ErrorAction SilentlyContinue)) {
-            cargo install tauri-cli --locked
-          }
+          Set-ExecutionPolicy Unrestricted -Scope Process -Force
+          iex (iwr "https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.ps1").Content
+
+      - name: Install tauri-cli
+        run: cargo binstall tauri-cli --no-confirm --locked
 
       - name: Bake PR + commit into version
         id: version

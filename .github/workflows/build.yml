@@ -182,34 +182,15 @@ jobs:
             apps/notebook/dist/
           retention-days: 1
 
-  build-linux:
-    name: Linux
-    needs: [changes, build-ui]
+  js-tests:
+    name: JS Tests & Benchmarks
+    needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
-      - name: Download UI build artifacts
-        uses: actions/download-artifact@v4
         with:
-          name: ui-build-dist
-          path: apps/notebook/dist
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Install rust
-        uses: dsherret/rust-toolchain-file@v1
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ubuntu-latest
+          lfs: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -239,6 +220,35 @@ jobs:
       - name: Run JS benchmarks
         run: pnpm vitest bench --run apps/notebook/src/lib/__tests__/
 
+  build-linux:
+    name: Linux
+    needs: [changes, build-ui]
+    if: needs.changes.outputs.source_changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download UI build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-build-dist
+          path: apps/notebook/dist
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ubuntu-latest
+
       - name: Build external binaries
         shell: bash
         run: |
@@ -253,19 +263,14 @@ jobs:
             cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
           fi
 
-      - name: Cache cargo bin
-        uses: actions/cache@v5
-        with:
-          path: ~/.cargo/bin
-          key: cargo-bin-ubuntu-tauri-cli-tauri-driver-${{ hashFiles('rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-bin-ubuntu-tauri-cli-tauri-driver-
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Install cargo-binstall
+        run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
 
       - name: Install tauri-cli and tauri-driver
-        run: |
-          if ! command -v cargo-tauri &> /dev/null || ! command -v tauri-driver &> /dev/null; then
-            cargo install tauri-cli tauri-driver --locked
-          fi
+        run: cargo binstall tauri-cli tauri-driver --no-confirm --locked
 
       - name: Upload Linux Rust binaries
         uses: actions/upload-artifact@v4
@@ -277,12 +282,6 @@ jobs:
             crates/notebook/binaries/runtimed-*
             crates/notebook/binaries/runt-*
           retention-days: 1
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Build
-        run: cargo build --release
 
       - name: Build Tauri E2E app
         run: cd crates/notebook && cargo tauri build --ci --no-bundle --config '{"build":{"beforeBuildCommand":""}}'
@@ -303,8 +302,39 @@ jobs:
             target/release/binaries/
           retention-days: 1
 
+      - name: Test notebook crate
+        run: cargo test -p notebook --verbose
+
+  rust-tests:
+    name: Rust Tests (Linux)
+    needs: [changes]
+    if: needs.changes.outputs.source_changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ubuntu-test
+
       - name: Run tests
-        run: cargo test --workspace --verbose
+        # Exclude notebook (Tauri app crate) — its build script requires bundled
+        # runtimed/runt binaries. The notebook crate's tests run in build-linux
+        # which builds those binaries first.
+        # Exclude runtimed-wasm — requires wasm-pack (tested in wasm-deno job).
+        # Exclude runtimed-py — requires Python/maturin (tested in runtimed-py-integration job).
+        run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude runtimed-py --verbose
 
   build:
     name: ${{ matrix.platform.name }}

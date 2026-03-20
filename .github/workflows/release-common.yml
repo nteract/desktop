@@ -249,19 +249,11 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
-      - name: Cache cargo bin
-        uses: actions/cache@v5
-        with:
-          path: ~/.cargo/bin
-          key: cargo-bin-macos-arm64-tauri-cli-${{ hashFiles('rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-bin-macos-arm64-tauri-cli-
+      - name: Install cargo-binstall
+        run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
 
       - name: Install Tauri CLI
-        run: |
-          if ! command -v cargo-tauri &> /dev/null; then
-            cargo install tauri-cli --locked
-          fi
+        run: cargo binstall tauri-cli --no-confirm --locked
 
       - name: Import Apple signing certificate
         env:
@@ -423,20 +415,14 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
-      - name: Cache cargo bin
-        uses: actions/cache@v5
-        with:
-          path: ~\.cargo\bin
-          key: cargo-bin-windows-x64-tauri-cli-${{ hashFiles('rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-bin-windows-x64-tauri-cli-
-
-      - name: Install Tauri CLI
+      - name: Install cargo-binstall
         shell: pwsh
         run: |
-          if (!(Get-Command cargo-tauri -ErrorAction SilentlyContinue)) {
-            cargo install tauri-cli --locked
-          }
+          Set-ExecutionPolicy Unrestricted -Scope Process -Force
+          iex (iwr "https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.ps1").Content
+
+      - name: Install Tauri CLI
+        run: cargo binstall tauri-cli --no-confirm --locked
 
       - name: Set version in tauri.conf.json
         shell: pwsh
@@ -572,19 +558,11 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
-      - name: Cache cargo bin
-        uses: actions/cache@v5
-        with:
-          path: ~/.cargo/bin
-          key: cargo-bin-linux-x64-tauri-cli-${{ hashFiles('rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-bin-linux-x64-tauri-cli-
+      - name: Install cargo-binstall
+        run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
 
       - name: Install Tauri CLI
-        run: |
-          if ! command -v cargo-tauri &> /dev/null; then
-            cargo install tauri-cli --locked
-          fi
+        run: cargo binstall tauri-cli --no-confirm --locked
 
       - name: Set version in tauri.conf.json
         run: |
