@@ -5,7 +5,7 @@ description = "Development workspace for nteract Python packages"
 requires-python = ">=3.10"
 dependencies = [
     "nteract",
-    "gremlin",
+    "gremlin ; sys_platform == 'darwin'",
 ]
 
 [tool.uv.workspace]
