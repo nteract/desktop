@@ -32,6 +32,7 @@ export function CompactExecutionButton({
   className,
 }: CompactExecutionButtonProps) {
   const handleClick = () => {
+    if (isQueued) return; // already in queue — no-op
     if (isExecuting) {
       onInterrupt?.();
     } else {
