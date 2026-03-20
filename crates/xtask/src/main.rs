@@ -1430,13 +1430,25 @@ fn run_cmd(cmd: &str, args: &[&str]) {
 /// and is ~130 bytes; the real WASM starts with the magic bytes `\0asm`.
 fn ensure_wasm_resolved() {
     let wasm = Path::new("apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm");
-    let Ok(bytes) = fs::read(wasm) else {
-        return; // file missing — wasm-pack hasn't run yet, other checks handle this
+    let bytes = match fs::read(wasm) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("Error: failed to read {}: {e}", wasm.display());
+            eprintln!("       The frontend build requires this WASM file.");
+            eprintln!();
+            eprintln!("  If you just cloned:  git lfs install && git lfs pull");
+            eprintln!("  To rebuild from source:  wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm");
+            exit(1);
+        }
     };
     if bytes.starts_with(b"\0asm") {
         return; // real WebAssembly binary
     }
-    eprintln!("Error: runtimed_wasm_bg.wasm is a Git LFS pointer, not the actual binary.");
+    if bytes.starts_with(b"version https://git-lfs") {
+        eprintln!("Error: runtimed_wasm_bg.wasm is a Git LFS pointer, not the actual binary.");
+    } else {
+        eprintln!("Error: runtimed_wasm_bg.wasm is not a valid WebAssembly binary.");
+    }
     eprintln!("       The frontend build will fail without the real file.");
     eprintln!();
     eprintln!("  Fix:  git lfs install && git lfs pull");
