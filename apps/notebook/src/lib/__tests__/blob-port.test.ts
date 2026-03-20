@@ -1,3 +1,4 @@
+import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   _testGetGeneration,
@@ -7,27 +8,18 @@ import {
   resetBlobPort,
 } from "../blob-port";
 
-// Mock invoke
-const mockInvoke = vi.fn<() => Promise<number>>();
+// Mock invoke — mockIPC delegates to this so tests can control return values
+const mockInvoke = vi.fn();
 
 beforeEach(() => {
   _testReset();
-  vi.stubGlobal("__TAURI_INTERNALS__", {
-    invoke: mockInvoke,
-    transformCallback: vi.fn(),
-  });
+  mockIPC((cmd, args) => mockInvoke(cmd, args));
 });
 
 afterEach(() => {
   mockInvoke.mockReset();
-  vi.unstubAllGlobals();
+  clearMocks();
 });
-
-// We need to mock the @tauri-apps/api/core invoke
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: (...args: unknown[]) =>
-    (globalThis as any).__TAURI_INTERNALS__.invoke(...args),
-}));
 
 describe("blob-port store", () => {
   it("starts with null", () => {
