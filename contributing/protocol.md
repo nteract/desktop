@@ -145,6 +145,7 @@ After the handshake, frames are typed by their first byte:
 | `0x02`    | NotebookResponse   | JSON |
 | `0x03`    | NotebookBroadcast  | JSON |
 | `0x04`    | Presence           | Binary (CBOR, see `notebook_doc::presence`) |
+| `0x05`    | RuntimeStateSync   | Binary (raw Automerge sync for per-notebook `RuntimeStateDoc`) |
 
 ## Automerge Sync
 
@@ -328,6 +329,16 @@ Stream outputs (stdout/stderr) are special: text is fed through a terminal emula
 
 ## Architectural Direction
 
+### RuntimeStateDoc (PR #977)
+
+Several broadcast variants carry **state** (kernel status, env sync diff, queue) rather than **events**. State-carrying broadcasts suffer from silent drops, no initial state for late joiners, and ordering races between windows. The `RuntimeStateDoc` replaces these with a daemon-authoritative, per-notebook Automerge document synced via frame type `0x05` on the existing notebook connection.
+
+The daemon writes kernel status, execution queue, and environment sync drift. Clients receive updates via normal Automerge sync — read-only enforced by stripping client changes. The frontend reads via `useRuntimeState()`. See `.context/plans/daemon-state-doc.md` for the full phased plan.
+
+**Key files:** `crates/notebook-doc/src/runtime_state.rs` (schema + setters), `apps/notebook/src/lib/runtime-state.ts` (frontend store + hook).
+
+### Comms in doc (#761)
+
 The current protocol has widget state (`CommState`, `CommSync`) as a parallel system alongside the CRDT. Issue #761 tracks moving widget state into `doc.comms/` in the Automerge document, which would:
 
 - Eliminate `CommSync` (new clients get widgets via normal sync)
@@ -356,7 +367,9 @@ The implementation is phased: #808 (schema + dual-write) → #809 (clients read 
 | `crates/runtimed-wasm/src/lib.rs` | WASM bindings: cell mutations, sync, per-cell accessors, `CellChangeset` |
 | `crates/notebook-doc/src/lib.rs` | `NotebookDoc`: Automerge schema, cell CRUD, output writes, per-cell accessors |
 | `crates/notebook-doc/src/diff.rs` | `CellChangeset`: structural diff from Automerge patches |
-| `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00–0x04) |
+| `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00–0x05) |
+| `crates/notebook-doc/src/runtime_state.rs` | `RuntimeStateDoc`: per-notebook daemon-authoritative state (kernel, queue, env sync) |
+| `apps/notebook/src/lib/runtime-state.ts` | Frontend runtime state store + `useRuntimeState()` hook |
 | `apps/notebook/src/lib/frame-types.ts` | Frame type constants + `sendFrame()` binary IPC helper |
 | `apps/notebook/src/hooks/useAutomergeNotebook.ts` | WASM handle owner, `scheduleMaterialize`, `CellChangeset` dispatch |
 | `apps/notebook/src/hooks/useDaemonKernel.ts` | Kernel execution, widget comm routing, broadcast handling |
