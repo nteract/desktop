@@ -23,3 +23,8 @@ pub const BROADCAST: u8 = 0x03;
 
 /// Presence (CBOR, see `presence` module).
 pub const PRESENCE: u8 = 0x04;
+
+/// RuntimeStateDoc sync message (binary Automerge sync).
+/// Carries the per-notebook ephemeral runtime state (kernel status, queue, env sync).
+/// Daemon-authoritative — client changes are stripped on receive.
+pub const RUNTIME_STATE_SYNC: u8 = 0x05;

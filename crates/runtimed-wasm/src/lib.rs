@@ -7,9 +7,11 @@
 
 use automerge::patches::PatchAction;
 use automerge::sync;
+use automerge::sync::SyncDoc;
 use automerge::Prop;
 use notebook_doc::diff::{diff_cells, CellChangeset};
 use notebook_doc::presence;
+use notebook_doc::runtime_state::{RuntimeState, RuntimeStateDoc};
 use notebook_doc::{CellSnapshot, NotebookDoc};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -81,6 +83,14 @@ pub enum FrameEvent {
         /// The decoded presence message (decoded from CBOR, passed through as-is).
         payload: serde_json::Value,
     },
+    /// Runtime state document was synced — frontend should update runtime state UI.
+    RuntimeStateSyncApplied {
+        /// True if the runtime state document changed.
+        changed: bool,
+        /// The full current runtime state snapshot (only when changed).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        state: Option<RuntimeState>,
+    },
     /// Unknown frame type — frontend can log and ignore.
     Unknown { frame_type: u8 },
 }
@@ -95,6 +105,9 @@ pub enum FrameEvent {
 pub struct NotebookHandle {
     doc: NotebookDoc,
     sync_state: sync::State,
+    /// Runtime state doc — daemon-authoritative, synced read-only.
+    state_doc: RuntimeStateDoc,
+    state_sync_state: sync::State,
     /// Cached metadata fingerprint — invalidated on `receive_frame` when
     /// the doc changes and on all local metadata mutation methods.
     /// Avoids re-serializing the metadata snapshot on every
@@ -189,6 +202,8 @@ impl NotebookHandle {
         NotebookHandle {
             doc: NotebookDoc::new(notebook_id),
             sync_state: sync::State::new(),
+            state_doc: RuntimeStateDoc::new(),
+            state_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
         }
     }
@@ -200,6 +215,8 @@ impl NotebookHandle {
         NotebookHandle {
             doc: NotebookDoc::empty(),
             sync_state: sync::State::new(),
+            state_doc: RuntimeStateDoc::new(),
+            state_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
         }
     }
@@ -212,6 +229,8 @@ impl NotebookHandle {
         NotebookHandle {
             doc: NotebookDoc::empty_with_actor(actor_label),
             sync_state: sync::State::new(),
+            state_doc: RuntimeStateDoc::new(),
+            state_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
         }
     }
@@ -223,6 +242,8 @@ impl NotebookHandle {
         Ok(NotebookHandle {
             doc,
             sync_state: sync::State::new(),
+            state_doc: RuntimeStateDoc::new(),
+            state_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
         })
     }
@@ -802,9 +823,24 @@ impl NotebookHandle {
         self.doc.save()
     }
 
+    /// Generate a sync reply for the RuntimeStateDoc.
+    /// Called on a debounce timer after receiving runtime state frames.
+    pub fn generate_runtime_state_sync_reply(&mut self) -> Option<Vec<u8>> {
+        self.state_doc
+            .generate_sync_message(&mut self.state_sync_state)
+            .map(|msg| msg.encode())
+    }
+
+    /// Read the current runtime state snapshot from the WASM doc.
+    pub fn get_runtime_state(&self) -> JsValue {
+        let state = self.state_doc.read_state();
+        serialize_to_js(&state).unwrap_or(JsValue::UNDEFINED)
+    }
+
     /// Reset the sync state. Call this when reconnecting to a new daemon session.
     pub fn reset_sync_state(&mut self) {
         self.sync_state = sync::State::new();
+        self.state_sync_state = sync::State::new();
     }
 
     /// Receive a typed frame from the daemon, demux by type byte, return events for the frontend.
@@ -893,6 +929,35 @@ impl NotebookHandle {
                     return JsValue::UNDEFINED;
                 };
                 events.push(FrameEvent::Presence { payload: value });
+            }
+            frame_types::RUNTIME_STATE_SYNC => {
+                // Apply daemon's RuntimeStateDoc sync message to our local replica.
+                // We use the raw Automerge sync (no change stripping) because the
+                // WASM is a read-only consumer — stripping is done daemon-side for
+                // the client→daemon direction.
+                let Ok(msg) = sync::Message::decode(payload) else {
+                    return JsValue::UNDEFINED;
+                };
+                let heads_before = self.state_doc.doc_mut().get_heads();
+                if self
+                    .state_doc
+                    .doc_mut()
+                    .sync()
+                    .receive_sync_message(&mut self.state_sync_state, msg)
+                    .is_err()
+                {
+                    return JsValue::UNDEFINED;
+                }
+                let heads_after = self.state_doc.doc_mut().get_heads();
+                let changed = heads_before != heads_after;
+
+                let state = if changed {
+                    Some(self.state_doc.read_state())
+                } else {
+                    None
+                };
+
+                events.push(FrameEvent::RuntimeStateSyncApplied { changed, state });
             }
             _ => {
                 events.push(FrameEvent::Unknown { frame_type });

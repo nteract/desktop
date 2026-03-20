@@ -38,6 +38,7 @@ import type { JupyterOutput } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { getBlobPort, refreshBlobPort } from "./blob-port";
 import { type CellChangeset, mergeChangesets } from "./cell-changeset";
+import { frame_types, sendFrame } from "./frame-types";
 import { logger } from "./logger";
 import {
   isManifestHash,
@@ -47,6 +48,7 @@ import {
 import { getCellById, updateCellById } from "./notebook-cells";
 import { emitBroadcast, emitPresence } from "./notebook-frame-bus";
 import { notifyMetadataChanged } from "./notebook-metadata";
+import { type RuntimeState, setRuntimeState } from "./runtime-state";
 import { fromTauriEvent } from "./tauri-rx";
 
 // Re-export CellChangeset types so existing consumers don't break.
@@ -83,6 +85,7 @@ interface FrameEvent {
   changeset?: CellChangeset;
   attributions?: TextAttribution[];
   payload?: unknown;
+  state?: unknown; // RuntimeState from RuntimeStateSyncApplied
 }
 
 // ── Pipeline dependencies ───────────────────────────────────────────
@@ -301,6 +304,47 @@ export function createFramePipeline(deps: FramePipelineDeps): Subscription {
     frameEvents$
       .pipe(filter((e) => e.type === "presence" && e.payload != null))
       .subscribe((e) => emitPresence(e.payload)),
+  );
+
+  // ── Sub-pipeline: runtime state sync ───────────────────────────────
+
+  subscription.add(
+    frameEvents$
+      .pipe(
+        filter((e) => e.type === "runtime_state_sync_applied"),
+        concatMap((e) => {
+          // Update the store when state changed
+          if (e.changed && e.state) {
+            setRuntimeState(e.state as RuntimeState);
+          }
+
+          // Send sync reply so the daemon knows our heads
+          const handle = deps.getHandle();
+          if (handle) {
+            try {
+              const reply = handle.generate_runtime_state_sync_reply();
+              if (reply) {
+                return from(
+                  sendFrame(frame_types.RUNTIME_STATE_SYNC, reply).catch(
+                    (err: unknown) =>
+                      logger.warn(
+                        "[frame-pipeline] runtime state sync reply failed:",
+                        err,
+                      ),
+                  ),
+                );
+              }
+            } catch (err) {
+              logger.warn(
+                "[frame-pipeline] generate_runtime_state_sync_reply failed:",
+                err,
+              );
+            }
+          }
+          return EMPTY;
+        }),
+      )
+      .subscribe(),
   );
 
   return subscription;

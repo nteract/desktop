@@ -145,7 +145,8 @@ fn pipe_frame(frame_tx: &mpsc::UnboundedSender<Vec<u8>>, frame: &connection::Typ
     match frame.frame_type {
         NotebookFrameType::AutomergeSync
         | NotebookFrameType::Broadcast
-        | NotebookFrameType::Presence => {
+        | NotebookFrameType::Presence
+        | NotebookFrameType::RuntimeStateSync => {
             let mut bytes = vec![frame.frame_type as u8];
             bytes.extend_from_slice(&frame.payload);
             let _ = frame_tx.send(bytes);

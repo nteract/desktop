@@ -1172,17 +1172,18 @@ async fn test_pipe_mode_only_pipes_allowed_frame_types() {
     );
 
     // Every piped frame must have a valid type byte from the forwarded set:
-    // AutomergeSync, Broadcast, or Presence — never Request or Response.
+    // AutomergeSync, Broadcast, Presence, or RuntimeStateSync — never Request or Response.
     let allowed_types = [
         frame_types::AUTOMERGE_SYNC,
         frame_types::BROADCAST,
         frame_types::PRESENCE,
+        frame_types::RUNTIME_STATE_SYNC,
     ];
     for (i, frame) in frames.iter().enumerate() {
         assert!(!frame.is_empty(), "frame {} should not be empty", i);
         assert!(
             allowed_types.contains(&frame[0]),
-            "frame {} has unexpected type byte 0x{:02x} — only AUTOMERGE_SYNC, BROADCAST, and PRESENCE are piped",
+            "frame {} has unexpected type byte 0x{:02x} — only AUTOMERGE_SYNC, BROADCAST, PRESENCE, and RUNTIME_STATE_SYNC are piped",
             i,
             frame[0]
         );

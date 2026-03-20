@@ -69,6 +69,8 @@ export const notebookhandle_set_conda_python: (a: number, b: number, c: number, 
 export const notebookhandle_generate_sync_message: (a: number, b: number) => void;
 export const notebookhandle_receive_sync_message: (a: number, b: number, c: number, d: number) => void;
 export const notebookhandle_save: (a: number, b: number) => void;
+export const notebookhandle_generate_runtime_state_sync_reply: (a: number, b: number) => void;
+export const notebookhandle_get_runtime_state: (a: number) => number;
 export const notebookhandle_reset_sync_state: (a: number) => void;
 export const notebookhandle_receive_frame: (a: number, b: number, c: number) => number;
 export const encode_cursor_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;

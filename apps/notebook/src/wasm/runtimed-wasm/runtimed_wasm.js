@@ -498,6 +498,27 @@ export class NotebookHandle {
         }
     }
     /**
+     * Generate a sync reply for the RuntimeStateDoc.
+     * Called on a debounce timer after receiving runtime state frames.
+     * @returns {Uint8Array | undefined}
+     */
+    generate_runtime_state_sync_reply() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.notebookhandle_generate_runtime_state_sync_reply(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            let v1;
+            if (r0 !== 0) {
+                v1 = getArrayU8FromWasm0(r0, r1).slice();
+                wasm.__wbindgen_export4(r0, r1 * 1, 1);
+            }
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Generate a sync message to send to the daemon (via the Tauri relay pipe).
      *
      * Returns the message as a byte array, or undefined if already in sync.
@@ -850,6 +871,14 @@ export class NotebookHandle {
         const ptr0 = passStringToWasm0(key, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.notebookhandle_get_metadata_value(this.__wbg_ptr, ptr0, len0);
+        return takeObject(ret);
+    }
+    /**
+     * Read the current runtime state snapshot from the WASM doc.
+     * @returns {any}
+     */
+    get_runtime_state() {
+        const ret = wasm.notebookhandle_get_runtime_state(this.__wbg_ptr);
         return takeObject(ret);
     }
     /**

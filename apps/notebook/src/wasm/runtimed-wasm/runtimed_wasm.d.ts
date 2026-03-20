@@ -122,6 +122,11 @@ export class NotebookHandle {
      */
     detect_runtime(): string | undefined;
     /**
+     * Generate a sync reply for the RuntimeStateDoc.
+     * Called on a debounce timer after receiving runtime state frames.
+     */
+    generate_runtime_state_sync_reply(): Uint8Array | undefined;
+    /**
      * Generate a sync message to send to the daemon (via the Tauri relay pipe).
      *
      * Returns the message as a byte array, or undefined if already in sync.
@@ -227,6 +232,10 @@ export class NotebookHandle {
      * Returns undefined if the key doesn't exist.
      */
     get_metadata_value(key: string): any;
+    /**
+     * Read the current runtime state snapshot from the WASM doc.
+     */
+    get_runtime_state(): any;
     /**
      * Load a notebook document from saved bytes (e.g., from get_automerge_doc_bytes).
      */
@@ -497,6 +506,8 @@ export interface InitOutput {
     readonly notebookhandle_generate_sync_message: (a: number, b: number) => void;
     readonly notebookhandle_receive_sync_message: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_save: (a: number, b: number) => void;
+    readonly notebookhandle_generate_runtime_state_sync_reply: (a: number, b: number) => void;
+    readonly notebookhandle_get_runtime_state: (a: number) => number;
     readonly notebookhandle_reset_sync_state: (a: number) => void;
     readonly notebookhandle_receive_frame: (a: number, b: number, c: number) => number;
     readonly encode_cursor_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;

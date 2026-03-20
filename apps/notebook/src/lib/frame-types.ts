@@ -18,6 +18,8 @@ export const frame_types = {
   BROADCAST: 0x03,
   /** Presence (CBOR, see notebook_doc::presence). */
   PRESENCE: 0x04,
+  /** RuntimeStateSync message (binary Automerge sync for RuntimeStateDoc). */
+  RUNTIME_STATE_SYNC: 0x05,
 } as const;
 
 /**

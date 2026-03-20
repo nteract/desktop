@@ -38,6 +38,7 @@ use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast};
 use crate::stream_terminal::{StreamOutputState, StreamTerminals};
 use crate::terminal_size::{TERMINAL_COLUMNS_STR, TERMINAL_LINES_STR};
 use crate::{EnvType, PooledEnv};
+use notebook_doc::runtime_state::RuntimeStateDoc;
 
 // ── Launched Environment Config ─────────────────────────────────────────────
 
@@ -293,6 +294,10 @@ pub struct RoomKernel {
     pending_completions: PendingCompletions,
     /// Terminal emulators for stream outputs (stdout/stderr)
     stream_terminals: Arc<tokio::sync::Mutex<StreamTerminals>>,
+    /// Per-notebook runtime state document (daemon-authoritative).
+    state_doc: Arc<RwLock<RuntimeStateDoc>>,
+    /// Notification channel for RuntimeStateDoc changes.
+    state_changed_tx: broadcast::Sender<()>,
 }
 
 /// Commands from iopub/shell handlers for queue state management.
@@ -351,6 +356,7 @@ fn escape_glob_pattern(pattern: Option<&str>) -> String {
 
 impl RoomKernel {
     /// Create a new room kernel with a broadcast channel for outputs.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         broadcast_tx: broadcast::Sender<NotebookBroadcast>,
         doc: Arc<RwLock<NotebookDoc>>,
@@ -358,6 +364,8 @@ impl RoomKernel {
         changed_tx: broadcast::Sender<()>,
         blob_store: Arc<BlobStore>,
         comm_state: Arc<CommState>,
+        state_doc: Arc<RwLock<RuntimeStateDoc>>,
+        state_changed_tx: broadcast::Sender<()>,
     ) -> Self {
         Self {
             kernel_type: String::new(),
@@ -389,6 +397,8 @@ impl RoomKernel {
             pending_history: Arc::new(StdMutex::new(HashMap::new())),
             pending_completions: Arc::new(StdMutex::new(HashMap::new())),
             stream_terminals: Arc::new(tokio::sync::Mutex::new(StreamTerminals::new())),
+            state_doc,
+            state_changed_tx,
         }
     }
 
@@ -476,6 +486,13 @@ impl RoomKernel {
             status: "starting".to_string(),
             cell_id: None,
         });
+
+        {
+            let mut sd = self.state_doc.write().await;
+            sd.set_kernel_status("starting");
+            sd.set_kernel_info(&self.kernel_type, &self.kernel_type, &self.env_source);
+            let _ = self.state_changed_tx.send(());
+        }
 
         // Determine kernel name for connection info
         let kernelspec_name = match kernel_type {
@@ -719,6 +736,8 @@ impl RoomKernel {
         let blob_store = self.blob_store.clone();
         let comm_state = self.comm_state.clone();
         let stream_terminals = self.stream_terminals.clone();
+        let state_doc_for_iopub = self.state_doc.clone();
+        let state_changed_for_iopub = self.state_changed_tx.clone();
 
         let iopub_task = tokio::spawn(async move {
             loop {
@@ -753,6 +772,12 @@ impl RoomKernel {
                                     status: status_str.to_string(),
                                     cell_id: cell_id.clone(),
                                 });
+
+                                {
+                                    let mut sd = state_doc_for_iopub.write().await;
+                                    sd.set_kernel_status(status_str);
+                                    let _ = state_changed_for_iopub.send(());
+                                }
 
                                 // Signal execution done when idle
                                 if status.execution_state == jupyter_protocol::ExecutionState::Idle
@@ -1665,6 +1690,12 @@ impl RoomKernel {
             cell_id: None,
         });
 
+        {
+            let mut sd = self.state_doc.write().await;
+            sd.set_kernel_status("idle");
+            let _ = self.state_changed_tx.send(());
+        }
+
         info!("[kernel-manager] Kernel started: {}", kernel_id);
         Ok(())
     }
@@ -1700,6 +1731,12 @@ impl RoomKernel {
             executing: self.executing.clone(),
             queued: self.queued_cells(),
         });
+
+        {
+            let mut sd = self.state_doc.write().await;
+            sd.set_queue(self.executing.as_deref(), &self.queued_cells());
+            let _ = self.state_changed_tx.send(());
+        }
 
         // Try to process if nothing executing
         self.process_next().await
@@ -1741,6 +1778,12 @@ impl RoomKernel {
         let _ = self
             .broadcast_tx
             .send(NotebookBroadcast::QueueChanged { executing, queued });
+
+        {
+            let mut sd = self.state_doc.write().await;
+            sd.set_queue(self.executing.as_deref(), &self.queued_cells());
+            let _ = self.state_changed_tx.send(());
+        }
 
         // Send execute request
         let request = ExecuteRequest::new(cell.code.clone());
@@ -1789,6 +1832,12 @@ impl RoomKernel {
                 executing: None,
                 queued: self.queued_cells(),
             });
+
+            {
+                let mut sd = self.state_doc.write().await;
+                sd.set_queue(None, &self.queued_cells());
+                let _ = self.state_changed_tx.send(());
+            }
 
             // Process next
             self.process_next().await?;
@@ -1841,6 +1890,9 @@ impl RoomKernel {
             executing: None,
             queued: vec![],
         });
+
+        // TODO: write to state_doc (requires async — kernel_died is sync)
+        // state_doc.set_kernel_status("error") + set_queue(None, &[])
     }
 
     /// Interrupt the currently executing cell and clear the execution queue.
@@ -2076,6 +2128,9 @@ impl RoomKernel {
             queued: vec![],
         });
 
+        // TODO: write to state_doc (requires async — clear_queue is sync)
+        // state_doc.set_queue(self.executing.as_deref(), &[])
+
         cleared
     }
 
@@ -2090,6 +2145,13 @@ impl RoomKernel {
             status: "shutdown".to_string(),
             cell_id: None,
         });
+
+        {
+            let mut sd = self.state_doc.write().await;
+            sd.set_kernel_status("shutdown");
+            sd.set_queue(None, &[]);
+            let _ = self.state_changed_tx.send(());
+        }
 
         // Abort tasks
         if let Some(task) = self.iopub_task.take() {
@@ -2226,7 +2288,18 @@ mod tests {
         let doc = Arc::new(RwLock::new(NotebookDoc::new("test-notebook")));
         let blob_store = Arc::new(BlobStore::new(tmp.path().join("blobs")));
         let comm_state = Arc::new(CommState::new());
-        let kernel = RoomKernel::new(tx, doc, persist_tx, changed_tx, blob_store, comm_state);
+        let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
+        let (state_changed_tx, _state_changed_rx) = broadcast::channel(16);
+        let kernel = RoomKernel::new(
+            tx,
+            doc,
+            persist_tx,
+            changed_tx,
+            blob_store,
+            comm_state,
+            state_doc,
+            state_changed_tx,
+        );
 
         assert!(!kernel.is_running());
         assert!(kernel.executing_cell().is_none());

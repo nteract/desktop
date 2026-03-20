@@ -45,6 +45,7 @@ use crate::notebook_doc::{notebook_doc_filename, CellSnapshot, NotebookDoc};
 use crate::notebook_metadata::NotebookMetadataSnapshot;
 use crate::protocol::{EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse};
 use notebook_doc::presence::{self, PresenceState};
+use notebook_doc::runtime_state::RuntimeStateDoc;
 
 /// Capacity for the per-room kernel broadcast channel. Sized to absorb bursts
 /// of output messages (e.g. fast-printing cells) so slower peers trigger a
@@ -367,6 +368,22 @@ async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
             let diff = compute_env_sync_diff(launched, &current_metadata);
             let in_sync = diff.is_none();
 
+            // Dual-write env sync to state_doc (borrow before broadcast moves diff)
+            {
+                let mut sd = room.state_doc.write().await;
+                match &diff {
+                    Some(d) => sd.set_env_sync(
+                        false,
+                        &d.added,
+                        &d.removed,
+                        d.channels_changed,
+                        d.deno_changed,
+                    ),
+                    None => sd.set_env_sync(true, &[], &[], false, false),
+                };
+                let _ = room.state_changed_tx.send(());
+            }
+
             let _ = room
                 .kernel_broadcast_tx
                 .send(NotebookBroadcast::EnvSyncState { in_sync, diff });
@@ -384,6 +401,12 @@ async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
                 };
 
                 if !added.is_empty() {
+                    // Dual-write env sync to state_doc (borrow before broadcast moves added)
+                    {
+                        let mut sd = room.state_doc.write().await;
+                        sd.set_env_sync(false, &added, &[], false, false);
+                        let _ = room.state_changed_tx.send(());
+                    }
                     let _ = room
                         .kernel_broadcast_tx
                         .send(NotebookBroadcast::EnvSyncState {
@@ -546,6 +569,12 @@ pub struct NotebookRoom {
     /// Wrapped in Mutex to allow setting after Arc creation.
     /// Sent when the room is evicted to stop the watcher.
     watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    /// Per-notebook RuntimeStateDoc — daemon-authoritative ephemeral state
+    /// (kernel status, queue, env sync). Clients sync read-only.
+    pub state_doc: Arc<RwLock<RuntimeStateDoc>>,
+    /// Notification channel for RuntimeStateDoc changes.
+    /// Peer sync loops subscribe to push RuntimeStateSync frames.
+    pub state_changed_tx: broadcast::Sender<()>,
 }
 
 /// Maximum number of snapshots to keep per notebook hash.
@@ -678,6 +707,9 @@ impl NotebookRoom {
 
         let (presence_tx, _) = broadcast::channel(64);
 
+        let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
+        let (state_changed_tx, _) = broadcast::channel(16);
+
         Self {
             doc: Arc::new(RwLock::new(doc)),
             changed_tx,
@@ -698,6 +730,8 @@ impl NotebookRoom {
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
             watcher_shutdown_tx: Mutex::new(None),
+            state_doc,
+            state_changed_tx,
         }
     }
 
@@ -734,6 +768,8 @@ impl NotebookRoom {
         let (presence_tx, _) = broadcast::channel(64);
         let notebook_path = PathBuf::from(notebook_id);
         let trust_state = verify_trust_from_file(&notebook_path);
+        let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
+        let (state_changed_tx, _) = broadcast::channel(16);
         Self {
             doc: Arc::new(RwLock::new(doc)),
             changed_tx,
@@ -754,6 +790,8 @@ impl NotebookRoom {
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
             watcher_shutdown_tx: Mutex::new(None),
+            state_doc,
+            state_changed_tx,
         }
     }
 
@@ -1194,6 +1232,8 @@ where
     let mut changed_rx = room.changed_tx.subscribe();
     let mut kernel_broadcast_rx = room.kernel_broadcast_tx.subscribe();
     let mut presence_rx = room.presence_tx.subscribe();
+    let mut state_changed_rx = room.state_changed_tx.subscribe();
+    let mut state_peer_state = sync::State::new();
 
     // Periodic pruning of stale presence peers (e.g. clients that silently dropped).
     let prune_period = std::time::Duration::from_millis(presence::DEFAULT_HEARTBEAT_MS);
@@ -1210,6 +1250,19 @@ where
     };
     if let Some(encoded) = initial_encoded {
         connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &encoded).await?;
+    }
+
+    // Phase 1.1: Initial RuntimeStateDoc sync — send runtime state to new peer
+    {
+        let mut state_doc = room.state_doc.write().await;
+        if let Some(msg) = state_doc.generate_sync_message(&mut state_peer_state) {
+            connection::send_typed_frame(
+                writer,
+                NotebookFrameType::RuntimeStateSync,
+                &msg.encode(),
+            )
+            .await?;
+        }
     }
 
     // Phase 1.5: Send comm state sync for widget reconstruction
@@ -1442,6 +1495,31 @@ where
                                 }
                             }
 
+                            NotebookFrameType::RuntimeStateSync => {
+                                // Client's sync reply — apply with change stripping
+                                // so the daemon knows what state the client has.
+                                let message = sync::Message::decode(&frame.payload)
+                                    .map_err(|e| anyhow::anyhow!("decode state sync: {}", e))?;
+                                let reply_encoded = {
+                                    let mut state_doc = room.state_doc.write().await;
+                                    state_doc.receive_sync_message(
+                                        &mut state_peer_state,
+                                        message,
+                                    )?;
+                                    state_doc
+                                        .generate_sync_message(&mut state_peer_state)
+                                        .map(|msg| msg.encode())
+                                };
+                                if let Some(encoded) = reply_encoded {
+                                    connection::send_typed_frame(
+                                        writer,
+                                        NotebookFrameType::RuntimeStateSync,
+                                        &encoded,
+                                    )
+                                    .await?;
+                                }
+                            }
+
                             NotebookFrameType::Response | NotebookFrameType::Broadcast => {
                                 // Clients shouldn't send these
                                 warn!(
@@ -1471,6 +1549,24 @@ where
                     connection::send_typed_frame(
                         writer,
                         NotebookFrameType::AutomergeSync,
+                        &encoded,
+                    )
+                    .await?;
+                }
+            }
+
+            // RuntimeStateDoc changed — push update to this client
+            _ = state_changed_rx.recv() => {
+                let encoded = {
+                    let mut state_doc = room.state_doc.write().await;
+                    state_doc
+                        .generate_sync_message(&mut state_peer_state)
+                        .map(|msg| msg.encode())
+                };
+                if let Some(encoded) = encoded {
+                    connection::send_typed_frame(
+                        writer,
+                        NotebookFrameType::RuntimeStateSync,
                         &encoded,
                     )
                     .await?;
@@ -1721,6 +1817,13 @@ async fn auto_launch_kernel(
     // Clear any stale comm state from a previous kernel (in case it crashed)
     room.comm_state.clear().await;
 
+    // Write "starting" to state_doc before launch begins
+    {
+        let mut sd = room.state_doc.write().await;
+        sd.set_kernel_status("starting");
+        let _ = room.state_changed_tx.send(());
+    }
+
     // Create new kernel
     let mut kernel = RoomKernel::new(
         room.kernel_broadcast_tx.clone(),
@@ -1729,6 +1832,8 @@ async fn auto_launch_kernel(
         room.changed_tx.clone(),
         room.blob_store.clone(),
         room.comm_state.clone(),
+        room.state_doc.clone(),
+        room.state_changed_tx.clone(),
     );
 
     // Detection priority:
@@ -2169,6 +2274,14 @@ async fn auto_launch_kernel(
             // Publish kernel state presence so late joiners see the running kernel
             publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es).await;
 
+            // Dual-write kernel status + info to state_doc
+            {
+                let mut sd = room.state_doc.write().await;
+                sd.set_kernel_status("idle");
+                sd.set_kernel_info(&kt, kernel_type, &es);
+                let _ = room.state_changed_tx.send(());
+            }
+
             info!(
                 "[notebook-sync] Auto-launch succeeded: {} kernel with {} environment",
                 kt, es
@@ -2183,6 +2296,12 @@ async fn auto_launch_kernel(
                     status: format!("error: {}", e),
                     cell_id: None,
                 });
+            // Dual-write error to state_doc
+            {
+                let mut sd = room.state_doc.write().await;
+                sd.set_kernel_status("error");
+                let _ = room.state_changed_tx.send(());
+            }
         }
     }
 }
@@ -2366,6 +2485,8 @@ async fn handle_notebook_request(
                 room.changed_tx.clone(),
                 room.blob_store.clone(),
                 room.comm_state.clone(),
+                room.state_doc.clone(),
+                room.state_changed_tx.clone(),
             );
             let notebook_path = notebook_path.map(std::path::PathBuf::from);
 
@@ -2793,15 +2914,31 @@ async fn handle_notebook_request(
                     // Publish kernel state presence so late joiners see the running kernel
                     publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es).await;
 
+                    // Dual-write kernel status + info to state_doc
+                    {
+                        let mut sd = room.state_doc.write().await;
+                        sd.set_kernel_status("idle");
+                        sd.set_kernel_info(&kt, &resolved_kernel_type, &es);
+                        let _ = room.state_changed_tx.send(());
+                    }
+
                     NotebookResponse::KernelLaunched {
                         kernel_type: kt,
                         env_source: es,
                         launched_config,
                     }
                 }
-                Err(e) => NotebookResponse::Error {
-                    error: format!("Failed to launch kernel: {}", e),
-                },
+                Err(e) => {
+                    // Dual-write error to state_doc
+                    {
+                        let mut sd = room.state_doc.write().await;
+                        sd.set_kernel_status("error");
+                        let _ = room.state_changed_tx.send(());
+                    }
+                    NotebookResponse::Error {
+                        error: format!("Failed to launch kernel: {}", e),
+                    }
+                }
             }
         }
 
@@ -2953,6 +3090,12 @@ async fn handle_notebook_request(
                             &env_source,
                         )
                         .await;
+                        // Dual-write shutdown to state_doc
+                        {
+                            let mut sd = room.state_doc.write().await;
+                            sd.set_kernel_status("shutdown");
+                            let _ = room.state_changed_tx.send(());
+                        }
                         NotebookResponse::KernelShuttingDown {}
                     }
                     Err(e) => NotebookResponse::Error {
@@ -5720,6 +5863,8 @@ mod tests {
 
         let (presence_tx, _) = broadcast::channel(64);
 
+        let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
+        let (state_changed_tx, _) = broadcast::channel(16);
         let room = NotebookRoom {
             doc: Arc::new(RwLock::new(doc)),
             changed_tx,
@@ -5749,6 +5894,8 @@ mod tests {
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
             watcher_shutdown_tx: Mutex::new(None),
+            state_doc,
+            state_changed_tx,
         };
 
         (room, notebook_path)

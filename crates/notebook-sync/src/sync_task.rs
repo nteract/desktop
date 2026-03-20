@@ -431,6 +431,16 @@ async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
                 notebook_id
             );
         }
+
+        NotebookFrameType::RuntimeStateSync => {
+            // RuntimeStateDoc sync frame from daemon. The Python sync client
+            // doesn't maintain a RuntimeStateDoc replica yet — just log it.
+            debug!(
+                "[notebook-sync] RuntimeStateSync frame for {} ({} bytes), ignoring",
+                notebook_id,
+                frame.payload.len()
+            );
+        }
     }
 }
 
