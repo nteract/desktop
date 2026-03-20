@@ -960,9 +960,10 @@ function AppContent() {
         // Clear any status banner when daemon reconnects (failed, checking, etc.)
         cancelReadyTimeout();
         setDaemonStatus(null);
-        if (event.payload?.runtime) {
-          setRuntimeHint(event.payload.runtime);
-        }
+        // Set or clear the runtime hint — clearing prevents stale hints
+        // when a window is reused to open a different notebook (Open path
+        // sends runtime: null).
+        setRuntimeHint(event.payload?.runtime ?? null);
       },
     );
 
