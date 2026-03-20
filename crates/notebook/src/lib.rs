@@ -3545,7 +3545,42 @@ pub fn run(
     runtime: Option<Runtime>,
     #[allow(unused_variables)] webdriver_port: Option<u16>,
 ) -> anyhow::Result<()> {
-    env_logger::init();
+    // Initialize logging - write to both stderr and log file (same pattern as runtimed)
+    let log_path = runtimed::default_notebook_log_path();
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path);
+
+    let mut builder =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+
+    if let Ok(file) = log_file {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        let file = Arc::new(Mutex::new(file));
+        builder.format(move |_buf, record| {
+            let formatted = format!(
+                "{} [{}] {}: {}\n",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                record.level(),
+                record.target(),
+                record.args()
+            );
+            eprint!("{}", formatted);
+            if let Ok(mut f) = file.lock() {
+                let _ = f.write_all(formatted.as_bytes());
+                let _ = f.flush();
+            }
+            Ok(())
+        });
+    }
+    builder.init();
+
     shell_env::load_shell_environment();
 
     // Check if onboarding is needed EARLY, before setting up notebook state.
