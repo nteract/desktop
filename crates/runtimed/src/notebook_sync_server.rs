@@ -1098,11 +1098,23 @@ where
                     );
                 }
 
-                rooms_guard.remove(&notebook_id_for_eviction);
-                info!(
-                    "[notebook-sync] Evicted room {} (idle timeout)",
-                    notebook_id_for_eviction
-                );
+                // Only remove if the room in the map is still the one we're evicting.
+                // A rekey may have replaced the room at this key with a different one.
+                if rooms_guard
+                    .get(&notebook_id_for_eviction)
+                    .is_some_and(|r| Arc::ptr_eq(r, &room_for_eviction))
+                {
+                    rooms_guard.remove(&notebook_id_for_eviction);
+                    info!(
+                        "[notebook-sync] Evicted room {} (idle timeout)",
+                        notebook_id_for_eviction
+                    );
+                } else {
+                    debug!(
+                        "[notebook-sync] Eviction skipped for {} (room was replaced)",
+                        notebook_id_for_eviction
+                    );
+                }
             }
         });
     } else {
@@ -2409,10 +2421,23 @@ async fn rekey_ephemeral_room(
                 .is_some_and(|r| Arc::ptr_eq(r, rooms_guard.get(old_notebook_id).unwrap_or(r)));
             if !is_same_room {
                 warn!(
-                    "[notebook-sync] Re-key skipped: canonical path {} already has a different room",
+                    "[notebook-sync] Re-key collision: evicting interloper room at {}",
                     canonical
                 );
-                return None;
+                // Remove the interloper — the ephemeral room has the real content.
+                let interloper = rooms_guard.remove(&canonical);
+                // Clean up interloper resources in background
+                if let Some(interloper) = interloper {
+                    tokio::spawn(async move {
+                        if let Some(mut kernel) = interloper.kernel.lock().await.take() {
+                            let _ = kernel.shutdown().await;
+                        }
+                        if let Some(tx) = interloper.watcher_shutdown_tx.lock().await.take() {
+                            let _ = tx.send(());
+                        }
+                    });
+                }
+                // Fall through to normal rekey below
             }
         }
 
