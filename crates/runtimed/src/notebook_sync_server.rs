@@ -395,7 +395,23 @@ async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
                                 deno_changed: false,
                             }),
                         });
+                } else {
+                    // Inline section exists but deps list is empty - back in sync
+                    let _ = room
+                        .kernel_broadcast_tx
+                        .send(NotebookBroadcast::EnvSyncState {
+                            in_sync: true,
+                            diff: None,
+                        });
                 }
+            } else {
+                // No inline deps in metadata at all - back in sync
+                let _ = room
+                    .kernel_broadcast_tx
+                    .send(NotebookBroadcast::EnvSyncState {
+                        in_sync: true,
+                        diff: None,
+                    });
             }
         }
     }
