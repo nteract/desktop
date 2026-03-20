@@ -1283,6 +1283,7 @@ FIXTURES_DIR = (
 )
 
 
+@pytest.mark.timeout(300)
 class TestProjectFileDetection:
     """Test project file auto-detection via notebook_path walk-up.
 
@@ -1290,8 +1291,12 @@ class TestProjectFileDetection:
     walks up from the notebook directory looking for project files
     (pyproject.toml, pixi.toml, environment.yml). The closest match wins.
 
-    These tests use fixture notebooks copied to a temp dir to avoid
-    the repo root pyproject.toml interfering with walk-up detection.
+    These tests use real fixture notebooks copied to a temp directory
+    (outside the repo tree) so the repo root pyproject.toml doesn't
+    interfere with walk-up detection.
+
+    Timeout is 300s because uv:pyproject kernels install real packages
+    via `uv run --with ipykernel`.
     """
 
     @pytest.fixture(scope="class")
