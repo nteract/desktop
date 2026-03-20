@@ -41,8 +41,14 @@ class Output:
         ...
 
     @property
-    def data(self) -> dict[str, str] | None:
-        """For display_data/execute_result: mime type -> content."""
+    def data(self) -> dict[str, str | bytes | dict] | None:
+        """For display_data/execute_result: mime type -> typed content.
+
+        Values are typed by MIME category:
+        - Text mimes (text/*, image/svg+xml) → ``str``
+        - Binary mimes (image/png, audio/*, …) → ``bytes`` (raw, not base64)
+        - JSON mimes (application/json, *+json) → ``dict``
+        """
         ...
 
     @property

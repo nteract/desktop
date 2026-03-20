@@ -7,35 +7,50 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use base64::Engine as _;
+use serde_json::Value;
 
-use crate::output::Output;
+use crate::output::{DataValue, Output};
 
-/// Check if a string looks like a blob hash (64 hex characters).
-fn is_blob_hash(s: &str) -> bool {
-    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
+/// Classification of a MIME type for the Python API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MimeKind {
+    /// UTF-8 text: text/*, image/svg+xml, application/javascript, etc.
+    Text,
+    /// Raw binary bytes: image/png, audio/*, video/*, etc.
+    Binary,
+    /// JSON data → Python dict/list: application/json, *+json
+    Json,
 }
 
-/// Check if a MIME type represents binary content.
-///
-/// Binary MIME types are stored as raw bytes in the blob store (decoded
-/// from Jupyter's base64 wire format). When resolving, we read the raw
-/// bytes and base64-encode them back to a string for the Output struct.
-///
-/// Must match the Rust `is_binary_mime` in `output_store.rs` and the
-/// TypeScript `isBinaryMime` in `manifest-resolution.ts`.
-fn is_binary_mime(mime: &str) -> bool {
-    if mime.starts_with("image/") {
-        // SVG is plain XML text in Jupyter, not base64-encoded binary.
-        return !mime.ends_with("+xml");
+/// Classify a MIME type into Text, Binary, or Json.
+fn mime_kind(mime: &str) -> MimeKind {
+    // JSON types → native Python dicts
+    if mime == "application/json" {
+        return MimeKind::Json;
     }
-    if mime.starts_with("audio/") || mime.starts_with("video/") {
-        return true;
+    if let Some(subtype) = mime.strip_prefix("application/") {
+        if subtype.ends_with("+json") {
+            return MimeKind::Json;
+        }
     }
 
-    // application/* is binary by default, with carve-outs for text-like formats.
+    // Binary images (but NOT SVG — that's XML text)
+    if mime.starts_with("image/") {
+        return if mime.ends_with("+xml") {
+            MimeKind::Text
+        } else {
+            MimeKind::Binary
+        };
+    }
+
+    // Audio/video are always binary
+    if mime.starts_with("audio/") || mime.starts_with("video/") {
+        return MimeKind::Binary;
+    }
+
+    // application/* is binary by default, with carve-outs for text-like formats
     if let Some(subtype) = mime.strip_prefix("application/") {
-        let is_text = subtype == "json"
-            || subtype == "javascript"
+        let is_text = subtype == "javascript"
             || subtype == "ecmascript"
             || subtype == "xml"
             || subtype == "xhtml+xml"
@@ -44,12 +59,21 @@ fn is_binary_mime(mime: &str) -> bool {
             || subtype == "graphql"
             || subtype == "x-latex"
             || subtype == "x-tex"
-            || subtype.ends_with("+json")
             || subtype.ends_with("+xml");
-        return !is_text;
+        return if is_text {
+            MimeKind::Text
+        } else {
+            MimeKind::Binary
+        };
     }
 
-    false
+    // Everything else (text/*, unknown) is text
+    MimeKind::Text
+}
+
+/// Check if a string looks like a blob hash (64 hex characters).
+fn is_blob_hash(s: &str) -> bool {
+    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Resolve an output string to an Output.
@@ -219,6 +243,9 @@ pub async fn resolve_output_with_type(
 }
 
 /// Convert a parsed JSON value to an Output.
+///
+/// For display_data/execute_result, binary MIME types (image/png, etc.)
+/// are base64-decoded from Jupyter's wire format into raw bytes.
 pub fn output_from_json(output_type: &str, json: &serde_json::Value) -> Option<Output> {
     match output_type {
         "stream" => {
@@ -228,28 +255,15 @@ pub fn output_from_json(output_type: &str, json: &serde_json::Value) -> Option<O
         }
         "display_data" => {
             let data = json.get("data")?.as_object()?;
-            let mut output_data = HashMap::new();
-            for (key, value) in data {
-                if let Some(s) = value.as_str() {
-                    output_data.insert(key.clone(), s.to_string());
-                } else {
-                    output_data.insert(key.clone(), value.to_string());
-                }
-            }
-            Some(Output::display_data(output_data))
+            Some(Output::display_data(json_data_to_datavalues(data)))
         }
         "execute_result" => {
             let data = json.get("data")?.as_object()?;
             let execution_count = json.get("execution_count")?.as_i64()?;
-            let mut output_data = HashMap::new();
-            for (key, value) in data {
-                if let Some(s) = value.as_str() {
-                    output_data.insert(key.clone(), s.to_string());
-                } else {
-                    output_data.insert(key.clone(), value.to_string());
-                }
-            }
-            Some(Output::execute_result(output_data, execution_count))
+            Some(Output::execute_result(
+                json_data_to_datavalues(data),
+                execution_count,
+            ))
         }
         "error" => {
             let ename = json.get("ename")?.as_str()?.to_string();
@@ -266,14 +280,59 @@ pub fn output_from_json(output_type: &str, json: &serde_json::Value) -> Option<O
     }
 }
 
+/// Convert a JSON data map (mime → value) to DataValue entries.
+///
+/// - Binary MIME types are base64-decoded from Jupyter's wire format → raw bytes
+/// - JSON MIME types are parsed into serde_json::Value → Python dict
+/// - Text MIME types (including SVG) are kept as strings
+fn json_data_to_datavalues(data: &serde_json::Map<String, Value>) -> HashMap<String, DataValue> {
+    let mut output_data = HashMap::new();
+    for (mime, value) in data {
+        let dv = match mime_kind(mime) {
+            MimeKind::Binary => {
+                // Jupyter sends binary data as base64 strings on the wire
+                if let Some(s) = value.as_str() {
+                    match base64::engine::general_purpose::STANDARD.decode(s) {
+                        Ok(bytes) => DataValue::Binary(bytes),
+                        Err(_) => DataValue::Text(s.to_string()),
+                    }
+                } else {
+                    DataValue::Text(value.to_string())
+                }
+            }
+            MimeKind::Json => {
+                // JSON data: if it's a string, parse it; if it's already an object, keep it
+                if let Some(s) = value.as_str() {
+                    match serde_json::from_str::<Value>(s) {
+                        Ok(parsed) => DataValue::Json(parsed),
+                        Err(_) => DataValue::Text(s.to_string()),
+                    }
+                } else {
+                    // Already a JSON value (object, array, etc.)
+                    DataValue::Json(value.clone())
+                }
+            }
+            MimeKind::Text => {
+                if let Some(s) = value.as_str() {
+                    DataValue::Text(s.to_string())
+                } else {
+                    DataValue::Text(value.to_string())
+                }
+            }
+        };
+        output_data.insert(mime.clone(), dv);
+    }
+    output_data
+}
+
 /// Convert a blob manifest to an Output.
 ///
 /// The manifest has a format like:
 /// {"output_type": "stream", "name": "stdout", "text": {"inline": "..."}}
 ///
 /// For display_data/execute_result, each MIME type's content ref is resolved
-/// according to its type: binary MIME types read raw bytes from the blob store
-/// and base64-encode them; text MIME types read as UTF-8 strings.
+/// according to its type: binary MIME types are returned as raw bytes
+/// (`DataValue::Binary`); text MIME types as strings (`DataValue::Text`).
 pub async fn output_from_manifest(
     output_type: &str,
     manifest: &serde_json::Value,
@@ -284,7 +343,7 @@ pub async fn output_from_manifest(
         "stream" => {
             let name = manifest.get("name")?.as_str()?;
             let text_ref = manifest.get("text")?;
-            let text = resolve_content_ref(text_ref, blob_base_url, blob_store_path, None).await?;
+            let text = resolve_text_ref(text_ref, blob_base_url, blob_store_path).await?;
             Some(Output::stream(name, &text))
         }
         "display_data" | "execute_result" => {
@@ -325,8 +384,7 @@ pub async fn output_from_manifest(
             } else {
                 // Content reference - resolve it and parse as JSON array
                 let tb_str =
-                    resolve_content_ref(traceback_val, blob_base_url, blob_store_path, None)
-                        .await?;
+                    resolve_text_ref(traceback_val, blob_base_url, blob_store_path).await?;
                 serde_json::from_str::<Vec<String>>(&tb_str).ok()?
             };
 
@@ -336,31 +394,56 @@ pub async fn output_from_manifest(
     }
 }
 
-/// Resolve a content reference from a blob manifest.
+/// Resolve a content reference from a blob manifest, returning a [`DataValue`].
 ///
 /// Content refs can be:
 /// - `{"inline": "actual content"}` — content is inline
 /// - `{"blob": "hash", "size": N}` — content is in the blob store
 ///
 /// For binary MIME types (images, etc.), the blob store holds raw bytes
-/// (decoded from Jupyter's base64 wire format). This function reads the
-/// raw bytes and base64-encodes them so the Output struct always contains
-/// base64 strings for binary content (matching Jupyter conventions).
+/// (decoded from Jupyter's base64 wire format). This function returns the
+/// raw bytes as `DataValue::Binary` — no re-encoding to base64.
 ///
 /// For text MIME types, the blob store holds UTF-8 text which is returned
-/// as-is.
+/// as `DataValue::Text`.
 pub async fn resolve_content_ref(
     content_ref: &serde_json::Value,
     blob_base_url: &Option<String>,
     blob_store_path: &Option<PathBuf>,
     mime_type: Option<&str>,
-) -> Option<String> {
+) -> Option<DataValue> {
+    let kind = mime_type.map(mime_kind).unwrap_or(MimeKind::Text);
+
     if let Some(inline) = content_ref.get("inline") {
-        return inline.as_str().map(|s| s.to_string());
+        let s = inline.as_str()?;
+        return Some(match kind {
+            MimeKind::Binary => {
+                // Inline binary is base64-encoded; decode to raw bytes
+                base64::engine::general_purpose::STANDARD
+                    .decode(s)
+                    .map(DataValue::Binary)
+                    .unwrap_or_else(|_| DataValue::Text(s.to_string()))
+            }
+            MimeKind::Json => {
+                // Inline JSON: parse if it's a string representation
+                serde_json::from_str::<Value>(s)
+                    .map(DataValue::Json)
+                    .unwrap_or_else(|_| DataValue::Text(s.to_string()))
+            }
+            MimeKind::Text => DataValue::Text(s.to_string()),
+        });
+    }
+
+    // Also handle inline JSON values (not wrapped in a string)
+    if kind == MimeKind::Json {
+        if let Some(inline) = content_ref.get("inline") {
+            if inline.is_object() || inline.is_array() {
+                return Some(DataValue::Json(inline.clone()));
+            }
+        }
     }
 
     let blob_hash = content_ref.get("blob").and_then(|v| v.as_str())?;
-    let binary = mime_type.is_some_and(is_binary_mime);
 
     // First try: read directly from disk
     if let Some(store_path) = blob_store_path {
@@ -369,15 +452,24 @@ pub async fn resolve_content_ref(
             let rest = &blob_hash[2..];
             let blob_path = store_path.join(prefix).join(rest);
 
-            if binary {
-                // Binary: read raw bytes and base64-encode
-                if let Ok(bytes) = tokio::fs::read(&blob_path).await {
-                    return Some(base64::engine::general_purpose::STANDARD.encode(&bytes));
+            match kind {
+                MimeKind::Binary => {
+                    if let Ok(bytes) = tokio::fs::read(&blob_path).await {
+                        return Some(DataValue::Binary(bytes));
+                    }
                 }
-            } else {
-                // Text: read as UTF-8 string
-                if let Ok(contents) = tokio::fs::read_to_string(&blob_path).await {
-                    return Some(contents);
+                MimeKind::Json => {
+                    if let Ok(contents) = tokio::fs::read_to_string(&blob_path).await {
+                        if let Ok(parsed) = serde_json::from_str::<Value>(&contents) {
+                            return Some(DataValue::Json(parsed));
+                        }
+                        return Some(DataValue::Text(contents));
+                    }
+                }
+                MimeKind::Text => {
+                    if let Ok(contents) = tokio::fs::read_to_string(&blob_path).await {
+                        return Some(DataValue::Text(contents));
+                    }
                 }
             }
         }
@@ -389,20 +481,47 @@ pub async fn resolve_content_ref(
 
         if let Ok(response) = reqwest::get(&url).await {
             if response.status().is_success() {
-                if binary {
-                    // Binary: read raw bytes and base64-encode
-                    if let Ok(bytes) = response.bytes().await {
-                        return Some(base64::engine::general_purpose::STANDARD.encode(&bytes));
+                match kind {
+                    MimeKind::Binary => {
+                        if let Ok(bytes) = response.bytes().await {
+                            return Some(DataValue::Binary(bytes.to_vec()));
+                        }
                     }
-                } else {
-                    // Text: read as UTF-8 string
-                    return response.text().await.ok();
+                    MimeKind::Json => {
+                        if let Ok(text) = response.text().await {
+                            if let Ok(parsed) = serde_json::from_str::<Value>(&text) {
+                                return Some(DataValue::Json(parsed));
+                            }
+                            return Some(DataValue::Text(text));
+                        }
+                    }
+                    MimeKind::Text => {
+                        if let Ok(text) = response.text().await {
+                            return Some(DataValue::Text(text));
+                        }
+                    }
                 }
             }
         }
     }
 
     None
+}
+
+/// Convenience wrapper: resolve a content ref that is always text.
+///
+/// Used for stream text, error tracebacks, and other non-data fields
+/// where the result is always a UTF-8 string.
+async fn resolve_text_ref(
+    content_ref: &serde_json::Value,
+    blob_base_url: &Option<String>,
+    blob_store_path: &Option<PathBuf>,
+) -> Option<String> {
+    match resolve_content_ref(content_ref, blob_base_url, blob_store_path, None).await? {
+        DataValue::Text(s) => Some(s),
+        DataValue::Json(v) => Some(v.to_string()),
+        DataValue::Binary(_) => None,
+    }
 }
 
 /// Resolve all outputs for a cell snapshot.

@@ -16,6 +16,7 @@ Requires: pip install nteract
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import difflib
 import json
@@ -105,10 +106,10 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
-# Maximum size for image data (base64-encoded). 1 MB is generous — a typical
+# Maximum size for raw image data in bytes. 1 MB is generous — a typical
 # matplotlib PNG is 50–100 KB. Images beyond this are silently dropped to
 # avoid blowing up the LLM's context window.
-_MAX_IMAGE_BASE64_BYTES = 1_000_000
+_MAX_IMAGE_BYTES = 1_000_000
 
 # Text mime type priority for LLM consumption.
 # text/llm+plain is from https://github.com/rgbkrk/repr_llm — a repr designed
@@ -150,12 +151,15 @@ def _format_output_text(output: runtimed.Output) -> str | None:
             if mime == "application/json":
                 try:
                     data = output.data[mime]
+                    if isinstance(data, dict):
+                        return json.dumps(data, indent=2)
                     if isinstance(data, str):
                         return json.dumps(json.loads(data), indent=2)
                     return json.dumps(data, indent=2)
                 except (json.JSONDecodeError, TypeError):
                     return str(output.data[mime])
-            return output.data[mime]
+            val = output.data[mime]
+            return val if isinstance(val, str) else str(val)
         return None
 
     return None
@@ -212,16 +216,22 @@ def _output_to_content(output: runtimed.Output) -> list[ContentItem]:
         if output.data is None:
             return items
 
-        # Images → ImageContent (base64 encoded by the kernel)
+        # Images → ImageContent (data is raw bytes from runtimed, encode for MCP)
         for mime in ("image/png", "image/jpeg", "image/gif", "image/webp"):
             if mime in output.data:
                 data = output.data[mime]
-                if isinstance(data, str) and len(data) <= _MAX_IMAGE_BASE64_BYTES:
+                if isinstance(data, bytes) and len(data) <= _MAX_IMAGE_BYTES:
+                    b64 = base64.b64encode(data).decode("ascii")
+                    items.append(ImageContent(type="image", data=b64, mimeType=mime))
+                elif isinstance(data, str) and len(data) <= _MAX_IMAGE_BYTES:
+                    # Legacy fallback: already base64-encoded string
                     items.append(ImageContent(type="image", data=data, mimeType=mime))
 
         # SVG as text (it's XML, not base64)
         if "image/svg+xml" in output.data:
-            items.append(TextContent(type="text", text=output.data["image/svg+xml"]))
+            svg = output.data["image/svg+xml"]
+            if isinstance(svg, str):
+                items.append(TextContent(type="text", text=svg))
 
         # Best available text representation
         for mime in _TEXT_MIME_PRIORITY:
@@ -230,7 +240,10 @@ def _output_to_content(output: runtimed.Output) -> list[ContentItem]:
             if mime == "application/json":
                 try:
                     data = output.data[mime]
-                    if isinstance(data, str):
+                    if isinstance(data, dict):
+                        # Native dict from runtimed — serialize directly
+                        text = json.dumps(data, indent=2)
+                    elif isinstance(data, str):
                         text = json.dumps(json.loads(data), indent=2)
                     else:
                         text = json.dumps(data, indent=2)
@@ -238,7 +251,10 @@ def _output_to_content(output: runtimed.Output) -> list[ContentItem]:
                 except (json.JSONDecodeError, TypeError):
                     items.append(TextContent(type="text", text=str(output.data[mime])))
             else:
-                items.append(TextContent(type="text", text=output.data[mime]))
+                val = output.data[mime]
+                items.append(
+                    TextContent(type="text", text=val if isinstance(val, str) else str(val))
+                )
             break
 
     return items

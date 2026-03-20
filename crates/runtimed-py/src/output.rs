@@ -1,7 +1,71 @@
 //! Output types for execution results.
 
 use pyo3::prelude::*;
+use pyo3::types::{PyBytes, PyDict};
 use std::collections::HashMap;
+
+/// A value in the output data dict — typed by MIME category.
+///
+/// | MIME type | Python type | Example |
+/// |-----------|-------------|---------|
+/// | `text/*`, `image/svg+xml` | `str` | `output.data["text/plain"]` → `str` |
+/// | `image/png`, `audio/*`, … | `bytes` | `output.data["image/png"]` → `bytes` |
+/// | `application/json`, `*+json` | `dict` | `output.data["application/json"]` → `dict` |
+#[derive(Clone, Debug)]
+pub enum DataValue {
+    /// UTF-8 text (text/*, image/svg+xml, etc.)
+    Text(String),
+    /// Raw binary bytes — no base64 encoding (image/png, audio/*, etc.)
+    Binary(Vec<u8>),
+    /// Parsed JSON (application/json, application/*+json) → Python dict
+    Json(serde_json::Value),
+}
+
+impl<'py> IntoPyObject<'py> for DataValue {
+    type Target = PyAny;
+    type Output = Bound<'py, PyAny>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        match self {
+            DataValue::Text(s) => Ok(s.into_pyobject(py)?.into_any()),
+            DataValue::Binary(b) => Ok(PyBytes::new(py, &b).into_any()),
+            DataValue::Json(v) => json_to_py(py, &v),
+        }
+    }
+}
+
+/// Convert a serde_json::Value to a native Python object (dict, list, str, etc.).
+fn json_to_py<'py>(py: Python<'py>, value: &serde_json::Value) -> PyResult<Bound<'py, PyAny>> {
+    match value {
+        serde_json::Value::Null => Ok(py.None().into_bound(py)),
+        serde_json::Value::Bool(b) => Ok(b.into_pyobject(py)?.to_owned().into_any()),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(i.into_pyobject(py)?.into_any())
+            } else if let Some(f) = n.as_f64() {
+                Ok(f.into_pyobject(py)?.into_any())
+            } else {
+                Ok(py.None().into_bound(py))
+            }
+        }
+        serde_json::Value::String(s) => Ok(s.into_pyobject(py)?.into_any()),
+        serde_json::Value::Array(arr) => {
+            let list = pyo3::types::PyList::empty(py);
+            for item in arr {
+                list.append(json_to_py(py, item)?)?;
+            }
+            Ok(list.into_any())
+        }
+        serde_json::Value::Object(map) => {
+            let dict = PyDict::new(py);
+            for (k, v) in map {
+                dict.set_item(k, json_to_py(py, v)?)?;
+            }
+            Ok(dict.into_any())
+        }
+    }
+}
 
 /// A single output from cell execution.
 #[pyclass(skip_from_py_object)]
@@ -19,9 +83,9 @@ pub struct Output {
     #[pyo3(get)]
     pub text: Option<String>,
 
-    /// For display_data/execute_result: mime type -> content
-    #[pyo3(get)]
-    pub data: Option<HashMap<String, String>>,
+    /// For display_data/execute_result: mime type -> content.
+    /// Text mimes are `str`, binary mimes (image/png etc.) are `bytes`.
+    pub data: Option<HashMap<String, DataValue>>,
 
     /// For errors: exception name
     #[pyo3(get)]
@@ -42,6 +106,26 @@ pub struct Output {
 
 #[pymethods]
 impl Output {
+    /// Access `data` as a Python dict with typed values:
+    /// - text mimes → `str`
+    /// - binary mimes → `bytes`
+    /// - JSON mimes → `dict`
+    #[getter]
+    fn data<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(data) = &self.data else {
+            return Ok(None);
+        };
+        let dict = PyDict::new(py);
+        for (key, value) in data {
+            match value {
+                DataValue::Text(s) => dict.set_item(key, s)?,
+                DataValue::Binary(b) => dict.set_item(key, PyBytes::new(py, b))?,
+                DataValue::Json(v) => dict.set_item(key, json_to_py(py, v)?)?,
+            }
+        }
+        Ok(Some(dict))
+    }
+
     fn __repr__(&self) -> String {
         match self.output_type.as_str() {
             "stream" => format!(
@@ -83,7 +167,7 @@ impl Output {
     }
 
     /// Create a display_data output.
-    pub fn display_data(data: HashMap<String, String>) -> Self {
+    pub fn display_data(data: HashMap<String, DataValue>) -> Self {
         Self {
             output_type: "display_data".to_string(),
             name: None,
@@ -97,7 +181,7 @@ impl Output {
     }
 
     /// Create an execute_result output.
-    pub fn execute_result(data: HashMap<String, String>, execution_count: i64) -> Self {
+    pub fn execute_result(data: HashMap<String, DataValue>, execution_count: i64) -> Self {
         Self {
             output_type: "execute_result".to_string(),
             name: None,
