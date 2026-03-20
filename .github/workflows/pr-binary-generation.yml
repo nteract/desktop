@@ -76,6 +76,7 @@ jobs:
         with:
           ref: ${{ needs.resolve-pr.outputs.head_sha }}
           fetch-depth: 1
+          lfs: true
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
