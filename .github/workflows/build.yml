@@ -221,7 +221,7 @@ jobs:
         run: pnpm vitest bench --run apps/notebook/src/lib/__tests__/
 
   build-linux:
-    name: Linux
+    name: Linux (release artifacts)
     needs: [changes, build-ui]
     if: needs.changes.outputs.source_changed == 'true'
     runs-on: ubuntu-latest
@@ -305,39 +305,8 @@ jobs:
       - name: Test notebook crate
         run: cargo test -p notebook --verbose
 
-  rust-tests:
-    name: Rust Tests (Linux)
-    needs: [changes]
-    if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Install rust
-        uses: dsherret/rust-toolchain-file@v1
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ubuntu-test
-
-      - name: Run tests
-        # Exclude notebook (Tauri app crate) — its build script requires bundled
-        # runtimed/runt binaries. The notebook crate's tests run in build-linux
-        # which builds those binaries first.
-        # Exclude runtimed-wasm — requires wasm-pack (tested in wasm-deno job).
-        # Exclude runtimed-py — requires Python/maturin (tested in runtimed-py-integration job).
-        run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude runtimed-py --verbose
-
-  clippy:
-    name: Clippy (Linux)
+  clippy-and-tests:
+    name: Clippy & Tests (Linux)
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
     runs-on: ubuntu-latest
@@ -359,8 +328,14 @@ jobs:
         with:
           shared-key: ubuntu-latest
 
+      # Excludes: notebook (needs bundled binaries, checked in build-linux),
+      # runtimed-wasm (needs wasm-pack, tested in wasm-deno),
+      # runtimed-py (needs Python/maturin, tested in runtimed-py-integration).
       - name: Clippy
         run: cargo clippy --workspace --exclude notebook --exclude runtimed-wasm --exclude runtimed-py --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude runtimed-py --verbose
 
   build:
     name: ${{ matrix.platform.name }}
