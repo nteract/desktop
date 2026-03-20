@@ -35,7 +35,7 @@ interface NotebookToolbarProps {
   /** Pre-start hint: "uv" | "conda" | "pixi" | null, derived from notebook metadata */
   envTypeHint?: EnvBadgeVariant | null;
   envProgress: EnvProgressState | null;
-  runtime?: string;
+  runtime?: string | null;
   onStartKernel: (name: string) => void;
   onInterruptKernel: () => void;
   onRestartKernel: () => void;
@@ -58,7 +58,7 @@ export function NotebookToolbar({
   envSource,
   envTypeHint,
   envProgress,
-  runtime = "python",
+  runtime = null,
   onStartKernel,
   onInterruptKernel,
   onRestartKernel,
@@ -254,54 +254,56 @@ export function NotebookToolbar({
           </button>
         )}
 
-        {/* Runtime / deps toggle */}
-        <button
-          type="button"
-          onClick={onToggleDependencies}
-          data-testid="deps-toggle"
-          data-runtime={runtime}
-          className={cn(
-            "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
-            runtime === "deno"
-              ? "bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 dark:text-emerald-400"
-              : "bg-blue-500/10 text-blue-600 hover:bg-blue-500/20 dark:text-blue-400",
-            isDepsOpen && "ring-1 ring-current/25",
-          )}
-          title={(() => {
-            const lang = runtime === "deno" ? "Deno/TypeScript" : "Python";
-            const mgr = envManager ? ` · ${envManager}` : "";
-            const action = isDepsOpen
-              ? "close environment panel"
-              : "open environment panel";
-            return `${lang}${mgr} — ${action}`;
-          })()}
-        >
-          {runtime === "deno" ? (
-            <>
-              <DenoIcon className="h-3 w-3" />
-              <span>Deno</span>
-            </>
-          ) : (
-            <>
-              <PythonIcon className="h-3 w-3" />
-              <span>Python</span>
-            </>
-          )}
-          {envManager && (
-            <>
-              <span className="opacity-40">·</span>
-              {envManager === "uv" && (
-                <UvIcon className="h-2 w-2 text-fuchsia-600 dark:text-fuchsia-400" />
-              )}
-              {envManager === "conda" && (
-                <CondaIcon className="h-2.5 w-2.5 text-emerald-600 dark:text-emerald-400" />
-              )}
-              {envManager === "pixi" && (
-                <PixiIcon className="h-2.5 w-2.5 text-amber-600 dark:text-amber-400" />
-              )}
-            </>
-          )}
-        </button>
+        {/* Runtime / deps toggle — hidden until runtime is known to avoid flicker */}
+        {runtime && (
+          <button
+            type="button"
+            onClick={onToggleDependencies}
+            data-testid="deps-toggle"
+            data-runtime={runtime}
+            className={cn(
+              "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+              runtime === "deno"
+                ? "bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 dark:text-emerald-400"
+                : "bg-blue-500/10 text-blue-600 hover:bg-blue-500/20 dark:text-blue-400",
+              isDepsOpen && "ring-1 ring-current/25",
+            )}
+            title={(() => {
+              const lang = runtime === "deno" ? "Deno/TypeScript" : "Python";
+              const mgr = envManager ? ` · ${envManager}` : "";
+              const action = isDepsOpen
+                ? "close environment panel"
+                : "open environment panel";
+              return `${lang}${mgr} — ${action}`;
+            })()}
+          >
+            {runtime === "deno" ? (
+              <>
+                <DenoIcon className="h-3 w-3" />
+                <span>Deno</span>
+              </>
+            ) : (
+              <>
+                <PythonIcon className="h-3 w-3" />
+                <span>Python</span>
+              </>
+            )}
+            {envManager && (
+              <>
+                <span className="opacity-40">·</span>
+                {envManager === "uv" && (
+                  <UvIcon className="h-2 w-2 text-fuchsia-600 dark:text-fuchsia-400" />
+                )}
+                {envManager === "conda" && (
+                  <CondaIcon className="h-2.5 w-2.5 text-emerald-600 dark:text-emerald-400" />
+                )}
+                {envManager === "pixi" && (
+                  <PixiIcon className="h-2.5 w-2.5 text-amber-600 dark:text-amber-400" />
+                )}
+              </>
+            )}
+          </button>
+        )}
 
         {/* Kernel status */}
         <div

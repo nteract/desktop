@@ -175,7 +175,10 @@ function AppContent() {
   // Notebook runtime type — reactive read from WASM Automerge doc.
   // Re-renders automatically when metadata changes (bootstrap, sync, writes).
   const detectedRuntime = useDetectRuntime();
-  const runtime = detectedRuntime ?? "python";
+  // Runtime hint from daemon:ready payload — available before metadata syncs,
+  // prevents momentary flicker of wrong runtime UI (e.g. Python for Deno notebooks).
+  const [runtimeHint, setRuntimeHint] = useState<string | null>(null);
+  const runtime = detectedRuntime ?? runtimeHint;
 
   // Auto-clear justSynced after 3 seconds
   useEffect(() => {
@@ -951,11 +954,17 @@ function AppContent() {
     });
 
     // Listen for daemon ready (reconnection success)
-    const unlistenReady = webview.listen("daemon:ready", () => {
-      // Clear any status banner when daemon reconnects (failed, checking, etc.)
-      cancelReadyTimeout();
-      setDaemonStatus(null);
-    });
+    const unlistenReady = webview.listen<{ runtime?: string }>(
+      "daemon:ready",
+      (event) => {
+        // Clear any status banner when daemon reconnects (failed, checking, etc.)
+        cancelReadyTimeout();
+        setDaemonStatus(null);
+        if (event.payload?.runtime) {
+          setRuntimeHint(event.payload.runtime);
+        }
+      },
+    );
 
     // Check daemon status on mount (in case events fired before React was ready)
     // Small delay to let initial events settle

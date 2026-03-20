@@ -53,7 +53,7 @@ interface NotebookViewProps {
   executingCellIds: Set<string>;
   queuedCellIds: Set<string>;
   pagePayloads: Map<string, CellPagePayload>;
-  runtime?: Runtime;
+  runtime?: Runtime | null;
   searchQuery?: string;
   searchCurrentMatch?: FindMatch | null;
   onFocusCell: (cellId: string) => void;

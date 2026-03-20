@@ -162,6 +162,10 @@ struct DaemonReadyPayload {
     notebook_id: String,
     cell_count: usize,
     needs_trust_approval: bool,
+    /// Runtime hint so the frontend can show the correct UI before metadata syncs.
+    /// Only set for Create (where we know the exact runtime); None for Open
+    /// (where the actual runtime is determined from the file's metadata).
+    runtime: Option<String>,
 }
 
 /// How to connect a new window to the daemon.
@@ -518,6 +522,7 @@ async fn initialize_notebook_sync_open(
         notebook_id: info.notebook_id.clone(),
         cell_count: info.cell_count,
         needs_trust_approval: info.needs_trust_approval,
+        runtime: None,
     };
 
     setup_sync_receivers(
@@ -586,6 +591,7 @@ async fn initialize_notebook_sync_create(
         notebook_id: info.notebook_id.clone(),
         cell_count: info.cell_count,
         needs_trust_approval: info.needs_trust_approval,
+        runtime: Some(runtime),
     };
 
     setup_sync_receivers(
