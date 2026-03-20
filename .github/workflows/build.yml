@@ -239,6 +239,9 @@ jobs:
       - name: Run JS benchmarks
         run: pnpm vitest bench --run apps/notebook/src/lib/__tests__/
 
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
       - name: Build external binaries
         shell: bash
         run: |
@@ -253,19 +256,11 @@ jobs:
             cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
           fi
 
-      - name: Cache cargo bin
-        uses: actions/cache@v5
-        with:
-          path: ~/.cargo/bin
-          key: cargo-bin-ubuntu-tauri-cli-tauri-driver-${{ hashFiles('rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-bin-ubuntu-tauri-cli-tauri-driver-
+      - name: Install cargo-binstall
+        run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
 
       - name: Install tauri-cli and tauri-driver
-        run: |
-          if ! command -v cargo-tauri &> /dev/null || ! command -v tauri-driver &> /dev/null; then
-            cargo install tauri-cli tauri-driver --locked
-          fi
+        run: cargo binstall tauri-cli tauri-driver --no-confirm --locked
 
       - name: Upload Linux Rust binaries
         uses: actions/upload-artifact@v4
@@ -277,12 +272,6 @@ jobs:
             crates/notebook/binaries/runtimed-*
             crates/notebook/binaries/runt-*
           retention-days: 1
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Build
-        run: cargo build --release
 
       - name: Build Tauri E2E app
         run: cd crates/notebook && cargo tauri build --ci --no-bundle --config '{"build":{"beforeBuildCommand":""}}'
