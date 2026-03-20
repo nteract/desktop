@@ -1155,45 +1155,46 @@ class TestDenoKernel:
     slow due to deno download; subsequent runs use the cached binary.
     """
 
-    def test_deno_kernel_launch(self, session):
+    @pytest.fixture
+    def deno_session(self, client):
+        """Create a Deno notebook — auto-launches with a Deno kernel."""
+        sess = client.create_notebook(runtime="deno")
+        yield sess
+        try:
+            if sess.kernel_started:
+                sess.shutdown_kernel()
+        except Exception:
+            pass
+
+    def test_deno_kernel_launch(self, deno_session):
         """Deno kernel launches and executes TypeScript."""
-        _set_deno_kernelspec(session)
-
-        start_kernel_with_retry(session, kernel_type="deno", env_source="deno")
-
-        result = session.run("console.log('hello from deno')")
+        result = deno_session.run("console.log('hello from deno')")
         assert result.success, f"Deno execution failed: {result.stderr}"
         assert "hello from deno" in result.stdout
 
-    def test_deno_kernel_typescript_features(self, session):
+    def test_deno_kernel_typescript_features(self, deno_session):
         """Deno kernel supports TypeScript features."""
-        _set_deno_kernelspec(session)
-
-        start_kernel_with_retry(session, kernel_type="deno", env_source="deno")
-
         # TypeScript type annotations and template literals
-        result = session.run(
+        result = deno_session.run(
             "const greet = (name: string): string => `Hello, ${name}!`;\n"
             "console.log(greet('integration test'))"
         )
         assert result.success, f"TypeScript execution failed: {result.stderr}"
         assert "Hello, integration test!" in result.stdout
 
-    def test_deno_kernelspec_via_typed_api(self, session):
+    def test_deno_kernelspec_via_typed_api(self, deno_session):
         """Deno kernelspec set via typed API enables Deno kernel."""
-        _set_deno_kernelspec(session)
-
-        # Verify kernelspec round-trips correctly before launching
-        ks = session.get_kernelspec()
+        # Verify kernelspec was set correctly by create_notebook(runtime="deno")
+        ks = deno_session.get_kernelspec()
         assert ks is not None, "Deno kernelspec should be readable"
         assert ks["name"] == "deno"
         assert ks["display_name"] == "Deno"
         assert ks.get("language") == "typescript"
 
-        start_kernel_with_retry(session, kernel_type="deno", env_source="deno")
-
-        # Verify kernel type is Deno
-        assert session.kernel_type == "deno"
+        # Verify the kernel is actually Deno by executing TypeScript
+        result = deno_session.run("const x: number = 42; console.log(x)")
+        assert result.success, f"Deno kernel should execute TypeScript: {result.stderr}"
+        assert "42" in result.stdout
 
 
 # ============================================================================
@@ -1221,6 +1222,14 @@ class TestCondaInlineDeps:
         socket_path, _ = daemon_process
         client = runtimed.Client(socket_path=str(socket_path)) if socket_path else runtimed.Client()
         sess = client.create_notebook(runtime="python")
+
+        # Shutdown the auto-launched Python kernel so we can re-launch
+        # with conda:inline env_source (the daemon returns
+        # KernelAlreadyRunning if a kernel is already up).
+        try:
+            sess.shutdown_kernel()
+        except Exception:
+            pass
 
         # Set up conda inline deps metadata using typed API
         _set_python_kernelspec(sess, conda_deps=["filelock"])
