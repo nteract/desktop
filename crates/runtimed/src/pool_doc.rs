@@ -117,8 +117,8 @@ impl PoolDoc {
         let uv_id = self
             .doc
             .get(ROOT, "uv")?
-            .and_then(|(_, id)| Some(id))
-            .expect("uv map missing");
+            .map(|(_, id)| id)
+            .ok_or(AutomergeError::InvalidIndex(0))?;
 
         self.doc.put(&uv_id, "available", state.uv.available)?;
         self.doc.put(&uv_id, "warming", state.uv.warming)?;
@@ -136,8 +136,8 @@ impl PoolDoc {
         let conda_id = self
             .doc
             .get(ROOT, "conda")?
-            .and_then(|(_, id)| Some(id))
-            .expect("conda map missing");
+            .map(|(_, id)| id)
+            .ok_or(AutomergeError::InvalidIndex(0))?;
 
         self.doc
             .put(&conda_id, "available", state.conda.available)?;
@@ -212,15 +212,26 @@ impl PoolDoc {
     /// Receive a sync message from a peer.
     ///
     /// For PoolDoc this is used to complete the sync protocol handshake
-    /// (the client sends back acknowledgments). We intentionally do NOT
-    /// apply any document mutations from the client — the pool doc is
-    /// daemon-authoritative.
+    /// (the client sends back acknowledgments). We intentionally strip
+    /// any document changes from the client — the pool doc is
+    /// daemon-authoritative and read-only for clients.
     pub fn receive_sync_message(
         &mut self,
         peer_state: &mut sync::State,
         message: sync::Message,
     ) -> Result<(), AutomergeError> {
-        self.doc.sync().receive_sync_message(peer_state, message)?;
+        // Strip any changes the client may have included — the daemon is the
+        // sole authority for pool state. We preserve heads/need/have so the
+        // sync protocol handshake (bloom filter exchange, ACKs) still works.
+        let filtered = sync::Message {
+            heads: message.heads,
+            need: message.need,
+            have: message.have,
+            changes: sync::ChunkList::empty(),
+            supported_capabilities: message.supported_capabilities,
+            version: message.version,
+        };
+        self.doc.sync().receive_sync_message(peer_state, filtered)?;
         Ok(())
     }
 }

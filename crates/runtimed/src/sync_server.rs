@@ -121,11 +121,13 @@ where
     info!("[sync] Pool state client connected");
 
     // Phase 1: Initial sync — server sends first
-    {
+    let initial_data = {
         let mut doc = pool_doc.write().await;
-        if let Some(msg) = doc.generate_sync_message(&mut peer_state) {
-            connection::send_frame(&mut writer, &msg.encode()).await?;
-        }
+        doc.generate_sync_message(&mut peer_state)
+            .map(|msg| msg.encode())
+    };
+    if let Some(data) = initial_data {
+        connection::send_frame(&mut writer, &data).await?;
     }
 
     // Phase 2: Exchange messages until sync is complete, then push on changes
@@ -138,14 +140,17 @@ where
                         let message = sync::Message::decode(&data)
                             .map_err(|e| anyhow::anyhow!("decode error: {}", e))?;
 
-                        let mut doc = pool_doc.write().await;
-                        // Process for sync protocol state, but client can't
-                        // meaningfully mutate pool state — daemon is authoritative.
-                        doc.receive_sync_message(&mut peer_state, message)?;
-
-                        // Send our response (completes handshake)
-                        if let Some(reply) = doc.generate_sync_message(&mut peer_state) {
-                            connection::send_frame(&mut writer, &reply.encode()).await?;
+                        let reply_data = {
+                            let mut doc = pool_doc.write().await;
+                            // Process for sync protocol state, but client can't
+                            // meaningfully mutate pool state — daemon is authoritative.
+                            doc.receive_sync_message(&mut peer_state, message)?;
+                            doc.generate_sync_message(&mut peer_state)
+                                .map(|msg| msg.encode())
+                        };
+                        // Send our response (completes handshake) — lock released
+                        if let Some(data) = reply_data {
+                            connection::send_frame(&mut writer, &data).await?;
                         }
                     }
                     None => {
@@ -157,10 +162,23 @@ where
             }
 
             // Pool state changed — push update to this client
-            _ = changed_rx.recv() => {
-                let mut doc = pool_doc.write().await;
-                if let Some(msg) = doc.generate_sync_message(&mut peer_state) {
-                    connection::send_frame(&mut writer, &msg.encode()).await?;
+            recv_result = changed_rx.recv() => {
+                match recv_result {
+                    Ok(()) => {}
+                    Err(broadcast::error::RecvError::Closed) => {
+                        info!("[sync] Pool state broadcast channel closed, disconnecting");
+                        return Ok(());
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("[sync] Pool state receiver lagged by {} messages", n);
+                    }
+                }
+                let push_data = {
+                    let mut doc = pool_doc.write().await;
+                    doc.generate_sync_message(&mut peer_state).map(|msg| msg.encode())
+                };
+                if let Some(data) = push_data {
+                    connection::send_frame(&mut writer, &data).await?;
                 }
             }
         }

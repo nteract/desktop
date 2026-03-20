@@ -2370,10 +2370,18 @@ print("warmup complete")
     /// Called from both warming loops (every 30s tick) and on error/recovery.
     /// The PoolDoc deduplicates — if nothing changed, this is a no-op.
     async fn update_pool_doc(&self) {
-        let (uv_available, uv_warming) = self.uv_pool.lock().await.stats();
-        let uv_error = self.uv_pool.lock().await.get_error();
-        let (conda_available, conda_warming) = self.conda_pool.lock().await.stats();
-        let conda_error = self.conda_pool.lock().await.get_error();
+        let (uv_available, uv_warming, uv_error) = {
+            let pool = self.uv_pool.lock().await;
+            let (available, warming) = pool.stats();
+            let error = pool.get_error();
+            (available, warming, error)
+        };
+        let (conda_available, conda_warming, conda_error) = {
+            let pool = self.conda_pool.lock().await;
+            let (available, warming) = pool.stats();
+            let error = pool.get_error();
+            (available, warming, error)
+        };
 
         let state = crate::pool_doc::PoolState {
             uv: crate::pool_doc::RuntimePoolState {
