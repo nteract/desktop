@@ -25,7 +25,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import uuid
 from pathlib import Path
 
 import pytest
@@ -345,19 +344,18 @@ def daemon_process():
 
 
 @pytest.fixture
-def session(daemon_process, monkeypatch):
-    """Create a fresh Session for each test."""
+def client(daemon_process):
+    """Create a Client connected to the test daemon."""
     socket_path, _ = daemon_process
-
-    # Set socket path env var so Session.connect() uses the right daemon
     if socket_path is not None:
-        monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
+        return runtimed.Client(socket_path=str(socket_path))
+    return runtimed.Client()
 
-    # Create session with unique notebook ID
-    notebook_id = f"test-{uuid.uuid4()}"
-    sess = runtimed.Session(notebook_id=notebook_id)
 
-    sess.connect()
+@pytest.fixture
+def session(client):
+    """Create a fresh Session for each test via Client.create_notebook()."""
+    sess = client.create_notebook(runtime="python")
     yield sess
 
     # Cleanup: shutdown kernel if running
@@ -369,22 +367,10 @@ def session(daemon_process, monkeypatch):
 
 
 @pytest.fixture
-def two_sessions(daemon_process, monkeypatch):
+def two_sessions(client):
     """Create two sessions connected to the same notebook (peer sync test)."""
-    socket_path, _ = daemon_process
-
-    # Set socket path env var so Session.connect() uses the right daemon
-    if socket_path is not None:
-        monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
-
-    # Both sessions share the same notebook ID
-    notebook_id = f"test-{uuid.uuid4()}"
-
-    session1 = runtimed.Session(notebook_id=notebook_id)
-    session1.connect()
-
-    session2 = runtimed.Session(notebook_id=notebook_id)
-    session2.connect()
+    session1 = client.create_notebook(runtime="python")
+    session2 = client.join_notebook(session1.notebook_id)
 
     yield session1, session2
 
@@ -1599,16 +1585,8 @@ class TestCondaInlineDeps:
     def conda_inline_session(self, daemon_process):
         """Create a session with conda inline deps, shared across tests in this class."""
         socket_path, _ = daemon_process
-
-        # Set socket path env var so Session.connect() uses the right daemon
-        old_socket_path = os.environ.get("RUNTIMED_SOCKET_PATH")
-        if socket_path is not None:
-            os.environ["RUNTIMED_SOCKET_PATH"] = str(socket_path)
-
-        # Create session with unique notebook ID
-        notebook_id = f"test-conda-inline-{uuid.uuid4()}"
-        sess = runtimed.Session(notebook_id=notebook_id)
-        sess.connect()
+        client = runtimed.Client(socket_path=str(socket_path)) if socket_path else runtimed.Client()
+        sess = client.create_notebook(runtime="python")
 
         # Set up conda inline deps metadata using typed API
         _set_python_kernelspec(sess, conda_deps=["filelock"])
@@ -1635,12 +1613,6 @@ class TestCondaInlineDeps:
                 sess.shutdown_kernel()
         except Exception:
             pass
-        finally:
-            # Restore env var
-            if old_socket_path is not None:
-                os.environ["RUNTIMED_SOCKET_PATH"] = old_socket_path
-            elif "RUNTIMED_SOCKET_PATH" in os.environ:
-                del os.environ["RUNTIMED_SOCKET_PATH"]
 
     def test_conda_inline_deps(self, conda_inline_session):
         """Conda inline deps from metadata launches kernel with deps installed."""
@@ -1789,19 +1761,18 @@ class TestProjectFileDetection:
 
 
 @pytest.fixture
-async def async_session(daemon_process, monkeypatch):
-    """Create a fresh AsyncSession for each test."""
+async def async_client(daemon_process):
+    """Create an AsyncClient connected to the test daemon."""
     socket_path, _ = daemon_process
-
-    # Set socket path env var so AsyncSession.connect() uses the right daemon
     if socket_path is not None:
-        monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
+        return runtimed.AsyncClient(socket_path=str(socket_path))
+    return runtimed.AsyncClient()
 
-    # Create session with unique notebook ID
-    notebook_id = f"async-test-{uuid.uuid4()}"
-    sess = runtimed.AsyncSession(notebook_id=notebook_id)
 
-    await sess.connect()
+@pytest.fixture
+async def async_session(async_client):
+    """Create a fresh AsyncSession for each test via AsyncClient.create_notebook()."""
+    sess = await async_client.create_notebook(runtime="python")
     yield sess
 
     # Cleanup: shutdown kernel if running
@@ -1813,20 +1784,10 @@ async def async_session(daemon_process, monkeypatch):
 
 
 @pytest.fixture
-async def two_async_sessions(daemon_process, monkeypatch):
+async def two_async_sessions(async_client):
     """Create two async sessions connected to the same notebook."""
-    socket_path, _ = daemon_process
-
-    if socket_path is not None:
-        monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
-
-    notebook_id = f"async-test-{uuid.uuid4()}"
-
-    session1 = runtimed.AsyncSession(notebook_id=notebook_id)
-    await session1.connect()
-
-    session2 = runtimed.AsyncSession(notebook_id=notebook_id)
-    await session2.connect()
+    session1 = await async_client.create_notebook(runtime="python")
+    session2 = await async_client.join_notebook(session1.notebook_id)
 
     yield session1, session2
 
@@ -2134,17 +2095,12 @@ class TestAsyncContextManager:
     """Test async context manager functionality."""
 
     @pytest.mark.asyncio
-    async def test_async_context_manager(self, daemon_process, monkeypatch):
+    async def test_async_context_manager(self, async_client):
         """AsyncSession works as async context manager."""
-        socket_path, _ = daemon_process
+        session = await async_client.create_notebook(runtime="python")
+        notebook_id = session.notebook_id
 
-        if socket_path is not None:
-            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
-
-        notebook_id = f"async-ctx-test-{uuid.uuid4()}"
-
-        async with runtimed.AsyncSession(notebook_id=notebook_id) as session:
-            await session.connect()
+        async with session:
             await async_start_kernel_with_retry(session)
 
             cell_id = await session.create_cell("print('context manager works')")
@@ -2157,8 +2113,7 @@ class TestAsyncContextManager:
         # Note: The daemon may be terminated by fixture teardown before we can verify,
         # which is fine - it means cleanup already completed
         try:
-            client = runtimed.DaemonClient()
-            rooms = client.list_rooms()
+            rooms = await async_client.list_rooms()
             room = next((r for r in rooms if r["notebook_id"] == notebook_id), None)
             # Room may be gone entirely or kernel should not be running
             if room is not None:
@@ -2502,15 +2457,11 @@ class TestSubscription:
 
 
 class TestOpenNotebook:
-    """Test Session.open_notebook() - daemon-owned file loading."""
+    """Test Client.open_notebook() - daemon-owned file loading."""
 
-    def test_open_existing_notebook(self, daemon_process, monkeypatch, tmp_path):
+    def test_open_existing_notebook(self, client, tmp_path):
         """Opening existing .ipynb loads cells via daemon."""
         import json
-
-        socket_path, _ = daemon_process
-        if socket_path is not None:
-            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
 
         # Create test notebook
         nb_path = tmp_path / "test.ipynb"
@@ -2540,7 +2491,7 @@ class TestOpenNotebook:
         )
 
         # Open via daemon
-        session = runtimed.Session.open_notebook(str(nb_path))
+        session = client.open_notebook(str(nb_path))
         assert session.is_connected
 
         # Verify daemon-derived notebook_id (should contain canonical path)
@@ -2552,7 +2503,7 @@ class TestOpenNotebook:
         assert cells[0].source == "x = 1"
         assert cells[1].cell_type == "markdown"
 
-    def test_open_notebook_returns_connection_info(self, daemon_process, monkeypatch, tmp_path):
+    def test_open_notebook_returns_connection_info(self, client, tmp_path):
         """NotebookConnectionInfo includes cell_count.
 
         With streaming load, cell_count is 0 in the handshake because
@@ -2560,10 +2511,6 @@ class TestOpenNotebook:
         sync messages after the connection is established.
         """
         import json
-
-        socket_path, _ = daemon_process
-        if socket_path is not None:
-            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
 
         # Create notebook with 3 cells
         nb_path = tmp_path / "three_cells.ipynb"
@@ -2600,7 +2547,7 @@ class TestOpenNotebook:
             )
         )
 
-        session = runtimed.Session.open_notebook(str(nb_path))
+        session = client.open_notebook(str(nb_path))
         info = session.connection_info
         assert info is not None
         # Streaming load defers cell loading to the sync loop, so the
@@ -2608,14 +2555,10 @@ class TestOpenNotebook:
         assert info.cell_count == 0
         assert info.notebook_id == session.notebook_id
 
-    def test_open_nonexistent_file_creates_notebook(self, daemon_process, monkeypatch, tmp_path):
+    def test_open_nonexistent_file_creates_notebook(self, client, tmp_path):
         """Opening missing file creates a new notebook at that path."""
-        socket_path, _ = daemon_process
-        if socket_path is not None:
-            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
-
         # Opening a non-existent path creates a new notebook
-        session = runtimed.Session.open_notebook(str(tmp_path / "new_notebook.ipynb"))
+        session = client.open_notebook(str(tmp_path / "new_notebook.ipynb"))
         try:
             info = session.connection_info
             assert info is not None
@@ -2627,14 +2570,10 @@ class TestOpenNotebook:
         finally:
             session.close()
 
-    def test_open_nonexistent_file_auto_appends_ipynb(self, daemon_process, monkeypatch, tmp_path):
+    def test_open_nonexistent_file_auto_appends_ipynb(self, client, tmp_path):
         """Opening missing file without .ipynb extension auto-appends it."""
-        socket_path, _ = daemon_process
-        if socket_path is not None:
-            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
-
         # Opening a path without .ipynb extension creates notebook with .ipynb appended
-        session = runtimed.Session.open_notebook(str(tmp_path / "mynotebook"))
+        session = client.open_notebook(str(tmp_path / "mynotebook"))
         try:
             info = session.connection_info
             assert info is not None
@@ -2647,13 +2586,9 @@ class TestOpenNotebook:
         os.environ.get("RUNTIMED_INTEGRATION_TEST") == "1",
         reason="Flaky on CI: open_notebook full-peer sync unreliable under resource pressure",
     )
-    def test_open_notebook_second_client_joins_room(self, daemon_process, monkeypatch, tmp_path):
+    def test_open_notebook_second_client_joins_room(self, client, tmp_path):
         """Second client joining same notebook gets synced cells."""
         import json
-
-        socket_path, _ = daemon_process
-        if socket_path is not None:
-            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
 
         nb_path = tmp_path / "shared.ipynb"
         nb_path.write_text(
@@ -2675,8 +2610,8 @@ class TestOpenNotebook:
             )
         )
 
-        session1 = runtimed.Session.open_notebook(str(nb_path))
-        session2 = runtimed.Session.open_notebook(str(nb_path))
+        session1 = client.open_notebook(str(nb_path))
+        session2 = client.open_notebook(str(nb_path))
 
         # Both should have same notebook_id
         assert session1.notebook_id == session2.notebook_id
@@ -2698,15 +2633,11 @@ class TestOpenNotebook:
 
 
 class TestCreateNotebook:
-    """Test Session.create_notebook() - daemon-owned creation."""
+    """Test Client.create_notebook() - daemon-owned creation."""
 
-    def test_create_python_notebook(self, daemon_process, monkeypatch):
+    def test_create_python_notebook(self, client):
         """Creating Python notebook returns session with one empty cell."""
-        socket_path, _ = daemon_process
-        if socket_path is not None:
-            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
-
-        session = runtimed.Session.create_notebook(runtime="python")
+        session = client.create_notebook(runtime="python")
         assert session.is_connected
 
         # notebook_id is UUID (not a path)
@@ -2718,13 +2649,9 @@ class TestCreateNotebook:
         assert cells[0].cell_type == "code"
         assert cells[0].source == ""
 
-    def test_create_notebook_returns_connection_info(self, daemon_process, monkeypatch):
+    def test_create_notebook_returns_connection_info(self, client):
         """NotebookConnectionInfo is available for created notebooks."""
-        socket_path, _ = daemon_process
-        if socket_path is not None:
-            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
-
-        session = runtimed.Session.create_notebook(runtime="python")
+        session = client.create_notebook(runtime="python")
         info = session.connection_info
         assert info is not None
         assert info.cell_count == 1
@@ -2732,29 +2659,21 @@ class TestCreateNotebook:
         # New notebooks don't need trust approval
         assert info.needs_trust_approval is False
 
-    def test_create_deno_notebook(self, daemon_process, monkeypatch):
+    def test_create_deno_notebook(self, client):
         """Creating Deno notebook sets correct runtime."""
-        socket_path, _ = daemon_process
-        if socket_path is not None:
-            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
-
-        session = runtimed.Session.create_notebook(runtime="deno")
+        session = client.create_notebook(runtime="deno")
         assert session.is_connected
 
         # Has one empty code cell
         cells = session.get_cells()
         assert len(cells) == 1
 
-    def test_create_notebook_with_working_dir(self, daemon_process, monkeypatch, tmp_path):
+    def test_create_notebook_with_working_dir(self, client, tmp_path):
         """working_dir is used for project file detection."""
-        socket_path, _ = daemon_process
-        if socket_path is not None:
-            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
-
         # Create pyproject.toml in tmp_path
         (tmp_path / "pyproject.toml").write_text("[project]\nname = 'test'")
 
-        session = runtimed.Session.create_notebook(runtime="python", working_dir=str(tmp_path))
+        session = client.create_notebook(runtime="python", working_dir=str(tmp_path))
 
         assert session.is_connected
 
@@ -2762,13 +2681,9 @@ class TestCreateNotebook:
 class TestTrustApproval:
     """Test trust approval flow for notebooks with inline dependencies."""
 
-    def test_untrusted_notebook_needs_approval(self, daemon_process, monkeypatch, tmp_path):
+    def test_untrusted_notebook_needs_approval(self, client, tmp_path):
         """Notebook with inline deps from unknown source needs trust."""
         import json
-
-        socket_path, _ = daemon_process
-        if socket_path is not None:
-            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
 
         nb_path = tmp_path / "untrusted.ipynb"
         nb_path.write_text(
@@ -2796,18 +2711,14 @@ class TestTrustApproval:
             )
         )
 
-        session = runtimed.Session.open_notebook(str(nb_path))
+        session = client.open_notebook(str(nb_path))
         info = session.connection_info
         assert info is not None
         assert info.needs_trust_approval is True
 
-    def test_notebook_without_deps_does_not_need_trust(self, daemon_process, monkeypatch, tmp_path):
+    def test_notebook_without_deps_does_not_need_trust(self, client, tmp_path):
         """Notebook without inline deps doesn't need trust approval."""
         import json
-
-        socket_path, _ = daemon_process
-        if socket_path is not None:
-            monkeypatch.setenv("RUNTIMED_SOCKET_PATH", str(socket_path))
 
         nb_path = tmp_path / "simple.ipynb"
         nb_path.write_text(
@@ -2829,7 +2740,7 @@ class TestTrustApproval:
             )
         )
 
-        session = runtimed.Session.open_notebook(str(nb_path))
+        session = client.open_notebook(str(nb_path))
         info = session.connection_info
         assert info is not None
         assert info.needs_trust_approval is False
