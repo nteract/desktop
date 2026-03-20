@@ -49,6 +49,15 @@ from runtimed.runtimed import (
     Output as Output,
 )
 from runtimed.runtimed import (
+    PyEnvState as PyEnvState,
+)
+from runtimed.runtimed import (
+    PyKernelState as PyKernelState,
+)
+from runtimed.runtimed import (
+    PyRuntimeState as PyRuntimeState,
+)
+from runtimed.runtimed import (
     QueueState as QueueState,
 )
 from runtimed.runtimed import (
@@ -84,6 +93,9 @@ __all__ = [
     "EventIteratorSubscription",
     "NotebookConnectionInfo",
     "Output",
+    "PyEnvState",
+    "PyKernelState",
+    "PyRuntimeState",
     "RuntimedError",
     "SyncEnvironmentResult",
     "CompletionItem",

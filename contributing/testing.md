@@ -162,6 +162,28 @@ cargo hone test cli.hone      # Specific file
 
 Location: `python/runtimed/tests/`
 
+**Virtual environments:** There are two Python venvs in this repo:
+
+| Venv | Path (from repo root) | Purpose |
+|------|-----------------------|---------|
+| Workspace venv | `.venv` | Used by the MCP server and day-to-day development. `maturin develop` installs here. |
+| Test venv | `python/runtimed/.venv` | Isolated env for `pytest` runs against `runtimed-py`. |
+
+Set up the test venv:
+
+```bash
+cd python/runtimed
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Build the native extension into the test venv
+cd ../../crates/runtimed-py
+VIRTUAL_ENV=../../python/runtimed/.venv maturin develop
+```
+
+> **Tip:** The workspace venv at `.venv` (repo root) is a separate concern — the MCP server and other workspace tooling use it. To install the bindings there instead, run `VIRTUAL_ENV=../../.venv maturin develop` from `crates/runtimed-py`.
+
 Configuration in `conftest.py` defines markers and daemon detection.
 
 **Test categories:**

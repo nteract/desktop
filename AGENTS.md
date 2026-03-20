@@ -35,20 +35,20 @@ There are **two venvs** that matter:
 
 | Venv | Purpose | Used by |
 |------|---------|---------|
-| `python/.venv` | Workspace venv — has both `nteract` and `runtimed` as editable installs | MCP server (`uv run --directory python nteract`) |
+| `.venv` (repo root) | Workspace venv — has `nteract`, `runtimed`, and `gremlin` as editable installs | MCP server (`uv run nteract`), gremlin agent |
 | `python/runtimed/.venv` | Test-only venv — has `runtimed` + `maturin` + test deps | `pytest` integration tests |
 
 ```bash
 # For the MCP server (most common — this is what supervisor_rebuild does):
-cd crates/runtimed-py && VIRTUAL_ENV=../../python/.venv uv run --directory ../../python/runtimed maturin develop
+cd crates/runtimed-py && VIRTUAL_ENV=../../.venv uv run --directory ../../python/runtimed maturin develop
 
 # For integration tests only:
 cd crates/runtimed-py && VIRTUAL_ENV=../../python/runtimed/.venv uv run --directory ../../python/runtimed maturin develop
 ```
 
-**Common mistake:** Running `maturin develop` without `VIRTUAL_ENV` installs the `.so` into whichever venv `uv run` resolves, which is `python/runtimed/.venv`. The MCP server runs from `python/.venv` and will never see it. Always set `VIRTUAL_ENV` explicitly.
+**Common mistake:** Running `maturin develop` without `VIRTUAL_ENV` installs the `.so` into whichever venv `uv run` resolves, which is `python/runtimed/.venv`. The MCP server runs from `.venv` (repo root) and will never see it. Always set `VIRTUAL_ENV` explicitly.
 
-If using the MCP supervisor, `supervisor_rebuild` handles this automatically — it builds into `python/.venv` and restarts the MCP server.
+If using the MCP supervisor, `supervisor_rebuild` handles this automatically — it builds into `.venv` and restarts the MCP server.
 
 ### Running Python integration tests
 
@@ -152,6 +152,29 @@ Keep descriptions short and descriptive, e.g.:
 - "Adding ipywidgets support"
 
 The `.context/` directory is gitignored and used for per-worktree state that shouldn't be committed.
+
+## Python Workspace
+
+The UV workspace root is the **repository root** — `pyproject.toml` and `.venv` live at the top level (not under `python/`). Three packages are workspace members:
+
+| Package | Path | Purpose |
+|---------|------|---------|
+| `runtimed` | `python/runtimed` | Python bindings for the Rust daemon (PyO3/maturin) |
+| `nteract` | `python/nteract` | MCP server for programmatic notebook interaction |
+| `gremlin` | `python/gremlin` | Autonomous notebook agent for stress testing; uses nteract MCP server as stdio subprocess |
+
+**Running the MCP server** from the repo root (no `--directory` flag needed):
+
+```bash
+uv run nteract
+```
+
+**Workspace dev dependencies** (available in `.venv`): `numpy`, `matplotlib`, `claude-agent-sdk`, `pydantic-ai`.
+
+### Python API Notes
+
+- **`Output.data` is typed by MIME kind**: `str` for text MIME types, `bytes` for binary (raw bytes, no base64), `dict` for JSON MIME types. Image outputs include a synthesized `text/llm+plain` key with blob URLs.
+- **`AsyncSession.get_runtime_state()`** returns the kernel's current runtime state (idle, busy, etc.). Previously missing, now implemented.
 
 ## MCP Server (Local Development)
 
@@ -500,7 +523,7 @@ Jupyter kernels send binary data (images, etc.) as base64-encoded strings on the
 - Base64-decoded by the daemon before storage — blob contains raw bytes
 - **Always** stored as blobs (never inlined, regardless of size)
 - Frontend resolves to `http://` blob URLs — browser fetches raw bytes directly
-- Python resolver reads raw bytes then base64-encodes for the `Output` struct
+- Python resolver reads raw bytes → `Output.data` is `bytes` (no base64 encoding)
 - Save-to-disk path reads raw bytes then base64-encodes for .ipynb format
 
 **Important exception:** `image/svg+xml` is **TEXT**, not binary. Jupyter sends SVG as plain XML strings. The `+xml` suffix is the tell.
@@ -539,7 +562,7 @@ The rule:
 | Consumer | Binary MIME resolution | Text MIME resolution |
 |----------|----------------------|---------------------|
 | **Frontend** (`manifest-resolution.ts`) | Returns `http://` blob URL (browser fetches raw bytes) | `response.text()` → string |
-| **Python** (`output_resolver.rs`) | `tokio::fs::read()` → base64-encode | `read_to_string()` → string |
+| **Python** (`output_resolver.rs`) | `tokio::fs::read()` → raw `bytes` (no base64) | `read_to_string()` → `str`; JSON mimes → `dict` |
 | **.ipynb save** (`output_store.rs`) | `resolve_binary_as_base64()` → base64 string | `resolve()` → UTF-8 string |
 
 #### Infrastructure Details

@@ -5,18 +5,21 @@ description = "Development workspace for nteract Python packages"
 requires-python = ">=3.10"
 dependencies = [
     "nteract",
+    "gremlin ; sys_platform == 'darwin'",
 ]
 
 [tool.uv.workspace]
-members = ["runtimed", "nteract"]
+members = ["python/runtimed", "python/nteract", "python/gremlin"]
 
 [tool.uv.sources]
 runtimed = { workspace = true }
 nteract = { workspace = true }
+gremlin = { workspace = true }
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+include = ["python/**/*.py", "python/**/*.pyi", "scripts/**/*.py"]
 
 [tool.ruff.lint]
 select = [
@@ -41,6 +44,12 @@ dev = [
     "ty>=0.0.22",
     "pytest>=8.0",
     "pyzmq>=26.0",
+    "numpy>=1.26",
+    "matplotlib>=3.8",
+    "pydantic-ai>=0.2.0",
+]
+agents = [
+    "claude-agent-sdk>=0.1.0",
 ]
 
 [tool.ty.rules]
@@ -53,6 +62,13 @@ include = ["**/tests/**"]
 [tool.ty.overrides.rules]
 unresolved-attribute = "ignore"
 invalid-assignment = "ignore"
+
+# Gremlin depends on claude-agent-sdk which is macOS-only (not in CI)
+[[tool.ty.overrides]]
+include = ["python/gremlin/**"]
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
+
 
 
 [tool.ruff.format]
