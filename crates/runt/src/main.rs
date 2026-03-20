@@ -2856,7 +2856,12 @@ async fn diagnostics_command(output_dir: Option<PathBuf>) -> Result<()> {
 
     let timestamp = chrono::Local::now().format("%Y-%m-%d-%H%M%S");
     let output_dir = output_dir.unwrap_or_else(|| {
-        dirs::desktop_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default())
+        // Prefer ~/Desktop if it exists, otherwise fall back to the system
+        // temp directory (always exists) so the command never fails on accounts
+        // without a Desktop folder.
+        dirs::desktop_dir()
+            .filter(|p| p.exists())
+            .unwrap_or_else(std::env::temp_dir)
     });
     let archive_name = format!("runt-diagnostics-{}.tar.gz", timestamp);
     let archive_path = output_dir.join(&archive_name);
