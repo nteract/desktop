@@ -106,15 +106,87 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
-# Maximum size for raw image data in bytes. 1 MB is generous — a typical
-# matplotlib PNG is 50–100 KB. Images beyond this are silently dropped to
-# avoid blowing up the LLM's context window.
-_MAX_IMAGE_BYTES = 1_000_000
+# Target budget for a single image in a tool response.  The Claude CLI's
+# stdio JSON buffer is 1 MB, and the API has its own token limits for tool
+# results.  Keeping each image under 100 KB base64 (~75 KB raw) leaves
+# plenty of room for text content alongside it.
+_IMAGE_BUDGET_BYTES = 75_000
+
+# Absolute ceiling — images larger than this after resizing are dropped
+# entirely (e.g. a 10 000×10 000 screenshot).
+_IMAGE_MAX_BYTES = 500_000
+
+# Minimum dimension — never shrink below this (would lose all detail).
+_IMAGE_MIN_DIM = 200
 
 # Text mime type priority for LLM consumption.
 # text/llm+plain is from https://github.com/rgbkrk/repr_llm — a repr designed
 # specifically for language models. text/html is intentionally excluded: it's
 # often bulky embedded JS (e.g. Plotly) that wastes context window.
+
+
+def _fit_image_for_llm(
+    data: bytes,
+    mime: str,
+    budget: int = _IMAGE_BUDGET_BYTES,
+) -> bytes | None:
+    """Resize an image so its raw bytes fit within *budget*.
+
+    Uses Pillow (installed with matplotlib) to progressively shrink the
+    image until it fits.  Returns ``None`` if the image can't be made
+    small enough or Pillow isn't available.
+
+    Only PNG and JPEG are resized; other formats are returned as-is if
+    they already fit, or dropped.
+    """
+    if len(data) <= budget:
+        return data
+
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+    except ImportError:
+        # No Pillow — return as-is if under the hard ceiling, else drop
+        return data if len(data) <= _IMAGE_MAX_BYTES else None
+
+    resizable = mime in ("image/png", "image/jpeg")
+    if not resizable:
+        return data if len(data) <= _IMAGE_MAX_BYTES else None
+
+    try:
+        img = Image.open(BytesIO(data))
+    except Exception:
+        return None
+
+    save_fmt = "PNG" if mime == "image/png" else "JPEG"
+    save_kwargs: dict = {}
+    if save_fmt == "JPEG":
+        save_kwargs["quality"] = 85
+
+    # Progressively halve the longer dimension until we fit
+    for _ in range(8):  # at most 8 halvings (256× reduction)
+        w, h = img.size
+        if w <= _IMAGE_MIN_DIM and h <= _IMAGE_MIN_DIM:
+            break
+
+        new_w = max(w // 2, _IMAGE_MIN_DIM)
+        new_h = max(h // 2, _IMAGE_MIN_DIM)
+        img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+        buf = BytesIO()
+        img.save(buf, format=save_fmt, **save_kwargs)
+        result = buf.getvalue()
+        if len(result) <= budget:
+            return result
+
+    # Last attempt didn't fit — return it if under the hard ceiling
+    buf = BytesIO()
+    img.save(buf, format=save_fmt, **save_kwargs)
+    result = buf.getvalue()
+    return result if len(result) <= _IMAGE_MAX_BYTES else None
+
+
 _TEXT_MIME_PRIORITY = (
     "text/llm+plain",
     "text/markdown",
@@ -216,16 +288,22 @@ def _output_to_content(output: runtimed.Output) -> list[ContentItem]:
         if output.data is None:
             return items
 
-        # Images → ImageContent (data is raw bytes from runtimed, encode for MCP)
+        # Images → ImageContent (resize to fit LLM context budget)
         for mime in ("image/png", "image/jpeg", "image/gif", "image/webp"):
             if mime in output.data:
                 data = output.data[mime]
-                if isinstance(data, bytes) and len(data) <= _MAX_IMAGE_BYTES:
-                    b64 = base64.b64encode(data).decode("ascii")
-                    items.append(ImageContent(type="image", data=b64, mimeType=mime))
-                elif isinstance(data, str) and len(data) <= _MAX_IMAGE_BYTES:
+                if isinstance(data, bytes):
+                    fitted = _fit_image_for_llm(data, mime)
+                    if fitted is not None:
+                        b64 = base64.b64encode(fitted).decode("ascii")
+                        items.append(ImageContent(type="image", data=b64, mimeType=mime))
+                elif isinstance(data, str):
                     # Legacy fallback: already base64-encoded string
-                    items.append(ImageContent(type="image", data=data, mimeType=mime))
+                    raw = base64.b64decode(data)
+                    fitted = _fit_image_for_llm(raw, mime)
+                    if fitted is not None:
+                        b64 = base64.b64encode(fitted).decode("ascii")
+                        items.append(ImageContent(type="image", data=b64, mimeType=mime))
 
         # SVG as text (it's XML, not base64)
         if "image/svg+xml" in output.data:
