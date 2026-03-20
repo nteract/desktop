@@ -169,6 +169,9 @@ function AppContent() {
   // Track pending kernel start that was blocked by trust dialog
   const pendingKernelStartRef = useRef(false);
 
+  // Guard against concurrent Run All / Restart & Run All operations (#982)
+  const runAllInFlightRef = useRef(false);
+
   // Notebook runtime type — reactive read from WASM Automerge doc.
   // Re-renders automatically when metadata changes (bootstrap, sync, writes).
   const detectedRuntime = useDetectRuntime();
@@ -489,41 +492,46 @@ function AppContent() {
 
   // Restart and run all cells
   const restartAndRunAll = useCallback(async () => {
-    const codeCells = getNotebookCellsSnapshot().filter(
-      (c) => c.cell_type === "code",
-    );
-
-    // Flush pending source sync so daemon has latest code
-    await flushSync();
-
-    // Clear all outputs locally (immediate feedback)
-    for (const cell of codeCells) {
-      clearOutputsLocal(cell.id);
-    }
-
-    // Clear outputs via daemon for cross-window sync
-    await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
-
-    // Shutdown existing kernel
-    await shutdownKernel();
-
-    // Start kernel - returns false if not started (e.g., trust dialog)
-    const kernelStarted = await tryStartKernel();
-    if (!kernelStarted) {
-      logger.debug("[App] restartAndRunAll: kernel not started, skipping");
+    if (runAllInFlightRef.current) {
+      logger.debug("[App] restartAndRunAll: already in flight, skipping");
       return;
     }
+    runAllInFlightRef.current = true;
+    try {
+      const codeCells = getNotebookCellsSnapshot().filter(
+        (c) => c.cell_type === "code",
+      );
 
-    // Daemon reads cell sources from Automerge doc and queues them
-    const response = await daemonRunAllCells();
-    if (response.result === "error") {
-      logger.error("[App] restartAndRunAll: daemon error", response.error);
-    } else if (response.result === "no_kernel") {
-      logger.warn("[App] restartAndRunAll: no kernel available");
+      // Flush pending source sync so daemon has latest code
+      await flushSync();
+
+      // Clear all outputs via WASM CRDT (syncs to daemon via Automerge)
+      for (const cell of codeCells) {
+        clearOutputsLocal(cell.id);
+      }
+
+      // Shutdown existing kernel
+      await shutdownKernel();
+
+      // Start kernel - returns false if not started (e.g., trust dialog)
+      const kernelStarted = await tryStartKernel();
+      if (!kernelStarted) {
+        logger.debug("[App] restartAndRunAll: kernel not started, skipping");
+        return;
+      }
+
+      // Daemon reads cell sources from Automerge doc and queues them
+      const response = await daemonRunAllCells();
+      if (response.result === "error") {
+        logger.error("[App] restartAndRunAll: daemon error", response.error);
+      } else if (response.result === "no_kernel") {
+        logger.warn("[App] restartAndRunAll: no kernel available");
+      }
+    } finally {
+      runAllInFlightRef.current = false;
     }
   }, [
     clearOutputsLocal,
-    clearOutputs,
     flushSync,
     shutdownKernel,
     tryStartKernel,
@@ -622,44 +630,49 @@ function AppContent() {
   }, [shutdownKernel, tryStartKernel]);
 
   const handleRunAllCells = useCallback(async () => {
-    // Daemon reads cells from synced Automerge doc
-    const codeCells = getNotebookCellsSnapshot().filter(
-      (c) => c.cell_type === "code",
-    );
-    if (codeCells.length === 0) return;
-
-    // Flush pending source sync so daemon has latest code
-    await flushSync();
-
-    // Clear all outputs first (local for immediate feedback)
-    for (const cell of codeCells) {
-      clearOutputsLocal(cell.id);
+    if (runAllInFlightRef.current) {
+      logger.debug("[App] handleRunAllCells: already in flight, skipping");
+      return;
     }
+    runAllInFlightRef.current = true;
+    try {
+      // Daemon reads cells from synced Automerge doc
+      const codeCells = getNotebookCellsSnapshot().filter(
+        (c) => c.cell_type === "code",
+      );
+      if (codeCells.length === 0) return;
 
-    // Await all daemon clears to ensure ordering before queueing
-    await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
+      // Flush pending source sync so daemon has latest code
+      await flushSync();
 
-    // Start kernel via daemon if not running
-    if (kernelStatus === KERNEL_STATUS.NOT_STARTED) {
-      const started = await tryStartKernel();
-      if (!started) {
-        logger.debug("[App] handleRunAllCells: kernel not started, skipping");
-        return;
+      // Clear all outputs via WASM CRDT (syncs to daemon via Automerge)
+      for (const cell of codeCells) {
+        clearOutputsLocal(cell.id);
       }
-    }
 
-    // Daemon reads cell sources from Automerge doc and queues them
-    const response = await daemonRunAllCells();
-    if (response.result === "error") {
-      logger.error("[App] handleRunAllCells: daemon error", response.error);
-    } else if (response.result === "no_kernel") {
-      logger.warn("[App] handleRunAllCells: no kernel available");
+      // Start kernel via daemon if not running
+      if (kernelStatus === KERNEL_STATUS.NOT_STARTED) {
+        const started = await tryStartKernel();
+        if (!started) {
+          logger.debug("[App] handleRunAllCells: kernel not started, skipping");
+          return;
+        }
+      }
+
+      // Daemon reads cell sources from Automerge doc and queues them
+      const response = await daemonRunAllCells();
+      if (response.result === "error") {
+        logger.error("[App] handleRunAllCells: daemon error", response.error);
+      } else if (response.result === "no_kernel") {
+        logger.warn("[App] handleRunAllCells: no kernel available");
+      }
+    } finally {
+      runAllInFlightRef.current = false;
     }
   }, [
     kernelStatus,
     tryStartKernel,
     clearOutputsLocal,
-    clearOutputs,
     flushSync,
     daemonRunAllCells,
   ]);
