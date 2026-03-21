@@ -170,7 +170,29 @@ pub(crate) async fn connect_with_socket(
     st.blob_base_url = blob_base_url;
     st.blob_store_path = blob_store_path;
 
+    hydrate_kernel_state(&mut st);
+
     Ok(())
+}
+
+/// Populate `kernel_started`, `kernel_type`, and `env_source` from the
+/// RuntimeStateDoc (the daemon's source of truth for kernel status).
+///
+/// Best-effort: silently does nothing if the handle is missing or the
+/// runtime state can't be read (e.g. brand-new notebook with no state yet).
+fn hydrate_kernel_state(state: &mut SessionState) {
+    let Some(handle) = state.handle.as_ref() else {
+        return;
+    };
+    let Ok(rs) = handle.get_runtime_state() else {
+        return;
+    };
+    let running = matches!(rs.kernel.status.as_str(), "idle" | "busy" | "starting");
+    if running {
+        state.kernel_started = true;
+        state.kernel_type = Some(rs.kernel.language.clone());
+        state.env_source = Some(rs.kernel.env_source.clone());
+    }
 }
 
 /// Spawn a background task that listens for `RoomRenamed` broadcasts
@@ -225,7 +247,7 @@ pub(crate) async fn connect_open(
     // Sync settings from daemon (best-effort, don't fail if unavailable)
     let settings = sync_settings(socket_path).await;
 
-    let state = SessionState {
+    let mut state = SessionState {
         handle: Some(result.handle),
         broadcast_rx: Some(result.broadcast_rx),
         kernel_started: false,
@@ -239,6 +261,8 @@ pub(crate) async fn connect_open(
         peer_label: None, // Set by caller (Session/AsyncSession)
         actor_label: actor_label.map(String::from),
     };
+
+    hydrate_kernel_state(&mut state);
 
     Ok((notebook_id, state, connection_info))
 }
@@ -269,7 +293,7 @@ pub(crate) async fn connect_create(
     // Sync settings from daemon (best-effort, don't fail if unavailable)
     let settings = sync_settings(socket_path).await;
 
-    let state = SessionState {
+    let mut state = SessionState {
         handle: Some(result.handle),
         broadcast_rx: Some(result.broadcast_rx),
         kernel_started: false,
@@ -283,6 +307,8 @@ pub(crate) async fn connect_create(
         peer_label: None, // Set by caller (Session/AsyncSession)
         actor_label: actor_label.map(String::from),
     };
+
+    hydrate_kernel_state(&mut state);
 
     Ok((notebook_id, state, connection_info))
 }
@@ -326,8 +352,14 @@ pub(crate) async fn start_kernel(
             ..
         } => {
             st.kernel_started = true;
-            st.kernel_type = Some(actual_type);
+            st.kernel_type = Some(actual_type.clone());
             st.env_source = Some(actual_env);
+            if kernel_type != actual_type {
+                return Err(to_py_err(format!(
+                    "Kernel type mismatch: requested '{}' but '{}' is already running",
+                    kernel_type, actual_type
+                )));
+            }
             Ok(())
         }
         NotebookResponse::KernelAlreadyRunning {
@@ -336,8 +368,14 @@ pub(crate) async fn start_kernel(
             ..
         } => {
             st.kernel_started = true;
-            st.kernel_type = Some(actual_type);
+            st.kernel_type = Some(actual_type.clone());
             st.env_source = Some(actual_env);
+            if kernel_type != actual_type {
+                return Err(to_py_err(format!(
+                    "Kernel type mismatch: requested '{}' but '{}' is already running",
+                    kernel_type, actual_type
+                )));
+            }
             Ok(())
         }
         NotebookResponse::Error { error } => Err(to_py_err(error)),
@@ -1038,7 +1076,20 @@ pub(crate) async fn run(
 }
 
 /// Queue a cell for execution without waiting for the result.
-pub(crate) async fn queue_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) -> PyResult<()> {
+pub(crate) async fn queue_cell(
+    state: &Arc<Mutex<SessionState>>,
+    notebook_id: &str,
+    cell_id: &str,
+) -> PyResult<()> {
+    // Auto-start kernel if not running (matches execute_cell behavior)
+    {
+        let st = state.lock().await;
+        if !st.kernel_started {
+            drop(st);
+            ensure_kernel_started(state, notebook_id).await?;
+        }
+    }
+
     let response = {
         let st = state.lock().await;
 
