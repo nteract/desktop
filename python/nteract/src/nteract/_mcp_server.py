@@ -92,12 +92,6 @@ async def _get_notebook() -> runtimed.Notebook:
     return _notebook
 
 
-async def _get_session() -> runtimed.AsyncSession:
-    """Get the current session (escape hatch for advanced operations)."""
-    notebook = await _get_notebook()
-    return notebook.session
-
-
 # Regex to strip ANSI escape sequences (terminal colors, cursor movement, etc.)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\].*?\x07|\x1b\(B")
 
@@ -365,14 +359,14 @@ def _build_cell_status_map(queue_state: runtimed.QueueState) -> dict[str, str]:
     return cell_status
 
 
-async def _get_cell_status_map(session: runtimed.AsyncSession) -> dict[str, str]:
+async def _get_cell_status_map(notebook: runtimed.Notebook) -> dict[str, str]:
     """Fetch queue state and return cell status map, empty on failure.
 
     Status is a best-effort annotation — errors should never prevent
     get_all_cells or get_cell from returning results.
     """
     try:
-        queue_state = await session.get_queue_state()
+        queue_state = await notebook.session.get_queue_state()
         return _build_cell_status_map(queue_state)
     except asyncio.CancelledError:
         raise
@@ -380,10 +374,10 @@ async def _get_cell_status_map(session: runtimed.AsyncSession) -> dict[str, str]
         return {}
 
 
-async def _get_single_cell_status(session: runtimed.AsyncSession, cell_id: str) -> str | None:
+async def _get_single_cell_status(notebook: runtimed.Notebook, cell_id: str) -> str | None:
     """Fetch queue status for a single cell, None on failure."""
     try:
-        queue_state = await session.get_queue_state()
+        queue_state = await notebook.session.get_queue_state()
         if queue_state.executing == cell_id:
             return "running"
         if cell_id in queue_state.queued:
@@ -397,7 +391,7 @@ async def _get_single_cell_status(session: runtimed.AsyncSession, cell_id: str) 
 
 def _format_cell_summary(
     index: int,
-    cell: runtimed.Cell,
+    cell: runtimed.CellHandle,
     preview_chars: int = 60,
     include_outputs: bool = False,
     status: str | None = None,
@@ -472,7 +466,7 @@ def _format_header(
     return " ".join(parts)
 
 
-def _format_cell(cell: runtimed.Cell, status: str | None = None) -> str:
+def _format_cell(cell: runtimed.CellHandle, status: str | None = None) -> str:
     """Format a cell for terminal display (includes source).
 
     Used by get_cell to show full cell state.
@@ -492,7 +486,7 @@ def _format_cell(cell: runtimed.Cell, status: str | None = None) -> str:
         return header
 
 
-def _cell_to_content(cell: runtimed.Cell, status: str | None = None) -> list[ContentItem]:
+def _cell_to_content(cell: runtimed.CellHandle, status: str | None = None) -> list[ContentItem]:
     """Convert a cell to rich MCP content items.
 
     Returns a header as TextContent, then each output as its richest type.
@@ -1185,11 +1179,10 @@ async def get_cell(
     notebook = await _get_notebook()
     await _send_cell_focus(cell_id)
     try:
-        handle = notebook.cells.get_by_id(cell_id)
-        cell = handle.snapshot()
-    except (KeyError, runtimed.RuntimedError):
+        cell = notebook.cells.get_by_id(cell_id)
+    except KeyError:
         return [TextContent(type="text", text=f'Cell "{cell_id}" not found')]
-    status = await _get_single_cell_status(notebook.session, cell_id)
+    status = await _get_single_cell_status(notebook, cell_id)
     return _cell_to_content(cell, status=status)
 
 
@@ -1251,15 +1244,15 @@ async def get_all_cells(
     if preview_chars < 1:
         raise ValueError(f"preview_chars must be >= 1, got {preview_chars}")
 
-    session = await _get_session()
-    cells = await session.get_cells()
+    notebook = await _get_notebook()
+    all_cells = list(notebook.cells)
 
     # Fetch execution queue state to annotate running/queued cells
-    cell_status = await _get_cell_status_map(session)
+    cell_status = await _get_cell_status_map(notebook)
 
     # Apply pagination
-    end = start + count if count is not None else len(cells)
-    cells = cells[start:end]
+    end = start + count if count is not None else len(all_cells)
+    cells = all_cells[start:end]
 
     if format == "json":
         return [
@@ -1349,13 +1342,13 @@ async def _execute_cell_internal(
     """Internal execution with streaming and partial results."""
     notebook = await _get_notebook()
     await _send_cell_focus(cell_id)
-    handle = notebook.cells.get_by_id(cell_id)
+    cell = notebook.cells.get_by_id(cell_id)
     events: list[Any] = []  # list[runtimed.ExecutionEvent]
     complete = False
 
     async def collect_events() -> None:
         nonlocal complete
-        async for event in await handle.stream():
+        async for event in await cell.stream():
             events.append(event)
             if event.event_type in ("done", "error"):
                 complete = True
@@ -1366,10 +1359,9 @@ async def _execute_cell_internal(
 
     if complete:
         # Prefer the synced document as the final source of truth once execution
-        # finishes. This is more robust across runtimed output transport changes.
+        # finishes. CellHandle reads from the local CRDT replica.
         with contextlib.suppress(Exception):
-            cell = handle.snapshot()
-            has_error_output = any(output.output_type == "error" for output in cell.outputs)
+            has_error_output = any(o.output_type == "error" for o in cell.outputs)
             status = "error" if has_error_output else "idle"
             header = _format_header(cell.id, status=status, execution_count=cell.execution_count)
             items: list[ContentItem] = [TextContent(type="text", text=header)]
@@ -1410,11 +1402,10 @@ async def resource_cells() -> str:
         return "Error: No active notebook"
 
     try:
-        cells = await _notebook.session.get_cells()
-        cell_status = await _get_cell_status_map(_notebook.session)
+        cell_status = await _get_cell_status_map(_notebook)
         lines = [
             _format_cell_summary(i, cell, status=cell_status.get(cell.id))
-            for i, cell in enumerate(cells)
+            for i, cell in enumerate(_notebook.cells)
         ]
         return "\n".join(lines)
     except Exception as e:
@@ -1429,10 +1420,8 @@ async def resource_cell(cell_id: str) -> str:
 
     try:
         await _send_cell_focus(cell_id)
-        cell = await _notebook.session.get_cell(cell_id=cell_id)
-        if cell is None:
-            return f"Error: Cell {cell_id} not found"
-        status = await _get_single_cell_status(_notebook.session, cell_id)
+        cell = _notebook.cells.get_by_id(cell_id)
+        status = await _get_single_cell_status(_notebook, cell_id)
         return _format_cell(cell, status=status)
     except Exception as e:
         return f"Error: {e}"
@@ -1445,15 +1434,12 @@ async def resource_cell_by_index(index: int) -> str:
         return "Error: No active notebook"
 
     try:
-        cell_ids = _notebook.cells.ids
-        if index < 0 or index >= len(cell_ids):
-            return f"Error: Index {index} out of range (notebook has {len(cell_ids)} cells)"
-        cell_id = cell_ids[index]
-        await _send_cell_focus(cell_id)
-        cell = await _notebook.session.get_cell(cell_id=cell_id)
-        if cell is None:
-            return f"Error: Cell at index {index} not found"
-        status = await _get_single_cell_status(_notebook.session, cell_id)
+        num_cells = len(_notebook.cells)
+        if index < 0 or index >= num_cells:
+            return f"Error: Index {index} out of range (notebook has {num_cells} cells)"
+        cell = _notebook.cells.get_by_index(index)
+        await _send_cell_focus(cell.id)
+        status = await _get_single_cell_status(_notebook, cell.id)
         return _format_cell(cell, status=status)
     except Exception as e:
         return f"Error: {e}"
@@ -1467,9 +1453,7 @@ async def resource_cell_outputs(cell_id: str) -> str:
 
     try:
         await _send_cell_focus(cell_id)
-        cell = await _notebook.session.get_cell(cell_id=cell_id)
-        if cell is None:
-            return f"Error: Cell {cell_id} not found"
+        cell = _notebook.cells.get_by_id(cell_id)
         output_text = _format_outputs_text(cell.outputs)
         if not output_text:
             return "(no outputs)"
@@ -1491,13 +1475,12 @@ async def resource_status() -> str:
         )
 
     try:
-        rt = _notebook.runtime
         return json.dumps(
             {
                 "notebook_id": _notebook.notebook_id,
                 "connected": await _notebook.session.is_connected(),
-                "runtime_status": rt.kernel.status,
-                "env_source": rt.kernel.env_source,
+                "runtime_status": _notebook.runtime.kernel.status,
+                "env_source": _notebook.runtime.kernel.env_source,
             }
         )
     except Exception as e:
