@@ -427,7 +427,7 @@ def daemon_process():
 
         # Wait for pools to warm up before running tests.
         # We poll the daemon log file for pool-ready messages since
-        # DaemonClient uses default_socket_path() which doesn't respect
+        # NativeClient uses default_socket_path() which doesn't respect
         # RUNTIMED_SOCKET_PATH for CI mode.
         uv_ready = False
         conda_ready = False
@@ -2591,16 +2591,6 @@ class TestPresence:
         )
 
     @pytest.mark.asyncio
-    async def test_set_cursor_not_connected_raises(self):
-        """set_cursor raises when not connected."""
-        pytest.skip("AsyncSession() constructor removed — sessions always pre-connected")
-
-    @pytest.mark.asyncio
-    async def test_set_selection_not_connected_raises(self):
-        """set_selection raises when not connected."""
-        pytest.skip("AsyncSession() constructor removed — sessions always pre-connected")
-
-    @pytest.mark.asyncio
     async def test_presence_with_two_peers(self, two_async_sessions):
         """Both peers can send presence without error."""
         s1, s2 = two_async_sessions
@@ -2667,16 +2657,6 @@ class TestPresence:
         """Can query remote cursors via AsyncSession."""
         cursors = await async_session.get_remote_cursors()
         assert isinstance(cursors, list)
-
-    @pytest.mark.asyncio
-    async def test_get_peers_not_connected_raises(self):
-        """get_peers raises when not connected."""
-        pytest.skip("AsyncSession() constructor removed — sessions always pre-connected")
-
-    @pytest.mark.asyncio
-    async def test_get_remote_cursors_not_connected_raises(self):
-        """get_remote_cursors raises when not connected."""
-        pytest.skip("AsyncSession() constructor removed — sessions always pre-connected")
 
 
 if __name__ == "__main__":

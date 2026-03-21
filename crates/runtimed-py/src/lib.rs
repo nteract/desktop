@@ -1,9 +1,9 @@
 //! Python bindings for runtimed daemon client.
 //!
 //! Provides Python classes for:
-//! - `DaemonClient`: Low-level daemon operations (status, ping, list rooms)
-//! - `Session`: Synchronous code execution with kernel management
-//! - `AsyncSession`: Async code execution with kernel management
+//! - `NativeClient`/`NativeAsyncClient`: Daemon operations (status, ping, list active notebooks)
+//! - `Session`: Synchronous notebook interaction with kernel management
+//! - `AsyncSession`: Async notebook interaction with kernel management
 //! - `ExecutionEventStream`: Async iterator over execution events
 //! - `ExecutionEventIterator`: Sync iterator over execution events
 //!
