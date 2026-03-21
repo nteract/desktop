@@ -56,6 +56,25 @@ class Notebook:
         """Save the notebook to disk. Returns the path saved to."""
         return await self._session.save(path)
 
+    async def start_kernel(
+        self,
+        kernel_type: str = "python",
+        env_source: str = "auto",
+        notebook_path: str | None = None,
+    ) -> None:
+        """Start a kernel in this notebook.
+
+        Args:
+            kernel_type: Kernel runtime type (e.g. "python", "deno").
+            env_source: Environment source (e.g. "auto", "uv:inline").
+            notebook_path: Optional path for project file detection.
+        """
+        await self._session.start_kernel(kernel_type, env_source, notebook_path)
+
+    async def shutdown_kernel(self) -> None:
+        """Shut down the kernel (daemon manages cleanup on last peer disconnect)."""
+        await self._session.shutdown_kernel()
+
     async def restart_kernel(self, wait_for_ready: bool = True) -> list[str]:
         """Restart the kernel. Returns progress messages."""
         return await self._session.restart_kernel(wait_for_ready)
