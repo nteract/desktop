@@ -5,27 +5,48 @@
  * from the daemon's pool for fast startup.
  *
  * Fixture: 1-vanilla.ipynb (no inline deps, no project file)
+ * Run with: cargo xtask e2e test-fixture \
+ *   crates/notebook/fixtures/audit-test/1-vanilla.ipynb \
+ *   e2e/specs/prewarmed-uv.spec.js
  */
 
+import { browser } from "@wdio/globals";
 import {
-  executeFirstCell,
   isManagedEnv,
+  setCellSource,
+  waitForAppReady,
   waitForCellOutput,
   waitForKernelReady,
+  waitForNotebookSynced,
 } from "../helpers.js";
 
 describe("Prewarmed Environment Pool", () => {
   it("should auto-launch kernel from pool", async () => {
-    // Wait for kernel to auto-launch (90s for first startup)
+    // 300s timeout: CI runners start cold and UV pool warming can take 3+ minutes
     await waitForKernelReady(300000);
   });
 
   it("should execute code and show managed env path", async () => {
-    // Execute the cell which prints sys.executable
-    const cell = await executeFirstCell();
+    await waitForNotebookSynced();
+
+    const codeCell = await $('[data-cell-type="code"]');
+    await codeCell.waitForExist({ timeout: 10000 });
+
+    // Ensure the cell has the right source via CodeMirror dispatch API.
+    // The fixture has source but CRDT sync may not have delivered it yet.
+    await setCellSource(codeCell, "import sys; print(sys.executable)");
+
+    // Execute via button click (reliable with tauri-plugin-webdriver)
+    const executeButton = await codeCell.$('[data-testid="execute-button"]');
+    await executeButton.waitForClickable({ timeout: 5000 });
+    await executeButton.click();
 
     // Wait for output
-    const output = await waitForCellOutput(cell, 60000);
+    const output = await waitForCellOutput(codeCell, 60000);
+
+    // Debug: log the actual output so CI failures are diagnosable
+    console.log(`[prewarmed-uv] output: ${JSON.stringify(output)}`);
+    console.log(`[prewarmed-uv] isManagedEnv: ${isManagedEnv(output)}`);
 
     // Verify it's a managed environment (runtimed-uv-* or runtimed-conda-*)
     expect(isManagedEnv(output)).toBe(true);
