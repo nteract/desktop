@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
+
+from runtimed.runtimed import RuntimedError as _RuntimedError
 
 if TYPE_CHECKING:
     from runtimed.runtimed import AsyncSession, Cell, ExecutionResult, Output
@@ -40,7 +43,7 @@ class CellHandle:
         try:
             cell = self._session.get_cell_sync(self._id)
             return cell.outputs
-        except Exception:
+        except _RuntimedError:
             return []
 
     @property
@@ -57,37 +60,36 @@ class CellHandle:
     @property
     def metadata(self) -> Any:
         """Parsed metadata dict (sync read)."""
+        raw = self._session.get_cell_metadata_sync(self._id)
+        if raw is None:
+            return {}
         try:
-            cell = self._session.get_cell_sync(self._id)
-            return cell.metadata
-        except Exception:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
             return {}
 
     @property
     def tags(self) -> list[str]:
-        """Cell tags (sync read)."""
+        """Cell tags (sync read). Uses Rust Cell helpers for key resolution."""
         try:
-            cell = self._session.get_cell_sync(self._id)
-            return cell.tags
-        except Exception:
+            return self._session.get_cell_sync(self._id).tags
+        except _RuntimedError:
             return []
 
     @property
     def is_source_hidden(self) -> bool:
-        """Whether cell source is hidden (sync read)."""
+        """Whether cell source is hidden (sync read). Uses Rust Cell helpers."""
         try:
-            cell = self._session.get_cell_sync(self._id)
-            return cell.is_source_hidden
-        except Exception:
+            return self._session.get_cell_sync(self._id).is_source_hidden
+        except _RuntimedError:
             return False
 
     @property
     def is_outputs_hidden(self) -> bool:
-        """Whether cell outputs are hidden (sync read)."""
+        """Whether cell outputs are hidden (sync read). Uses Rust Cell helpers."""
         try:
-            cell = self._session.get_cell_sync(self._id)
-            return cell.is_outputs_hidden
-        except Exception:
+            return self._session.get_cell_sync(self._id).is_outputs_hidden
+        except _RuntimedError:
             return False
 
     def snapshot(self) -> Cell:
