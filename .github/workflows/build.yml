@@ -517,9 +517,12 @@ jobs:
           export DISPLAY=:99
           sleep 2
 
-          # Start daemon with pool configuration
+          # Start daemon with pool configuration.
+          # Unset UV_CACHE_DIR/UV_PYTHON_INSTALL_DIR so the daemon uses its own
+          # env paths (runtimed-uv-*) instead of the CI uv action's temp cache.
           TARGET=$(ls target/release/binaries/ | grep runtimed | head -1)
-          RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
+          env -u UV_CACHE_DIR -u UV_PYTHON_INSTALL_DIR \
+            RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
             ./target/release/binaries/$TARGET --dev run \
             --uv-pool-size ${{ matrix.uv_pool }} --conda-pool-size ${{ matrix.conda_pool }} \
             > e2e-logs/daemon.log 2>&1 &
@@ -536,11 +539,13 @@ jobs:
 
           # Start the app (with notebook if specified)
           if [ -n "${{ matrix.notebook }}" ]; then
-            RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
+            env -u UV_CACHE_DIR -u UV_PYTHON_INSTALL_DIR \
+              RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
               RUST_LOG=info,notebook=debug \
               ./target/release/notebook "${{ matrix.notebook }}" > e2e-logs/app.log 2>&1 &
           else
-            RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
+            env -u UV_CACHE_DIR -u UV_PYTHON_INSTALL_DIR \
+              RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
               RUST_LOG=info,notebook=debug \
               ./target/release/notebook > e2e-logs/app.log 2>&1 &
           fi
