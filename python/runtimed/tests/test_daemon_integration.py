@@ -427,8 +427,7 @@ def daemon_process():
 
         # Wait for pools to warm up before running tests.
         # We poll the daemon log file for pool-ready messages since
-        # NativeClient uses default_socket_path() which doesn't respect
-        # RUNTIMED_SOCKET_PATH for CI mode.
+        # a reachable socket doesn't guarantee pools are warmed.
         uv_ready = False
         conda_ready = False
         import re
