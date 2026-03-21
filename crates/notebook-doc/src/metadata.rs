@@ -328,6 +328,11 @@ impl NotebookMetadataSnapshot {
             return Some("deno".to_string());
         }
 
+        // Fall back to runt.uv or runt.conda presence — these are implicitly Python
+        if self.runt.uv.is_some() || self.runt.conda.is_some() {
+            return Some("python".to_string());
+        }
+
         None
     }
 
@@ -895,6 +900,60 @@ mod tests {
             config: None,
             flexible_npm_imports: None,
         });
+        assert_eq!(s.detect_runtime(), Some("deno".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_runt_uv_fallback() {
+        let s = NotebookMetadataSnapshot {
+            runt: RuntMetadata {
+                uv: Some(UvInlineMetadata {
+                    dependencies: vec!["requests".to_string()],
+                    requires_python: None,
+                    prerelease: None,
+                }),
+                ..RuntMetadata::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(s.detect_runtime(), Some("python".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_runt_conda_fallback() {
+        let s = NotebookMetadataSnapshot {
+            runt: RuntMetadata {
+                conda: Some(CondaInlineMetadata {
+                    dependencies: vec!["numpy".to_string()],
+                    channels: vec!["conda-forge".to_string()],
+                    python: None,
+                }),
+                ..RuntMetadata::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(s.detect_runtime(), Some("python".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_kernelspec_takes_priority_over_runt_uv() {
+        // kernelspec should still win even if runt.uv is present
+        let s = NotebookMetadataSnapshot {
+            kernelspec: Some(KernelspecSnapshot {
+                name: "deno".to_string(),
+                display_name: "Deno".to_string(),
+                language: Some("typescript".to_string()),
+            }),
+            runt: RuntMetadata {
+                uv: Some(UvInlineMetadata {
+                    dependencies: vec!["requests".to_string()],
+                    requires_python: None,
+                    prerelease: None,
+                }),
+                ..RuntMetadata::default()
+            },
+            ..Default::default()
+        };
         assert_eq!(s.detect_runtime(), Some("deno".to_string()));
     }
 
