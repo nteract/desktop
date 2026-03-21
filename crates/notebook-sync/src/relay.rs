@@ -74,13 +74,16 @@ pub enum RelayCommand {
 #[derive(Clone)]
 pub struct RelayHandle {
     cmd_tx: mpsc::Sender<RelayCommand>,
-    notebook_id: String,
+    notebook_id: std::sync::Arc<std::sync::RwLock<String>>,
 }
 
 impl std::fmt::Debug for RelayHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RelayHandle")
-            .field("notebook_id", &self.notebook_id)
+            .field(
+                "notebook_id",
+                &*self.notebook_id.read().unwrap_or_else(|e| e.into_inner()),
+            )
             .finish()
     }
 }
@@ -92,13 +95,21 @@ impl RelayHandle {
     pub(crate) fn new(cmd_tx: mpsc::Sender<RelayCommand>, notebook_id: String) -> Self {
         Self {
             cmd_tx,
-            notebook_id,
+            notebook_id: std::sync::Arc::new(std::sync::RwLock::new(notebook_id)),
         }
     }
 
     /// Get the notebook ID this handle is connected to.
-    pub fn notebook_id(&self) -> &str {
-        &self.notebook_id
+    pub fn notebook_id(&self) -> String {
+        self.notebook_id
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Update the notebook ID after a room re-key (e.g. save-as from untitled).
+    pub fn set_notebook_id(&self, new_id: String) {
+        *self.notebook_id.write().unwrap_or_else(|e| e.into_inner()) = new_id;
     }
 
     /// Send a request to the daemon and wait for a response.
