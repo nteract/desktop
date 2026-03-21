@@ -42,6 +42,10 @@ fn main() {
             let source = args.get(1).map(String::as_str);
             cmd_icons(source);
         }
+        "e2e" => {
+            let sub_args: Vec<String> = args[1..].to_vec();
+            cmd_e2e(sub_args);
+        }
         "build-e2e" => cmd_build_e2e(),
         "build-dmg" => cmd_build_dmg(),
         "build-app" => cmd_build_app(),
@@ -91,7 +95,6 @@ Development:
   vite                       Start Vite server standalone
   build                      Full debug build (frontend + rust)
   build --rust-only          Rebuild rust only, reuse existing frontend
-  build-e2e                  Debug build with built-in WebDriver server
   run [notebook.ipynb]       Run bundled debug binary
 
 Release:
@@ -115,6 +118,8 @@ Linting:
 Testing:
   integration [filter]       Run Python integration tests with an isolated daemon
                              Optional filter is passed to pytest -k (e.g. 'test_start_kernel')
+  e2e [build|test|test-fixture|test-all]
+                             E2E testing (build, run, manage fixtures)
 
 Other:
   wasm                       Rebuild runtimed-wasm (wasm-pack build)
@@ -635,6 +640,43 @@ fn cmd_run(notebook: Option<&str>) {
 }
 
 fn cmd_build_e2e() {
+    eprintln!("Note: 'build-e2e' is deprecated, use 'cargo xtask e2e build' instead.");
+    cmd_e2e_build();
+}
+
+fn print_e2e_help() {
+    eprintln!("Usage: cargo xtask e2e [COMMAND]");
+    eprintln!();
+    eprintln!("Commands:");
+    eprintln!(
+        "  build                          Build the E2E binary (debug, with embedded WebDriver)"
+    );
+    eprintln!("  test                           Run E2E smoke tests (default if no command given)");
+    eprintln!("  test-fixture <notebook> <spec>  Run a single fixture test");
+    eprintln!("  test-all                       Run smoke + all fixture tests");
+    eprintln!("  help                           Show this help");
+}
+
+fn cmd_e2e(args: Vec<String>) {
+    let subcmd = args.first().map(|s| s.as_str()).unwrap_or("test");
+    match subcmd {
+        "build" => cmd_e2e_build(),
+        "test" => cmd_e2e_test(args),
+        "test-fixture" => cmd_e2e_test_fixture(args),
+        "test-all" => cmd_e2e_test_all(),
+        "help" | "--help" | "-h" => {
+            print_e2e_help();
+        }
+        _ => {
+            eprintln!("Unknown e2e subcommand: {subcmd}");
+            eprintln!();
+            print_e2e_help();
+            exit(1);
+        }
+    }
+}
+
+fn cmd_e2e_build() {
     require_pnpm();
     require_tauri();
 
@@ -662,6 +704,216 @@ fn cmd_build_e2e() {
 
     println!("Build complete: ./target/debug/notebook");
     println!("The app embeds a WebDriver server on port 4445 (tauri-plugin-webdriver).");
+}
+
+/// Run a single E2E test session. Returns the test process exit code.
+///
+/// Spawns a dev daemon and the notebook app, waits for WebDriver on port
+/// 4445, runs `pnpm test:e2e`, then cleans everything up.
+fn run_e2e_session(
+    notebook_path: Option<&str>,
+    spec_path: Option<&str>,
+    workspace_dir: Option<&str>,
+) -> i32 {
+    // Ensure e2e binary exists
+    if !Path::new("./target/debug/notebook").exists() {
+        cmd_e2e_build();
+    }
+
+    // Start daemon
+    let mut daemon = if let Some(ws) = workspace_dir {
+        // Custom workspace: spawn daemon with overridden RUNTIMED_WORKSPACE_PATH
+        ensure_dev_daemon_binaries();
+        let mut cmd = Command::new(dev_daemon_binary(false));
+        cmd.args(["--dev", "run"])
+            .env("RUNTIMED_DEV", "1")
+            .env("RUNTIMED_WORKSPACE_PATH", ws)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().unwrap_or_else(|e| {
+            eprintln!("Failed to start daemon: {e}");
+            exit(1);
+        });
+        relay_child_output("daemon", child.stdout.take());
+        relay_child_output("daemon", child.stderr.take());
+        // Can't use wait_for_dev_daemon with a non-default workspace, poll briefly
+        println!("Waiting for daemon to initialize...");
+        thread::sleep(Duration::from_secs(10));
+        child
+    } else {
+        let mut d = spawn_dev_daemon_process(false);
+        if let Err(msg) = wait_for_dev_daemon(&mut d, Duration::from_secs(30)) {
+            eprintln!("Failed to start dev daemon: {msg}");
+            stop_child(&mut d, "daemon");
+            return 1;
+        }
+        d
+    };
+
+    // Start the notebook app (embeds WebDriver on port 4445)
+    let mut app_cmd = Command::new("./target/debug/notebook");
+    if let Some(path) = notebook_path {
+        app_cmd.arg(path);
+    }
+    app_cmd.env("RUST_LOG", "info");
+    if let Some(ws) = workspace_dir {
+        app_cmd
+            .env("RUNTIMED_DEV", "1")
+            .env("RUNTIMED_WORKSPACE_PATH", ws)
+            .current_dir(ws);
+    } else {
+        apply_worktree_env(&mut app_cmd, true);
+    }
+    app_cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut app = match app_cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            eprintln!("Failed to start notebook app: {e}");
+            stop_child(&mut daemon, "daemon");
+            return 1;
+        }
+    };
+    relay_child_output("app", app.stdout.take());
+    relay_child_output("app", app.stderr.take());
+
+    // Wait for embedded WebDriver server on port 4445
+    println!("Waiting for WebDriver on port 4445...");
+    let wd_start = Instant::now();
+    let wd_timeout = Duration::from_secs(30);
+    let mut wd_ready = false;
+    while wd_start.elapsed() < wd_timeout {
+        if std::net::TcpStream::connect("127.0.0.1:4445").is_ok() {
+            println!("WebDriver ready ({}s)", wd_start.elapsed().as_secs());
+            wd_ready = true;
+            break;
+        }
+        if app.try_wait().ok().flatten().is_some() {
+            eprintln!("App exited before WebDriver became ready.");
+            stop_child(&mut daemon, "daemon");
+            return 1;
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+    if !wd_ready {
+        eprintln!("Timed out waiting for WebDriver on port 4445.");
+        stop_child(&mut app, "app");
+        stop_child(&mut daemon, "daemon");
+        return 1;
+    }
+
+    // Run pnpm test:e2e
+    let mut test_cmd = Command::new("pnpm");
+    test_cmd.args(["test:e2e"]).env("WEBDRIVER_PORT", "4445");
+    if let Some(spec) = spec_path {
+        test_cmd.env("E2E_SPEC", spec);
+    }
+    if let Some(ws) = workspace_dir {
+        test_cmd.env("RUNTIMED_WORKSPACE_PATH", ws);
+    }
+
+    let test_code = match test_cmd.status() {
+        Ok(s) => {
+            if s.success() {
+                0
+            } else {
+                s.code().unwrap_or(1)
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to run pnpm test:e2e: {e}");
+            1
+        }
+    };
+
+    // Cleanup
+    stop_child(&mut app, "app");
+    stop_child(&mut daemon, "daemon");
+
+    test_code
+}
+
+fn cmd_e2e_test(_args: Vec<String>) {
+    println!("Running E2E smoke tests...");
+    let code = run_e2e_session(None, None, None);
+    exit(code);
+}
+
+fn cmd_e2e_test_fixture(args: Vec<String>) {
+    let notebook_path = args.get(1).unwrap_or_else(|| {
+        eprintln!("Usage: cargo xtask e2e test-fixture <notebook_path> <spec_path>");
+        exit(1);
+    });
+    let spec_path = args.get(2).unwrap_or_else(|| {
+        eprintln!("Usage: cargo xtask e2e test-fixture <notebook_path> <spec_path>");
+        exit(1);
+    });
+
+    println!("Running E2E fixture test...");
+    println!("  Notebook: {notebook_path}");
+    println!("  Spec:     {spec_path}");
+
+    let code = run_e2e_session(Some(notebook_path), Some(spec_path), None);
+    exit(code);
+}
+
+fn cmd_e2e_test_all() {
+    println!("Running all E2E tests...\n");
+    let mut failed = false;
+
+    // 1. Smoke tests (default specs, excluding fixtures)
+    println!("=== Smoke Tests ===");
+    if run_e2e_session(None, None, None) != 0 {
+        eprintln!("Smoke tests failed.");
+        failed = true;
+    }
+
+    // 2. Fixture tests (mirroring CI e2e-fixtures job)
+    let fixtures: &[(&str, &str, &str)] = &[
+        (
+            "crates/notebook/fixtures/audit-test/1-vanilla.ipynb",
+            "e2e/specs/prewarmed-uv.spec.js",
+            "Prewarmed Pool Test",
+        ),
+        (
+            "crates/notebook/fixtures/audit-test/10-deno.ipynb",
+            "e2e/specs/deno.spec.js",
+            "Deno Kernel Test",
+        ),
+    ];
+
+    for (notebook, spec, name) in fixtures {
+        println!("\n=== {name} ===");
+        if run_e2e_session(Some(notebook), Some(spec), None) != 0 {
+            eprintln!("{name} failed.");
+            failed = true;
+        }
+    }
+
+    // 3. Untitled pyproject test (needs custom workspace directory)
+    println!("\n=== Untitled Pyproject Test ===");
+    let fixture_dir =
+        std::fs::canonicalize("crates/notebook/fixtures/audit-test/pyproject-project")
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to resolve pyproject fixture directory: {e}");
+                exit(1);
+            });
+    let fixture_str = fixture_dir.to_string_lossy().to_string();
+    if run_e2e_session(
+        None,
+        Some("e2e/specs/untitled-pyproject.spec.js"),
+        Some(&fixture_str),
+    ) != 0
+    {
+        eprintln!("Untitled Pyproject Test failed.");
+        failed = true;
+    }
+
+    if failed {
+        eprintln!("\nSome E2E tests failed.");
+        exit(1);
+    }
+    println!("\nAll E2E tests passed!");
 }
 
 fn cmd_wasm() {

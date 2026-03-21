@@ -9,10 +9,7 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:e2e": "wdio run e2e/wdio.conf.js",
-    "test:e2e:docker": "docker compose run --rm tauri-e2e",
-    "test:e2e:native": "wdio run e2e/wdio.conf.js",
-    "e2e:docker:build": "docker compose build tauri-e2e",
-    "e2e:docker:shell": "docker compose --profile dev run --rm tauri-e2e-shell"
+    "test:e2e:native": "wdio run e2e/wdio.conf.js"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.0",
