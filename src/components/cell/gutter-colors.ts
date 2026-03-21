@@ -79,12 +79,12 @@ export const defaultGutterColors: Record<string, GutterColorConfig> = {
   },
   raw: {
     ribbon: {
-      default: "bg-rose-200 dark:bg-rose-800",
+      default: "bg-gray-200 dark:bg-gray-700",
       focused: "bg-rose-400 dark:bg-rose-600",
     },
     outputRibbon: {
       default:
-        "bg-gradient-to-b from-rose-200/60 to-rose-200 dark:from-rose-800/60 dark:to-rose-800",
+        "bg-gradient-to-b from-gray-200/60 to-gray-200 dark:from-gray-700/60 dark:to-gray-700",
       focused:
         "bg-gradient-to-b from-rose-400/60 to-rose-400 dark:from-rose-600/60 dark:to-rose-600",
     },
