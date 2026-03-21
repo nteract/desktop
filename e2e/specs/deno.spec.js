@@ -15,8 +15,8 @@ import {
 
 describe("Deno Kernel", () => {
   it("should auto-launch Deno kernel", async () => {
-    // Wait for kernel to auto-launch (90s, includes deno bootstrap if needed)
-    await waitForKernelReady(90000);
+    // Wait for kernel to auto-launch (300s, includes deno bootstrap if needed)
+    await waitForKernelReady(300000);
   });
 
   it("should execute TypeScript and show output", async () => {

@@ -421,10 +421,38 @@ jobs:
   # Build Tauri app once and share with E2E shards
   # E2E smoke test - verifies basic app functionality
   e2e:
-    name: E2E Smoke Test
+    name: "E2E: ${{ matrix.name }}"
     runs-on: ubuntu-latest
     needs: [changes, build-linux]
     if: needs.changes.outputs.source_changed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Smoke
+            spec: ""
+            notebook: ""
+            uv_pool: 3
+            conda_pool: 0
+            timeout: 12
+          - name: UI (Cell Visibility)
+            spec: "e2e/specs/cell-visibility.spec.js"
+            notebook: "crates/notebook/fixtures/audit-test/14-cell-visibility.ipynb"
+            uv_pool: 0
+            conda_pool: 0
+            timeout: 5
+          - name: UV Prewarmed
+            spec: "e2e/specs/prewarmed-uv.spec.js"
+            notebook: "crates/notebook/fixtures/audit-test/1-vanilla.ipynb"
+            uv_pool: 3
+            conda_pool: 0
+            timeout: 12
+          - name: Deno
+            spec: "e2e/specs/deno.spec.js"
+            notebook: "crates/notebook/fixtures/audit-test/10-deno.ipynb"
+            uv_pool: 0
+            conda_pool: 0
+            timeout: 8
     steps:
       - uses: actions/checkout@v6
 
@@ -474,8 +502,8 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
-      - name: Run E2E smoke test
-        timeout-minutes: 12
+      - name: Run E2E test
+        timeout-minutes: ${{ matrix.timeout }}
         run: |
           set -o pipefail
           mkdir -p e2e-logs
@@ -489,20 +517,33 @@ jobs:
           export DISPLAY=:99
           sleep 2
 
-          # Start daemon with pool pre-warming
+          # Start daemon with pool configuration
           TARGET=$(ls target/release/binaries/ | grep runtimed | head -1)
           RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
             ./target/release/binaries/$TARGET --dev run \
-            --uv-pool-size 3 --conda-pool-size 0 \
+            --uv-pool-size ${{ matrix.uv_pool }} --conda-pool-size ${{ matrix.conda_pool }} \
             > e2e-logs/daemon.log 2>&1 &
           DAEMON_PID=$!
-          echo "Waiting for daemon pool to warm (90s on cold CI)..."
-          sleep 90
 
-          # Start the app (embeds WebDriver on port 4445)
-          RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
-            RUST_LOG=info,notebook=debug \
-            ./target/release/notebook > e2e-logs/app.log 2>&1 &
+          # Wait for pool warm-up (skip for tests with no pool)
+          if [ "${{ matrix.uv_pool }}" = "0" ] && [ "${{ matrix.conda_pool }}" = "0" ]; then
+            echo "No pool to warm, sleeping 5s..."
+            sleep 5
+          else
+            echo "Waiting for daemon pool to warm (90s on cold CI)..."
+            sleep 90
+          fi
+
+          # Start the app (with notebook if specified)
+          if [ -n "${{ matrix.notebook }}" ]; then
+            RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
+              RUST_LOG=info,notebook=debug \
+              ./target/release/notebook "${{ matrix.notebook }}" > e2e-logs/app.log 2>&1 &
+          else
+            RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
+              RUST_LOG=info,notebook=debug \
+              ./target/release/notebook > e2e-logs/app.log 2>&1 &
+          fi
           APP_PID=$!
 
           # Wait for WebDriver server
@@ -514,7 +555,12 @@ jobs:
           echo "WebDriver ready"
 
           # Run tests
-          WEBDRIVER_PORT=4445 pnpm test:e2e 2>&1 | tee e2e-logs/test-output.log
+          if [ -n "${{ matrix.spec }}" ]; then
+            WEBDRIVER_PORT=4445 E2E_SPEC="${{ matrix.spec }}" \
+              pnpm test:e2e 2>&1 | tee e2e-logs/test-output.log
+          else
+            WEBDRIVER_PORT=4445 pnpm test:e2e 2>&1 | tee e2e-logs/test-output.log
+          fi
           EXIT=$?
 
           # Cleanup
@@ -541,7 +587,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-screenshots
+          name: e2e-screenshots-${{ matrix.name }}
           path: e2e-screenshots/failures/
           retention-days: 7
 
@@ -549,162 +595,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-daemon-logs
-          path: e2e-logs/
-          retention-days: 7
-
-  # E2E fixture tests - kernel launch scenarios (runs after smoke test passes)
-  e2e-fixtures:
-    name: E2E Kernel Launch Tests
-    runs-on: ubuntu-latest
-    needs: [changes, build-linux]
-    if: needs.changes.outputs.source_changed == 'true'
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libgtk-3-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            xvfb \
-            webkit2gtk-driver
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: "20"
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - name: Set pnpm store directory
-        run: pnpm config set store-dir ~/.pnpm-store
-
-      - name: Cache pnpm store
-        uses: actions/cache@v5
-        with:
-          path: ~/.pnpm-store
-          key: pnpm-store-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            pnpm-store-${{ runner.os }}-
-
-      - name: Install dependencies
-        run: pnpm install
-
-      - name: Download E2E artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: e2e-app-linux
-          path: ./target/release
-
-      - name: Make binaries executable
-        run: |
-          chmod +x target/release/notebook
-          chmod +x target/release/binaries/*
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Run kernel launch fixture tests
-        timeout-minutes: 20
-        run: |
-          set -o pipefail
-          mkdir -p e2e-logs
-
-          # Pre-seed settings to skip onboarding
-          mkdir -p ~/.config/nteract-nightly
-          echo '{"onboarding_completed": true}' > ~/.config/nteract-nightly/settings.json
-
-          # Start Xvfb
-          Xvfb :99 -screen 0 1920x1080x24 2>/dev/null &
-          export DISPLAY=:99
-          sleep 2
-
-          # Start daemon once — reuse across all fixture tests
-          TARGET=$(ls target/release/binaries/ | grep runtimed | head -1)
-          RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
-            ./target/release/binaries/$TARGET --dev run \
-            --uv-pool-size 3 --conda-pool-size 0 \
-            > e2e-logs/daemon.log 2>&1 &
-          DAEMON_PID=$!
-          echo "Waiting for daemon pool to warm (90s on cold CI)..."
-          sleep 90
-
-          FAIL=0
-
-          # Run a fixture test: start app with notebook, wait for WebDriver, run spec
-          run_test() {
-            local notebook="$1" spec="$2" name="$3"
-            echo "=== $name ==="
-
-            RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
-              RUST_LOG=info,notebook=debug \
-              ./target/release/notebook "$notebook" > e2e-logs/app-${name// /-}.log 2>&1 &
-            local app_pid=$!
-
-            for i in $(seq 1 60); do
-              curl -s http://localhost:4445/status >/dev/null 2>&1 && break
-              kill -0 $app_pid 2>/dev/null || { echo "App died"; cat e2e-logs/app-${name// /-}.log; return 1; }
-              sleep 1
-            done
-
-            local rc=0
-            WEBDRIVER_PORT=4445 E2E_SPEC="$spec" \
-              pnpm test:e2e 2>&1 | tee -a e2e-logs/fixtures-output.log || rc=$?
-
-            kill $app_pid 2>/dev/null || true
-            sleep 2
-            echo "=== $name: exit $rc ==="
-            return $rc
-          }
-
-          run_test \
-            "crates/notebook/fixtures/audit-test/14-cell-visibility.ipynb" \
-            "e2e/specs/cell-visibility.spec.js" \
-            "Cell Visibility" || FAIL=1
-
-          run_test \
-            "crates/notebook/fixtures/audit-test/1-vanilla.ipynb" \
-            "e2e/specs/prewarmed-uv.spec.js" \
-            "Prewarmed Pool" || FAIL=1
-
-          run_test \
-            "crates/notebook/fixtures/audit-test/10-deno.ipynb" \
-            "e2e/specs/deno.spec.js" \
-            "Deno Kernel" || FAIL=1
-
-          # Cleanup
-          kill $DAEMON_PID 2>/dev/null || true
-          exit $FAIL
-        env:
-          NO_AT_BRIDGE: 1
-          LIBGL_ALWAYS_SOFTWARE: 1
-          WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: 1
-          WEBKIT_DISABLE_COMPOSITING_MODE: 1
-
-      - name: Collect daemon logs
-        if: always()
-        run: |
-          mkdir -p e2e-logs
-          find ~/.cache/runt/worktrees -name "runtimed.log" -exec cp {} e2e-logs/ \; 2>/dev/null || true
-          echo "=== Daemon log ===" && cat e2e-logs/runtimed.log 2>/dev/null || echo "No daemon log found"
-
-      - name: Upload failure screenshots
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-fixture-screenshots
-          path: e2e-screenshots/failures/
-          retention-days: 7
-
-      - name: Upload test logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-fixture-logs
+          name: e2e-logs-${{ matrix.name }}
           path: e2e-logs/
           retention-days: 7
 

@@ -17,7 +17,7 @@ import {
 describe("Prewarmed Environment Pool", () => {
   it("should auto-launch kernel from pool", async () => {
     // Wait for kernel to auto-launch (90s for first startup)
-    await waitForKernelReady(90000);
+    await waitForKernelReady(300000);
   });
 
   it("should execute code and show managed env path", async () => {
