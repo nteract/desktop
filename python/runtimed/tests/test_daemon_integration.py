@@ -843,11 +843,14 @@ class TestTerminalEmulation:
         """
         start_kernel_with_retry(session)
 
-        cell_id = create_cell_and_wait_for_sync(session, r"""
+        cell_id = create_cell_and_wait_for_sync(
+            session,
+            r"""
 import sys
 sys.stdout.write("Progress: 50%\rProgress: 100%")
 sys.stdout.flush()
-""")
+""",
+        )
         result = session.execute_cell(cell_id)
 
         assert result.success
@@ -859,7 +862,9 @@ sys.stdout.flush()
         """Simulated progress bar should show only final state."""
         start_kernel_with_retry(session)
 
-        cell_id = create_cell_and_wait_for_sync(session, r"""
+        cell_id = create_cell_and_wait_for_sync(
+            session,
+            r"""
 import sys
 import time
 for i in range(0, 101, 20):
@@ -867,7 +872,8 @@ for i in range(0, 101, 20):
     sys.stdout.flush()
     time.sleep(0.05)
 print()  # Final newline
-""")
+""",
+        )
         result = session.execute_cell(cell_id)
 
         assert result.success
@@ -881,11 +887,14 @@ print()  # Final newline
         """Consecutive print statements should be merged into one output."""
         start_kernel_with_retry(session)
 
-        cell_id = create_cell_and_wait_for_sync(session, """
+        cell_id = create_cell_and_wait_for_sync(
+            session,
+            """
 print("line 1")
 print("line 2")
 print("line 3")
-""")
+""",
+        )
         result = session.execute_cell(cell_id)
 
         assert result.success
@@ -901,13 +910,16 @@ print("line 3")
         """Interleaved stdout and stderr should remain separate streams."""
         start_kernel_with_retry(session)
 
-        cell_id = create_cell_and_wait_for_sync(session, """
+        cell_id = create_cell_and_wait_for_sync(
+            session,
+            """
 import sys
 print("out1")
 sys.stderr.write("err1\\n")
 sys.stderr.flush()
 print("out2")
-""")
+""",
+        )
         result = session.execute_cell(cell_id)
 
         assert result.success
@@ -924,10 +936,13 @@ print("out2")
         """ANSI color codes should be preserved in output."""
         start_kernel_with_retry(session)
 
-        cell_id = create_cell_and_wait_for_sync(session, r"""
+        cell_id = create_cell_and_wait_for_sync(
+            session,
+            r"""
 # Print with ANSI red color
 print("\x1b[31mRed text\x1b[0m Normal text")
-""")
+""",
+        )
         result = session.execute_cell(cell_id)
 
         assert result.success
@@ -941,12 +956,15 @@ print("\x1b[31mRed text\x1b[0m Normal text")
         """Backspace character should delete previous character."""
         start_kernel_with_retry(session)
 
-        cell_id = create_cell_and_wait_for_sync(session, r"""
+        cell_id = create_cell_and_wait_for_sync(
+            session,
+            r"""
 import sys
 sys.stdout.write("abc\b\bd")
 sys.stdout.flush()
 print()
-""")
+""",
+        )
         result = session.execute_cell(cell_id)
 
         assert result.success
@@ -958,12 +976,15 @@ print()
         """ANSI colors combined with carriage return work correctly."""
         start_kernel_with_retry(session)
 
-        cell_id = create_cell_and_wait_for_sync(session, r"""
+        cell_id = create_cell_and_wait_for_sync(
+            session,
+            r"""
 import sys
 # Print colored text, then overwrite with different color
 sys.stdout.write("\x1b[31mRed\x1b[0m\r\x1b[32mGreen\x1b[0m")
 sys.stdout.flush()
-""")
+""",
+        )
         result = session.execute_cell(cell_id)
 
         assert result.success
@@ -1696,9 +1717,7 @@ class TestDocumentFirstExecution:
         await async_wait_for_sync(queued_cell_executed, description="queued cell execution")
 
         # Verify it ran by executing another cell that uses the variable
-        cell2 = await async_create_cell_and_wait_for_sync(
-            async_session, "print(async_queued_var)"
-        )
+        cell2 = await async_create_cell_and_wait_for_sync(async_session, "print(async_queued_var)")
         result = await async_session.execute_cell(cell2)
 
         assert result.success
@@ -2002,9 +2021,7 @@ class TestStreamExecute:
         error_outputs = [
             event
             for event in events
-            if event.event_type == "output"
-            and event.output
-            and event.output.output_type == "error"
+            if event.event_type == "output" and event.output and event.output.output_type == "error"
         ]
         error_events = [event for event in events if event.event_type == "error"]
         cell = await async_session.get_cell(cell_id)
