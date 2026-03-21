@@ -8,7 +8,11 @@ from runtimed._cell import CellCollection
 from runtimed._presence import Presence
 
 if TYPE_CHECKING:
-    from runtimed.runtimed import AsyncSession, SyncEnvironmentResult
+    from runtimed.runtimed import (
+        AsyncSession,
+        QueueState,
+        SyncEnvironmentResult,
+    )
 
 
 class Notebook:
@@ -97,6 +101,14 @@ class Notebook:
         """Queue all code cells for execution. Returns number of cells queued."""
         return await self._session.run_all_cells()
 
+    async def is_connected(self) -> bool:
+        """Check if the session is connected to the daemon."""
+        return await self._session.is_connected()
+
+    async def queue_state(self) -> QueueState:
+        """Get the execution queue state (currently executing + queued cells)."""
+        return await self._session.get_queue_state()
+
     async def close(self) -> None:
         """Close the notebook session."""
         await self._session.close()
@@ -147,11 +159,6 @@ class Notebook:
     async def sync_environment(self) -> SyncEnvironmentResult:
         """Hot-install dependencies without restarting."""
         return await self._session.sync_environment()
-
-    @property
-    def session(self) -> AsyncSession:
-        """The underlying AsyncSession (for advanced/direct use)."""
-        return self._session
 
     # ── Context manager ──────────────────────────────────────────────
 

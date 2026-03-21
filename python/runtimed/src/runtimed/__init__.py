@@ -11,10 +11,9 @@ from runtimed._notebook_info import NotebookInfo
 from runtimed._presence import Presence
 
 # Data types (from native bindings)
-# Runtime state types (renamed from Py* to clean names)
-# Standalone functions
-# Native types (for advanced use / internal consumers like nteract MCP)
-from runtimed.runtimed import (
+# These are importable but not in __all__ — for internal consumers
+# and power users who need direct access to the native types.
+from runtimed.runtimed import (  # noqa: F401
     AsyncSession,
     Cell,
     CompletionItem,
@@ -45,16 +44,11 @@ __all__ = [
     "CellHandle",
     "CellCollection",
     "Presence",
-    # Data types
+    # Data types (reachable through wrapper)
     "Cell",
-    "CompletionItem",
-    "CompletionResult",
     "ExecutionEvent",
     "ExecutionResult",
-    "HistoryEntry",
-    "NotebookConnectionInfo",
     "Output",
-    "QueueState",
     "RuntimedError",
     "SyncEnvironmentResult",
     # Runtime state
@@ -64,11 +58,6 @@ __all__ = [
     # Standalone functions
     "default_socket_path",
     "show_notebook_app",
-    # Native types (advanced)
-    "NativeAsyncClient",
-    "NativeClient",
-    "AsyncSession",
-    "Session",
 ]
 
 try:
