@@ -299,11 +299,11 @@ import runtimed
 async def main():
     client = runtimed.Client()
     async with await client.create() as notebook:
-        # Execute code
-        result = await notebook.run("print('hello')")
+        # Work with cells
+        cell = await notebook.cells.create("print('hello')")
+        result = await cell.run()
         print(result.stdout)  # "hello\n"
 
-        # Work with cells
         cell = await notebook.cells.create("x = 42")
         await cell.run()
 

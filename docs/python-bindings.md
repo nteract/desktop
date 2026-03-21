@@ -109,8 +109,9 @@ async with await client.create() as notebook:
     path = await notebook.save()
     path = await notebook.save("/tmp/copy.ipynb")
 
-    # Quick execution (create cell + execute + return result)
-    result = await notebook.run("print('hello')")
+    # Execute code
+    cell = await notebook.cells.create("print('hello')")
+    result = await cell.run()
 # Session closed automatically on exit
 ```
 
@@ -171,7 +172,7 @@ await cell.queue()  # fire-and-forget
 
 ### ExecutionResult
 
-Returned by `cell.run()` or `notebook.run()`:
+Returned by `cell.run()`:
 
 ```python
 result = await cell.run()
@@ -254,7 +255,8 @@ async def multi_client_demo():
     nb2 = await client.join(nb1.notebook_id)
     print(len(nb2.cells))  # 1 — synced from nb1
 
-    result = await nb2.run("print(x)")
+    cell2 = await nb2.cells.create("print(x)")
+    result = await cell2.run()
     print(result.stdout)  # "42\n" — shared kernel state
 ```
 
