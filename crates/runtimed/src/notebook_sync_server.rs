@@ -3772,11 +3772,28 @@ async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
 /// 4. Reconstruct cells: source and outputs from Automerge, cell metadata from existing file
 /// 5. Write the merged notebook to disk
 ///
+/// Errors from save_notebook_to_disk.
+#[derive(Debug)]
+enum SaveError {
+    /// Transient / potentially recoverable (e.g. disk full, busy)
+    Retryable(String),
+    /// Permanent — retrying will never help (path is a directory, permission denied, invalid path)
+    Unrecoverable(String),
+}
+
+impl std::fmt::Display for SaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SaveError::Retryable(msg) | SaveError::Unrecoverable(msg) => f.write_str(msg),
+        }
+    }
+}
+
 /// Returns the absolute path where the notebook was written.
 async fn save_notebook_to_disk(
     room: &NotebookRoom,
     target_path: Option<&str>,
-) -> Result<String, String> {
+) -> Result<String, SaveError> {
     // Determine the actual save path
     let notebook_path = match target_path {
         Some(p) => {
@@ -3785,10 +3802,10 @@ async fn save_notebook_to_disk(
             // Reject relative paths - daemon CWD is unpredictable (could be / when running as launchd)
             // Clients (Tauri file dialog, Python SDK) should always provide absolute paths.
             if path.is_relative() {
-                return Err(format!(
+                return Err(SaveError::Unrecoverable(format!(
                     "Relative paths are not supported for save: '{}'. Please provide an absolute path.",
                     p
-                ));
+                )));
             }
 
             // Ensure .ipynb extension
@@ -3918,13 +3935,21 @@ async fn save_notebook_to_disk(
 
     // Serialize with trailing newline (nbformat convention)
     let content = serde_json::to_string_pretty(&notebook_json)
-        .map_err(|e| format!("Failed to serialize notebook: {e}"))?;
+        .map_err(|e| SaveError::Retryable(format!("Failed to serialize notebook: {e}")))?;
     let content_with_newline = format!("{content}\n");
 
     // Write to disk (async to avoid blocking the runtime)
     tokio::fs::write(&notebook_path, content_with_newline)
         .await
-        .map_err(|e| format!("Failed to write notebook: {e}"))?;
+        .map_err(|e| {
+            let msg = format!("Failed to write notebook: {e}");
+            match e.kind() {
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::IsADirectory => {
+                    SaveError::Unrecoverable(msg)
+                }
+                _ => SaveError::Retryable(msg),
+            }
+        })?;
 
     // Update last_self_write timestamp so file watcher skips this change
     let now = std::time::SystemTime::now()
@@ -4339,6 +4364,13 @@ fn spawn_autosave_debouncer_with_config(
                                         },
                                     );
                                 }
+                            }
+                            Err(ref e @ SaveError::Unrecoverable(_)) => {
+                                error!(
+                                    "[autosave] Unrecoverable save error, disabling autosave for {}: {}",
+                                    notebook_id, e
+                                );
+                                break;
                             }
                             Err(e) => {
                                 warn!("[autosave] Failed to save: {}", e);
@@ -6901,7 +6933,14 @@ mod tests {
         assert!(result.is_err());
         let error = result.unwrap_err();
         assert!(
-            error.contains("Relative paths are not supported"),
+            matches!(error, SaveError::Unrecoverable(_)),
+            "Error should be unrecoverable: {}",
+            error
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("Relative paths are not supported"),
             "Error should mention relative paths: {}",
             error
         );

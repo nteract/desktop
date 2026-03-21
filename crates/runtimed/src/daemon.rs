@@ -1104,6 +1104,42 @@ impl Daemon {
         // Check if file exists before canonicalizing (canonicalize fails for non-existent paths)
         let mut path_buf = std::path::PathBuf::from(&path);
         let file_exists = match tokio::fs::metadata(&path_buf).await {
+            Ok(meta) if meta.is_dir() => {
+                // Directory path — create untitled notebook with this as working dir
+                info!(
+                    "[runtimed] Path {} is a directory, creating untitled notebook with working_dir",
+                    path
+                );
+                let dir_path = match path_buf.canonicalize() {
+                    Ok(p) => p.to_string_lossy().to_string(),
+                    Err(_) => path_buf.to_string_lossy().to_string(),
+                };
+                // Verify directory is writable
+                let test_file = path_buf.join(".runtimed_write_test");
+                match tokio::fs::write(&test_file, b"").await {
+                    Ok(_) => {
+                        let _ = tokio::fs::remove_file(&test_file).await;
+                    }
+                    Err(e) => {
+                        let (_reader, mut writer) = tokio::io::split(stream);
+                        send_error_response(
+                            &mut writer,
+                            format!("Directory '{}' is not writable: {}", path, e),
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                }
+                let settings = self.settings.read().await.get_all();
+                return self
+                    .handle_create_notebook(
+                        stream,
+                        settings.default_runtime.to_string(),
+                        Some(dir_path),
+                        None,
+                    )
+                    .await;
+            }
             Ok(_) => true,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // For new files, ensure .ipynb extension
