@@ -75,13 +75,14 @@ python/runtimed/.venv/bin/python -m pytest python/runtimed/tests/test_session_un
 
 ### Running the notebook app (dev mode)
 
-With supervisor tools:
+**Do not launch the notebook app from an agent terminal.** The app is a GUI process that blocks until the user quits it (⌘Q), and the agent will misinterpret the exit. Let the human launch it from their own terminal or Zed task.
+
+With supervisor tools, the daemon and vite are already managed — the human just runs:
 ```bash
-# Daemon is already managed — just launch the app
 cargo xtask notebook
 ```
 
-Without supervisor (two terminals):
+Without supervisor (human runs both):
 ```bash
 # Terminal 1: Start dev daemon
 cargo xtask dev-daemon
