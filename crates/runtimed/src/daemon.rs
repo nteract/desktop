@@ -1114,11 +1114,12 @@ impl Daemon {
                     Ok(p) => p.to_string_lossy().to_string(),
                     Err(_) => path_buf.to_string_lossy().to_string(),
                 };
-                // Verify directory is writable
-                let test_file = path_buf.join(".runtimed_write_test");
-                match tokio::fs::write(&test_file, b"").await {
+                // Verify directory is writable using a uniquely-named temp file.
+                // create_new uses O_EXCL so it can never clobber an existing file.
+                let probe = path_buf.join(format!(".runtimed_probe_{}", uuid::Uuid::new_v4()));
+                match std::fs::File::create_new(&probe) {
                     Ok(_) => {
-                        let _ = tokio::fs::remove_file(&test_file).await;
+                        let _ = std::fs::remove_file(&probe);
                     }
                     Err(e) => {
                         let (_reader, mut writer) = tokio::io::split(stream);
