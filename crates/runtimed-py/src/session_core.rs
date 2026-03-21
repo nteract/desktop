@@ -379,6 +379,13 @@ pub(crate) async fn restart_kernel(
     state: &Arc<Mutex<SessionState>>,
     wait_for_ready: bool,
 ) -> PyResult<Vec<String>> {
+    // Capture the current kernel_type and env_source before shutdown clears them,
+    // so we re-launch with the same configuration.
+    let (prev_kernel_type, prev_env_source) = {
+        let st = state.lock().await;
+        (st.kernel_type.clone(), st.env_source.clone())
+    };
+
     // Shutdown
     {
         let mut st = state.lock().await;
@@ -418,13 +425,18 @@ pub(crate) async fn restart_kernel(
     };
     // Lock is now released — other operations can proceed.
 
+    // Re-launch with the same kernel_type and env_source as before,
+    // falling back to "python" / "auto" if no kernel was previously running.
+    let restart_kernel_type = prev_kernel_type.unwrap_or_else(|| "python".to_string());
+    let restart_env_source = prev_env_source.unwrap_or_else(|| "auto".to_string());
+
     // Send LaunchKernel with a timeout, collecting progress messages concurrently.
     let mut progress_messages: Vec<String> = Vec::new();
     let launch_timeout = std::time::Duration::from_secs(120);
 
     let launch_fut = handle.send_request(NotebookRequest::LaunchKernel {
-        kernel_type: "python".to_string(),
-        env_source: "auto".to_string(),
+        kernel_type: restart_kernel_type,
+        env_source: restart_env_source,
         notebook_path: resolved_path,
     });
 
