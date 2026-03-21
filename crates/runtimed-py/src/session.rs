@@ -975,6 +975,9 @@ impl Session {
     /// clean up the kernel. Use shutdown_kernel() explicitly if you need
     /// to stop the kernel.
     fn close(&self) -> PyResult<()> {
+        let mut st = self.runtime.block_on(self.state.lock());
+        st.handle = None;
+        st.broadcast_rx = None;
         Ok(())
     }
 }

@@ -246,6 +246,6 @@ impl AsyncClient {
     }
 
     fn __repr__(&self) -> String {
-        format!("AsyncClient(socket={})", self.socket_path.display())
+        format!("NativeAsyncClient(socket={})", self.socket_path.display())
     }
 }

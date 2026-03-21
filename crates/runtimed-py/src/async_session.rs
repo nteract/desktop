@@ -1262,9 +1262,19 @@ impl AsyncSession {
     // Repr, context manager, close
     // =========================================================================
 
-    /// Close the session (no-op — daemon manages lifecycle).
+    /// Close the session, disconnecting from the notebook room.
+    ///
+    /// Drops the document handle so the daemon sees this peer as disconnected.
+    /// Does NOT shut down the kernel — the daemon manages kernel lifecycle
+    /// based on peer count and keep-alive settings.
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        future_into_py(py, async move { Ok(()) })
+        let state = Arc::clone(&self.state);
+        future_into_py(py, async move {
+            let mut st = state.lock().await;
+            st.handle = None;
+            st.broadcast_rx = None;
+            Ok(())
+        })
     }
 
     fn __repr__(&self) -> String {
