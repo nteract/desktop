@@ -58,13 +58,6 @@ For Zed MCP config:
 }
 ```
 
-## Running Demos
-
-```bash
-# From the repo root
-RUNTIMED_SOCKET_PATH=... uv run python python/runtimed/demos/presence_cursor.py <notebook_id>
-```
-
 ## Rebuilding After Rust Changes
 
 If you change code in `crates/runtimed-py/` or `crates/runtimed/`:

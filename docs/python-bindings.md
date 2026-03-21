@@ -260,29 +260,40 @@ async def multi_client_demo():
     print(result.stdout)  # "42\n" — shared kernel state
 ```
 
-## Advanced: Native Session API
+## Streaming Execution & Presence
 
-For power users who need direct access to the low-level session methods (streaming execution, presence, cell metadata, dependencies), use `NativeAsyncClient` and `AsyncSession`:
+The wrapper API covers streaming execution, presence, and all other
+session-level features — no need to drop down to native types:
 
 ```python
-native_client = runtimed.NativeAsyncClient()
-session = await native_client.create_notebook()
+client = runtimed.Client()
+nb = await client.create_notebook()
+await nb.start()
 
-# Full session API available
-cell_id = await session.create_cell("print('hello')")
-result = await session.execute_cell(cell_id)
+cell = await nb.cells.create("print('hello')")
 
 # Streaming execution
-async for event in await session.stream_execute(cell_id):
+async for event in await cell.stream():
     if event.event_type == "output":
         print(event.output.text)
 
 # Presence
-await session.set_cursor(cell_id, line=0, column=5)
-peers = await session.get_peers()
+await nb.presence.set_cursor(cell.id, line=0, column=5)
+peers = nb.peers  # sync read — list of (peer_id, label) tuples
 
-await session.close()
+await nb.close()
 ```
+
+### Internal: Native Session API
+
+> **Note:** `NativeAsyncClient` and `AsyncSession` are internal types not
+> included in the public `__all__`. The wrapper API above covers their
+> functionality. If you genuinely need the raw session (e.g. for methods
+> not yet wrapped), import them explicitly:
+>
+> ```python
+> from runtimed.runtimed import NativeAsyncClient, AsyncSession
+> ```
 
 ## Error Handling
 
