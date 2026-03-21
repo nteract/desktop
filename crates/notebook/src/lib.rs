@@ -12,8 +12,6 @@ pub mod shell_env;
 pub mod trust;
 pub mod typosquat;
 pub mod uv_env;
-#[cfg(feature = "webdriver-test")]
-pub mod webdriver;
 
 pub use runtimed::runtime::Runtime;
 
@@ -3561,11 +3559,7 @@ fn correct_window_scale(window: &tauri::WebviewWindow, saved_scale_factor: Optio
 ///
 /// For untitled notebooks, the current working directory is captured at startup
 /// for project file detection (pyproject.toml, pixi.toml, environment.yaml).
-pub fn run(
-    notebook_path: Option<PathBuf>,
-    runtime: Option<Runtime>,
-    #[allow(unused_variables)] webdriver_port: Option<u16>,
-) -> anyhow::Result<()> {
+pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::Result<()> {
     // Initialize logging - write to both stderr and log file (same pattern as runtimed)
     let log_path = runtimed::default_notebook_log_path();
     if let Some(parent) = log_path.parent() {
@@ -3806,7 +3800,8 @@ pub fn run(
         }
     }
 
-    let app = tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
@@ -3815,7 +3810,15 @@ pub fn run(
             tauri_plugin_window_state::Builder::default()
                 .with_denylist(&["main", "onboarding", "upgrade"])
                 .build(),
-        )
+        );
+
+    #[cfg(feature = "e2e-webdriver")]
+    {
+        log::info!("[e2e] Registering tauri-plugin-webdriver for E2E testing");
+        builder = builder.plugin(tauri_plugin_webdriver::init());
+    }
+
+    let app = builder
         .manage(window_registry.clone())
         .manage(reconnect_in_progress)
         .manage(restart_in_progress)
@@ -3942,22 +3945,15 @@ pub fn run(
                 );
             }
 
-            // Start WebDriver server for native E2E testing (if enabled)
-            #[cfg(feature = "webdriver-test")]
-            if let Some(port) = webdriver_port {
-                log::info!("[webdriver] Starting built-in WebDriver server on port {}", port);
-                webdriver::start_server(app.handle().clone(), port);
-
-                // Prevent the app from stealing focus during E2E tests.
-                // NSApplicationActivationPolicyAccessory keeps the window visible
-                // and functional but won't activate (steal focus) or show in the Dock.
-                #[cfg(target_os = "macos")]
-                unsafe {
-                    use cocoa::appkit::{NSApplication, NSApplicationActivationPolicy};
-                    use cocoa::base::nil;
-                    let ns_app = NSApplication::sharedApplication(nil);
-                    ns_app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory);
-                }
+            // Prevent the app from stealing focus during E2E tests.
+            // NSApplicationActivationPolicyAccessory keeps the window visible
+            // and functional but won't activate (steal focus) or show in the Dock.
+            #[cfg(all(feature = "e2e-webdriver", target_os = "macos"))]
+            unsafe {
+                use cocoa::appkit::{NSApplication, NSApplicationActivationPolicy};
+                use cocoa::base::nil;
+                let ns_app = NSApplication::sharedApplication(nil);
+                ns_app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory);
             }
 
             // Set up native menu bar

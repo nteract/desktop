@@ -19,7 +19,7 @@ if [ -f "$PROJECT_ROOT/e2e/.env" ]; then
   set -a; source "$PROJECT_ROOT/e2e/.env"; set +a
 fi
 
-PORT="${WEBDRIVER_PORT:-${CONDUCTOR_PORT:-${PORT:-4444}}}"
+PORT="${WEBDRIVER_PORT:-${CONDUCTOR_PORT:-${PORT:-4445}}}"
 
 # --- Pre-flight checks ---
 
@@ -138,7 +138,7 @@ case "${1:-help}" in
   build)
     # Rebuild with WebDriver support using cargo tauri build (embeds frontend)
     cd "$PROJECT_ROOT"
-    cargo tauri build --debug --no-bundle --features webdriver-test \
+    cargo tauri build --debug --no-bundle --features e2e-webdriver \
       --config '{"build":{"beforeBuildCommand":""}}'
     echo ""
     echo "Binary ready: $BINARY"
@@ -156,8 +156,8 @@ case "${1:-help}" in
     # Start the daemon and app with WebDriver server
     require_binary
     start_daemon
-    echo "Starting notebook with WebDriver on port $PORT..."
-    RUST_LOG="${RUST_LOG:-info}" "$BINARY" --webdriver-port "$PORT"
+    echo "Starting notebook (embedded WebDriver on port $PORT)..."
+    RUST_LOG="${RUST_LOG:-info}" "$BINARY"
     ;;
 
   stop)
@@ -263,7 +263,7 @@ case "${1:-help}" in
     sleep 1
     start_daemon
     echo "Starting notebook with fixture: $NOTEBOOK"
-    RUST_LOG="${RUST_LOG:-info}" "$BINARY" --webdriver-port "$PORT" "$NOTEBOOK" &
+    RUST_LOG="${RUST_LOG:-info}" "$BINARY" "$NOTEBOOK" &
     wait_for_server 30
     TEST_EXIT=0
     E2E_SPEC="$SPEC" WEBDRIVER_PORT="$PORT" pnpm exec wdio run e2e/wdio.conf.js || TEST_EXIT=$?
@@ -341,7 +341,7 @@ case "${1:-help}" in
 
     echo "Starting untitled notebook from $FIXTURE_DIR (app will detect pyproject.toml)"
     cd "$FIXTURE_DIR"
-    RUST_LOG="${RUST_LOG:-info}" "$BINARY" --webdriver-port "$PORT" &
+    RUST_LOG="${RUST_LOG:-info}" "$BINARY" &
     cd "$PROJECT_ROOT"
     wait_for_server 30
     TEST_EXIT=0

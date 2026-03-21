@@ -11,23 +11,12 @@ struct Args {
     /// Runtime for new notebooks (python, deno). Falls back to user settings if not specified.
     #[arg(long, short)]
     runtime: Option<Runtime>,
-
-    /// Start a built-in WebDriver server on this port for E2E testing.
-    /// Enables native E2E tests without Docker or tauri-driver.
-    #[cfg(feature = "webdriver-test")]
-    #[arg(long)]
-    webdriver_port: Option<u16>,
 }
 
 fn main() {
     let args = Args::parse();
 
-    #[cfg(feature = "webdriver-test")]
-    let webdriver_port = args.webdriver_port;
-    #[cfg(not(feature = "webdriver-test"))]
-    let webdriver_port: Option<u16> = None;
-
-    if let Err(e) = notebook::run(args.path.clone(), args.runtime, webdriver_port) {
+    if let Err(e) = notebook::run(args.path.clone(), args.runtime) {
         // Show native error dialog before exiting
         let title = "Cannot Open Notebook";
         let message = match &args.path {

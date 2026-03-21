@@ -61,8 +61,8 @@ WORKDIR /app/crates/notebook
 RUN cargo tauri build --ci --config '{"build":{"beforeBuildCommand":""}}'
 WORKDIR /app
 
-# Expose WebDriver ports
-EXPOSE 4444 4445
+# Expose WebDriver port (embedded in app via tauri-plugin-webdriver, default 4445)
+EXPOSE 4445
 
-# Default command starts Xvfb and tauri-driver
-CMD ["bash", "-c", "Xvfb :99 -screen 0 1920x1080x24 & sleep 2 && DISPLAY=:99 tauri-driver --port 4444"]
+# Default command starts Xvfb and the app (which serves WebDriver on port 4445)
+CMD ["bash", "-c", "Xvfb :99 -screen 0 1920x1080x24 & sleep 2 && DISPLAY=:99 ./target/release/notebook"]

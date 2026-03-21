@@ -654,14 +654,14 @@ fn cmd_build_e2e() {
             "--debug",
             "--no-bundle",
             "--features",
-            "webdriver-test",
+            "e2e-webdriver",
             "--config",
             r#"{"build":{"beforeBuildCommand":""}}"#,
         ],
     );
 
     println!("Build complete: ./target/debug/notebook");
-    println!("Run with: ./target/debug/notebook --webdriver-port 4444");
+    println!("The app embeds a WebDriver server on port 4445 (tauri-plugin-webdriver).");
 }
 
 fn cmd_wasm() {

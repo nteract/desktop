@@ -27,8 +27,8 @@ services:
       bash -c "
         Xvfb :99 -screen 0 1920x1080x24 &
         sleep 2 &&
-        DISPLAY=:99 tauri-driver --port 4444 &
-        sleep 3 &&
+        DISPLAY=:99 /app/target/release/notebook &
+        sleep 5 &&
         cd /app &&
         pnpm test:e2e
       "
@@ -36,7 +36,7 @@ services:
   # =============================================================================
   # E2E Shell: Interactive debugging
   # =============================================================================
-  # Starts container with Xvfb and tauri-driver running, drops you into a shell.
+  # Starts container with Xvfb and the app running, drops you into a shell.
   # Useful for debugging test failures interactively.
   #
   # Usage:
@@ -64,8 +64,8 @@ services:
       bash -c "
         Xvfb :99 -screen 0 1920x1080x24 &
         sleep 2 &&
-        DISPLAY=:99 tauri-driver --port 4444 &
-        sleep 3 &&
+        DISPLAY=:99 /app/target/release/notebook &
+        sleep 5 &&
         echo '=== E2E Dev Shell ===' &&
         echo 'Run tests: pnpm test:e2e' &&
         echo 'Run single: pnpm wdio run e2e/wdio.conf.js --spec e2e/specs/notebook-execution.spec.js' &&
