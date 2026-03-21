@@ -72,24 +72,30 @@ def _peer_label() -> str:
     return _client_name or "Agent"
 
 
-# Session state - single active session at a time
-_session: runtimed.AsyncSession | None = None
-_client: runtimed.NativeAsyncClient | None = None
+# Notebook state - single active notebook at a time
+_notebook: runtimed.Notebook | None = None
+_client: runtimed.Client | None = None
 
 
-def _get_client() -> runtimed.NativeAsyncClient:
-    """Get or create the async client."""
+def _get_client() -> runtimed.Client:
+    """Get or create the client."""
     global _client
     if _client is None:
-        _client = runtimed.NativeAsyncClient()
+        _client = runtimed.Client()
     return _client
 
 
-async def _get_session() -> runtimed.AsyncSession:
-    """Get the current session, raising error if not connected."""
-    if _session is None:
+async def _get_notebook() -> runtimed.Notebook:
+    """Get the current notebook, raising error if not connected."""
+    if _notebook is None:
         raise RuntimeError("No active notebook session. Call join_notebook first.")
-    return _session
+    return _notebook
+
+
+async def _get_session() -> runtimed.AsyncSession:
+    """Get the current session (escape hatch for advanced operations)."""
+    notebook = await _get_notebook()
+    return notebook.session
 
 
 # Regex to strip ANSI escape sequences (terminal colors, cursor movement, etc.)
@@ -599,16 +605,16 @@ async def list_active_notebooks() -> list[dict[str, Any]]:
     Use join_notebook(notebook_id) to connect to one.
     """
     client = _get_client()
-    rooms = await client.list_active_notebooks()
+    notebooks = await client.list_active_notebooks()
     return [
         {
-            "notebook_id": room["notebook_id"],
-            "active_peers": room["active_peers"],
-            "has_kernel": room["has_kernel"],
-            "kernel_type": room.get("kernel_type"),
-            "kernel_status": room.get("kernel_status"),
+            "notebook_id": info.notebook_id,
+            "active_peers": info.active_peers,
+            "has_runtime": info.has_runtime,
+            "runtime_type": info.runtime_type,
+            "status": info.status,
         }
-        for room in rooms
+        for info in notebooks
     ]
 
 
@@ -630,8 +636,8 @@ if not _no_show:
         """
         target = notebook_id
         if target is None:
-            if _session is not None:
-                target = _session.notebook_id
+            if _notebook is not None:
+                target = _notebook.notebook_id
             else:
                 raise ValueError(
                     "No notebook_id provided and no active session. "
@@ -639,9 +645,9 @@ if not _no_show:
                 )
 
         client = _get_client()
-        rooms = await client.list_active_notebooks()
-        room_ids = {room["notebook_id"] for room in rooms}
-        if target not in room_ids:
+        notebooks = await client.list_active_notebooks()
+        notebook_ids = {info.notebook_id for info in notebooks}
+        if target not in notebook_ids:
             raise ValueError(
                 f"Notebook '{target}' is not currently running. "
                 f"Use list_active_notebooks() to see active notebooks."
@@ -667,22 +673,21 @@ async def join_notebook(
     Use list_active_notebooks() to see available sessions. To open a file from disk,
     use open_notebook(path). To create a new notebook, use create_notebook().
     """
-    global _session
+    global _notebook
     if ctx:
         _sniff_client_name(ctx)
 
-    # Close existing session if any
-    if _session is not None:
+    # Close existing notebook if any
+    if _notebook is not None:
         with contextlib.suppress(Exception):
-            await _session.close()
+            await _notebook.close()
 
-    # Join existing session
+    # Join existing notebook
     client = _get_client()
-    _session = await client.join_notebook(notebook_id, peer_label=_peer_label())
-    session = _session
+    _notebook = await client.join_notebook(notebook_id, peer_label=_peer_label())
 
     return {
-        "notebook_id": session.notebook_id,
+        "notebook_id": _notebook.notebook_id,
         "connected": True,
     }
 
@@ -693,19 +698,18 @@ async def open_notebook(path: str, ctx: Context | None = None) -> dict[str, Any]
 
     Use create_notebook() for new notebooks.
     """
-    global _session
+    global _notebook
     if ctx:
         _sniff_client_name(ctx)
 
-    if _session is not None:
+    if _notebook is not None:
         with contextlib.suppress(Exception):
-            await _session.close()
+            await _notebook.close()
 
     client = _get_client()
-    _session = await client.open_notebook(path, peer_label=_peer_label())
-    session = _session
+    _notebook = await client.open_notebook(path, peer_label=_peer_label())
     return {
-        "notebook_id": session.notebook_id,
+        "notebook_id": _notebook.notebook_id,
         "path": path,
     }
 
@@ -738,32 +742,32 @@ async def create_notebook(
 
     Call save_notebook(path) to persist to disk.
     """
-    global _session
+    global _notebook
     if ctx:
         _sniff_client_name(ctx)
 
-    if _session is not None:
+    if _notebook is not None:
         with contextlib.suppress(Exception):
-            await _session.close()
+            await _notebook.close()
 
     client = _get_client()
-    _session = await client.create_notebook(
+    _notebook = await client.create_notebook(
         runtime=runtime, working_dir=working_dir, peer_label=_peer_label()
     )
-    session = _session
 
     if dependencies and runtime == "python":
         # Add dependencies to notebook metadata
+        session = _notebook.session
         for dep in dependencies:
             await session.add_uv_dependency(dep)
 
         # The daemon may have auto-launched a kernel (without these deps).
         # Restart to ensure the kernel picks up the inline deps.
         with contextlib.suppress(Exception):
-            await session.restart_kernel(wait_for_ready=True)
+            await _notebook.restart()
 
     return {
-        "notebook_id": session.notebook_id,
+        "notebook_id": _notebook.notebook_id,
         "runtime": runtime,
         "dependencies": dependencies or [],
     }
@@ -776,11 +780,14 @@ async def save_notebook(path: str | None = None) -> dict[str, Any]:
     The daemon automatically re-keys ephemeral (UUID-based) rooms to the saved
     file path, so no disconnect/reconnect is needed.
     """
-    session = await _get_session()
-    old_notebook_id = session.notebook_id
+    notebook = await _get_notebook()
+    old_notebook_id = notebook.notebook_id
 
     try:
-        saved_path = await session.save(path)
+        if path is not None:
+            saved_path = await notebook.save_as(path)
+        else:
+            saved_path = await notebook.save()
     except Exception as e:
         error_msg = str(e)
         is_write_error = "Read-only" in error_msg or "Failed to write" in error_msg
@@ -791,7 +798,7 @@ async def save_notebook(path: str | None = None) -> dict[str, Any]:
             ) from e
         raise
 
-    new_notebook_id = session.notebook_id
+    new_notebook_id = notebook.notebook_id
     result: dict[str, Any] = {"path": saved_path, "notebook_id": new_notebook_id}
     if old_notebook_id != new_notebook_id:
         result["previous_notebook_id"] = old_notebook_id
@@ -806,8 +813,8 @@ async def save_notebook(path: str | None = None) -> dict[str, Any]:
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def interrupt_kernel() -> dict[str, Any]:
     """Interrupt the currently executing cell."""
-    session = await _get_session()
-    await session.interrupt()
+    notebook = await _get_notebook()
+    await notebook.interrupt()
 
     return {"interrupted": True}
 
@@ -819,8 +826,8 @@ async def restart_kernel(ctx: Context | None = None) -> dict[str, Any]:
     Reports environment preparation progress (package downloads, installs)
     via MCP log notifications while waiting. Times out after 120s.
     """
-    session = await _get_session()
-    progress_messages: list[str] = await session.restart_kernel(wait_for_ready=True)
+    notebook = await _get_notebook()
+    progress_messages: list[str] = await notebook.restart()
 
     # Send progress messages as MCP log notifications (retroactively)
     if ctx and progress_messages:
@@ -830,7 +837,7 @@ async def restart_kernel(ctx: Context | None = None) -> dict[str, Any]:
 
     return {
         "restarted": True,
-        "env_source": await session.env_source(),
+        "env_source": notebook.runtime.kernel.env_source,
         "progress": progress_messages,
     }
 
@@ -1442,12 +1449,13 @@ async def run_all_cells() -> dict[str, Any]:
 @mcp.resource("notebook://cells")
 async def resource_cells() -> str:
     """Get all cells in the current notebook as a compact summary."""
-    if _session is None:
-        return "Error: No active session"
+    if _notebook is None:
+        return "Error: No active notebook"
 
     try:
-        cells = await _session.get_cells()
-        cell_status = await _get_cell_status_map(_session)
+        session = _notebook.session
+        cells = await session.get_cells()
+        cell_status = await _get_cell_status_map(session)
         lines = [
             _format_cell_summary(i, cell, status=cell_status.get(cell.id))
             for i, cell in enumerate(cells)
@@ -1460,15 +1468,16 @@ async def resource_cells() -> str:
 @mcp.resource("notebook://cell/{cell_id}")
 async def resource_cell(cell_id: str) -> str:
     """Get a specific cell's source and outputs."""
-    if _session is None:
-        return "Error: No active session"
+    if _notebook is None:
+        return "Error: No active notebook"
 
     try:
-        await _send_cell_focus(_session, cell_id)
-        cell = await _session.get_cell(cell_id=cell_id)
+        session = _notebook.session
+        await _send_cell_focus(session, cell_id)
+        cell = await session.get_cell(cell_id=cell_id)
         if cell is None:
             return f"Error: Cell {cell_id} not found"
-        status = await _get_single_cell_status(_session, cell_id)
+        status = await _get_single_cell_status(session, cell_id)
         return _format_cell(cell, status=status)
     except Exception as e:
         return f"Error: {e}"
@@ -1477,19 +1486,20 @@ async def resource_cell(cell_id: str) -> str:
 @mcp.resource("notebook://cells/by-index/{index}")
 async def resource_cell_by_index(index: int) -> str:
     """Get the cell at the specified position (0-based index)."""
-    if _session is None:
-        return "Error: No active session"
+    if _notebook is None:
+        return "Error: No active notebook"
 
     try:
-        cell_ids = await _session.get_cell_ids()
+        session = _notebook.session
+        cell_ids = await session.get_cell_ids()
         if index < 0 or index >= len(cell_ids):
             return f"Error: Index {index} out of range (notebook has {len(cell_ids)} cells)"
         cell_id = cell_ids[index]
-        await _send_cell_focus(_session, cell_id)
-        cell = await _session.get_cell(cell_id=cell_id)
+        await _send_cell_focus(session, cell_id)
+        cell = await session.get_cell(cell_id=cell_id)
         if cell is None:
             return f"Error: Cell at index {index} not found"
-        status = await _get_single_cell_status(_session, cell_id)
+        status = await _get_single_cell_status(session, cell_id)
         return _format_cell(cell, status=status)
     except Exception as e:
         return f"Error: {e}"
@@ -1498,12 +1508,13 @@ async def resource_cell_by_index(index: int) -> str:
 @mcp.resource("notebook://cell/{cell_id}/outputs")
 async def resource_cell_outputs(cell_id: str) -> str:
     """Get a specific cell's outputs only (text format)."""
-    if _session is None:
-        return "Error: No active session"
+    if _notebook is None:
+        return "Error: No active notebook"
 
     try:
-        await _send_cell_focus(_session, cell_id)
-        cell = await _session.get_cell(cell_id=cell_id)
+        session = _notebook.session
+        await _send_cell_focus(session, cell_id)
+        cell = await session.get_cell(cell_id=cell_id)
         if cell is None:
             return f"Error: Cell {cell_id} not found"
         output_text = _format_outputs_text(cell.outputs)
@@ -1516,8 +1527,8 @@ async def resource_cell_outputs(cell_id: str) -> str:
 
 @mcp.resource("notebook://status")
 async def resource_status() -> str:
-    """Get the current session and kernel status as JSON."""
-    if _session is None:
+    """Get the current notebook and runtime status as JSON."""
+    if _notebook is None:
         return json.dumps(
             {
                 "connected": False,
@@ -1527,12 +1538,13 @@ async def resource_status() -> str:
         )
 
     try:
+        session = _notebook.session
         return json.dumps(
             {
-                "notebook_id": _session.notebook_id,
-                "connected": await _session.is_connected(),
-                "kernel_started": await _session.kernel_started(),
-                "env_source": await _session.env_source(),
+                "notebook_id": _notebook.notebook_id,
+                "connected": await session.is_connected(),
+                "kernel_started": await session.kernel_started(),
+                "env_source": await session.env_source(),
             }
         )
     except Exception as e:
@@ -1544,8 +1556,19 @@ async def resource_rooms() -> str:
     """Get all active notebook rooms as JSON."""
     try:
         client = _get_client()
-        rooms = await client.list_active_notebooks()
-        return json.dumps([dict(room) for room in rooms])
+        notebooks = await client.list_active_notebooks()
+        return json.dumps(
+            [
+                {
+                    "notebook_id": info.notebook_id,
+                    "active_peers": info.active_peers,
+                    "has_runtime": info.has_runtime,
+                    "runtime_type": info.runtime_type,
+                    "status": info.status,
+                }
+                for info in notebooks
+            ]
+        )
     except Exception as e:
         return json.dumps({"error": str(e)})
 
