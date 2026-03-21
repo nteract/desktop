@@ -125,6 +125,58 @@ def start_kernel_with_retry(session, *, retries=5, delay=1.0, **kwargs):
     raise last_err
 
 
+def shutdown_and_start_kernel(session, *, env_source, retries=5, delay=1.0, **kwargs):
+    """Shut down any auto-launched kernel, then start with a specific env_source.
+
+    The daemon auto-launches a prewarmed kernel when create_notebook() is called.
+    This races with explicit start_kernel(env_source=...) — if the auto-launched
+    kernel wins, start_kernel returns KernelAlreadyRunning with the wrong
+    env_source (not an error, so start_kernel_with_retry won't catch it).
+
+    This helper:
+    1. Shuts down the auto-launched kernel (retrying to handle the race where
+       shutdown arrives before auto-launch acquires the kernel lock)
+    2. Starts the kernel with the desired env_source
+    3. Verifies env_source matches; if not, shuts down and retries
+    """
+    # Phase 1: Reliably shut down the auto-launched kernel.
+    # The auto-launch task runs in the background and may not have acquired
+    # the kernel lock yet when our first shutdown arrives (returning NoKernel).
+    # Retry a few times with short delays to catch the kernel after it starts.
+    for _ in range(3):
+        try:
+            session.shutdown_kernel()
+        except Exception:
+            pass
+        time.sleep(0.5)
+
+    # Phase 2: Start kernel and verify env_source matches.
+    last_err: Exception = Exception("max retries exceeded")
+    for attempt in range(retries):
+        try:
+            session.start_kernel(env_source=env_source, **kwargs)
+        except runtimed.RuntimedError as e:
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(delay)
+            continue
+
+        # start_kernel succeeded — check if we got the right env_source.
+        # KernelAlreadyRunning silently returns the existing kernel's env_source.
+        if session.env_source == env_source:
+            return
+
+        # Wrong env_source: a stale auto-launched kernel is still running.
+        # Shut it down and retry.
+        try:
+            session.shutdown_kernel()
+        except Exception:
+            pass
+        time.sleep(delay)
+
+    raise last_err
+
+
 async def async_start_kernel_with_retry(session, *, retries=5, delay=1.0, **kwargs):
     """Async retry wrapper for start_kernel (tolerates connection timeouts on CI)."""
     last_err: Exception = Exception("max retries exceeded")
@@ -902,11 +954,6 @@ class TestOutputHandling:
     execution stops when an error is raised.
     """
 
-    @pytest.mark.xfail(
-        reason="Sync race: create_cell + execute_cell in quick succession may execute "
-        "before source is synced to daemon. See #875 discussion.",
-        strict=False,
-    )
     def test_output_types_and_error_stops_execution(self, session):
         """Test stream, display, error outputs and verify error stops execution.
 
@@ -930,6 +977,11 @@ class TestOutputHandling:
         cell2 = session.create_cell("display('test')")
         cell3 = session.create_cell('raise ValueError("better see this")')
         cell4 = session.create_cell('print("this better not run")')
+
+        # Let CRDT sync propagate cell sources to the daemon before executing.
+        # Under broadcast pressure (kernel warmup, runtime state updates),
+        # confirm_sync's best-effort fallback can fire prematurely.
+        time.sleep(0.5)
 
         # Execute cell 2: display data
         result2 = session.execute_cell(cell2)
@@ -1148,8 +1200,8 @@ class TestKernelLaunchMetadata:
         """
         _set_python_kernelspec(session, uv_deps=["requests"])
 
-        # Retry: metadata may not have synced to the daemon's Automerge doc yet
-        start_kernel_with_retry(session, kernel_type="python", env_source="uv:inline")
+        # Shut down the auto-launched prewarmed kernel, then start with uv:inline
+        shutdown_and_start_kernel(session, kernel_type="python", env_source="uv:inline")
 
         assert session.env_source == "uv:inline"
 
@@ -1163,8 +1215,8 @@ class TestKernelLaunchMetadata:
         """UV inline env actually has a working Python with the declared deps."""
         _set_python_kernelspec(session, uv_deps=["requests"])
 
-        # Retry: metadata may not have synced to the daemon's Automerge doc yet
-        start_kernel_with_retry(session, kernel_type="python", env_source="uv:inline")
+        # Shut down the auto-launched prewarmed kernel, then start with uv:inline
+        shutdown_and_start_kernel(session, kernel_type="python", env_source="uv:inline")
 
         # sys.prefix should point to a venv, not the system Python
         result = session.run("import sys; print(sys.prefix)")
@@ -1265,24 +1317,12 @@ class TestCondaInlineDeps:
         client = runtimed.Client(socket_path=str(socket_path)) if socket_path else runtimed.Client()
         sess = client.create_notebook(runtime="python")
 
-        # Shutdown the auto-launched Python kernel so we can re-launch
-        # with conda:inline env_source (the daemon returns
-        # KernelAlreadyRunning if a kernel is already up).
-        try:
-            sess.shutdown_kernel()
-        except Exception:
-            pass
-
         # Set up conda inline deps metadata using typed API
         _set_python_kernelspec(sess, conda_deps=["filelock"])
 
-        # Extra delay: conda:inline metadata must propagate to the daemon's
-        # Automerge doc before start_kernel reads it. The retry helper covers
-        # transient failures but the class-scoped fixture only runs once.
-        time.sleep(2.0)
-
-        # Start kernel once for all tests in class (longer retry for conda env creation)
-        start_kernel_with_retry(
+        # Shut down the auto-launched prewarmed kernel and start with conda:inline.
+        # Uses longer retries because conda env creation can be slow.
+        shutdown_and_start_kernel(
             sess,
             kernel_type="python",
             env_source="conda:inline",
@@ -1352,13 +1392,21 @@ class TestProjectFileDetection:
 
     @pytest.fixture(scope="class")
     def isolated_fixtures(self, tmp_path_factory):
-        """Copy fixture directories to temp location outside the repo tree."""
+        """Copy fixture directories to temp location outside the repo tree.
+
+        Excludes uv.lock and .venv — these are local artifacts that may be
+        incompatible with the daemon's uv version. Let uv generate fresh ones.
+        """
         import shutil
 
         tmp = tmp_path_factory.mktemp("fixtures")
         for subdir in ["pyproject-project", "pixi-project", "conda-env-project"]:
             if (FIXTURES_DIR / subdir).exists():
-                shutil.copytree(FIXTURES_DIR / subdir, tmp / subdir)
+                shutil.copytree(
+                    FIXTURES_DIR / subdir,
+                    tmp / subdir,
+                    ignore=shutil.ignore_patterns(".venv", "uv.lock"),
+                )
         return tmp
 
     def test_pyproject_auto_detection(self, session, isolated_fixtures):
@@ -1605,6 +1653,13 @@ class TestDocumentFirstExecution:
         await async_start_kernel_with_retry(async_session)
 
         cell_id = await async_session.create_cell("result = 2 + 2; print(result)")
+
+        # Brief pause for CRDT sync: under broadcast pressure (kernel warmup,
+        # runtime state updates), confirm_sync's 5-round budget can be consumed
+        # by non-sync frames, causing the best-effort fallback to fire before
+        # the cell source propagates to the daemon.
+        await asyncio.sleep(0.5)
+
         result = await async_session.execute_cell(cell_id)
 
         assert result.success
@@ -1806,6 +1861,7 @@ class TestErrorHandling:
         assert warmup_result.success
 
         cell_id = await async_session.create_cell("if True print('broken')")
+        await asyncio.sleep(0.5)
         result = await async_session.execute_cell(cell_id)
 
         assert not result.success
@@ -1861,6 +1917,7 @@ class TestStreamExecute:
         await async_start_kernel_with_retry(async_session)
 
         cell_id = await async_session.create_cell("for i in range(3): print(f'line {i}')")
+        await asyncio.sleep(0.5)
 
         events = []
         async for event in await async_session.stream_execute(cell_id):
@@ -1883,6 +1940,7 @@ class TestStreamExecute:
         await async_start_kernel_with_retry(async_session)
 
         cell_id = await async_session.create_cell("print('first'); print('second')")
+        await asyncio.sleep(0.5)
 
         output_events = []
         async for event in await async_session.stream_execute(cell_id):
@@ -1898,25 +1956,28 @@ class TestStreamExecute:
 
     @pytest.mark.asyncio
     async def test_stream_execute_error_in_output(self, async_session):
-        """Execution errors are captured in cell outputs (document state).
+        """stream_execute() captures execution errors as output events.
 
-        We verify via the document (get_cell_outputs) rather than relying
-        on broadcast events, which can be missed under load. The document
-        is the source of truth.
+        Python errors (ValueError, etc.) are broadcast as Output events
+        with output_type="error" and ename/evalue/traceback fields.
+        Using stream_execute avoids the CRDT sync race that execute_cell
+        has — broadcasts arrive in real-time.
         """
         await async_start_kernel_with_retry(async_session)
 
         cell_id = await async_session.create_cell("raise ValueError('test error')")
+        await asyncio.sleep(0.5)
 
-        # Execute and let it complete
-        result = await async_session.execute_cell(cell_id)
+        output_events = []
+        async for event in await async_session.stream_execute(cell_id):
+            if event.event_type == "output":
+                output_events.append(event)
 
-        # The document should have the error output
-        assert not result.success, "raise ValueError should fail"
-        error_outputs = [o for o in result.outputs if o.output_type == "error"]
-        assert len(error_outputs) >= 1, "Expected error output in cell"
-        assert error_outputs[0].ename == "ValueError"
-        assert "test error" in (error_outputs[0].evalue or "")
+        # Should have an error output
+        error_outputs = [e for e in output_events if e.output and e.output.output_type == "error"]
+        assert len(error_outputs) >= 1, "Expected error output event from ValueError"
+        assert error_outputs[0].output.ename == "ValueError"
+        assert "test error" in (error_outputs[0].output.evalue or "")
 
 
 # ============================================================================
