@@ -61,7 +61,7 @@ client = runtimed.Client()
 # Discover active notebooks
 notebooks = await client.list_active_notebooks()
 for info in notebooks:
-    print(f"{info.name} [{info.kernel_status}] ({info.active_peers} peers)")
+    print(f"{info.name} [{info.status}] ({info.active_peers} peers)")
 
 # Open, create, or join notebooks
 notebook = await client.open("/path/to/notebook.ipynb")
@@ -98,12 +98,12 @@ async with await client.create() as notebook:
     print(notebook.runtime.kernel.status)
     print(notebook.peers)
 
-    # Kernel lifecycle
-    await notebook.start_kernel(kernel_type="python")
-    await notebook.start_kernel(kernel_type="deno")
-    await notebook.restart_kernel()
+    # Runtime lifecycle
+    await notebook.start(runtime="python")
+    await notebook.start(runtime="deno")
+    await notebook.restart()
     await notebook.interrupt()
-    await notebook.shutdown_kernel()
+    await notebook.shutdown()
 
     # Save
     path = await notebook.save()

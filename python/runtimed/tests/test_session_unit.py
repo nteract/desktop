@@ -131,14 +131,14 @@ class TestNotebookInfo:
         assert info.path is not None
         assert not info.is_ephemeral
         assert info.active_peers == 2
-        assert info.has_kernel is True
+        assert info.has_runtime is True
 
     def test_from_dict_ephemeral(self):
         info = runtimed.NotebookInfo._from_dict(
             {
                 "notebook_id": "abc123",
                 "active_peers": 0,
-                "has_kernel": False,
+                "has_runtime": False,
             }
         )
         assert info.name == "abc123"
@@ -148,7 +148,7 @@ class TestNotebookInfo:
     def test_repr(self):
         info = runtimed.NotebookInfo(
             notebook_id="/test/gremlins.ipynb",
-            kernel_status="idle",
+            status="idle",
             active_peers=3,
         )
         r = repr(info)
