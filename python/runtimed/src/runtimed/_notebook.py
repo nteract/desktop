@@ -49,8 +49,12 @@ class Notebook:
 
     # ── Async operations ─────────────────────────────────────────────
 
-    async def save(self, path: str | None = None) -> str:
-        """Save the notebook to disk. Returns the path saved to."""
+    async def save(self) -> str:
+        """Save the notebook to its current path. Returns the path saved to."""
+        return await self._session.save(None)
+
+    async def save_as(self, path: str) -> str:
+        """Save the notebook to a new path. Returns the path saved to."""
         return await self._session.save(path)
 
     async def start(
