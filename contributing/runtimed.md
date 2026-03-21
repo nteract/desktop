@@ -274,42 +274,29 @@ VIRTUAL_ENV=../../python/runtimed/.venv maturin develop
 ### Basic Usage
 
 ```python
+import asyncio
 import runtimed
 
-session = runtimed.Session()
-session.connect()
-session.start_kernel()
+async def main():
+    client = runtimed.Client()
+    async with await client.create() as notebook:
+        # Execute code
+        result = await notebook.run("print('hello')")
+        print(result.stdout)  # "hello\n"
 
-result = session.run("print('hello')")
-print(result.stdout)  # "hello\n"
-print(result.outputs)  # [Output(stream, stdout: "hello\n")]
+        # Work with cells
+        cell = await notebook.cells.create("x = 42")
+        await cell.run()
 
-# Rich output (e.g. display(Image(...)))
-result = session.run("from IPython.display import Image, display; display(Image(filename='photo.png'))")
-for output in result.outputs:
-    for mime, value in output.data.items():
-        print(mime, type(value))
-        # image/png  <class 'bytes'>       — raw binary, NOT base64
-        # text/llm+plain  <class 'str'>    — synthesized blob URL for LLM consumers
-        # text/plain <class 'str'>
+        # Sync reads from local CRDT
+        print(cell.source)      # "x = 42"
+        print(cell.cell_type)   # "code"
+        print(cell.outputs)     # resolved outputs
 
-# Get cell with outputs (includes historical outputs from other clients)
-cell = session.get_cell(result.cell_id)
-print(cell.outputs)  # [Output(stream, stdout: "hello\n")]
-
-# Per-cell accessors (O(1), no full-doc materialization)
-source = session.get_cell_source(result.cell_id)  # just the source string
-cell_type = session.get_cell_type(result.cell_id)  # "code" | "markdown" | "raw"
-cell_ids = session.get_cell_ids()                   # position-sorted IDs
-
-# Move a cell (updates fractional index position)
-new_position = session.move_cell("cell-id", after_cell_id="other-cell-id")
-
-# Cell objects include position
-print(cell.position)  # fractional index string e.g. "80", "C0"
+asyncio.run(main())
 ```
 
-**Prefer per-cell accessors** (`get_cell_source`, `get_cell_type`, `get_cell_ids`) over `get_cells()` when you only need one cell or one field. `get_cells()` materializes every cell's source, outputs, and metadata.
+See [docs/python-bindings.md](../docs/python-bindings.md) for the full API reference.
 
 ### Output.data Typing
 
@@ -342,8 +329,7 @@ The Python bindings respect the `RUNTIMED_SOCKET_PATH` environment variable. Thi
 **System daemon (default):**
 ```python
 # Connects to system daemon at ~/Library/Caches/runt/runtimed.sock
-session = runtimed.Session()
-session.connect()
+client = runtimed.Client()
 ```
 
 **Worktree daemon (for development):**
@@ -367,25 +353,7 @@ export RUNTIMED_SOCKET_PATH=$(cat ~/Library/Caches/runt/worktrees/*/daemon.json 
   jq -r 'select(.worktree_path == "'$(pwd)'") | .endpoint')
 
 # Now Python bindings will use the worktree daemon
-python -c "import runtimed; s = runtimed.Session(); s.connect(); print('Connected!')"
-```
-
-### Cross-Session Output Visibility
-
-The `Cell.outputs` field is populated from the Automerge document, enabling agents to see outputs from cells executed by other clients:
-
-```python
-# Session 1 executes code
-s1 = runtimed.Session(notebook_id="shared")
-s1.connect()
-s1.start_kernel()
-s1.run("x = 42")
-
-# Session 2 sees outputs without executing
-s2 = runtimed.Session(notebook_id="shared")
-s2.connect()
-cells = s2.get_cells()
-print(cells[0].outputs)  # Shows outputs from s1's execution
+python -c "import asyncio, runtimed; asyncio.run(runtimed.Client().ping())"
 ```
 
 ## Troubleshooting

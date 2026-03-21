@@ -12,27 +12,33 @@ pip install runtimed
 
 ## Quick Start
 
+> All examples use `await` — run them inside `asyncio.run(main())`, a Jupyter notebook, or a Python REPL with top-level await (e.g. `python -m asyncio`).
+
 ```python
+import asyncio
 import runtimed
 
-client = runtimed.Client()
-notebook = await client.create()
+async def main():
+    client = runtimed.Client()
+    notebook = await client.create()
 
-# Create and execute cells
-cell = await notebook.cells.create("print('hello')")
-result = await cell.run()
-print(result.stdout)  # "hello\n"
+    # Create and execute cells
+    cell = await notebook.cells.create("print('hello')")
+    result = await cell.run()
+    print(result.stdout)  # "hello\n"
 
-# Read cell properties (sync — local CRDT replica)
-print(cell.source)      # "print('hello')"
-print(cell.cell_type)   # "code"
+    # Read cell properties (sync — local CRDT replica)
+    print(cell.source)      # "print('hello')"
+    print(cell.cell_type)   # "code"
 
-# Edit cells
-await cell.set_source("x = 42")
-await cell.run()
+    # Edit cells
+    await cell.set_source("x = 42")
+    await cell.run()
 
-# Save the notebook
-path = await notebook.save("/tmp/my-notebook.ipynb")
+    # Save the notebook
+    path = await notebook.save("/tmp/my-notebook.ipynb")
+
+asyncio.run(main())
 ```
 
 ## Features
@@ -63,20 +69,21 @@ notebook = await client.join(notebook_id)
 ### Notebook
 
 ```python
-notebook = await client.create()
+async with await client.create() as notebook:
+    # Cells collection (sync reads, async writes)
+    print(len(notebook.cells))
+    for cell in notebook.cells:
+        print(f"{cell.id[:8]}: {cell.source[:40]}")
 
-# Cells collection (sync reads, async writes)
-print(len(notebook.cells))
-for cell in notebook.cells:
-    print(f"{cell.id[:8]}: {cell.source[:40]}")
+    # Runtime state (sync read from local doc)
+    print(notebook.runtime.kernel.status)
 
-# Runtime state (sync read from local doc)
-print(notebook.runtime.kernel.status)
-
-# Kernel lifecycle
-await notebook.restart_kernel()
-await notebook.interrupt()
-await notebook.save()
+    # Kernel lifecycle
+    await notebook.start_kernel(kernel_type="python")
+    await notebook.restart_kernel()
+    await notebook.interrupt()
+    await notebook.save()
+# Session closed automatically on exit
 ```
 
 ### Cells
