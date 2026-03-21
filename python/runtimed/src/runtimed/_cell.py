@@ -77,7 +77,7 @@ class CellHandle:
             return []
 
     @property
-    def is_source_hidden(self) -> bool:
+    def source_hidden(self) -> bool:
         """Whether cell source is hidden (sync read). Uses Rust Cell helpers."""
         try:
             return self._session.get_cell_sync(self._id).is_source_hidden
@@ -85,7 +85,7 @@ class CellHandle:
             return False
 
     @property
-    def is_outputs_hidden(self) -> bool:
+    def outputs_hidden(self) -> bool:
         """Whether cell outputs are hidden (sync read). Uses Rust Cell helpers."""
         try:
             return self._session.get_cell_sync(self._id).is_outputs_hidden

@@ -138,12 +138,13 @@ class TestNotebookInfo:
             {
                 "notebook_id": "abc123",
                 "active_peers": 0,
-                "has_runtime": False,
+                "has_kernel": False,
             }
         )
         assert info.name == "abc123"
         assert info.path is None
         assert info.is_ephemeral is True
+        assert info.has_runtime is False
 
     def test_repr(self):
         info = runtimed.NotebookInfo(

@@ -46,7 +46,7 @@ class NotebookInfo:
 
     async def join(self, client: Client, peer_label: str | None = None) -> Notebook:
         """Join this room and return a Notebook."""
-        return await client.join(self.notebook_id, peer_label=peer_label)
+        return await client.join_notebook(self.notebook_id, peer_label=peer_label)
 
     @classmethod
     def _from_dict(cls, d: dict[str, Any]) -> NotebookInfo:

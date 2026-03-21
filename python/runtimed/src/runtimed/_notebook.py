@@ -13,7 +13,8 @@ if TYPE_CHECKING:
 class Notebook:
     """A connected notebook with sync reads and async writes.
 
-    Created by ``Client.open()``, ``Client.create()``, or ``Client.join()``.
+    Created by ``Client.open_notebook()``, ``Client.create_notebook()``,
+    or ``Client.join_notebook()``.
 
     Properties read from the local Automerge replica (sync).
     Mutation methods are async (synced to peers).

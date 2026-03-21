@@ -298,7 +298,7 @@ import runtimed
 
 async def main():
     client = runtimed.Client()
-    async with await client.create() as notebook:
+    async with await client.create_notebook() as notebook:
         # Work with cells
         cell = await notebook.cells.create("print('hello')")
         result = await cell.run()
