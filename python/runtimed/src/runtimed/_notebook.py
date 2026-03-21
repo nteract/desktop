@@ -5,9 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from runtimed._cell import CellCollection
+from runtimed._presence import Presence
 
 if TYPE_CHECKING:
-    from runtimed.runtimed import AsyncSession
+    from runtimed.runtimed import AsyncSession, SyncEnvironmentResult
 
 
 class Notebook:
@@ -20,11 +21,12 @@ class Notebook:
     Mutation methods are async (synced to peers).
     """
 
-    __slots__ = ("_session", "_cells")
+    __slots__ = ("_session", "_cells", "_presence")
 
     def __init__(self, async_session: AsyncSession) -> None:
         self._session = async_session
         self._cells: CellCollection | None = None
+        self._presence: Presence | None = None
 
     @property
     def notebook_id(self) -> str:
@@ -36,6 +38,13 @@ class Notebook:
         if self._cells is None:
             self._cells = CellCollection(self._session)
         return self._cells
+
+    @property
+    def presence(self) -> Presence:
+        """Presence operations (cursor, selection, focus)."""
+        if self._presence is None:
+            self._presence = Presence(self._session)
+        return self._presence
 
     @property
     def runtime(self):
@@ -84,9 +93,60 @@ class Notebook:
         """Interrupt the currently executing cell."""
         await self._session.interrupt()
 
+    async def run_all(self) -> int:
+        """Queue all code cells for execution. Returns number of cells queued."""
+        return await self._session.run_all_cells()
+
     async def close(self) -> None:
         """Close the notebook session."""
         await self._session.close()
+
+    # ── Dependency management ────────────────────────────────────────
+
+    async def _package_manager(self) -> str:
+        """Auto-detect the package manager (uv or conda)."""
+        env = await self._session.env_source()
+        if env:
+            return "conda" if env.startswith("conda:") else "uv"
+        env_type = await self._session.get_metadata_env_type()
+        if env_type:
+            return env_type
+        settings = self._session.get_settings()
+        if settings:
+            return settings.get("default_python_env", "uv")
+        return "uv"
+
+    async def add_dependency(self, package: str) -> list[str]:
+        """Add a package dependency. Returns updated dependency list."""
+        pm = await self._package_manager()
+        if pm == "conda":
+            await self._session.add_conda_dependency(package)
+            return await self._session.get_conda_dependencies()
+        else:
+            await self._session.add_uv_dependency(package)
+            return await self._session.get_uv_dependencies()
+
+    async def remove_dependency(self, package: str) -> list[str]:
+        """Remove a package dependency. Returns updated dependency list."""
+        pm = await self._package_manager()
+        if pm == "conda":
+            await self._session.remove_conda_dependency(package)
+            return await self._session.get_conda_dependencies()
+        else:
+            await self._session.remove_uv_dependency(package)
+            return await self._session.get_uv_dependencies()
+
+    async def get_dependencies(self) -> list[str]:
+        """Get current package dependencies."""
+        pm = await self._package_manager()
+        if pm == "conda":
+            return await self._session.get_conda_dependencies()
+        else:
+            return await self._session.get_uv_dependencies()
+
+    async def sync_environment(self) -> SyncEnvironmentResult:
+        """Hot-install dependencies without restarting."""
+        return await self._session.sync_environment()
 
     @property
     def session(self) -> AsyncSession:
