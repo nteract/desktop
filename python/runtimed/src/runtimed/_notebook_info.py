@@ -33,8 +33,9 @@ class NotebookInfo:
     @property
     def path(self) -> Path | None:
         """Filesystem path, or None for ephemeral notebooks."""
-        if "/" in self.notebook_id:
-            return Path(self.notebook_id)
+        p = Path(self.notebook_id)
+        if p.is_absolute():
+            return p
         return None
 
     @property
