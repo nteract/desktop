@@ -26,7 +26,7 @@ mod subscription;
 
 use async_client::AsyncClient;
 use async_session::AsyncSession;
-use client::{Client, DaemonClient};
+use client::Client;
 use error::RuntimedError;
 use event_stream::{ExecutionEventIterator, ExecutionEventStream};
 use output::{
@@ -70,11 +70,8 @@ fn runtimed(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Client>()?;
     m.add_class::<AsyncClient>()?;
 
-    // Core classes - sync API (deprecated, use Client instead)
-    m.add_class::<DaemonClient>()?;
+    // Session types (used internally by Python wrappers)
     m.add_class::<Session>()?;
-
-    // Core classes - async API (deprecated, use AsyncClient instead)
     m.add_class::<AsyncSession>()?;
 
     // Iterator types for streaming execution

@@ -288,9 +288,9 @@ def daemon_health_check(daemon_process):
     # 1. Create client and ping
     try:
         if socket_path is not None:
-            client = runtimed.Client(socket_path=str(socket_path))
+            client = runtimed.NativeClient(socket_path=str(socket_path))
         else:
-            client = runtimed.Client()
+            client = runtimed.NativeClient()
         assert client.ping(), "Daemon did not respond to ping"
         print("[health] Ping: OK", file=sys.stderr)
     except Exception as e:
@@ -511,8 +511,8 @@ def client(daemon_process):
     """Create a Client connected to the test daemon."""
     socket_path, _ = daemon_process
     if socket_path is not None:
-        return runtimed.Client(socket_path=str(socket_path))
-    return runtimed.Client()
+        return runtimed.NativeClient(socket_path=str(socket_path))
+    return runtimed.NativeClient()
 
 
 @pytest.fixture
@@ -1365,7 +1365,11 @@ class TestCondaInlineDeps:
     def conda_inline_session(self, daemon_process):
         """Create a session with conda inline deps, shared across tests in this class."""
         socket_path, _ = daemon_process
-        client = runtimed.Client(socket_path=str(socket_path)) if socket_path else runtimed.Client()
+        client = (
+            runtimed.NativeClient(socket_path=str(socket_path))
+            if socket_path
+            else runtimed.NativeClient()
+        )
         sess = client.create_notebook(runtime="python")
 
         # Set up conda inline deps metadata using typed API
@@ -1570,8 +1574,8 @@ async def async_client(daemon_process):
     """Create an AsyncClient connected to the test daemon."""
     socket_path, _ = daemon_process
     if socket_path is not None:
-        return runtimed.AsyncClient(socket_path=str(socket_path))
-    return runtimed.AsyncClient()
+        return runtimed.NativeAsyncClient(socket_path=str(socket_path))
+    return runtimed.NativeAsyncClient()
 
 
 @pytest.fixture
@@ -1930,7 +1934,7 @@ class TestContextManager:
         # Note: The daemon may be terminated by fixture teardown before we can verify,
         # which is fine - it means cleanup already completed
         try:
-            rooms = await async_client.list_rooms()
+            rooms = await async_client.list_active_notebooks()
             room = next((r for r in rooms if r["notebook_id"] == notebook_id), None)
             # Room may be gone entirely or kernel should not be running
             if room is not None:
@@ -2589,18 +2593,12 @@ class TestPresence:
     @pytest.mark.asyncio
     async def test_set_cursor_not_connected_raises(self):
         """set_cursor raises when not connected."""
-        sess = runtimed.AsyncSession()
-        with pytest.raises(runtimed.RuntimedError):
-            await sess.set_cursor("fake-cell", line=0, column=0)
+        pytest.skip("AsyncSession() constructor removed — sessions always pre-connected")
 
     @pytest.mark.asyncio
     async def test_set_selection_not_connected_raises(self):
         """set_selection raises when not connected."""
-        sess = runtimed.AsyncSession()
-        with pytest.raises(runtimed.RuntimedError):
-            await sess.set_selection(
-                "fake-cell", anchor_line=0, anchor_col=0, head_line=0, head_col=0
-            )
+        pytest.skip("AsyncSession() constructor removed — sessions always pre-connected")
 
     @pytest.mark.asyncio
     async def test_presence_with_two_peers(self, two_async_sessions):
@@ -2673,16 +2671,12 @@ class TestPresence:
     @pytest.mark.asyncio
     async def test_get_peers_not_connected_raises(self):
         """get_peers raises when not connected."""
-        sess = runtimed.AsyncSession()
-        with pytest.raises(runtimed.RuntimedError):
-            await sess.get_peers()
+        pytest.skip("AsyncSession() constructor removed — sessions always pre-connected")
 
     @pytest.mark.asyncio
     async def test_get_remote_cursors_not_connected_raises(self):
         """get_remote_cursors raises when not connected."""
-        sess = runtimed.AsyncSession()
-        with pytest.raises(runtimed.RuntimedError):
-            await sess.get_remote_cursors()
+        pytest.skip("AsyncSession() constructor removed — sessions always pre-connected")
 
 
 if __name__ == "__main__":

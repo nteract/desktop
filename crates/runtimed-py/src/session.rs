@@ -11,7 +11,6 @@ use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
-use crate::daemon_paths::get_socket_path;
 use crate::error::to_py_err;
 use crate::event_stream::ExecutionEventIterator;
 use crate::output::{Cell, ExecutionResult, NotebookConnectionInfo, SyncEnvironmentResult};
@@ -42,16 +41,8 @@ pub struct Session {
     peer_label: Option<String>,
 }
 
-use crate::error::emit_deprecation_warning;
-
 impl Session {
-    /// Open a notebook without deprecation warning (used by Client).
-    pub(crate) fn open_notebook_inner(path: &str, peer_label: Option<String>) -> PyResult<Self> {
-        let socket_path = get_socket_path();
-        Self::open_notebook_with_socket(socket_path, path, peer_label)
-    }
-
-    /// Open a notebook with a specific socket path (used by Client).
+    /// Open a notebook with a specific socket path (used by NativeClient).
     pub(crate) fn open_notebook_with_socket(
         socket_path: PathBuf,
         path: &str,
@@ -169,40 +160,6 @@ impl Session {
 
 #[pymethods]
 impl Session {
-    /// Create a new session.
-    ///
-    /// Args:
-    ///     notebook_id: Optional unique identifier for this session.
-    ///                  If not provided, a random UUID is generated.
-    ///                  Multiple Session objects with the same notebook_id
-    ///                  will share the same kernel.
-    #[new]
-    #[pyo3(signature = (notebook_id=None, peer_label=None))]
-    fn new(
-        py: Python<'_>,
-        notebook_id: Option<String>,
-        peer_label: Option<String>,
-    ) -> PyResult<Self> {
-        emit_deprecation_warning(py, "Session() is deprecated. Use Client().open_notebook() or Client().create_notebook() instead.")?;
-        let runtime = Runtime::new().map_err(to_py_err)?;
-        let notebook_id =
-            notebook_id.unwrap_or_else(|| format!("agent-session-{}", uuid::Uuid::new_v4()));
-
-        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
-
-        let mut state = SessionState::new();
-        state.peer_label = peer_label.clone();
-        state.actor_label = actor_label.clone();
-
-        Ok(Self {
-            runtime,
-            state: Arc::new(Mutex::new(state)),
-            notebook_id,
-            notebook_id_override: Arc::new(std::sync::Mutex::new(None)),
-            peer_label,
-        })
-    }
-
     /// The notebook ID for this session.
     /// After saving an ephemeral notebook, this reflects the new file-path ID.
     #[getter]
@@ -252,53 +209,8 @@ impl Session {
     }
 
     // =========================================================================
-    // Connection (static constructors and connect)
+    // Connection
     // =========================================================================
-
-    /// Open an existing notebook file.
-    ///
-    /// Returns a new Session connected to the notebook at the given path.
-    ///
-    /// Args:
-    ///     path: Path to the .ipynb file.
-    ///
-    /// Raises:
-    ///     RuntimedError: If the file cannot be opened or parsed.
-    #[staticmethod]
-    #[pyo3(signature = (path, peer_label=None))]
-    fn open_notebook(py: Python<'_>, path: &str, peer_label: Option<String>) -> PyResult<Self> {
-        emit_deprecation_warning(
-            py,
-            "Session.open_notebook() is deprecated. Use Client().open_notebook() instead.",
-        )?;
-        Self::open_notebook_inner(path, peer_label)
-    }
-
-    /// Create a new notebook.
-    ///
-    /// Returns a new Session connected to a fresh notebook.
-    ///
-    /// Args:
-    ///     runtime: Kernel runtime type (default: "python").
-    ///     working_dir: Optional working directory for the notebook.
-    ///
-    /// Returns:
-    ///     A new Session connected to the created notebook.
-    #[staticmethod]
-    #[pyo3(signature = (runtime="python", working_dir=None, peer_label=None))]
-    fn create_notebook(
-        py: Python<'_>,
-        runtime: &str,
-        working_dir: Option<&str>,
-        peer_label: Option<String>,
-    ) -> PyResult<Self> {
-        emit_deprecation_warning(
-            py,
-            "Session.create_notebook() is deprecated. Use Client().create_notebook() instead.",
-        )?;
-        let socket_path = get_socket_path();
-        Self::create_notebook_with_socket(socket_path, runtime, working_dir, peer_label)
-    }
 
     /// Connect to the daemon.
     fn connect(&self) -> PyResult<()> {
