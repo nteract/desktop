@@ -797,7 +797,7 @@ impl Session {
     /// Queue a cell for execution without waiting for the result.
     fn queue_cell(&self, cell_id: &str) -> PyResult<()> {
         self.runtime
-            .block_on(session_core::queue_cell(&self.state, cell_id))
+            .block_on(session_core::queue_cell(&self.state, &self.notebook_id, cell_id))
     }
 
     /// Stream execution events for a cell as an iterator.
