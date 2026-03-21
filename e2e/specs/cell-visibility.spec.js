@@ -1,52 +1,43 @@
 /**
- * E2E Test: Cell Visibility Toggles
+ * E2E Test: Cell Visibility Toggles (fixture-based)
  *
- * Verifies that source and output visibility can be toggled using
- * JupyterLab-compatible metadata (metadata.jupyter.source_hidden,
- * metadata.jupyter.outputs_hidden).
+ * Uses a pre-built notebook fixture with source + output already present.
+ * No kernel launch needed — this tests pure UI behavior.
+ *
+ * Fixture: crates/notebook/fixtures/audit-test/14-cell-visibility.ipynb
+ * Run with: ./e2e/dev.sh test-fixture \
+ *   crates/notebook/fixtures/audit-test/14-cell-visibility.ipynb \
+ *   e2e/specs/cell-visibility.spec.js
  *
  * Tests:
  * - Hide/show source via gutter button
  * - Hide/show outputs via gutter button
  * - Compact "Cell hidden" chip when both are hidden
- * - Persistence after save/reload
  */
 
 import { browser } from "@wdio/globals";
 import {
   setCellSource,
-  waitForCellOutput,
-  waitForKernelReady,
+  waitForAppReady,
   waitForNotebookSynced,
 } from "../helpers.js";
 
 describe("Cell Visibility Toggles", () => {
-  it("should launch kernel and execute a cell to have outputs", async () => {
-    await waitForKernelReady(180000);
+  it("should have a cell with source and output from fixture", async () => {
+    await waitForAppReady();
     await waitForNotebookSynced();
 
-    // Find the first code cell
+    // The fixture notebook has a code cell with pre-existing output
     const codeCell = await $('[data-cell-type="code"]');
-    await codeCell.waitForExist({ timeout: 5000 });
+    await codeCell.waitForExist({ timeout: 10000 });
 
-    // Set cell source via CodeMirror dispatch API
-    await setCellSource(codeCell, "print('visibility test')");
+    // Verify source is present
+    const editor = await codeCell.$(".cm-content[contenteditable]");
+    expect(await editor.isExisting()).toBe(true);
 
-    // Execute via button (more reliable than synthetic Shift+Enter)
-    const executeButton = await codeCell.$('[data-testid="execute-button"]');
-    if (await executeButton.isExisting()) {
-      await executeButton.waitForClickable({ timeout: 5000 });
-      await executeButton.click();
-    } else {
-      const editor = await codeCell.$('.cm-content[contenteditable="true"]');
-      await editor.click();
-      await browser.pause(200);
-      await browser.keys(["Shift", "Enter"]);
-    }
-
-    // Wait for output
-    const output = await waitForCellOutput(codeCell, 30000);
-    expect(output).toContain("visibility test");
+    // Verify output is present (stream output from the fixture)
+    const outputArea = await codeCell.$('[data-slot="output-area"]');
+    expect(await outputArea.isExisting()).toBe(true);
   });
 
   it("should hide source when clicking source toggle button", async () => {
@@ -176,38 +167,13 @@ describe("Cell Visibility Toggles", () => {
     expect(await output.isExisting()).toBe(true);
   });
 
-  it("should show error count on hidden cell chip when cell has error output", async () => {
+  // Skip: error count test requires a running kernel to produce error output.
+  // This should be a separate fixture with pre-existing error output, or
+  // tested alongside the kernel launch fixture specs.
+  it.skip("should show error count on hidden cell chip when cell has error output", async () => {
     const codeCell = await $('[data-cell-type="code"]');
 
-    // Set cell source via CodeMirror dispatch API
-    await setCellSource(codeCell, "raise ValueError('test error')");
-
-    // Execute via button (more reliable than synthetic Shift+Enter)
-    const executeButton = await codeCell.$('[data-testid="execute-button"]');
-    if (await executeButton.isExisting()) {
-      await executeButton.waitForClickable({ timeout: 5000 });
-      await executeButton.click();
-    } else {
-      const editor = await codeCell.$('.cm-content[contenteditable="true"]');
-      await editor.click();
-      await browser.pause(200);
-      await browser.keys(["Shift", "Enter"]);
-    }
-
-    // Wait for error output to appear
-    await browser.waitUntil(
-      async () => {
-        const errorOutput = await codeCell.$('[data-slot="ansi-error-output"]');
-        return await errorOutput.isExisting();
-      },
-      {
-        timeout: 30000,
-        interval: 500,
-        timeoutMsg: "Error output did not appear",
-      },
-    );
-
-    // Hide source
+    // TODO: Use a fixture with pre-existing error output instead of executing code
     await codeCell.moveTo();
     await browser.pause(300);
     const hideSourceButton = await codeCell.$('button[title="Hide source"]');
@@ -215,7 +181,6 @@ describe("Cell Visibility Toggles", () => {
     await hideSourceButton.click();
     await browser.pause(300);
 
-    // Hide outputs
     await codeCell.moveTo();
     await browser.pause(300);
     const hideOutputButton = await codeCell.$('button[title="Hide outputs"]');

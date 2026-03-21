@@ -487,13 +487,13 @@ jobs:
           TARGET=$(ls target/release/binaries/ | grep runtimed | head -1)
           RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
             ./target/release/binaries/$TARGET --dev run \
-            --uv-pool-size 2 --conda-pool-size 0 &
+            --uv-pool-size 3 --conda-pool-size 0 &
           echo "RUNTIMED_PID=$!" >> $GITHUB_ENV
 
           # Wait for daemon to initialize and pool to warm up
           # CI runners start cold — pool warming takes longer than local dev
           echo "Waiting for daemon to be ready..."
-          sleep 60
+          sleep 90
 
       - name: Run E2E smoke test
         timeout-minutes: 5

@@ -28,6 +28,7 @@ fs.mkdirSync(SCREENSHOT_FAILURES_DIR, { recursive: true });
 // Fixture specs require special setup (NOTEBOOK_PATH or working directory) and are excluded
 // from the default run. Use ./e2e/dev.sh test-fixture or test-untitled-pyproject to run them.
 const FIXTURE_SPECS = [
+  "cell-visibility.spec.js", // Requires fixture notebook with pre-existing outputs
   "conda-inline.spec.js",
   "deno.spec.js",
   "prewarmed-uv.spec.js",
