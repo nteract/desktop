@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from runtimed.runtimed import AsyncSession
@@ -61,8 +61,11 @@ class Presence:
 
     # ── Read operations ──────────────────────────────────────────────
 
-    async def get_remote_cursors(self) -> list[dict[str, Any]]:
-        """Get cursor positions from other connected peers."""
+    async def get_remote_cursors(self) -> list[tuple[str, str, str, int, int]]:
+        """Get cursor positions from other connected peers.
+
+        Returns a list of (peer_id, peer_label, cell_id, line, column) tuples.
+        """
         return await self._session.get_remote_cursors()
 
     def __repr__(self) -> str:
