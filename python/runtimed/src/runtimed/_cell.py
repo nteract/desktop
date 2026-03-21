@@ -37,8 +37,11 @@ class CellHandle:
     @property
     def outputs(self) -> list[Output]:
         """Resolved outputs (sync — may do disk I/O for blob resolution)."""
-        cell = self._session.get_cell_sync(self._id)
-        return cell.outputs
+        try:
+            cell = self._session.get_cell_sync(self._id)
+            return cell.outputs
+        except Exception:
+            return []
 
     @property
     def execution_count(self) -> int | None:
@@ -54,8 +57,38 @@ class CellHandle:
     @property
     def metadata(self) -> Any:
         """Parsed metadata dict (sync read)."""
-        cell = self._session.get_cell_sync(self._id)
-        return cell.metadata
+        try:
+            cell = self._session.get_cell_sync(self._id)
+            return cell.metadata
+        except Exception:
+            return {}
+
+    @property
+    def tags(self) -> list[str]:
+        """Cell tags (sync read)."""
+        try:
+            cell = self._session.get_cell_sync(self._id)
+            return cell.tags
+        except Exception:
+            return []
+
+    @property
+    def is_source_hidden(self) -> bool:
+        """Whether cell source is hidden (sync read)."""
+        try:
+            cell = self._session.get_cell_sync(self._id)
+            return cell.is_source_hidden
+        except Exception:
+            return False
+
+    @property
+    def is_outputs_hidden(self) -> bool:
+        """Whether cell outputs are hidden (sync read)."""
+        try:
+            cell = self._session.get_cell_sync(self._id)
+            return cell.is_outputs_hidden
+        except Exception:
+            return False
 
     def snapshot(self) -> Cell:
         """Return the full Cell object (sync — includes resolved outputs)."""
