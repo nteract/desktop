@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from runtimed.runtimed import RuntimedError as _RuntimedError
 
 if TYPE_CHECKING:
-    from runtimed.runtimed import AsyncSession, Cell, ExecutionResult, Output
+    from runtimed.runtimed import (
+        AsyncSession,
+        Cell,
+        ExecutionEvent,
+        ExecutionResult,
+        Output,
+    )
 
 
 class CellHandle:
@@ -141,6 +148,38 @@ class CellHandle:
         """Clear this cell's outputs."""
         await self._session.clear_outputs(self._id)
         return self
+
+    async def set_tags(self, tags: list[str]) -> CellHandle:
+        """Set the cell's tags."""
+        await self._session.set_cell_tags(self._id, tags)
+        return self
+
+    async def set_source_hidden(self, hidden: bool) -> CellHandle:
+        """Show or hide the cell's source."""
+        await self._session.set_cell_source_hidden(self._id, hidden)
+        return self
+
+    async def set_outputs_hidden(self, hidden: bool) -> CellHandle:
+        """Show or hide the cell's outputs."""
+        await self._session.set_cell_outputs_hidden(self._id, hidden)
+        return self
+
+    async def stream(
+        self,
+        timeout_secs: float = 60.0,
+        signal_only: bool = False,
+    ) -> AsyncIterator[ExecutionEvent]:
+        """Execute and stream events as an async iterator.
+
+        Yields ``ExecutionEvent`` objects until execution completes.
+        Use ``signal_only=True`` to receive only start/done signals
+        without output payloads.
+        """
+        return await self._session.stream_execute(
+            self._id,
+            timeout_secs,
+            signal_only,
+        )
 
     def __repr__(self) -> str:
         return f"Cell({self._id[:8]}, {self.cell_type})"

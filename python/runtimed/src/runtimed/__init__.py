@@ -8,6 +8,7 @@ from runtimed._cell import CellCollection, CellHandle
 from runtimed._client import Client
 from runtimed._notebook import Notebook
 from runtimed._notebook_info import NotebookInfo
+from runtimed._presence import Presence
 
 # Data types (from native bindings)
 # Runtime state types (renamed from Py* to clean names)
@@ -43,6 +44,7 @@ __all__ = [
     "NotebookInfo",
     "CellHandle",
     "CellCollection",
+    "Presence",
     # Data types
     "Cell",
     "CompletionItem",

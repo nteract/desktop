@@ -5,6 +5,7 @@ from runtimed._cell import CellHandle as CellHandle
 from runtimed._client import Client as Client
 from runtimed._notebook import Notebook as Notebook
 from runtimed._notebook_info import NotebookInfo as NotebookInfo
+from runtimed._presence import Presence as Presence
 from runtimed.runtimed import AsyncSession as AsyncSession
 from runtimed.runtimed import Cell as Cell
 from runtimed.runtimed import CompletionItem as CompletionItem

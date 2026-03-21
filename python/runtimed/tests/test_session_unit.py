@@ -54,6 +54,7 @@ class TestModuleExports:
             "NotebookInfo",
             "CellHandle",
             "CellCollection",
+            "Presence",
             # Data types
             "Cell",
             "CompletionItem",
