@@ -14,7 +14,7 @@
 
 import { browser } from "@wdio/globals";
 import {
-  typeSlowly,
+  setCellSource,
   waitForCellOutput,
   waitForKernelReady,
   waitForNotebookSynced,
@@ -29,20 +29,20 @@ describe("Cell Visibility Toggles", () => {
     const codeCell = await $('[data-cell-type="code"]');
     await codeCell.waitForExist({ timeout: 5000 });
 
-    // Focus the editor
-    const editor = await codeCell.$('.cm-content[contenteditable="true"]');
-    await editor.waitForExist({ timeout: 5000 });
-    await editor.click();
-    await browser.pause(200);
+    // Set cell source via CodeMirror dispatch API
+    await setCellSource(codeCell, "print('visibility test')");
 
-    // Select all and type a simple print
-    const modKey = process.platform === "darwin" ? "Meta" : "Control";
-    await browser.keys([modKey, "a"]);
-    await browser.pause(100);
-    await typeSlowly("print('visibility test')");
-
-    // Execute with Shift+Enter
-    await browser.keys(["Shift", "Enter"]);
+    // Execute via button (more reliable than synthetic Shift+Enter)
+    const executeButton = await codeCell.$('[data-testid="execute-button"]');
+    if (await executeButton.isExisting()) {
+      await executeButton.waitForClickable({ timeout: 5000 });
+      await executeButton.click();
+    } else {
+      const editor = await codeCell.$('.cm-content[contenteditable="true"]');
+      await editor.click();
+      await browser.pause(200);
+      await browser.keys(["Shift", "Enter"]);
+    }
 
     // Wait for output
     const output = await waitForCellOutput(codeCell, 30000);
@@ -179,17 +179,20 @@ describe("Cell Visibility Toggles", () => {
   it("should show error count on hidden cell chip when cell has error output", async () => {
     const codeCell = await $('[data-cell-type="code"]');
 
-    // Focus editor and type code that raises an error
-    const editor = await codeCell.$('.cm-content[contenteditable="true"]');
-    await editor.click();
-    await browser.pause(200);
-    const modKey = process.platform === "darwin" ? "Meta" : "Control";
-    await browser.keys([modKey, "a"]);
-    await browser.pause(100);
-    await typeSlowly("raise ValueError('test error')");
+    // Set cell source via CodeMirror dispatch API
+    await setCellSource(codeCell, "raise ValueError('test error')");
 
-    // Execute with Shift+Enter
-    await browser.keys(["Shift", "Enter"]);
+    // Execute via button (more reliable than synthetic Shift+Enter)
+    const executeButton = await codeCell.$('[data-testid="execute-button"]');
+    if (await executeButton.isExisting()) {
+      await executeButton.waitForClickable({ timeout: 5000 });
+      await executeButton.click();
+    } else {
+      const editor = await codeCell.$('.cm-content[contenteditable="true"]');
+      await editor.click();
+      await browser.pause(200);
+      await browser.keys(["Shift", "Enter"]);
+    }
 
     // Wait for error output to appear
     await browser.waitUntil(
