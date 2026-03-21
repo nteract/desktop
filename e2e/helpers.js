@@ -311,6 +311,11 @@ export async function waitForKernelStatus(status, timeout = 30000) {
 /**
  * Type text character by character with delay.
  * Use this when typing into CodeMirror editors where bulk input may drop keys.
+ *
+ * NOTE: This uses browser.keys() which dispatches JS keyboard events.
+ * Some WebDriver implementations (e.g. tauri-plugin-webdriver) dispatch
+ * synthetic events that CodeMirror ignores. Prefer setCellSource() for
+ * reliable text insertion into CodeMirror editors.
  */
 export async function typeSlowly(text, delay = 30) {
   for (const char of text) {
@@ -323,6 +328,46 @@ export async function typeSlowly(text, delay = 30) {
     }
     await browser.pause(delay);
   }
+}
+
+/**
+ * Set the source of a code cell via CodeMirror's dispatch API.
+ *
+ * This bypasses WebDriver sendKeys/keyboard events entirely, using
+ * browser.execute() to call CodeMirror's transaction API directly.
+ * This is the reliable way to set cell content — synthetic keyboard
+ * events from JS-based WebDriver implementations don't flow through
+ * CodeMirror's input pipeline.
+ *
+ * @param {WebdriverIO.Element} codeCell - The cell element ([data-cell-type="code"])
+ * @param {string} source - The code to set
+ */
+export async function setCellSource(codeCell, source) {
+  await browser.execute(
+    (cellEl, text) => {
+      // Find the CodeMirror editor within the cell
+      const cmContent = cellEl.querySelector(".cm-content[contenteditable]");
+      if (!cmContent) throw new Error("No CodeMirror editor found in cell");
+
+      // Get the CodeMirror EditorView instance from the DOM.
+      // CM6 stores the view on .cmTile.view (not .cmView.view).
+      const cmEditor = cmContent.cmTile?.view;
+      if (!cmEditor) throw new Error("No CodeMirror view found");
+
+      // Replace the entire document content via a transaction
+      cmEditor.dispatch({
+        changes: {
+          from: 0,
+          to: cmEditor.state.doc.length,
+          insert: text,
+        },
+      });
+    },
+    codeCell,
+    source,
+  );
+  // Brief pause for the CRDT to sync the source to the daemon
+  await browser.pause(300);
 }
 
 /**

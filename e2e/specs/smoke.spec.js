@@ -12,7 +12,7 @@
 import { browser } from "@wdio/globals";
 import {
   getKernelStatus,
-  typeSlowly,
+  setCellSource,
   waitForAppReady,
   waitForCellOutput,
   waitForKernelReady,
@@ -41,22 +41,21 @@ describe("E2E Smoke Test", () => {
     const codeCell = await $('[data-cell-type="code"]');
     await codeCell.waitForExist({ timeout: 5000 });
 
-    // Focus the editor
-    const editor = await codeCell.$('.cm-content[contenteditable="true"]');
-    await editor.waitForExist({ timeout: 5000 });
-    await editor.click();
-    await browser.pause(200);
+    // Set cell source via CodeMirror dispatch API (reliable with any WebDriver)
+    await setCellSource(codeCell, "print('hello from e2e')");
 
-    // Select all existing content (Cmd+A on macOS, Ctrl+A elsewhere)
-    const modKey = process.platform === "darwin" ? "Meta" : "Control";
-    await browser.keys([modKey, "a"]);
-    await browser.pause(100);
-
-    // Type a simple print statement (replaces selected content)
-    await typeSlowly("print('hello from e2e')");
-
-    // Execute with Shift+Enter
-    await browser.keys(["Shift", "Enter"]);
+    // Execute via the execute button (more reliable than Shift+Enter with synthetic events)
+    const executeButton = await codeCell.$('[data-testid="execute-button"]');
+    if (await executeButton.isExisting()) {
+      await executeButton.waitForClickable({ timeout: 5000 });
+      await executeButton.click();
+    } else {
+      // Fallback: focus editor and use Shift+Enter
+      const editor = await codeCell.$('.cm-content[contenteditable="true"]');
+      await editor.click();
+      await browser.pause(200);
+      await browser.keys(["Shift", "Enter"]);
+    }
 
     // Wait for output to appear (uses global fallback for WRY compatibility)
     const outputText = await waitForCellOutput(codeCell, 30000);
