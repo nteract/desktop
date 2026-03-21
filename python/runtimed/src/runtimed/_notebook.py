@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from runtimed._cell import CellCollection
 
 if TYPE_CHECKING:
-    from runtimed.runtimed import AsyncSession, ExecutionResult
+    from runtimed.runtimed import AsyncSession
 
 
 class Notebook:
@@ -47,10 +47,6 @@ class Notebook:
         return self._session.get_peers_sync()
 
     # ── Async operations ─────────────────────────────────────────────
-
-    async def run(self, code: str, timeout_secs: float = 60.0) -> ExecutionResult:
-        """Create a cell, execute it, and return the result."""
-        return await self._session.run(code, timeout_secs)
 
     async def save(self, path: str | None = None) -> str:
         """Save the notebook to disk. Returns the path saved to."""
