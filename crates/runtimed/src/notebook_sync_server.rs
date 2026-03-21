@@ -954,7 +954,7 @@ where
         let is_new_notebook =
             !notebook_path_snapshot.exists() && uuid::Uuid::parse_str(&notebook_id).is_ok();
 
-        let (should_auto_launch, trust_status) = {
+        let (should_auto_launch, trust_status, has_kernel) = {
             let trust_state = room.trust_state.read().await;
             let has_kernel = room.has_kernel().await;
             let status = trust_state.status.clone();
@@ -967,7 +967,7 @@ where
                 // For new notebooks (UUID, no file): NoDependencies is safe to auto-launch
                 // For newly-created notebooks at a path: also safe to auto-launch
                 && (notebook_path_snapshot.exists() || is_new_notebook || created_new_at_path);
-            (should_launch, status)
+            (should_launch, status, has_kernel)
         };
 
         if should_auto_launch {
@@ -994,13 +994,11 @@ where
                 )
                 .await;
             });
-        } else if !matches!(
-            trust_status,
-            runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
-        ) {
+        } else {
             info!(
-                "[notebook-sync] Notebook {} not trusted, skipping auto-launch (status: {:?})",
-                notebook_id, trust_status
+                "[notebook-sync] Auto-launch skipped for {} (trust: {:?}, has_kernel: {}, path_exists: {}, is_new: {}, created_at_path: {})",
+                notebook_id, trust_status, has_kernel,
+                notebook_path_snapshot.exists(), is_new_notebook, created_new_at_path
             );
         }
     }

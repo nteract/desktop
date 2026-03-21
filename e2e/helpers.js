@@ -284,6 +284,14 @@ export async function approveTrustDialog(timeout = 15000) {
  */
 export async function getKernelStatus() {
   return await browser.execute(() => {
+    // Prefer the data-kernel-status attribute (added in #1041) — it reflects
+    // the raw status enum value and doesn't depend on DOM text rendering.
+    const statusEl = document.querySelector('[data-testid="kernel-status"]');
+    if (statusEl) {
+      const attr = statusEl.getAttribute("data-kernel-status");
+      if (attr) return attr.trim().toLowerCase();
+    }
+    // Fallback: read the visible status text from the toolbar
     const el = document.querySelector(
       '[data-testid="notebook-toolbar"] .capitalize',
     );

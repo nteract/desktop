@@ -12,9 +12,7 @@
 
 import { browser } from "@wdio/globals";
 import {
-  isManagedEnv,
   setCellSource,
-  waitForAppReady,
   waitForCellOutput,
   waitForKernelReady,
   waitForNotebookSynced,
