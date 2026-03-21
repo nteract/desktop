@@ -55,16 +55,11 @@ class TestModuleExports:
             "CellHandle",
             "CellCollection",
             "Presence",
-            # Data types
+            # Data types (reachable through wrapper)
             "Cell",
-            "CompletionItem",
-            "CompletionResult",
             "ExecutionEvent",
             "ExecutionResult",
-            "HistoryEntry",
-            "NotebookConnectionInfo",
             "Output",
-            "QueueState",
             "RuntimedError",
             "SyncEnvironmentResult",
             # Runtime state
@@ -74,11 +69,6 @@ class TestModuleExports:
             # Standalone functions
             "default_socket_path",
             "show_notebook_app",
-            # Native types (advanced)
-            "NativeAsyncClient",
-            "NativeClient",
-            "AsyncSession",
-            "Session",
         }
         assert set(runtimed.__all__) == expected
 
