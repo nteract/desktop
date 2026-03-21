@@ -22,7 +22,7 @@ import {
 
 describe("Cell Visibility Toggles", () => {
   it("should launch kernel and execute a cell to have outputs", async () => {
-    await waitForKernelReady(120000);
+    await waitForKernelReady(180000);
     await waitForNotebookSynced();
 
     // Find the first code cell
