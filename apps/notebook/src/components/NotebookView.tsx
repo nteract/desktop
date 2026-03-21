@@ -16,15 +16,9 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS as DndCSS } from "@dnd-kit/utilities";
-import { Code, LetterText, Plus, RotateCcw, X } from "lucide-react";
+import { Plus, RotateCcw, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
@@ -68,49 +62,73 @@ interface NotebookViewProps {
   onSetCellOutputsHidden?: (cellId: string, hidden: boolean) => void;
 }
 
+const adderRibbonColors: Record<string, { light: string; dark: string }> = {
+  code: { light: "rgb(56, 189, 248)", dark: "rgb(2, 132, 199)" },
+  markdown: { light: "rgb(52, 211, 153)", dark: "rgb(5, 150, 105)" },
+  raw: { light: "rgb(251, 113, 133)", dark: "rgb(225, 29, 72)" },
+};
+const defaultAdderRibbonColor = adderRibbonColors.code;
+
 function CellAdder({
   afterCellId,
   onAdd,
+  cellType = "code",
 }: {
   afterCellId?: string | null;
   onAdd: (type: "code" | "markdown", afterCellId?: string | null) => void;
+  cellType?: string;
 }) {
+  const ribbonColor = adderRibbonColors[cellType] ?? defaultAdderRibbonColor;
+
   return (
-    <div className="group/adder flex h-5 w-full items-center select-none">
-      {/* Gutter area - holds the + button */}
-      <div className="flex h-full flex-shrink-0 items-center">
-        <div className="flex w-10 items-center justify-end pr-1">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                className="flex h-4 w-4 items-center justify-center rounded-full border border-transparent text-muted-foreground/40 opacity-0 transition-all hover:border-border hover:bg-muted hover:text-foreground group-hover/adder:opacity-100"
-              >
-                <Plus className="h-3 w-3" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              side="right"
-              align="start"
-              className="min-w-[140px]"
+    <div className="flex h-7 w-full items-center select-none">
+      {/* Hover zone limited to gutter + ribbon area */}
+      <div className="group/adder flex h-full flex-shrink-0 items-center pr-3">
+        {/* Gutter spacer — matches cell gutter w-10 */}
+        <div className="w-10" />
+        {/* Ribbon zone — widens on hover to reveal cell type options */}
+        <div
+          style={
+            {
+              "--adder-ribbon": ribbonColor.light,
+              "--adder-ribbon-dark": ribbonColor.dark,
+            } as React.CSSProperties
+          }
+          className={cn(
+            "flex h-full flex-shrink-0 items-center overflow-hidden",
+            "w-1 bg-gray-200 transition-all duration-200 ease-out dark:bg-gray-700",
+            "group-hover/adder:w-auto group-hover/adder:rounded-r-sm group-hover/adder:bg-[var(--adder-ribbon)] group-hover/adder:pr-1 dark:group-hover/adder:bg-[var(--adder-ribbon-dark)]",
+            "group-focus-within/adder:w-auto group-focus-within/adder:rounded-r-sm group-focus-within/adder:bg-[var(--adder-ribbon)] group-focus-within/adder:pr-1 dark:group-focus-within/adder:bg-[var(--adder-ribbon-dark)]",
+          )}
+        >
+          <div
+            className={cn(
+              "flex items-center gap-0.5 pl-1.5 opacity-0 transition-opacity duration-150",
+              "group-hover/adder:opacity-100 group-hover/adder:delay-75",
+              "group-focus-within/adder:opacity-100 group-focus-within/adder:delay-75",
+            )}
+          >
+            <button
+              type="button"
+              title="Add code cell"
+              onClick={() => onAdd("code", afterCellId)}
+              className="flex items-center whitespace-nowrap rounded-sm px-2 py-0.5 text-xs font-medium text-foreground/70 transition-colors hover:bg-white/20 hover:text-foreground dark:text-white/70 dark:hover:text-white"
             >
-              <DropdownMenuItem onClick={() => onAdd("code", afterCellId)}>
-                <Code className="h-4 w-4" />
-                Code
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => onAdd("markdown", afterCellId)}>
-                <LetterText className="h-4 w-4" />
-                Markdown
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              + Code
+            </button>
+            <button
+              type="button"
+              title="Add markdown cell"
+              onClick={() => onAdd("markdown", afterCellId)}
+              className="flex items-center whitespace-nowrap rounded-sm px-2 py-0.5 text-xs font-medium text-foreground/70 transition-colors hover:bg-white/20 hover:text-foreground dark:text-white/70 dark:hover:text-white"
+            >
+              + Markdown
+            </button>
+          </div>
         </div>
-        <div className="w-1" />
       </div>
-      {/* Thin line across content area */}
-      <div className="flex-1 relative flex items-center">
-        <div className="absolute inset-x-0 h-px bg-transparent group-hover/adder:bg-border transition-colors" />
-      </div>
+      {/* Content area — no hover trigger */}
+      <div className="flex-1" />
     </div>
   );
 }
@@ -255,6 +273,7 @@ const CellRenderer = memo(function CellRenderer({
 /** Wrapper component for sortable cells */
 function SortableCell({
   cellId,
+  nextCellId,
   index,
   renderCell,
   onAddCell,
@@ -262,6 +281,7 @@ function SortableCell({
   isHiddenInGroup,
 }: {
   cellId: string;
+  nextCellId?: string;
   index: number;
   renderCell: (
     cell: NotebookCell,
@@ -273,6 +293,8 @@ function SortableCell({
   onDeleteCell: (cellId: string) => void;
   isHiddenInGroup?: boolean;
 }) {
+  const cell = useCell(cellId);
+  const nextCell = useCell(nextCellId ?? "");
   const {
     attributes,
     listeners,
@@ -298,9 +320,15 @@ function SortableCell({
     return <div ref={setNodeRef} style={style} />;
   }
 
+  const cellType = cell?.cell_type ?? "code";
+  // Adder color matches the cell below; for the last cell, fall back to its own type
+  const nextCellType = nextCell?.cell_type ?? cellType;
+
   return (
     <div ref={setNodeRef} style={style}>
-      {index === 0 && <CellAdder afterCellId={null} onAdd={onAddCell} />}
+      {index === 0 && (
+        <CellAdder afterCellId={null} onAdd={onAddCell} cellType={cellType} />
+      )}
       <ErrorBoundary
         fallback={(error, resetErrorBoundary) => (
           <CellErrorFallback
@@ -318,7 +346,11 @@ function SortableCell({
           isDragging={isDragging}
         />
       </ErrorBoundary>
-      <CellAdder afterCellId={cellId} onAdd={onAddCell} />
+      <CellAdder
+        afterCellId={cellId}
+        onAdd={onAddCell}
+        cellType={nextCellType}
+      />
     </div>
   );
 }
@@ -759,6 +791,7 @@ function NotebookViewContent({
                 <SortableCell
                   key={cellId}
                   cellId={cellId}
+                  nextCellId={cellIds[index + 1]}
                   index={index}
                   renderCell={renderCell}
                   onAddCell={onAddCell}
