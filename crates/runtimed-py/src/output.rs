@@ -756,7 +756,7 @@ impl ExecutionResult {
 // ── Runtime state (from RuntimeStateDoc) ─────────────────────────────
 
 /// Kernel state from the RuntimeStateDoc.
-#[pyclass(get_all, skip_from_py_object)]
+#[pyclass(name = "KernelState", get_all, skip_from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyKernelState {
     /// Kernel status: "not_started", "starting", "idle", "busy", "error", "shutdown"
@@ -780,7 +780,7 @@ impl PyKernelState {
 }
 
 /// Environment sync state from the RuntimeStateDoc.
-#[pyclass(get_all, skip_from_py_object)]
+#[pyclass(name = "EnvState", get_all, skip_from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyEnvState {
     /// Whether notebook metadata matches the launched kernel config.
@@ -813,7 +813,7 @@ impl PyEnvState {
 }
 
 /// Full runtime state snapshot from the daemon's RuntimeStateDoc.
-#[pyclass(get_all, skip_from_py_object)]
+#[pyclass(name = "RuntimeState", get_all, skip_from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyRuntimeState {
     /// Kernel state (status, name, language, env_source).

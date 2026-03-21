@@ -44,7 +44,7 @@ uv run python -m gremlin <notebook_id>
 
 ```bash
 # List active notebooks via the daemon
-uv run python -c "import runtimed; print(runtimed.Client().list_rooms())"
+uv run python -c "import runtimed; print(runtimed.NativeClient().list_active_notebooks())"
 ```
 
 ## Requirements

@@ -221,7 +221,7 @@ class QueueState:
         """Cell IDs waiting in queue."""
         ...
 
-class PyKernelState:
+class KernelState:
     """Kernel state from the RuntimeStateDoc."""
 
     @property
@@ -241,7 +241,7 @@ class PyKernelState:
         """Environment source label (e.g. "uv:prewarmed", "conda:pixi")."""
         ...
 
-class PyEnvState:
+class EnvState:
     """Environment sync state from the RuntimeStateDoc."""
 
     @property
@@ -265,11 +265,11 @@ class PyEnvState:
         """Whether deno config differs."""
         ...
 
-class PyRuntimeState:
+class RuntimeState:
     """Full runtime state snapshot from the daemon's RuntimeStateDoc."""
 
     @property
-    def kernel(self) -> PyKernelState:
+    def kernel(self) -> KernelState:
         """Kernel state (status, name, language, env_source)."""
         ...
     @property
@@ -277,7 +277,7 @@ class PyRuntimeState:
         """Execution queue state."""
         ...
     @property
-    def env(self) -> PyEnvState:
+    def env(self) -> EnvState:
         """Environment sync state."""
         ...
     @property
@@ -357,17 +357,11 @@ class EventIteratorSubscription:
 # Client (recommended sync API)
 # ---------------------------------------------------------------------------
 
-class Client:
-    """Synchronous client for the runtimed daemon.
+class NativeClient:
+    """Synchronous native client for the runtimed daemon.
 
-    Primary entry point for the runtimed Python API. Creates pre-connected
-    sessions for notebook operations and provides daemon-level operations.
-
-    Example::
-
-        client = Client()
-        session = client.open_notebook("/path/to/notebook.ipynb")
-        cell_ids = session.get_cell_ids()
+    Low-level client — the Python ``runtimed.Client`` wraps this to return
+    ``Notebook`` objects instead of raw ``Session``.
     """
 
     def __init__(
@@ -378,7 +372,7 @@ class Client:
     def ping(self) -> bool: ...
     def is_running(self) -> bool: ...
     def status(self) -> dict[str, Any]: ...
-    def list_rooms(self) -> list[dict[str, Any]]: ...
+    def list_active_notebooks(self) -> list[dict[str, Any]]: ...
     def flush_pool(self) -> None: ...
     def shutdown(self) -> None: ...
     def open_notebook(
@@ -402,17 +396,11 @@ class Client:
 # AsyncClient (recommended async API)
 # ---------------------------------------------------------------------------
 
-class AsyncClient:
-    """Async client for the runtimed daemon.
+class NativeAsyncClient:
+    """Async native client for the runtimed daemon.
 
-    Primary entry point for the async runtimed Python API. Creates pre-connected
-    async sessions for notebook operations and provides daemon-level operations.
-
-    Example::
-
-        client = AsyncClient()
-        session = await client.open_notebook("/path/to/notebook.ipynb")
-        cell_ids = await session.get_cell_ids()
+    Low-level client — the Python ``runtimed.Client`` wraps this to return
+    ``Notebook`` objects instead of raw ``AsyncSession``.
     """
 
     def __init__(
@@ -423,7 +411,7 @@ class AsyncClient:
     def ping(self) -> Coroutine[Any, Any, bool]: ...
     def is_running(self) -> Coroutine[Any, Any, bool]: ...
     def status(self) -> Coroutine[Any, Any, dict[str, Any]]: ...
-    def list_rooms(self) -> Coroutine[Any, Any, list[dict[str, Any]]]: ...
+    def list_active_notebooks(self) -> Coroutine[Any, Any, list[dict[str, Any]]]: ...
     def flush_pool(self) -> Coroutine[Any, Any, None]: ...
     def shutdown(self) -> Coroutine[Any, Any, None]: ...
     def open_notebook(
@@ -444,32 +432,12 @@ class AsyncClient:
     ) -> Coroutine[Any, Any, AsyncSession]: ...
 
 # ---------------------------------------------------------------------------
-# DaemonClient (deprecated, use Client or AsyncClient)
-# ---------------------------------------------------------------------------
-
-class DaemonClient:
-    """Client for communicating with the runtimed daemon."""
-
-    def __init__(self) -> None: ...
-    def ping(self) -> bool: ...
-    def is_running(self) -> bool: ...
-    def status(self) -> dict[str, Any]: ...
-    def list_rooms(self) -> list[dict[str, Any]]: ...
-    def flush_pool(self) -> None: ...
-    def shutdown(self) -> None: ...
-
 # ---------------------------------------------------------------------------
 # Session (synchronous)
 # ---------------------------------------------------------------------------
 
 class Session:
     """Synchronous session for notebook interaction."""
-
-    def __init__(
-        self,
-        notebook_id: str | None = None,
-        peer_label: str | None = None,
-    ) -> None: ...
     @property
     def notebook_id(self) -> str: ...
     @property
@@ -482,17 +450,6 @@ class Session:
     def env_source(self) -> str | None: ...
     @property
     def connection_info(self) -> NotebookConnectionInfo | None: ...
-    @staticmethod
-    def open_notebook(
-        path: str,
-        peer_label: str | None = None,
-    ) -> Session: ...
-    @staticmethod
-    def create_notebook(
-        runtime: str = "python",
-        working_dir: str | None = None,
-        peer_label: str | None = None,
-    ) -> Session: ...
     def connect(self) -> None: ...
 
     # Kernel lifecycle
@@ -630,7 +587,7 @@ class Session:
         unique: bool = True,
     ) -> list[HistoryEntry]: ...
     def get_queue_state(self) -> QueueState: ...
-    def get_runtime_state(self) -> PyRuntimeState: ...
+    def get_runtime_state(self) -> RuntimeState: ...
     def run_all_cells(self) -> int: ...
 
     # Context manager
@@ -650,11 +607,6 @@ class Session:
 class AsyncSession:
     """Async session for notebook interaction."""
 
-    def __init__(
-        self,
-        notebook_id: str | None = None,
-        peer_label: str | None = None,
-    ) -> None: ...
     @property
     def notebook_id(self) -> str: ...
     def is_connected(self) -> Coroutine[Any, Any, bool]: ...
@@ -662,17 +614,6 @@ class AsyncSession:
     def kernel_type(self) -> Coroutine[Any, Any, str | None]: ...
     def env_source(self) -> Coroutine[Any, Any, str | None]: ...
     def connection_info(self) -> Coroutine[Any, Any, NotebookConnectionInfo | None]: ...
-    @staticmethod
-    def open_notebook(
-        path: str,
-        peer_label: str | None = None,
-    ) -> Coroutine[Any, Any, AsyncSession]: ...
-    @staticmethod
-    def create_notebook(
-        runtime: str = "python",
-        working_dir: str | None = None,
-        peer_label: str | None = None,
-    ) -> Coroutine[Any, Any, AsyncSession]: ...
     def connect(self) -> Coroutine[Any, Any, None]: ...
 
     # Kernel lifecycle
@@ -818,8 +759,19 @@ class AsyncSession:
         unique: bool = True,
     ) -> Coroutine[Any, Any, list[HistoryEntry]]: ...
     def get_queue_state(self) -> Coroutine[Any, Any, QueueState]: ...
-    def get_runtime_state(self) -> Coroutine[Any, Any, PyRuntimeState]: ...
+    def get_runtime_state(self) -> Coroutine[Any, Any, RuntimeState]: ...
     def run_all_cells(self) -> Coroutine[Any, Any, int]: ...
+
+    # Synchronous reads (for Python wrapper's sync properties)
+    def get_cell_ids_sync(self) -> list[str]: ...
+    def get_cell_source_sync(self, cell_id: str) -> str | None: ...
+    def get_cell_type_sync(self, cell_id: str) -> str | None: ...
+    def get_cell_execution_count_sync(self, cell_id: str) -> str | None: ...
+    def get_cell_sync(self, cell_id: str) -> Cell: ...
+    def get_cells_sync(self) -> list[Cell]: ...
+    def get_cell_metadata_sync(self, cell_id: str) -> str | None: ...
+    def get_runtime_state_sync(self) -> RuntimeState: ...
+    def get_peers_sync(self) -> list[tuple[str, str]]: ...
 
     # Context manager
     def close(self) -> Coroutine[Any, Any, None]: ...
