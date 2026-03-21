@@ -1641,27 +1641,27 @@ async fn save_notebook_as(
     registry: tauri::State<'_, WindowNotebookRegistry>,
 ) -> Result<(), String> {
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-    let sync_generation = sync_generation_for_window(&window, registry.inner())?;
     let context_path = path_for_window(&window, registry.inner())?;
     let dirty = dirty_for_window(&window, registry.inner())?;
 
-    // Save via daemon to the new path - daemon handles formatting and disk write
     let sync_handle = notebook_sync.lock().await.clone();
     let handle = sync_handle.ok_or("Not connected to daemon")?;
 
-    // Use daemon-returned path (may have .ipynb appended or be normalized)
-    let saved_path = match handle
+    // Save via daemon — daemon writes to disk and re-keys the room from
+    // UUID → canonical file path. The connection stays live, no reconnect needed.
+    let (saved_path, new_notebook_id) = match handle
         .send_request(NotebookRequest::SaveNotebook {
-            format_cells: true, // Daemon formats cells before saving
+            format_cells: true,
             path: Some(path),
         })
         .await
     {
         Ok(NotebookResponse::NotebookSaved {
-            path: daemon_path, ..
+            path: daemon_path,
+            new_notebook_id,
         }) => {
             info!("[save-as] Notebook saved via daemon to: {}", daemon_path);
-            PathBuf::from(daemon_path)
+            (PathBuf::from(daemon_path), new_notebook_id)
         }
         Ok(NotebookResponse::Error { error }) => {
             return Err(format!("Daemon save failed: {}", error));
@@ -1674,58 +1674,53 @@ async fn save_notebook_as(
         }
     };
 
-    // Shut down the kernel in the old room before disconnecting.
-    // This prevents orphaned kernels that would linger until room eviction (30s).
-    // We ignore the result: NoKernel is fine, and errors won't block save-as.
-    let _ = handle
-        .send_request(NotebookRequest::ShutdownKernel {})
-        .await;
-
-    // Update the stored path and window title using daemon-returned path
+    // Update local state — the room is the same, just aliased to a file path now.
     let filename = saved_path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("Untitled.ipynb");
     let _ = window.set_title(filename);
 
-    // Update context.path and mark as clean
     if let Ok(mut p) = context_path.lock() {
         *p = Some(saved_path.clone());
     }
     dirty.store(false, Ordering::SeqCst);
 
+    if let Some(ref new_id) = new_notebook_id {
+        let notebook_id_arc = notebook_id_for_window(&window, registry.inner())?;
+        if let Ok(mut id) = notebook_id_arc.lock() {
+            info!("[save-as] Room re-keyed: {} -> {}", *id, new_id);
+            *id = new_id.clone();
+        }
+        drop(notebook_id_arc);
+    }
+
     refresh_native_menu(window.app_handle(), registry.inner());
 
-    // Reconnect to the daemon with the new path-based room ID.
-    // The daemon just saved the file, so OpenNotebook will load it right back.
-    // No need to carry cells across — the daemon has them on disk.
-    info!("[save-as] Reconnecting to room for new path");
-
-    // Clear the existing sync handle to disconnect from the old room
-    {
-        let mut sync_guard = notebook_sync.lock().await;
-        *sync_guard = None;
-    }
-
-    // Reconnect via daemon-owned open. The daemon loads the file it just saved,
-    // creating a new room keyed by the canonical path.
-    // We don't fail the save if reconnect fails — the file was already written.
-    let notebook_id = notebook_id_for_window(&window, registry.inner())?;
-    let webview_window = window
-        .app_handle()
-        .get_webview_window(window.label())
-        .ok_or_else(|| "Current webview window not found".to_string())?;
-    if let Err(e) = initialize_notebook_sync_open(
-        webview_window,
-        saved_path,
-        notebook_sync,
-        sync_generation,
-        notebook_id,
-    )
-    .await
-    {
-        warn!("[save-as] Daemon reconnect failed (save succeeded): {}", e);
-    }
+    // Shut down the old kernel (its working directory was wrong for the new path)
+    // and launch a fresh one with the correct notebook path. We do this in the
+    // background so the save returns immediately.
+    let saved_path_str = saved_path.to_string_lossy().to_string();
+    let notebook_sync_for_kernel = notebook_sync.clone();
+    tokio::spawn(async move {
+        let guard = notebook_sync_for_kernel.lock().await;
+        if let Some(ref handle) = *guard {
+            let _ = handle
+                .send_request(NotebookRequest::ShutdownKernel {})
+                .await;
+            match handle
+                .send_request(NotebookRequest::LaunchKernel {
+                    kernel_type: "auto".to_string(),
+                    env_source: "auto".to_string(),
+                    notebook_path: Some(saved_path_str),
+                })
+                .await
+            {
+                Ok(resp) => info!("[save-as] Kernel launched for saved notebook: {:?}", resp),
+                Err(e) => warn!("[save-as] Kernel launch failed: {}", e),
+            }
+        }
+    });
 
     Ok(())
 }
