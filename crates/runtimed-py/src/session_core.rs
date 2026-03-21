@@ -411,13 +411,20 @@ pub(crate) async fn restart_kernel(
     state: &Arc<Mutex<SessionState>>,
     wait_for_ready: bool,
 ) -> PyResult<Vec<String>> {
-    // Shutdown
-    {
+    // Capture kernel type/env before shutdown clears them, then shut down.
+    let (handle, resolved_path, relaunch_kernel_type, relaunch_env_source, mut progress_rx) = {
         let mut st = state.lock().await;
         let handle = st
             .handle
             .as_ref()
             .ok_or_else(|| to_py_err("Not connected"))?;
+
+        // Snapshot relaunch config before shutdown clears it
+        let kt = st
+            .kernel_type
+            .clone()
+            .unwrap_or_else(|| "python".to_string());
+        let es = st.env_source.clone().unwrap_or_else(|| "auto".to_string());
 
         let response = handle
             .send_request(NotebookRequest::ShutdownKernel {})
@@ -433,23 +440,13 @@ pub(crate) async fn restart_kernel(
             NotebookResponse::Error { error } => return Err(to_py_err(error)),
             _ => {}
         }
-    }
 
-    // Clone handle and resubscribe broadcast_rx so we can release the lock
-    // before the potentially long-running LaunchKernel request.
-    let (handle, resolved_path, relaunch_kernel_type, relaunch_env_source, mut progress_rx) = {
-        let st = state.lock().await;
         let handle = st
             .handle
             .as_ref()
             .ok_or_else(|| to_py_err("Not connected"))?
             .clone();
         let resolved_path = st.notebook_path.clone();
-        let kt = st
-            .kernel_type
-            .clone()
-            .unwrap_or_else(|| "python".to_string());
-        let es = st.env_source.clone().unwrap_or_else(|| "auto".to_string());
         let progress_rx = st.broadcast_rx.as_ref().map(|rx| rx.resubscribe());
         (handle, resolved_path, kt, es, progress_rx)
     };
