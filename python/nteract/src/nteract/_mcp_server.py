@@ -72,24 +72,24 @@ def _peer_label() -> str:
     return _client_name or "Agent"
 
 
-# Session state - single active session at a time
-_session: runtimed.AsyncSession | None = None
-_client: runtimed.AsyncClient | None = None
+# Notebook state - single active notebook at a time
+_notebook: runtimed.Notebook | None = None
+_client: runtimed.Client | None = None
 
 
-def _get_client() -> runtimed.AsyncClient:
-    """Get or create the async client."""
+def _get_client() -> runtimed.Client:
+    """Get or create the client."""
     global _client
     if _client is None:
-        _client = runtimed.AsyncClient()
+        _client = runtimed.Client()
     return _client
 
 
-async def _get_session() -> runtimed.AsyncSession:
-    """Get the current session, raising error if not connected."""
-    if _session is None:
+async def _get_notebook() -> runtimed.Notebook:
+    """Get the current notebook, raising error if not connected."""
+    if _notebook is None:
         raise RuntimeError("No active notebook session. Call join_notebook first.")
-    return _session
+    return _notebook
 
 
 # Regex to strip ANSI escape sequences (terminal colors, cursor movement, etc.)
@@ -359,14 +359,14 @@ def _build_cell_status_map(queue_state: runtimed.QueueState) -> dict[str, str]:
     return cell_status
 
 
-async def _get_cell_status_map(session: runtimed.AsyncSession) -> dict[str, str]:
+async def _get_cell_status_map(notebook: runtimed.Notebook) -> dict[str, str]:
     """Fetch queue state and return cell status map, empty on failure.
 
     Status is a best-effort annotation — errors should never prevent
     get_all_cells or get_cell from returning results.
     """
     try:
-        queue_state = await session.get_queue_state()
+        queue_state = await notebook.session.get_queue_state()
         return _build_cell_status_map(queue_state)
     except asyncio.CancelledError:
         raise
@@ -374,10 +374,10 @@ async def _get_cell_status_map(session: runtimed.AsyncSession) -> dict[str, str]
         return {}
 
 
-async def _get_single_cell_status(session: runtimed.AsyncSession, cell_id: str) -> str | None:
+async def _get_single_cell_status(notebook: runtimed.Notebook, cell_id: str) -> str | None:
     """Fetch queue status for a single cell, None on failure."""
     try:
-        queue_state = await session.get_queue_state()
+        queue_state = await notebook.session.get_queue_state()
         if queue_state.executing == cell_id:
             return "running"
         if cell_id in queue_state.queued:
@@ -391,7 +391,7 @@ async def _get_single_cell_status(session: runtimed.AsyncSession, cell_id: str) 
 
 def _format_cell_summary(
     index: int,
-    cell: runtimed.Cell,
+    cell: runtimed.CellHandle,
     preview_chars: int = 60,
     include_outputs: bool = False,
     status: str | None = None,
@@ -466,7 +466,7 @@ def _format_header(
     return " ".join(parts)
 
 
-def _format_cell(cell: runtimed.Cell, status: str | None = None) -> str:
+def _format_cell(cell: runtimed.CellHandle, status: str | None = None) -> str:
     """Format a cell for terminal display (includes source).
 
     Used by get_cell to show full cell state.
@@ -486,7 +486,7 @@ def _format_cell(cell: runtimed.Cell, status: str | None = None) -> str:
         return header
 
 
-def _cell_to_content(cell: runtimed.Cell, status: str | None = None) -> list[ContentItem]:
+def _cell_to_content(cell: runtimed.CellHandle, status: str | None = None) -> list[ContentItem]:
     """Convert a cell to rich MCP content items.
 
     Returns a header as TextContent, then each output as its richest type.
@@ -599,16 +599,16 @@ async def list_active_notebooks() -> list[dict[str, Any]]:
     Use join_notebook(notebook_id) to connect to one.
     """
     client = _get_client()
-    rooms = await client.list_rooms()
+    notebooks = await client.list_active_notebooks()
     return [
         {
-            "notebook_id": room["notebook_id"],
-            "active_peers": room["active_peers"],
-            "has_kernel": room["has_kernel"],
-            "kernel_type": room.get("kernel_type"),
-            "kernel_status": room.get("kernel_status"),
+            "notebook_id": info.notebook_id,
+            "active_peers": info.active_peers,
+            "has_runtime": info.has_runtime,
+            "runtime_type": info.runtime_type,
+            "status": info.status,
         }
-        for room in rooms
+        for info in notebooks
     ]
 
 
@@ -630,8 +630,8 @@ if not _no_show:
         """
         target = notebook_id
         if target is None:
-            if _session is not None:
-                target = _session.notebook_id
+            if _notebook is not None:
+                target = _notebook.notebook_id
             else:
                 raise ValueError(
                     "No notebook_id provided and no active session. "
@@ -639,9 +639,9 @@ if not _no_show:
                 )
 
         client = _get_client()
-        rooms = await client.list_rooms()
-        room_ids = {room["notebook_id"] for room in rooms}
-        if target not in room_ids:
+        notebooks = await client.list_active_notebooks()
+        notebook_ids = {info.notebook_id for info in notebooks}
+        if target not in notebook_ids:
             raise ValueError(
                 f"Notebook '{target}' is not currently running. "
                 f"Use list_active_notebooks() to see active notebooks."
@@ -667,22 +667,21 @@ async def join_notebook(
     Use list_active_notebooks() to see available sessions. To open a file from disk,
     use open_notebook(path). To create a new notebook, use create_notebook().
     """
-    global _session
+    global _notebook
     if ctx:
         _sniff_client_name(ctx)
 
-    # Close existing session if any
-    if _session is not None:
+    # Close existing notebook if any
+    if _notebook is not None:
         with contextlib.suppress(Exception):
-            await _session.close()
+            await _notebook.close()
 
-    # Join existing session
+    # Join existing notebook
     client = _get_client()
-    _session = await client.join_notebook(notebook_id, peer_label=_peer_label())
-    session = _session
+    _notebook = await client.join_notebook(notebook_id, peer_label=_peer_label())
 
     return {
-        "notebook_id": session.notebook_id,
+        "notebook_id": _notebook.notebook_id,
         "connected": True,
     }
 
@@ -693,19 +692,18 @@ async def open_notebook(path: str, ctx: Context | None = None) -> dict[str, Any]
 
     Use create_notebook() for new notebooks.
     """
-    global _session
+    global _notebook
     if ctx:
         _sniff_client_name(ctx)
 
-    if _session is not None:
+    if _notebook is not None:
         with contextlib.suppress(Exception):
-            await _session.close()
+            await _notebook.close()
 
     client = _get_client()
-    _session = await client.open_notebook(path, peer_label=_peer_label())
-    session = _session
+    _notebook = await client.open_notebook(path, peer_label=_peer_label())
     return {
-        "notebook_id": session.notebook_id,
+        "notebook_id": _notebook.notebook_id,
         "path": path,
     }
 
@@ -738,32 +736,31 @@ async def create_notebook(
 
     Call save_notebook(path) to persist to disk.
     """
-    global _session
+    global _notebook
     if ctx:
         _sniff_client_name(ctx)
 
-    if _session is not None:
+    if _notebook is not None:
         with contextlib.suppress(Exception):
-            await _session.close()
+            await _notebook.close()
 
     client = _get_client()
-    _session = await client.create_notebook(
+    _notebook = await client.create_notebook(
         runtime=runtime, working_dir=working_dir, peer_label=_peer_label()
     )
-    session = _session
 
     if dependencies and runtime == "python":
         # Add dependencies to notebook metadata
         for dep in dependencies:
-            await session.add_uv_dependency(dep)
+            await _notebook.add_dependency(dep)
 
         # The daemon may have auto-launched a kernel (without these deps).
         # Restart to ensure the kernel picks up the inline deps.
         with contextlib.suppress(Exception):
-            await session.restart_kernel(wait_for_ready=True)
+            await _notebook.restart()
 
     return {
-        "notebook_id": session.notebook_id,
+        "notebook_id": _notebook.notebook_id,
         "runtime": runtime,
         "dependencies": dependencies or [],
     }
@@ -776,11 +773,14 @@ async def save_notebook(path: str | None = None) -> dict[str, Any]:
     The daemon automatically re-keys ephemeral (UUID-based) rooms to the saved
     file path, so no disconnect/reconnect is needed.
     """
-    session = await _get_session()
-    old_notebook_id = session.notebook_id
+    notebook = await _get_notebook()
+    old_notebook_id = notebook.notebook_id
 
     try:
-        saved_path = await session.save(path)
+        if path is not None:
+            saved_path = await notebook.save_as(path)
+        else:
+            saved_path = await notebook.save()
     except Exception as e:
         error_msg = str(e)
         is_write_error = "Read-only" in error_msg or "Failed to write" in error_msg
@@ -791,7 +791,7 @@ async def save_notebook(path: str | None = None) -> dict[str, Any]:
             ) from e
         raise
 
-    new_notebook_id = session.notebook_id
+    new_notebook_id = notebook.notebook_id
     result: dict[str, Any] = {"path": saved_path, "notebook_id": new_notebook_id}
     if old_notebook_id != new_notebook_id:
         result["previous_notebook_id"] = old_notebook_id
@@ -806,8 +806,8 @@ async def save_notebook(path: str | None = None) -> dict[str, Any]:
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def interrupt_kernel() -> dict[str, Any]:
     """Interrupt the currently executing cell."""
-    session = await _get_session()
-    await session.interrupt()
+    notebook = await _get_notebook()
+    await notebook.interrupt()
 
     return {"interrupted": True}
 
@@ -819,8 +819,8 @@ async def restart_kernel(ctx: Context | None = None) -> dict[str, Any]:
     Reports environment preparation progress (package downloads, installs)
     via MCP log notifications while waiting. Times out after 120s.
     """
-    session = await _get_session()
-    progress_messages: list[str] = await session.restart_kernel(wait_for_ready=True)
+    notebook = await _get_notebook()
+    progress_messages: list[str] = await notebook.restart()
 
     # Send progress messages as MCP log notifications (retroactively)
     if ctx and progress_messages:
@@ -830,7 +830,7 @@ async def restart_kernel(ctx: Context | None = None) -> dict[str, Any]:
 
     return {
         "restarted": True,
-        "env_source": await session.env_source(),
+        "env_source": notebook.runtime.kernel.env_source,
         "progress": progress_messages,
     }
 
@@ -840,80 +840,35 @@ async def restart_kernel(ctx: Context | None = None) -> dict[str, Any]:
 # =============================================================================
 
 
-async def _get_package_manager(session: runtimed.AsyncSession) -> str:
-    """Detect which package manager the notebook is using.
-
-    Detection order:
-    1. If kernel is running, check env_source (most reliable)
-    2. Check notebook metadata structure (conda vs uv)
-    3. Check session's settings replica for default_python_env
-    4. Default to "uv" if no signal
-    """
-    # First check env_source if kernel is running
-    env = await session.env_source()
-    if env:
-        if env.startswith("conda:"):
-            return "conda"
-        return "uv"
-
-    # Check metadata structure (not just non-empty deps)
-    env_type = await session.get_metadata_env_type()
-    if env_type:
-        return env_type
-
-    # Check settings from session's local replica (no round-trip)
-    settings = session.get_settings()
-    if settings:
-        return settings.get("default_python_env", "uv")
-
-    return "uv"
-
-
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def add_dependency(package: str) -> dict[str, Any]:
     """Add a package dependency (e.g. "pandas>=2.0"). Call sync_environment() to install."""
-    session = await _get_session()
-    pm = await _get_package_manager(session)
-    if pm == "conda":
-        await session.add_conda_dependency(package)
-        deps = await session.get_conda_dependencies()
-    else:
-        await session.add_uv_dependency(package)
-        deps = await session.get_uv_dependencies()
-    return {"dependencies": deps, "added": package, "package_manager": pm}
+    notebook = await _get_notebook()
+    deps = await notebook.add_dependency(package)
+    return {"dependencies": deps, "added": package}
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def remove_dependency(package: str) -> dict[str, Any]:
     """Remove a package dependency. Requires restart_kernel() to take effect."""
-    session = await _get_session()
-    pm = await _get_package_manager(session)
-    if pm == "conda":
-        await session.remove_conda_dependency(package)
-        deps = await session.get_conda_dependencies()
-    else:
-        await session.remove_uv_dependency(package)
-        deps = await session.get_uv_dependencies()
-    return {"dependencies": deps, "removed": package, "package_manager": pm}
+    notebook = await _get_notebook()
+    deps = await notebook.remove_dependency(package)
+    return {"dependencies": deps, "removed": package}
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def get_dependencies() -> dict[str, Any]:
     """Get the notebook's current package dependencies."""
-    session = await _get_session()
-    pm = await _get_package_manager(session)
-    if pm == "conda":
-        deps = await session.get_conda_dependencies()
-    else:
-        deps = await session.get_uv_dependencies()
-    return {"dependencies": deps, "package_manager": pm}
+    notebook = await _get_notebook()
+    deps = await notebook.get_dependencies()
+    return {"dependencies": deps}
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def sync_environment() -> dict[str, Any]:
     """Hot-install new dependencies without restarting. Use restart_kernel() if this fails."""
-    session = await _get_session()
-    result = await session.sync_environment()
+    notebook = await _get_notebook()
+    result = await notebook.sync_environment()
     return {
         "success": result.success,
         "synced_packages": result.synced_packages,
@@ -940,17 +895,16 @@ async def create_cell(
     timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 30.0,
 ) -> list[ContentItem]:
     """Create a cell, optionally executing it."""
-    session = await _get_session()
-    cell_id = await session.create_cell(
-        source=source,
-        cell_type=cell_type,
-        index=index,
-    )
+    notebook = await _get_notebook()
+    if index is not None:
+        cell = await notebook.cells.insert_at(index, source, cell_type)
+    else:
+        cell = await notebook.cells.create(source, cell_type)
 
     if and_run and cell_type == "code":
-        return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
+        return await _execute_cell_internal(cell.id, timeout_secs=timeout_secs)
 
-    return [TextContent(type="text", text=f"Created cell: {cell_id}")]
+    return [TextContent(type="text", text=f"Created cell: {cell.id}")]
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
@@ -969,31 +923,31 @@ async def set_cell(
     timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 30.0,
 ) -> ContentItem | list[ContentItem]:
     """Update a cell's source and/or type. Use replace_match for targeted edits."""
-    session = await _get_session()
+    notebook = await _get_notebook()
+    try:
+        cell = notebook.cells.get_by_id(cell_id)
+    except KeyError:
+        return TextContent(type="text", text=f'Cell "{cell_id}" not found')
 
     # Update source if provided
     if source is not None:
-        await session.set_source(cell_id=cell_id, source=source)
+        await cell.set_source(source)
 
     # Update cell type if provided
     if cell_type is not None:
-        await session.set_cell_type(cell_id=cell_id, cell_type=cell_type)
+        await cell.set_type(cell_type)
 
     # If source was changed, ensure the final presence is cursor-at-end (not focus
     # from set_cell_type, which would clear the cursor on the frontend).
     if source is not None:
-        await _send_edit_cursor(session, cell_id, source, len(source))
+        await _send_edit_cursor(cell_id, source, len(source))
 
     # If nothing was changed, return current cell state
     if source is None and cell_type is None:
         return TextContent(type="text", text=f'Cell "{cell_id}" unchanged (no updates specified)')
 
-    if and_run:
-        ct = await session.get_cell_type(cell_id=cell_id)
-        if ct is None:
-            return TextContent(type="text", text=f'Cell "{cell_id}" not found')
-        if ct == "code":
-            return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
+    if and_run and cell.cell_type == "code":
+        return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
 
     return TextContent(type="text", text=f'Cell "{cell_id}" updated')
 
@@ -1004,11 +958,13 @@ async def set_cells_source_hidden(
     hidden: Annotated[bool, Field(description="True to hide source, False to show")],
 ) -> TextContent:
     """Hide or show the source (code input) of one or more cells."""
-    session = await _get_session()
+    notebook = await _get_notebook()
     not_found: list[str] = []
     for cell_id in cell_ids:
-        ok = await session.set_cell_source_hidden(cell_id=cell_id, hidden=hidden)
-        if not ok:
+        try:
+            cell = notebook.cells.get_by_id(cell_id)
+            await cell.set_source_hidden(hidden)
+        except KeyError:
             not_found.append(cell_id)
     updated = len(cell_ids) - len(not_found)
     msg = f"Set source_hidden={hidden} on {updated} cell(s)"
@@ -1023,11 +979,13 @@ async def set_cells_outputs_hidden(
     hidden: Annotated[bool, Field(description="True to hide outputs, False to show")],
 ) -> TextContent:
     """Hide or show the outputs of one or more cells."""
-    session = await _get_session()
+    notebook = await _get_notebook()
     not_found: list[str] = []
     for cell_id in cell_ids:
-        ok = await session.set_cell_outputs_hidden(cell_id=cell_id, hidden=hidden)
-        if not ok:
+        try:
+            cell = notebook.cells.get_by_id(cell_id)
+            await cell.set_outputs_hidden(hidden)
+        except KeyError:
             not_found.append(cell_id)
     updated = len(cell_ids) - len(not_found)
     msg = f"Set outputs_hidden={hidden} on {updated} cell(s)"
@@ -1042,14 +1000,14 @@ async def add_cell_tags(
     tags: Annotated[list[str], Field(description="Tags to add")],
 ) -> TextContent:
     """Add tags to a cell's metadata. Existing tags are preserved."""
-    session = await _get_session()
+    notebook = await _get_notebook()
     try:
-        cell = await session.get_cell(cell_id=cell_id)
-    except Exception as e:
-        return TextContent(type="text", text=str(e))
-    existing: list[str] = list(cell.metadata.get("tags", []))
+        cell = notebook.cells.get_by_id(cell_id)
+    except KeyError:
+        return TextContent(type="text", text=f"Cell {cell_id} not found")
+    existing = cell.tags
     merged = existing + [t for t in tags if t not in existing]
-    await session.set_cell_tags(cell_id=cell_id, tags=merged)
+    await cell.set_tags(merged)
     return TextContent(type="text", text=f"Tags for {cell_id}: {merged}")
 
 
@@ -1059,42 +1017,44 @@ async def remove_cell_tags(
     tags: Annotated[list[str], Field(description="Tags to remove")],
 ) -> TextContent:
     """Remove tags from a cell's metadata."""
-    session = await _get_session()
+    notebook = await _get_notebook()
     try:
-        cell = await session.get_cell(cell_id=cell_id)
-    except Exception as e:
-        return TextContent(type="text", text=str(e))
-    existing: list[str] = list(cell.metadata.get("tags", []))
+        cell = notebook.cells.get_by_id(cell_id)
+    except KeyError:
+        return TextContent(type="text", text=f"Cell {cell_id} not found")
+    existing = cell.tags
     filtered = [t for t in existing if t not in tags]
-    await session.set_cell_tags(cell_id=cell_id, tags=filtered)
+    await cell.set_tags(filtered)
     return TextContent(type="text", text=f"Tags for {cell_id}: {filtered}")
 
 
-async def _send_edit_cursor(
-    session: runtimed.AsyncSession, cell_id: str, source: str, offset: int
-) -> None:
+async def _send_edit_cursor(cell_id: str, source: str, offset: int) -> None:
     """Send cursor presence at a character offset (best-effort, non-blocking)."""
+    if _notebook is None:
+        return
     from nteract._editing import offset_to_line_col
 
     try:
         line, col = offset_to_line_col(source, offset)
-        await session.set_cursor(cell_id=cell_id, line=line, column=col)
+        await _notebook.presence.set_cursor(cell_id, line, col)
     except Exception:
         pass  # Presence is best-effort — don't fail the edit
 
 
-async def _send_cell_cursor(
-    session: runtimed.AsyncSession, cell_id: str, line: int = 0, column: int = 0
-) -> None:
+async def _send_cell_cursor(cell_id: str, line: int = 0, column: int = 0) -> None:
     """Send cursor presence on a cell (best-effort, errors silently ignored)."""
+    if _notebook is None:
+        return
     with contextlib.suppress(Exception):
-        await session.set_cursor(cell_id=cell_id, line=line, column=column)
+        await _notebook.presence.set_cursor(cell_id, line, column)
 
 
-async def _send_cell_focus(session: runtimed.AsyncSession, cell_id: str) -> None:
+async def _send_cell_focus(cell_id: str) -> None:
     """Send focus presence on a cell (best-effort, errors silently ignored)."""
+    if _notebook is None:
+        return
     with contextlib.suppress(Exception):
-        await session.set_focus(cell_id=cell_id)
+        await _notebook.presence.focus(cell_id)
 
 
 def _format_edit_diff(cell_id: str, old_text: str, new_text: str) -> str:
@@ -1130,10 +1090,13 @@ async def replace_match(
     from nteract._editing import PatternError
     from nteract._editing import replace_match as _replace_match
 
-    session = await _get_session()
-    source = await session.get_cell_source(cell_id=cell_id)
-    if source is None:
+    notebook = await _get_notebook()
+    try:
+        cell = notebook.cells.get_by_id(cell_id)
+    except KeyError:
         return TextContent(type="text", text=f'Cell "{cell_id}" not found')
+
+    source = cell.source
 
     try:
         result = _replace_match(source, match, content, context_before, context_after)
@@ -1141,18 +1104,13 @@ async def replace_match(
         raise RuntimeError(f"{e} (match_count={e.match_count}, source_length={len(source)})") from e
 
     # Show cursor at edit location before applying
-    await _send_edit_cursor(session, cell_id, source, result.span.start)
+    await _send_edit_cursor(cell_id, source, result.span.start)
 
-    await session.splice_source(
-        cell_id=cell_id,
-        index=result.span.start,
-        delete_count=result.span.end - result.span.start,
-        text=content,
-    )
+    await cell.splice(result.span.start, result.span.end - result.span.start, content)
 
     # Move cursor to end of replacement
     end_offset = result.span.start + len(content)
-    await _send_edit_cursor(session, cell_id, result.new_source, end_offset)
+    await _send_edit_cursor(cell_id, result.new_source, end_offset)
 
     if and_run:
         return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
@@ -1184,10 +1142,13 @@ async def replace_regex(
     from nteract._editing import PatternError
     from nteract._editing import replace_regex as _replace_regex
 
-    session = await _get_session()
-    source = await session.get_cell_source(cell_id=cell_id)
-    if source is None:
+    notebook = await _get_notebook()
+    try:
+        cell = notebook.cells.get_by_id(cell_id)
+    except KeyError:
         return TextContent(type="text", text=f'Cell "{cell_id}" not found')
+
+    source = cell.source
 
     try:
         result = _replace_regex(source, pattern, content)
@@ -1195,18 +1156,13 @@ async def replace_regex(
         raise RuntimeError(f"{e} (match_count={e.match_count}, source_length={len(source)})") from e
 
     # Show cursor at edit location before applying
-    await _send_edit_cursor(session, cell_id, source, result.span.start)
+    await _send_edit_cursor(cell_id, source, result.span.start)
 
-    await session.splice_source(
-        cell_id=cell_id,
-        index=result.span.start,
-        delete_count=result.span.end - result.span.start,
-        text=content,
-    )
+    await cell.splice(result.span.start, result.span.end - result.span.start, content)
 
     # Move cursor to end of replacement
     end_offset = result.span.start + len(content)
-    await _send_edit_cursor(session, cell_id, result.new_source, end_offset)
+    await _send_edit_cursor(cell_id, result.new_source, end_offset)
 
     if and_run:
         return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
@@ -1220,12 +1176,13 @@ async def get_cell(
     cell_id: str,
 ) -> list[ContentItem]:
     """Get a cell's source and outputs by ID."""
-    session = await _get_session()
-    await _send_cell_focus(session, cell_id)
-    cell = await session.get_cell(cell_id=cell_id)
-    if cell is None:
+    notebook = await _get_notebook()
+    await _send_cell_focus(cell_id)
+    try:
+        cell = notebook.cells.get_by_id(cell_id)
+    except KeyError:
         return [TextContent(type="text", text=f'Cell "{cell_id}" not found')]
-    status = await _get_single_cell_status(session, cell_id)
+    status = await _get_single_cell_status(notebook, cell_id)
     return _cell_to_content(cell, status=status)
 
 
@@ -1287,15 +1244,15 @@ async def get_all_cells(
     if preview_chars < 1:
         raise ValueError(f"preview_chars must be >= 1, got {preview_chars}")
 
-    session = await _get_session()
-    cells = await session.get_cells()
+    notebook = await _get_notebook()
+    all_cells = list(notebook.cells)
 
     # Fetch execution queue state to annotate running/queued cells
-    cell_status = await _get_cell_status_map(session)
+    cell_status = await _get_cell_status_map(notebook)
 
     # Apply pagination
-    end = start + count if count is not None else len(cells)
-    cells = cells[start:end]
+    end = start + count if count is not None else len(all_cells)
+    cells = all_cells[start:end]
 
     if format == "json":
         return [
@@ -1339,9 +1296,9 @@ async def get_all_cells(
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def delete_cell(cell_id: str) -> dict[str, Any]:
     """Delete a cell by ID."""
-    session = await _get_session()
-    await session.delete_cell(cell_id=cell_id)
-
+    notebook = await _get_notebook()
+    cell = notebook.cells.get_by_id(cell_id)
+    await cell.delete()
     return {"cell_id": cell_id, "deleted": True}
 
 
@@ -1353,12 +1310,13 @@ async def move_cell(
     ] = None,
 ) -> dict[str, Any]:
     """Move a cell to a new position."""
-    session = await _get_session()
-    new_position = await session.move_cell(cell_id=cell_id, after_cell_id=after_cell_id)
+    notebook = await _get_notebook()
+    cell = notebook.cells.get_by_id(cell_id)
+    after = notebook.cells.get_by_id(after_cell_id) if after_cell_id else None
+    await cell.move_after(after)
     return {
         "cell_id": cell_id,
         "after_cell_id": after_cell_id,
-        "new_position": new_position,
         "moved": True,
     }
 
@@ -1366,8 +1324,9 @@ async def move_cell(
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def clear_outputs(cell_id: str) -> dict[str, Any]:
     """Clear a cell's outputs."""
-    session = await _get_session()
-    await session.clear_outputs(cell_id)
+    notebook = await _get_notebook()
+    cell = notebook.cells.get_by_id(cell_id)
+    await cell.clear_outputs()
     return {"cell_id": cell_id, "cleared": True}
 
 
@@ -1381,14 +1340,15 @@ async def _execute_cell_internal(
     timeout_secs: float = 30.0,
 ) -> list[ContentItem]:
     """Internal execution with streaming and partial results."""
-    session = await _get_session()
-    await _send_cell_focus(session, cell_id)
+    notebook = await _get_notebook()
+    await _send_cell_focus(cell_id)
+    cell = notebook.cells.get_by_id(cell_id)
     events: list[Any] = []  # list[runtimed.ExecutionEvent]
     complete = False
 
     async def collect_events() -> None:
         nonlocal complete
-        async for event in await session.stream_execute(cell_id):
+        async for event in await cell.stream():
             events.append(event)
             if event.event_type in ("done", "error"):
                 complete = True
@@ -1399,13 +1359,9 @@ async def _execute_cell_internal(
 
     if complete:
         # Prefer the synced document as the final source of truth once execution
-        # finishes. This is more robust across runtimed output transport changes.
-        session = await _get_session()
+        # finishes. CellHandle reads from the local CRDT replica.
         with contextlib.suppress(Exception):
-            cell = await session.get_cell(cell_id=cell_id)
-            if cell is None:
-                raise ValueError(f'Cell "{cell_id}" not found')
-            has_error_output = any(output.output_type == "error" for output in cell.outputs)
+            has_error_output = any(o.output_type == "error" for o in cell.outputs)
             status = "error" if has_error_output else "idle"
             header = _format_header(cell.id, status=status, execution_count=cell.execution_count)
             items: list[ContentItem] = [TextContent(type="text", text=header)]
@@ -1429,8 +1385,8 @@ async def execute_cell(
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
 async def run_all_cells() -> dict[str, Any]:
     """Queue all code cells for execution. Use get_all_cells() to see results."""
-    session = await _get_session()
-    count = await session.run_all_cells()
+    notebook = await _get_notebook()
+    count = await notebook.run_all()
     return {"status": "queued", "count": count}
 
 
@@ -1442,15 +1398,14 @@ async def run_all_cells() -> dict[str, Any]:
 @mcp.resource("notebook://cells")
 async def resource_cells() -> str:
     """Get all cells in the current notebook as a compact summary."""
-    if _session is None:
-        return "Error: No active session"
+    if _notebook is None:
+        return "Error: No active notebook"
 
     try:
-        cells = await _session.get_cells()
-        cell_status = await _get_cell_status_map(_session)
+        cell_status = await _get_cell_status_map(_notebook)
         lines = [
             _format_cell_summary(i, cell, status=cell_status.get(cell.id))
-            for i, cell in enumerate(cells)
+            for i, cell in enumerate(_notebook.cells)
         ]
         return "\n".join(lines)
     except Exception as e:
@@ -1460,15 +1415,13 @@ async def resource_cells() -> str:
 @mcp.resource("notebook://cell/{cell_id}")
 async def resource_cell(cell_id: str) -> str:
     """Get a specific cell's source and outputs."""
-    if _session is None:
-        return "Error: No active session"
+    if _notebook is None:
+        return "Error: No active notebook"
 
     try:
-        await _send_cell_focus(_session, cell_id)
-        cell = await _session.get_cell(cell_id=cell_id)
-        if cell is None:
-            return f"Error: Cell {cell_id} not found"
-        status = await _get_single_cell_status(_session, cell_id)
+        await _send_cell_focus(cell_id)
+        cell = _notebook.cells.get_by_id(cell_id)
+        status = await _get_single_cell_status(_notebook, cell_id)
         return _format_cell(cell, status=status)
     except Exception as e:
         return f"Error: {e}"
@@ -1477,19 +1430,16 @@ async def resource_cell(cell_id: str) -> str:
 @mcp.resource("notebook://cells/by-index/{index}")
 async def resource_cell_by_index(index: int) -> str:
     """Get the cell at the specified position (0-based index)."""
-    if _session is None:
-        return "Error: No active session"
+    if _notebook is None:
+        return "Error: No active notebook"
 
     try:
-        cell_ids = await _session.get_cell_ids()
-        if index < 0 or index >= len(cell_ids):
-            return f"Error: Index {index} out of range (notebook has {len(cell_ids)} cells)"
-        cell_id = cell_ids[index]
-        await _send_cell_focus(_session, cell_id)
-        cell = await _session.get_cell(cell_id=cell_id)
-        if cell is None:
-            return f"Error: Cell at index {index} not found"
-        status = await _get_single_cell_status(_session, cell_id)
+        num_cells = len(_notebook.cells)
+        if index < 0 or index >= num_cells:
+            return f"Error: Index {index} out of range (notebook has {num_cells} cells)"
+        cell = _notebook.cells.get_by_index(index)
+        await _send_cell_focus(cell.id)
+        status = await _get_single_cell_status(_notebook, cell.id)
         return _format_cell(cell, status=status)
     except Exception as e:
         return f"Error: {e}"
@@ -1498,14 +1448,12 @@ async def resource_cell_by_index(index: int) -> str:
 @mcp.resource("notebook://cell/{cell_id}/outputs")
 async def resource_cell_outputs(cell_id: str) -> str:
     """Get a specific cell's outputs only (text format)."""
-    if _session is None:
-        return "Error: No active session"
+    if _notebook is None:
+        return "Error: No active notebook"
 
     try:
-        await _send_cell_focus(_session, cell_id)
-        cell = await _session.get_cell(cell_id=cell_id)
-        if cell is None:
-            return f"Error: Cell {cell_id} not found"
+        await _send_cell_focus(cell_id)
+        cell = _notebook.cells.get_by_id(cell_id)
         output_text = _format_outputs_text(cell.outputs)
         if not output_text:
             return "(no outputs)"
@@ -1516,8 +1464,8 @@ async def resource_cell_outputs(cell_id: str) -> str:
 
 @mcp.resource("notebook://status")
 async def resource_status() -> str:
-    """Get the current session and kernel status as JSON."""
-    if _session is None:
+    """Get the current notebook and runtime status as JSON."""
+    if _notebook is None:
         return json.dumps(
             {
                 "connected": False,
@@ -1529,10 +1477,10 @@ async def resource_status() -> str:
     try:
         return json.dumps(
             {
-                "notebook_id": _session.notebook_id,
-                "connected": await _session.is_connected(),
-                "kernel_started": await _session.kernel_started(),
-                "env_source": await _session.env_source(),
+                "notebook_id": _notebook.notebook_id,
+                "connected": await _notebook.session.is_connected(),
+                "runtime_status": _notebook.runtime.kernel.status,
+                "env_source": _notebook.runtime.kernel.env_source,
             }
         )
     except Exception as e:
@@ -1544,8 +1492,19 @@ async def resource_rooms() -> str:
     """Get all active notebook rooms as JSON."""
     try:
         client = _get_client()
-        rooms = await client.list_rooms()
-        return json.dumps([dict(room) for room in rooms])
+        notebooks = await client.list_active_notebooks()
+        return json.dumps(
+            [
+                {
+                    "notebook_id": info.notebook_id,
+                    "active_peers": info.active_peers,
+                    "has_runtime": info.has_runtime,
+                    "runtime_type": info.runtime_type,
+                    "status": info.status,
+                }
+                for info in notebooks
+            ]
+        )
     except Exception as e:
         return json.dumps({"error": str(e)})
 

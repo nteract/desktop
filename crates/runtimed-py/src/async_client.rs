@@ -2,7 +2,6 @@
 //!
 //! Async counterpart to `Client`. Uses `future_into_py` for all operations.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use pyo3::prelude::*;
@@ -11,6 +10,39 @@ use pyo3_async_runtimes::tokio::future_into_py;
 use crate::async_session::AsyncSession;
 use crate::daemon_paths::get_socket_path;
 use crate::error::to_py_err;
+
+/// Room info data for async serialization (avoids needing GIL inside future).
+struct RoomInfoData {
+    notebook_id: String,
+    active_peers: usize,
+    has_kernel: bool,
+    kernel_type: Option<String>,
+    kernel_status: Option<String>,
+    env_source: Option<String>,
+}
+
+impl<'py> pyo3::IntoPyObject<'py> for RoomInfoData {
+    type Target = pyo3::types::PyDict;
+    type Output = pyo3::Bound<'py, pyo3::types::PyDict>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        let dict = pyo3::types::PyDict::new(py);
+        dict.set_item("notebook_id", &self.notebook_id)?;
+        dict.set_item("active_peers", self.active_peers)?;
+        dict.set_item("has_kernel", self.has_kernel)?;
+        if let Some(kernel_type) = &self.kernel_type {
+            dict.set_item("kernel_type", kernel_type)?;
+        }
+        if let Some(kernel_status) = &self.kernel_status {
+            dict.set_item("kernel_status", kernel_status)?;
+        }
+        if let Some(env_source) = &self.env_source {
+            dict.set_item("env_source", env_source)?;
+        }
+        Ok(dict)
+    }
+}
 
 /// Async client for the runtimed daemon.
 ///
@@ -21,7 +53,7 @@ use crate::error::to_py_err;
 ///     client = AsyncClient()
 ///     session = await client.open_notebook("/path/to/notebook.ipynb")
 ///     cell_ids = await session.get_cell_ids()
-#[pyclass]
+#[pyclass(name = "NativeAsyncClient")]
 pub struct AsyncClient {
     socket_path: PathBuf,
     peer_label: Option<String>,
@@ -72,7 +104,7 @@ impl AsyncClient {
         future_into_py(py, async move {
             let client = runtimed::client::PoolClient::new(socket_path);
             let stats = client.status().await.map_err(to_py_err)?;
-            let mut map = HashMap::new();
+            let mut map = std::collections::HashMap::new();
             map.insert("uv_available".to_string(), stats.uv_available as i64);
             map.insert("conda_available".to_string(), stats.conda_available as i64);
             map.insert("uv_warming".to_string(), stats.uv_warming as i64);
@@ -81,29 +113,30 @@ impl AsyncClient {
         })
     }
 
-    /// List all active notebook rooms.
-    fn list_rooms<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    /// List all active notebooks.
+    ///
+    /// Returns a list of dicts with notebook information:
+    ///   - notebook_id: the notebook's identifier (file path or virtual ID)
+    ///   - active_peers: number of connected peers (int)
+    ///   - has_kernel: whether a kernel is running (bool)
+    ///   - kernel_type: kernel type if running (e.g., "python", "deno")
+    ///   - kernel_status: current kernel status (if any)
+    ///   - env_source: environment source label (if any)
+    fn list_active_notebooks<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let socket_path = self.socket_path.clone();
         future_into_py(py, async move {
             let client = runtimed::client::PoolClient::new(socket_path);
             let rooms = client.list_rooms().await.map_err(to_py_err)?;
-            let result: Vec<HashMap<String, String>> = rooms
+            // Return as Vec of RoomInfoData which can be converted to Python dicts
+            let result: Vec<RoomInfoData> = rooms
                 .into_iter()
-                .map(|room| {
-                    let mut map = HashMap::new();
-                    map.insert("notebook_id".to_string(), room.notebook_id);
-                    map.insert("active_peers".to_string(), room.active_peers.to_string());
-                    map.insert("has_kernel".to_string(), room.has_kernel.to_string());
-                    if let Some(kernel_type) = room.kernel_type {
-                        map.insert("kernel_type".to_string(), kernel_type);
-                    }
-                    if let Some(kernel_status) = room.kernel_status {
-                        map.insert("kernel_status".to_string(), kernel_status);
-                    }
-                    if let Some(env_source) = room.env_source {
-                        map.insert("env_source".to_string(), env_source);
-                    }
-                    map
+                .map(|room| RoomInfoData {
+                    notebook_id: room.notebook_id,
+                    active_peers: room.active_peers,
+                    has_kernel: room.has_kernel,
+                    kernel_type: room.kernel_type,
+                    kernel_status: room.kernel_status,
+                    env_source: room.env_source,
                 })
                 .collect();
             Ok(result)
@@ -213,6 +246,6 @@ impl AsyncClient {
     }
 
     fn __repr__(&self) -> String {
-        format!("AsyncClient(socket={})", self.socket_path.display())
+        format!("NativeAsyncClient(socket={})", self.socket_path.display())
     }
 }

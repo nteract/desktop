@@ -11,9 +11,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::daemon_paths::get_socket_path;
-use crate::error::{emit_deprecation_warning, to_py_err};
+use crate::error::to_py_err;
 use crate::event_stream::ExecutionEventStream;
+use crate::output::{Cell, PyRuntimeState};
 use crate::session_core::{self, SessionState};
 use crate::subscription::EventSubscription;
 
@@ -121,36 +121,6 @@ impl AsyncSession {
 
 #[pymethods]
 impl AsyncSession {
-    /// Create a new async session.
-    ///
-    /// Args:
-    ///     notebook_id: Optional unique identifier. If not provided, a random UUID is generated.
-    ///     peer_label: Optional label for collaborative presence.
-    #[new]
-    #[pyo3(signature = (notebook_id=None, peer_label=None))]
-    fn new(
-        py: Python<'_>,
-        notebook_id: Option<String>,
-        peer_label: Option<String>,
-    ) -> PyResult<Self> {
-        emit_deprecation_warning(py, "AsyncSession() is deprecated. Use AsyncClient().open_notebook() or AsyncClient().create_notebook() instead.")?;
-        let notebook_id =
-            notebook_id.unwrap_or_else(|| format!("agent-session-{}", uuid::Uuid::new_v4()));
-
-        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
-
-        let mut state = SessionState::new();
-        state.peer_label = peer_label.clone();
-        state.actor_label = actor_label.clone();
-
-        Ok(Self {
-            state: Arc::new(Mutex::new(state)),
-            notebook_id,
-            notebook_id_override: Arc::new(std::sync::Mutex::new(None)),
-            peer_label,
-        })
-    }
-
     /// The notebook ID for this session.
     /// After saving an ephemeral notebook, this reflects the new file-path ID.
     #[getter]
@@ -210,71 +180,8 @@ impl AsyncSession {
     }
 
     // =========================================================================
-    // Connection (static constructors and connect)
+    // Connection
     // =========================================================================
-
-    /// Open an existing notebook file.
-    ///
-    /// Returns a coroutine that resolves to a new AsyncSession.
-    ///
-    /// Args:
-    ///     path: Path to the .ipynb file.
-    #[staticmethod]
-    #[pyo3(signature = (path, peer_label=None))]
-    fn open_notebook<'py>(
-        py: Python<'py>,
-        path: &str,
-        peer_label: Option<String>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        emit_deprecation_warning(py, "AsyncSession.open_notebook() is deprecated. Use AsyncClient().open_notebook() instead.")?;
-        let path = path.to_string();
-        let socket_path = get_socket_path();
-        future_into_py(py, async move {
-            Self::open_notebook_async(socket_path, path, peer_label).await
-        })
-    }
-
-    /// Create a new notebook.
-    ///
-    /// Returns a coroutine that resolves to a new AsyncSession.
-    ///
-    /// Args:
-    ///     runtime: Kernel runtime type (default: "python").
-    ///     working_dir: Optional working directory for the notebook.
-    #[staticmethod]
-    #[pyo3(signature = (runtime="python", working_dir=None, peer_label=None))]
-    fn create_notebook<'py>(
-        py: Python<'py>,
-        runtime: &str,
-        working_dir: Option<&str>,
-        peer_label: Option<String>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        emit_deprecation_warning(py, "AsyncSession.create_notebook() is deprecated. Use AsyncClient().create_notebook() instead.")?;
-        // Validate working_dir if provided
-        if let Some(wd) = working_dir {
-            let path = std::path::Path::new(wd);
-            if !path.exists() {
-                return Err(pyo3::exceptions::PyFileNotFoundError::new_err(format!(
-                    "working_dir does not exist: {}",
-                    wd
-                )));
-            }
-            if !path.is_dir() {
-                return Err(pyo3::exceptions::PyNotADirectoryError::new_err(format!(
-                    "working_dir is not a directory: {}",
-                    wd
-                )));
-            }
-        }
-
-        let runtime = runtime.to_string();
-        let working_dir_buf = working_dir.map(PathBuf::from);
-        let socket_path = get_socket_path();
-
-        future_into_py(py, async move {
-            Self::create_notebook_async(socket_path, runtime, working_dir_buf, peer_label).await
-        })
-    }
 
     /// Connect to the daemon.
     fn connect<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -1097,9 +1004,10 @@ impl AsyncSession {
     /// Queue a cell for execution without waiting for the result.
     fn queue_cell<'py>(&self, py: Python<'py>, cell_id: &str) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
+        let notebook_id = self.notebook_id.clone();
         let cell_id = cell_id.to_string();
         future_into_py(py, async move {
-            session_core::queue_cell(&state, &cell_id).await
+            session_core::queue_cell(&state, &notebook_id, &cell_id).await
         })
     }
 
@@ -1250,12 +1158,124 @@ impl AsyncSession {
     }
 
     // =========================================================================
+    // Synchronous reads (for Python wrapper's sync properties)
+    // =========================================================================
+    // These use blocking_lock() to read directly from the local Automerge
+    // replica without going through future_into_py. Safe because Python
+    // calls these from the main thread, not from the tokio runtime.
+
+    /// Get all cell IDs in document order (sync read from local doc).
+    fn get_cell_ids_sync(&self) -> PyResult<Vec<String>> {
+        let st = self.state.blocking_lock();
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
+        Ok(handle.get_cell_ids())
+    }
+
+    /// Get a cell's source (sync read from local doc).
+    fn get_cell_source_sync(&self, cell_id: &str) -> PyResult<Option<String>> {
+        let st = self.state.blocking_lock();
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
+        Ok(handle.get_cell_source(cell_id))
+    }
+
+    /// Get a cell's type (sync read from local doc).
+    fn get_cell_type_sync(&self, cell_id: &str) -> PyResult<Option<String>> {
+        let st = self.state.blocking_lock();
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
+        Ok(handle.get_cell_type(cell_id))
+    }
+
+    /// Get a cell's execution count (sync read from local doc).
+    fn get_cell_execution_count_sync(&self, cell_id: &str) -> PyResult<Option<String>> {
+        let st = self.state.blocking_lock();
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
+        Ok(handle.get_cell_execution_count(cell_id))
+    }
+
+    /// Get a cell by ID with resolved outputs (sync — uses a temporary runtime for blob I/O).
+    fn get_cell_sync(&self, cell_id: &str) -> PyResult<Cell> {
+        let state = Arc::clone(&self.state);
+        let cell_id = cell_id.to_string();
+        // Spawn a blocking task with a temporary runtime for the async output resolution.
+        let rt = tokio::runtime::Runtime::new().map_err(to_py_err)?;
+        rt.block_on(session_core::get_cell(&state, &cell_id))
+    }
+
+    /// Get all cells with resolved outputs (sync — uses a temporary runtime for blob I/O).
+    fn get_cells_sync(&self) -> PyResult<Vec<Cell>> {
+        let state = Arc::clone(&self.state);
+        let rt = tokio::runtime::Runtime::new().map_err(to_py_err)?;
+        rt.block_on(session_core::get_cells(&state))
+    }
+
+    /// Get cell metadata as JSON string (sync read from local doc).
+    fn get_cell_metadata_sync(&self, cell_id: &str) -> PyResult<Option<String>> {
+        let st = self.state.blocking_lock();
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
+        match handle.get_cell_metadata(cell_id) {
+            Some(metadata) => Ok(Some(
+                serde_json::to_string(&metadata)
+                    .map_err(|e| to_py_err(format!("Serialize: {}", e)))?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Get runtime state (sync read from local RuntimeStateDoc).
+    fn get_runtime_state_sync(&self) -> PyResult<PyRuntimeState> {
+        let st = self.state.blocking_lock();
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
+        let rs = handle
+            .get_runtime_state()
+            .map_err(|e| to_py_err(format!("{}", e)))?;
+        Ok(rs.into())
+    }
+
+    /// Get connected peers (sync read from local doc).
+    fn get_peers_sync(&self) -> PyResult<Vec<(String, String)>> {
+        let st = self.state.blocking_lock();
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?;
+        Ok(handle.get_peers())
+    }
+
+    // =========================================================================
     // Repr, context manager, close
     // =========================================================================
 
-    /// Close the session (no-op — daemon manages lifecycle).
+    /// Close the session, disconnecting from the notebook room.
+    ///
+    /// Drops the document handle so the daemon sees this peer as disconnected.
+    /// Does NOT shut down the kernel — the daemon manages kernel lifecycle
+    /// based on peer count and keep-alive settings.
     fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        future_into_py(py, async move { Ok(()) })
+        let state = Arc::clone(&self.state);
+        future_into_py(py, async move {
+            let mut st = state.lock().await;
+            st.handle = None;
+            st.broadcast_rx = None;
+            Ok(())
+        })
     }
 
     fn __repr__(&self) -> String {
