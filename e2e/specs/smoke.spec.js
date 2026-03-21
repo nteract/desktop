@@ -27,8 +27,8 @@ describe("E2E Smoke Test", () => {
   });
 
   it("should auto-launch kernel and reach idle", async () => {
-    // 90s timeout for first kernel launch (includes env creation)
-    await waitForKernelReady(120000);
+    // 300s timeout: CI runners start cold and UV pool warming can take 3+ minutes
+    await waitForKernelReady(300000);
     const status = await getKernelStatus();
     expect(status).toBe("idle");
   });

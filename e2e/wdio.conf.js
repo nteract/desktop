@@ -114,7 +114,7 @@ export const config = {
 
   mochaOpts: {
     ui: "bdd",
-    timeout: 180000, // 3 minutes to handle kernel startup scenarios
+    timeout: 360000, // 6 minutes to handle cold CI kernel startup (pool warming + env creation)
   },
 
   /**

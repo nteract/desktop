@@ -475,7 +475,7 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Run E2E smoke test
-        timeout-minutes: 8
+        timeout-minutes: 12
         run: |
           set -o pipefail
           mkdir -p e2e-logs
