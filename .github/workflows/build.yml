@@ -506,18 +506,36 @@ jobs:
           sleep 2
 
           # Start the app (embeds WebDriver server via tauri-plugin-webdriver on port 4445)
-          ./target/release/notebook &
+          RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
+            RUST_LOG=info,notebook=debug \
+            ./target/release/notebook > e2e-logs/app-stdout.log 2>&1 &
           APP_PID=$!
 
           # Wait for embedded WebDriver server
-          echo "Waiting for embedded WebDriver server..."
+          echo "Waiting for embedded WebDriver server on port 4445..."
+          WD_READY=0
           for i in $(seq 1 30); do
             if curl -s http://localhost:4445/status >/dev/null 2>&1; then
               echo "WebDriver ready (${i}s)"
+              WD_READY=1
+              break
+            fi
+            # Check if app process died
+            if ! kill -0 $APP_PID 2>/dev/null; then
+              echo "ERROR: App process died. Logs:"
+              cat e2e-logs/app-stdout.log || true
               break
             fi
             sleep 1
           done
+
+          if [ "$WD_READY" = "0" ]; then
+            echo "ERROR: WebDriver never became ready. App logs:"
+            cat e2e-logs/app-stdout.log || true
+            echo "---"
+            curl -v http://localhost:4445/status 2>&1 || true
+            FAIL=1
+          fi
 
           # Run the smoke test (capture output)
           WEBDRIVER_PORT=4445 pnpm test:e2e 2>&1 | tee e2e-logs/test-output.log || FAIL=1
