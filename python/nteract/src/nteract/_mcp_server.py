@@ -74,14 +74,14 @@ def _peer_label() -> str:
 
 # Session state - single active session at a time
 _session: runtimed.AsyncSession | None = None
-_client: runtimed.AsyncClient | None = None
+_client: runtimed.NativeAsyncClient | None = None
 
 
-def _get_client() -> runtimed.AsyncClient:
+def _get_client() -> runtimed.NativeAsyncClient:
     """Get or create the async client."""
     global _client
     if _client is None:
-        _client = runtimed.AsyncClient()
+        _client = runtimed.NativeAsyncClient()
     return _client
 
 
@@ -599,7 +599,7 @@ async def list_active_notebooks() -> list[dict[str, Any]]:
     Use join_notebook(notebook_id) to connect to one.
     """
     client = _get_client()
-    rooms = await client.list_rooms()
+    rooms = await client.list_active_notebooks()
     return [
         {
             "notebook_id": room["notebook_id"],
@@ -639,7 +639,7 @@ if not _no_show:
                 )
 
         client = _get_client()
-        rooms = await client.list_rooms()
+        rooms = await client.list_active_notebooks()
         room_ids = {room["notebook_id"] for room in rooms}
         if target not in room_ids:
             raise ValueError(
@@ -1544,7 +1544,7 @@ async def resource_rooms() -> str:
     """Get all active notebook rooms as JSON."""
     try:
         client = _get_client()
-        rooms = await client.list_rooms()
+        rooms = await client.list_active_notebooks()
         return json.dumps([dict(room) for room in rooms])
     except Exception as e:
         return json.dumps({"error": str(e)})

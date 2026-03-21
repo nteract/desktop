@@ -1,7 +1,7 @@
-"""Unit tests for Session and AsyncSession classes.
+"""Unit tests for the runtimed public API surface.
 
-These tests don't require a running daemon - they test construction,
-properties, and error handling for disconnected sessions.
+These tests don't require a running daemon — they test construction,
+exports, and working_dir validation.
 """
 
 import pytest
@@ -9,204 +9,59 @@ import pytest
 import runtimed
 
 
-class TestSessionConstruction:
-    """Test Session construction and properties."""
+class TestModuleExports:
+    """Test that all expected classes are exported."""
 
-    def test_session_with_auto_id(self):
-        """Session generates unique ID if not provided."""
-        session = runtimed.Session()
-        assert session.notebook_id.startswith("agent-session-")
-        assert len(session.notebook_id) > 20  # UUID adds significant length
+    def test_client_exported(self):
+        """Client is exported from runtimed."""
+        assert hasattr(runtimed, "Client")
 
-    def test_session_with_custom_id(self):
-        """Session uses provided notebook_id."""
-        session = runtimed.Session(notebook_id="my-custom-notebook")
-        assert session.notebook_id == "my-custom-notebook"
+    def test_notebook_exported(self):
+        """Notebook is exported from runtimed."""
+        assert hasattr(runtimed, "Notebook")
 
-    def test_session_unique_ids(self):
-        """Each Session gets a unique ID."""
-        s1 = runtimed.Session()
-        s2 = runtimed.Session()
-        assert s1.notebook_id != s2.notebook_id
+    def test_notebook_info_exported(self):
+        """NotebookInfo is exported from runtimed."""
+        assert hasattr(runtimed, "NotebookInfo")
 
-    def test_session_repr_disconnected(self):
-        """Session repr shows disconnected status."""
-        session = runtimed.Session(notebook_id="test-repr")
-        r = repr(session)
-        assert "Session" in r
-        assert "test-repr" in r
-        assert "disconnected" in r
+    def test_cell_handle_exported(self):
+        """CellHandle is exported from runtimed."""
+        assert hasattr(runtimed, "CellHandle")
 
-    def test_session_is_connected_initially_false(self):
-        """Session is not connected immediately after construction."""
-        session = runtimed.Session()
-        assert not session.is_connected
+    def test_native_types_exported(self):
+        """Native types are accessible for advanced use."""
+        assert hasattr(runtimed, "NativeAsyncClient")
+        assert hasattr(runtimed, "NativeClient")
+        assert hasattr(runtimed, "AsyncSession")
+        assert hasattr(runtimed, "Session")
 
-    def test_session_kernel_started_initially_false(self):
-        """Kernel is not started immediately after construction."""
-        session = runtimed.Session()
-        assert not session.kernel_started
+    def test_runtime_state_types_exported(self):
+        """Runtime state types use clean names."""
+        assert hasattr(runtimed, "RuntimeState")
+        assert hasattr(runtimed, "KernelState")
+        assert hasattr(runtimed, "EnvState")
 
-    def test_session_env_source_initially_none(self):
-        """env_source is None when no kernel is running."""
-        session = runtimed.Session()
-        assert session.env_source is None
+    def test_deprecated_types_removed(self):
+        """DaemonClient is no longer exported."""
+        assert not hasattr(runtimed, "DaemonClient")
 
-
-class TestAsyncSessionConstruction:
-    """Test AsyncSession construction and properties."""
-
-    def test_async_session_with_auto_id(self):
-        """AsyncSession generates unique ID if not provided."""
-        session = runtimed.AsyncSession()
-        assert session.notebook_id.startswith("agent-session-")
-        assert len(session.notebook_id) > 20
-
-    def test_async_session_with_custom_id(self):
-        """AsyncSession uses provided notebook_id."""
-        session = runtimed.AsyncSession(notebook_id="my-async-notebook")
-        assert session.notebook_id == "my-async-notebook"
-
-    def test_async_session_unique_ids(self):
-        """Each AsyncSession gets a unique ID."""
-        s1 = runtimed.AsyncSession()
-        s2 = runtimed.AsyncSession()
-        assert s1.notebook_id != s2.notebook_id
-
-    def test_async_session_repr(self):
-        """AsyncSession repr shows notebook ID."""
-        session = runtimed.AsyncSession(notebook_id="test-async-repr")
-        r = repr(session)
-        assert "AsyncSession" in r
-        assert "test-async-repr" in r
-
-
-class TestAsyncSessionProperties:
-    """Test AsyncSession async property methods."""
-
-    @pytest.mark.asyncio
-    async def test_async_is_connected_initially_false(self):
-        """AsyncSession is not connected immediately after construction."""
-        session = runtimed.AsyncSession()
-        assert not await session.is_connected()
-
-    @pytest.mark.asyncio
-    async def test_async_kernel_started_initially_false(self):
-        """Kernel is not started immediately after construction."""
-        session = runtimed.AsyncSession()
-        assert not await session.kernel_started()
-
-    @pytest.mark.asyncio
-    async def test_async_env_source_initially_none(self):
-        """env_source is None when no kernel is running."""
-        session = runtimed.AsyncSession()
-        assert await session.env_source() is None
-
-
-class TestSessionErrorHandling:
-    """Test error handling for disconnected sessions."""
-
-    def test_set_source_without_connection(self):
-        """set_source raises error when not connected."""
-        session = runtimed.Session()
-        with pytest.raises(runtimed.RuntimedError, match="[Nn]ot connected"):
-            session.set_source("cell-123", "x = 1")
-
-    def test_get_cell_without_connection(self):
-        """get_cell raises error when not connected."""
-        session = runtimed.Session()
-        with pytest.raises(runtimed.RuntimedError, match="[Nn]ot connected"):
-            session.get_cell("cell-123")
-
-    def test_get_cells_without_connection(self):
-        """get_cells raises error when not connected."""
-        session = runtimed.Session()
-        with pytest.raises(runtimed.RuntimedError, match="[Nn]ot connected"):
-            session.get_cells()
-
-    def test_delete_cell_without_connection(self):
-        """delete_cell raises error when not connected."""
-        session = runtimed.Session()
-        with pytest.raises(runtimed.RuntimedError, match="[Nn]ot connected"):
-            session.delete_cell("cell-123")
-
-    def test_interrupt_without_connection(self):
-        """interrupt raises error when not connected."""
-        session = runtimed.Session()
-        with pytest.raises(runtimed.RuntimedError, match="[Nn]ot connected"):
-            session.interrupt()
-
-    def test_shutdown_kernel_without_connection(self):
-        """shutdown_kernel raises error when not connected."""
-        session = runtimed.Session()
-        with pytest.raises(runtimed.RuntimedError, match="[Nn]ot connected"):
-            session.shutdown_kernel()
-
-    def test_queue_cell_without_connection(self):
-        """queue_cell raises error when not connected."""
-        session = runtimed.Session()
-        with pytest.raises(runtimed.RuntimedError, match="[Nn]ot connected"):
-            session.queue_cell("cell-123")
-
-
-class TestAsyncSessionErrorHandling:
-    """Test error handling for disconnected async sessions."""
-
-    @pytest.mark.asyncio
-    async def test_async_set_source_without_connection(self):
-        """set_source raises error when not connected."""
-        session = runtimed.AsyncSession()
-        with pytest.raises(runtimed.RuntimedError, match="[Nn]ot connected"):
-            await session.set_source("cell-123", "x = 1")
-
-    @pytest.mark.asyncio
-    async def test_async_get_cell_without_connection(self):
-        """get_cell raises error when not connected."""
-        session = runtimed.AsyncSession()
-        with pytest.raises(runtimed.RuntimedError, match="[Nn]ot connected"):
-            await session.get_cell("cell-123")
-
-    @pytest.mark.asyncio
-    async def test_async_get_cells_without_connection(self):
-        """get_cells raises error when not connected."""
-        session = runtimed.AsyncSession()
-        with pytest.raises(runtimed.RuntimedError, match="[Nn]ot connected"):
-            await session.get_cells()
-
-    @pytest.mark.asyncio
-    async def test_async_delete_cell_without_connection(self):
-        """delete_cell raises error when not connected."""
-        session = runtimed.AsyncSession()
-        with pytest.raises(runtimed.RuntimedError, match="[Nn]ot connected"):
-            await session.delete_cell("cell-123")
-
-    @pytest.mark.asyncio
-    async def test_async_interrupt_without_connection(self):
-        """interrupt raises error when not connected."""
-        session = runtimed.AsyncSession()
-        with pytest.raises(runtimed.RuntimedError, match="[Nn]ot connected"):
-            await session.interrupt()
-
-    @pytest.mark.asyncio
-    async def test_async_shutdown_kernel_without_connection(self):
-        """shutdown_kernel raises error when not connected."""
-        session = runtimed.AsyncSession()
-        with pytest.raises(runtimed.RuntimedError, match="[Nn]ot connected"):
-            await session.shutdown_kernel()
-
-    @pytest.mark.asyncio
-    async def test_async_create_cell_without_connection(self):
-        """create_cell raises error when not connected."""
-        session = runtimed.AsyncSession()
-        with pytest.raises(runtimed.RuntimedError, match="[Nn]ot connected"):
-            await session.create_cell("x = 1")
-
-    @pytest.mark.asyncio
-    async def test_async_queue_cell_without_connection(self):
-        """queue_cell raises error when not connected."""
-        session = runtimed.AsyncSession()
-        with pytest.raises(runtimed.RuntimedError, match="[Nn]ot connected"):
-            await session.queue_cell("cell-123")
+    def test_all_exports(self):
+        """Check __all__ exports the expected items."""
+        expected = [
+            "Client",
+            "Notebook",
+            "NotebookInfo",
+            "CellHandle",
+            "CellCollection",
+            "ExecutionResult",
+            "Output",
+            "RuntimedError",
+            "RuntimeState",
+            "KernelState",
+            "EnvState",
+        ]
+        for name in expected:
+            assert name in runtimed.__all__, f"{name} not in __all__"
 
 
 class TestOutputTypes:
@@ -225,65 +80,81 @@ class TestOutputTypes:
         assert hasattr(runtimed, "RuntimedError")
 
 
+class TestClientConstruction:
+    """Test Client construction."""
+
+    def test_client_creates(self):
+        """Client can be instantiated without a daemon."""
+        client = runtimed.Client()
+        assert repr(client) == "Client()"
+
+    def test_native_client_creates(self):
+        """NativeClient can be instantiated."""
+        client = runtimed.NativeClient()
+        assert "NativeClient" in repr(client) or "Client" in repr(client)
+
+
+class TestNotebookInfo:
+    """Test NotebookInfo dataclass."""
+
+    def test_from_dict_file_backed(self):
+        info = runtimed.NotebookInfo._from_dict(
+            {
+                "notebook_id": "/Users/test/notebook.ipynb",
+                "active_peers": 2,
+                "has_kernel": True,
+                "kernel_type": "python",
+                "kernel_status": "idle",
+                "env_source": "uv:prewarmed",
+            }
+        )
+        assert info.notebook_id == "/Users/test/notebook.ipynb"
+        assert info.name == "notebook"
+        assert info.path is not None
+        assert not info.is_ephemeral
+        assert info.active_peers == 2
+        assert info.has_kernel is True
+
+    def test_from_dict_ephemeral(self):
+        info = runtimed.NotebookInfo._from_dict(
+            {
+                "notebook_id": "abc123",
+                "active_peers": 0,
+                "has_kernel": False,
+            }
+        )
+        assert info.name == "abc123"
+        assert info.path is None
+        assert info.is_ephemeral is True
+
+    def test_repr(self):
+        info = runtimed.NotebookInfo(
+            notebook_id="/test/gremlins.ipynb",
+            kernel_status="idle",
+            active_peers=3,
+        )
+        r = repr(info)
+        assert "gremlins" in r
+        assert "idle" in r
+        assert "3 peers" in r
+
+
 class TestCreateNotebookValidation:
-    """Test create_notebook working_dir validation."""
+    """Test create_notebook working_dir validation on NativeAsyncClient."""
 
     def test_create_notebook_rejects_nonexistent_path(self):
         """create_notebook raises FileNotFoundError for non-existent working_dir."""
+        client = runtimed.NativeAsyncClient()
         with pytest.raises(FileNotFoundError, match="working_dir does not exist"):
-            runtimed.Session.create_notebook(working_dir="/sessions/fake-path")
+            client.create_notebook(working_dir="/sessions/fake-path")
 
     def test_create_notebook_rejects_file_as_working_dir(self, tmp_path):
         """create_notebook raises NotADirectoryError when working_dir is a file."""
         test_file = tmp_path / "test_file.txt"
         test_file.write_text("test")
+        client = runtimed.NativeAsyncClient()
         with pytest.raises(NotADirectoryError, match="working_dir is not a directory"):
-            runtimed.Session.create_notebook(working_dir=str(test_file))
-
-
-class TestAsyncCreateNotebookValidation:
-    """Test AsyncSession.create_notebook working_dir validation."""
-
-    def test_async_create_notebook_rejects_nonexistent_path(self):
-        """AsyncSession.create_notebook raises FileNotFoundError for non-existent working_dir."""
-        with pytest.raises(FileNotFoundError, match="working_dir does not exist"):
-            runtimed.AsyncSession.create_notebook(working_dir="/sessions/fake-path")
-
-    def test_async_create_notebook_rejects_file_as_working_dir(self, tmp_path):
-        """AsyncSession.create_notebook raises NotADirectoryError when working_dir is a file."""
-        test_file = tmp_path / "test_file.txt"
-        test_file.write_text("test")
-        with pytest.raises(NotADirectoryError, match="working_dir is not a directory"):
-            runtimed.AsyncSession.create_notebook(working_dir=str(test_file))
-
-
-class TestModuleExports:
-    """Test that all expected classes are exported."""
-
-    def test_session_exported(self):
-        """Session is exported from runtimed."""
-        assert hasattr(runtimed, "Session")
-
-    def test_async_session_exported(self):
-        """AsyncSession is exported from runtimed."""
-        assert hasattr(runtimed, "AsyncSession")
-
-    def test_daemon_client_exported(self):
-        """DaemonClient is exported from runtimed."""
-        assert hasattr(runtimed, "DaemonClient")
-
-    def test_all_exports(self):
-        """Check __all__ exports the expected items."""
-        expected = [
-            "Session",
-            "AsyncSession",
-            "DaemonClient",
-            "ExecutionResult",
-            "Output",
-            "RuntimedError",
-        ]
-        for name in expected:
-            assert name in runtimed.__all__, f"{name} not in __all__"
+            client.create_notebook(working_dir=str(test_file))
 
 
 if __name__ == "__main__":
