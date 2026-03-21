@@ -169,6 +169,6 @@ impl Client {
         } else {
             "disconnected"
         };
-        format!("Client({})", status)
+        format!("NativeClient({})", status)
     }
 }

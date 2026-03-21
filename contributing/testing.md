@@ -215,19 +215,19 @@ RUNTIMED_INTEGRATION_TEST=1 pytest python/runtimed/tests/ -v
 
 ```python
 # Unit test (no daemon)
-class TestSessionConstruction:
-    def test_session_with_auto_id(self):
-        session = runtimed.Session()
-        assert session.notebook_id.startswith("agent-session-")
-        assert not session.is_connected
+class TestModuleExports:
+    def test_client_exported(self):
+        assert hasattr(runtimed, "Client")
 
-# Integration test (needs daemon)
+    def test_notebook_exported(self):
+        assert hasattr(runtimed, "Notebook")
+
+# Integration test (needs daemon, uses NativeAsyncClient for direct session access)
 @pytest.mark.asyncio
-async def test_kernel_execution(self):
-    async with runtimed.AsyncSession() as session:
-        await session.start_kernel()
-        result = await session.run("1 + 1")
-        assert result.success
+async def test_kernel_execution(async_session):
+    await async_session.start_kernel()
+    result = await async_session.run("1 + 1")
+    assert result.success
 ```
 
 **Environment variables:**

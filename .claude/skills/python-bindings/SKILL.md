@@ -37,24 +37,29 @@ Running `maturin develop` without `VIRTUAL_ENV` installs the `.so` into whicheve
 ## Basic Usage
 
 ```python
+import asyncio
 import runtimed
 
-session = runtimed.Session()
-session.connect()
-session.start_kernel()
+async def main():
+    client = runtimed.Client()
+    async with await client.create() as notebook:
+        cell = await notebook.cells.create("print('hello')")
+        result = await cell.run()
+        print(result.stdout)   # "hello\n"
 
-result = session.run("print('hello')")
-print(result.stdout)   # "hello\n"
-print(result.outputs)  # [Output(stream, stdout: "hello\n")]
+        # Sync reads from local CRDT
+        print(cell.source)      # "print('hello')"
+        print(cell.cell_type)   # "code"
 
-# Rich output
-result = session.run("from IPython.display import Image, display; display(Image(filename='photo.png'))")
-for output in result.outputs:
-    for mime, value in output.data.items():
-        print(mime, type(value))
-        # image/png  <class 'bytes'>       -- raw binary, NOT base64
-        # text/llm+plain  <class 'str'>    -- synthesized blob URL
-        # text/plain <class 'str'>
+asyncio.run(main())
+```
+
+For the native session API (streaming, presence, metadata), use `NativeAsyncClient`:
+
+```python
+native_client = runtimed.NativeAsyncClient()
+session = await native_client.create_notebook()
+result = await session.run("print('hello')")
 ```
 
 ## Output.data Typing
@@ -72,53 +77,41 @@ for output in result.outputs:
 
 When an output contains a binary image MIME type, the daemon synthesizes a `text/llm+plain` entry combining text/plain, image metadata, and blob URL. Lets LLMs reference images without decoding binary data.
 
-## Per-Cell Accessors
+## High-Level Cell Access
 
-Prefer these O(1) methods over `get_cells()` (which materializes everything):
+The `Notebook.cells` collection provides sync reads and async writes:
+
+```python
+# Sync reads from local CRDT
+cell = notebook.cells.get_by_index(0)
+print(cell.source, cell.cell_type, cell.outputs)
+
+# Search
+matches = notebook.cells.find("import")
+
+# Runtime state
+print(notebook.runtime.kernel.status)  # sync read
+```
+
+For the native session API, per-cell accessors are also available:
 
 ```python
 source = session.get_cell_source(cell_id)    # just the source string
 cell_type = session.get_cell_type(cell_id)   # "code" | "markdown" | "raw"
 cell_ids = session.get_cell_ids()             # position-sorted IDs
-
-# Full cell with outputs
-cell = session.get_cell(cell_id)
-print(cell.outputs, cell.position)
-
-# Move a cell
-session.move_cell("cell-id", after_cell_id="other-cell-id")
-
-# Runtime state
-state = await async_session.get_runtime_state()  # idle, busy, etc.
 ```
 
 ## Socket Path Configuration
 
 **System daemon (default):**
 ```python
-session = runtimed.Session()
-session.connect()  # ~/Library/Caches/runt/runtimed.sock
+client = runtimed.Client()  # ~/Library/Caches/runt/runtimed.sock
 ```
 
 **Worktree daemon (development):**
 ```bash
 export RUNTIMED_SOCKET_PATH="$(./target/debug/runt daemon status --json | python3 -c 'import sys,json; print(json.load(sys.stdin)["socket_path"])')"
 python your_script.py
-```
-
-## Cross-Session Output Visibility
-
-The `Cell.outputs` field is from the Automerge document. Agents can see outputs from cells executed by other clients:
-
-```python
-s1 = runtimed.Session(notebook_id="shared")
-s1.connect(); s1.start_kernel()
-s1.run("x = 42")
-
-s2 = runtimed.Session(notebook_id="shared")
-s2.connect()
-cells = s2.get_cells()
-print(cells[0].outputs)  # Shows outputs from s1
 ```
 
 ## Running Integration Tests
@@ -159,11 +152,11 @@ Three packages are workspace members:
 
 ### Wrong daemon
 
-If `session.run()` returns `Output(stream, stderr: "Failed to parse output: <hash>")`, the bindings are connecting to the wrong daemon. The blob store is per-daemon. Set `RUNTIMED_SOCKET_PATH` to the correct daemon socket.
+If `notebook.run()` returns `Output(stream, stderr: "Failed to parse output: <hash>")`, the bindings are connecting to the wrong daemon. The blob store is per-daemon. Set `RUNTIMED_SOCKET_PATH` to the correct daemon socket.
 
-### Empty outputs from get_cell()
+### Empty outputs from cell.outputs
 
-If `session.run()` shows outputs but `session.get_cell()` returns `outputs=[]`:
+If `cell.run()` shows outputs but `cell.outputs` returns `[]`:
 1. Check socket path — daemon needs blob store access
 2. Timing — outputs may not be written to Automerge yet. Try a small delay or re-fetch.
 
