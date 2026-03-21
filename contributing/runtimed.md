@@ -83,7 +83,26 @@ cat ~/.cache/runt/daemon.json   # check "version" field
 
 ### Fast iteration: Daemon + bundled notebook
 
-When iterating on daemon code, you often want to test changes in the notebook app without rebuilding the frontend:
+When iterating on daemon code, you often want to test changes in the notebook app without rebuilding the frontend.
+
+**With Inkwell supervisor** (if you have `supervisor_*` MCP tools — e.g. in Zed):
+
+The supervisor manages the dev daemon for you. No env vars or extra terminals needed.
+
+- `supervisor_restart(target="daemon")` — start or restart the dev daemon after code changes
+- `supervisor_rebuild` — rebuild Python bindings (`maturin develop`) + restart
+- `supervisor_status` — check daemon status (`daemon_managed: true` confirms it's running)
+- `supervisor_logs` — tail daemon logs
+- `supervisor_start_vite` — start the Vite dev server for hot-reload
+
+Then build and run the app normally:
+```bash
+cargo xtask build                 # Full build (includes frontend)
+cargo xtask build --rust-only     # Fast rebuild (reuses frontend assets)
+cargo xtask run                   # Run the bundled binary
+```
+
+**Without supervisor** (manual two-terminal workflow):
 
 ```bash
 # Terminal 1: Run dev daemon (restart when you change daemon code)

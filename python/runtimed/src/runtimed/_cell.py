@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
+
+from runtimed.runtimed import RuntimedError as _RuntimedError
 
 if TYPE_CHECKING:
     from runtimed.runtimed import AsyncSession, Cell, ExecutionResult, Output
@@ -37,8 +40,11 @@ class CellHandle:
     @property
     def outputs(self) -> list[Output]:
         """Resolved outputs (sync — may do disk I/O for blob resolution)."""
-        cell = self._session.get_cell_sync(self._id)
-        return cell.outputs
+        try:
+            cell = self._session.get_cell_sync(self._id)
+            return cell.outputs
+        except _RuntimedError:
+            return []
 
     @property
     def execution_count(self) -> int | None:
@@ -54,8 +60,37 @@ class CellHandle:
     @property
     def metadata(self) -> Any:
         """Parsed metadata dict (sync read)."""
-        cell = self._session.get_cell_sync(self._id)
-        return cell.metadata
+        raw = self._session.get_cell_metadata_sync(self._id)
+        if raw is None:
+            return {}
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    @property
+    def tags(self) -> list[str]:
+        """Cell tags (sync read). Uses Rust Cell helpers for key resolution."""
+        try:
+            return self._session.get_cell_sync(self._id).tags
+        except _RuntimedError:
+            return []
+
+    @property
+    def is_source_hidden(self) -> bool:
+        """Whether cell source is hidden (sync read). Uses Rust Cell helpers."""
+        try:
+            return self._session.get_cell_sync(self._id).is_source_hidden
+        except _RuntimedError:
+            return False
+
+    @property
+    def is_outputs_hidden(self) -> bool:
+        """Whether cell outputs are hidden (sync read). Uses Rust Cell helpers."""
+        try:
+            return self._session.get_cell_sync(self._id).is_outputs_hidden
+        except _RuntimedError:
+            return False
 
     def snapshot(self) -> Cell:
         """Return the full Cell object (sync — includes resolved outputs)."""

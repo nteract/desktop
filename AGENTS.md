@@ -6,7 +6,23 @@ This document provides guidance for AI agents working in this repository. Claude
 
 ## Quick Recipes (Common Dev Tasks)
 
-These are copy-paste-ready commands. **All commands that interact with the dev daemon require two env vars.** Without them you'll hit the system daemon and cause problems.
+### If you have `supervisor_*` tools — use them
+
+If your MCP client provides `supervisor_status`, `supervisor_restart`, `supervisor_rebuild`, etc., **prefer those over manual terminal commands**. The supervisor manages the dev daemon lifecycle for you — no env vars, no extra terminals.
+
+| Instead of… | Use… |
+|-------------|------|
+| `cargo xtask dev-daemon` (in a terminal) | `supervisor_restart(target="daemon")` |
+| `maturin develop` (rebuild bindings) | `supervisor_rebuild` |
+| `runt daemon status` (with env vars) | `supervisor_status` |
+| `runt daemon logs` | `supervisor_logs` |
+| `cargo xtask vite` | `supervisor_start_vite` |
+
+The supervisor automatically handles per-worktree isolation, env var plumbing, and daemon restarts. You only need the manual commands below when the supervisor isn't available.
+
+### Manual commands (when supervisor is not available)
+
+All commands that interact with the dev daemon require two env vars. Without them you'll hit the system daemon and cause problems.
 
 ```bash
 # ── Dev daemon env vars (required for ALL dev commands) ────────────
@@ -59,6 +75,14 @@ python/runtimed/.venv/bin/python -m pytest python/runtimed/tests/test_session_un
 
 ### Running the notebook app (dev mode)
 
+**Do not launch the notebook app from an agent terminal.** The app is a GUI process that blocks until the user quits it (⌘Q), and the agent will misinterpret the exit. Let the human launch it from their own terminal or Zed task.
+
+With supervisor tools, the daemon and vite are already managed — the human just runs:
+```bash
+cargo xtask notebook
+```
+
+Without supervisor (human runs both):
 ```bash
 # Terminal 1: Start dev daemon
 cargo xtask dev-daemon
@@ -183,10 +207,10 @@ The supervisor watches `python/nteract/src/`, `python/runtimed/src/`, `crates/ru
 
 ### Tool availability
 
-- **Inkwell active** → all supervisor + nteract tools available
-- **nteract MCP only** → nteract tools only, no `supervisor_*`
+- **Inkwell active** → all supervisor + nteract tools available. **Prefer supervisor tools for daemon lifecycle** — they handle env vars and isolation automatically.
+- **nteract MCP only** → nteract tools only, no `supervisor_*`. Use manual terminal commands for daemon management.
 - **No MCP server** → use `cargo xtask run-mcp` to set one up
-- **Dev daemon not running** → Inkwell starts it automatically
+- **Dev daemon not running** → Inkwell starts it automatically via `supervisor_restart(target="daemon")`
 
 ## Build System (`cargo xtask`)
 
@@ -206,7 +230,9 @@ Use instead:
 
 ### Per-Worktree Daemon Isolation
 
-Each git worktree runs its own isolated daemon in dev mode.
+Each git worktree runs its own isolated daemon in dev mode. If you have supervisor tools, the daemon is managed for you — use `supervisor_restart(target="daemon")` to start or restart it, and `supervisor_status` to check it.
+
+Without supervisor (manual two-terminal workflow):
 
 ```bash
 # Terminal 1: Start dev daemon
@@ -216,7 +242,7 @@ cargo xtask dev-daemon
 cargo xtask notebook
 ```
 
-Use `./target/debug/runt` to interact with the worktree daemon:
+Use `./target/debug/runt` to interact with the worktree daemon (or `supervisor_status`/`supervisor_logs` if available):
 
 ```bash
 ./target/debug/runt daemon status

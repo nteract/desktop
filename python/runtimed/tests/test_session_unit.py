@@ -46,22 +46,40 @@ class TestModuleExports:
         assert not hasattr(runtimed, "DaemonClient")
 
     def test_all_exports(self):
-        """Check __all__ exports the expected items."""
-        expected = [
+        """Check __all__ exports match expected items exactly."""
+        expected = {
+            # Primary API
             "Client",
             "Notebook",
             "NotebookInfo",
             "CellHandle",
             "CellCollection",
+            # Data types
+            "Cell",
+            "CompletionItem",
+            "CompletionResult",
+            "ExecutionEvent",
             "ExecutionResult",
+            "HistoryEntry",
+            "NotebookConnectionInfo",
             "Output",
+            "QueueState",
             "RuntimedError",
+            "SyncEnvironmentResult",
+            # Runtime state
             "RuntimeState",
             "KernelState",
             "EnvState",
-        ]
-        for name in expected:
-            assert name in runtimed.__all__, f"{name} not in __all__"
+            # Standalone functions
+            "default_socket_path",
+            "show_notebook_app",
+            # Native types (advanced)
+            "NativeAsyncClient",
+            "NativeClient",
+            "AsyncSession",
+            "Session",
+        }
+        assert set(runtimed.__all__) == expected
 
 
 class TestOutputTypes:
