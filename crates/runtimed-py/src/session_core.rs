@@ -44,6 +44,10 @@ pub(crate) struct SessionState {
     pub kernel_started: bool,
     pub kernel_type: Option<String>,
     pub env_source: Option<String>,
+    /// Intended runtime type for this session (e.g. "python", "deno").
+    /// Set at creation/open time; used by ensure_kernel_started to avoid
+    /// hardcoding "python" when auto-launching kernels.
+    pub runtime: String,
     /// Base URL for blob server (for resolving blob hashes)
     pub blob_base_url: Option<String>,
     /// Path to blob store directory (fallback for direct disk access)
@@ -68,6 +72,7 @@ impl SessionState {
             kernel_started: false,
             kernel_type: None,
             env_source: None,
+            runtime: "python".to_string(),
             blob_base_url: None,
             blob_store_path: None,
             connection_info: None,
@@ -170,6 +175,15 @@ pub(crate) async fn connect_with_socket(
     st.blob_base_url = blob_base_url;
     st.blob_store_path = blob_store_path;
 
+    // Infer runtime from the notebook's kernelspec when joining an existing notebook
+    if let Some(meta) = st.handle.as_ref().and_then(|h| h.get_notebook_metadata()) {
+        if let Some(ref ks) = meta.kernelspec {
+            if ks.name == "deno" {
+                st.runtime = "deno".to_string();
+            }
+        }
+    }
+
     hydrate_kernel_state(&mut st);
 
     Ok(())
@@ -247,12 +261,27 @@ pub(crate) async fn connect_open(
     // Sync settings from daemon (best-effort, don't fail if unavailable)
     let settings = sync_settings(socket_path).await;
 
+    // Infer runtime from the notebook's kernelspec (if present)
+    let runtime = result
+        .handle
+        .get_notebook_metadata()
+        .and_then(|meta| meta.kernelspec)
+        .map(|ks| {
+            if ks.name == "deno" {
+                "deno".to_string()
+            } else {
+                "python".to_string()
+            }
+        })
+        .unwrap_or_else(|| "python".to_string());
+
     let mut state = SessionState {
         handle: Some(result.handle),
         broadcast_rx: Some(result.broadcast_rx),
         kernel_started: false,
         kernel_type: None,
         env_source: None,
+        runtime,
         blob_base_url,
         blob_store_path,
         connection_info: Some(connection_info.clone()),
@@ -299,6 +328,7 @@ pub(crate) async fn connect_create(
         kernel_started: false,
         kernel_type: None,
         env_source: None,
+        runtime: runtime.to_string(),
         blob_base_url,
         blob_store_path,
         connection_info: Some(connection_info.clone()),
@@ -2012,7 +2042,11 @@ async fn ensure_kernel_started(
         }
     }
 
-    start_kernel(state, "python", "auto", None).await
+    let runtime = {
+        let st = state.lock().await;
+        st.runtime.clone()
+    };
+    start_kernel(state, &runtime, "auto", None).await
 }
 
 /// Resolve blob server URL and store path from daemon info.
