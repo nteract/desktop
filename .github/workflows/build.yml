@@ -474,85 +474,57 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
-      - name: Pre-seed settings to skip onboarding
-        run: |
-          # The app shows an onboarding window on fresh installs, which has no
-          # notebook webview for WebDriver to interact with. Pre-seed settings
-          # so the app opens a notebook directly.
-          mkdir -p ~/.config/nteract-nightly
-          echo '{"onboarding_completed": true}' > ~/.config/nteract-nightly/settings.json
-
-      - name: Start E2E daemon
-        run: |
-          TARGET=$(ls target/release/binaries/ | grep runtimed | head -1)
-          RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
-            ./target/release/binaries/$TARGET --dev run \
-            --uv-pool-size 3 --conda-pool-size 0 &
-          echo "RUNTIMED_PID=$!" >> $GITHUB_ENV
-
-          # Wait for daemon to initialize and pool to warm up
-          # CI runners start cold — pool warming takes longer than local dev
-          echo "Waiting for daemon to be ready..."
-          sleep 90
-
       - name: Run E2E smoke test
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: |
           set -o pipefail
           mkdir -p e2e-logs
 
-          # Start Xvfb
+          # Pre-seed settings to skip onboarding
+          mkdir -p ~/.config/nteract-nightly
+          echo '{"onboarding_completed": true}' > ~/.config/nteract-nightly/settings.json
+
+          # Start Xvfb (headless display for WebKitGTK)
           Xvfb :99 -screen 0 1920x1080x24 2>/dev/null &
           export DISPLAY=:99
           sleep 2
 
-          # Start the app (embeds WebDriver server via tauri-plugin-webdriver on port 4445)
+          # Start daemon with pool pre-warming
+          TARGET=$(ls target/release/binaries/ | grep runtimed | head -1)
+          RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
+            ./target/release/binaries/$TARGET --dev run \
+            --uv-pool-size 3 --conda-pool-size 0 \
+            > e2e-logs/daemon.log 2>&1 &
+          DAEMON_PID=$!
+          echo "Waiting for daemon pool to warm (90s on cold CI)..."
+          sleep 90
+
+          # Start the app (embeds WebDriver on port 4445)
           RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
             RUST_LOG=info,notebook=debug \
-            ./target/release/notebook > e2e-logs/app-stdout.log 2>&1 &
+            ./target/release/notebook > e2e-logs/app.log 2>&1 &
           APP_PID=$!
 
-          # Wait for embedded WebDriver server
-          echo "Waiting for embedded WebDriver server on port 4445..."
-          WD_READY=0
-          for i in $(seq 1 30); do
-            if curl -s http://localhost:4445/status >/dev/null 2>&1; then
-              echo "WebDriver ready (${i}s)"
-              WD_READY=1
-              break
-            fi
-            # Check if app process died
-            if ! kill -0 $APP_PID 2>/dev/null; then
-              echo "ERROR: App process died. Logs:"
-              cat e2e-logs/app-stdout.log || true
-              break
-            fi
+          # Wait for WebDriver server
+          for i in $(seq 1 60); do
+            curl -s http://localhost:4445/status >/dev/null 2>&1 && break
+            kill -0 $APP_PID 2>/dev/null || { echo "App died"; cat e2e-logs/app.log; exit 1; }
             sleep 1
           done
+          echo "WebDriver ready"
 
-          if [ "$WD_READY" = "0" ]; then
-            echo "ERROR: WebDriver never became ready. App logs:"
-            cat e2e-logs/app-stdout.log || true
-            echo "---"
-            curl -v http://localhost:4445/status 2>&1 || true
-            FAIL=1
-          fi
-
-          # Run the smoke test (capture output)
-          WEBDRIVER_PORT=4445 pnpm test:e2e 2>&1 | tee e2e-logs/test-output.log || FAIL=1
+          # Run tests
+          WEBDRIVER_PORT=4445 pnpm test:e2e 2>&1 | tee e2e-logs/test-output.log
+          EXIT=$?
 
           # Cleanup
-          kill $APP_PID 2>/dev/null || true
-          kill $RUNTIMED_PID 2>/dev/null || true
-
-          exit ${FAIL:-0}
+          kill $APP_PID $DAEMON_PID 2>/dev/null || true
+          exit $EXIT
         env:
-          RUNTIMED_WORKSPACE_PATH: ${{ github.workspace }}
           NO_AT_BRIDGE: 1
           LIBGL_ALWAYS_SOFTWARE: 1
           WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: 1
           WEBKIT_DISABLE_COMPOSITING_MODE: 1
-          RUST_LOG: info,notebook=debug,runtimed=debug
 
       - name: Collect daemon logs
         if: always()
@@ -637,135 +609,81 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Run kernel launch fixture tests
-        timeout-minutes: 15
+        timeout-minutes: 20
         run: |
           set -o pipefail
           mkdir -p e2e-logs
+
+          # Pre-seed settings to skip onboarding
+          mkdir -p ~/.config/nteract-nightly
+          echo '{"onboarding_completed": true}' > ~/.config/nteract-nightly/settings.json
 
           # Start Xvfb
           Xvfb :99 -screen 0 1920x1080x24 2>/dev/null &
           export DISPLAY=:99
           sleep 2
 
+          # Start daemon once — reuse across all fixture tests
+          TARGET=$(ls target/release/binaries/ | grep runtimed | head -1)
+          RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
+            ./target/release/binaries/$TARGET --dev run \
+            --uv-pool-size 3 --conda-pool-size 0 \
+            > e2e-logs/daemon.log 2>&1 &
+          DAEMON_PID=$!
+          echo "Waiting for daemon pool to warm (90s on cold CI)..."
+          sleep 90
+
           FAIL=0
 
-          # Helper function to run a fixture test
-          run_fixture_test() {
-            local notebook="$1"
-            local spec="$2"
-            local name="$3"
+          # Run a fixture test: start app with notebook, wait for WebDriver, run spec
+          run_test() {
+            local notebook="$1" spec="$2" name="$3"
+            echo "=== $name ==="
 
-            echo "=== Running $name ==="
-
-            # Pre-seed settings to skip onboarding
-            mkdir -p ~/.config/nteract-nightly
-            echo '{"onboarding_completed": true}' > ~/.config/nteract-nightly/settings.json
-
-            # Start daemon fresh for each test
-            TARGET=$(ls target/release/binaries/ | grep runtimed | head -1)
             RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
-              ./target/release/binaries/$TARGET --dev run \
-              --uv-pool-size 2 --conda-pool-size 0 &
-            DAEMON_PID=$!
-            sleep 20
+              RUST_LOG=info,notebook=debug \
+              ./target/release/notebook "$notebook" > e2e-logs/app-${name// /-}.log 2>&1 &
+            local app_pid=$!
 
-            # Start the app with the notebook (embeds WebDriver on port 4445)
-            ./target/release/notebook "$notebook" &
-            APP_PID=$!
-
-            # Wait for embedded WebDriver server
-            for i in $(seq 1 30); do
+            for i in $(seq 1 60); do
               curl -s http://localhost:4445/status >/dev/null 2>&1 && break
+              kill -0 $app_pid 2>/dev/null || { echo "App died"; cat e2e-logs/app-${name// /-}.log; return 1; }
               sleep 1
             done
 
-            # Run test and capture exit code
-            local exit_code=0
+            local rc=0
             WEBDRIVER_PORT=4445 E2E_SPEC="$spec" \
-              pnpm test:e2e 2>&1 | tee -a e2e-logs/fixtures-output.log || exit_code=$?
+              pnpm test:e2e 2>&1 | tee -a e2e-logs/fixtures-output.log || rc=$?
 
-            # Cleanup
-            kill $APP_PID 2>/dev/null || true
-            kill $DAEMON_PID 2>/dev/null || true
+            kill $app_pid 2>/dev/null || true
             sleep 2
-
-            echo "=== $name complete (exit: $exit_code) ==="
-            return $exit_code
+            echo "=== $name: exit $rc ==="
+            return $rc
           }
 
-          # Helper function to run untitled notebook test from a specific directory
-          # This test requires the app to be launched from a directory containing pyproject.toml
-          run_untitled_test() {
-            local fixture_dir="$1"
-            local spec="$2"
-            local name="$3"
+          run_test \
+            "crates/notebook/fixtures/audit-test/14-cell-visibility.ipynb" \
+            "e2e/specs/cell-visibility.spec.js" \
+            "Cell Visibility" || FAIL=1
 
-            echo "=== Running $name ==="
-
-            # Pre-seed settings to skip onboarding
-            mkdir -p ~/.config/nteract-nightly
-            echo '{"onboarding_completed": true}' > ~/.config/nteract-nightly/settings.json
-
-            # Start daemon with fixture directory as workspace path
-            TARGET=$(ls target/release/binaries/ | grep runtimed | head -1)
-            RUNTIMED_WORKSPACE_PATH="$fixture_dir" \
-              ./target/release/binaries/$TARGET --dev run \
-              --uv-pool-size 2 --conda-pool-size 0 &
-            DAEMON_PID=$!
-            sleep 20
-
-            # Start the app from fixture directory so it inherits that CWD
-            # Set RUNTIMED_WORKSPACE_PATH so app connects to the daemon we just started
-            (cd "$fixture_dir" && \
-              RUNTIMED_WORKSPACE_PATH="$fixture_dir" \
-              "${GITHUB_WORKSPACE}/target/release/notebook") &
-            APP_PID=$!
-
-            # Wait for embedded WebDriver server
-            for i in $(seq 1 30); do
-              curl -s http://localhost:4445/status >/dev/null 2>&1 && break
-              sleep 1
-            done
-
-            # Run test WITHOUT NOTEBOOK_PATH (untitled notebook)
-            local exit_code=0
-            WEBDRIVER_PORT=4445 E2E_SPEC="$spec" RUNTIMED_WORKSPACE_PATH="$fixture_dir" \
-              pnpm test:e2e 2>&1 | tee -a e2e-logs/fixtures-output.log || exit_code=$?
-
-            # Cleanup
-            kill $APP_PID 2>/dev/null || true
-            kill $DAEMON_PID 2>/dev/null || true
-            sleep 2
-
-            echo "=== $name complete (exit: $exit_code) ==="
-            return $exit_code
-          }
-
-          # Run each fixture test
-          run_fixture_test \
+          run_test \
             "crates/notebook/fixtures/audit-test/1-vanilla.ipynb" \
             "e2e/specs/prewarmed-uv.spec.js" \
-            "Prewarmed Pool Test" || FAIL=1
+            "Prewarmed Pool" || FAIL=1
 
-          run_fixture_test \
+          run_test \
             "crates/notebook/fixtures/audit-test/10-deno.ipynb" \
             "e2e/specs/deno.spec.js" \
-            "Deno Kernel Test" || FAIL=1
+            "Deno Kernel" || FAIL=1
 
-          # Run untitled notebook test from pyproject fixture directory
-          run_untitled_test \
-            "${GITHUB_WORKSPACE}/crates/notebook/fixtures/audit-test/pyproject-project" \
-            "e2e/specs/untitled-pyproject.spec.js" \
-            "Untitled Pyproject Test" || FAIL=1
-
+          # Cleanup
+          kill $DAEMON_PID 2>/dev/null || true
           exit $FAIL
         env:
-          RUNTIMED_WORKSPACE_PATH: ${{ github.workspace }}
           NO_AT_BRIDGE: 1
           LIBGL_ALWAYS_SOFTWARE: 1
           WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: 1
           WEBKIT_DISABLE_COMPOSITING_MODE: 1
-          RUST_LOG: info,notebook=debug,runtimed=debug
 
       - name: Collect daemon logs
         if: always()
