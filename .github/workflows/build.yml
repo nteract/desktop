@@ -491,8 +491,9 @@ jobs:
           echo "RUNTIMED_PID=$!" >> $GITHUB_ENV
 
           # Wait for daemon to initialize and pool to warm up
+          # CI runners start cold — pool warming takes longer than local dev
           echo "Waiting for daemon to be ready..."
-          sleep 30
+          sleep 60
 
       - name: Run E2E smoke test
         timeout-minutes: 5

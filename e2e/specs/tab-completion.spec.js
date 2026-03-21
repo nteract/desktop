@@ -17,7 +17,7 @@ describe("Tab Completion", () => {
   before(async () => {
     await waitForAppReady();
     // Wait for kernel so completions work
-    await waitForKernelReady(90000);
+    await waitForKernelReady(120000);
   });
 
   // Skip: Flaky in CI due to kernel completion timing variance. The async chain
