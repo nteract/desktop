@@ -1693,31 +1693,51 @@ async fn save_notebook_as(
             *id = new_id.clone();
         }
         drop(notebook_id_arc);
+
+        // Update the live relay handle's notebook_id so subsequent commands
+        // (e.g. user-triggered kernel restart) derive the correct file path
+        // instead of the stale UUID.
+        let guard = notebook_sync.lock().await;
+        if let Some(ref handle) = *guard {
+            handle.set_notebook_id(new_id.clone());
+        }
+        drop(guard);
     }
 
     refresh_native_menu(window.app_handle(), registry.inner());
 
-    // Shut down the old kernel (its working directory was wrong for the new path)
-    // and launch a fresh one with the correct notebook path. We do this in the
-    // background so the save returns immediately.
+    // Restart the kernel only if one was already running. This preserves
+    // trust: if the user had a kernel, trust was already approved. If not,
+    // we don't bypass the trust dialog by launching one now.
     let saved_path_str = saved_path.to_string_lossy().to_string();
     let notebook_sync_for_kernel = notebook_sync.clone();
     tokio::spawn(async move {
         let guard = notebook_sync_for_kernel.lock().await;
         if let Some(ref handle) = *guard {
-            let _ = handle
-                .send_request(NotebookRequest::ShutdownKernel {})
-                .await;
             match handle
-                .send_request(NotebookRequest::LaunchKernel {
-                    kernel_type: "auto".to_string(),
-                    env_source: "auto".to_string(),
-                    notebook_path: Some(saved_path_str),
-                })
+                .send_request(NotebookRequest::ShutdownKernel {})
                 .await
             {
-                Ok(resp) => info!("[save-as] Kernel launched for saved notebook: {:?}", resp),
-                Err(e) => warn!("[save-as] Kernel launch failed: {}", e),
+                Ok(NotebookResponse::KernelShuttingDown {}) => {
+                    // Had a running kernel — relaunch with the correct path.
+                    match handle
+                        .send_request(NotebookRequest::LaunchKernel {
+                            kernel_type: "auto".to_string(),
+                            env_source: "auto".to_string(),
+                            notebook_path: Some(saved_path_str),
+                        })
+                        .await
+                    {
+                        Ok(resp) => {
+                            info!("[save-as] Kernel launched for saved notebook: {:?}", resp)
+                        }
+                        Err(e) => warn!("[save-as] Kernel launch failed: {}", e),
+                    }
+                }
+                _ => {
+                    // No kernel was running — don't launch one (trust not yet approved).
+                    info!("[save-as] No kernel was running, skipping launch");
+                }
             }
         }
     });
