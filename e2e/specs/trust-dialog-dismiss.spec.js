@@ -11,20 +11,37 @@
 
 import { browser, expect } from "@wdio/globals";
 import {
-  executeFirstCell,
   getKernelStatus,
+  setCellSource,
   waitForAppReady,
+  waitForNotebookSynced,
 } from "../helpers.js";
 
 describe("Trust Dialog Dismiss", () => {
   before(async () => {
     await waitForAppReady();
+    console.log("[trust-dialog-dismiss] App ready");
   });
 
   it("should close trust dialog on single click without waiting for kernel", async () => {
-    // Execute a cell to trigger kernel start (which requires trust approval)
-    // This is how other trust-related specs trigger the dialog
-    await executeFirstCell();
+    // Wait for the notebook to sync and render cells
+    await waitForNotebookSynced();
+    console.log("[trust-dialog-dismiss] Notebook synced");
+
+    // Find the first code cell
+    const codeCell = await $('[data-cell-type="code"]');
+    await codeCell.waitForExist({ timeout: 10000 });
+    console.log("[trust-dialog-dismiss] Found code cell");
+
+    // Set cell source via CodeMirror dispatch (bypasses synthetic keyboard events)
+    await setCellSource(codeCell, "import sys; print(sys.executable)");
+    console.log("[trust-dialog-dismiss] Set cell source");
+
+    // Click the execute button to trigger kernel start (which requires trust approval)
+    const executeButton = await codeCell.$('[data-testid="execute-button"]');
+    await executeButton.waitForClickable({ timeout: 5000 });
+    await executeButton.click();
+    console.log("[trust-dialog-dismiss] Clicked execute button");
 
     // Wait for the trust dialog to appear (notebook has untrusted deps)
     const dialog = await $('[data-testid="trust-dialog"]');
@@ -35,17 +52,28 @@ describe("Trust Dialog Dismiss", () => {
       timeoutMsg:
         "Trust dialog did not appear - fixture notebook should have untrusted deps",
     });
+    // The trust dialog should be visible before approval
+    expect(await dialog.isExisting()).toBe(true);
+    console.log("[trust-dialog-dismiss] Trust dialog appeared");
 
     // Record current kernel status before clicking
     const statusBefore = await getKernelStatus();
-    console.log(`Kernel status before trust approval: ${statusBefore}`);
+    console.log(
+      `[trust-dialog-dismiss] Kernel status before trust approval: ${statusBefore}`,
+    );
 
-    // Find and click the approve button
+    // Approve and decline buttons should be present
     const approveButton = await $('[data-testid="trust-approve-button"]');
+    expect(await approveButton.isExisting()).toBe(true);
+    const declineButton = await $('[data-testid="trust-decline-button"]');
+    expect(await declineButton.isExisting()).toBe(true);
+
+    // Click the approve button
     await approveButton.waitForClickable({ timeout: 5000 });
 
     const clickTime = Date.now();
     await approveButton.click();
+    console.log("[trust-dialog-dismiss] Clicked approve button");
 
     // Dialog should close QUICKLY (within 3 seconds) - this is the key assertion
     // If it waited for kernel launch, this would timeout
@@ -58,11 +86,13 @@ describe("Trust Dialog Dismiss", () => {
 
     const closeTime = Date.now();
     const dismissTime = closeTime - clickTime;
-    console.log(`Dialog dismissed in ${dismissTime}ms`);
+    console.log(`[trust-dialog-dismiss] Dialog dismissed in ${dismissTime}ms`);
 
     // Check kernel status - should be starting or have quickly reached idle
     const statusAfter = await getKernelStatus();
-    console.log(`Kernel status after dialog closed: ${statusAfter}`);
+    console.log(
+      `[trust-dialog-dismiss] Kernel status after dialog closed: ${statusAfter}`,
+    );
     expect(["starting", "idle", "busy"]).toContain(statusAfter);
   });
 });

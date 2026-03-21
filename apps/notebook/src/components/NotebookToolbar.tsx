@@ -261,6 +261,7 @@ export function NotebookToolbar({
             onClick={onToggleDependencies}
             data-testid="deps-toggle"
             data-runtime={runtime}
+            data-env-manager={envManager || undefined}
             className={cn(
               "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
               runtime === "deno"
@@ -311,6 +312,8 @@ export function NotebookToolbar({
           role="status"
           aria-label={`Kernel: ${kernelStatusDescription}`}
           title={envErrorMessage ? undefined : kernelStatusTooltip}
+          data-testid="kernel-status"
+          data-kernel-status={kernelStatus}
         >
           <div
             className={cn(

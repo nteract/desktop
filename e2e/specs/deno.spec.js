@@ -24,6 +24,12 @@ describe("Deno Kernel", () => {
     await waitForKernelReady(300000);
   });
 
+  it("should show Deno runtime in toolbar", async () => {
+    const depsToggle = await $('[data-testid="deps-toggle"]');
+    await depsToggle.waitForExist({ timeout: 10000 });
+    expect(await depsToggle.getAttribute("data-runtime")).toBe("deno");
+  });
+
   it("should execute TypeScript and show output", async () => {
     await waitForNotebookSynced();
 
