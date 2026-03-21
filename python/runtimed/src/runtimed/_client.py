@@ -16,7 +16,7 @@ class Client:
     Example::
 
         client = Client()
-        notebook = await client.create()
+        notebook = await client.create_notebook()
         cell = await notebook.cells.create("print('hello')")
         print(cell.source)   # sync read
         result = await cell.run()  # async
@@ -34,12 +34,12 @@ class Client:
         raw = await self._native.list_active_notebooks()
         return [NotebookInfo._from_dict(d) for d in raw]
 
-    async def open(self, path: str, peer_label: str | None = None) -> Notebook:
+    async def open_notebook(self, path: str, peer_label: str | None = None) -> Notebook:
         """Open an existing notebook file and return a connected Notebook."""
         session = await self._native.open_notebook(path, peer_label)
         return Notebook(session)
 
-    async def create(
+    async def create_notebook(
         self,
         runtime: str = "python",
         working_dir: str | None = None,
@@ -49,7 +49,7 @@ class Client:
         session = await self._native.create_notebook(runtime, working_dir, peer_label)
         return Notebook(session)
 
-    async def join(self, notebook_id: str, peer_label: str | None = None) -> Notebook:
+    async def join_notebook(self, notebook_id: str, peer_label: str | None = None) -> Notebook:
         """Join an existing notebook room by ID."""
         session = await self._native.join_notebook(notebook_id, peer_label)
         return Notebook(session)
