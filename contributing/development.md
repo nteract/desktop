@@ -166,7 +166,18 @@ In production, the Tauri app auto-installs and manages the system daemon. In dev
 - Your code changes take effect immediately on daemon restart
 - No interference with the system daemon
 
-**Two-terminal workflow:**
+**With Inkwell supervisor (preferred for agents):**
+
+If you have `supervisor_*` MCP tools available (e.g. in Zed with `mcp-supervisor`), the daemon is managed for you:
+
+- `supervisor_restart(target="daemon")` — start or restart the dev daemon
+- `supervisor_status` — check daemon status (includes `daemon_managed: true/false`)
+- `supervisor_rebuild` — rebuild Python bindings + restart
+- `supervisor_logs` — tail daemon logs
+
+No env vars or extra terminals needed. The supervisor handles per-worktree isolation automatically.
+
+**Two-terminal workflow (without supervisor):**
 
 ```bash
 # Terminal 1: Start the dev daemon (stays running)
@@ -205,7 +216,7 @@ RUNTIMED_DEV=1 cargo xtask notebook
 
 Per-worktree state is stored in `<cache>/runt-nightly/worktrees/{hash}/` (macOS: `~/Library/Caches/`, Linux: `~/.cache/`).
 
-**For AI agents:** Use `./target/debug/runt` directly to interact with the daemon. See the "Agent Access to Dev Daemon" section in CLAUDE.md. When using a raw terminal (not Zed tasks), set the env vars manually:
+**For AI agents:** If `supervisor_*` tools are available, prefer those — they handle env vars and daemon lifecycle automatically. Otherwise, use `./target/debug/runt` directly (see "Agent Access to Dev Daemon" in CLAUDE.md). When using a raw terminal (not Zed tasks), set the env vars manually:
 
 ```bash
 export RUNTIMED_DEV=1
