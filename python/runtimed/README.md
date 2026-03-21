@@ -36,7 +36,7 @@ async def main():
     await cell.run()
 
     # Save the notebook
-    path = await notebook.save("/tmp/my-notebook.ipynb")
+    path = await notebook.save_as("/tmp/my-notebook.ipynb")
 
 asyncio.run(main())
 ```

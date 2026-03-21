@@ -107,7 +107,7 @@ async with await client.create_notebook() as notebook:
 
     # Save
     path = await notebook.save()
-    path = await notebook.save("/tmp/copy.ipynb")
+    path = await notebook.save_as("/tmp/copy.ipynb")
 
     # Execute code
     cell = await notebook.cells.create("print('hello')")
