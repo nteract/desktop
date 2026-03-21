@@ -43,7 +43,7 @@ import runtimed
 
 async def main():
     client = runtimed.Client()
-    async with await client.create() as notebook:
+    async with await client.create_notebook() as notebook:
         cell = await notebook.cells.create("print('hello')")
         result = await cell.run()
         print(result.stdout)  # "hello\n"
@@ -61,12 +61,12 @@ client = runtimed.Client()
 # Discover active notebooks
 notebooks = await client.list_active_notebooks()
 for info in notebooks:
-    print(f"{info.name} [{info.kernel_status}] ({info.active_peers} peers)")
+    print(f"{info.name} [{info.status}] ({info.active_peers} peers)")
 
 # Open, create, or join notebooks
-notebook = await client.open("/path/to/notebook.ipynb")
-notebook = await client.create(runtime="python")
-notebook = await client.join(notebook_id)
+notebook = await client.open_notebook("/path/to/notebook.ipynb")
+notebook = await client.create_notebook(runtime="python")
+notebook = await client.join_notebook(notebook_id)
 
 # Health checks
 await client.ping()        # True if daemon responding
@@ -86,7 +86,7 @@ await client.shutdown()    # Stop the daemon
 A `Notebook` wraps a connected session. Properties are **sync reads** from the local Automerge replica. Methods are **async writes** that sync to peers.
 
 ```python
-async with await client.create() as notebook:
+async with await client.create_notebook() as notebook:
     print(notebook.notebook_id)
 
     # Cells collection (sync reads, async writes)
@@ -98,12 +98,12 @@ async with await client.create() as notebook:
     print(notebook.runtime.kernel.status)
     print(notebook.peers)
 
-    # Kernel lifecycle
-    await notebook.start_kernel(kernel_type="python")
-    await notebook.start_kernel(kernel_type="deno")
-    await notebook.restart_kernel()
+    # Runtime lifecycle
+    await notebook.start(runtime="python")
+    await notebook.start(runtime="deno")
+    await notebook.restart()
     await notebook.interrupt()
-    await notebook.shutdown_kernel()
+    await notebook.shutdown()
 
     # Save
     path = await notebook.save()
@@ -247,12 +247,12 @@ async def multi_client_demo():
     client = runtimed.Client()
 
     # Client 1 creates a notebook and executes code
-    nb1 = await client.create()
+    nb1 = await client.create_notebook()
     cell = await nb1.cells.create("x = 42")
     await cell.run()
 
     # Client 2 joins the same notebook, sees the cell, shares the kernel
-    nb2 = await client.join(nb1.notebook_id)
+    nb2 = await client.join_notebook(nb1.notebook_id)
     print(len(nb2.cells))  # 1 — synced from nb1
 
     cell2 = await nb2.cells.create("print(x)")

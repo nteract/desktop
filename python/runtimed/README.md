@@ -20,7 +20,7 @@ import runtimed
 
 async def main():
     client = runtimed.Client()
-    notebook = await client.create()
+    notebook = await client.create_notebook()
 
     # Create and execute cells
     cell = await notebook.cells.create("print('hello')")
@@ -58,18 +58,18 @@ client = runtimed.Client()
 # Discover active notebooks
 notebooks = await client.list_active_notebooks()
 for info in notebooks:
-    print(f"{info.name} [{info.kernel_status}] ({info.active_peers} peers)")
+    print(f"{info.name} [{info.status}] ({info.active_peers} peers)")
 
 # Open, create, or join notebooks
-notebook = await client.open("/path/to/notebook.ipynb")
-notebook = await client.create(runtime="python")
-notebook = await client.join(notebook_id)
+notebook = await client.open_notebook("/path/to/notebook.ipynb")
+notebook = await client.create_notebook(runtime="python")
+notebook = await client.join_notebook(notebook_id)
 ```
 
 ### Notebook
 
 ```python
-async with await client.create() as notebook:
+async with await client.create_notebook() as notebook:
     # Cells collection (sync reads, async writes)
     print(len(notebook.cells))
     for cell in notebook.cells:
@@ -78,9 +78,9 @@ async with await client.create() as notebook:
     # Runtime state (sync read from local doc)
     print(notebook.runtime.kernel.status)
 
-    # Kernel lifecycle
-    await notebook.start_kernel(kernel_type="python")
-    await notebook.restart_kernel()
+    # Runtime lifecycle
+    await notebook.start(runtime="python")
+    await notebook.restart()
     await notebook.interrupt()
     await notebook.save()
 # Session closed automatically on exit

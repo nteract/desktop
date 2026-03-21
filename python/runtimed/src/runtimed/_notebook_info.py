@@ -19,10 +19,10 @@ class NotebookInfo:
     """
 
     notebook_id: str
-    kernel_type: str | None = None
-    kernel_status: str | None = None
+    runtime_type: str | None = None
+    status: str | None = None
     active_peers: int = 0
-    has_kernel: bool = False
+    has_runtime: bool = False
     env_source: str | None = None
 
     @property
@@ -46,21 +46,21 @@ class NotebookInfo:
 
     async def join(self, client: Client, peer_label: str | None = None) -> Notebook:
         """Join this room and return a Notebook."""
-        return await client.join(self.notebook_id, peer_label=peer_label)
+        return await client.join_notebook(self.notebook_id, peer_label=peer_label)
 
     @classmethod
     def _from_dict(cls, d: dict[str, Any]) -> NotebookInfo:
         """Construct from the dict returned by NativeAsyncClient.list_active_notebooks()."""
         return cls(
             notebook_id=d["notebook_id"],
-            kernel_type=d.get("kernel_type"),
-            kernel_status=d.get("kernel_status"),
+            runtime_type=d.get("kernel_type"),
+            status=d.get("kernel_status"),
             active_peers=int(d.get("active_peers", 0)),
-            has_kernel=bool(d.get("has_kernel", False)),
+            has_runtime=bool(d.get("has_kernel", False)),
             env_source=d.get("env_source"),
         )
 
     def __repr__(self) -> str:
-        status = f" [{self.kernel_status}]" if self.kernel_status else ""
+        status_str = f" [{self.status}]" if self.status else ""
         peers = f" ({self.active_peers} peers)" if self.active_peers else ""
-        return f"NotebookInfo({self.name!r}{status}{peers})"
+        return f"NotebookInfo({self.name!r}{status_str}{peers})"
