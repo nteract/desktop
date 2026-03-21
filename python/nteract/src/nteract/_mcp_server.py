@@ -31,6 +31,7 @@ from mcp.types import ImageContent, TextContent, ToolAnnotations
 from pydantic import Field
 
 import runtimed
+from runtimed.runtimed import QueueState
 
 logger = logging.getLogger(__name__)
 
@@ -349,7 +350,7 @@ def _outputs_to_content(outputs: list[runtimed.Output]) -> list[ContentItem]:
     return items
 
 
-def _build_cell_status_map(queue_state: runtimed.QueueState) -> dict[str, str]:
+def _build_cell_status_map(queue_state: QueueState) -> dict[str, str]:
     """Build a cell_id -> status mapping from queue state."""
     cell_status: dict[str, str] = {}
     if queue_state.executing:
@@ -366,7 +367,7 @@ async def _get_cell_status_map(notebook: runtimed.Notebook) -> dict[str, str]:
     get_all_cells or get_cell from returning results.
     """
     try:
-        queue_state = await notebook.session.get_queue_state()
+        queue_state = await notebook.queue_state()
         return _build_cell_status_map(queue_state)
     except asyncio.CancelledError:
         raise
@@ -377,7 +378,7 @@ async def _get_cell_status_map(notebook: runtimed.Notebook) -> dict[str, str]:
 async def _get_single_cell_status(notebook: runtimed.Notebook, cell_id: str) -> str | None:
     """Fetch queue status for a single cell, None on failure."""
     try:
-        queue_state = await notebook.session.get_queue_state()
+        queue_state = await notebook.queue_state()
         if queue_state.executing == cell_id:
             return "running"
         if cell_id in queue_state.queued:
@@ -1478,7 +1479,7 @@ async def resource_status() -> str:
         return json.dumps(
             {
                 "notebook_id": _notebook.notebook_id,
-                "connected": await _notebook.session.is_connected(),
+                "connected": await _notebook.is_connected(),
                 "runtime_status": _notebook.runtime.kernel.status,
                 "env_source": _notebook.runtime.kernel.env_source,
             }
