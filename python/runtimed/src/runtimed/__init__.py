@@ -2,47 +2,59 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
-# Native daemon client (PyO3 bindings)
-from runtimed.runtimed import (
-    AsyncClient,
+from runtimed._cell import CellCollection, CellHandle
+
+# Primary API
+from runtimed._client import Client
+from runtimed._notebook import Notebook
+from runtimed._notebook_info import NotebookInfo
+from runtimed._presence import Presence
+
+# Data types (from native bindings)
+# These are importable but not in __all__ — for internal consumers
+# and power users who need direct access to the native types.
+from runtimed.runtimed import (  # noqa: F401
     AsyncSession,
     Cell,
-    Client,
     CompletionItem,
     CompletionResult,
-    DaemonClient,
+    EnvState,
     ExecutionEvent,
     ExecutionResult,
     HistoryEntry,
+    KernelState,
+    NativeAsyncClient,
+    NativeClient,
     NotebookConnectionInfo,
     Output,
     QueueState,
     RuntimedError,
+    RuntimeState,
     Session,
+    SyncEnvironmentResult,
     default_socket_path,
     show_notebook_app,
 )
 
 __all__ = [
-    # New API (recommended)
+    # Primary API
     "Client",
-    "AsyncClient",
-    # Legacy API (deprecated, kept for backwards compatibility)
-    "DaemonClient",
-    "Session",
-    "AsyncSession",
-    # Output types
+    "Notebook",
+    "NotebookInfo",
+    "CellHandle",
+    "CellCollection",
+    "Presence",
+    # Data types (reachable through wrapper)
     "Cell",
     "ExecutionEvent",
     "ExecutionResult",
-    "NotebookConnectionInfo",
     "Output",
     "RuntimedError",
-    # Completion and queue types
-    "CompletionItem",
-    "CompletionResult",
-    "QueueState",
-    "HistoryEntry",
+    "SyncEnvironmentResult",
+    # Runtime state
+    "RuntimeState",
+    "KernelState",
+    "EnvState",
     # Standalone functions
     "default_socket_path",
     "show_notebook_app",

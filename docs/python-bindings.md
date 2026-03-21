@@ -35,365 +35,147 @@ The repo uses two venvs:
 
 ## Quick Start
 
-### Synchronous API
-
-```python
-import runtimed
-
-# Execute code with automatic kernel management
-with runtimed.Session() as session:
-    session.start_kernel()
-    result = session.run("print('hello')")
-    print(result.stdout)  # "hello\n"
-```
-
-### Async API
+> All examples use `await` — run them inside `asyncio.run(main())`, a Jupyter notebook, or `python -m asyncio`.
 
 ```python
 import asyncio
 import runtimed
 
 async def main():
-    async with runtimed.AsyncSession() as session:
-        await session.start_kernel()
-        result = await session.run("print('hello async')")
-        print(result.stdout)  # "hello async\n"
+    client = runtimed.Client()
+    async with await client.create_notebook() as notebook:
+        cell = await notebook.cells.create("print('hello')")
+        result = await cell.run()
+        print(result.stdout)  # "hello\n"
 
 asyncio.run(main())
 ```
 
-## Session API
+## Client
 
-The `Session` class is the primary interface for executing code. Each session connects to a notebook room in the daemon.
-
-### Creating a Session
-
-```python
-# Auto-generated notebook ID
-session = runtimed.Session()
-
-# Explicit notebook ID (allows sharing between sessions)
-session = runtimed.Session(notebook_id="my-notebook")
-```
-
-### Kernel Lifecycle
-
-```python
-session.connect()                    # Connect to daemon (auto-called by start_kernel)
-session.start_kernel()               # Launch Python kernel (env_source="auto", notebook_path=None)
-session.start_kernel(kernel_type="deno")  # Launch Deno kernel
-session.start_kernel(env_source="uv:prewarmed")  # Explicit env source
-session.start_kernel(notebook_path="/path/to/nb.ipynb")  # Hint for project file detection
-session.interrupt()                  # Interrupt running execution
-session.shutdown_kernel()            # Stop the kernel
-```
-
-### Code Execution
-
-```python
-# Create cells in the document, then execute (document-first pattern)
-cell_id = session.create_cell("x = 42")
-result = session.execute_cell(cell_id)
-
-# Execute another cell
-cell_id2 = session.create_cell("print(x)")
-result = session.execute_cell(cell_id2)
-
-# Check results
-print(result.success)         # True if no error
-print(result.stdout)          # Captured stdout
-print(result.stderr)          # Captured stderr
-print(result.execution_count) # Execution counter
-print(result.error)           # Error output if failed
-
-# Queue execution without waiting (fire-and-forget)
-session.queue_cell(cell_id)
-# Poll for results later
-cell = session.get_cell(cell_id)
-```
-
-### Document-First Execution
-
-The session uses a document-first model where cells are stored in an automerge document. This enables multi-client synchronization.
-
-```python
-# Create a cell in the document
-cell_id = session.create_cell("x = 10")
-
-# Update cell source (full replacement, uses Myers diff internally)
-session.set_source(cell_id, "x = 20")
-
-# Append to cell source (direct CRDT insert, no diff — ideal for streaming)
-session.append_source(cell_id, "\ny = 30")
-
-# Execute by cell ID (daemon reads source from document)
-result = session.execute_cell(cell_id)
-
-# Read cell state
-cell = session.get_cell(cell_id)
-print(cell.source)           # "x = 20\ny = 30"
-print(cell.execution_count)  # 1
-
-# List all cells
-cells = session.get_cells()
-
-# Delete a cell
-session.delete_cell(cell_id)
-
-# Move a cell (returns new fractional position string)
-new_position = session.move_cell(cell_id, after_cell_id="other-cell-id")
-```
-
-### Saving Notebooks
-
-Save the notebook document to disk. The daemon handles serialization.
-
-```python
-# Save to the current notebook path (daemon resolves it)
-path = session.save()
-print(path)  # "/Users/you/notebooks/analysis.ipynb"
-
-# Save-as to a specific path
-path = session.save(path="/tmp/copy.ipynb")
-print(path)  # "/tmp/copy.ipynb"
-```
-
-Returns the absolute path where the file was written.
-
-### Streaming Execution
-
-Process outputs incrementally as they arrive from the kernel:
-
-```python
-cell_id = session.create_cell("for i in range(5): print(i)")
-events = session.stream_execute(cell_id)
-
-for event in events:
-    if event.event_type == "execution_started":
-        print(f"Started, count={event.execution_count}")
-    elif event.event_type == "output":
-        print(f"Output: {event.output}")
-    elif event.event_type == "done":
-        print("Done!")
-```
-
-### Context Manager
-
-Sessions work as context managers for automatic cleanup:
-
-```python
-with runtimed.Session() as session:
-    session.start_kernel()
-    cell_id = session.create_cell("1 + 1")
-    result = session.execute_cell(cell_id)
-# Kernel automatically shut down on exit
-```
-
-### Properties
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `notebook_id` | `str` | Unique identifier for this notebook |
-| `is_connected` | `bool` | Whether connected to daemon |
-| `kernel_started` | `bool` | Whether kernel is running |
-| `kernel_type` | `str \| None` | Current kernel type ("python", "deno", or None if not started) |
-| `env_source` | `str \| None` | Environment source (e.g., "uv:prewarmed") |
-| `connection_info` | `NotebookConnectionInfo \| None` | Notebook connection info after connecting. Fields: `protocol` (str), `notebook_id` (str), `cell_count` (int), `needs_trust_approval` (bool), and optional `protocol_version` (int \| None), `daemon_version` (str \| None), `error` (str \| None) |
-
-## AsyncSession API
-
-The `AsyncSession` class provides the same functionality as `Session` but with an async API for use in async Python code.
-
-### Quick Start
-
-```python
-import asyncio
-import runtimed
-
-async def main():
-    async with runtimed.AsyncSession() as session:
-        await session.start_kernel()
-        cell_id = await session.create_cell("print('hello async')")
-        result = await session.execute_cell(cell_id)
-        print(result.stdout)  # "hello async\n"
-
-asyncio.run(main())
-```
-
-### Creating an AsyncSession
-
-```python
-# Auto-generated notebook ID
-session = runtimed.AsyncSession()
-
-# Explicit notebook ID (allows sharing between sessions)
-session = runtimed.AsyncSession(notebook_id="my-notebook")
-```
-
-### Kernel Lifecycle
-
-```python
-await session.connect()              # Connect to daemon
-await session.start_kernel()         # Launch Python kernel
-await session.start_kernel(kernel_type="deno")  # Launch Deno kernel
-await session.interrupt()            # Interrupt running execution
-await session.shutdown_kernel()      # Stop the kernel
-```
-
-### Code Execution
-
-```python
-# Create and execute cells (document-first pattern)
-cell_id = await session.create_cell("x = 42")
-result = await session.execute_cell(cell_id)
-
-cell_id2 = await session.create_cell("print(x)")
-result = await session.execute_cell(cell_id2)
-
-# Check results
-print(result.success)         # True if no error
-print(result.stdout)          # Captured stdout
-print(result.stderr)          # Captured stderr
-
-# Queue execution without waiting
-await session.queue_cell(cell_id)
-```
-
-### Document-First Execution
-
-```python
-# Create a cell in the automerge document
-cell_id = await session.create_cell("x = 10")
-
-# Update cell source (full replacement, uses Myers diff internally)
-await session.set_source(cell_id, "x = 20")
-
-# Append to cell source (direct CRDT insert, no diff — ideal for streaming)
-await session.append_source(cell_id, "\ny = 30")
-
-# Execute by cell ID (daemon reads source from document)
-result = await session.execute_cell(cell_id)
-
-# Read cell state
-cell = await session.get_cell(cell_id)
-print(cell.source)  # "x = 20\ny = 30"
-
-# List all cells
-cells = await session.get_cells()
-
-# Delete a cell
-await session.delete_cell(cell_id)
-
-# Move a cell
-new_position = await session.move_cell(cell_id, after_cell_id="other-cell-id")
-```
-
-### Saving Notebooks
-
-```python
-# Save to the current notebook path
-path = await session.save()
-
-# Save-as to a specific path
-path = await session.save(path="/tmp/copy.ipynb")
-```
-
-### Streaming Execution
-
-Process outputs incrementally as they arrive from the kernel:
-
-```python
-cell_id = await session.create_cell("for i in range(5): print(i)")
-
-async for event in await session.stream_execute(cell_id):
-    if event.event_type == "execution_started":
-        print(f"Started, count={event.execution_count}")
-    elif event.event_type == "output":
-        print(f"Output: {event.output}")
-    elif event.event_type == "done":
-        print("Done!")
-```
-
-### Async Context Manager
-
-AsyncSession works as an async context manager for automatic cleanup:
-
-```python
-async with runtimed.AsyncSession() as session:
-    await session.start_kernel()
-    cell_id = await session.create_cell("1 + 1")
-    result = await session.execute_cell(cell_id)
-# Kernel automatically shut down on exit
-```
-
-### Async Properties
-
-Note that property accessors are async methods in AsyncSession:
-
-```python
-# These are coroutines, not properties
-connected = await session.is_connected()     # bool
-kernel_running = await session.kernel_started()  # bool
-env = await session.env_source()             # str | None
-
-# Only notebook_id is a sync property
-notebook_id = session.notebook_id  # str
-```
-
-## Client API
-
-The `Client` class provides daemon-level operations and is a factory for connected sessions.
-
-> **Note:** `DaemonClient` is deprecated. Use `Client` (or `AsyncClient` for async code) instead.
+`runtimed.Client` is the primary entry point. It wraps the daemon connection and returns `Notebook` objects.
 
 ```python
 client = runtimed.Client()
 
+# Discover active notebooks
+notebooks = await client.list_active_notebooks()
+for info in notebooks:
+    print(f"{info.name} [{info.status}] ({info.active_peers} peers)")
+
+# Open, create, or join notebooks
+notebook = await client.open_notebook("/path/to/notebook.ipynb")
+notebook = await client.create_notebook(runtime="python")
+notebook = await client.join_notebook(notebook_id)
+
 # Health checks
-client.ping()         # True if daemon responding
-client.is_running()   # True if daemon process exists
+await client.ping()        # True if daemon responding
+await client.is_running()  # True if daemon process exists
 
 # Pool status
-stats = client.status()
-# {
-#   'uv_available': 2,
-#   'conda_available': 0,
-#   'uv_warming': 1,
-#   'conda_warming': 0
-# }
-
-# Active notebook rooms
-rooms = client.list_rooms()
-# [
-#   {
-#     'notebook_id': 'my-notebook',
-#     'active_peers': 2,
-#     'has_kernel': True,
-#     'kernel_type': 'python',
-#     'kernel_status': 'idle',
-#     'env_source': 'uv:prewarmed'
-#   }
-# ]
-
-# Session factory methods
-session = client.open_notebook("/path/to/notebook.ipynb")
-session = client.create_notebook(runtime="python", working_dir="/path/to/project")
-session = client.join_notebook("existing-notebook-id")
+stats = await client.status()
+# {'uv_available': 2, 'conda_available': 0, ...}
 
 # Operations
-client.flush_pool()   # Clear and rebuild environment pool
-client.shutdown()     # Stop the daemon
+await client.flush_pool()  # Clear and rebuild environment pool
+await client.shutdown()    # Stop the daemon
+```
+
+## Notebook
+
+A `Notebook` wraps a connected session. Properties are **sync reads** from the local Automerge replica. Methods are **async writes** that sync to peers.
+
+```python
+async with await client.create_notebook() as notebook:
+    print(notebook.notebook_id)
+
+    # Cells collection (sync reads, async writes)
+    print(len(notebook.cells))
+    for cell in notebook.cells:
+        print(f"{cell.id[:8]}: {cell.source[:40]}")
+
+    # Runtime state (sync read from local doc)
+    print(notebook.runtime.kernel.status)
+    print(notebook.peers)
+
+    # Runtime lifecycle
+    await notebook.start(runtime="python")
+    await notebook.start(runtime="deno")
+    await notebook.restart()
+    await notebook.interrupt()
+    await notebook.shutdown()
+
+    # Save
+    path = await notebook.save()
+    path = await notebook.save_as("/tmp/copy.ipynb")
+
+    # Execute code
+    cell = await notebook.cells.create("print('hello')")
+    result = await cell.run()
+# Session closed automatically on exit
+```
+
+### CellCollection
+
+Access via `notebook.cells`. Sync reads, async mutations.
+
+```python
+# Create cells
+cell = await notebook.cells.create("import math")
+cell = await notebook.cells.insert_at(0, "# Title", cell_type="markdown")
+
+# Access cells (sync)
+cell = notebook.cells.get_by_index(0)     # by position (supports negative)
+cell = notebook.cells.get_by_index(-1)    # last cell
+cell = notebook.cells.get_by_id(cell_id)  # by ID
+cell = notebook.cells[cell_id]            # sugar for get_by_id
+matches = notebook.cells.find("import")   # search source text
+
+# Iteration (sync)
+for cell in notebook.cells:
+    print(cell.source)
+
+len(notebook.cells)          # cell count
+"cell-id" in notebook.cells  # membership test
+notebook.cells.ids           # all cell IDs in order
+```
+
+### CellHandle
+
+A live reference to a cell. Properties read from the local CRDT. Methods write async.
+
+```python
+# Sync reads
+cell.id               # str
+cell.source           # str
+cell.cell_type        # "code", "markdown", or "raw"
+cell.outputs          # list[Output]
+cell.execution_count  # int | None
+cell.metadata         # dict
+cell.snapshot()       # full Cell object
+
+# Async mutations (return self for chaining, except run/delete)
+await cell.set_source("x = 2")
+await cell.append("\ny = 3")
+await cell.splice(index=0, delete_count=5, text="new ")
+await cell.set_type("markdown")
+await cell.move_after(other_cell)
+await cell.clear_outputs()
+await cell.delete()
+
+# Execution
+result = await cell.run(timeout_secs=60.0)  # returns ExecutionResult
+await cell.queue()  # fire-and-forget
 ```
 
 ## Result Types
 
 ### ExecutionResult
 
-Returned by `execute_cell()`:
+Returned by `cell.run()`:
 
 ```python
-cell_id = session.create_cell("print('hello')")
-result = session.execute_cell(cell_id)
+result = await cell.run()
 
 result.cell_id          # Cell that was executed
 result.success          # True if no error
@@ -403,22 +185,6 @@ result.stdout           # Combined stdout text
 result.stderr           # Combined stderr text
 result.display_data     # List of display_data/execute_result outputs
 result.error            # First error output, or None
-```
-
-### ExecutionEvent
-
-Returned by `stream_execute()`:
-
-```python
-events = session.stream_execute(cell_id)  # or: await session.stream_execute(cell_id)
-
-for event in events:
-    event.event_type      # "execution_started", "output", "done", "error"
-    event.cell_id         # Cell this event is for
-    event.output          # Output object (only for "output" events)
-    event.output_index    # int | None (only for "output" events: index in cell's output list)
-    event.execution_count # int (only for "execution_started" events)
-    event.error_message   # str (only for "error" events)
 ```
 
 ### Output
@@ -452,97 +218,70 @@ Values in the `output.data` dict are typed by MIME category — not always `str`
 | Binary | `bytes` | `image/png`, `image/jpeg`, `audio/*`, `video/*` |
 | JSON | `dict` (or `list`) | `application/json`, `application/vnd.dataresource+json`, any `*+json` |
 
-Binary MIME types are returned as **raw bytes** — no base64 encoding. This means you can write them directly to a file or pass them to an image library without decoding:
+Binary MIME types are returned as **raw bytes** — no base64 encoding.
+
+### RuntimeState
+
+Sync read from the local RuntimeStateDoc:
 
 ```python
-result = session.execute_cell(cell_id)
-for output in result.display_data:
-    if "image/png" in output.data:
-        png_bytes = output.data["image/png"]  # bytes, not base64
-        with open("plot.png", "wb") as f:
-            f.write(png_bytes)
-
-    if "application/json" in output.data:
-        obj = output.data["application/json"]  # dict, not a JSON string
-        print(obj["key"])
-```
-
-The output resolver also synthesizes a `text/llm+plain` entry for outputs that contain binary images. This provides an LLM-friendly text description including the image MIME type, size, and blob URL — useful for agent workflows that cannot consume raw image bytes.
-
-### Cell
-
-Cell from the automerge document:
-
-```python
-cell = session.get_cell(cell_id)
-
-cell.id              # Cell identifier
-cell.cell_type       # "code", "markdown", or "raw"
-cell.position        # Fractional index string for ordering
-cell.source          # Cell source content
-cell.execution_count # Execution count if executed
-cell.outputs         # List of Output objects (resolved from automerge document)
-cell.metadata_json   # Cell metadata as JSON string
+rs = notebook.runtime
+rs.kernel.status      # "not_started", "starting", "idle", "busy", "error", "shutdown"
+rs.kernel.language    # "python", "typescript", etc.
+rs.kernel.name        # Kernel display name
+rs.kernel.env_source  # "uv:prewarmed", "conda:inline", etc.
+rs.queue.executing    # Cell ID currently executing, or None
+rs.queue.queued       # List of queued cell IDs
+rs.env.in_sync        # Whether deps match the kernel environment
+rs.env.added          # Packages in metadata but not in kernel
+rs.env.removed        # Packages in kernel but not in metadata
+rs.last_saved         # ISO timestamp of last save, or None
 ```
 
 ## Multi-Client Scenarios
 
-Two sessions with the same `notebook_id` share the same kernel and document:
+Multiple clients joining the same notebook share the kernel and document:
 
 ```python
-# Session 1 creates a cell and executes
-s1 = runtimed.Session(notebook_id="shared")
-s1.connect()
-s1.start_kernel()
-cell_id = s1.create_cell("x = 42")
-s1.execute_cell(cell_id)
+async def multi_client_demo():
+    client = runtimed.Client()
 
-# Session 2 sees the cell and shares the kernel
-s2 = runtimed.Session(notebook_id="shared")
-s2.connect()
-s2.start_kernel()  # Reuses existing kernel
+    # Client 1 creates a notebook and executes code
+    nb1 = await client.create_notebook()
+    cell = await nb1.cells.create("x = 42")
+    await cell.run()
 
-cells = s2.get_cells()
-assert any(c.id == cell_id for c in cells)
+    # Client 2 joins the same notebook, sees the cell, shares the kernel
+    nb2 = await client.join_notebook(nb1.notebook_id)
+    print(len(nb2.cells))  # 1 — synced from nb1
 
-# Execute in s2, result visible to s1
-cell_id2 = s2.create_cell("print(x)")
-s2.execute_cell(cell_id2)  # Uses x=42 from s1's execution
+    cell2 = await nb2.cells.create("print(x)")
+    result = await cell2.run()
+    print(result.stdout)  # "42\n" — shared kernel state
 ```
 
-This enables:
-- Multiple Python processes sharing a notebook
-- Python scripts interacting with notebooks open in the app
-- Agent workflows with parallel execution
+## Advanced: Native Session API
 
-### Agentic Streaming
-
-An agent can stream text into a cell while other clients see it in real-time:
+For power users who need direct access to the low-level session methods (streaming execution, presence, cell metadata, dependencies), use `NativeAsyncClient` and `AsyncSession`:
 
 ```python
-import asyncio
-import runtimed
+native_client = runtimed.NativeAsyncClient()
+session = await native_client.create_notebook()
 
-async def agent_writes_code():
-    async with runtimed.AsyncSession(notebook_id="shared") as session:
-        await session.start_kernel()
+# Full session API available
+cell_id = await session.create_cell("print('hello')")
+result = await session.execute_cell(cell_id)
 
-        # Create an empty cell
-        cell_id = await session.create_cell("")
+# Streaming execution
+async for event in await session.stream_execute(cell_id):
+    if event.event_type == "output":
+        print(event.output.text)
 
-        # Stream tokens into the cell — each append is a CRDT op
-        # that syncs to all connected clients in real-time
-        for token in ["import ", "math\n", "print(", "math.pi", ")"]:
-            await session.append_source(cell_id, token)
-            await asyncio.sleep(0.05)  # Simulate LLM token delay
+# Presence
+await session.set_cursor(cell_id, line=0, column=5)
+peers = await session.get_peers()
 
-        # Execute the completed cell and stream outputs
-        events = await session.stream_execute(cell_id)
-        for event in events:
-            if event.event_type == "output":
-                print(f"Result: {event.output.text}")
-
-asyncio.run(agent_writes_code())
+await session.close()
 ```
 
 ## Error Handling
@@ -551,9 +290,9 @@ All errors raise `RuntimedError`:
 
 ```python
 try:
-    session.execute_cell("nonexistent-cell-id")
+    await cell.run()
 except runtimed.RuntimedError as e:
-    print(f"Error: {e}")  # "Cell not found: nonexistent-cell-id"
+    print(f"Error: {e}")
 ```
 
 Common error scenarios:
@@ -569,5 +308,3 @@ Common error scenarios:
 |----------|-------------|
 | `RUNTIMED_WORKSPACE_PATH` | Use dev daemon for this worktree |
 | `RUNTIMED_SOCKET_PATH` | Override daemon socket path |
-
-

@@ -12,92 +12,100 @@ pip install runtimed
 
 ## Quick Start
 
-### Synchronous API
-
-```python
-import runtimed
-
-with runtimed.Session() as session:
-    session.start_kernel()
-    result = session.run("print('hello')")
-    print(result.stdout)  # "hello\n"
-```
-
-### Async API
+> All examples use `await` — run them inside `asyncio.run(main())`, a Jupyter notebook, or a Python REPL with top-level await (e.g. `python -m asyncio`).
 
 ```python
 import asyncio
 import runtimed
 
 async def main():
-    async with runtimed.AsyncSession() as session:
-        await session.start_kernel()
-        result = await session.run("print('hello async')")
-        print(result.stdout)
+    client = runtimed.Client()
+    notebook = await client.create_notebook()
+
+    # Create and execute cells
+    cell = await notebook.cells.create("print('hello')")
+    result = await cell.run()
+    print(result.stdout)  # "hello\n"
+
+    # Read cell properties (sync — local CRDT replica)
+    print(cell.source)      # "print('hello')"
+    print(cell.cell_type)   # "code"
+
+    # Edit cells
+    await cell.set_source("x = 42")
+    await cell.run()
+
+    # Save the notebook
+    path = await notebook.save_as("/tmp/my-notebook.ipynb")
 
 asyncio.run(main())
 ```
 
 ## Features
 
-- **Code execution** via daemon-managed kernels
-- **Sync and async APIs** for flexibility
-- **Document-first model** with automerge sync
+- **Document-first model** with Automerge CRDT sync
+- **Sync reads, async writes** — reads from local replica, writes sync to peers
 - **Multi-client support** for shared notebooks
 - **Rich output capture** (stdout, stderr, display_data, errors)
 
-## Session API
+## API Overview
+
+### Client
 
 ```python
-session = runtimed.Session(notebook_id="my-notebook")
-session.start_kernel()
+client = runtimed.Client()
 
-# Simple execution
-result = session.run("x = 42")
+# Discover active notebooks
+notebooks = await client.list_active_notebooks()
+for info in notebooks:
+    print(f"{info.name} [{info.status}] ({info.active_peers} peers)")
 
-# Document-first pattern (for fine-grained control)
-cell_id = session.create_cell("print(x)")
-result = session.execute_cell(cell_id)
-
-# Inspect results
-print(result.success)
-print(result.stdout)
-print(result.error)
-
-# Save the notebook to disk
-path = session.save()                       # Save to current path
-path = session.save(path="/tmp/copy.ipynb")  # Save-as
-
-# Reorder cells
-new_position = session.move_cell(cell_id, after_cell_id="other-id")
+# Open, create, or join notebooks
+notebook = await client.open_notebook("/path/to/notebook.ipynb")
+notebook = await client.create_notebook(runtime="python")
+notebook = await client.join_notebook(notebook_id)
 ```
 
-## AsyncSession API
+### Notebook
 
 ```python
-async with runtimed.AsyncSession(notebook_id="my-notebook") as session:
-    await session.start_kernel()
-    result = await session.run("x = 42")
+async with await client.create_notebook() as notebook:
+    # Cells collection (sync reads, async writes)
+    print(len(notebook.cells))
+    for cell in notebook.cells:
+        print(f"{cell.id[:8]}: {cell.source[:40]}")
 
-    # Or document-first pattern
-    cell_id = await session.create_cell("print(x)")
-    result = await session.execute_cell(cell_id)
+    # Runtime state (sync read from local doc)
+    print(notebook.runtime.kernel.status)
 
-    # Save the notebook to disk
-    path = await session.save()                       # Save to current path
-    path = await session.save(path="/tmp/copy.ipynb")  # Save-as
-
-    # Reorder cells
-    new_position = await session.move_cell(cell_id, after_cell_id="other-id")
+    # Runtime lifecycle
+    await notebook.start(runtime="python")
+    await notebook.restart()
+    await notebook.interrupt()
+    await notebook.save()
+# Session closed automatically on exit
 ```
 
-## DaemonClient API
+### Cells
 
 ```python
-client = runtimed.DaemonClient()
-client.ping()        # Health check
-client.status()      # Pool statistics
-client.list_rooms()  # Active notebooks
+# Create cells
+cell = await notebook.cells.create("import math")
+cell = await notebook.cells.insert_at(0, "# Title", cell_type="markdown")
+
+# Access cells
+cell = notebook.cells.get_by_index(0)    # by position
+cell = notebook.cells.get_by_id(cell_id) # by ID
+matches = notebook.cells.find("import")  # search source
+
+# Read properties (sync)
+print(cell.source, cell.cell_type, cell.outputs)
+
+# Mutate (async)
+await cell.set_source("x = 2")
+await cell.append("\ny = 3")
+result = await cell.run()
+await cell.delete()
 ```
 
 ## Requirements

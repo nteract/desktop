@@ -44,6 +44,10 @@ pub(crate) struct SessionState {
     pub kernel_started: bool,
     pub kernel_type: Option<String>,
     pub env_source: Option<String>,
+    /// Intended runtime type for this session (e.g. "python", "deno").
+    /// Set at creation/open time; used by ensure_kernel_started to avoid
+    /// hardcoding "python" when auto-launching kernels.
+    pub runtime: String,
     /// Base URL for blob server (for resolving blob hashes)
     pub blob_base_url: Option<String>,
     /// Path to blob store directory (fallback for direct disk access)
@@ -68,6 +72,7 @@ impl SessionState {
             kernel_started: false,
             kernel_type: None,
             env_source: None,
+            runtime: "python".to_string(),
             blob_base_url: None,
             blob_store_path: None,
             connection_info: None,
@@ -170,7 +175,38 @@ pub(crate) async fn connect_with_socket(
     st.blob_base_url = blob_base_url;
     st.blob_store_path = blob_store_path;
 
+    // Infer runtime from the notebook's kernelspec when joining an existing notebook
+    if let Some(meta) = st.handle.as_ref().and_then(|h| h.get_notebook_metadata()) {
+        if let Some(ref ks) = meta.kernelspec {
+            if ks.name == "deno" {
+                st.runtime = "deno".to_string();
+            }
+        }
+    }
+
+    hydrate_kernel_state(&mut st);
+
     Ok(())
+}
+
+/// Populate `kernel_started`, `kernel_type`, and `env_source` from the
+/// RuntimeStateDoc (the daemon's source of truth for kernel status).
+///
+/// Best-effort: silently does nothing if the handle is missing or the
+/// runtime state can't be read (e.g. brand-new notebook with no state yet).
+fn hydrate_kernel_state(state: &mut SessionState) {
+    let Some(handle) = state.handle.as_ref() else {
+        return;
+    };
+    let Ok(rs) = handle.get_runtime_state() else {
+        return;
+    };
+    let running = matches!(rs.kernel.status.as_str(), "idle" | "busy" | "starting");
+    if running {
+        state.kernel_started = true;
+        state.kernel_type = Some(rs.kernel.language.clone());
+        state.env_source = Some(rs.kernel.env_source.clone());
+    }
 }
 
 /// Spawn a background task that listens for `RoomRenamed` broadcasts
@@ -225,12 +261,27 @@ pub(crate) async fn connect_open(
     // Sync settings from daemon (best-effort, don't fail if unavailable)
     let settings = sync_settings(socket_path).await;
 
-    let state = SessionState {
+    // Infer runtime from the notebook's kernelspec (if present)
+    let runtime = result
+        .handle
+        .get_notebook_metadata()
+        .and_then(|meta| meta.kernelspec)
+        .map(|ks| {
+            if ks.name == "deno" {
+                "deno".to_string()
+            } else {
+                "python".to_string()
+            }
+        })
+        .unwrap_or_else(|| "python".to_string());
+
+    let mut state = SessionState {
         handle: Some(result.handle),
         broadcast_rx: Some(result.broadcast_rx),
         kernel_started: false,
         kernel_type: None,
         env_source: None,
+        runtime,
         blob_base_url,
         blob_store_path,
         connection_info: Some(connection_info.clone()),
@@ -239,6 +290,8 @@ pub(crate) async fn connect_open(
         peer_label: None, // Set by caller (Session/AsyncSession)
         actor_label: actor_label.map(String::from),
     };
+
+    hydrate_kernel_state(&mut state);
 
     Ok((notebook_id, state, connection_info))
 }
@@ -269,12 +322,13 @@ pub(crate) async fn connect_create(
     // Sync settings from daemon (best-effort, don't fail if unavailable)
     let settings = sync_settings(socket_path).await;
 
-    let state = SessionState {
+    let mut state = SessionState {
         handle: Some(result.handle),
         broadcast_rx: Some(result.broadcast_rx),
         kernel_started: false,
         kernel_type: None,
         env_source: None,
+        runtime: runtime.to_string(),
         blob_base_url,
         blob_store_path,
         connection_info: Some(connection_info.clone()),
@@ -283,6 +337,8 @@ pub(crate) async fn connect_create(
         peer_label: None, // Set by caller (Session/AsyncSession)
         actor_label: actor_label.map(String::from),
     };
+
+    hydrate_kernel_state(&mut state);
 
     Ok((notebook_id, state, connection_info))
 }
@@ -326,8 +382,14 @@ pub(crate) async fn start_kernel(
             ..
         } => {
             st.kernel_started = true;
-            st.kernel_type = Some(actual_type);
+            st.kernel_type = Some(actual_type.clone());
             st.env_source = Some(actual_env);
+            if kernel_type != actual_type {
+                return Err(to_py_err(format!(
+                    "Kernel type mismatch: requested '{}' but '{}' is already running",
+                    kernel_type, actual_type
+                )));
+            }
             Ok(())
         }
         NotebookResponse::KernelAlreadyRunning {
@@ -336,8 +398,14 @@ pub(crate) async fn start_kernel(
             ..
         } => {
             st.kernel_started = true;
-            st.kernel_type = Some(actual_type);
+            st.kernel_type = Some(actual_type.clone());
             st.env_source = Some(actual_env);
+            if kernel_type != actual_type {
+                return Err(to_py_err(format!(
+                    "Kernel type mismatch: requested '{}' but '{}' is already running",
+                    kernel_type, actual_type
+                )));
+            }
             Ok(())
         }
         NotebookResponse::Error { error } => Err(to_py_err(error)),
@@ -379,6 +447,13 @@ pub(crate) async fn restart_kernel(
     state: &Arc<Mutex<SessionState>>,
     wait_for_ready: bool,
 ) -> PyResult<Vec<String>> {
+    // Capture the current kernel_type and env_source before shutdown clears them,
+    // so we re-launch with the same configuration.
+    let (prev_kernel_type, prev_env_source) = {
+        let st = state.lock().await;
+        (st.kernel_type.clone(), st.env_source.clone())
+    };
+
     // Shutdown
     {
         let mut st = state.lock().await;
@@ -418,13 +493,18 @@ pub(crate) async fn restart_kernel(
     };
     // Lock is now released — other operations can proceed.
 
+    // Re-launch with the same kernel_type and env_source as before,
+    // falling back to "python" / "auto" if no kernel was previously running.
+    let restart_kernel_type = prev_kernel_type.unwrap_or_else(|| "python".to_string());
+    let restart_env_source = prev_env_source.unwrap_or_else(|| "auto".to_string());
+
     // Send LaunchKernel with a timeout, collecting progress messages concurrently.
     let mut progress_messages: Vec<String> = Vec::new();
     let launch_timeout = std::time::Duration::from_secs(120);
 
     let launch_fut = handle.send_request(NotebookRequest::LaunchKernel {
-        kernel_type: "python".to_string(),
-        env_source: "auto".to_string(),
+        kernel_type: restart_kernel_type,
+        env_source: restart_env_source,
         notebook_path: resolved_path,
     });
 
@@ -1026,7 +1106,20 @@ pub(crate) async fn run(
 }
 
 /// Queue a cell for execution without waiting for the result.
-pub(crate) async fn queue_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) -> PyResult<()> {
+pub(crate) async fn queue_cell(
+    state: &Arc<Mutex<SessionState>>,
+    notebook_id: &str,
+    cell_id: &str,
+) -> PyResult<()> {
+    // Auto-start kernel if not running (matches execute_cell behavior)
+    {
+        let st = state.lock().await;
+        if !st.kernel_started {
+            drop(st);
+            ensure_kernel_started(state, notebook_id).await?;
+        }
+    }
+
     let response = {
         let st = state.lock().await;
 
@@ -1949,7 +2042,11 @@ async fn ensure_kernel_started(
         }
     }
 
-    start_kernel(state, "python", "auto", None).await
+    let runtime = {
+        let st = state.lock().await;
+        st.runtime.clone()
+    };
+    start_kernel(state, &runtime, "auto", None).await
 }
 
 /// Resolve blob server URL and store path from daemon info.
