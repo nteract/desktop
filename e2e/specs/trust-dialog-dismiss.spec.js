@@ -68,7 +68,10 @@ describe("Trust Dialog Dismiss", () => {
     const declineButton = await $('[data-testid="trust-decline-button"]');
     expect(await declineButton.isExisting()).toBe(true);
 
-    // Click the approve button
+    // Wait for the button to be enabled — a checkTrust() call from the
+    // daemon:ready listener can briefly set loading=true, which disables
+    // the buttons. Poll until the disabled attribute clears.
+    await approveButton.waitForEnabled({ timeout: 10000 });
     await approveButton.waitForClickable({ timeout: 5000 });
 
     const clickTime = Date.now();
@@ -88,11 +91,23 @@ describe("Trust Dialog Dismiss", () => {
     const dismissTime = closeTime - clickTime;
     console.log(`[trust-dialog-dismiss] Dialog dismissed in ${dismissTime}ms`);
 
-    // Check kernel status - should be starting or have quickly reached idle
+    // Kernel launch is fire-and-forget — status propagates via RuntimeStateDoc
+    // sync, so poll briefly instead of reading once.
+    await browser.waitUntil(
+      async () => {
+        const s = await getKernelStatus();
+        return s === "starting" || s === "idle" || s === "busy";
+      },
+      {
+        timeout: 10000,
+        interval: 200,
+        timeoutMsg:
+          "Kernel status never reached starting/idle/busy after trust approval",
+      },
+    );
     const statusAfter = await getKernelStatus();
     console.log(
       `[trust-dialog-dismiss] Kernel status after dialog closed: ${statusAfter}`,
     );
-    expect(["starting", "idle", "busy"]).toContain(statusAfter);
   });
 });
