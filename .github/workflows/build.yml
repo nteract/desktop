@@ -284,7 +284,7 @@ jobs:
           retention-days: 1
 
       - name: Build Tauri E2E app
-        run: cd crates/notebook && cargo tauri build --ci --no-bundle --config '{"build":{"beforeBuildCommand":""}}'
+        run: cd crates/notebook && cargo tauri build --ci --no-bundle --features e2e-webdriver --config '{"build":{"beforeBuildCommand":""}}'
 
       - name: Stage E2E artifacts
         run: |
