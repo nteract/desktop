@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from runtimed._client import Client
     from runtimed._notebook import Notebook
 
 
@@ -43,7 +44,7 @@ class NotebookInfo:
         """True if this notebook has no backing file."""
         return self.path is None
 
-    async def join(self, client: Any, peer_label: str | None = None) -> Notebook:
+    async def join(self, client: Client, peer_label: str | None = None) -> Notebook:
         """Join this room and return a Notebook."""
         return await client.join(self.notebook_id, peer_label=peer_label)
 
