@@ -1,0 +1,78 @@
+"""Client — the primary entry point for the runtimed Python API."""
+
+from __future__ import annotations
+
+from runtimed._notebook import Notebook
+from runtimed._notebook_info import NotebookInfo
+from runtimed.runtimed import NativeAsyncClient
+
+
+class Client:
+    """Async client for the runtimed daemon.
+
+    Primary entry point for the runtimed Python API. Returns ``Notebook``
+    objects with sync reads and async writes.
+
+    Example::
+
+        client = Client()
+        notebook = await client.create()
+        cell = await notebook.cells.create("print('hello')")
+        print(cell.source)   # sync read
+        result = await cell.run()  # async
+    """
+
+    def __init__(
+        self,
+        socket_path: str | None = None,
+        peer_label: str | None = None,
+    ) -> None:
+        self._native = NativeAsyncClient(socket_path, peer_label)
+
+    async def list_active_notebooks(self) -> list[NotebookInfo]:
+        """List all active notebook rooms on the daemon."""
+        raw = await self._native.list_active_notebooks()
+        return [NotebookInfo._from_dict(d) for d in raw]
+
+    async def open(self, path: str, peer_label: str | None = None) -> Notebook:
+        """Open an existing notebook file and return a connected Notebook."""
+        session = await self._native.open_notebook(path, peer_label)
+        return Notebook(session)
+
+    async def create(
+        self,
+        runtime: str = "python",
+        working_dir: str | None = None,
+        peer_label: str | None = None,
+    ) -> Notebook:
+        """Create a new notebook and return a connected Notebook."""
+        session = await self._native.create_notebook(runtime, working_dir, peer_label)
+        return Notebook(session)
+
+    async def join(self, notebook_id: str, peer_label: str | None = None) -> Notebook:
+        """Join an existing notebook room by ID."""
+        session = await self._native.join_notebook(notebook_id, peer_label)
+        return Notebook(session)
+
+    async def ping(self) -> bool:
+        """Check if the daemon is alive."""
+        return await self._native.ping()
+
+    async def is_running(self) -> bool:
+        """Check if the daemon is running."""
+        return await self._native.is_running()
+
+    async def status(self) -> dict:
+        """Get daemon pool statistics."""
+        return await self._native.status()
+
+    async def flush_pool(self) -> None:
+        """Flush prewarmed environment pool."""
+        await self._native.flush_pool()
+
+    async def shutdown(self) -> None:
+        """Request daemon shutdown."""
+        await self._native.shutdown()
+
+    def __repr__(self) -> str:
+        return "Client()"
