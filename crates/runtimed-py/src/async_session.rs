@@ -1004,9 +1004,10 @@ impl AsyncSession {
     /// Queue a cell for execution without waiting for the result.
     fn queue_cell<'py>(&self, py: Python<'py>, cell_id: &str) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
+        let notebook_id = self.notebook_id.clone();
         let cell_id = cell_id.to_string();
         future_into_py(py, async move {
-            session_core::queue_cell(&state, &cell_id).await
+            session_core::queue_cell(&state, &notebook_id, &cell_id).await
         })
     }
 
