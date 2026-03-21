@@ -1392,21 +1392,13 @@ class TestProjectFileDetection:
 
     @pytest.fixture(scope="class")
     def isolated_fixtures(self, tmp_path_factory):
-        """Copy fixture directories to temp location outside the repo tree.
-
-        Excludes uv.lock and .venv — these are local artifacts that may be
-        incompatible with the daemon's uv version. Let uv generate fresh ones.
-        """
+        """Copy fixture directories to temp location outside the repo tree."""
         import shutil
 
         tmp = tmp_path_factory.mktemp("fixtures")
         for subdir in ["pyproject-project", "pixi-project", "conda-env-project"]:
             if (FIXTURES_DIR / subdir).exists():
-                shutil.copytree(
-                    FIXTURES_DIR / subdir,
-                    tmp / subdir,
-                    ignore=shutil.ignore_patterns(".venv", "uv.lock"),
-                )
+                shutil.copytree(FIXTURES_DIR / subdir, tmp / subdir)
         return tmp
 
     def test_pyproject_auto_detection(self, session, isolated_fixtures):
