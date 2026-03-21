@@ -114,16 +114,16 @@ def main():
 
     if not notebook_id:
         # Auto-detect: pick the first open notebook
-        client = runtimed.DaemonClient()
-        rooms = client.list_rooms()
+        client = runtimed.NativeClient()
+        rooms = client.list_active_notebooks()
         if not rooms:
             print("No open notebooks found. Open a notebook in nteract first.", file=sys.stderr)
             sys.exit(1)
         notebook_id = rooms[0]["notebook_id"]
         print(f"Auto-detected notebook: {notebook_id}")
 
-    session = runtimed.Session(notebook_id=notebook_id, peer_label="🤖 Agent")
-    session.connect()
+    client = runtimed.NativeClient(peer_label="🤖 Agent")
+    session = client.join_notebook(notebook_id)
 
     cells = session.get_cells()
     if not cells:
