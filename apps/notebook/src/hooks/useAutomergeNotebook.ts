@@ -370,8 +370,8 @@ export function useAutomergeNotebook() {
 
   const addCell = useCallback(
     (
-      afterCellId: string | null,
-      cellType: "code" | "markdown",
+      cellType: "code" | "markdown" | "raw",
+      afterCellId?: string | null,
       initialSource?: string,
     ) => {
       const handle = handleRef.current;
@@ -453,7 +453,7 @@ export function useAutomergeNotebook() {
   );
 
   const moveCell = useCallback(
-    (cellId: string, afterCellId: string | null) => {
+    (cellId: string, afterCellId?: string | null) => {
       commitMutation((handle) => {
         handle.move_cell(cellId, afterCellId ?? undefined);
         return true;
@@ -596,6 +596,7 @@ export function useAutomergeNotebook() {
     deleteCell,
     setCellSourceHidden,
     setCellOutputsHidden,
+    setDirty,
 
     // Sync
     flushSync,
