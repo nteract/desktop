@@ -169,10 +169,10 @@ Deno.test({
     // Baseline: prove the Python Session (Rust automerge) works end-to-end
     const result = await runPython(`
 import json
-from runtimed import Session
+from runtimed.runtimed import NativeClient
 
-s = Session("cross-baseline")
-s.connect()
+c = NativeClient()
+s = c.join_notebook("cross-baseline")
 s.start_kernel(kernel_type="python", env_source="auto")
 
 cell_id = s.create_cell('print("baseline")', cell_type="code")
@@ -210,10 +210,10 @@ Deno.test({
     // create its own cell and check the round-trip
     const result = await runPython(`
 import json
-from runtimed import Session
+from runtimed.runtimed import NativeClient
 
-s = Session("wasm-compat-check")
-s.connect()
+c = NativeClient()
+s = c.join_notebook("wasm-compat-check")
 
 # Create a cell via Rust automerge
 cell_id = s.create_cell("x = 42", cell_type="code")
@@ -246,10 +246,10 @@ Deno.test({
     // and modify a doc that was produced by saving a Rust-created doc.
     const result = await runPython(`
 import json
-from runtimed import Session
+from runtimed.runtimed import NativeClient
 
-s = Session("cross-exec")
-s.connect()
+c = NativeClient()
+s = c.join_notebook("cross-exec")
 s.start_kernel(kernel_type="python", env_source="auto")
 
 cell_id = s.create_cell('print("cross-impl verified!")', cell_type="code")
@@ -290,17 +290,17 @@ Deno.test({
     // the Rust-side doc will contain cells our WASM can read.
     const result = await runPython(`
 import json, time
-from runtimed import Session
+from runtimed.runtimed import NativeClient
+
+c = NativeClient()
 
 # First session creates cells
-s1 = Session("multi-peer-test")
-s1.connect()
+s1 = c.join_notebook("multi-peer-test")
 
 cell1 = s1.create_cell("# cell from peer 1", cell_type="code")
 
 # Second session joins the same room
-s2 = Session("multi-peer-test")
-s2.connect()
+s2 = c.join_notebook("multi-peer-test")
 
 # Give sync a moment
 time.sleep(0.5)
@@ -338,5 +338,38 @@ print(json.dumps({
 
     // Same cell IDs on both sides
     assertEquals(parsed.s1_ids.sort(), parsed.s2_ids.sort());
+  },
+});
+
+Deno.test({
+  name: "Cross-impl: WASM can load doc bytes exported from Python Session via daemon",
+  ignore: !hasDaemon,
+  fn: async () => {
+    // Python creates a cell via the daemon (Rust automerge), confirms sync,
+    // and exports the raw Automerge doc bytes. WASM loads those bytes and
+    // verifies byte-level compatibility.
+    const docHex = await runPython(`
+from runtimed.runtimed import NativeClient
+
+c = NativeClient()
+s = c.join_notebook("export-bytes-test")
+cell_id = s.create_cell("x = 42", cell_type="code")
+s.confirm_sync()
+doc_bytes = s.get_automerge_doc_bytes()
+print(doc_bytes.hex())
+`);
+
+    const docBytes = fromHex(docHex);
+    assert(docBytes.length > 0, "doc bytes should be non-empty");
+
+    const handle = NotebookHandle.load(docBytes);
+    assertEquals(handle.cell_count(), 1);
+
+    const cells = handle.get_cells();
+    assertEquals(cells[0].source, "x = 42");
+    assertEquals(cells[0].cell_type, "code");
+
+    for (const c of cells) c.free();
+    handle.free();
   },
 });

@@ -1606,6 +1606,42 @@ pub(crate) async fn get_metadata(
     Ok(handle.get_metadata_string(key))
 }
 
+// =========================================================================
+// Low-level sync (for testing / cross-impl verification)
+// =========================================================================
+
+/// Export the raw Automerge document bytes from the local replica.
+///
+/// Calls `doc.save()` on the underlying `AutoCommit`, returning the full
+/// serialized Automerge document. Useful for cross-implementation
+/// compatibility testing (e.g., loading the bytes in WASM).
+pub(crate) async fn get_automerge_doc_bytes(
+    state: &Arc<Mutex<SessionState>>,
+) -> PyResult<Vec<u8>> {
+    let st = state.lock().await;
+    let handle = st
+        .handle
+        .as_ref()
+        .ok_or_else(|| to_py_err("Not connected"))?;
+
+    handle.with_doc(|doc| doc.save()).map_err(to_py_err)
+}
+
+/// Confirm that the daemon has merged all local changes.
+///
+/// Blocks until the daemon's shared_heads include our local heads,
+/// ensuring the daemon sees all local mutations (cell creates, source
+/// updates, etc.) before proceeding.
+pub(crate) async fn confirm_sync(state: &Arc<Mutex<SessionState>>) -> PyResult<()> {
+    let st = state.lock().await;
+    let handle = st
+        .handle
+        .as_ref()
+        .ok_or_else(|| to_py_err("Not connected"))?;
+
+    handle.confirm_sync().await.map_err(to_py_err)
+}
+
 /// Save the notebook to disk.
 /// Result of a save operation, containing the saved path and optionally
 /// a new notebook_id if the daemon re-keyed the room (ephemeral → file-path).

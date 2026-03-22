@@ -942,6 +942,34 @@ impl Session {
     }
 
     // =========================================================================
+    // Low-level sync (for testing / cross-impl verification)
+    // =========================================================================
+
+    /// Get the raw Automerge document bytes from the local replica.
+    ///
+    /// Returns the full serialized document as `bytes`. Useful for
+    /// cross-implementation testing (e.g., loading WASM-side).
+    fn get_automerge_doc_bytes<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let bytes = self
+            .runtime
+            .block_on(session_core::get_automerge_doc_bytes(&self.state))?;
+        Ok(pyo3::types::PyBytes::new(py, &bytes))
+    }
+
+    /// Confirm that the daemon has merged all local changes.
+    ///
+    /// Blocks until the daemon acknowledges our local heads. Called
+    /// internally by execute_cell, but exposed for tests that need
+    /// an explicit sync barrier.
+    fn confirm_sync(&self) -> PyResult<()> {
+        self.runtime
+            .block_on(session_core::confirm_sync(&self.state))
+    }
+
+    // =========================================================================
     // Repr, context manager, close
     // =========================================================================
 

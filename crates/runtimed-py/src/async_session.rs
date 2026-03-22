@@ -1158,6 +1158,28 @@ impl AsyncSession {
     }
 
     // =========================================================================
+    // Low-level sync (for testing / cross-impl verification)
+    // =========================================================================
+
+    /// Get the raw Automerge document bytes from the local replica.
+    fn get_automerge_doc_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future_into_py(
+            py,
+            async move { session_core::get_automerge_doc_bytes(&state).await },
+        )
+    }
+
+    /// Confirm that the daemon has merged all local changes.
+    fn confirm_sync<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future_into_py(
+            py,
+            async move { session_core::confirm_sync(&state).await },
+        )
+    }
+
+    // =========================================================================
     // Synchronous reads (for Python wrapper's sync properties)
     // =========================================================================
     // These use blocking_lock() to read directly from the local Automerge
