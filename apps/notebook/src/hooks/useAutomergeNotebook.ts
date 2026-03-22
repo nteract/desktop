@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { from, switchMap } from "rxjs";
+import { debounceTime, from, Subject, switchMap } from "rxjs";
 import { getBlobPort, refreshBlobPort } from "../lib/blob-port";
 import { createFramePipeline } from "../lib/frame-pipeline";
 import { frame_types, sendFrame } from "../lib/frame-types";
@@ -57,9 +57,8 @@ export function useAutomergeNotebook() {
   const sessionIdRef = useRef(crypto.randomUUID().slice(0, 8));
   const outputCacheRef = useRef<Map<string, JupyterOutput>>(new Map());
 
-  // Debounce timer for batching rapid local edits before syncing.
-  // Replaces the RxJS sourceSync$ Subject (#1072).
-  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // RxJS subjects for debounced outbound sync.
+  const sourceSync$ = useRef(new Subject<void>());
 
   // Refresh blob port on mount.
   useEffect(() => {
@@ -216,6 +215,14 @@ export function useAutomergeNotebook() {
       },
     });
 
+    // Source sync: 20ms debounce for batching rapid keystrokes.
+    const sourceSyncSub = sourceSync$.current
+      .pipe(debounceTime(20))
+      .subscribe(() => {
+        const handle = handleRef.current;
+        if (handle) syncToRelay(handle);
+      });
+
     // Bulk output clearing (run-all / restart-and-run-all).
     const clearOutputsSub = fromTauriEvent<string[]>(
       "cells:outputs_cleared",
@@ -234,7 +241,7 @@ export function useAutomergeNotebook() {
       cancelled = true;
       frameSub.unsubscribe();
       lifecycleSub.unsubscribe();
-      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+      sourceSyncSub.unsubscribe();
       clearOutputsSub.unsubscribe();
 
       // Flush pending local changes before freeing handle.
@@ -252,30 +259,17 @@ export function useAutomergeNotebook() {
 
   // ── Cell mutations ─────────────────────────────────────────────────
 
-  /** Schedule a debounced sync to the daemon (20ms, trailing edge). */
-  const scheduleSyncToRelay = useCallback(() => {
-    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-    syncTimerRef.current = setTimeout(() => {
-      syncTimerRef.current = null;
-      const handle = handleRef.current;
-      if (handle) syncToRelay(handle);
-    }, 20);
-  }, [syncToRelay]);
+  const updateCellSource = useCallback((cellId: string, source: string) => {
+    const handle = handleRef.current;
+    if (!handle || awaitingInitialSyncRef.current) return;
 
-  const updateCellSource = useCallback(
-    (cellId: string, source: string) => {
-      const handle = handleRef.current;
-      if (!handle || awaitingInitialSyncRef.current) return;
+    const updated = handle.update_source(cellId, source);
+    if (!updated) return;
 
-      const updated = handle.update_source(cellId, source);
-      if (!updated) return;
-
-      updateCellById(cellId, (c) => ({ ...c, source }));
-      scheduleSyncToRelay();
-      setDirty(true);
-    },
-    [scheduleSyncToRelay],
-  );
+    updateCellById(cellId, (c) => ({ ...c, source }));
+    sourceSync$.current.next();
+    setDirty(true);
+  }, []);
 
   /**
    * Clear outputs for a local UI action (Ctrl-Enter, menu clear).
@@ -287,7 +281,7 @@ export function useAutomergeNotebook() {
     if (handle) {
       handle.clear_outputs(cellId);
       handle.set_execution_count(cellId, "null");
-      scheduleSyncToRelay();
+      sourceSync$.current.next();
       setDirty(true);
     }
 
@@ -308,7 +302,7 @@ export function useAutomergeNotebook() {
     const clearedIds: string[] = handle.clear_all_outputs();
     if (clearedIds.length === 0) return;
 
-    scheduleSyncToRelay();
+    sourceSync$.current.next();
     setDirty(true);
 
     const clearedSet = new Set(clearedIds);
@@ -496,8 +490,9 @@ export function useAutomergeNotebook() {
   // ── CRDT bridge deps ───────────────────────────────────────────────
   // Stable getter for the WASM handle (reads ref at call time).
   const getHandle = useCallback(() => handleRef.current, []);
-  // Trigger a debounced sync to the daemon.
-  const triggerSync = scheduleSyncToRelay;
+  // Trigger a debounced sync to the daemon (same Subject the old
+  // updateCellSource used via sourceSync$).
+  const triggerSync = useCallback(() => sourceSync$.current.next(), []);
 
   return {
     cellIds,
