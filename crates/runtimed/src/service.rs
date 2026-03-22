@@ -121,58 +121,6 @@ impl ServiceManager {
         Self { config }
     }
 
-    /// Remove the com.apple.quarantine extended attribute from the binary.
-    ///
-    /// macOS adds this attribute to files downloaded from the internet, and Gatekeeper
-    /// may block execution of quarantined binaries. We proactively remove it after
-    /// copying the binary to prevent startup failures.
-    ///
-    /// Returns Ok(true) if quarantine was removed, Ok(false) if not quarantined,
-    /// or Err with a warning message if removal failed.
-    #[cfg(target_os = "macos")]
-    fn remove_quarantine(&self) -> Result<bool, String> {
-        use std::process::Command;
-
-        // First check if the binary is quarantined
-        let check = Command::new("xattr")
-            .args(["-p", "com.apple.quarantine"])
-            .arg(&self.config.binary_path)
-            .output();
-
-        match check {
-            Ok(o) if o.status.success() => {
-                // Binary is quarantined, try to remove it
-                let remove = Command::new("xattr")
-                    .args(["-d", "com.apple.quarantine"])
-                    .arg(&self.config.binary_path)
-                    .output();
-
-                match remove {
-                    Ok(o) if o.status.success() => {
-                        info!("[service] Removed quarantine attribute from binary");
-                        Ok(true)
-                    }
-                    Ok(o) => {
-                        let stderr = String::from_utf8_lossy(&o.stderr);
-                        Err(format!(
-                            "Failed to remove quarantine (binary may be blocked by Gatekeeper): {}",
-                            stderr.trim()
-                        ))
-                    }
-                    Err(e) => Err(format!("xattr command failed: {}", e)),
-                }
-            }
-            Ok(_) => {
-                // Not quarantined (xattr -p returns non-zero when attribute doesn't exist)
-                Ok(false)
-            }
-            Err(e) => {
-                // xattr command itself failed - unusual but not fatal
-                Err(format!("Could not check quarantine status: {}", e))
-            }
-        }
-    }
-
     /// Install the daemon as a system service.
     ///
     /// This copies the binary to a persistent location and creates the
@@ -187,31 +135,66 @@ impl ServiceManager {
             std::fs::create_dir_all(parent)?;
         }
 
-        // Copy binary to persistent location
-        std::fs::copy(source_binary, &self.config.binary_path)?;
-        info!(
-            "[service] Installed binary to {:?}",
-            self.config.binary_path
-        );
-
-        // Make binary executable on Unix
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o755);
-            std::fs::set_permissions(&self.config.binary_path, perms)?;
-        }
-
-        // Remove quarantine attribute on macOS (Gatekeeper may block quarantined binaries)
-        #[cfg(target_os = "macos")]
-        if let Err(warning) = self.remove_quarantine() {
-            log::warn!("[service] {}", warning);
-        }
+        // Atomically replace the binary (write to temp + rename) to avoid
+        // corrupting a running daemon's mapped pages on macOS. See the
+        // doc comment on `atomic_copy_binary` for details.
+        self.atomic_copy_binary(source_binary)?;
 
         // Create service configuration
         self.create_service_config()?;
 
         info!("[service] Service installed successfully");
+        Ok(())
+    }
+
+    /// Copy a binary to `self.config.binary_path` via a temporary file and
+    /// atomic `rename`, then set permissions and remove quarantine.
+    ///
+    /// A plain `std::fs::copy` truncates and rewrites the *same inode*.
+    /// On macOS, if a `KeepAlive`-restarted daemon still has the old inode
+    /// memory-mapped, the in-place write invalidates its code-signature
+    /// pages.  Worse, the *new* daemon inherits the same inode and can
+    /// crash minutes later when macOS demand-pages an unloaded `__TEXT`
+    /// page whose hash no longer matches the code directory.
+    ///
+    /// Writing to a temp file and then `rename`-ing atomically swaps the
+    /// directory entry to a **new inode**, so:
+    ///   - any process still mapped to the old inode keeps valid pages,
+    ///   - the new daemon maps a pristine inode with a clean signature.
+    fn atomic_copy_binary(&self, source_binary: &PathBuf) -> ServiceResult<()> {
+        let tmp_path = self.config.binary_path.with_extension("new");
+
+        // Copy to a temp file (creates a new inode)
+        std::fs::copy(source_binary, &tmp_path)?;
+
+        // Set permissions on the temp file before rename
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o755);
+            std::fs::set_permissions(&tmp_path, perms)?;
+        }
+
+        // Remove quarantine on the temp file before rename
+        #[cfg(target_os = "macos")]
+        {
+            use std::process::Command;
+            // Best-effort: if quarantine removal fails, the rename still
+            // proceeds — Gatekeeper may prompt but won't crash.
+            let _ = Command::new("xattr")
+                .args(["-d", "com.apple.quarantine"])
+                .arg(&tmp_path)
+                .output();
+        }
+
+        // Atomic swap — old inode stays valid for any mapped process
+        std::fs::rename(&tmp_path, &self.config.binary_path)?;
+
+        info!(
+            "[service] Installed binary to {:?}",
+            self.config.binary_path
+        );
+
         Ok(())
     }
 
@@ -252,23 +235,9 @@ impl ServiceManager {
         // Stop the running daemon (ignore errors - may not be running)
         self.stop().ok();
 
-        // Replace the binary
-        std::fs::copy(source_binary, &self.config.binary_path)?;
-        info!("[service] Replaced binary at {:?}", self.config.binary_path);
-
-        // Make binary executable on Unix
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o755);
-            std::fs::set_permissions(&self.config.binary_path, perms)?;
-        }
-
-        // Remove quarantine attribute on macOS (Gatekeeper may block quarantined binaries)
-        #[cfg(target_os = "macos")]
-        if let Err(warning) = self.remove_quarantine() {
-            log::warn!("[service] {}", warning);
-        }
+        // Atomically replace the binary (write to temp + rename) so that
+        // any daemon still mapped to the old inode keeps valid pages.
+        self.atomic_copy_binary(source_binary)?;
 
         // Recreate service config to apply any template changes (e.g., new env vars)
         self.create_service_config()?;
