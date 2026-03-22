@@ -441,6 +441,12 @@ async function materializeFromBatch(
           )
         ).filter((o): o is JupyterOutput => o !== null);
 
+        // Re-read execution_count and metadata from WASM *after* the
+        // await — the async blob resolution may have yielded while new
+        // sync frames arrived. Reading before the await gave stale
+        // values that could show an old execution_count alongside new
+        // outputs (inconsistent snapshot across yield points).
+        // See: https://github.com/nteract/desktop/issues/1067
         const ecStr = handle.get_cell_execution_count(cellId);
         const ec =
           !ecStr || ecStr === "null" ? null : Number.parseInt(ecStr, 10);

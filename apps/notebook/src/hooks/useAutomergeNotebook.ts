@@ -99,9 +99,15 @@ export function useAutomergeNotebook() {
   const syncToRelay = useCallback((handle: NotebookHandle) => {
     const msg = handle.generate_sync_message();
     if (msg) {
-      sendFrame(frame_types.AUTOMERGE_SYNC, msg).catch((e: unknown) =>
-        logger.warn("[automerge-notebook] sync to relay failed:", e),
-      );
+      sendFrame(frame_types.AUTOMERGE_SYNC, msg).catch((e: unknown) => {
+        logger.warn("[automerge-notebook] sync to relay failed:", e);
+        // generate_sync_message() already advanced sync_state before
+        // we discovered the send failure. Re-arm the debounce so a
+        // fresh message is generated on the next round. The protocol
+        // will re-derive what needs to be sent from the current doc
+        // and peer state.
+        sourceSync$.current.next();
+      });
     }
   }, []);
 
@@ -230,9 +236,13 @@ export function useAutomergeNotebook() {
         if (!handle) return;
         const reply = handle.generate_sync_reply();
         if (reply) {
-          sendFrame(frame_types.AUTOMERGE_SYNC, reply).catch((e: unknown) =>
-            logger.warn("[automerge-notebook] sync reply failed:", e),
-          );
+          sendFrame(frame_types.AUTOMERGE_SYNC, reply).catch((e: unknown) => {
+            logger.warn("[automerge-notebook] sync reply failed:", e);
+            // generate_sync_reply() already advanced sync_state.
+            // Re-arm so the next debounce round generates a fresh
+            // message from current doc state.
+            syncReply$.current.next();
+          });
         }
       });
 
@@ -432,22 +442,24 @@ export function useAutomergeNotebook() {
 
   // ── Sync flush ─────────────────────────────────────────────────────
 
-  /** Flush pending debounced sync immediately (call before execute/save). */
+  /**
+   * Flush pending debounced sync immediately (call before execute/save).
+   *
+   * Instead of calling `generate_sync_message()` directly (which
+   * destructively advances `sync_state.last_sent_heads` before the
+   * message reaches the wire), we force-fire the existing debounce
+   * subjects. This ensures only **one callsite** (the debounce handlers)
+   * ever touches `sync_state`, eliminating the consumption race that
+   * causes sync head divergence under rapid Ctrl+Enter.
+   *
+   * See: https://github.com/nteract/desktop/issues/1067
+   */
   const flushSync = useCallback(async () => {
-    const handle = handleRef.current;
-    if (!handle) return;
-    // Bypasses the debounce; any pending emission becomes a no-op.
-    const msg = handle.generate_sync_message();
-    if (msg) {
-      try {
-        await sendFrame(frame_types.AUTOMERGE_SYNC, msg);
-      } catch (e) {
-        // Best-effort: don't block callers (execute, save) if the relay
-        // is temporarily unable to forward the sync frame.  The daemon
-        // will catch up on the next successful sync round-trip.
-        logger.warn("[flushSync] failed to send sync frame, continuing", e);
-      }
-    }
+    // Force-fire pending debounces instead of generating a new message.
+    sourceSync$.current.next();
+    syncReply$.current.next();
+    // Wait for debounces to fire (50ms max) and IPC to complete.
+    await new Promise((resolve) => setTimeout(resolve, 60));
   }, []);
 
   // ── File operations ────────────────────────────────────────────────
