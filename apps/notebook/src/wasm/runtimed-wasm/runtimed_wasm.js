@@ -364,6 +364,18 @@ export class NotebookHandle {
         wasm.notebookhandle_cancel_last_flush(this.__wbg_ptr);
     }
     /**
+     * Roll back runtime-state sync state after a failed
+     * `flush_runtime_state_sync()` delivery.
+     *
+     * Mirrors `cancel_last_flush()` for the notebook doc: clears
+     * `in_flight` and `sent_hashes` on `state_sync_state` so the next
+     * `flush_runtime_state_sync()` or `generate_runtime_state_sync_reply()`
+     * produces a message instead of returning `None`.
+     */
+    cancel_last_runtime_state_flush() {
+        wasm.notebookhandle_cancel_last_runtime_state_flush(this.__wbg_ptr);
+    }
+    /**
      * Get the number of cells in the document.
      * @returns {number}
      */
@@ -579,6 +591,10 @@ export class NotebookHandle {
      * Without this, if the daemon's initial `RuntimeStateSync` frame arrives
      * before the WASM handle is ready, the kernel status is never synced
      * and the frontend stays stuck on "not_started".
+     *
+     * If the returned message cannot be delivered, the caller MUST call
+     * `cancel_last_runtime_state_flush()` to prevent `sent_hashes` from
+     * permanently filtering out the undelivered state data.
      * @returns {Uint8Array | undefined}
      */
     flush_runtime_state_sync() {

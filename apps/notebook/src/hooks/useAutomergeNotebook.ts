@@ -114,6 +114,7 @@ export function useAutomergeNotebook() {
     if (stateMsg) {
       sendFrame(frame_types.RUNTIME_STATE_SYNC, stateMsg).catch(
         (e: unknown) => {
+          handle.cancel_last_runtime_state_flush();
           logger.warn(
             "[automerge-notebook] runtime state sync to relay failed:",
             e,

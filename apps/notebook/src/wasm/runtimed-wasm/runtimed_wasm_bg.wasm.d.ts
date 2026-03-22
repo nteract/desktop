@@ -72,6 +72,7 @@ export const notebookhandle_cancel_last_flush: (a: number) => void;
 export const notebookhandle_receive_sync_message: (a: number, b: number, c: number, d: number) => void;
 export const notebookhandle_save: (a: number, b: number) => void;
 export const notebookhandle_flush_runtime_state_sync: (a: number, b: number) => void;
+export const notebookhandle_cancel_last_runtime_state_flush: (a: number) => void;
 export const notebookhandle_get_runtime_state: (a: number) => number;
 export const notebookhandle_reset_sync_state: (a: number) => void;
 export const notebookhandle_receive_frame: (a: number, b: number, c: number) => number;
