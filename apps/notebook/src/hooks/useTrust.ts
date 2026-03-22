@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useState } from "react";
 import { logger } from "../lib/logger";
+import { useRuntimeState } from "../lib/runtime-state";
 
 /** Trust status from the backend */
 export type TrustStatusType =
@@ -24,6 +25,9 @@ export interface TyposquatWarning {
 }
 
 export function useTrust() {
+  const runtimeState = useRuntimeState();
+  const runtimeTrustNeedsApproval = runtimeState.trust.needs_approval;
+
   const [trustInfo, setTrustInfo] = useState<TrustInfo | null>(null);
   const [typosquatWarnings, setTyposquatWarnings] = useState<
     TyposquatWarning[]
@@ -106,7 +110,8 @@ export function useTrust() {
     trustInfo?.status === "trusted" || trustInfo?.status === "no_dependencies";
   const needsApproval =
     trustInfo?.status === "untrusted" ||
-    trustInfo?.status === "signature_invalid";
+    trustInfo?.status === "signature_invalid" ||
+    runtimeTrustNeedsApproval; // From RuntimeStateDoc — arrives via sync, no race
   const hasDependencies = trustInfo?.status !== "no_dependencies";
 
   // Total dependency count

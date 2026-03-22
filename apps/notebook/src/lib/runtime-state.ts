@@ -33,10 +33,16 @@ export interface EnvState {
   deno_changed: boolean;
 }
 
+export interface TrustState {
+  status: string;
+  needs_approval: boolean;
+}
+
 export interface RuntimeState {
   kernel: KernelState;
   queue: QueueState;
   env: EnvState;
+  trust: TrustState;
   last_saved: string | null;
 }
 
@@ -59,6 +65,10 @@ const DEFAULT_RUNTIME_STATE: RuntimeState = {
     removed: [],
     channels_changed: false,
     deno_changed: false,
+  },
+  trust: {
+    status: "no_dependencies",
+    needs_approval: false,
   },
   last_saved: null,
 };
