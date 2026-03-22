@@ -21,6 +21,15 @@
 
 import type { NotebookTransport } from "./transport.ts";
 import { FrameType } from "./transport.ts";
+import {
+  Subject,
+  Observable,
+  bufferTime,
+  filter,
+  map,
+  share,
+  type Subscription,
+} from "rxjs";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -160,6 +169,87 @@ export type SyncEngineEvent =
   | { type: "sync_retry" }
   | { type: "error"; error: unknown; context: string };
 
+/**
+ * A coalesced batch of cell changesets, emitted after a debounce window.
+ *
+ * Multiple rapid `cells_changed` events (e.g., during output streaming)
+ * are merged into a single batch. If any changeset in the batch is null
+ * (meaning a full materialization is needed), `needsFull` is true.
+ */
+// ── Changeset merging ───────────────────────────────────────────────
+
+/**
+ * Merge multiple CellChangesets into one.
+ *
+ * Used by the coalescing pipeline to combine rapid `cells_changed` events
+ * into a single materialization batch.
+ *
+ * - `changed`: union of all changed cells (fields OR'd together)
+ * - `added`: union of all added cell IDs
+ * - `removed`: union of all removed cell IDs
+ * - `order_changed`: true if any changeset had order_changed
+ */
+export function mergeChangesets(changesets: CellChangeset[]): CellChangeset {
+  if (changesets.length === 0) {
+    return { changed: [], added: [], removed: [], order_changed: false };
+  }
+  if (changesets.length === 1) {
+    return changesets[0];
+  }
+
+  const changedMap = new Map<string, ChangedFields>();
+  const addedSet = new Set<string>();
+  const removedSet = new Set<string>();
+  let orderChanged = false;
+
+  for (const cs of changesets) {
+    orderChanged = orderChanged || cs.order_changed;
+
+    for (const id of cs.added) addedSet.add(id);
+    for (const id of cs.removed) removedSet.add(id);
+
+    for (const cell of cs.changed) {
+      const existing = changedMap.get(cell.cell_id);
+      if (existing) {
+        // OR the field flags together
+        changedMap.set(cell.cell_id, {
+          source: existing.source || cell.fields.source,
+          outputs: existing.outputs || cell.fields.outputs,
+          cell_type: existing.cell_type || cell.fields.cell_type,
+          execution_count:
+            existing.execution_count || cell.fields.execution_count,
+          metadata: existing.metadata || cell.fields.metadata,
+          position: existing.position || cell.fields.position,
+        });
+      } else {
+        changedMap.set(cell.cell_id, { ...cell.fields });
+      }
+    }
+  }
+
+  const changed: ChangedCell[] = Array.from(changedMap.entries()).map(
+    ([cell_id, fields]) => ({ cell_id, fields }),
+  );
+
+  return {
+    changed,
+    added: Array.from(addedSet),
+    removed: Array.from(removedSet),
+    order_changed: orderChanged,
+  };
+}
+
+export interface CoalescedCellChanges {
+  /** Merged changeset, or null if a full materialization is needed. */
+  changeset: CellChangeset | null;
+  /** True if any individual changeset was null (requires full materialization). */
+  needsFull: boolean;
+  /** All text attributions from the batch. */
+  attributions: TextAttribution[];
+  /** Number of individual cells_changed events in this batch. */
+  batchSize: number;
+}
+
 export type SyncEngineEventType = SyncEngineEvent["type"];
 
 type EventCallback = (event: SyncEngineEvent) => void;
@@ -183,10 +273,19 @@ export interface SyncEngineOptions {
    * sync state and retries. Default: 3000ms.
    */
   initialSyncTimeoutMs?: number;
+
+  /**
+   * Coalescing window (ms) for batching cell change events before
+   * materialization. Multiple rapid `cells_changed` events within
+   * this window are merged into a single {@link CoalescedCellChanges}.
+   * Default: 32ms (one frame at 30fps).
+   */
+  coalesceMs?: number;
 }
 
 const DEFAULT_FLUSH_DEBOUNCE_MS = 20;
 const DEFAULT_INITIAL_SYNC_TIMEOUT_MS = 3000;
+const DEFAULT_COALESCE_MS = 32;
 
 // ── SyncEngine ──────────────────────────────────────────────────────
 
@@ -237,6 +336,10 @@ export class SyncEngine {
   // ── Event subscribers ──────────────────────────────────────────
   #listeners: Map<SyncEngineEventType, Set<EventCallback>> = new Map();
 
+  // ── RxJS streams ───────────────────────────────────────────────
+  readonly #events$ = new Subject<SyncEngineEvent>();
+  #rxSub: Subscription | null = null;
+
   constructor(
     getHandle: HandleGetter | SyncableHandle,
     transport: NotebookTransport,
@@ -252,8 +355,109 @@ export class SyncEngine {
       flushDebounceMs: options.flushDebounceMs ?? DEFAULT_FLUSH_DEBOUNCE_MS,
       initialSyncTimeoutMs:
         options.initialSyncTimeoutMs ?? DEFAULT_INITIAL_SYNC_TIMEOUT_MS,
+      coalesceMs: options.coalesceMs ?? DEFAULT_COALESCE_MS,
     };
   }
+
+  // ── RxJS Observables ───────────────────────────────────────────
+
+  /**
+   * All engine events as an RxJS Observable.
+   *
+   * Hot observable — multicasted via `share()`. Emits from the moment
+   * `start()` is called until `stop()`. Subscribers receive events as
+   * they happen (no replay).
+   */
+  readonly events$: Observable<SyncEngineEvent> = this.#events$.pipe(share());
+
+  /**
+   * Coalesced cell change stream.
+   *
+   * Batches rapid `cells_changed` events over a configurable window
+   * (default 32ms) and merges their changesets. Consumers subscribe to
+   * this instead of listening for individual `cells_changed` events to
+   * avoid over-materializing during output streaming.
+   *
+   * If any changeset in the batch is `null`, the merged result has
+   * `needsFull: true` — the consumer should do a full materialization
+   * instead of incremental.
+   *
+   * Note: uses a getter to defer pipeline creation until after the
+   * constructor sets `#options` (field initializers run before the
+   * constructor body).
+   */
+  #cellChanges$: Observable<CoalescedCellChanges> | null = null;
+  get cellChanges$(): Observable<CoalescedCellChanges> {
+    if (!this.#cellChanges$) {
+      this.#cellChanges$ = this.#events$.pipe(
+        filter(
+          (e): e is Extract<SyncEngineEvent, { type: "cells_changed" }> =>
+            e.type === "cells_changed",
+        ),
+        bufferTime(this.#options.coalesceMs),
+        filter((batch) => batch.length > 0),
+        map((batch): CoalescedCellChanges => {
+          const needsFull = batch.some((e) => e.changeset === null);
+          const attributions = batch.flatMap((e) => e.attributions);
+
+          if (needsFull) {
+            return {
+              changeset: null,
+              needsFull: true,
+              attributions,
+              batchSize: batch.length,
+            };
+          }
+
+          const merged = mergeChangesets(batch.map((e) => e.changeset!));
+          return {
+            changeset: merged,
+            needsFull: false,
+            attributions,
+            batchSize: batch.length,
+          };
+        }),
+        share(),
+      );
+    }
+    return this.#cellChanges$;
+  }
+
+  /**
+   * Broadcast events as an Observable.
+   */
+  readonly broadcasts$: Observable<unknown> = this.#events$.pipe(
+    filter(
+      (e): e is Extract<SyncEngineEvent, { type: "broadcast" }> =>
+        e.type === "broadcast",
+    ),
+    map((e) => e.payload),
+    share(),
+  );
+
+  /**
+   * Presence events as an Observable.
+   */
+  readonly presence$: Observable<unknown> = this.#events$.pipe(
+    filter(
+      (e): e is Extract<SyncEngineEvent, { type: "presence" }> =>
+        e.type === "presence",
+    ),
+    map((e) => e.payload),
+    share(),
+  );
+
+  /**
+   * Runtime state changes as an Observable.
+   */
+  readonly runtimeState$: Observable<unknown> = this.#events$.pipe(
+    filter(
+      (e): e is Extract<SyncEngineEvent, { type: "runtime_state_changed" }> =>
+        e.type === "runtime_state_changed",
+    ),
+    map((e) => e.state),
+    share(),
+  );
 
   // ── Lifecycle ──────────────────────────────────────────────────
 
@@ -284,6 +488,10 @@ export class SyncEngine {
     this.#unsubscribeFrame?.();
     this.#unsubscribeFrame = null;
 
+    // Tear down RxJS subscriptions.
+    this.#rxSub?.unsubscribe();
+    this.#rxSub = null;
+
     // Cancel timers.
     if (this.#flushTimer !== null) {
       clearTimeout(this.#flushTimer);
@@ -297,7 +505,10 @@ export class SyncEngine {
     // Final flush — best effort.
     this.#flushNow();
 
-    // Clear listeners.
+    // Complete the subject (terminates all Observable subscribers).
+    this.#events$.complete();
+
+    // Clear callback listeners.
     this.#listeners.clear();
   }
 
@@ -608,6 +819,10 @@ export class SyncEngine {
   // ── Internal: event emission ───────────────────────────────────
 
   #emit(event: SyncEngineEvent): void {
+    // Push to RxJS Subject (feeds all Observable streams).
+    this.#events$.next(event);
+
+    // Push to callback listeners.
     const set = this.#listeners.get(event.type);
     if (set) {
       for (const cb of set) {

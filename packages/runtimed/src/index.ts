@@ -50,7 +50,10 @@ export type {
   SyncEngineOptions,
   SyncEngineEvent,
   SyncEngineEventType,
+  CoalescedCellChanges,
 } from "./sync-engine.ts";
+
+export { mergeChangesets } from "./sync-engine.ts";
 
 // ── Frame Events (from WASM) ─────────────────────────────────────────
 

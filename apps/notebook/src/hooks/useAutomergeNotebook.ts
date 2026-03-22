@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { from, switchMap } from "rxjs";
+import { from, switchMap, Subscription as RxSubscription } from "rxjs";
 import { getBlobPort, refreshBlobPort } from "../lib/blob-port";
 import { logger } from "../lib/logger";
 import {
@@ -60,6 +60,7 @@ export function useAutomergeNotebook() {
   // SyncEngine + TauriTransport refs (stable across re-renders).
   const engineRef = useRef<SyncEngine | null>(null);
   const transportRef = useRef<TauriTransport | null>(null);
+  const rxSubRef = useRef<RxSubscription | null>(null);
 
   // Refresh blob port on mount.
   useEffect(() => {
@@ -181,38 +182,49 @@ export function useAutomergeNotebook() {
       }
     });
 
-    engine.on("cells_changed", (event) => {
-      // Re-materialize from WASM after inbound sync changes.
-      const h = handleRef.current;
-      if (h) {
-        // Emit text attributions as broadcasts for CodeMirror.
-        if (event.attributions && event.attributions.length > 0) {
+    // ── RxJS subscriptions to coalesced engine streams ────────────
+    //
+    // cellChanges$ buffers rapid cells_changed events over 32ms and
+    // merges their changesets. This prevents over-materializing during
+    // output streaming (which can cause blob resolution races and
+    // CodeMirror splice_source errors from stale positions).
+
+    const rxSub = new RxSubscription();
+    rxSubRef.current = rxSub;
+
+    rxSub.add(
+      engine.cellChanges$.subscribe((batch) => {
+        const h = handleRef.current;
+        if (!h) return;
+
+        // Emit text attributions for CodeMirror remote cursors.
+        if (batch.attributions.length > 0) {
           emitBroadcast({
             type: "text_attribution",
-            attributions: event.attributions,
+            attributions: batch.attributions,
           });
         }
 
         // Full async materialization — resolves manifest hashes from
-        // the blob HTTP server. Required for outputs (which are stored
-        // as content-addressed blob references in the CRDT).
-        // TODO: Use incremental materialization with changeset to avoid
-        // re-resolving outputs that haven't changed.
+        // the blob HTTP server. The coalescing ensures we don't start
+        // a new materialization while the previous one is resolving blobs.
         materializeCells(h).catch((err: unknown) => {
           logger.warn("[automerge-notebook] materialize failed:", err);
         });
-      }
-    });
+      }),
+    );
 
-    engine.on("broadcast", (event) => {
-      emitBroadcast(event.payload);
-    });
+    rxSub.add(
+      engine.broadcasts$.subscribe((payload) => {
+        emitBroadcast(payload);
+      }),
+    );
 
-    engine.on("runtime_state_changed", (event) => {
-      setRuntimeState(
-        event.state as import("../lib/runtime-state").RuntimeState,
-      );
-    });
+    rxSub.add(
+      engine.runtimeState$.subscribe((state) => {
+        setRuntimeState(state as import("../lib/runtime-state").RuntimeState);
+      }),
+    );
 
     engine.on("sync_retry", () => {
       logger.info("[automerge-notebook] SyncEngine retrying initial sync");
@@ -285,6 +297,7 @@ export function useAutomergeNotebook() {
 
     return () => {
       cancelled = true;
+      rxSubRef.current?.unsubscribe();
       lifecycleSub.unsubscribe();
       clearOutputsSub.unsubscribe();
 
