@@ -1,7 +1,7 @@
 /**
  * TauriTransport — NotebookTransport implementation for the Tauri desktop app.
  *
- * Bridges the @nteract/runtimed library to Tauri IPC:
+ * Bridges the runtimed library to Tauri IPC:
  * - `sendFrame` → `invoke("send_frame", rawBytes)`
  * - `onFrame` → `getCurrentWebview().listen("notebook:frame")`
  * - `sendRequest` → `invoke(commandName, args)` for daemon commands
@@ -19,7 +19,7 @@ import type {
   NotebookTransport,
   FrameTypeValue,
   Unsubscribe,
-} from "@nteract/runtimed";
+} from "runtimed";
 
 // ── TauriTransport ──────────────────────────────────────────────────
 

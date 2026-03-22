@@ -1,5 +1,5 @@
 /**
- * @nteract/runtimed — Transport-agnostic JavaScript bindings for
+ * runtimed — Transport-agnostic JavaScript bindings for
  * nteract notebook documents.
  *
  * Wraps the runtimed WASM CRDT engine with a clean API for sync,
@@ -7,8 +7,8 @@
  *
  * @example
  * ```ts
- * import { SyncEngine, FrameType } from "@nteract/runtimed";
- * import type { NotebookTransport, SyncableHandle } from "@nteract/runtimed";
+ * import { SyncEngine, FrameType } from "runtimed";
+ * import type { NotebookTransport, SyncableHandle } from "runtimed";
  *
  * const engine = new SyncEngine(handle, transport);
  * engine.on("cells_changed", (e) => console.log(e.changeset));

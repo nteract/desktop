@@ -28,7 +28,7 @@ import { TauriTransport } from "../lib/tauri-transport";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import type { DaemonBroadcast, JupyterOutput } from "../types";
 
-import { SyncEngine } from "@nteract/runtimed";
+import { SyncEngine } from "runtimed";
 
 // ── WASM init ────────────────────────────────────────────────────────
 
@@ -44,7 +44,7 @@ const wasmReady = (async () => {
  * Core Automerge notebook hook — manages the WASM document, sync lifecycle,
  * and cell store.
  *
- * Uses {@link SyncEngine} from `@nteract/runtimed` for all sync management
+ * Uses {@link SyncEngine} from `runtimed` for all sync management
  * and {@link TauriTransport} for the IPC layer. The hook subscribes to engine
  * events and writes to the React cell/runtime stores.
  */
@@ -242,7 +242,7 @@ export function useAutomergeNotebook() {
                 // Resolve outputs from cache (sync path).
                 // Outputs that are manifest hashes not in cache will show
                 // as loading — a subsequent full materialize will resolve them.
-                const resolvedOutputs = (outputs ?? [])
+                const resolvedOutputs = ((outputs ?? []) as string[])
                   .map((o: string) => {
                     // 1. Already resolved in cache
                     const cached = outputCacheRef.current.get(o);

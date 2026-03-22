@@ -1,7 +1,7 @@
 /**
  * Deno tests for SyncEngine + DirectTransport.
  *
- * Proves the @nteract/runtimed library works end-to-end without a browser,
+ * Proves the runtimed library works end-to-end without a browser,
  * daemon, or Tauri. Two WASM NotebookHandles sync through the SyncEngine
  * and DirectTransport.
  *

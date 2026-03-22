@@ -288,9 +288,6 @@ importers:
       '@dnd-kit/utilities':
         specifier: ^3.2.2
         version: 3.2.2(react@19.2.4)
-      '@nteract/runtimed':
-        specifier: workspace:*
-        version: link:../../packages/runtimed
       '@tauri-apps/api':
         specifier: ^2.10.1
         version: 2.10.1
@@ -357,6 +354,9 @@ importers:
       remark-math:
         specifier: ^6.0.0
         version: 6.0.0
+      runtimed:
+        specifier: workspace:*
+        version: link:../../packages/runtimed
       rxjs:
         specifier: ^7.8.2
         version: 7.8.2

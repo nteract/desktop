@@ -1,7 +1,7 @@
 /**
  * Integration test: SyncEngine + real daemon via Python Session.
  *
- * Proves the @nteract/runtimed library works end-to-end with a real
+ * Proves the runtimed library works end-to-end with a real
  * daemon — not just two WASM handles talking to each other. The test:
  *
  * 1. Python Session creates a notebook room in the daemon
