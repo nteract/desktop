@@ -75,6 +75,21 @@ export class NotebookHandle {
      */
     append_source(cell_id: string, text: string): boolean;
     /**
+     * Roll back sync state after a failed `flush_local_changes()` delivery.
+     *
+     * If the message from `flush_local_changes()` was NOT delivered to the
+     * daemon (e.g. sendFrame failed, relay mutex blocked), call this to clear
+     * `in_flight` and `sent_hashes`. Without this, `generate_sync_message`
+     * will permanently filter out the change data for hashes it believes were
+     * already sent, causing a protocol stall that only `reset_sync_state()`
+     * (page reload) can recover from.
+     *
+     * Clearing `sent_hashes` may cause some change data to be resent on the
+     * next sync message, but the protocol tolerates duplicates — Automerge's
+     * `load_incremental` deduplicates on receive.
+     */
+    cancel_last_flush(): void;
+    /**
      * Get the number of cells in the document.
      */
     cell_count(): number;
@@ -127,32 +142,29 @@ export class NotebookHandle {
      */
     detect_runtime(): string | undefined;
     /**
+     * Flush any pending local changes as a sync message to send to the daemon.
+     *
+     * Call this after local CRDT mutations (cell edits, metadata changes) to
+     * push them to the daemon. Returns the message as a byte array, or
+     * `undefined` if there are no unsent local changes.
+     *
+     * This is the ONLY way to generate an outbound sync message besides the
+     * reply embedded in `receive_frame()`. Having exactly two controlled paths
+     * (reply-to-inbound and flush-local) prevents the consumption race from
+     * #1067 where `flushSync` and `syncReply$` both called
+     * `generate_sync_message`, racing on the shared `sync_state`.
+     *
+     * If the returned message cannot be delivered, the caller MUST call
+     * `cancel_last_flush()` to prevent `sent_hashes` from permanently
+     * filtering out the undelivered change data.
+     */
+    flush_local_changes(): Uint8Array | undefined;
+    /**
      * Generate a sync reply for the RuntimeStateDoc.
      * Called immediately after each `RuntimeStateSyncApplied` event
      * so the daemon knows which state the client has received.
      */
     generate_runtime_state_sync_reply(): Uint8Array | undefined;
-    /**
-     * Generate a sync message to send to the daemon (via the Tauri relay pipe).
-     *
-     * Returns the message as a byte array, or undefined if already in sync.
-     * The caller should prepend the frame type byte (0x00 for AutomergeSync)
-     * and send via `invoke("send_frame", { frameData })`.
-     */
-    generate_sync_message(): Uint8Array | undefined;
-    /**
-     * Generate a sync reply after one or more inbound frames have been applied.
-     *
-     * This is the same operation as `generate_sync_message()` but named to
-     * communicate the intended usage: the frontend should call this on a
-     * debounce timer after processing inbound sync frames, rather than
-     * replying to every frame individually.
-     *
-     * Safe to call after multiple `receive_frame()` calls — each receive
-     * applies changes cumulatively, and one generate covers everything.
-     * The Automerge sync protocol converges regardless of reply timing.
-     */
-    generate_sync_reply(): Uint8Array | undefined;
     /**
      * Get the actor identity label for this document.
      */
@@ -268,12 +280,15 @@ export class NotebookHandle {
      *
      * Returns a JS array of `FrameEvent` objects directly via `serde-wasm-bindgen`
      * (no JSON string intermediate). Sync frames return a single `sync_applied`
-     * event with an optional `CellChangeset`.
+     * event with an optional `CellChangeset` and an optional `reply`.
      *
-     * **Sync replies are NOT generated here.** The frontend must call
-     * `generate_sync_reply()` on a debounce timer to send replies back to the
-     * daemon. This avoids an IPC-per-frame amplification loop — multiple
-     * inbound frames coalesce into a single outbound reply.
+     * **Sync replies are generated atomically** within this method after applying
+     * each inbound `AUTOMERGE_SYNC` frame. The reply bytes (if any) are returned
+     * in `FrameEvent::SyncApplied.reply` — the caller should send them immediately
+     * via `sendFrame(0x00, reply)`. This eliminates the consumption race from #1067
+     * where a separate `generate_sync_reply()` call could be preempted by
+     * `flushSync`'s `generate_sync_message()`, both competing on the same
+     * `sync_state`.
      *
      * Returns `undefined` if the frame is empty or cannot be processed.
      */
@@ -510,7 +525,8 @@ export interface InitOutput {
     readonly notebookhandle_clear_conda_section: (a: number, b: number) => void;
     readonly notebookhandle_set_conda_channels: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_set_conda_python: (a: number, b: number, c: number, d: number) => void;
-    readonly notebookhandle_generate_sync_message: (a: number, b: number) => void;
+    readonly notebookhandle_flush_local_changes: (a: number, b: number) => void;
+    readonly notebookhandle_cancel_last_flush: (a: number) => void;
     readonly notebookhandle_receive_sync_message: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_save: (a: number, b: number) => void;
     readonly notebookhandle_generate_runtime_state_sync_reply: (a: number, b: number) => void;
@@ -521,7 +537,6 @@ export interface InitOutput {
     readonly encode_selection_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
     readonly encode_focus_presence: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly encode_clear_channel_presence: (a: number, b: number, c: number, d: number, e: number) => void;
-    readonly notebookhandle_generate_sync_reply: (a: number, b: number) => void;
     readonly __wbindgen_export: (a: number, b: number) => number;
     readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export3: (a: number) => void;

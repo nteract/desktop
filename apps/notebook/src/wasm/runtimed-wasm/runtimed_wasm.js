@@ -347,6 +347,23 @@ export class NotebookHandle {
         }
     }
     /**
+     * Roll back sync state after a failed `flush_local_changes()` delivery.
+     *
+     * If the message from `flush_local_changes()` was NOT delivered to the
+     * daemon (e.g. sendFrame failed, relay mutex blocked), call this to clear
+     * `in_flight` and `sent_hashes`. Without this, `generate_sync_message`
+     * will permanently filter out the change data for hashes it believes were
+     * already sent, causing a protocol stall that only `reset_sync_state()`
+     * (page reload) can recover from.
+     *
+     * Clearing `sent_hashes` may cause some change data to be resent on the
+     * next sync message, but the protocol tolerates duplicates — Automerge's
+     * `load_incremental` deduplicates on receive.
+     */
+    cancel_last_flush() {
+        wasm.notebookhandle_cancel_last_flush(this.__wbg_ptr);
+    }
+    /**
      * Get the number of cells in the document.
      * @returns {number}
      */
@@ -521,6 +538,40 @@ export class NotebookHandle {
         }
     }
     /**
+     * Flush any pending local changes as a sync message to send to the daemon.
+     *
+     * Call this after local CRDT mutations (cell edits, metadata changes) to
+     * push them to the daemon. Returns the message as a byte array, or
+     * `undefined` if there are no unsent local changes.
+     *
+     * This is the ONLY way to generate an outbound sync message besides the
+     * reply embedded in `receive_frame()`. Having exactly two controlled paths
+     * (reply-to-inbound and flush-local) prevents the consumption race from
+     * #1067 where `flushSync` and `syncReply$` both called
+     * `generate_sync_message`, racing on the shared `sync_state`.
+     *
+     * If the returned message cannot be delivered, the caller MUST call
+     * `cancel_last_flush()` to prevent `sent_hashes` from permanently
+     * filtering out the undelivered change data.
+     * @returns {Uint8Array | undefined}
+     */
+    flush_local_changes() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.notebookhandle_flush_local_changes(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            let v1;
+            if (r0 !== 0) {
+                v1 = getArrayU8FromWasm0(r0, r1).slice();
+                wasm.__wbindgen_export4(r0, r1 * 1, 1);
+            }
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Generate a sync reply for the RuntimeStateDoc.
      * Called immediately after each `RuntimeStateSyncApplied` event
      * so the daemon knows which state the client has received.
@@ -530,59 +581,6 @@ export class NotebookHandle {
         try {
             const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
             wasm.notebookhandle_generate_runtime_state_sync_reply(retptr, this.__wbg_ptr);
-            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-            let v1;
-            if (r0 !== 0) {
-                v1 = getArrayU8FromWasm0(r0, r1).slice();
-                wasm.__wbindgen_export4(r0, r1 * 1, 1);
-            }
-            return v1;
-        } finally {
-            wasm.__wbindgen_add_to_stack_pointer(16);
-        }
-    }
-    /**
-     * Generate a sync message to send to the daemon (via the Tauri relay pipe).
-     *
-     * Returns the message as a byte array, or undefined if already in sync.
-     * The caller should prepend the frame type byte (0x00 for AutomergeSync)
-     * and send via `invoke("send_frame", { frameData })`.
-     * @returns {Uint8Array | undefined}
-     */
-    generate_sync_message() {
-        try {
-            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-            wasm.notebookhandle_generate_sync_message(retptr, this.__wbg_ptr);
-            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-            let v1;
-            if (r0 !== 0) {
-                v1 = getArrayU8FromWasm0(r0, r1).slice();
-                wasm.__wbindgen_export4(r0, r1 * 1, 1);
-            }
-            return v1;
-        } finally {
-            wasm.__wbindgen_add_to_stack_pointer(16);
-        }
-    }
-    /**
-     * Generate a sync reply after one or more inbound frames have been applied.
-     *
-     * This is the same operation as `generate_sync_message()` but named to
-     * communicate the intended usage: the frontend should call this on a
-     * debounce timer after processing inbound sync frames, rather than
-     * replying to every frame individually.
-     *
-     * Safe to call after multiple `receive_frame()` calls — each receive
-     * applies changes cumulatively, and one generate covers everything.
-     * The Automerge sync protocol converges regardless of reply timing.
-     * @returns {Uint8Array | undefined}
-     */
-    generate_sync_reply() {
-        try {
-            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-            wasm.notebookhandle_generate_sync_reply(retptr, this.__wbg_ptr);
             var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
             var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
             let v1;
@@ -987,12 +985,15 @@ export class NotebookHandle {
      *
      * Returns a JS array of `FrameEvent` objects directly via `serde-wasm-bindgen`
      * (no JSON string intermediate). Sync frames return a single `sync_applied`
-     * event with an optional `CellChangeset`.
+     * event with an optional `CellChangeset` and an optional `reply`.
      *
-     * **Sync replies are NOT generated here.** The frontend must call
-     * `generate_sync_reply()` on a debounce timer to send replies back to the
-     * daemon. This avoids an IPC-per-frame amplification loop — multiple
-     * inbound frames coalesce into a single outbound reply.
+     * **Sync replies are generated atomically** within this method after applying
+     * each inbound `AUTOMERGE_SYNC` frame. The reply bytes (if any) are returned
+     * in `FrameEvent::SyncApplied.reply` — the caller should send them immediately
+     * via `sendFrame(0x00, reply)`. This eliminates the consumption race from #1067
+     * where a separate `generate_sync_reply()` call could be preempted by
+     * `flushSync`'s `generate_sync_message()`, both competing on the same
+     * `sync_state`.
      *
      * Returns `undefined` if the frame is empty or cannot be processed.
      * @param {Uint8Array} frame_bytes

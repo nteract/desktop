@@ -47,8 +47,8 @@ await init(wasmBytes);
 /** Sync two handles until both return no more messages (convergence). */
 function syncHandles(a: NotebookHandle, b: NotebookHandle, maxRounds = 10) {
   for (let i = 0; i < maxRounds; i++) {
-    const msgA = a.generate_sync_message();
-    const msgB = b.generate_sync_message();
+    const msgA = a.flush_local_changes();
+    const msgB = b.flush_local_changes();
     if (!msgA && !msgB) break;
     if (msgA) b.receive_sync_message(msgA);
     if (msgB) a.receive_sync_message(msgB);
@@ -338,7 +338,7 @@ Deno.test("Sync: delete cell syncs correctly", () => {
   client.free();
 });
 
-Deno.test("Sync: generate_sync_message returns null when in sync", () => {
+Deno.test("Sync: flush_local_changes returns null when in sync", () => {
   const server = new NotebookHandle("sync-test");
   const client = NotebookHandle.load(server.save());
 
@@ -346,8 +346,8 @@ Deno.test("Sync: generate_sync_message returns null when in sync", () => {
   syncHandles(server, client);
 
   // Both should report no message needed
-  assertEquals(server.generate_sync_message(), undefined);
-  assertEquals(client.generate_sync_message(), undefined);
+  assertEquals(server.flush_local_changes(), undefined);
+  assertEquals(client.flush_local_changes(), undefined);
 
   server.free();
   client.free();
@@ -379,14 +379,14 @@ Deno.test("Bug #1067: consumed sync message causes protocol stall", () => {
   server.update_source("cell-1", "output-v1");
 
   // Step 2: Client receives the server's sync message
-  const serverMsg1 = server.generate_sync_message();
+  const serverMsg1 = server.flush_local_changes();
   assert(serverMsg1 !== undefined, "server should have a sync message");
   const changed = client.receive_sync_message(serverMsg1);
   assert(changed, "client doc should have changed");
 
   // Step 3: Client generates a reply — like flushSync() does.
   // This ADVANCES client's sync_state.last_sent_heads.
-  const consumedReply = client.generate_sync_message();
+  const consumedReply = client.flush_local_changes();
   assert(consumedReply !== undefined, "client should have a reply");
 
   // Step 4: The reply is DROPPED. Never delivered to server.
@@ -401,13 +401,13 @@ Deno.test("Bug #1067: consumed sync message causes protocol stall", () => {
   //
   // Meanwhile, the server sends its new change. Let's see if the
   // protocol can recover.
-  const serverMsg2 = server.generate_sync_message();
+  const serverMsg2 = server.flush_local_changes();
   assert(serverMsg2 !== undefined, "server should have msg for output-v2");
   client.receive_sync_message(serverMsg2);
 
   // The client should now generate a reply that covers BOTH the
   // previously-dropped reply AND the new change.
-  const recoveryReply = client.generate_sync_message();
+  const recoveryReply = client.flush_local_changes();
 
   // THIS IS THE BUG: if recoveryReply is undefined, the protocol has
   // stalled. The client thinks it's in sync (because sync_state was
@@ -477,17 +477,17 @@ Deno.test("Bug #1067: rapid flushSync steals debounced reply", () => {
 
   // Server streams multiple rapid changes (simulates IOPub output burst)
   server.update_source("cell-1", "line 1");
-  const msg1 = server.generate_sync_message();
+  const msg1 = server.flush_local_changes();
   assert(msg1 !== undefined);
   client.receive_sync_message(msg1);
 
   server.update_source("cell-1", "line 1\nline 2");
-  const msg2 = server.generate_sync_message();
+  const msg2 = server.flush_local_changes();
   assert(msg2 !== undefined);
   client.receive_sync_message(msg2);
 
   server.update_source("cell-1", "line 1\nline 2\nline 3");
-  const msg3 = server.generate_sync_message();
+  const msg3 = server.flush_local_changes();
   assert(msg3 !== undefined);
   client.receive_sync_message(msg3);
 
@@ -495,11 +495,11 @@ Deno.test("Bug #1067: rapid flushSync steals debounced reply", () => {
   // A debounced syncReply$ would call generate_sync_reply() here.
   // But flushSync() fires first (user presses Ctrl+Enter):
 
-  const flushMsg = client.generate_sync_message(); // flushSync steals it
+  const flushMsg = client.flush_local_changes(); // flushSync steals it
   // flushMsg is defined — it covers all 3 inbound syncs.
 
   // Now the debounced syncReply fires:
-  const debouncedReply = client.generate_sync_message(); // generates reply
+  const debouncedReply = client.flush_local_changes(); // generates reply
 
   // The debounced reply should ideally still work, but if flushMsg
   // already advanced sync_state, debouncedReply may be undefined.
@@ -516,12 +516,12 @@ Deno.test("Bug #1067: rapid flushSync steals debounced reply", () => {
 
     // Server makes a new change
     server.update_source("cell-1", "line 1\nline 2\nline 3\nline 4");
-    const msg4 = server.generate_sync_message();
+    const msg4 = server.flush_local_changes();
     assert(msg4 !== undefined, "server should still produce messages");
     client.receive_sync_message(msg4);
 
     // Client tries to reply again
-    const retryReply = client.generate_sync_message();
+    const retryReply = client.flush_local_changes();
 
     if (retryReply === undefined) {
       console.warn(
@@ -612,8 +612,8 @@ Deno.test("Sync: bootstrap from saved bytes preserves all content", () => {
 
   // Sync should converge immediately (no changes needed)
   syncHandles(daemon, wasm);
-  assertEquals(daemon.generate_sync_message(), undefined);
-  assertEquals(wasm.generate_sync_message(), undefined);
+  assertEquals(daemon.flush_local_changes(), undefined);
+  assertEquals(wasm.flush_local_changes(), undefined);
 
   for (const c of cells) c.free();
   daemon.free();
@@ -633,15 +633,15 @@ Deno.test("Sync: load from bytes + incremental sync with changed flag", () => {
   syncHandles(daemon, wasm);
 
   // Verify sync state is converged
-  assertEquals(daemon.generate_sync_message(), undefined);
-  assertEquals(wasm.generate_sync_message(), undefined);
+  assertEquals(daemon.flush_local_changes(), undefined);
+  assertEquals(wasm.flush_local_changes(), undefined);
 
   // Daemon adds new content
   daemon.add_cell(1, "new-cell", "markdown");
   daemon.update_source("new-cell", "# New section");
 
   // Generate sync message from daemon
-  const msg = daemon.generate_sync_message();
+  const msg = daemon.flush_local_changes();
   assertExists(msg, "Daemon should have sync message after mutation");
 
   // WASM receives and should report changed=true
@@ -675,12 +675,12 @@ Deno.test("Sync: converged peers have no sync messages", () => {
 
   // After convergence, neither should have messages
   assertEquals(
-    daemon.generate_sync_message(),
+    daemon.flush_local_changes(),
     undefined,
     "Daemon has no message when converged",
   );
   assertEquals(
-    wasm.generate_sync_message(),
+    wasm.flush_local_changes(),
     undefined,
     "WASM has no message when converged",
   );
@@ -705,8 +705,8 @@ Deno.test("Sync: reset_sync_state allows re-sync from scratch", () => {
   syncHandles(daemon, wasm);
 
   // Both converged
-  assertEquals(daemon.generate_sync_message(), undefined);
-  assertEquals(wasm.generate_sync_message(), undefined);
+  assertEquals(daemon.flush_local_changes(), undefined);
+  assertEquals(wasm.flush_local_changes(), undefined);
 
   // Daemon updates the cell
   daemon.update_source("cell-1", "updated");
@@ -715,7 +715,7 @@ Deno.test("Sync: reset_sync_state allows re-sync from scratch", () => {
   wasm.reset_sync_state();
 
   // After reset, WASM should need to sync again
-  const wasmMsg = wasm.generate_sync_message();
+  const wasmMsg = wasm.flush_local_changes();
   assertExists(
     wasmMsg,
     "After reset_sync_state, WASM should generate sync message",
@@ -866,7 +866,7 @@ Deno.test("create_empty: incremental sync after bootstrap works", () => {
   daemon.update_source("cell-2", "y = 2");
 
   // Generate sync message and verify change detection
-  const msg = daemon.generate_sync_message();
+  const msg = daemon.flush_local_changes();
   assertExists(msg, "Daemon should have sync message after adding cell");
 
   const changed = wasm.receive_sync_message(msg);

@@ -72,6 +72,12 @@ pub enum FrameEvent {
         /// Empty when `changed` is false or when only non-source fields changed.
         #[serde(skip_serializing_if = "Vec::is_empty")]
         attributions: Vec<TextAttribution>,
+        /// Sync reply to send back to the daemon, generated atomically after
+        /// applying the inbound message. `None` when the protocol has nothing
+        /// to send (e.g. already in sync). The caller should prepend frame type
+        /// byte 0x00 and send via `sendFrame`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reply: Option<Vec<u8>>,
     },
     /// Broadcast event from the daemon (kernel status, output, etc.)
     Broadcast {
@@ -779,31 +785,42 @@ impl NotebookHandle {
             .map_err(|e| JsError::new(&format!("set_conda_python failed: {}", e)))
     }
 
-    /// Generate a sync message to send to the daemon (via the Tauri relay pipe).
+    /// Flush any pending local changes as a sync message to send to the daemon.
     ///
-    /// Returns the message as a byte array, or undefined if already in sync.
-    /// The caller should prepend the frame type byte (0x00 for AutomergeSync)
-    /// and send via `invoke("send_frame", { frameData })`.
-    pub fn generate_sync_message(&mut self) -> Option<Vec<u8>> {
+    /// Call this after local CRDT mutations (cell edits, metadata changes) to
+    /// push them to the daemon. Returns the message as a byte array, or
+    /// `undefined` if there are no unsent local changes.
+    ///
+    /// This is the ONLY way to generate an outbound sync message besides the
+    /// reply embedded in `receive_frame()`. Having exactly two controlled paths
+    /// (reply-to-inbound and flush-local) prevents the consumption race from
+    /// #1067 where `flushSync` and `syncReply$` both called
+    /// `generate_sync_message`, racing on the shared `sync_state`.
+    ///
+    /// If the returned message cannot be delivered, the caller MUST call
+    /// `cancel_last_flush()` to prevent `sent_hashes` from permanently
+    /// filtering out the undelivered change data.
+    pub fn flush_local_changes(&mut self) -> Option<Vec<u8>> {
         self.doc
             .generate_sync_message(&mut self.sync_state)
             .map(|msg| msg.encode())
     }
 
-    /// Generate a sync reply after one or more inbound frames have been applied.
+    /// Roll back sync state after a failed `flush_local_changes()` delivery.
     ///
-    /// This is the same operation as `generate_sync_message()` but named to
-    /// communicate the intended usage: the frontend should call this on a
-    /// debounce timer after processing inbound sync frames, rather than
-    /// replying to every frame individually.
+    /// If the message from `flush_local_changes()` was NOT delivered to the
+    /// daemon (e.g. sendFrame failed, relay mutex blocked), call this to clear
+    /// `in_flight` and `sent_hashes`. Without this, `generate_sync_message`
+    /// will permanently filter out the change data for hashes it believes were
+    /// already sent, causing a protocol stall that only `reset_sync_state()`
+    /// (page reload) can recover from.
     ///
-    /// Safe to call after multiple `receive_frame()` calls — each receive
-    /// applies changes cumulatively, and one generate covers everything.
-    /// The Automerge sync protocol converges regardless of reply timing.
-    pub fn generate_sync_reply(&mut self) -> Option<Vec<u8>> {
-        self.doc
-            .generate_sync_message(&mut self.sync_state)
-            .map(|msg| msg.encode())
+    /// Clearing `sent_hashes` may cause some change data to be resent on the
+    /// next sync message, but the protocol tolerates duplicates — Automerge's
+    /// `load_incremental` deduplicates on receive.
+    pub fn cancel_last_flush(&mut self) {
+        self.sync_state.in_flight = false;
+        self.sync_state.sent_hashes.clear();
     }
 
     /// Receive and apply a sync message from the daemon (via the Tauri relay pipe).
@@ -859,12 +876,15 @@ impl NotebookHandle {
     ///
     /// Returns a JS array of `FrameEvent` objects directly via `serde-wasm-bindgen`
     /// (no JSON string intermediate). Sync frames return a single `sync_applied`
-    /// event with an optional `CellChangeset`.
+    /// event with an optional `CellChangeset` and an optional `reply`.
     ///
-    /// **Sync replies are NOT generated here.** The frontend must call
-    /// `generate_sync_reply()` on a debounce timer to send replies back to the
-    /// daemon. This avoids an IPC-per-frame amplification loop — multiple
-    /// inbound frames coalesce into a single outbound reply.
+    /// **Sync replies are generated atomically** within this method after applying
+    /// each inbound `AUTOMERGE_SYNC` frame. The reply bytes (if any) are returned
+    /// in `FrameEvent::SyncApplied.reply` — the caller should send them immediately
+    /// via `sendFrame(0x00, reply)`. This eliminates the consumption race from #1067
+    /// where a separate `generate_sync_reply()` call could be preempted by
+    /// `flushSync`'s `generate_sync_message()`, both competing on the same
+    /// `sync_state`.
     ///
     /// Returns `undefined` if the frame is empty or cannot be processed.
     pub fn receive_frame(&mut self, frame_bytes: &[u8]) -> JsValue {
@@ -916,10 +936,20 @@ impl NotebookHandle {
                     (None, Vec::new())
                 };
 
+                // Generate sync reply atomically — within the same &mut self
+                // borrow as receive_sync_message. This eliminates the race from
+                // #1067 where a separate generate_sync_reply() call could be
+                // preempted by flushSync's generate_sync_message().
+                let reply = self
+                    .doc
+                    .generate_sync_message(&mut self.sync_state)
+                    .map(|msg| msg.encode());
+
                 events.push(FrameEvent::SyncApplied {
                     changed,
                     changeset,
                     attributions,
+                    reply,
                 });
             }
             frame_types::BROADCAST => {
