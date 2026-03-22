@@ -1,0 +1,4 @@
+interface:
+  display_name: "nteract Notebook Sync"
+  short_description: "Notebook sync and CRDT rules"
+  default_prompt: "Use $nteract-notebook-sync when changing Automerge sync, notebook doc ownership, or output materialization in this repo."

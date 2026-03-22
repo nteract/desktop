@@ -1,0 +1,4 @@
+interface:
+  display_name: "nteract Python Bindings"
+  short_description: "Python bindings and MCP dev"
+  default_prompt: "Use $nteract-python-bindings to build, test, or debug the Python bindings and MCP server in this repo."

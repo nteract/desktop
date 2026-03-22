@@ -4,6 +4,12 @@
 
 This document provides guidance for AI agents working in this repository. Claude agents also receive contextual rules (`.claude/rules/`) and skills (`.claude/skills/`) auto-loaded when relevant. All agents should run `cargo xtask help` to discover build commands.
 
+Codex-specific repo skills live in `.codex/skills/`. Prefer them when the task matches:
+- `nteract-daemon-dev` for per-worktree daemon lifecycle, socket setup, and daemon-backed verification
+- `nteract-python-bindings` for `maturin develop`, venv selection, and MCP server work
+- `nteract-notebook-sync` for Automerge ownership, output manifests, and sync-path changes
+- `nteract-testing` for choosing and running the right verification path
+
 ## Quick Recipes (Common Dev Tasks)
 
 ### If you have `supervisor_*` tools — use them
