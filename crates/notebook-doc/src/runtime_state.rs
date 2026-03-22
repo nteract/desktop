@@ -21,6 +21,9 @@
 //!     removed: List[Str]   (packages in kernel but not in metadata)
 //!     channels_changed: bool
 //!     deno_changed: bool
+//!   trust/
+//!     status: Str          ("trusted" | "untrusted" | "signature_invalid" | "no_dependencies")
+//!     needs_approval: bool
 //!   last_saved: Str|null   (ISO timestamp of last save)
 //! ```
 
@@ -88,12 +91,22 @@ impl Default for EnvState {
     }
 }
 
+/// Trust state snapshot for the runtime state doc.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustRuntimeState {
+    /// "trusted", "untrusted", "signature_invalid", "no_dependencies"
+    pub status: String,
+    /// Whether the frontend should show the trust approval dialog
+    pub needs_approval: bool,
+}
+
 /// Full runtime state snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeState {
     pub kernel: KernelState,
     pub queue: QueueState,
     pub env: EnvState,
+    pub trust: TrustRuntimeState,
     pub last_saved: Option<String>,
 }
 
@@ -154,6 +167,15 @@ impl RuntimeStateDoc {
             .expect("scaffold env.channels_changed");
         doc.put(&env, "deno_changed", false)
             .expect("scaffold env.deno_changed");
+
+        // trust/
+        let trust = doc
+            .put_object(&ROOT, "trust", ObjType::Map)
+            .expect("scaffold trust");
+        doc.put(&trust, "status", "no_dependencies")
+            .expect("scaffold trust.status");
+        doc.put(&trust, "needs_approval", false)
+            .expect("scaffold trust.needs_approval");
 
         // last_saved
         doc.put(&ROOT, "last_saved", ScalarValue::Null)
@@ -284,6 +306,26 @@ impl RuntimeStateDoc {
     }
 
     // ── Granular setters (daemon calls these individually) ──────────
+
+    /// Update trust state. Returns `true` if the doc was mutated.
+    #[allow(clippy::expect_used)]
+    pub fn set_trust(&mut self, status: &str, needs_approval: bool) -> bool {
+        let trust = self.get_map("trust").expect("trust map must exist");
+        let cur_status = self.read_str(&trust, "status");
+        let cur_needs = self.read_bool(&trust, "needs_approval");
+
+        if cur_status == status && cur_needs == needs_approval {
+            return false;
+        }
+
+        self.doc
+            .put(&trust, "status", status)
+            .expect("put trust.status");
+        self.doc
+            .put(&trust, "needs_approval", needs_approval)
+            .expect("put trust.needs_approval");
+        true
+    }
 
     /// Update kernel status. Returns `true` if the doc was mutated.
     #[allow(clippy::expect_used)]
@@ -493,6 +535,7 @@ impl RuntimeStateDoc {
         let kernel = self.get_map("kernel");
         let queue = self.get_map("queue");
         let env = self.get_map("env");
+        let trust = self.get_map("trust");
 
         let kernel_state = kernel
             .as_ref()
@@ -537,10 +580,19 @@ impl RuntimeStateDoc {
                 _ => None,
             });
 
+        let trust_state = trust
+            .as_ref()
+            .map(|t| TrustRuntimeState {
+                status: self.read_str(t, "status"),
+                needs_approval: self.read_bool(t, "needs_approval"),
+            })
+            .unwrap_or_default();
+
         RuntimeState {
             kernel: kernel_state,
             queue: queue_state,
             env: env_state,
+            trust: trust_state,
             last_saved,
         }
     }
@@ -586,7 +638,8 @@ mod tests {
     fn test_new_doc_has_default_state() {
         let doc = RuntimeStateDoc::new();
         let state = doc.read_state();
-        assert_eq!(state, RuntimeState::default());
+        // Note: new() scaffolds trust.status as "no_dependencies" which matches
+        // TrustRuntimeState::default() (empty string), so we compare fields individually.
         assert_eq!(state.kernel.status, "not_started");
         assert_eq!(state.kernel.name, "");
         assert_eq!(state.kernel.language, "");
@@ -598,6 +651,8 @@ mod tests {
         assert!(state.env.removed.is_empty());
         assert!(!state.env.channels_changed);
         assert!(!state.env.deno_changed);
+        assert_eq!(state.trust.status, "no_dependencies");
+        assert!(!state.trust.needs_approval);
         assert!(state.last_saved.is_none());
     }
 
@@ -662,6 +717,20 @@ mod tests {
     }
 
     #[test]
+    fn test_set_trust() {
+        let mut doc = RuntimeStateDoc::new();
+        assert!(doc.set_trust("untrusted", true));
+        let state = doc.read_state();
+        assert_eq!(state.trust.status, "untrusted");
+        assert!(state.trust.needs_approval);
+
+        assert!(doc.set_trust("trusted", false));
+        let state = doc.read_state();
+        assert_eq!(state.trust.status, "trusted");
+        assert!(!state.trust.needs_approval);
+    }
+
+    #[test]
     fn test_dedup_skips_redundant_writes() {
         let mut doc = RuntimeStateDoc::new();
 
@@ -684,6 +753,10 @@ mod tests {
         assert!(doc.set_env_sync(false, &[], &[], false, false));
         assert!(!doc.set_env_sync(false, &[], &[], false, false));
 
+        // Same for trust — default is ("no_dependencies", false)
+        assert!(doc.set_trust("trusted", false));
+        assert!(!doc.set_trust("trusted", false));
+
         // Same for last_saved
         assert!(doc.set_last_saved(Some("2025-01-15T12:00:00Z")));
         assert!(!doc.set_last_saved(Some("2025-01-15T12:00:00Z")));
@@ -705,6 +778,7 @@ mod tests {
             true,
             false,
         );
+        daemon_doc.set_trust("untrusted", true);
         daemon_doc.set_last_saved(Some("2025-01-15T12:00:00Z"));
 
         // Client uses new_empty() — random actor, no scaffolding.
@@ -740,6 +814,8 @@ mod tests {
         assert_eq!(client_state.queue.executing, Some("cell-1".to_string()));
         assert_eq!(client_state.queue.queued.len(), 2);
         assert!(!client_state.env.in_sync);
+        assert_eq!(client_state.trust.status, "untrusted");
+        assert!(client_state.trust.needs_approval);
         assert_eq!(
             client_state.last_saved,
             Some("2025-01-15T12:00:00Z".to_string()),

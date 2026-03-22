@@ -938,6 +938,25 @@ where
         }
     }
 
+    // Write trust state to RuntimeStateDoc so frontend can read it reactively
+    {
+        let trust_state = room.trust_state.read().await;
+        let needs_approval = !matches!(
+            trust_state.status,
+            runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
+        );
+        let status_str = match &trust_state.status {
+            runt_trust::TrustStatus::Trusted => "trusted",
+            runt_trust::TrustStatus::Untrusted => "untrusted",
+            runt_trust::TrustStatus::SignatureInvalid => "signature_invalid",
+            runt_trust::TrustStatus::NoDependencies => "no_dependencies",
+        };
+        let mut sd = room.state_doc.write().await;
+        if sd.set_trust(status_str, needs_approval) {
+            let _ = room.state_changed_tx.send(());
+        }
+    }
+
     room.active_peers.fetch_add(1, Ordering::Relaxed);
     let peers = room.active_peers.load(Ordering::Relaxed);
     info!(
@@ -2558,6 +2577,14 @@ async fn handle_notebook_request(
 
             // Clear any stale comm state from a previous kernel (in case it crashed)
             room.comm_state.clear().await;
+
+            // Trust is approved if user explicitly launches kernel — update RuntimeStateDoc
+            {
+                let mut sd = room.state_doc.write().await;
+                if sd.set_trust("trusted", false) {
+                    let _ = room.state_changed_tx.send(());
+                }
+            }
 
             // Create new kernel
             let mut kernel = RoomKernel::new(
