@@ -84,6 +84,7 @@ interface FrameEvent {
   changed?: boolean;
   changeset?: CellChangeset;
   attributions?: TextAttribution[];
+  reply?: number[]; // Inline sync reply bytes from receive_frame (#1067 fix)
   payload?: unknown;
   state?: unknown; // RuntimeState from RuntimeStateSyncApplied
 }
@@ -119,13 +120,6 @@ export interface FramePipelineDeps {
 
   /** Shared output manifest cache (mutated in place). */
   outputCache: Map<string, JupyterOutput>;
-
-  /**
-   * Called after each `sync_applied` event. The hook uses this to
-   * schedule a debounced sync reply (until Phase 2 inlines it as a
-   * `debounceTime` operator).
-   */
-  onSyncApplied: () => void;
 
   /**
    * Resend the initial sync message. Called by the retry timer when
@@ -199,6 +193,22 @@ export function createFramePipeline(deps: FramePipelineDeps): Subscription {
             });
           }
 
+          // ── Send inline sync reply immediately (fire-and-forget) ───
+          // The reply was generated atomically inside WASM's receive_frame,
+          // eliminating the consumption race from #1067 where a separate
+          // generate_sync_reply() could be preempted by flushSync.
+          if (e.reply) {
+            sendFrame(
+              frame_types.AUTOMERGE_SYNC,
+              new Uint8Array(e.reply),
+            ).catch((err: unknown) =>
+              logger.warn(
+                "[frame-pipeline] inline sync reply send failed:",
+                err,
+              ),
+            );
+          }
+
           // ── Initial sync: materialize immediately (no coalescing) ──
           if (deps.getAwaitingInitialSync()) {
             if (e.changed) {
@@ -213,7 +223,6 @@ export function createFramePipeline(deps: FramePipelineDeps): Subscription {
                     .then(() => {
                       deps.setIsLoading(false);
                       notifyMetadataChanged();
-                      deps.onSyncApplied();
                     })
                     .catch((err: unknown) => {
                       logger.warn(
@@ -221,7 +230,6 @@ export function createFramePipeline(deps: FramePipelineDeps): Subscription {
                         err,
                       );
                       deps.setIsLoading(false);
-                      deps.onSyncApplied();
                     }),
                 );
               }
@@ -233,7 +241,6 @@ export function createFramePipeline(deps: FramePipelineDeps): Subscription {
             // user sees the loading state until real content arrives.
             // Restart the retry timer in case the exchange stalls.
             retrySync$.next();
-            deps.onSyncApplied();
             return EMPTY;
           }
 
@@ -241,7 +248,6 @@ export function createFramePipeline(deps: FramePipelineDeps): Subscription {
           if (e.changed) {
             materialize$.next(e.changeset ?? null);
           }
-          deps.onSyncApplied();
           return EMPTY;
         }),
       )

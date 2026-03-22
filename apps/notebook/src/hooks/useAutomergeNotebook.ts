@@ -59,7 +59,6 @@ export function useAutomergeNotebook() {
 
   // RxJS subjects for debounced outbound sync.
   const sourceSync$ = useRef(new Subject<void>());
-  const syncReply$ = useRef(new Subject<void>());
 
   // Refresh blob port on mount.
   useEffect(() => {
@@ -95,13 +94,16 @@ export function useAutomergeNotebook() {
     replaceNotebookCells(newCells);
   }, []);
 
-  /** Send a sync message to the Tauri relay (fire-and-forget). */
+  /** Flush local CRDT changes to the Tauri relay (fire-and-forget).
+   *  Uses flush_local_changes + cancel_last_flush to prevent the sync
+   *  state consumption race from #1067. */
   const syncToRelay = useCallback((handle: NotebookHandle) => {
-    const msg = handle.generate_sync_message();
+    const msg = handle.flush_local_changes();
     if (msg) {
-      sendFrame(frame_types.AUTOMERGE_SYNC, msg).catch((e: unknown) =>
-        logger.warn("[automerge-notebook] sync to relay failed:", e),
-      );
+      sendFrame(frame_types.AUTOMERGE_SYNC, msg).catch((e: unknown) => {
+        handle.cancel_last_flush();
+        logger.warn("[automerge-notebook] sync to relay failed:", e);
+      });
     }
   }, []);
 
@@ -202,11 +204,10 @@ export function useAutomergeNotebook() {
       setIsLoading,
       materializeCells,
       outputCache: outputCacheRef.current,
-      onSyncApplied: () => syncReply$.current.next(),
       retrySyncToRelay: () => {
         const handle = handleRef.current;
         if (!handle) return;
-        // Reset sync state so generate_sync_message() produces a fresh
+        // Reset sync state so flush_local_changes() produces a fresh
         // request instead of returning null (which it does when the
         // handle believes it's already in sync with the peer).
         handle.reset_sync_state();
@@ -220,20 +221,6 @@ export function useAutomergeNotebook() {
       .subscribe(() => {
         const handle = handleRef.current;
         if (handle) syncToRelay(handle);
-      });
-
-    // Sync reply: 50ms debounce for coalescing inbound frame replies.
-    const syncReplySub = syncReply$.current
-      .pipe(debounceTime(50))
-      .subscribe(() => {
-        const handle = handleRef.current;
-        if (!handle) return;
-        const reply = handle.generate_sync_reply();
-        if (reply) {
-          sendFrame(frame_types.AUTOMERGE_SYNC, reply).catch((e: unknown) =>
-            logger.warn("[automerge-notebook] sync reply failed:", e),
-          );
-        }
       });
 
     // Bulk output clearing (run-all / restart-and-run-all).
@@ -255,18 +242,11 @@ export function useAutomergeNotebook() {
       frameSub.unsubscribe();
       lifecycleSub.unsubscribe();
       sourceSyncSub.unsubscribe();
-      syncReplySub.unsubscribe();
       clearOutputsSub.unsubscribe();
 
-      // Flush pending sync before freeing handle.
+      // Flush pending local changes before freeing handle.
       if (handleRef.current) {
         syncToRelay(handleRef.current);
-        const reply = handleRef.current.generate_sync_reply();
-        if (reply) {
-          sendFrame(frame_types.AUTOMERGE_SYNC, reply).catch((e: unknown) =>
-            logger.warn("[automerge-notebook] teardown sync reply failed:", e),
-          );
-        }
       }
 
       resetNotebookCells();
@@ -437,15 +417,16 @@ export function useAutomergeNotebook() {
     const handle = handleRef.current;
     if (!handle) return;
     // Bypasses the debounce; any pending emission becomes a no-op.
-    const msg = handle.generate_sync_message();
+    const msg = handle.flush_local_changes();
     if (msg) {
       try {
         await sendFrame(frame_types.AUTOMERGE_SYNC, msg);
       } catch (e) {
-        // Best-effort: don't block callers (execute, save) if the relay
-        // is temporarily unable to forward the sync frame.  The daemon
-        // will catch up on the next successful sync round-trip.
-        logger.warn("[flushSync] failed to send sync frame, continuing", e);
+        // flush_local_changes advanced sync_state (in_flight, sent_hashes).
+        // Cancel to prevent sent_hashes from permanently filtering out
+        // the change data we never delivered (#1067).
+        handle.cancel_last_flush();
+        logger.warn("[flushSync] failed, rolled back sync state", e);
       }
     }
   }, []);

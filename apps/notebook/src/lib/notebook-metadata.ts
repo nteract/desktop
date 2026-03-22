@@ -254,13 +254,19 @@ export async function setMetadataSnapshot(
 }
 
 /**
- * Generate a sync message from the WASM doc and send it to the daemon via the Tauri relay pipe.
+ * Flush local CRDT changes to the daemon via the Tauri relay pipe.
+ * Uses flush_local_changes + cancel_last_flush to prevent the sync
+ * state consumption race from #1067.
  */
 async function syncToRelay(): Promise<void> {
   if (!_handle) return;
-  const msg = _handle.generate_sync_message();
+  const msg = _handle.flush_local_changes();
   if (msg) {
-    await sendFrame(frame_types.AUTOMERGE_SYNC, msg);
+    try {
+      await sendFrame(frame_types.AUTOMERGE_SYNC, msg);
+    } catch {
+      _handle.cancel_last_flush();
+    }
   }
 }
 

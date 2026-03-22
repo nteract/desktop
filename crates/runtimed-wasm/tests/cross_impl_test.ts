@@ -135,8 +135,8 @@ Deno.test("Cross-impl: WASM sync between two independent handles", () => {
 
   // Sync messages exchange
   for (let i = 0; i < 10; i++) {
-    const msgA = frontend.generate_sync_message();
-    const msgB = relay.generate_sync_message();
+    const msgA = frontend.flush_local_changes();
+    const msgB = relay.flush_local_changes();
     if (!msgA && !msgB) break;
     if (msgA) relay.receive_sync_message(msgA);
     if (msgB) frontend.receive_sync_message(msgB);

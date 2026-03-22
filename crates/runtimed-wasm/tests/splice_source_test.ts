@@ -60,8 +60,8 @@ type Handle = any;
 /** Sync two handles until convergence (no more messages in either direction). */
 function syncHandles(a: Handle, b: Handle, maxRounds = 20) {
   for (let i = 0; i < maxRounds; i++) {
-    const msgA = a.generate_sync_message();
-    const msgB = b.generate_sync_message();
+    const msgA = a.flush_local_changes();
+    const msgB = b.flush_local_changes();
     if (!msgA && !msgB) break;
     if (msgA) b.receive_sync_message(msgA);
     if (msgB) a.receive_sync_message(msgB);
@@ -94,7 +94,7 @@ function syncViaFrame(
   to: Handle,
   // deno-lint-ignore no-explicit-any
 ): any[] | null {
-  const msg = from.generate_sync_message();
+  const msg = from.flush_local_changes();
   if (!msg) return null;
 
   // Build a frame: type byte 0x00 (AUTOMERGE_SYNC) + payload
