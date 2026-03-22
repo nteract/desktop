@@ -1,0 +1,4 @@
+interface:
+  display_name: "nteract Daemon Dev"
+  short_description: "Per-worktree daemon workflows"
+  default_prompt: "Use $nteract-daemon-dev to work safely with the per-worktree runtimed daemon in this repo."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "nteract Testing"
+  short_description: "Repo test selection and setup"
+  default_prompt: "Use $nteract-testing to choose, run, and interpret the right test suites for this repo."
