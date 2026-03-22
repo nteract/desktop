@@ -53,6 +53,15 @@ export interface SyncableHandle {
   reset_sync_state(): void;
 }
 
+/**
+ * A function that returns the current SyncableHandle, or null if unavailable.
+ *
+ * Using a getter instead of a direct reference ensures the engine always
+ * reads the latest handle — critical for React strict mode where effects
+ * mount/cleanup/mount and the handle ref can change between async operations.
+ */
+export type HandleGetter = () => SyncableHandle | null;
+
 // ── Frame events (mirrored from runtimed-wasm FrameEvent enum) ──────
 
 /** Changeset describing which cells changed and how. */
@@ -192,13 +201,13 @@ const DEFAULT_INITIAL_SYNC_TIMEOUT_MS = 3000;
  *
  * Usage:
  * ```ts
- * const engine = new SyncEngine(handle, transport, { flushDebounceMs: 20 });
+ * const engine = new SyncEngine(() => handleRef.current, transport, { flushDebounceMs: 20 });
  * engine.on("cells_changed", (e) => updateStore(e.changeset));
  * engine.on("broadcast", (e) => handleBroadcast(e.payload));
  * engine.start();
  *
  * // After local CRDT mutations:
- * handle.update_source("cell-1", "new code");
+ * handleRef.current.update_source("cell-1", "new code");
  * engine.scheduleFlush();
  *
  * // Cleanup:
@@ -206,7 +215,7 @@ const DEFAULT_INITIAL_SYNC_TIMEOUT_MS = 3000;
  * ```
  */
 export class SyncEngine {
-  readonly #handle: SyncableHandle;
+  readonly #getHandle: HandleGetter;
   readonly #transport: NotebookTransport;
   readonly #options: Required<SyncEngineOptions>;
 
@@ -225,11 +234,15 @@ export class SyncEngine {
   #listeners: Map<SyncEngineEventType, Set<EventCallback>> = new Map();
 
   constructor(
-    handle: SyncableHandle,
+    getHandle: HandleGetter | SyncableHandle,
     transport: NotebookTransport,
     options: SyncEngineOptions = {},
   ) {
-    this.#handle = handle;
+    // Accept either a getter function or a direct handle (for tests).
+    this.#getHandle =
+      typeof getHandle === "function" && !("receive_frame" in getHandle)
+        ? (getHandle as HandleGetter)
+        : () => getHandle as SyncableHandle;
     this.#transport = transport;
     this.#options = {
       flushDebounceMs: options.flushDebounceMs ?? DEFAULT_FLUSH_DEBOUNCE_MS,
@@ -356,9 +369,12 @@ export class SyncEngine {
   #processFrame(frame: Uint8Array): void {
     if (!this.#running) return;
 
+    const handle = this.#getHandle();
+    if (!handle) return;
+
     let events: FrameEvent[] | undefined;
     try {
-      events = this.#handle.receive_frame(frame);
+      events = handle.receive_frame(frame);
     } catch (err) {
       this.#emit({ type: "error", error: err, context: "receive_frame" });
       return;
@@ -395,7 +411,7 @@ export class SyncEngine {
       this.#transport
         .sendFrame(FrameType.AUTOMERGE_SYNC, new Uint8Array(event.reply))
         .catch((err) => {
-          this.#handle.cancel_last_flush();
+          this.#getHandle()?.cancel_last_flush();
           this.#emit({
             type: "error",
             error: err,
@@ -443,8 +459,10 @@ export class SyncEngine {
     }
 
     // Send runtime state sync reply so the daemon knows our heads.
+    const handle = this.#getHandle();
+    if (!handle) return;
     try {
-      const reply = this.#handle.generate_runtime_state_sync_reply();
+      const reply = handle.generate_runtime_state_sync_reply();
       if (reply) {
         this.#transport
           .sendFrame(FrameType.RUNTIME_STATE_SYNC, reply)
@@ -469,13 +487,15 @@ export class SyncEngine {
 
   /** Synchronous flush — fire-and-forget, errors emitted as events. */
   #flushNow(): void {
+    const handle = this.#getHandle();
+    if (!handle) return;
     try {
-      const msg = this.#handle.flush_local_changes();
+      const msg = handle.flush_local_changes();
       if (msg) {
         this.#transport
           .sendFrame(FrameType.AUTOMERGE_SYNC, msg)
           .catch((err) => {
-            this.#handle.cancel_last_flush();
+            this.#getHandle()?.cancel_last_flush();
             this.#emit({ type: "error", error: err, context: "flush_send" });
           });
       }
@@ -486,12 +506,14 @@ export class SyncEngine {
 
   /** Async flush — awaits the send so callers can sequence after it. */
   async #flushAsync(): Promise<void> {
-    const msg = this.#handle.flush_local_changes();
+    const handle = this.#getHandle();
+    if (!handle) return;
+    const msg = handle.flush_local_changes();
     if (!msg) return;
     try {
       await this.#transport.sendFrame(FrameType.AUTOMERGE_SYNC, msg);
     } catch (err) {
-      this.#handle.cancel_last_flush();
+      this.#getHandle()?.cancel_last_flush();
       this.#emit({ type: "error", error: err, context: "flush_send" });
       throw err;
     }
@@ -508,7 +530,7 @@ export class SyncEngine {
       // Reset sync state and re-send the initial sync message.
       // This handles the case where the first message was lost or
       // consumed by a stale handle.
-      this.#handle.reset_sync_state();
+      this.#getHandle()?.reset_sync_state();
       this.#flushNow();
       this.#emit({ type: "sync_retry" });
 

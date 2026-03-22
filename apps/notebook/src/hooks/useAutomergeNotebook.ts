@@ -154,7 +154,7 @@ export function useAutomergeNotebook() {
     await transport.connect();
     transportRef.current = transport;
 
-    const engine = new SyncEngine(handle, transport, {
+    const engine = new SyncEngine(() => handleRef.current, transport, {
       flushDebounceMs: 20,
       initialSyncTimeoutMs: 3000,
     });

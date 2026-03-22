@@ -46,6 +46,7 @@ export type {
 export { SyncEngine } from "./sync-engine.ts";
 export type {
   SyncableHandle,
+  HandleGetter,
   SyncEngineOptions,
   SyncEngineEvent,
   SyncEngineEventType,
