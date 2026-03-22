@@ -230,13 +230,13 @@ pub async fn prepare_environment_in(
     // This handles cases where a recently-published version (e.g. a nightly pre-release)
     // isn't found because uv's cached package index is stale.
     let install_output = if !install_output.status.success() {
-        info!("uv pip install failed, retrying with --refresh");
-        let mut retry_args = vec![
-            "pip".to_string(),
-            "install".to_string(),
-            "--refresh".to_string(),
-        ];
-        retry_args.extend_from_slice(&install_args[2..]);
+        let first_stderr = String::from_utf8_lossy(&install_output.stderr);
+        info!(
+            "uv pip install failed, retrying with --refresh. First attempt stderr: {}",
+            first_stderr
+        );
+        let mut retry_args = install_args.clone();
+        retry_args.insert(2, "--refresh".to_string());
         tokio::process::Command::new(&uv_path)
             .args(&retry_args)
             .stdout(Stdio::piped())
