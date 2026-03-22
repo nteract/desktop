@@ -7,6 +7,7 @@ import {
   type CellSnapshot,
   cellSnapshotsToNotebookCells,
   cellSnapshotsToNotebookCellsSync,
+  isManifestHash,
 } from "../lib/materialize-cells";
 import {
   getNotebookCellsSnapshot,
@@ -241,16 +242,27 @@ export function useAutomergeNotebook() {
                 // Resolve outputs from cache (sync path).
                 // Outputs that are manifest hashes not in cache will show
                 // as loading — a subsequent full materialize will resolve them.
-                const resolvedOutputs = (outputs ?? []).map(
-                  (o: string) =>
-                    outputCacheRef.current.get(o) ??
-                    (typeof o === "string" && o.length === 16
-                      ? (c.outputs.find(
-                          (existing: JupyterOutput) =>
-                            existing && "_manifest" in existing,
-                        ) ?? { output_type: "loading", _manifest: o })
-                      : JSON.parse(o)),
-                );
+                const resolvedOutputs = (outputs ?? [])
+                  .map((o: string) => {
+                    // 1. Already resolved in cache
+                    const cached = outputCacheRef.current.get(o);
+                    if (cached) return cached;
+
+                    // 2. Manifest hash — needs async blob resolution
+                    if (isManifestHash(o)) {
+                      return null; // will trigger deferred materialize below
+                    }
+
+                    // 3. Inline JSON output
+                    try {
+                      const parsed = JSON.parse(o) as JupyterOutput;
+                      outputCacheRef.current.set(o, parsed);
+                      return parsed;
+                    } catch {
+                      return null;
+                    }
+                  })
+                  .filter((o): o is JupyterOutput => o !== null);
 
                 return {
                   ...c,
@@ -269,9 +281,7 @@ export function useAutomergeNotebook() {
               cell.fields.outputs &&
               (h.get_cell_outputs(cell.cell_id) ?? []).some(
                 (o: string) =>
-                  typeof o === "string" &&
-                  o.length === 16 &&
-                  !outputCacheRef.current.has(o),
+                  isManifestHash(o) && !outputCacheRef.current.has(o),
               ),
           );
           if (hasUnresolved) {
