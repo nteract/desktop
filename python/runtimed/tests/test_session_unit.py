@@ -55,17 +55,8 @@ class TestModuleExports:
             "CellHandle",
             "CellCollection",
             "Presence",
-            # Data types (reachable through wrapper)
-            "Cell",
-            "ExecutionEvent",
-            "ExecutionResult",
-            "Output",
+            # Error type
             "RuntimedError",
-            "SyncEnvironmentResult",
-            # Runtime state
-            "RuntimeState",
-            "KernelState",
-            "EnvState",
             # Standalone functions
             "default_socket_path",
             "show_notebook_app",
