@@ -370,7 +370,12 @@ export class SyncEngine {
     if (!this.#running) return;
 
     const handle = this.#getHandle();
-    if (!handle) return;
+    if (!handle) {
+      console.warn(
+        "[SyncEngine] processFrame: handle getter returned null, skipping frame",
+      );
+      return;
+    }
 
     let events: FrameEvent[] | undefined;
     try {
@@ -380,7 +385,34 @@ export class SyncEngine {
       return;
     }
 
-    if (!events || !Array.isArray(events)) return;
+    if (!events || !Array.isArray(events)) {
+      console.warn(
+        "[SyncEngine] processFrame: receive_frame returned non-array:",
+        typeof events,
+        "frame type byte:",
+        frame[0],
+        "frame length:",
+        frame.length,
+      );
+      return;
+    }
+
+    // Diagnostic: log event types during initial sync
+    if (this.#awaitingInitialSync) {
+      for (const ev of events) {
+        if (ev.type === "sync_applied") {
+          const sa = ev as SyncAppliedEvent;
+          console.log(
+            "[SyncEngine] initial sync: sync_applied changed=%s changeset=%s reply=%s",
+            sa.changed,
+            sa.changeset ? "yes" : "no",
+            sa.reply ? `${sa.reply.length}B` : "none",
+          );
+        } else {
+          console.log("[SyncEngine] initial sync: event type=%s", ev.type);
+        }
+      }
+    }
 
     for (const event of events) {
       switch (event.type) {
