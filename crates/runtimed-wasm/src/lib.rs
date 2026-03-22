@@ -857,6 +857,19 @@ impl NotebookHandle {
             .map(|msg| msg.encode())
     }
 
+    /// Generate an initial RuntimeStateDoc sync message.
+    ///
+    /// Call this during bootstrap (alongside `flush_local_changes` for the
+    /// notebook doc) so the daemon knows we need the full RuntimeStateDoc.
+    /// Without this, if the daemon's initial `RuntimeStateSync` frame arrives
+    /// before the WASM handle is ready, the kernel status is never synced
+    /// and the frontend stays stuck on "not_started".
+    pub fn flush_runtime_state_sync(&mut self) -> Option<Vec<u8>> {
+        self.state_doc
+            .generate_sync_message(&mut self.state_sync_state)
+            .map(|msg| msg.encode())
+    }
+
     /// Read the current runtime state snapshot from the WASM doc.
     pub fn get_runtime_state(&self) -> JsValue {
         let state = self.state_doc.read_state();

@@ -160,6 +160,16 @@ export class NotebookHandle {
      */
     flush_local_changes(): Uint8Array | undefined;
     /**
+     * Generate an initial RuntimeStateDoc sync message.
+     *
+     * Call this during bootstrap (alongside `flush_local_changes` for the
+     * notebook doc) so the daemon knows we need the full RuntimeStateDoc.
+     * Without this, if the daemon's initial `RuntimeStateSync` frame arrives
+     * before the WASM handle is ready, the kernel status is never synced
+     * and the frontend stays stuck on "not_started".
+     */
+    flush_runtime_state_sync(): Uint8Array | undefined;
+    /**
      * Generate a sync reply for the RuntimeStateDoc.
      * Called immediately after each `RuntimeStateSyncApplied` event
      * so the daemon knows which state the client has received.
@@ -529,7 +539,7 @@ export interface InitOutput {
     readonly notebookhandle_cancel_last_flush: (a: number) => void;
     readonly notebookhandle_receive_sync_message: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_save: (a: number, b: number) => void;
-    readonly notebookhandle_generate_runtime_state_sync_reply: (a: number, b: number) => void;
+    readonly notebookhandle_flush_runtime_state_sync: (a: number, b: number) => void;
     readonly notebookhandle_get_runtime_state: (a: number) => number;
     readonly notebookhandle_reset_sync_state: (a: number) => void;
     readonly notebookhandle_receive_frame: (a: number, b: number, c: number) => number;
@@ -537,6 +547,7 @@ export interface InitOutput {
     readonly encode_selection_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
     readonly encode_focus_presence: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly encode_clear_channel_presence: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly notebookhandle_generate_runtime_state_sync_reply: (a: number, b: number) => void;
     readonly __wbindgen_export: (a: number, b: number) => number;
     readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export3: (a: number) => void;

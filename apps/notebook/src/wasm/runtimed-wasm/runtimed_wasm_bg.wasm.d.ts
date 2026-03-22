@@ -71,7 +71,7 @@ export const notebookhandle_flush_local_changes: (a: number, b: number) => void;
 export const notebookhandle_cancel_last_flush: (a: number) => void;
 export const notebookhandle_receive_sync_message: (a: number, b: number, c: number, d: number) => void;
 export const notebookhandle_save: (a: number, b: number) => void;
-export const notebookhandle_generate_runtime_state_sync_reply: (a: number, b: number) => void;
+export const notebookhandle_flush_runtime_state_sync: (a: number, b: number) => void;
 export const notebookhandle_get_runtime_state: (a: number) => number;
 export const notebookhandle_reset_sync_state: (a: number) => void;
 export const notebookhandle_receive_frame: (a: number, b: number, c: number) => number;
@@ -79,6 +79,7 @@ export const encode_cursor_presence: (a: number, b: number, c: number, d: number
 export const encode_selection_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
 export const encode_focus_presence: (a: number, b: number, c: number, d: number, e: number) => void;
 export const encode_clear_channel_presence: (a: number, b: number, c: number, d: number, e: number) => void;
+export const notebookhandle_generate_runtime_state_sync_reply: (a: number, b: number) => void;
 export const __wbindgen_export: (a: number, b: number) => number;
 export const __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_export3: (a: number) => void;

@@ -572,6 +572,32 @@ export class NotebookHandle {
         }
     }
     /**
+     * Generate an initial RuntimeStateDoc sync message.
+     *
+     * Call this during bootstrap (alongside `flush_local_changes` for the
+     * notebook doc) so the daemon knows we need the full RuntimeStateDoc.
+     * Without this, if the daemon's initial `RuntimeStateSync` frame arrives
+     * before the WASM handle is ready, the kernel status is never synced
+     * and the frontend stays stuck on "not_started".
+     * @returns {Uint8Array | undefined}
+     */
+    flush_runtime_state_sync() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.notebookhandle_flush_runtime_state_sync(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            let v1;
+            if (r0 !== 0) {
+                v1 = getArrayU8FromWasm0(r0, r1).slice();
+                wasm.__wbindgen_export4(r0, r1 * 1, 1);
+            }
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Generate a sync reply for the RuntimeStateDoc.
      * Called immediately after each `RuntimeStateSyncApplied` event
      * so the daemon knows which state the client has received.

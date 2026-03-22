@@ -105,6 +105,22 @@ export function useAutomergeNotebook() {
         logger.warn("[automerge-notebook] sync to relay failed:", e);
       });
     }
+
+    // Also initiate RuntimeStateDoc sync so the daemon sends kernel status,
+    // trust state, etc. Without this, if the daemon's initial RuntimeStateSync
+    // frame arrived before the WASM handle was ready, the frontend would stay
+    // stuck on "not_started" with no way to recover (#runtime-state-race).
+    const stateMsg = handle.flush_runtime_state_sync();
+    if (stateMsg) {
+      sendFrame(frame_types.RUNTIME_STATE_SYNC, stateMsg).catch(
+        (e: unknown) => {
+          logger.warn(
+            "[automerge-notebook] runtime state sync to relay failed:",
+            e,
+          );
+        },
+      );
+    }
   }, []);
 
   /** Sync re-read cells from WASM (cache-only, no blob fetches). */
