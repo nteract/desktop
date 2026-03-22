@@ -51,6 +51,10 @@ export interface SyncableHandle {
 
   /** Reset all sync state (reconnection / page reload equivalent). */
   reset_sync_state(): void;
+
+  /** Number of cells in the document. Used to detect initial sync completion
+   *  when the daemon sent content before the transport was listening. */
+  cell_count(): number;
 }
 
 /**
@@ -454,13 +458,21 @@ export class SyncEngine {
 
     // ── Initial sync handshake ───────────────────────────────────
     if (this.#awaitingInitialSync) {
-      if (event.changed) {
-        // First real content from the daemon — initial sync complete.
+      // Check if the doc has content — the daemon may have sent it
+      // before the transport was listening (relay emits frames as soon
+      // as the room is created, but our transport connects later).
+      // In that case `changed` is false (daemon thinks we already have
+      // it) but the doc actually has cells from the sync exchange.
+      const handle = this.#getHandle();
+      const hasContent = handle ? handle.cell_count() > 0 : false;
+
+      if (event.changed || hasContent) {
+        // Content arrived (or was already present) — initial sync complete.
         this.#awaitingInitialSync = false;
         this.#clearRetryTimer();
         this.#emit({ type: "initial_sync_complete" });
 
-        // Also emit the cells_changed so consumers can materialize.
+        // Emit cells_changed so consumers can materialize.
         this.#emit({
           type: "cells_changed",
           changeset: event.changeset ?? null,
