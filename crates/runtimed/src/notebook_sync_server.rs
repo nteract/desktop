@@ -2258,12 +2258,16 @@ async fn auto_launch_kernel(
                                     .await;
                                 }
                             }
-                            QueueCommand::CellError { cell_id } => {
+                            QueueCommand::CellError {
+                                cell_id,
+                                execution_id: _,
+                            } => {
                                 warn!("[notebook-sync] Cell error (stop-on-error): {}", cell_id);
                                 // Clear the queue to stop execution on error, which matches
                                 // the behavior of manually-launched kernel handler.
                                 let mut guard = room_kernel.lock().await;
                                 if let Some(ref mut k) = *guard {
+                                    k.mark_execution_errored();
                                     let cleared = k.clear_queue();
                                     if !cleared.is_empty() {
                                         info!(
@@ -2285,14 +2289,14 @@ async fn auto_launch_kernel(
                             }
                             QueueCommand::KernelDied => {
                                 warn!("[notebook-sync] Kernel died, unblocking execution queue");
-                                let env_source = {
+                                let (env_source, was_executing) = {
                                     let mut guard = room_kernel.lock().await;
                                     if let Some(ref mut k) = *guard {
                                         let es = k.env_source().to_string();
-                                        k.kernel_died();
-                                        Some(es)
+                                        let was_exec = k.kernel_died();
+                                        (Some(es), was_exec)
                                     } else {
-                                        None
+                                        (None, None)
                                     }
                                 };
                                 // Write error status + cleared queue to state doc
@@ -2304,6 +2308,10 @@ async fn auto_launch_kernel(
                                         None::<&notebook_doc::runtime_state::QueueEntry>,
                                         &[],
                                     );
+                                    if let Some((ref cell_id, ref execution_id)) = was_executing {
+                                        changed |=
+                                            sd.append_completed(execution_id, cell_id, false);
+                                    }
                                     if changed {
                                         let _ = room_state_changed_tx.send(());
                                     }
@@ -2949,7 +2957,10 @@ async fn handle_notebook_request(
                                             .await;
                                         }
                                     }
-                                    QueueCommand::CellError { cell_id } => {
+                                    QueueCommand::CellError {
+                                        cell_id,
+                                        execution_id: _,
+                                    } => {
                                         warn!(
                                             "[notebook-sync] Cell error (stop-on-error): {}",
                                             cell_id
@@ -2957,6 +2968,7 @@ async fn handle_notebook_request(
                                         // Clear the queue to stop execution on error
                                         let mut guard = room_kernel.lock().await;
                                         if let Some(ref mut k) = *guard {
+                                            k.mark_execution_errored();
                                             let cleared = k.clear_queue();
                                             if !cleared.is_empty() {
                                                 info!(
@@ -2978,14 +2990,14 @@ async fn handle_notebook_request(
                                     }
                                     QueueCommand::KernelDied => {
                                         warn!("[notebook-sync] Kernel died, unblocking execution queue");
-                                        let env_source = {
+                                        let (env_source, was_executing) = {
                                             let mut guard = room_kernel.lock().await;
                                             if let Some(ref mut k) = *guard {
                                                 let es = k.env_source().to_string();
-                                                k.kernel_died();
-                                                Some(es)
+                                                let was_exec = k.kernel_died();
+                                                (Some(es), was_exec)
                                             } else {
-                                                None
+                                                (None, None)
                                             }
                                         };
                                         // Write error status + cleared queue to state doc
@@ -2997,6 +3009,15 @@ async fn handle_notebook_request(
                                                 None::<&notebook_doc::runtime_state::QueueEntry>,
                                                 &[],
                                             );
+                                            if let Some((ref cell_id, ref execution_id)) =
+                                                was_executing
+                                            {
+                                                changed |= sd.append_completed(
+                                                    execution_id,
+                                                    cell_id,
+                                                    false,
+                                                );
+                                            }
                                             if changed {
                                                 let _ = room_state_changed_tx.send(());
                                             }

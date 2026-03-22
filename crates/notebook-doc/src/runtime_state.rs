@@ -24,6 +24,7 @@
 //!     channels_changed: bool
 //!     deno_changed: bool
 //!   last_saved: Str|null   (ISO timestamp of last save)
+//!   completed/  List[Map { execution_id: Str, cell_id: Str, success: Bool }]
 //! ```
 
 use automerge::{
@@ -97,6 +98,14 @@ impl Default for EnvState {
     }
 }
 
+/// A completed execution entry in the completion log.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompletedExecution {
+    pub execution_id: String,
+    pub cell_id: String,
+    pub success: bool,
+}
+
 /// Full runtime state snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeState {
@@ -104,6 +113,8 @@ pub struct RuntimeState {
     pub queue: QueueState,
     pub env: EnvState,
     pub last_saved: Option<String>,
+    #[serde(default)]
+    pub completed: Vec<CompletedExecution>,
 }
 
 // ── RuntimeStateDoc ─────────────────────────────────────────────────
@@ -171,6 +182,10 @@ impl RuntimeStateDoc {
         // last_saved
         doc.put(&ROOT, "last_saved", ScalarValue::Null)
             .expect("scaffold last_saved");
+
+        // completed/
+        doc.put_object(&ROOT, "completed", ObjType::List)
+            .expect("scaffold completed");
 
         Self { doc }
     }
@@ -544,6 +559,55 @@ impl RuntimeStateDoc {
         true
     }
 
+    /// Record a completed execution. Trims the log to the last 32 entries.
+    #[allow(clippy::expect_used)]
+    pub fn append_completed(&mut self, execution_id: &str, cell_id: &str, success: bool) -> bool {
+        const MAX_COMPLETED: usize = 32;
+
+        let list = self
+            .doc
+            .get(&ROOT, "completed")
+            .expect("get completed")
+            .map(|(_, id)| id);
+
+        let list = match list {
+            Some(id) => id,
+            None => {
+                // Scaffold if missing (e.g., old doc)
+                self.doc
+                    .put_object(&ROOT, "completed", ObjType::List)
+                    .expect("scaffold completed")
+            }
+        };
+
+        // Create a map entry
+        let len = self.doc.length(&list);
+        let entry = self
+            .doc
+            .insert_object(&list, len, ObjType::Map)
+            .expect("insert completed entry");
+        self.doc
+            .put(&entry, "execution_id", execution_id)
+            .expect("put execution_id");
+        self.doc
+            .put(&entry, "cell_id", cell_id)
+            .expect("put cell_id");
+        self.doc
+            .put(&entry, "success", success)
+            .expect("put success");
+
+        // Trim old entries from the front
+        let new_len = self.doc.length(&list);
+        if new_len > MAX_COMPLETED {
+            let to_remove = new_len - MAX_COMPLETED;
+            for _ in 0..to_remove {
+                self.doc.delete(&list, 0).expect("trim completed entry");
+            }
+        }
+
+        true
+    }
+
     // ── Full state read ─────────────────────────────────────────────
 
     /// Read the full runtime state snapshot.
@@ -624,11 +688,37 @@ impl RuntimeStateDoc {
                 _ => None,
             });
 
+        let completed = self
+            .doc
+            .get(&ROOT, "completed")
+            .ok()
+            .flatten()
+            .map(|(_, list_id)| {
+                let len = self.doc.length(&list_id);
+                (0..len)
+                    .filter_map(|i| {
+                        let (_, entry_id) = self.doc.get(&list_id, i).ok()??;
+                        let execution_id = self
+                            .read_opt_str(&entry_id, "execution_id")
+                            .unwrap_or_default();
+                        let cell_id = self.read_opt_str(&entry_id, "cell_id").unwrap_or_default();
+                        let success = self.read_bool(&entry_id, "success");
+                        Some(CompletedExecution {
+                            execution_id,
+                            cell_id,
+                            success,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         RuntimeState {
             kernel: kernel_state,
             queue: queue_state,
             env: env_state,
             last_saved,
+            completed,
         }
     }
 
@@ -686,6 +776,7 @@ mod tests {
         assert!(!state.env.channels_changed);
         assert!(!state.env.deno_changed);
         assert!(state.last_saved.is_none());
+        assert!(state.completed.is_empty());
     }
 
     #[test]
@@ -800,6 +891,41 @@ mod tests {
         // Same for last_saved
         assert!(doc.set_last_saved(Some("2025-01-15T12:00:00Z")));
         assert!(!doc.set_last_saved(Some("2025-01-15T12:00:00Z")));
+    }
+
+    #[test]
+    fn test_append_completed_and_read() {
+        let mut doc = RuntimeStateDoc::new();
+
+        // Append a few entries
+        assert!(doc.append_completed("exec-1", "cell-a", true));
+        assert!(doc.append_completed("exec-2", "cell-b", false));
+        assert!(doc.append_completed("exec-3", "cell-a", true));
+
+        let state = doc.read_state();
+        assert_eq!(state.completed.len(), 3);
+        assert_eq!(state.completed[0].execution_id, "exec-1");
+        assert_eq!(state.completed[0].cell_id, "cell-a");
+        assert!(state.completed[0].success);
+        assert_eq!(state.completed[1].execution_id, "exec-2");
+        assert!(!state.completed[1].success);
+        assert_eq!(state.completed[2].execution_id, "exec-3");
+    }
+
+    #[test]
+    fn test_append_completed_trims_to_max() {
+        let mut doc = RuntimeStateDoc::new();
+
+        // Insert 40 entries — should trim to 32
+        for i in 0..40 {
+            doc.append_completed(&format!("exec-{i}"), &format!("cell-{i}"), i % 2 == 0);
+        }
+
+        let state = doc.read_state();
+        assert_eq!(state.completed.len(), 32);
+        // Oldest surviving entry should be exec-8 (indices 0..7 trimmed)
+        assert_eq!(state.completed[0].execution_id, "exec-8");
+        assert_eq!(state.completed[31].execution_id, "exec-39");
     }
 
     #[test]

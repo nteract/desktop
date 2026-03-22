@@ -272,6 +272,8 @@ pub struct RoomKernel {
     queue: VecDeque<QueuedCell>,
     /// Currently executing cell (cell_id, execution_id)
     executing: Option<(String, String)>,
+    /// Whether the current execution encountered an error (for completion logging)
+    execution_errored: bool,
     /// Current kernel status
     status: KernelStatus,
     /// Broadcast channel for sending outputs to peers
@@ -311,7 +313,10 @@ pub enum QueueCommand {
     /// A cell finished executing (received status=idle from kernel)
     ExecutionDone { cell_id: String },
     /// A cell produced an error (for stop-on-error behavior)
-    CellError { cell_id: String },
+    CellError {
+        cell_id: String,
+        execution_id: String,
+    },
     /// The kernel process died (iopub connection lost).
     /// Unblocks the execution queue and notifies the frontend.
     KernelDied,
@@ -387,6 +392,7 @@ impl RoomKernel {
             cell_id_map: Arc::new(StdMutex::new(HashMap::new())),
             queue: VecDeque::new(),
             executing: None,
+            execution_errored: false,
             status: KernelStatus::Starting,
             broadcast_tx,
             cmd_tx: None,
@@ -452,6 +458,13 @@ impl RoomKernel {
     /// Get the currently executing entry as (cell_id, execution_id).
     pub fn executing_entry(&self) -> Option<&(String, String)> {
         self.executing.as_ref()
+    }
+
+    /// Mark the current execution as having encountered an error.
+    /// Called from the CellError handler so that `execution_done` logs
+    /// the completion with `success: false`.
+    pub fn mark_execution_errored(&mut self) {
+        self.execution_errored = true;
     }
 
     /// Get the queued cell IDs.
@@ -1350,6 +1363,7 @@ impl RoomKernel {
                                     // Signal cell error for stop-on-error
                                     let _ = iopub_cmd_tx.try_send(QueueCommand::CellError {
                                         cell_id: cid.clone(),
+                                        execution_id: execution_id.clone(),
                                     });
                                 }
                             }
@@ -2004,8 +2018,13 @@ impl RoomKernel {
             });
 
             {
+                let success = !self.execution_errored;
+                self.execution_errored = false;
                 let mut sd = self.state_doc.write().await;
-                if sd.set_queue(None::<&QueueEntry>, &self.queued_entries()) {
+                let mut changed = false;
+                changed |= sd.set_queue(None::<&QueueEntry>, &self.queued_entries());
+                changed |= sd.append_completed(&execution_id, cell_id, success);
+                if changed {
                     let _ = self.state_changed_tx.send(());
                 }
             }
@@ -2023,11 +2042,11 @@ impl RoomKernel {
     ///
     /// This method is idempotent - multiple calls (e.g., from both process
     /// watcher and heartbeat monitor) are safe.
-    pub fn kernel_died(&mut self) {
+    pub fn kernel_died(&mut self) -> Option<(String, String)> {
         // Idempotent: if already dead, don't re-broadcast
         if self.status == KernelStatus::Dead {
             debug!("[kernel-manager] kernel_died called but already dead, ignoring");
-            return;
+            return None;
         }
 
         warn!(
@@ -2036,8 +2055,8 @@ impl RoomKernel {
             self.queue.len()
         );
 
-        // Clear executing state so the queue doesn't stay permanently stuck
-        self.executing = None;
+        // Capture executing cell before clearing so callers can log completion
+        let was_executing = self.executing.take();
         self.status = KernelStatus::Dead;
 
         // Clear any queued cells — they can't execute without a kernel
@@ -2065,6 +2084,8 @@ impl RoomKernel {
         // Note: state_doc writes for kernel_died happen in the async command
         // processor (notebook_sync_server.rs QueueCommand::KernelDied handler).
         // state_doc.set_kernel_status("error") + set_queue(None::<&QueueEntry>, &[])
+
+        was_executing
     }
 
     /// Interrupt the currently executing cell and clear the execution queue.

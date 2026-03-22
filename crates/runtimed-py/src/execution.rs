@@ -176,11 +176,16 @@ impl Execution {
     /// If the cell is currently running, sends an interrupt. If it's queued,
     /// this is currently a no-op (cancel-from-queue requires a new protocol
     /// variant).
+    ///
+    /// TODO: After interrupting, clear the execution queue so queued cells
+    /// don't run. NotebookRequest doesn't have a ClearQueue variant yet —
+    /// add one and send it here after the interrupt succeeds.
     fn cancel<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             session_core::interrupt(&state).await
+            // TODO: send ClearQueue request here once the protocol supports it
         })
     }
 
@@ -217,7 +222,17 @@ async fn collect_outputs_for_execution(
             let st = state.lock().await;
             if let Some(handle) = st.handle.as_ref() {
                 if let Ok(rs) = handle.get_runtime_state() {
-                    if rs.kernel.status == "error" {
+                    // Check completion log first — handles late consumers who
+                    // connect after the execution already finished. Without this,
+                    // a late consumer would poll forever waiting for an execution
+                    // that already left the queue.
+                    if rs.completed.iter().any(|c| c.execution_id == execution_id) {
+                        log::debug!(
+                            "[execution] Execution {} found in completion log (late consumer fast path)",
+                            execution_id
+                        );
+                        true
+                    } else if rs.kernel.status == "error" {
                         kernel_error = Some("Kernel error".to_string());
                         true
                     } else if rs.kernel.status == "shutdown" {
