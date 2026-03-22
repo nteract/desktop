@@ -143,6 +143,13 @@ pub struct CompletionItem {
     pub source: Option<String>,
 }
 
+/// An entry in the execution queue, pairing a cell with its execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueEntry {
+    pub cell_id: String,
+    pub execution_id: String,
+}
+
 /// Difference between launched environment config and current metadata.
 /// Used to show the user what packages would be added/removed on restart.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -325,7 +332,10 @@ pub enum NotebookResponse {
     },
 
     /// Cell queued for execution.
-    CellQueued { cell_id: String },
+    CellQueued {
+        cell_id: String,
+        execution_id: String,
+    },
 
     /// Outputs cleared.
     OutputsCleared { cell_id: String },
@@ -451,12 +461,14 @@ pub enum NotebookBroadcast {
     /// Execution started for a cell.
     ExecutionStarted {
         cell_id: String,
+        execution_id: String,
         execution_count: i64,
     },
 
     /// Output produced by a cell.
     Output {
         cell_id: String,
+        execution_id: String,
         output_type: String, // "stream", "display_data", "execute_result", "error"
         output_json: String, // Serialized Jupyter output content
         /// If Some, this is an update to an existing output at the given index.
@@ -473,12 +485,15 @@ pub enum NotebookBroadcast {
     },
 
     /// Execution completed for a cell.
-    ExecutionDone { cell_id: String },
+    ExecutionDone {
+        cell_id: String,
+        execution_id: String,
+    },
 
     /// Queue state changed.
     QueueChanged {
-        executing: Option<String>,
-        queued: Vec<String>,
+        executing: Option<QueueEntry>,
+        queued: Vec<QueueEntry>,
     },
 
     /// Kernel error (failed to launch, crashed, etc.)

@@ -549,17 +549,25 @@ pub struct QueueState {
     pub executing: Option<String>,
     /// Cell IDs waiting in queue
     pub queued: Vec<String>,
+    /// Execution ID of the currently executing cell (None if idle or unknown)
+    pub executing_execution_id: Option<String>,
+    /// Execution IDs corresponding 1:1 to `queued` cell IDs
+    pub queued_execution_ids: Vec<String>,
 }
 
 #[pymethods]
 impl QueueState {
     fn __repr__(&self) -> String {
         match &self.executing {
-            Some(cell_id) => format!(
-                "QueueState(executing={}, queued={})",
-                cell_id,
-                self.queued.len()
-            ),
+            Some(cell_id) => {
+                let exec_id = self.executing_execution_id.as_deref().unwrap_or("?");
+                format!(
+                    "QueueState(executing={}[{}], queued={})",
+                    cell_id,
+                    exec_id,
+                    self.queued.len()
+                )
+            }
             None => format!("QueueState(idle, queued={})", self.queued.len()),
         }
     }
@@ -855,8 +863,15 @@ impl From<notebook_doc::runtime_state::RuntimeState> for PyRuntimeState {
                 env_source: rs.kernel.env_source,
             },
             queue: QueueState {
-                executing: rs.queue.executing,
-                queued: rs.queue.queued,
+                executing_execution_id: rs.queue.executing.as_ref().map(|e| e.execution_id.clone()),
+                executing: rs.queue.executing.map(|e| e.cell_id),
+                queued_execution_ids: rs
+                    .queue
+                    .queued
+                    .iter()
+                    .map(|e| e.execution_id.clone())
+                    .collect(),
+                queued: rs.queue.queued.into_iter().map(|e| e.cell_id).collect(),
             },
             env: PyEnvState {
                 in_sync: rs.env.in_sync,

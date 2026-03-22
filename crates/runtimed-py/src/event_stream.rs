@@ -115,6 +115,7 @@ impl ExecutionEventStream {
                             NotebookBroadcast::ExecutionStarted {
                                 cell_id: msg_cell_id,
                                 execution_count,
+                                ..
                             } => {
                                 if msg_cell_id == cell_id {
                                     return Ok(ExecutionEvent::execution_started(
@@ -129,6 +130,7 @@ impl ExecutionEventStream {
                                 output_type,
                                 output_json,
                                 output_index,
+                                ..
                             } => {
                                 if msg_cell_id == cell_id {
                                     if signal_only {
@@ -159,6 +161,7 @@ impl ExecutionEventStream {
                             }
                             NotebookBroadcast::ExecutionDone {
                                 cell_id: msg_cell_id,
+                                ..
                             } => {
                                 if msg_cell_id == cell_id {
                                     state.done = true;
@@ -264,6 +267,7 @@ impl ExecutionEventIterator {
                         NotebookBroadcast::ExecutionStarted {
                             cell_id: msg_cell_id,
                             execution_count,
+                            ..
                         } => {
                             if msg_cell_id == cell_id {
                                 return Ok(Some(ExecutionEvent::execution_started(
@@ -277,6 +281,7 @@ impl ExecutionEventIterator {
                             output_type,
                             output_json,
                             output_index,
+                            ..
                         } => {
                             if msg_cell_id == cell_id {
                                 if signal_only {
@@ -303,6 +308,7 @@ impl ExecutionEventIterator {
                         }
                         NotebookBroadcast::ExecutionDone {
                             cell_id: msg_cell_id,
+                            ..
                         } => {
                             if msg_cell_id == cell_id {
                                 state.done = true;

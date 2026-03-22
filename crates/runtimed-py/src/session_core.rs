@@ -1188,8 +1188,9 @@ pub(crate) async fn collect_outputs(
                         kernel_error = Some("Kernel shut down".to_string());
                         true
                     } else {
-                        let in_executing = rs.queue.executing.as_deref() == Some(cell_id);
-                        let in_queued = rs.queue.queued.iter().any(|id| id == cell_id);
+                        let in_executing = rs.queue.executing.as_ref().map(|e| e.cell_id.as_str())
+                            == Some(cell_id);
+                        let in_queued = rs.queue.queued.iter().any(|e| e.cell_id == cell_id);
                         let in_queue = in_executing || in_queued;
 
                         if in_queue {
@@ -1232,6 +1233,7 @@ pub(crate) async fn collect_outputs(
                 {
                     Ok(Some(NotebookBroadcast::ExecutionDone {
                         cell_id: msg_cell_id,
+                        ..
                     })) => {
                         if msg_cell_id == cell_id {
                             log::debug!("[session_core] ExecutionDone broadcast for {}", cell_id);
@@ -2005,6 +2007,10 @@ pub(crate) async fn get_runtime_state(
 }
 
 /// Get the execution queue state.
+///
+/// Reads from the local RuntimeStateDoc replica rather than sending a
+/// GetQueueState request to the daemon. This gives us access to execution
+/// IDs (via QueueEntry) which the wire response doesn't carry.
 pub(crate) async fn get_queue_state(state: &Arc<Mutex<SessionState>>) -> PyResult<QueueState> {
     let st = state.lock().await;
     let handle = st
@@ -2012,16 +2018,21 @@ pub(crate) async fn get_queue_state(state: &Arc<Mutex<SessionState>>) -> PyResul
         .as_ref()
         .ok_or_else(|| to_py_err("Not connected"))?;
 
-    let response = handle
-        .send_request(NotebookRequest::GetQueueState {})
-        .await
-        .map_err(to_py_err)?;
+    let rs = handle
+        .get_runtime_state()
+        .map_err(|e| to_py_err(format!("{}", e)))?;
 
-    match response {
-        NotebookResponse::QueueState { executing, queued } => Ok(QueueState { executing, queued }),
-        NotebookResponse::Error { error } => Err(to_py_err(error)),
-        other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
-    }
+    Ok(QueueState {
+        executing_execution_id: rs.queue.executing.as_ref().map(|e| e.execution_id.clone()),
+        executing: rs.queue.executing.map(|e| e.cell_id),
+        queued_execution_ids: rs
+            .queue
+            .queued
+            .iter()
+            .map(|e| e.execution_id.clone())
+            .collect(),
+        queued: rs.queue.queued.into_iter().map(|e| e.cell_id).collect(),
+    })
 }
 
 // =========================================================================

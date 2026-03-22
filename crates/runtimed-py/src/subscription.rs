@@ -246,6 +246,7 @@ async fn broadcast_to_event(
         NotebookBroadcast::ExecutionStarted {
             cell_id,
             execution_count,
+            ..
         } => {
             if !cell_ids.is_empty() && !cell_ids.contains(&cell_id) {
                 return None;
@@ -260,6 +261,7 @@ async fn broadcast_to_event(
             output_type,
             output_json,
             output_index,
+            ..
         } => {
             if !cell_ids.is_empty() && !cell_ids.contains(&cell_id) {
                 return None;
@@ -286,7 +288,7 @@ async fn broadcast_to_event(
                 Some(ExecutionEvent::output_signal(&cell_id, output_index))
             }
         }
-        NotebookBroadcast::ExecutionDone { cell_id } => {
+        NotebookBroadcast::ExecutionDone { cell_id, .. } => {
             if !cell_ids.is_empty() && !cell_ids.contains(&cell_id) {
                 return None;
             }

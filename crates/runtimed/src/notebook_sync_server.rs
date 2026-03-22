@@ -2275,7 +2275,10 @@ async fn auto_launch_kernel(
                                 // Write cleared queue to state doc
                                 {
                                     let mut sd = room_state_doc.write().await;
-                                    if sd.set_queue(None, &[]) {
+                                    if sd.set_queue(
+                                        None::<&notebook_doc::runtime_state::QueueEntry>,
+                                        &[],
+                                    ) {
                                         let _ = room_state_changed_tx.send(());
                                     }
                                 }
@@ -2297,7 +2300,10 @@ async fn auto_launch_kernel(
                                     let mut sd = room_state_doc.write().await;
                                     let mut changed = false;
                                     changed |= sd.set_kernel_status("error");
-                                    changed |= sd.set_queue(None, &[]);
+                                    changed |= sd.set_queue(
+                                        None::<&notebook_doc::runtime_state::QueueEntry>,
+                                        &[],
+                                    );
                                     if changed {
                                         let _ = room_state_changed_tx.send(());
                                     }
@@ -2962,7 +2968,10 @@ async fn handle_notebook_request(
                                         // Write cleared queue to state doc
                                         {
                                             let mut sd = room_state_doc.write().await;
-                                            if sd.set_queue(None, &[]) {
+                                            if sd.set_queue(
+                                                None::<&notebook_doc::runtime_state::QueueEntry>,
+                                                &[],
+                                            ) {
                                                 let _ = room_state_changed_tx.send(());
                                             }
                                         }
@@ -2984,7 +2993,10 @@ async fn handle_notebook_request(
                                             let mut sd = room_state_doc.write().await;
                                             let mut changed = false;
                                             changed |= sd.set_kernel_status("error");
-                                            changed |= sd.set_queue(None, &[]);
+                                            changed |= sd.set_queue(
+                                                None::<&notebook_doc::runtime_state::QueueEntry>,
+                                                &[],
+                                            );
                                             if changed {
                                                 let _ = room_state_changed_tx.send(());
                                             }
@@ -3052,7 +3064,10 @@ async fn handle_notebook_request(
             let mut kernel_guard = room.kernel.lock().await;
             if let Some(ref mut kernel) = *kernel_guard {
                 match kernel.queue_cell(cell_id.clone(), code).await {
-                    Ok(()) => NotebookResponse::CellQueued { cell_id },
+                    Ok(execution_id) => NotebookResponse::CellQueued {
+                        cell_id,
+                        execution_id,
+                    },
                     Err(e) => NotebookResponse::Error {
                         error: format!("Failed to queue cell: {}", e),
                     },
@@ -3117,7 +3132,10 @@ async fn handle_notebook_request(
             let mut kernel_guard = room.kernel.lock().await;
             if let Some(ref mut kernel) = *kernel_guard {
                 match kernel.queue_cell(cell_id.clone(), source).await {
-                    Ok(()) => NotebookResponse::CellQueued { cell_id },
+                    Ok(execution_id) => NotebookResponse::CellQueued {
+                        cell_id,
+                        execution_id,
+                    },
                     Err(e) => NotebookResponse::Error {
                         error: format!("Failed to queue cell: {}", e),
                     },
@@ -3242,7 +3260,7 @@ async fn handle_notebook_request(
             let kernel_guard = room.kernel.lock().await;
             if let Some(ref kernel) = *kernel_guard {
                 NotebookResponse::QueueState {
-                    executing: kernel.executing_cell().cloned(),
+                    executing: kernel.executing_cell().map(|s| s.to_string()),
                     queued: kernel.queued_cells(),
                 }
             } else {
