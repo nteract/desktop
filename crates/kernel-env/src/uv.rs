@@ -226,6 +226,27 @@ pub async fn prepare_environment_in(
         .output()
         .await?;
 
+    // If install failed, retry once with --refresh to bypass stale index cache.
+    // This handles cases where a recently-published version (e.g. a nightly pre-release)
+    // isn't found because uv's cached package index is stale.
+    let install_output = if !install_output.status.success() {
+        info!("uv pip install failed, retrying with --refresh");
+        let mut retry_args = vec![
+            "pip".to_string(),
+            "install".to_string(),
+            "--refresh".to_string(),
+        ];
+        retry_args.extend_from_slice(&install_args[2..]);
+        tokio::process::Command::new(&uv_path)
+            .args(&retry_args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await?
+    } else {
+        install_output
+    };
+
     if !install_output.status.success() {
         tokio::fs::remove_dir_all(&venv_path).await.ok();
         let stderr = String::from_utf8_lossy(&install_output.stderr);
