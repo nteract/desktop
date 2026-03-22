@@ -178,6 +178,45 @@ class ExecutionResult:
         """Error output if any."""
         ...
 
+class Execution:
+    """A handle to a submitted cell execution.
+
+    Returned by ``session.execute(cell_id)``. The execution proceeds
+    regardless of whether this handle is used — the daemon drives it
+    and writes outputs into the CRDT.
+    """
+
+    @property
+    def execution_id(self) -> str:
+        """Unique ID for this execution attempt."""
+        ...
+
+    @property
+    def cell_id(self) -> str:
+        """The cell being executed."""
+        ...
+
+    @property
+    def status(self) -> str:
+        """Current status: "pending", "running", "done", or "error"."""
+        ...
+
+    def result(self, timeout: float | None = None) -> Coroutine[Any, Any, ExecutionResult]:
+        """Wait for the execution to complete and return the result."""
+        ...
+
+    def stream(
+        self,
+        timeout_secs: float = 60.0,
+        signal_only: bool = False,
+    ) -> ExecutionEventStream:
+        """Return an async iterator of execution events."""
+        ...
+
+    def cancel(self) -> Coroutine[Any, Any, None]:
+        """Cancel the execution by interrupting the kernel."""
+        ...
+
 class CompletionItem:
     """A single completion item from the kernel."""
 
@@ -219,6 +258,16 @@ class QueueState:
     @property
     def queued(self) -> list[str]:
         """Cell IDs waiting in queue."""
+        ...
+
+    @property
+    def executing_execution_id(self) -> str | None:
+        """Execution ID of the currently executing cell (None if idle)."""
+        ...
+
+    @property
+    def queued_execution_ids(self) -> list[str]:
+        """Execution IDs of cells waiting in queue."""
         ...
 
 class KernelState:
@@ -556,6 +605,7 @@ class Session:
     def get_settings(self) -> dict[str, Any] | None: ...
 
     # Execution
+    def execute(self, cell_id: str) -> Execution: ...
     def execute_cell(
         self,
         cell_id: str,
@@ -726,6 +776,7 @@ class AsyncSession:
     def get_settings(self) -> dict[str, Any] | None: ...
 
     # Execution
+    def execute(self, cell_id: str) -> Coroutine[Any, Any, Execution]: ...
     def execute_cell(
         self,
         cell_id: str,
