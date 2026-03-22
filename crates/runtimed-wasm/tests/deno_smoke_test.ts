@@ -353,6 +353,206 @@ Deno.test("Sync: generate_sync_message returns null when in sync", () => {
   client.free();
 });
 
+// ── Bug reproduction: #1067 — sync head divergence ───────────────────
+
+Deno.test("Bug #1067: consumed sync message causes protocol stall", () => {
+  // Reproduces the rapid Ctrl+Enter bug where flushSync() calls
+  // generate_sync_message() (advancing sync_state) but the message
+  // is never delivered to the server. The sync protocol stalls because
+  // sync_state believes the message was sent.
+  //
+  // This simulates:
+  //   1. Server makes a change (kernel writes output)
+  //   2. Client receives the sync message (WASM applies it)
+  //   3. Client calls generate_sync_message() — like flushSync() does
+  //   4. The message is DROPPED (simulating failed/delayed sendFrame)
+  //   5. Server makes another change
+  //   6. Client should still be able to sync — but can't
+
+  const server = new NotebookHandle("stall-test");
+  server.add_cell(0, "cell-1", "code");
+
+  const client = NotebookHandle.load(server.save());
+  syncHandles(server, client);
+
+  // Step 1: Server makes a change (simulates daemon writing output)
+  server.update_source("cell-1", "output-v1");
+
+  // Step 2: Client receives the server's sync message
+  const serverMsg1 = server.generate_sync_message();
+  assert(serverMsg1 !== undefined, "server should have a sync message");
+  const changed = client.receive_sync_message(serverMsg1);
+  assert(changed, "client doc should have changed");
+
+  // Step 3: Client generates a reply — like flushSync() does.
+  // This ADVANCES client's sync_state.last_sent_heads.
+  const consumedReply = client.generate_sync_message();
+  assert(consumedReply !== undefined, "client should have a reply");
+
+  // Step 4: The reply is DROPPED. Never delivered to server.
+  // (Simulates sendFrame failing or being blocked by the relay mutex)
+
+  // Step 5: Server makes another change
+  server.update_source("cell-1", "output-v2");
+
+  // Step 6: Try to sync. The client's sync_state thinks it already
+  // sent a reply for output-v1, so generate_sync_message may return
+  // nothing — even though the server never received the reply.
+  //
+  // Meanwhile, the server sends its new change. Let's see if the
+  // protocol can recover.
+  const serverMsg2 = server.generate_sync_message();
+  assert(serverMsg2 !== undefined, "server should have msg for output-v2");
+  client.receive_sync_message(serverMsg2);
+
+  // The client should now generate a reply that covers BOTH the
+  // previously-dropped reply AND the new change.
+  const recoveryReply = client.generate_sync_message();
+
+  // THIS IS THE BUG: if recoveryReply is undefined, the protocol has
+  // stalled. The client thinks it's in sync (because sync_state was
+  // advanced by the dropped message) but the server disagrees.
+  //
+  // If Automerge's sync protocol is resilient to this, recoveryReply
+  // will be defined and delivering it will converge the two docs.
+  if (recoveryReply === undefined) {
+    // Protocol stalled — this is the bug.
+    // Verify the docs have diverged.
+    const serverCell = server.get_cell("cell-1");
+    const clientCell = client.get_cell("cell-1");
+    assertExists(serverCell);
+    assertExists(clientCell);
+
+    // Client should have output-v2 (it received the sync message)
+    assertEquals(clientCell.source, "output-v2");
+    clientCell.free();
+
+    // Server should also have output-v2 (it wrote it)
+    assertEquals(serverCell.source, "output-v2");
+    serverCell.free();
+
+    // But can the server see what the client knows? Without the reply,
+    // the server can't advance. Let's check if a full sync recovers.
+    // This simulates what happens after a page reload (reset_sync_state).
+    console.warn(
+      "BUG #1067 REPRODUCED: generate_sync_message() returned undefined " +
+        "after dropped message. Protocol stalled. Testing reset recovery...",
+    );
+
+    // Reset sync state (simulates page reload)
+    client.reset_sync_state();
+    syncHandles(server, client);
+
+    const recoveredCell = server.get_cell("cell-1");
+    assertExists(recoveredCell);
+    assertEquals(recoveredCell.source, "output-v2");
+    recoveredCell.free();
+  } else {
+    // Protocol recovered — deliver the reply and verify convergence.
+    server.receive_sync_message(recoveryReply);
+    syncHandles(server, client);
+
+    const serverCell = server.get_cell("cell-1");
+    assertExists(serverCell);
+    assertEquals(serverCell.source, "output-v2");
+    serverCell.free();
+  }
+
+  server.free();
+  client.free();
+});
+
+Deno.test("Bug #1067: rapid flushSync steals debounced reply", () => {
+  // Simulates the exact interleaving from the bug:
+  //   - Server streams outputs (multiple sync frames)
+  //   - Client calls generate_sync_reply (debounced) — but before it fires,
+  //     flushSync calls generate_sync_message, consuming the pending reply
+  //   - The debounced reply then returns undefined
+
+  const server = new NotebookHandle("rapid-test");
+  server.add_cell(0, "cell-1", "code");
+
+  const client = NotebookHandle.load(server.save());
+  syncHandles(server, client);
+
+  // Server streams multiple rapid changes (simulates IOPub output burst)
+  server.update_source("cell-1", "line 1");
+  const msg1 = server.generate_sync_message();
+  assert(msg1 !== undefined);
+  client.receive_sync_message(msg1);
+
+  server.update_source("cell-1", "line 1\nline 2");
+  const msg2 = server.generate_sync_message();
+  assert(msg2 !== undefined);
+  client.receive_sync_message(msg2);
+
+  server.update_source("cell-1", "line 1\nline 2\nline 3");
+  const msg3 = server.generate_sync_message();
+  assert(msg3 !== undefined);
+  client.receive_sync_message(msg3);
+
+  // At this point, the client has 3 unacknowledged inbound syncs.
+  // A debounced syncReply$ would call generate_sync_reply() here.
+  // But flushSync() fires first (user presses Ctrl+Enter):
+
+  const flushMsg = client.generate_sync_message(); // flushSync steals it
+  // flushMsg is defined — it covers all 3 inbound syncs.
+
+  // Now the debounced syncReply fires:
+  const debouncedReply = client.generate_sync_message(); // generates reply
+
+  // The debounced reply should ideally still work, but if flushMsg
+  // already advanced sync_state, debouncedReply may be undefined.
+  // This demonstrates the consumption race.
+
+  if (flushMsg !== undefined && debouncedReply === undefined) {
+    console.warn(
+      "BUG #1067 CONFIRMED: flushSync consumed the debounced reply. " +
+        "If flushMsg delivery fails, no recovery path exists.",
+    );
+
+    // Simulate flushMsg delivery failure (best-effort catch from PR #1053)
+    // The message is lost. Can the protocol recover?
+
+    // Server makes a new change
+    server.update_source("cell-1", "line 1\nline 2\nline 3\nline 4");
+    const msg4 = server.generate_sync_message();
+    assert(msg4 !== undefined, "server should still produce messages");
+    client.receive_sync_message(msg4);
+
+    // Client tries to reply again
+    const retryReply = client.generate_sync_message();
+
+    if (retryReply === undefined) {
+      console.warn(
+        "STALL CONFIRMED: client cannot generate reply after lost flushSync. " +
+          "Only reset_sync_state() (page reload) recovers.",
+      );
+    } else {
+      // Partial recovery — deliver and check convergence
+      server.receive_sync_message(retryReply);
+      syncHandles(server, client);
+    }
+  }
+
+  // Regardless of the race outcome, verify final state consistency
+  // after a full reset + sync (simulates page reload)
+  client.reset_sync_state();
+  syncHandles(server, client);
+
+  const clientCell = client.get_cell("cell-1");
+  assertExists(clientCell);
+  // Client should have whatever the server's latest source is
+  const serverCell = server.get_cell("cell-1");
+  assertExists(serverCell);
+  assertEquals(clientCell.source, serverCell.source);
+  clientCell.free();
+  serverCell.free();
+
+  server.free();
+  client.free();
+});
+
 Deno.test("Sync: source edit character-level merge", () => {
   const server = new NotebookHandle("sync-test");
   server.add_cell(0, "cell-1", "code");
