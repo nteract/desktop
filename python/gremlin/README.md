@@ -44,7 +44,7 @@ uv run python -m gremlin <notebook_id>
 
 ```bash
 # List active notebooks via the daemon
-uv run python -c "import runtimed; print(runtimed.NativeClient().list_active_notebooks())"
+uv run python -c "import asyncio, runtimed; client = runtimed.Client(); print(asyncio.run(client.list_active_notebooks()))"
 ```
 
 ## Requirements

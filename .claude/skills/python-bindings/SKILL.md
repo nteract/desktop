@@ -42,7 +42,7 @@ import runtimed
 
 async def main():
     client = runtimed.Client()
-    async with await client.create() as notebook:
+    async with await client.create_notebook() as notebook:
         cell = await notebook.cells.create("print('hello')")
         result = await cell.run()
         print(result.stdout)   # "hello\n"
@@ -51,15 +51,27 @@ async def main():
         print(cell.source)      # "print('hello')"
         print(cell.cell_type)   # "code"
 
+        # Streaming execution (async iterator)
+        cell2 = await notebook.cells.create("for i in range(3): print(i)")
+        async for event in await cell2.stream():
+            print(event)
+
+        # Presence (cursor/selection sync)
+        await notebook.presence.set_cursor(cell.id, line=0, column=5)
+
 asyncio.run(main())
 ```
 
-For the native session API (streaming, presence, metadata), use `NativeAsyncClient`:
+Other `Client` entry points:
 
 ```python
-native_client = runtimed.NativeAsyncClient()
-session = await native_client.create_notebook()
-result = await session.run("print('hello')")
+notebook = await client.open_notebook("/path/to/notebook.ipynb")
+notebook = await client.join_notebook(notebook_id)
+
+# List active notebooks
+infos = await client.list_active_notebooks()  # list[NotebookInfo]
+for info in infos:
+    print(info.runtime_type, info.status, info.has_runtime)
 ```
 
 ## Output.data Typing
@@ -82,23 +94,31 @@ When an output contains a binary image MIME type, the daemon synthesizes a `text
 The `Notebook.cells` collection provides sync reads and async writes:
 
 ```python
-# Sync reads from local CRDT
+# Sync reads from local CRDT via CellHandle properties
 cell = notebook.cells.get_by_index(0)
 print(cell.source, cell.cell_type, cell.outputs)
+print(cell.tags, cell.source_hidden, cell.outputs_hidden)
 
 # Search
 matches = notebook.cells.find("import")
 
-# Runtime state
-print(notebook.runtime.kernel.status)  # sync read
-```
+# Iterate all cells
+for cell in notebook.cells:
+    print(cell.id, cell.source[:40])
 
-For the native session API, per-cell accessors are also available:
+# Async mutations on CellHandle
+await cell.set_source("new code")
+await cell.splice(0, 0, "# inserted at top\n")
+await cell.set_tags(["parameters"])
+await cell.set_source_hidden(True)
+await cell.clear_outputs()
+await cell.delete()
 
-```python
-source = session.get_cell_source(cell_id)    # just the source string
-cell_type = session.get_cell_type(cell_id)   # "code" | "markdown" | "raw"
-cell_ids = session.get_cell_ids()             # position-sorted IDs
+# Runtime state (sync read)
+print(notebook.runtime)
+
+# Connected peers
+print(notebook.peers)  # list of (peer_id, peer_label)
 ```
 
 ## Socket Path Configuration
@@ -152,7 +172,7 @@ Three packages are workspace members:
 
 ### Wrong daemon
 
-If `notebook.run()` returns `Output(stream, stderr: "Failed to parse output: <hash>")`, the bindings are connecting to the wrong daemon. The blob store is per-daemon. Set `RUNTIMED_SOCKET_PATH` to the correct daemon socket.
+If `cell.run()` returns `Output(stream, stderr: "Failed to parse output: <hash>")`, the bindings are connecting to the wrong daemon. The blob store is per-daemon. Set `RUNTIMED_SOCKET_PATH` to the correct daemon socket.
 
 ### Empty outputs from cell.outputs
 
