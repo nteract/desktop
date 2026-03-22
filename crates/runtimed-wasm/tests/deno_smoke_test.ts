@@ -1072,6 +1072,106 @@ Deno.test(
   },
 );
 
+// ── Regression tests: #1074 — RuntimeStateDoc sync race ──────────────
+
+Deno.test(
+  "Fix #1074: flush_runtime_state_sync produces initial message from fresh handle",
+  () => {
+    // A freshly-created handle has an empty RuntimeStateDoc.
+    // flush_runtime_state_sync() should produce a sync message so the
+    // daemon knows we need the full state (kernel status, trust, etc.).
+    const handle = NotebookHandle.create_empty_with_actor("test:bootstrap");
+
+    const msg = handle.flush_runtime_state_sync();
+    assert(
+      msg !== undefined,
+      "flush_runtime_state_sync should produce a message from a fresh handle",
+    );
+
+    // Calling again without receiving anything — in_flight blocks it
+    const msg2 = handle.flush_runtime_state_sync();
+    assertEquals(
+      msg2,
+      undefined,
+      "second flush should return undefined (in_flight)",
+    );
+
+    handle.free();
+  },
+);
+
+Deno.test(
+  "Fix #1074: cancel_last_runtime_state_flush recovers from failed send",
+  () => {
+    // Mirrors the cancel_last_flush test from #1068 but for state_sync_state.
+    // If the RUNTIME_STATE_SYNC send fails, cancel clears in_flight and
+    // sent_hashes so the next flush produces a fresh message.
+    const handle = NotebookHandle.create_empty_with_actor("test:cancel");
+
+    // First flush — generates a message (advances state_sync_state)
+    const msg1 = handle.flush_runtime_state_sync();
+    assert(msg1 !== undefined, "first flush should produce a message");
+
+    // Simulate delivery failure — message is DROPPED
+    // Call cancel to roll back state_sync_state
+    handle.cancel_last_runtime_state_flush();
+
+    // Now flush again — should produce a NEW message
+    const msg2 = handle.flush_runtime_state_sync();
+    assert(
+      msg2 !== undefined,
+      "after cancel_last_runtime_state_flush, flush should produce a message",
+    );
+
+    handle.free();
+  },
+);
+
+Deno.test(
+  "Fix #1074: WITHOUT cancel, dropped RuntimeStateSync stalls (documents danger)",
+  () => {
+    // Documents the dangerous behavior: if cancel_last_runtime_state_flush
+    // is NOT called after a failed send, state_sync_state retains stale
+    // in_flight/sent_hashes and subsequent flushes return undefined.
+    const handle = NotebookHandle.create_empty_with_actor("test:no-cancel");
+
+    // First flush — advances state_sync_state
+    const msg1 = handle.flush_runtime_state_sync();
+    assert(msg1 !== undefined);
+
+    // Simulate delivery failure — DELIBERATELY do NOT cancel
+    // in_flight is now true, blocking future flushes
+
+    const msg2 = handle.flush_runtime_state_sync();
+    assertEquals(
+      msg2,
+      undefined,
+      "without cancel, in_flight blocks the next flush",
+    );
+
+    // Even generate_runtime_state_sync_reply is affected (same sync state)
+    // because in_flight prevents message generation.
+    // The only recovery without cancel is reset_sync_state.
+    if (msg2 === undefined) {
+      console.warn(
+        "CONFIRMED: without cancel_last_runtime_state_flush on dropped " +
+          "RuntimeStateSync, subsequent flushes return undefined. " +
+          "Kernel status stays stuck at not_started until page reload.",
+      );
+    }
+
+    // Nuclear recovery always works
+    handle.reset_sync_state();
+    const msg3 = handle.flush_runtime_state_sync();
+    assert(
+      msg3 !== undefined,
+      "reset_sync_state must always recover RuntimeStateDoc sync",
+    );
+
+    handle.free();
+  },
+);
+
 Deno.test("Sync: source edit character-level merge", () => {
   const server = new NotebookHandle("sync-test");
   server.add_cell(0, "cell-1", "code");
