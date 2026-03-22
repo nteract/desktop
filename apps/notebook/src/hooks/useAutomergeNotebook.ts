@@ -183,8 +183,6 @@ export function useAutomergeNotebook() {
 
     engine.on("cells_changed", (event) => {
       // Re-materialize from WASM after inbound sync changes.
-      // For now, full re-materialize. The frame pipeline's coalescing
-      // and incremental materialization can be layered on top later.
       const h = handleRef.current;
       if (h) {
         // Emit text attributions as broadcasts for CodeMirror.
@@ -195,12 +193,14 @@ export function useAutomergeNotebook() {
           });
         }
 
-        // Sync re-read (cache-only) for fast visual feedback.
-        // TODO: Use incremental materialization with changeset for
-        // output-heavy cells (blob resolution). For now, sync read
-        // is fast enough for source/metadata changes and outputs
-        // that are already cached.
-        rematerializeCellsSync(h);
+        // Full async materialization — resolves manifest hashes from
+        // the blob HTTP server. Required for outputs (which are stored
+        // as content-addressed blob references in the CRDT).
+        // TODO: Use incremental materialization with changeset to avoid
+        // re-resolving outputs that haven't changed.
+        materializeCells(h).catch((err: unknown) => {
+          logger.warn("[automerge-notebook] materialize failed:", err);
+        });
       }
     });
 
