@@ -484,34 +484,82 @@ async fn resolve_metadata_snapshot(
 fn verify_trust_from_file(notebook_path: &Path) -> TrustState {
     // Read and parse the notebook file
     let metadata = match std::fs::read_to_string(notebook_path) {
-        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
-            Ok(nb) => nb
-                .get("metadata")
-                .and_then(|m| m.as_object())
-                .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-                .unwrap_or_default(),
-            Err(_) => std::collections::HashMap::new(),
-        },
-        Err(_) => std::collections::HashMap::new(),
+        Ok(content) => {
+            debug!(
+                "[trust] Read notebook file: {} ({} bytes)",
+                notebook_path.display(),
+                content.len()
+            );
+            match serde_json::from_str::<serde_json::Value>(&content) {
+                Ok(nb) => {
+                    let meta: std::collections::HashMap<String, serde_json::Value> = nb
+                        .get("metadata")
+                        .and_then(|m| m.as_object())
+                        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                        .unwrap_or_default();
+                    let keys: Vec<&String> = meta.keys().collect();
+                    debug!("[trust] Metadata keys: {:?}", keys);
+                    if let Some(runt) = meta.get("runt") {
+                        debug!("[trust] runt metadata: {}", runt);
+                    }
+                    meta
+                }
+                Err(e) => {
+                    warn!("[trust] Failed to parse notebook JSON: {}", e);
+                    std::collections::HashMap::new()
+                }
+            }
+        }
+        Err(e) => {
+            warn!(
+                "[trust] Failed to read notebook file {}: {}",
+                notebook_path.display(),
+                e
+            );
+            std::collections::HashMap::new()
+        }
     };
+
+    let has_deps = runt_trust::has_dependencies(&metadata);
+    debug!(
+        "[trust] has_dependencies={}, path={}",
+        has_deps,
+        notebook_path.display()
+    );
 
     // Verify trust using the shared runt-trust crate
     match runt_trust::verify_notebook_trust(&metadata) {
-        Ok(info) => TrustState {
-            status: info.status.clone(),
-            info,
-            pending_launch: false,
-        },
-        Err(_) => TrustState {
-            status: runt_trust::TrustStatus::Untrusted,
-            info: runt_trust::TrustInfo {
+        Ok(info) => {
+            info!(
+                "[trust] Verification result for {}: {:?} (uv_deps={:?}, conda_deps={:?})",
+                notebook_path.display(),
+                info.status,
+                info.uv_dependencies,
+                info.conda_dependencies,
+            );
+            TrustState {
+                status: info.status.clone(),
+                info,
+                pending_launch: false,
+            }
+        }
+        Err(e) => {
+            warn!(
+                "[trust] Verification error for {}: {}",
+                notebook_path.display(),
+                e
+            );
+            TrustState {
                 status: runt_trust::TrustStatus::Untrusted,
-                uv_dependencies: vec![],
-                conda_dependencies: vec![],
-                conda_channels: vec![],
-            },
-            pending_launch: false,
-        },
+                info: runt_trust::TrustInfo {
+                    status: runt_trust::TrustStatus::Untrusted,
+                    uv_dependencies: vec![],
+                    conda_dependencies: vec![],
+                    conda_channels: vec![],
+                },
+                pending_launch: false,
+            }
+        }
     }
 }
 
