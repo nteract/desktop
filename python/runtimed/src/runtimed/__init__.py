@@ -11,8 +11,10 @@ from runtimed._notebook_info import NotebookInfo
 from runtimed._presence import Presence
 
 # Data types (from native bindings)
-# These are importable but not in __all__ — for internal consumers
-# and power users who need direct access to the native types.
+# These are importable but not in __all__ — they are return-only types
+# with no Python constructors. Users encounter them as return values
+# (e.g. cell.run() → ExecutionResult, notebook.runtime → RuntimeState)
+# but cannot instantiate them directly.
 from runtimed.runtimed import (  # noqa: F401
     AsyncSession,
     Cell,
@@ -37,24 +39,15 @@ from runtimed.runtimed import (  # noqa: F401
 )
 
 __all__ = [
-    # Primary API
+    # Primary API — constructable entry points
     "Client",
     "Notebook",
     "NotebookInfo",
     "CellHandle",
     "CellCollection",
     "Presence",
-    # Data types (reachable through wrapper)
-    "Cell",
-    "ExecutionEvent",
-    "ExecutionResult",
-    "Output",
+    # Error type — raisable / catchable
     "RuntimedError",
-    "SyncEnvironmentResult",
-    # Runtime state
-    "RuntimeState",
-    "KernelState",
-    "EnvState",
     # Standalone functions
     "default_socket_path",
     "show_notebook_app",
