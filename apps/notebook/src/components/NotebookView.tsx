@@ -112,7 +112,7 @@ function CellAdder({
               type="button"
               title="Add code cell"
               onClick={() => onAdd("code", afterCellId)}
-              className="flex items-center whitespace-nowrap rounded-sm px-2 py-0.5 text-xs font-medium text-foreground/70 transition-colors hover:bg-white/20 hover:text-foreground dark:text-white/70 dark:hover:text-white"
+              className="flex items-center whitespace-nowrap rounded-sm px-2 py-0.5 text-xs font-medium text-white/70 transition-colors hover:bg-white/20 hover:text-white"
             >
               + Code
             </button>
@@ -120,7 +120,7 @@ function CellAdder({
               type="button"
               title="Add markdown cell"
               onClick={() => onAdd("markdown", afterCellId)}
-              className="flex items-center whitespace-nowrap rounded-sm px-2 py-0.5 text-xs font-medium text-foreground/70 transition-colors hover:bg-white/20 hover:text-foreground dark:text-white/70 dark:hover:text-white"
+              className="flex items-center whitespace-nowrap rounded-sm px-2 py-0.5 text-xs font-medium text-white/70 transition-colors hover:bg-white/20 hover:text-white"
             >
               + Markdown
             </button>
