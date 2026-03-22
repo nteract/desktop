@@ -65,8 +65,11 @@ where
 
         let select_result = tokio::select! {
             biased;
-            cmd = config.cmd_rx.recv() => SelectResult::Command(cmd),
+            // Prioritize incoming daemon frames (sync, broadcast, presence)
+            // over outgoing commands.  Keeping sync frames flowing prevents
+            // head divergence; commands can wait a tick.
             frame = connection::recv_typed_frame(&mut reader) => SelectResult::Frame(frame),
+            cmd = config.cmd_rx.recv() => SelectResult::Command(cmd),
         };
 
         match select_result {
@@ -181,10 +184,14 @@ async fn send_request_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         .await
         .map_err(SyncError::Io)?;
 
-    // Determine timeout based on request type
+    // Determine timeout based on request type.
+    // Completions get a short timeout — they should be fast or not at all,
+    // and a long wait blocks the entire relay (no other commands can be
+    // processed while we wait for the response frame).
     let timeout_secs = match request {
         notebook_protocol::protocol::NotebookRequest::LaunchKernel { .. } => 300,
         notebook_protocol::protocol::NotebookRequest::SyncEnvironment { .. } => 300,
+        notebook_protocol::protocol::NotebookRequest::Complete { .. } => 5,
         _ => 30,
     };
 

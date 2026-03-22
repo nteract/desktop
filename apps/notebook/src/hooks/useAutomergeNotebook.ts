@@ -439,7 +439,14 @@ export function useAutomergeNotebook() {
     // Bypasses the debounce; any pending emission becomes a no-op.
     const msg = handle.generate_sync_message();
     if (msg) {
-      await sendFrame(frame_types.AUTOMERGE_SYNC, msg);
+      try {
+        await sendFrame(frame_types.AUTOMERGE_SYNC, msg);
+      } catch (e) {
+        // Best-effort: don't block callers (execute, save) if the relay
+        // is temporarily unable to forward the sync frame.  The daemon
+        // will catch up on the next successful sync round-trip.
+        logger.warn("[flushSync] failed to send sync frame, continuing", e);
+      }
     }
   }, []);
 
