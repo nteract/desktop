@@ -208,17 +208,30 @@ class CompletionResult:
     @property
     def cursor_end(self) -> int: ...
 
+class PyQueueEntry:
+    """An entry in the execution queue."""
+
+    @property
+    def cell_id(self) -> str:
+        """Cell ID."""
+        ...
+
+    @property
+    def execution_id(self) -> str:
+        """Execution ID (UUID)."""
+        ...
+
 class QueueState:
     """Current state of the execution queue."""
 
     @property
-    def executing(self) -> str | None:
-        """Cell ID currently executing (None if idle)."""
+    def executing(self) -> PyQueueEntry | None:
+        """Entry currently executing (None if idle)."""
         ...
 
     @property
-    def queued(self) -> list[str]:
-        """Cell IDs waiting in queue."""
+    def queued(self) -> list[PyQueueEntry]:
+        """Entries waiting in queue."""
         ...
 
 class KernelState:
@@ -562,7 +575,7 @@ class Session:
         timeout_secs: float = 60.0,
     ) -> ExecutionResult: ...
     def run(self, code: str, timeout_secs: float = 60.0) -> ExecutionResult: ...
-    def queue_cell(self, cell_id: str) -> None: ...
+    def queue_cell(self, cell_id: str) -> str: ...
     def stream_execute(
         self,
         cell_id: str,
@@ -734,7 +747,7 @@ class AsyncSession:
     def run(
         self, code: str, timeout_secs: float = 60.0
     ) -> Coroutine[Any, Any, ExecutionResult]: ...
-    def queue_cell(self, cell_id: str) -> Coroutine[Any, Any, None]: ...
+    def queue_cell(self, cell_id: str) -> Coroutine[Any, Any, str]: ...
     def stream_execute(
         self,
         cell_id: str,

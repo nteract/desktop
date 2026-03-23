@@ -17,7 +17,11 @@ import {
 } from "../lib/kernel-status";
 import { logger } from "../lib/logger";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
-import { resetRuntimeState, useRuntimeState } from "../lib/runtime-state";
+import {
+  type QueueEntry,
+  resetRuntimeState,
+  useRuntimeState,
+} from "../lib/runtime-state";
 import type {
   DaemonBroadcast,
   DaemonNotebookResponse,
@@ -31,8 +35,8 @@ export type DaemonKernelStatus = KernelStatus;
 
 /** Queue state from daemon */
 export interface DaemonQueueState {
-  executing: string | null;
-  queued: string[];
+  executing: QueueEntry | null;
+  queued: QueueEntry[];
 }
 
 interface UseDaemonKernelOptions {
@@ -92,7 +96,7 @@ export function useDaemonKernel({
       executing: runtimeState.queue.executing,
       queued: runtimeState.queue.queued,
     }),
-    [runtimeState.queue.executing, runtimeState.queue.queued],
+    [runtimeState.queue],
   );
 
   // Derive env sync state from the doc
@@ -229,11 +233,12 @@ export function useDaemonKernel({
   useEffect(() => {
     const prev = prevQueueRef.current;
     prevQueueRef.current = queueState;
-    const executingChanged = prev.executing !== queueState.executing;
+    const executingChanged =
+      prev.executing?.cell_id !== queueState.executing?.cell_id;
     let queuedChanged = prev.queued.length !== queueState.queued.length;
     if (!queuedChanged) {
       for (let i = 0; i < prev.queued.length; i++) {
-        if (prev.queued[i] !== queueState.queued[i]) {
+        if (prev.queued[i]?.cell_id !== queueState.queued[i]?.cell_id) {
           queuedChanged = true;
           break;
         }
@@ -584,7 +589,7 @@ export function useDaemonKernel({
         // for state but kept for backward compatibility.
         return {
           executing: response.executing ?? null,
-          queued: response.queued,
+          queued: response.queued ?? [],
         };
       }
     } catch (e) {
@@ -677,9 +682,11 @@ export function useDaemonKernel({
     /** Send a comm message to the kernel (for widget interactions) */
     sendCommMessage,
     /** Check if a cell is currently executing */
-    isCellExecuting: (cellId: string) => queueState.executing === cellId,
+    isCellExecuting: (cellId: string) =>
+      queueState.executing?.cell_id === cellId,
     /** Check if a cell is in the queue */
     isCellQueued: (cellId: string) =>
-      queueState.executing === cellId || queueState.queued.includes(cellId),
+      queueState.executing?.cell_id === cellId ||
+      queueState.queued.some((entry) => entry.cell_id === cellId),
   };
 }

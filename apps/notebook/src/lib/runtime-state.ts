@@ -20,9 +20,14 @@ export interface KernelState {
   env_source: string;
 }
 
+export interface QueueEntry {
+  cell_id: string;
+  execution_id: string;
+}
+
 export interface QueueState {
-  executing: string | null;
-  queued: string[];
+  executing: QueueEntry | null;
+  queued: QueueEntry[];
 }
 
 export interface EnvState {

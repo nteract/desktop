@@ -113,6 +113,13 @@ pub struct PoolError {
     pub retry_in_secs: u64,
 }
 
+/// An entry in the execution queue, pairing a cell with its execution.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QueueEntry {
+    pub cell_id: String,
+    pub execution_id: String,
+}
+
 // ── Helper structs ──────────────────────────────────────────────────────────
 
 /// A single entry from kernel input history.
@@ -325,7 +332,10 @@ pub enum NotebookResponse {
     },
 
     /// Cell queued for execution.
-    CellQueued { cell_id: String },
+    CellQueued {
+        cell_id: String,
+        execution_id: String,
+    },
 
     /// Outputs cleared.
     OutputsCleared { cell_id: String },
@@ -348,14 +358,12 @@ pub enum NotebookResponse {
 
     /// Queue state response.
     QueueState {
-        executing: Option<String>, // cell_id currently executing
-        queued: Vec<String>,       // cell_ids waiting
+        executing: Option<QueueEntry>,
+        queued: Vec<QueueEntry>,
     },
 
     /// All cells queued for execution.
-    AllCellsQueued {
-        count: usize, // number of code cells queued
-    },
+    AllCellsQueued { queued: Vec<QueueEntry> },
 
     /// Notebook saved successfully to disk.
     NotebookSaved {
@@ -451,12 +459,14 @@ pub enum NotebookBroadcast {
     /// Execution started for a cell.
     ExecutionStarted {
         cell_id: String,
+        execution_id: String,
         execution_count: i64,
     },
 
     /// Output produced by a cell.
     Output {
         cell_id: String,
+        execution_id: String,
         output_type: String, // "stream", "display_data", "execute_result", "error"
         output_json: String, // Serialized Jupyter output content
         /// If Some, this is an update to an existing output at the given index.
@@ -473,12 +483,15 @@ pub enum NotebookBroadcast {
     },
 
     /// Execution completed for a cell.
-    ExecutionDone { cell_id: String },
+    ExecutionDone {
+        cell_id: String,
+        execution_id: String,
+    },
 
     /// Queue state changed.
     QueueChanged {
-        executing: Option<String>,
-        queued: Vec<String>,
+        executing: Option<QueueEntry>,
+        queued: Vec<QueueEntry>,
     },
 
     /// Kernel error (failed to launch, crashed, etc.)

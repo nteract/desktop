@@ -19,7 +19,7 @@ use crate::daemon_paths::get_socket_path;
 use crate::error::to_py_err;
 use crate::output::{
     Cell, CompletionItem, CompletionResult, ExecutionResult, HistoryEntry, NotebookConnectionInfo,
-    Output, PyRuntimeState, QueueState, SyncEnvironmentResult,
+    Output, PyQueueEntry, PyRuntimeState, QueueState, SyncEnvironmentResult,
 };
 use crate::output_resolver;
 
@@ -1125,7 +1125,7 @@ pub(crate) async fn queue_cell(
     state: &Arc<Mutex<SessionState>>,
     notebook_id: &str,
     cell_id: &str,
-) -> PyResult<()> {
+) -> PyResult<String> {
     // Auto-start kernel if not running (matches execute_cell behavior)
     {
         let st = state.lock().await;
@@ -1154,10 +1154,10 @@ pub(crate) async fn queue_cell(
     };
 
     match response {
-        NotebookResponse::CellQueued { .. } => {
+        NotebookResponse::CellQueued { execution_id, .. } => {
             // Emit focus presence — queuing cell for execution
             emit_focus_presence(state, cell_id).await;
-            Ok(())
+            Ok(execution_id)
         }
         NotebookResponse::Error { error } => Err(to_py_err(error)),
         other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
@@ -1203,8 +1203,12 @@ pub(crate) async fn collect_outputs(
                         kernel_error = Some("Kernel shut down".to_string());
                         true
                     } else {
-                        let in_executing = rs.queue.executing.as_deref() == Some(cell_id);
-                        let in_queued = rs.queue.queued.iter().any(|id| id == cell_id);
+                        let in_executing = rs
+                            .queue
+                            .executing
+                            .as_ref()
+                            .is_some_and(|e| e.cell_id == cell_id);
+                        let in_queued = rs.queue.queued.iter().any(|e| e.cell_id == cell_id);
                         let in_queue = in_executing || in_queued;
 
                         if in_queue {
@@ -1247,6 +1251,7 @@ pub(crate) async fn collect_outputs(
                 {
                     Ok(Some(NotebookBroadcast::ExecutionDone {
                         cell_id: msg_cell_id,
+                        ..
                     })) => {
                         if msg_cell_id == cell_id {
                             log::debug!("[session_core] ExecutionDone broadcast for {}", cell_id);
@@ -1375,7 +1380,8 @@ pub(crate) async fn run_all_cells(
     };
 
     match response {
-        NotebookResponse::AllCellsQueued { count } => {
+        NotebookResponse::AllCellsQueued { queued } => {
+            let count = queued.len();
             // Focus on the last code cell — gives a visual anchor for where execution ends.
             // RunAllCells only queues code cells, so focusing the last code cell (not the
             // last cell overall, which might be markdown/raw) is more accurate.
@@ -2099,7 +2105,19 @@ pub(crate) async fn get_queue_state(state: &Arc<Mutex<SessionState>>) -> PyResul
         .map_err(to_py_err)?;
 
     match response {
-        NotebookResponse::QueueState { executing, queued } => Ok(QueueState { executing, queued }),
+        NotebookResponse::QueueState { executing, queued } => Ok(QueueState {
+            executing: executing.map(|e| PyQueueEntry {
+                cell_id: e.cell_id,
+                execution_id: e.execution_id,
+            }),
+            queued: queued
+                .into_iter()
+                .map(|e| PyQueueEntry {
+                    cell_id: e.cell_id,
+                    execution_id: e.execution_id,
+                })
+                .collect(),
+        }),
         NotebookResponse::Error { error } => Err(to_py_err(error)),
         other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
     }

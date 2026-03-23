@@ -725,7 +725,7 @@ mod integration_tests {
 
         while tokio::time::Instant::now() < deadline {
             match tokio::time::timeout(Duration::from_millis(500), broadcast_rx.recv()).await {
-                Ok(Some(NotebookBroadcast::ExecutionDone { cell_id }))
+                Ok(Some(NotebookBroadcast::ExecutionDone { cell_id, .. }))
                     if cell_id == "cell-exec" =>
                 {
                     got_done = true;

@@ -13,8 +13,10 @@
 //!     language: Str        (e.g. "python", "typescript")
 //!     env_source: Str      (e.g. "uv:prewarmed", "conda:pixi", "deno")
 //!   queue/
-//!     executing: Str|null  (cell_id currently executing)
-//!     queued: List[Str]    (cell_ids waiting)
+//!     executing: Str|null              (cell_id currently executing)
+//!     executing_execution_id: Str|null (execution_id for the executing cell)
+//!     queued: List[Str]                (cell_ids waiting)
+//!     queued_execution_ids: List[Str]  (parallel execution_ids for queued entries)
 //!   env/
 //!     in_sync: bool
 //!     added: List[Str]     (packages in metadata but not in kernel)
@@ -58,11 +60,18 @@ impl Default for KernelState {
     }
 }
 
+/// An entry in the execution queue.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueEntry {
+    pub cell_id: String,
+    pub execution_id: String,
+}
+
 /// Queue state snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueState {
-    pub executing: Option<String>,
-    pub queued: Vec<String>,
+    pub executing: Option<QueueEntry>,
+    pub queued: Vec<QueueEntry>,
 }
 
 /// Environment sync state snapshot.
@@ -150,8 +159,12 @@ impl RuntimeStateDoc {
             .expect("scaffold queue");
         doc.put(&queue, "executing", ScalarValue::Null)
             .expect("scaffold queue.executing");
+        doc.put(&queue, "executing_execution_id", ScalarValue::Null)
+            .expect("scaffold queue.executing_execution_id");
         doc.put_object(&queue, "queued", ObjType::List)
             .expect("scaffold queue.queued");
+        doc.put_object(&queue, "queued_execution_ids", ObjType::List)
+            .expect("scaffold queue.queued_execution_ids");
 
         // env/
         let env = doc
@@ -365,49 +378,91 @@ impl RuntimeStateDoc {
 
     /// Update queue state. Returns `true` if mutated.
     #[allow(clippy::expect_used)]
-    pub fn set_queue(&mut self, executing: Option<&str>, queued: &[String]) -> bool {
+    pub fn set_queue(&mut self, executing: Option<&QueueEntry>, queued: &[QueueEntry]) -> bool {
         let queue = self.get_map("queue").expect("queue map must exist");
-        let cur_executing = self.read_opt_str(&queue, "executing");
-        let cur_queued = self.read_str_list(&queue, "queued");
+        let cur_exec_cid = self.read_opt_str(&queue, "executing");
+        let cur_exec_eid = self.read_opt_str(&queue, "executing_execution_id");
+        let cur_queued_cids = self.read_str_list(&queue, "queued");
+        let cur_queued_eids = self.read_str_list(&queue, "queued_execution_ids");
 
-        let exec_match = match (&cur_executing, executing) {
+        // Compare executing by both cell_id and execution_id
+        let exec_match = match (&cur_exec_cid, executing) {
             (None, None) => true,
-            (Some(a), Some(b)) => a == b,
+            (Some(cid), Some(entry)) => {
+                cid == &entry.cell_id && cur_exec_eid.as_deref().unwrap_or("") == entry.execution_id
+            }
             _ => false,
         };
 
-        if exec_match && cur_queued.len() == queued.len() && cur_queued == queued {
+        let queued_cids: Vec<&str> = queued.iter().map(|e| e.cell_id.as_str()).collect();
+        let queued_eids: Vec<&str> = queued.iter().map(|e| e.execution_id.as_str()).collect();
+        let cur_cid_refs: Vec<&str> = cur_queued_cids.iter().map(|s| s.as_str()).collect();
+        let cur_eid_refs: Vec<&str> = cur_queued_eids.iter().map(|s| s.as_str()).collect();
+
+        if exec_match && cur_cid_refs == queued_cids && cur_eid_refs == queued_eids {
             return false;
         }
 
+        // Write executing cell_id and execution_id
         match executing {
-            Some(cell_id) => self
-                .doc
-                .put(&queue, "executing", cell_id)
-                .expect("put queue.executing"),
-            None => self
-                .doc
-                .put(&queue, "executing", ScalarValue::Null)
-                .expect("put queue.executing null"),
+            Some(entry) => {
+                self.doc
+                    .put(&queue, "executing", entry.cell_id.as_str())
+                    .expect("put queue.executing");
+                self.doc
+                    .put(
+                        &queue,
+                        "executing_execution_id",
+                        entry.execution_id.as_str(),
+                    )
+                    .expect("put queue.executing_execution_id");
+            }
+            None => {
+                self.doc
+                    .put(&queue, "executing", ScalarValue::Null)
+                    .expect("put queue.executing null");
+                self.doc
+                    .put(&queue, "executing_execution_id", ScalarValue::Null)
+                    .expect("put queue.executing_execution_id null");
+            }
         }
 
-        // Reuse the existing list object to avoid Automerge object churn.
-        let list = self
+        // Reuse existing list objects to avoid Automerge object churn.
+        let cid_list = self
             .doc
             .get(&queue, "queued")
             .expect("get queue.queued")
             .map(|(_, id)| id)
             .expect("queued list must exist");
+        let eid_list = self
+            .doc
+            .get(&queue, "queued_execution_ids")
+            .expect("get queue.queued_execution_ids")
+            .map(|(_, id)| id)
+            .expect("queued_execution_ids list must exist");
+
         // Clear existing entries (reverse order for stable indices)
-        let len = self.doc.length(&list);
-        for i in (0..len).rev() {
-            self.doc.delete(&list, i).expect("delete queued entry");
-        }
-        // Insert new entries
-        for (i, cell_id) in queued.iter().enumerate() {
+        let cid_len = self.doc.length(&cid_list);
+        for i in (0..cid_len).rev() {
             self.doc
-                .insert(&list, i, cell_id.as_str())
+                .delete(&cid_list, i)
+                .expect("delete queued cell_id");
+        }
+        let eid_len = self.doc.length(&eid_list);
+        for i in (0..eid_len).rev() {
+            self.doc
+                .delete(&eid_list, i)
+                .expect("delete queued execution_id");
+        }
+
+        // Insert new entries in both parallel lists
+        for (i, entry) in queued.iter().enumerate() {
+            self.doc
+                .insert(&cid_list, i, entry.cell_id.as_str())
                 .expect("insert queued cell_id");
+            self.doc
+                .insert(&eid_list, i, entry.execution_id.as_str())
+                .expect("insert queued execution_id");
         }
 
         true
@@ -549,9 +604,30 @@ impl RuntimeStateDoc {
 
         let queue_state = queue
             .as_ref()
-            .map(|q| QueueState {
-                executing: self.read_opt_str(q, "executing"),
-                queued: self.read_str_list(q, "queued"),
+            .map(|q| {
+                let executing_cid = self.read_opt_str(q, "executing");
+                let executing_eid = self.read_opt_str(q, "executing_execution_id");
+                let queued_cids = self.read_str_list(q, "queued");
+                let queued_eids = self.read_str_list(q, "queued_execution_ids");
+
+                QueueState {
+                    executing: executing_cid.map(|cid| QueueEntry {
+                        cell_id: cid,
+                        execution_id: executing_eid.unwrap_or_default(),
+                    }),
+                    queued: queued_cids
+                        .into_iter()
+                        .zip(
+                            queued_eids
+                                .into_iter()
+                                .chain(std::iter::repeat(String::new())),
+                        )
+                        .map(|(cid, eid)| QueueEntry {
+                            cell_id: cid,
+                            execution_id: eid,
+                        })
+                        .collect(),
+                }
             })
             .unwrap_or_default();
 
@@ -679,12 +755,33 @@ mod tests {
     #[test]
     fn test_set_queue() {
         let mut doc = RuntimeStateDoc::new();
-        let queued = vec!["cell-2".to_string(), "cell-3".to_string()];
-        assert!(doc.set_queue(Some("cell-1"), &queued));
+        let exec = QueueEntry {
+            cell_id: "cell-1".to_string(),
+            execution_id: "exec-1".to_string(),
+        };
+        let queued = vec![
+            QueueEntry {
+                cell_id: "cell-2".to_string(),
+                execution_id: "exec-2".to_string(),
+            },
+            QueueEntry {
+                cell_id: "cell-3".to_string(),
+                execution_id: "exec-3".to_string(),
+            },
+        ];
+        assert!(doc.set_queue(Some(&exec), &queued));
 
         let state = doc.read_state();
-        assert_eq!(state.queue.executing, Some("cell-1".to_string()));
-        assert_eq!(state.queue.queued, queued);
+        assert_eq!(state.queue.executing.as_ref().unwrap().cell_id, "cell-1");
+        assert_eq!(
+            state.queue.executing.as_ref().unwrap().execution_id,
+            "exec-1"
+        );
+        assert_eq!(state.queue.queued.len(), 2);
+        assert_eq!(state.queue.queued[0].cell_id, "cell-2");
+        assert_eq!(state.queue.queued[0].execution_id, "exec-2");
+        assert_eq!(state.queue.queued[1].cell_id, "cell-3");
+        assert_eq!(state.queue.queued[1].execution_id, "exec-3");
     }
 
     #[test]
@@ -744,9 +841,16 @@ mod tests {
         assert!(!doc.set_kernel_info("k", "python", "uv:prewarmed"));
 
         // Same for queue
-        let q = vec!["a".to_string()];
-        assert!(doc.set_queue(Some("x"), &q));
-        assert!(!doc.set_queue(Some("x"), &q));
+        let exec = QueueEntry {
+            cell_id: "x".to_string(),
+            execution_id: "e1".to_string(),
+        };
+        let q = vec![QueueEntry {
+            cell_id: "a".to_string(),
+            execution_id: "e2".to_string(),
+        }];
+        assert!(doc.set_queue(Some(&exec), &q));
+        assert!(!doc.set_queue(Some(&exec), &q));
 
         // Same for env — defaults are (true, [], [], false, false),
         // so use non-default values to get an initial mutation.
@@ -768,8 +872,20 @@ mod tests {
         daemon_doc.set_kernel_status("busy");
         daemon_doc.set_kernel_info("charming-toucan", "python", "uv:prewarmed");
         daemon_doc.set_queue(
-            Some("cell-1"),
-            &["cell-2".to_string(), "cell-3".to_string()],
+            Some(&QueueEntry {
+                cell_id: "cell-1".to_string(),
+                execution_id: "exec-1".to_string(),
+            }),
+            &[
+                QueueEntry {
+                    cell_id: "cell-2".to_string(),
+                    execution_id: "exec-2".to_string(),
+                },
+                QueueEntry {
+                    cell_id: "cell-3".to_string(),
+                    execution_id: "exec-3".to_string(),
+                },
+            ],
         );
         daemon_doc.set_env_sync(
             false,
@@ -811,7 +927,14 @@ mod tests {
         assert_eq!(daemon_state, client_state);
         assert_eq!(client_state.kernel.status, "busy");
         assert_eq!(client_state.kernel.name, "charming-toucan");
-        assert_eq!(client_state.queue.executing, Some("cell-1".to_string()));
+        assert_eq!(
+            client_state.queue.executing.as_ref().unwrap().cell_id,
+            "cell-1"
+        );
+        assert_eq!(
+            client_state.queue.executing.as_ref().unwrap().execution_id,
+            "exec-1"
+        );
         assert_eq!(client_state.queue.queued.len(), 2);
         assert!(!client_state.env.in_sync);
         assert_eq!(client_state.trust.status, "untrusted");

@@ -354,9 +354,9 @@ def _build_cell_status_map(queue_state: QueueState) -> dict[str, str]:
     """Build a cell_id -> status mapping from queue state."""
     cell_status: dict[str, str] = {}
     if queue_state.executing:
-        cell_status[queue_state.executing] = "running"
-    for cid in queue_state.queued:
-        cell_status[cid] = "queued"
+        cell_status[queue_state.executing.cell_id] = "running"
+    for entry in queue_state.queued:
+        cell_status[entry.cell_id] = "queued"
     return cell_status
 
 
@@ -379,9 +379,9 @@ async def _get_single_cell_status(notebook: runtimed.Notebook, cell_id: str) -> 
     """Fetch queue status for a single cell, None on failure."""
     try:
         queue_state = await notebook.queue_state()
-        if queue_state.executing == cell_id:
+        if queue_state.executing and queue_state.executing.cell_id == cell_id:
             return "running"
-        if cell_id in queue_state.queued:
+        if any(entry.cell_id == cell_id for entry in queue_state.queued):
             return "queued"
         return None
     except asyncio.CancelledError:

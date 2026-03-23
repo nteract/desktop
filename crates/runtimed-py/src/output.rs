@@ -542,22 +542,42 @@ impl CompletionResult {
 }
 
 /// Current state of the execution queue.
+/// An entry in the execution queue, pairing a cell with its execution.
+#[pyclass(get_all, skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyQueueEntry {
+    /// Cell ID
+    pub cell_id: String,
+    /// Execution ID (UUID)
+    pub execution_id: String,
+}
+
+#[pymethods]
+impl PyQueueEntry {
+    fn __repr__(&self) -> String {
+        format!(
+            "QueueEntry(cell_id={}, execution_id={})",
+            self.cell_id, self.execution_id
+        )
+    }
+}
+
 #[pyclass(get_all, skip_from_py_object)]
 #[derive(Clone, Debug)]
 pub struct QueueState {
-    /// Cell ID currently executing (None if idle)
-    pub executing: Option<String>,
-    /// Cell IDs waiting in queue
-    pub queued: Vec<String>,
+    /// Entry currently executing (None if idle)
+    pub executing: Option<PyQueueEntry>,
+    /// Entries waiting in queue
+    pub queued: Vec<PyQueueEntry>,
 }
 
 #[pymethods]
 impl QueueState {
     fn __repr__(&self) -> String {
         match &self.executing {
-            Some(cell_id) => format!(
+            Some(entry) => format!(
                 "QueueState(executing={}, queued={})",
-                cell_id,
+                entry.cell_id,
                 self.queued.len()
             ),
             None => format!("QueueState(idle, queued={})", self.queued.len()),
@@ -833,7 +853,7 @@ impl PyRuntimeState {
             "RuntimeState(kernel={}, queue={}, env={})",
             self.kernel.status,
             match &self.queue.executing {
-                Some(id) => format!("executing={}", id),
+                Some(entry) => format!("executing={}", entry.cell_id),
                 None => format!("idle, queued={}", self.queue.queued.len()),
             },
             if self.env.in_sync {
@@ -855,8 +875,19 @@ impl From<notebook_doc::runtime_state::RuntimeState> for PyRuntimeState {
                 env_source: rs.kernel.env_source,
             },
             queue: QueueState {
-                executing: rs.queue.executing,
-                queued: rs.queue.queued,
+                executing: rs.queue.executing.map(|e| PyQueueEntry {
+                    cell_id: e.cell_id,
+                    execution_id: e.execution_id,
+                }),
+                queued: rs
+                    .queue
+                    .queued
+                    .into_iter()
+                    .map(|e| PyQueueEntry {
+                        cell_id: e.cell_id,
+                        execution_id: e.execution_id,
+                    })
+                    .collect(),
             },
             env: PyEnvState {
                 in_sync: rs.env.in_sync,

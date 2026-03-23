@@ -162,11 +162,13 @@ export type DaemonBroadcast =
   | {
       event: "execution_started";
       cell_id: string;
+      execution_id: string;
       execution_count: number;
     }
   | {
       event: "output";
       cell_id: string;
+      execution_id: string;
       output_type: string; // "stream" | "display_data" | "execute_result" | "error"
       output_json: string; // Serialized output in nbformat shape
     }
@@ -179,11 +181,12 @@ export type DaemonBroadcast =
   | {
       event: "execution_done";
       cell_id: string;
+      execution_id: string;
     }
   | {
       event: "queue_changed";
-      executing?: string;
-      queued: string[];
+      executing?: { cell_id: string; execution_id: string } | null;
+      queued: { cell_id: string; execution_id: string }[];
     }
   | {
       event: "kernel_error";
@@ -234,7 +237,7 @@ export type DaemonNotebookResponse =
       kernel_type: string;
       env_source: string;
     }
-  | { result: "cell_queued"; cell_id: string }
+  | { result: "cell_queued"; cell_id: string; execution_id: string }
   | { result: "outputs_cleared"; cell_id: string }
   | { result: "interrupt_sent" }
   | { result: "kernel_shutting_down" }
@@ -245,8 +248,15 @@ export type DaemonNotebookResponse =
       env_source?: string;
       status: string;
     }
-  | { result: "queue_state"; executing?: string; queued: string[] }
-  | { result: "all_cells_queued"; count: number }
+  | {
+      result: "queue_state";
+      executing?: { cell_id: string; execution_id: string } | null;
+      queued: { cell_id: string; execution_id: string }[];
+    }
+  | {
+      result: "all_cells_queued";
+      queued: { cell_id: string; execution_id: string }[];
+    }
   | { result: "ok" }
   | { result: "error"; error: string }
   | { result: "sync_environment_started"; packages: string[] }

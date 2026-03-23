@@ -795,7 +795,8 @@ impl Session {
     }
 
     /// Queue a cell for execution without waiting for the result.
-    fn queue_cell(&self, cell_id: &str) -> PyResult<()> {
+    /// Returns the execution_id for the queued execution.
+    fn queue_cell(&self, cell_id: &str) -> PyResult<String> {
         self.runtime.block_on(session_core::queue_cell(
             &self.state,
             &self.notebook_id,

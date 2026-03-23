@@ -29,6 +29,7 @@ from runtimed.runtimed import (  # noqa: F401
     NativeClient,
     NotebookConnectionInfo,
     Output,
+    PyQueueEntry,
     QueueState,
     RuntimedError,
     RuntimeState,

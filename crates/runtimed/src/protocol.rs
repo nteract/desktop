@@ -14,7 +14,7 @@ use crate::{EnvType, PoolError, PoolStats, PooledEnv};
 // Re-export all notebook protocol types from the shared crate.
 pub use notebook_protocol::protocol::{
     CommSnapshot, CompletionItem, DenoLaunchedConfig, EnvSyncDiff, HistoryEntry, LaunchedEnvConfig,
-    NotebookBroadcast, NotebookRequest, NotebookResponse,
+    NotebookBroadcast, NotebookRequest, NotebookResponse, QueueEntry,
 };
 
 /// Requests that clients can send to the daemon.
@@ -468,6 +468,7 @@ mod tests {
     fn test_notebook_broadcast_output() {
         let broadcast = NotebookBroadcast::Output {
             cell_id: "cell-1".into(),
+            execution_id: "exec-1".into(),
             output_type: "stream".into(),
             output_json: r#"{"name":"stdout","text":"hello\n"}"#.into(),
             output_index: None,
@@ -496,6 +497,7 @@ mod tests {
         // Test with output_index set
         let broadcast_with_index = NotebookBroadcast::Output {
             cell_id: "cell-2".into(),
+            execution_id: "exec-2".into(),
             output_type: "stream".into(),
             output_json: r#"{"name":"stdout","text":"hello\n"}"#.into(),
             output_index: Some(0),

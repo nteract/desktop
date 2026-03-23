@@ -34,11 +34,24 @@ use crate::blob_store::BlobStore;
 use crate::comm_state::CommState;
 use crate::notebook_doc::NotebookDoc;
 use crate::output_store::{self, DEFAULT_INLINE_THRESHOLD};
-use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast};
+use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast, QueueEntry};
 use crate::stream_terminal::{StreamOutputState, StreamTerminals};
 use crate::terminal_size::{TERMINAL_COLUMNS_STR, TERMINAL_LINES_STR};
 use crate::{EnvType, PooledEnv};
-use notebook_doc::runtime_state::RuntimeStateDoc;
+use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
+
+/// Convert a protocol QueueEntry to a RuntimeStateDoc QueueEntry.
+fn to_doc_entry(e: &QueueEntry) -> DocQueueEntry {
+    DocQueueEntry {
+        cell_id: e.cell_id.clone(),
+        execution_id: e.execution_id.clone(),
+    }
+}
+
+/// Convert a slice of protocol QueueEntries to doc QueueEntries.
+fn to_doc_entries(entries: &[QueueEntry]) -> Vec<DocQueueEntry> {
+    entries.iter().map(to_doc_entry).collect()
+}
 
 // ── Launched Environment Config ─────────────────────────────────────────────
 
@@ -192,6 +205,7 @@ async fn update_output_by_display_id_with_manifests(
 #[derive(Debug, Clone)]
 pub struct QueuedCell {
     pub cell_id: String,
+    pub execution_id: String,
     pub code: String,
 }
 
@@ -264,12 +278,12 @@ pub struct RoomKernel {
     process_group_id: Option<i32>,
     /// Kernel ID for the process registry (orphan reaping)
     kernel_id: Option<String>,
-    /// Mapping from msg_id → cell_id for routing iopub messages
-    cell_id_map: Arc<StdMutex<HashMap<String, String>>>,
+    /// Mapping from msg_id → (cell_id, execution_id) for routing iopub messages
+    cell_id_map: Arc<StdMutex<HashMap<String, (String, String)>>>,
     /// Execution queue (pending cells)
     queue: VecDeque<QueuedCell>,
-    /// Currently executing cell
-    executing: Option<String>,
+    /// Currently executing cell: (cell_id, execution_id)
+    executing: Option<(String, String)>,
     /// Current kernel status
     status: KernelStatus,
     /// Broadcast channel for sending outputs to peers
@@ -307,7 +321,10 @@ pub struct RoomKernel {
 #[derive(Debug)]
 pub enum QueueCommand {
     /// A cell finished executing (received status=idle from kernel)
-    ExecutionDone { cell_id: String },
+    ExecutionDone {
+        cell_id: String,
+        execution_id: String,
+    },
     /// A cell produced an error (for stop-on-error behavior)
     CellError { cell_id: String },
     /// The kernel process died (iopub connection lost).
@@ -443,13 +460,27 @@ impl RoomKernel {
     }
 
     /// Get the currently executing cell ID.
-    pub fn executing_cell(&self) -> Option<&String> {
-        self.executing.as_ref()
+    pub fn executing_cell(&self) -> Option<&str> {
+        self.executing.as_ref().map(|(cid, _)| cid.as_str())
     }
 
     /// Get the queued cell IDs.
-    pub fn queued_cells(&self) -> Vec<String> {
-        self.queue.iter().map(|c| c.cell_id.clone()).collect()
+    pub fn queued_cells(&self) -> Vec<QueueEntry> {
+        self.queue
+            .iter()
+            .map(|c| QueueEntry {
+                cell_id: c.cell_id.clone(),
+                execution_id: c.execution_id.clone(),
+            })
+            .collect()
+    }
+
+    /// Get the currently executing entry as a QueueEntry.
+    pub fn executing_entry(&self) -> Option<QueueEntry> {
+        self.executing.as_ref().map(|(cid, eid)| QueueEntry {
+            cell_id: cid.clone(),
+            execution_id: eid.clone(),
+        })
     }
 
     /// Launch a kernel for this room.
@@ -803,11 +834,13 @@ impl RoomKernel {
                             message.parent_header.as_ref().map(|h| &h.msg_id)
                         );
 
-                        // Look up cell_id from msg_id
-                        let cell_id = message
+                        // Look up (cell_id, execution_id) from msg_id
+                        let cell_entry = message
                             .parent_header
                             .as_ref()
                             .and_then(|h| cell_id_map.lock().ok()?.get(&h.msg_id).cloned());
+                        let cell_id = cell_entry.as_ref().map(|(cid, _)| cid.clone());
+                        let execution_id = cell_entry.as_ref().map(|(_, eid)| eid.clone());
 
                         // Handle different message types
                         match &message.content {
@@ -840,9 +873,12 @@ impl RoomKernel {
                                 // Signal execution done when idle
                                 if status.execution_state == jupyter_protocol::ExecutionState::Idle
                                 {
-                                    if let Some(cid) = cell_id {
-                                        let _ = iopub_cmd_tx
-                                            .try_send(QueueCommand::ExecutionDone { cell_id: cid });
+                                    if let Some((cid, eid)) = cell_entry.clone() {
+                                        let _ =
+                                            iopub_cmd_tx.try_send(QueueCommand::ExecutionDone {
+                                                cell_id: cid,
+                                                execution_id: eid,
+                                            });
                                     }
                                 }
                             }
@@ -886,6 +922,7 @@ impl RoomKernel {
                                     let _ =
                                         broadcast_tx.send(NotebookBroadcast::ExecutionStarted {
                                             cell_id: cid.clone(),
+                                            execution_id: execution_id.clone().unwrap_or_default(),
                                             execution_count,
                                         });
                                 }
@@ -1033,6 +1070,7 @@ impl RoomKernel {
 
                                     let _ = broadcast_tx.send(NotebookBroadcast::Output {
                                         cell_id: cid.clone(),
+                                        execution_id: execution_id.clone().unwrap_or_default(),
                                         output_type: "stream".to_string(),
                                         output_json: output_ref,
                                         output_index: broadcast_output_index,
@@ -1148,6 +1186,7 @@ impl RoomKernel {
 
                                         let _ = broadcast_tx.send(NotebookBroadcast::Output {
                                             cell_id: cid.clone(),
+                                            execution_id: execution_id.clone().unwrap_or_default(),
                                             output_type: output_type.to_string(),
                                             output_json: output_ref,
                                             output_index: None,
@@ -1305,6 +1344,7 @@ impl RoomKernel {
 
                                         let _ = broadcast_tx.send(NotebookBroadcast::Output {
                                             cell_id: cid.clone(),
+                                            execution_id: execution_id.clone().unwrap_or_default(),
                                             output_type: "error".to_string(),
                                             output_json: output_ref,
                                             output_index: None,
@@ -1515,10 +1555,12 @@ impl RoomKernel {
 
                         match msg.content {
                             JupyterMessageContent::ExecuteReply(ref reply) => {
-                                // Get cell_id from msg_id mapping
-                                let cell_id = msg.parent_header.as_ref().and_then(|h| {
+                                // Get (cell_id, execution_id) from msg_id mapping
+                                let cell_entry = msg.parent_header.as_ref().and_then(|h| {
                                     shell_cell_id_map.lock().ok()?.get(&h.msg_id).cloned()
                                 });
+                                let cell_id = cell_entry.as_ref().map(|(cid, _)| cid.clone());
+                                let execution_id = cell_entry.as_ref().map(|(_, eid)| eid.clone());
 
                                 // Process page payloads - convert to display_data outputs
                                 // This handles IPython's ? and ?? help commands
@@ -1585,6 +1627,9 @@ impl RoomKernel {
                                             let _ = shell_broadcast_tx.send(
                                                 NotebookBroadcast::Output {
                                                     cell_id: cid.clone(),
+                                                    execution_id: execution_id
+                                                        .clone()
+                                                        .unwrap_or_default(),
                                                     output_type: "display_data".to_string(),
                                                     output_json: output_ref,
                                                     output_index: None,
@@ -1600,6 +1645,9 @@ impl RoomKernel {
                                         let _ = shell_broadcast_tx.send(
                                             NotebookBroadcast::ExecutionDone {
                                                 cell_id: cid.clone(),
+                                                execution_id: execution_id
+                                                    .clone()
+                                                    .unwrap_or_default(),
                                             },
                                         );
                                     }
@@ -1766,45 +1814,59 @@ impl RoomKernel {
 
     /// Queue a cell for execution.
     ///
-    /// Idempotent: if the cell is already executing or queued, this is a no-op.
-    /// This prevents duplicate executions when multiple windows trigger RunAllCells.
-    pub async fn queue_cell(&mut self, cell_id: String, code: String) -> Result<()> {
-        // Skip if already executing or queued (idempotent)
-        if self.executing.as_ref() == Some(&cell_id) {
-            info!(
-                "[kernel-manager] Cell {} already executing, skipping",
-                cell_id
-            );
-            return Ok(());
+    /// Idempotent: if the cell is already executing or queued, returns the
+    /// existing `execution_id` instead of generating a new one.
+    /// Returns the `execution_id` for this execution.
+    pub async fn queue_cell(&mut self, cell_id: String, code: String) -> Result<String> {
+        // Idempotent: return existing execution_id if already executing or queued
+        if let Some((ref cid, ref eid)) = self.executing {
+            if cid == &cell_id {
+                info!(
+                    "[kernel-manager] Cell {} already executing ({}), skipping",
+                    cell_id, eid
+                );
+                return Ok(eid.clone());
+            }
         }
-        if self.queue.iter().any(|c| c.cell_id == cell_id) {
-            info!("[kernel-manager] Cell {} already queued, skipping", cell_id);
-            return Ok(());
+        if let Some(existing) = self.queue.iter().find(|c| c.cell_id == cell_id) {
+            info!(
+                "[kernel-manager] Cell {} already queued ({}), skipping",
+                cell_id, existing.execution_id
+            );
+            return Ok(existing.execution_id.clone());
         }
 
-        info!("[kernel-manager] Queuing cell: {}", cell_id);
+        let execution_id = Uuid::new_v4().to_string();
+        info!(
+            "[kernel-manager] Queuing cell: {} (execution_id={})",
+            cell_id, execution_id
+        );
 
         // Add to queue
         self.queue.push_back(QueuedCell {
             cell_id: cell_id.clone(),
+            execution_id: execution_id.clone(),
             code,
         });
 
         // Broadcast queue state
         let _ = self.broadcast_tx.send(NotebookBroadcast::QueueChanged {
-            executing: self.executing.clone(),
+            executing: self.executing_entry(),
             queued: self.queued_cells(),
         });
 
         {
+            let doc_exec = self.executing_entry().as_ref().map(to_doc_entry);
+            let doc_queued = to_doc_entries(&self.queued_cells());
             let mut sd = self.state_doc.write().await;
-            if sd.set_queue(self.executing.as_deref(), &self.queued_cells()) {
+            if sd.set_queue(doc_exec.as_ref(), &doc_queued) {
                 let _ = self.state_changed_tx.send(());
             }
         }
 
         // Try to process if nothing executing
-        self.process_next().await
+        self.process_next().await?;
+        Ok(execution_id)
     }
 
     /// Clear outputs for a cell (before re-execution).
@@ -1832,11 +1894,11 @@ impl RoomKernel {
             return Err(anyhow::anyhow!("No kernel running"));
         }
 
-        self.executing = Some(cell.cell_id.clone());
+        self.executing = Some((cell.cell_id.clone(), cell.execution_id.clone()));
         self.status = KernelStatus::Busy;
 
         // Collect queue state before borrowing shell_writer
-        let executing = self.executing.clone();
+        let executing = self.executing_entry();
         let queued = self.queued_cells();
 
         // Broadcast queue state
@@ -1845,8 +1907,10 @@ impl RoomKernel {
             .send(NotebookBroadcast::QueueChanged { executing, queued });
 
         {
+            let doc_exec = self.executing_entry().as_ref().map(to_doc_entry);
+            let doc_queued = to_doc_entries(&self.queued_cells());
             let mut sd = self.state_doc.write().await;
-            if sd.set_queue(self.executing.as_deref(), &self.queued_cells()) {
+            if sd.set_queue(doc_exec.as_ref(), &doc_queued) {
                 let _ = self.state_changed_tx.send(());
             }
         }
@@ -1856,41 +1920,49 @@ impl RoomKernel {
         let message: JupyterMessage = request.into();
         let msg_id = message.header.msg_id.clone();
 
-        // Register msg_id → cell_id BEFORE sending.
+        // Register msg_id → (cell_id, execution_id) BEFORE sending.
         // First, remove any old mappings for this cell_id (from previous executions).
         // This bounds the map to one entry per cell, not per execution, while still
         // allowing both shell (execute_reply) and iopub (idle status) to use the mapping.
         {
             let mut map = self.cell_id_map.lock().unwrap();
-            map.retain(|_, v| v != &cell.cell_id);
-            map.insert(msg_id.clone(), cell.cell_id.clone());
+            map.retain(|_, (cid, _)| cid != &cell.cell_id);
+            map.insert(
+                msg_id.clone(),
+                (cell.cell_id.clone(), cell.execution_id.clone()),
+            );
         }
 
         // Now borrow shell_writer mutably
         let shell = self.shell_writer.as_mut().unwrap();
         shell.send(message).await?;
         info!(
-            "[kernel-manager] Sent execute_request: msg_id={} cell_id={}",
-            msg_id, cell.cell_id
+            "[kernel-manager] Sent execute_request: msg_id={} cell_id={} execution_id={}",
+            msg_id, cell.cell_id, cell.execution_id
         );
 
         Ok(())
     }
 
     /// Mark a cell execution as complete and process next.
-    pub async fn execution_done(&mut self, cell_id: &str) -> Result<()> {
-        if self.executing.as_ref() == Some(&cell_id.to_string()) {
+    pub async fn execution_done(&mut self, cell_id: &str, execution_id: &str) -> Result<()> {
+        let matches = self
+            .executing
+            .as_ref()
+            .is_some_and(|(cid, _)| cid == cell_id);
+        if matches {
             self.executing = None;
             self.status = KernelStatus::Idle;
 
             // Note: cell_id_map cleanup happens when a cell is RE-EXECUTED (in
-            // send_execute_request), not here. The shell and iopub channels race,
+            // process_next), not here. The shell and iopub channels race,
             // and both need the mapping. Cleaning up on re-execution bounds the map
             // to one entry per cell while avoiding the race condition.
 
             // Broadcast done
             let _ = self.broadcast_tx.send(NotebookBroadcast::ExecutionDone {
                 cell_id: cell_id.to_string(),
+                execution_id: execution_id.to_string(),
             });
 
             // Broadcast queue state
@@ -1900,8 +1972,9 @@ impl RoomKernel {
             });
 
             {
+                let doc_queued = to_doc_entries(&self.queued_cells());
                 let mut sd = self.state_doc.write().await;
-                if sd.set_queue(None, &self.queued_cells()) {
+                if sd.set_queue(None, &doc_queued) {
                     let _ = self.state_changed_tx.send(());
                 }
             }
@@ -1917,13 +1990,15 @@ impl RoomKernel {
     /// Unblocks the execution queue by clearing the executing cell and queue,
     /// and broadcasts an error status to all connected peers.
     ///
+    /// Returns the (cell_id, execution_id) of the interrupted execution, if any.
+    ///
     /// This method is idempotent - multiple calls (e.g., from both process
     /// watcher and heartbeat monitor) are safe.
-    pub fn kernel_died(&mut self) {
+    pub fn kernel_died(&mut self) -> Option<(String, String)> {
         // Idempotent: if already dead, don't re-broadcast
         if self.status == KernelStatus::Dead {
             debug!("[kernel-manager] kernel_died called but already dead, ignoring");
-            return;
+            return None;
         }
 
         warn!(
@@ -1932,8 +2007,8 @@ impl RoomKernel {
             self.queue.len()
         );
 
-        // Clear executing state so the queue doesn't stay permanently stuck
-        self.executing = None;
+        // Capture the interrupted execution before clearing
+        let interrupted = self.executing.take();
         self.status = KernelStatus::Dead;
 
         // Clear any queued cells — they can't execute without a kernel
@@ -1961,6 +2036,8 @@ impl RoomKernel {
         // Note: state_doc writes for kernel_died happen in the async command
         // processor (notebook_sync_server.rs QueueCommand::KernelDied handler).
         // state_doc.set_kernel_status("error") + set_queue(None, &[])
+
+        interrupted
     }
 
     /// Interrupt the currently executing cell and clear the execution queue.
@@ -2187,18 +2264,25 @@ impl RoomKernel {
     }
 
     /// Clear the execution queue.
-    pub fn clear_queue(&mut self) -> Vec<String> {
-        let cleared: Vec<String> = self.queue.drain(..).map(|c| c.cell_id).collect();
+    pub fn clear_queue(&mut self) -> Vec<QueueEntry> {
+        let cleared: Vec<QueueEntry> = self
+            .queue
+            .drain(..)
+            .map(|c| QueueEntry {
+                cell_id: c.cell_id,
+                execution_id: c.execution_id,
+            })
+            .collect();
 
         // Broadcast queue state
         let _ = self.broadcast_tx.send(NotebookBroadcast::QueueChanged {
-            executing: self.executing.clone(),
+            executing: self.executing_entry(),
             queued: vec![],
         });
 
         // Note: state_doc writes for clear_queue happen in the async command
         // processor (notebook_sync_server.rs QueueCommand::CellError handler).
-        // state_doc.set_queue(self.executing.as_deref(), &[])
+        // state_doc.set_queue(self.executing_entry().as_ref(), &[])
 
         cleared
     }
