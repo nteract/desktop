@@ -164,17 +164,29 @@ pub async fn connect(
     socket_path: PathBuf,
     notebook_id: String,
 ) -> Result<ConnectResult, SyncError> {
-    connect_with_options(socket_path, notebook_id, None, None).await
+    connect_with_options(socket_path, notebook_id, None, None, None).await
 }
 
 /// Connect to a notebook room with options.
+///
+/// `actor_label` sets the Automerge actor identity **before** initial sync
+/// so that even the bootstrap operations are attributed to the caller
+/// (e.g., `"agent:claude:abc123"`, `"human:kyle:session42"`).
 pub async fn connect_with_options(
     socket_path: PathBuf,
     notebook_id: String,
     working_dir: Option<PathBuf>,
     initial_metadata: Option<String>,
+    actor_label: Option<&str>,
 ) -> Result<ConnectResult, SyncError> {
-    connect_with_options_impl(socket_path, notebook_id, working_dir, initial_metadata).await
+    connect_with_options_impl(
+        socket_path,
+        notebook_id,
+        working_dir,
+        initial_metadata,
+        actor_label,
+    )
+    .await
 }
 
 async fn connect_with_options_impl(
@@ -182,6 +194,7 @@ async fn connect_with_options_impl(
     notebook_id: String,
     working_dir: Option<PathBuf>,
     initial_metadata: Option<String>,
+    actor_label: Option<&str>,
 ) -> Result<ConnectResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
@@ -210,7 +223,12 @@ async fn connect_with_options_impl(
 
     // Initial Automerge sync exchange — start from the standard notebook
     // skeleton so load_incremental takes the incremental path.
-    let bootstrap = notebook_doc::NotebookDoc::bootstrap();
+    // Set the actor before sync so all ops (including bootstrap) are
+    // attributed to the caller, not a random UUID.
+    let bootstrap = match actor_label {
+        Some(label) => notebook_doc::NotebookDoc::bootstrap_with_actor(label),
+        None => notebook_doc::NotebookDoc::bootstrap(),
+    };
     let mut doc = bootstrap.into_inner();
     let mut peer_state = sync::State::new();
     let mut pending_broadcasts = Vec::new();
@@ -257,10 +275,23 @@ async fn connect_with_options_impl(
 
 /// Connect and open an existing notebook file.
 pub async fn connect_open(socket_path: PathBuf, path: PathBuf) -> Result<OpenResult, SyncError> {
-    connect_open_impl(socket_path, path).await
+    connect_open_with_actor(socket_path, path, None).await
 }
 
-async fn connect_open_impl(socket_path: PathBuf, path: PathBuf) -> Result<OpenResult, SyncError> {
+/// Open a notebook file with a specific actor identity.
+pub async fn connect_open_with_actor(
+    socket_path: PathBuf,
+    path: PathBuf,
+    actor_label: Option<&str>,
+) -> Result<OpenResult, SyncError> {
+    connect_open_impl(socket_path, path, actor_label).await
+}
+
+async fn connect_open_impl(
+    socket_path: PathBuf,
+    path: PathBuf,
+    actor_label: Option<&str>,
+) -> Result<OpenResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
     let mut reader = tokio::io::BufReader::new(reader);
@@ -291,7 +322,10 @@ async fn connect_open_impl(socket_path: PathBuf, path: PathBuf) -> Result<OpenRe
 
     // Initial Automerge sync exchange — start from the standard notebook
     // skeleton so load_incremental takes the incremental path.
-    let bootstrap = notebook_doc::NotebookDoc::bootstrap();
+    let bootstrap = match actor_label {
+        Some(label) => notebook_doc::NotebookDoc::bootstrap_with_actor(label),
+        None => notebook_doc::NotebookDoc::bootstrap(),
+    };
     let mut doc = bootstrap.into_inner();
     let mut peer_state = sync::State::new();
     let mut pending_broadcasts = Vec::new();
@@ -341,7 +375,17 @@ pub async fn connect_create(
     runtime: &str,
     working_dir: Option<PathBuf>,
 ) -> Result<CreateResult, SyncError> {
-    connect_create_impl(socket_path, runtime, working_dir, None).await
+    connect_create_impl(socket_path, runtime, working_dir, None, None).await
+}
+
+/// Create a new notebook with a specific actor identity.
+pub async fn connect_create_with_actor(
+    socket_path: PathBuf,
+    runtime: &str,
+    working_dir: Option<PathBuf>,
+    actor_label: Option<&str>,
+) -> Result<CreateResult, SyncError> {
+    connect_create_impl(socket_path, runtime, working_dir, None, actor_label).await
 }
 
 async fn connect_create_impl(
@@ -349,6 +393,7 @@ async fn connect_create_impl(
     runtime: &str,
     working_dir: Option<PathBuf>,
     notebook_id: Option<String>,
+    actor_label: Option<&str>,
 ) -> Result<CreateResult, SyncError> {
     let stream = connect_stream!(&socket_path);
     let (reader, writer) = tokio::io::split(stream);
@@ -384,7 +429,10 @@ async fn connect_create_impl(
 
     // Initial Automerge sync exchange — start from the standard notebook
     // skeleton so load_incremental takes the incremental path.
-    let bootstrap = notebook_doc::NotebookDoc::bootstrap();
+    let bootstrap = match actor_label {
+        Some(label) => notebook_doc::NotebookDoc::bootstrap_with_actor(label),
+        None => notebook_doc::NotebookDoc::bootstrap(),
+    };
     let mut doc = bootstrap.into_inner();
     let mut peer_state = sync::State::new();
     let mut pending_broadcasts = Vec::new();

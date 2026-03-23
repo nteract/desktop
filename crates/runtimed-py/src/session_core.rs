@@ -158,14 +158,15 @@ pub(crate) async fn connect_with_socket(
         return Ok(());
     }
 
-    let result = notebook_sync::connect::connect(socket_path.clone(), notebook_id.to_string())
-        .await
-        .map_err(to_py_err)?;
-
-    // Set actor label on the handle for provenance tracking
-    if let Some(label) = &st.actor_label {
-        result.handle.set_actor(label).map_err(to_py_err)?;
-    }
+    let result = notebook_sync::connect::connect_with_options(
+        socket_path.clone(),
+        notebook_id.to_string(),
+        None,
+        None,
+        st.actor_label.as_deref(),
+    )
+    .await
+    .map_err(to_py_err)?;
 
     // Resolve blob paths from daemon info
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
@@ -245,14 +246,13 @@ pub(crate) async fn connect_open(
     path: &str,
     actor_label: Option<&str>,
 ) -> PyResult<(String, SessionState, NotebookConnectionInfo)> {
-    let result = notebook_sync::connect::connect_open(socket_path.clone(), PathBuf::from(path))
-        .await
-        .map_err(to_py_err)?;
-
-    // Set actor label on the handle for provenance tracking
-    if let Some(label) = actor_label {
-        result.handle.set_actor(label).map_err(to_py_err)?;
-    }
+    let result = notebook_sync::connect::connect_open_with_actor(
+        socket_path.clone(),
+        PathBuf::from(path),
+        actor_label,
+    )
+    .await
+    .map_err(to_py_err)?;
 
     let notebook_id = result.info.notebook_id.clone();
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
@@ -305,15 +305,14 @@ pub(crate) async fn connect_create(
     working_dir: Option<PathBuf>,
     actor_label: Option<&str>,
 ) -> PyResult<(String, SessionState, NotebookConnectionInfo)> {
-    let result =
-        notebook_sync::connect::connect_create(socket_path.clone(), runtime, working_dir.clone())
-            .await
-            .map_err(to_py_err)?;
-
-    // Set actor label on the handle for provenance tracking
-    if let Some(label) = actor_label {
-        result.handle.set_actor(label).map_err(to_py_err)?;
-    }
+    let result = notebook_sync::connect::connect_create_with_actor(
+        socket_path.clone(),
+        runtime,
+        working_dir.clone(),
+        actor_label,
+    )
+    .await
+    .map_err(to_py_err)?;
 
     let notebook_id = result.info.notebook_id.clone();
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
