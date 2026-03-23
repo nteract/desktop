@@ -155,24 +155,39 @@ export function useAutomergeNotebook() {
 
   // ── Bootstrap ──────────────────────────────────────────────────────
 
-  const bootstrap = useCallback(async () => {
-    await wasmReady;
+  const bootstrap = useCallback(
+    async (forceNew = false) => {
+      await wasmReady;
 
-    const handle = NotebookHandle.create_empty_with_actor(
-      `human:${sessionIdRef.current}`,
-    );
+      // Reuse existing handle if one exists — critical for React strict mode
+      // which runs mount/cleanup/mount. Creating a new handle on the second
+      // mount would free the first (synced) handle, leaving CodeMirror with
+      // content that doesn't match the new (empty) handle. The magic plugin
+      // (%%html) then fires DOM mutations against the empty handle → crash.
+      //
+      // forceNew=true is used by daemon:ready (actual reconnection) where
+      // we genuinely need a fresh handle for a new daemon session.
+      let handle = handleRef.current;
+      if (!handle || forceNew) {
+        handleRef.current?.free();
+        handle = NotebookHandle.create_empty_with_actor(
+          `human:${sessionIdRef.current}`,
+        );
+        handleRef.current = handle;
+        setNotebookHandle(handle);
+      }
 
-    handleRef.current?.free();
-    handleRef.current = handle;
-    setNotebookHandle(handle);
+      awaitingInitialSyncRef.current = true;
+      setIsLoading(true);
 
-    awaitingInitialSyncRef.current = true;
-    setIsLoading(true);
-
-    syncToRelay(handle);
-    logger.info("[automerge-notebook] Bootstrap: empty handle, awaiting sync");
-    return true;
-  }, [syncToRelay]);
+      syncToRelay(handle);
+      logger.info(
+        "[automerge-notebook] Bootstrap: empty handle, awaiting sync",
+      );
+      return true;
+    },
+    [syncToRelay],
+  );
 
   // ── Lifecycle (single effect) ──────────────────────────────────────
 
@@ -200,7 +215,7 @@ export function useAutomergeNotebook() {
           awaitingInitialSyncRef.current = true;
           setIsLoading(true);
           return from(
-            bootstrap().catch((err: unknown) => {
+            bootstrap(true).catch((err: unknown) => {
               logger.error(
                 "[automerge-notebook] lifecycle bootstrap failed:",
                 err,
@@ -261,16 +276,20 @@ export function useAutomergeNotebook() {
       sourceSyncSub.unsubscribe();
       clearOutputsSub.unsubscribe();
 
-      // Flush pending local changes before freeing handle.
+      // Flush pending local changes (but do NOT free the handle).
+      // The handle survives React strict mode's cleanup/re-mount cycle.
+      // It's only freed when bootstrap creates a replacement (daemon:ready)
+      // or on true unmount (component removed from tree). Freeing here
+      // would leave CodeMirror with content from the synced handle while
+      // the second mount creates an empty handle — causing splice_source
+      // "index out of bounds" crashes on magic cells (%%html).
       if (handleRef.current) {
         syncToRelay(handleRef.current);
       }
 
+      // Reset stores but keep handleRef alive.
       resetNotebookCells();
       resetRuntimeState();
-      setNotebookHandle(null);
-      handleRef.current?.free();
-      handleRef.current = null;
     };
   }, [bootstrap, materializeCells, syncToRelay]);
 

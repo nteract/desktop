@@ -144,18 +144,32 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
 
       isProcessingOutbound = true;
       try {
-        // Collect all changes first, then apply in reverse order (end → start)
-        // so that earlier positions aren't shifted by later splices.
-        // iterChanges reports fromA/toA in pre-transaction coordinates;
-        // applying ascending would mis-apply when a single transaction
-        // contains multiple separated edits (multi-cursor, replace-all, IME).
-        const changes: Array<{
-          fromA: number;
-          toA: number;
-          inserted: string;
-        }> = [];
-
+        // Process each transaction in FORWARD order, but apply each
+        // transaction's changes in REVERSE order (end → start).
+        //
+        // Forward across transactions: transaction N+1's positions assume
+        // transaction N has already been applied (e.g., auto-close-tag
+        // inserts "</div>" at position 13 AFTER the ">" was inserted at
+        // position 12 by the preceding transaction).
+        //
+        // Reverse within a transaction: iterChanges reports fromA/toA in
+        // pre-transaction coordinates. Applying end→start prevents earlier
+        // positions from being shifted by later splices (multi-cursor,
+        // replace-all, IME).
+        //
+        // The old code flattened ALL changes into one array and reversed
+        // the entire thing — which broke when auto-close-tag created a
+        // second transaction whose positions depended on the first.
+        let aborted = false;
         for (const tr of outboundTxs) {
+          if (aborted) break;
+
+          const changes: Array<{
+            fromA: number;
+            toA: number;
+            inserted: string;
+          }> = [];
+
           tr.changes.iterChanges(
             (
               fromA: number,
@@ -171,17 +185,22 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
               });
             },
           );
-        }
 
-        // Apply end → start so positions stay valid.
-        for (let i = changes.length - 1; i >= 0; i--) {
-          const { fromA, toA, inserted } = changes[i];
-          const deleteCount = toA - fromA;
-          const ok = handle.splice_source(cellId, fromA, deleteCount, inserted);
-          if (!ok) {
-            // Cell was deleted or handle is stale — abort remaining splices
-            // and resync the editor from the WASM handle on next inbound.
-            break;
+          // Apply this transaction's changes end → start.
+          for (let i = changes.length - 1; i >= 0; i--) {
+            const { fromA, toA, inserted } = changes[i];
+            const deleteCount = toA - fromA;
+            const ok = handle.splice_source(
+              cellId,
+              fromA,
+              deleteCount,
+              inserted,
+            );
+            if (!ok) {
+              // Cell was deleted or handle is stale — abort all remaining.
+              aborted = true;
+              break;
+            }
           }
         }
 
