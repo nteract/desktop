@@ -662,13 +662,24 @@ impl NotebookDoc {
         }
     }
 
-    /// Create an empty sync-only bootstrap document with a specific text encoding.
+    /// Create a sync-only bootstrap document with a specific text encoding.
     ///
     /// Use `TextEncoding::Utf16CodeUnit` for the WASM/CodeMirror frontend.
+    ///
+    /// Seeds the document with a single marker operation so that
+    /// `automerge::Automerge::is_empty()` returns false.  Without this,
+    /// the first `receive_sync_message` / `load_incremental` call hits a
+    /// fast-path that replaces `*self` with a freshly-loaded doc using
+    /// **default** `LoadOptions` — discarding the encoding we set here.
+    /// A non-empty doc takes the normal incremental-apply path which
+    /// preserves the encoding.
     pub fn empty_with_encoding(encoding: TextEncoding) -> Self {
-        Self {
-            doc: AutoCommit::new_with_encoding(encoding),
-        }
+        let mut doc = AutoCommit::new_with_encoding(encoding);
+        // Marker op: keeps encoding alive across the first sync.
+        // The daemon also writes schema_version = 2, so the CRDT
+        // merge converges to the same value with no conflict.
+        let _ = doc.put(automerge::ROOT, "schema_version", SCHEMA_VERSION);
+        Self { doc }
     }
 
     /// Create an empty sync-only bootstrap document with a specific actor identity.
