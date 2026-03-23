@@ -13,8 +13,8 @@ export const jscell_outputs_json: (a: number, b: number) => void;
 export const jscell_metadata_json: (a: number, b: number) => void;
 export const jscell_resolved_assets_json: (a: number, b: number) => void;
 export const notebookhandle_new: (a: number, b: number) => number;
+export const notebookhandle_create_bootstrap: (a: number, b: number) => number;
 export const notebookhandle_create_empty: () => number;
-export const notebookhandle_create_empty_with_actor: (a: number, b: number) => number;
 export const notebookhandle_load: (a: number, b: number, c: number) => void;
 export const notebookhandle_get_actor_id: (a: number, b: number) => void;
 export const notebookhandle_set_actor: (a: number, b: number, c: number) => void;
@@ -81,6 +81,7 @@ export const encode_selection_presence: (a: number, b: number, c: number, d: num
 export const encode_focus_presence: (a: number, b: number, c: number, d: number, e: number) => void;
 export const encode_clear_channel_presence: (a: number, b: number, c: number, d: number, e: number) => void;
 export const notebookhandle_generate_runtime_state_sync_reply: (a: number, b: number) => void;
+export const notebookhandle_create_empty_with_actor: (a: number, b: number) => number;
 export const __wbindgen_export: (a: number, b: number) => number;
 export const __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_export3: (a: number) => void;

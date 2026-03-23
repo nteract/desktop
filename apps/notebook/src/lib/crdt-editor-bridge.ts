@@ -190,6 +190,37 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
           for (let i = changes.length - 1; i >= 0; i--) {
             const { fromA, toA, inserted } = changes[i];
             const deleteCount = toA - fromA;
+
+            // Diagnostic: log splices near non-BMP characters (surrogate pairs)
+            const docText = vu.state.doc.toString();
+            const wasmSource = handle.get_cell_source(cellId) ?? "";
+            const hasNonBMP = /[\uD800-\uDBFF]/.test(
+              docText.slice(Math.max(0, fromA - 4), fromA + deleteCount + 4),
+            );
+            if (hasNonBMP || wasmSource.length !== docText.length) {
+              console.warn("[crdt-bridge] SPLICE", {
+                cellId: cellId.slice(0, 8),
+                fromA,
+                toA,
+                deleteCount,
+                inserted: inserted.slice(0, 40),
+                cmDocLen: docText.length,
+                wasmSourceLen: wasmSource.length,
+                nearbyChars: JSON.stringify(
+                  docText.slice(
+                    Math.max(0, fromA - 2),
+                    fromA + deleteCount + 2,
+                  ),
+                ),
+                nearbyCodePoints: [
+                  ...docText.slice(
+                    Math.max(0, fromA - 2),
+                    fromA + deleteCount + 2,
+                  ),
+                ].map((c) => c.codePointAt(0)?.toString(16)),
+              });
+            }
+
             const ok = handle.splice_source(
               cellId,
               fromA,

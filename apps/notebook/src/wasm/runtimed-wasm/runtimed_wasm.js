@@ -482,9 +482,24 @@ export class NotebookHandle {
         }
     }
     /**
-     * Create a handle with an empty Automerge doc (zero operations) for
-     * sync-only bootstrap.  The sync protocol populates the doc from the
-     * daemon — no `GetDocBytes` needed.
+     * Create a bootstrap handle for sync — no notebook ID, just skeleton + encoding + actor.
+     *
+     * This is the preferred constructor for sync-only clients. The daemon
+     * populates the full document via Automerge sync.
+     * @param {string} actor_label
+     * @returns {NotebookHandle}
+     */
+    static create_bootstrap(actor_label) {
+        const ptr0 = passStringToWasm0(actor_label, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.notebookhandle_create_bootstrap(ptr0, len0);
+        return NotebookHandle.__wrap(ret);
+    }
+    /**
+     * Create a handle with the bootstrap skeleton for sync.
+     *
+     * Deprecated — use [`create_bootstrap()`](Self::create_bootstrap) which
+     * requires an actor label.
      * @returns {NotebookHandle}
      */
     static create_empty() {
@@ -492,10 +507,9 @@ export class NotebookHandle {
         return NotebookHandle.__wrap(ret);
     }
     /**
-     * Create an empty sync-only bootstrap handle with a specific actor identity.
+     * Create a bootstrap handle with a specific actor identity.
      *
-     * The `actor_label` is a self-attested identity string (e.g., `"human:<session>"`,
-     * `"agent:claude:<session>"`) that tags all subsequent edits for provenance.
+     * Deprecated — use [`create_bootstrap()`](Self::create_bootstrap).
      * @param {string} actor_label
      * @returns {NotebookHandle}
      */

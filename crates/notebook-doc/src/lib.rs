@@ -653,16 +653,25 @@ impl NotebookDoc {
     /// Create a client-side bootstrap document for sync.
     ///
     /// Every client — WASM frontend, Python bindings, future Swift, etc. —
-    /// should start from the same document skeleton before syncing with the
+    /// must start from the same document skeleton before syncing with the
     /// daemon.  The skeleton mirrors what [`NotebookDoc::new()`] creates:
     ///
     /// ```text
     /// ROOT/
     ///   schema_version: 2
     ///   cells: {}          (empty Map)
-    ///   metadata/
-    ///     runtime: "python"
+    ///   metadata: {}       (empty Map)
     /// ```
+    ///
+    /// Both parameters are required:
+    ///
+    /// - `encoding` — `Utf16CodeUnit` for WASM/CodeMirror (JS strings are
+    ///   UTF-16), `UnicodeCodePoint` for Python bindings. Encoding is a
+    ///   local interpretation — peers with different encodings sync correctly.
+    ///
+    /// - `actor_label` — identity string for edit attribution (e.g.,
+    ///   `"human:kyle:session42"`, `"agent:claude:abc123"`). Set **before**
+    ///   the bootstrap puts so all ops are attributed to the caller.
     ///
     /// **Why this matters**: Automerge's `load_incremental` has a fast-path
     /// for empty documents (`is_empty() == true`) that replaces `*self` with
@@ -672,44 +681,9 @@ impl NotebookDoc {
     ///
     /// Because the daemon creates the same structure, the CRDT merge
     /// converges to identical values with no conflicts.
-    pub fn bootstrap() -> Self {
-        Self::bootstrap_inner(None, None)
-    }
-
-    /// Bootstrap with a specific text encoding.
-    ///
-    /// Use `TextEncoding::Utf16CodeUnit` for the WASM/CodeMirror frontend
-    /// (JavaScript strings are UTF-16). The daemon should use
-    /// [`bootstrap()`](Self::bootstrap) which defaults to `UnicodeCodePoint`
-    /// (correct for Python string indices).
-    ///
-    /// Encoding is a local interpretation — it does not affect the wire
-    /// format, so peers with different encodings sync correctly.
-    pub fn bootstrap_with_encoding(encoding: TextEncoding) -> Self {
-        Self::bootstrap_inner(None, Some(encoding))
-    }
-
-    /// Bootstrap with a specific actor identity.
-    pub fn bootstrap_with_actor(actor_label: &str) -> Self {
-        Self::bootstrap_inner(Some(actor_label), None)
-    }
-
-    /// Bootstrap with both actor identity and text encoding.
-    pub fn bootstrap_with_actor_and_encoding(actor_label: &str, encoding: TextEncoding) -> Self {
-        Self::bootstrap_inner(Some(actor_label), Some(encoding))
-    }
-
-    /// Shared bootstrap constructor.  Seeds the doc with the standard
-    /// notebook skeleton so `is_empty()` is false before the first sync.
-    fn bootstrap_inner(actor_label: Option<&str>, encoding: Option<TextEncoding>) -> Self {
-        let mut doc = match encoding {
-            Some(enc) => AutoCommit::new_with_encoding(enc),
-            None => AutoCommit::new(),
-        };
-
-        if let Some(label) = actor_label {
-            doc.set_actor(ActorId::from(label.as_bytes()));
-        }
+    pub fn bootstrap(encoding: TextEncoding, actor_label: &str) -> Self {
+        let mut doc = AutoCommit::new_with_encoding(encoding);
+        doc.set_actor(ActorId::from(actor_label.as_bytes()));
 
         // Seed the standard notebook skeleton — schema_version, empty cells
         // map, and empty metadata map.  The daemon writes these too, so the
@@ -723,28 +697,6 @@ impl NotebookDoc {
         let _ = doc.put_object(automerge::ROOT, "metadata", ObjType::Map);
 
         Self { doc }
-    }
-
-    // ── Convenience aliases (thin delegates to bootstrap*) ───────────
-
-    /// Alias for [`bootstrap()`](Self::bootstrap).
-    pub fn empty() -> Self {
-        Self::bootstrap()
-    }
-
-    /// Alias for [`bootstrap_with_encoding()`](Self::bootstrap_with_encoding).
-    pub fn empty_with_encoding(encoding: TextEncoding) -> Self {
-        Self::bootstrap_with_encoding(encoding)
-    }
-
-    /// Alias for [`bootstrap_with_actor()`](Self::bootstrap_with_actor).
-    pub fn empty_with_actor(actor_label: &str) -> Self {
-        Self::bootstrap_with_actor(actor_label)
-    }
-
-    /// Alias for [`bootstrap_with_actor_and_encoding()`](Self::bootstrap_with_actor_and_encoding).
-    pub fn empty_with_actor_and_encoding(actor_label: &str, encoding: TextEncoding) -> Self {
-        Self::bootstrap_with_actor_and_encoding(actor_label, encoding)
     }
 
     /// Load a notebook document from saved bytes.
@@ -2458,7 +2410,7 @@ mod tests {
     fn test_empty_doc_has_bootstrap_skeleton() {
         // empty() now delegates to bootstrap(), which seeds the doc with
         // schema_version, an empty cells map, and an empty metadata map.
-        let doc = NotebookDoc::empty();
+        let doc = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "test");
         assert_eq!(doc.notebook_id(), None); // bootstrap doesn't set notebook_id
         assert_eq!(doc.cell_count(), 0);
         assert_eq!(doc.get_cells(), vec![]);
@@ -2470,7 +2422,7 @@ mod tests {
 
     #[test]
     fn test_empty_doc_set_metadata() {
-        let mut doc = NotebookDoc::empty();
+        let mut doc = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "test");
         // set_metadata should work even without a pre-existing metadata map
         let result = doc.set_metadata("runtime", "python");
         assert!(result.is_ok());
@@ -2485,7 +2437,7 @@ mod tests {
         daemon.add_cell(0, "cell-1", "code").unwrap();
         daemon.update_source("cell-1", "print('hello')").unwrap();
 
-        let mut empty = NotebookDoc::empty();
+        let mut empty = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "test");
         let mut daemon_state = sync::State::new();
         let mut empty_state = sync::State::new();
 
@@ -3453,7 +3405,7 @@ mod tests {
             .set_cell_tags("cell1", vec!["synced".to_string()])
             .unwrap();
 
-        let mut client = NotebookDoc::empty();
+        let mut client = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "test");
         let mut daemon_state = sync::State::new();
         let mut client_state = sync::State::new();
 
@@ -3645,7 +3597,7 @@ mod tests {
         daemon.add_cell(2, "c", "code").unwrap();
 
         // Sync to client
-        let mut client = NotebookDoc::empty();
+        let mut client = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "test");
         let mut daemon_state = sync::State::new();
         let mut client_state = sync::State::new();
 
@@ -4024,7 +3976,7 @@ mod tests {
         });
         daemon.set_cell_metadata("cell1", &meta).unwrap();
 
-        let mut client = NotebookDoc::empty();
+        let mut client = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "test");
         let mut daemon_state = sync::State::new();
         let mut client_state = sync::State::new();
 
@@ -4106,7 +4058,7 @@ mod tests {
 
     #[test]
     fn test_empty_with_actor() {
-        let doc = NotebookDoc::empty_with_actor("human:session-1");
+        let doc = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "human:session-1");
         assert_eq!(doc.get_actor_id(), "human:session-1");
     }
 
@@ -4119,7 +4071,7 @@ mod tests {
         runtimed.add_cell(0, "cell-1", "code").unwrap();
 
         // Frontend doc with "human" actor
-        let mut frontend = NotebookDoc::empty_with_actor("human:tab-1");
+        let mut frontend = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "human:tab-1");
 
         let mut runtimed_sync = sync::State::new();
         let mut frontend_state = sync::State::new();
@@ -4197,7 +4149,7 @@ mod tests {
         runtimed.add_cell(0, "cell-1", "code").unwrap();
 
         // human joins and syncs
-        let mut human = NotebookDoc::empty_with_actor("human:tab-1");
+        let mut human = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "human:tab-1");
         let mut rs = sync::State::new();
         let mut hs = sync::State::new();
         for _ in 0..10 {
@@ -4242,7 +4194,7 @@ mod tests {
         assert_eq!(daemon.cell_count(), 0);
 
         // Frontend starts empty
-        let mut frontend = NotebookDoc::empty_with_actor("human:tab-1");
+        let mut frontend = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "human:tab-1");
 
         let mut ds = sync::State::new();
         let mut fs = sync::State::new();

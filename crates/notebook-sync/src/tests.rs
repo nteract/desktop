@@ -620,7 +620,7 @@ mod integration_tests {
         }
 
         let result =
-            crate::connect::connect(daemon_socket_path(), "test-connect".into(), None).await;
+            crate::connect::connect(daemon_socket_path(), "test-connect".into(), "test").await;
 
         assert!(result.is_ok(), "Failed to connect: {:?}", result.err());
 
@@ -639,7 +639,7 @@ mod integration_tests {
         let conn = crate::connect::connect(
             daemon_socket_path(),
             format!("test-cell-{}", uuid::Uuid::new_v4()),
-            None,
+            "test",
         )
         .await
         .expect("connect");
@@ -670,7 +670,7 @@ mod integration_tests {
         }
 
         let notebook_id = format!("test-exec-{}", uuid::Uuid::new_v4());
-        let conn = crate::connect::connect(daemon_socket_path(), notebook_id, None)
+        let conn = crate::connect::connect(daemon_socket_path(), notebook_id, "test")
             .await
             .expect("connect");
 
@@ -780,7 +780,7 @@ mod integration_tests {
         let notebook_id = format!("test-share-{}", uuid::Uuid::new_v4());
 
         // First handle connects and creates a cell
-        let conn1 = crate::connect::connect(daemon_socket_path(), notebook_id.clone(), None)
+        let conn1 = crate::connect::connect(daemon_socket_path(), notebook_id.clone(), "test")
             .await
             .expect("connect 1");
 
@@ -792,7 +792,7 @@ mod integration_tests {
         conn1.handle.confirm_sync().await.expect("confirm_sync 1");
 
         // Second handle connects to the same notebook
-        let conn2 = crate::connect::connect(daemon_socket_path(), notebook_id, None)
+        let conn2 = crate::connect::connect(daemon_socket_path(), notebook_id, "test")
             .await
             .expect("connect 2");
 
@@ -815,7 +815,7 @@ mod integration_tests {
         }
 
         let notebook_id = format!("test-meta-{}", uuid::Uuid::new_v4());
-        let conn = crate::connect::connect(daemon_socket_path(), notebook_id, None)
+        let conn = crate::connect::connect(daemon_socket_path(), notebook_id, "test")
             .await
             .expect("connect");
 
@@ -856,7 +856,7 @@ mod integration_tests {
         }
 
         let notebook_id = format!("test-actor-{}", uuid::Uuid::new_v4());
-        let conn = crate::connect::connect(daemon_socket_path(), notebook_id, None)
+        let conn = crate::connect::connect(daemon_socket_path(), notebook_id, "test")
             .await
             .expect("connect");
 
@@ -893,7 +893,7 @@ mod integration_tests {
         let notebook_id = format!("test-contrib-{}", uuid::Uuid::new_v4());
 
         // Peer 1: "agent:alice"
-        let conn1 = crate::connect::connect(daemon_socket_path(), notebook_id.clone(), None)
+        let conn1 = crate::connect::connect(daemon_socket_path(), notebook_id.clone(), "test")
             .await
             .expect("connect 1");
         conn1
@@ -907,7 +907,7 @@ mod integration_tests {
         conn1.handle.confirm_sync().await.expect("confirm_sync 1");
 
         // Peer 2: "agent:bob"
-        let conn2 = crate::connect::connect(daemon_socket_path(), notebook_id, None)
+        let conn2 = crate::connect::connect(daemon_socket_path(), notebook_id, "test")
             .await
             .expect("connect 2");
         conn2
@@ -970,7 +970,7 @@ mod integration_tests {
 
         let bogus_path = PathBuf::from("/tmp/nonexistent-runtimed-test.sock");
         let result =
-            crate::connect::connect(bogus_path.clone(), "test-notebook".to_string(), None).await;
+            crate::connect::connect(bogus_path.clone(), "test-notebook".to_string(), "test").await;
 
         let err = match result {
             Err(e) => e,

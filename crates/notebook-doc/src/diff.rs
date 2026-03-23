@@ -522,7 +522,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    use crate::NotebookDoc;
+    use crate::{NotebookDoc, TextEncoding};
     use automerge::sync;
 
     /// Helper: create two docs (daemon + client), sync to convergence,
@@ -748,7 +748,7 @@ mod tests {
         let mut daemon = NotebookDoc::new("nb1");
         daemon.add_cell(0, "cell-1", "code").unwrap();
 
-        let mut client = NotebookDoc::empty();
+        let mut client = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "test");
         sync_docs(&mut daemon, &mut client);
 
         let before = client.doc_mut().get_heads();
@@ -772,7 +772,7 @@ mod tests {
         daemon.add_cell(0, "cell-1", "code").unwrap();
         daemon.update_source("cell-1", "print('hello')").unwrap();
 
-        let mut client = NotebookDoc::empty();
+        let mut client = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "test");
         sync_docs(&mut daemon, &mut client);
 
         let before = client.doc_mut().get_heads();
@@ -802,7 +802,7 @@ mod tests {
         let mut daemon = NotebookDoc::new("nb1");
         daemon.add_cell(0, "cell-1", "code").unwrap();
 
-        let mut client = NotebookDoc::empty();
+        let mut client = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "test");
         sync_docs(&mut daemon, &mut client);
 
         let before = client.doc_mut().get_heads();
@@ -1007,7 +1007,7 @@ mod tests {
         let mut daemon = NotebookDoc::new_with_actor("nb1", "runtimed");
         daemon.add_cell(0, "cell-1", "code").unwrap();
 
-        let mut client = NotebookDoc::empty_with_actor("human:test");
+        let mut client = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "human:test");
         sync_docs(&mut daemon, &mut client);
 
         let before = client.doc_mut().get_heads();

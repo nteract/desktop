@@ -376,7 +376,7 @@ async fn test_notebook_sync_via_unified_socket() {
     assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
 
     // Connect first client — should get empty notebook
-    let client1 = connect::connect(socket_path.clone(), "test-notebook".to_string(), None)
+    let client1 = connect::connect(socket_path.clone(), "test-notebook".to_string(), "test")
         .await
         .expect("client1 should connect")
         .handle;
@@ -389,7 +389,7 @@ async fn test_notebook_sync_via_unified_socket() {
     client1.update_source("cell-1", "print('hello')").unwrap();
 
     // Connect second client to the same notebook — should see the cell
-    let client2 = connect::connect(socket_path.clone(), "test-notebook".to_string(), None)
+    let client2 = connect::connect(socket_path.clone(), "test-notebook".to_string(), "test")
         .await
         .expect("client2 should connect")
         .handle;
@@ -401,7 +401,7 @@ async fn test_notebook_sync_via_unified_socket() {
     assert_eq!(cells[0].cell_type, "code");
 
     // Connect to a different notebook — should be independent
-    let client3 = connect::connect(socket_path.clone(), "other-notebook".to_string(), None)
+    let client3 = connect::connect(socket_path.clone(), "other-notebook".to_string(), "test")
         .await
         .expect("client3 should connect")
         .handle;
@@ -429,11 +429,11 @@ async fn test_notebook_sync_cross_window_propagation() {
     assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
 
     // Both clients connect to the same notebook
-    let client1 = connect::connect(socket_path.clone(), "shared-nb".to_string(), None)
+    let client1 = connect::connect(socket_path.clone(), "shared-nb".to_string(), "test")
         .await
         .unwrap()
         .handle;
-    let client2 = connect::connect(socket_path.clone(), "shared-nb".to_string(), None)
+    let client2 = connect::connect(socket_path.clone(), "shared-nb".to_string(), "test")
         .await
         .unwrap()
         .handle;
@@ -491,11 +491,11 @@ async fn test_notebook_room_eviction_and_persistence() {
 
     // Phase 1: Two clients connect, add cells, then both disconnect
     {
-        let client1 = connect::connect(socket_path.clone(), "evict-test".to_string(), None)
+        let client1 = connect::connect(socket_path.clone(), "evict-test".to_string(), "test")
             .await
             .unwrap()
             .handle;
-        let _client2 = connect::connect(socket_path.clone(), "evict-test".to_string(), None)
+        let _client2 = connect::connect(socket_path.clone(), "evict-test".to_string(), "test")
             .await
             .unwrap()
             .handle;
@@ -515,7 +515,7 @@ async fn test_notebook_room_eviction_and_persistence() {
 
     // Phase 2: Reconnect — the room should be fresh (not loaded from persisted state)
     // This matches the design: .ipynb is source of truth, Automerge is just sync layer
-    let client3 = connect::connect(socket_path.clone(), "evict-test".to_string(), None)
+    let client3 = connect::connect(socket_path.clone(), "evict-test".to_string(), "test")
         .await
         .expect("should reconnect after room eviction")
         .handle;
@@ -548,7 +548,7 @@ async fn test_notebook_cell_delete_propagation() {
     assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
 
     // Client1 creates three cells
-    let client1 = connect::connect(socket_path.clone(), "delete-test".to_string(), None)
+    let client1 = connect::connect(socket_path.clone(), "delete-test".to_string(), "test")
         .await
         .unwrap()
         .handle;
@@ -565,7 +565,7 @@ async fn test_notebook_cell_delete_propagation() {
     client1.update_source("keep-2", "c = 3").unwrap();
 
     // Client2 joins and verifies all three cells
-    let client2 = connect::connect(socket_path.clone(), "delete-test".to_string(), None)
+    let client2 = connect::connect(socket_path.clone(), "delete-test".to_string(), "test")
         .await
         .unwrap()
         .handle;
@@ -625,9 +625,9 @@ async fn test_multiple_notebooks_concurrent_isolation() {
 
     // Create three notebooks concurrently
     let (nb_a, nb_b, nb_c) = tokio::join!(
-        connect::connect(socket_path.clone(), "nb-alpha".to_string(), None),
-        connect::connect(socket_path.clone(), "nb-beta".to_string(), None),
-        connect::connect(socket_path.clone(), "nb-gamma".to_string(), None),
+        connect::connect(socket_path.clone(), "nb-alpha".to_string(), "test"),
+        connect::connect(socket_path.clone(), "nb-beta".to_string(), "test"),
+        connect::connect(socket_path.clone(), "nb-gamma".to_string(), "test"),
     );
     let nb_a = nb_a.unwrap().handle;
     let nb_b = nb_b.unwrap().handle;
@@ -652,9 +652,9 @@ async fn test_multiple_notebooks_concurrent_isolation() {
 
     // Verify each notebook is isolated by connecting fresh clients
     let (fresh_a, fresh_b, fresh_c) = tokio::join!(
-        connect::connect(socket_path.clone(), "nb-alpha".to_string(), None),
-        connect::connect(socket_path.clone(), "nb-beta".to_string(), None),
-        connect::connect(socket_path.clone(), "nb-gamma".to_string(), None),
+        connect::connect(socket_path.clone(), "nb-alpha".to_string(), "test"),
+        connect::connect(socket_path.clone(), "nb-beta".to_string(), "test"),
+        connect::connect(socket_path.clone(), "nb-gamma".to_string(), "test"),
     );
 
     let cells_a = fresh_a.unwrap().handle.get_cells();
@@ -697,7 +697,7 @@ async fn test_notebook_append_and_clear_outputs() {
     assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
 
     // Client1 creates a cell and appends outputs incrementally
-    let client1 = connect::connect(socket_path.clone(), "output-test".to_string(), None)
+    let client1 = connect::connect(socket_path.clone(), "output-test".to_string(), "test")
         .await
         .unwrap()
         .handle;
@@ -724,7 +724,7 @@ async fn test_notebook_append_and_clear_outputs() {
         .unwrap();
 
     // Client2 connects and should see all 3 outputs
-    let client2 = connect::connect(socket_path.clone(), "output-test".to_string(), None)
+    let client2 = connect::connect(socket_path.clone(), "output-test".to_string(), "test")
         .await
         .unwrap()
         .handle;
@@ -773,7 +773,7 @@ async fn test_notebook_append_and_clear_outputs() {
         .unwrap();
 
     // Verify via a fresh client
-    let client3 = connect::connect(socket_path.clone(), "output-test".to_string(), None)
+    let client3 = connect::connect(socket_path.clone(), "output-test".to_string(), "test")
         .await
         .unwrap()
         .handle;
@@ -846,7 +846,7 @@ async fn test_streaming_load_via_open_notebook() {
     );
 
     // Open via OpenNotebook handshake — triggers streaming load
-    let result = connect::connect_open(socket_path.clone(), nb_path.clone(), None)
+    let result = connect::connect_open(socket_path.clone(), nb_path.clone(), "test")
         .await
         .expect("should connect and open notebook");
     let handle = result.handle;
@@ -945,7 +945,7 @@ async fn test_streaming_load_second_client_joins() {
     );
 
     // First client opens — triggers streaming load
-    let result1 = connect::connect_open(socket_path.clone(), nb_path.clone(), None)
+    let result1 = connect::connect_open(socket_path.clone(), nb_path.clone(), "test")
         .await
         .expect("client1 should connect");
     let handle1 = result1.handle;
@@ -962,7 +962,7 @@ async fn test_streaming_load_second_client_joins() {
     );
 
     // Second client opens the same file — should join the existing room
-    let result2 = connect::connect_open(socket_path.clone(), nb_path.clone(), None)
+    let result2 = connect::connect_open(socket_path.clone(), nb_path.clone(), "test")
         .await
         .expect("client2 should connect");
     let handle2 = result2.handle;
@@ -1083,7 +1083,7 @@ async fn test_pipe_mode_forwards_sync_frames() {
             .unwrap();
 
     // Second client (full peer) adds a cell and updates source
-    let client2 = connect::connect(socket_path.clone(), "pipe-sync-test".to_string(), None)
+    let client2 = connect::connect(socket_path.clone(), "pipe-sync-test".to_string(), "test")
         .await
         .unwrap()
         .handle;
@@ -1149,10 +1149,14 @@ async fn test_pipe_mode_only_pipes_allowed_frame_types() {
     // Note: this only produces AutomergeSync frames — actual Broadcast frames
     // require a kernel launch, which is covered by E2E tests. This test
     // verifies the type-byte filter, not broadcast-specific forwarding.
-    let client2 = connect::connect(socket_path.clone(), "pipe-broadcast-test".to_string(), None)
-        .await
-        .unwrap()
-        .handle;
+    let client2 = connect::connect(
+        socket_path.clone(),
+        "pipe-broadcast-test".to_string(),
+        "test",
+    )
+    .await
+    .unwrap()
+    .handle;
     client2.add_cell_after("bc-cell", "code", None).unwrap();
     client2.update_source("bc-cell", "x = 1").unwrap();
 
@@ -1288,7 +1292,7 @@ async fn test_pipe_mode_preserves_frame_order() {
             .unwrap();
 
     // Second client rapidly adds multiple cells
-    let client2 = connect::connect(socket_path.clone(), "pipe-order-test".to_string(), None)
+    let client2 = connect::connect(socket_path.clone(), "pipe-order-test".to_string(), "test")
         .await
         .unwrap()
         .handle;
@@ -1355,7 +1359,7 @@ async fn test_pipe_mode_preserves_frame_order() {
     // Connect a third full-peer client and verify convergence — this proves
     // the daemon processed all mutations and that the sync traffic the pipe
     // received (in channel order) represents the correct state transitions.
-    let client3 = connect::connect(socket_path.clone(), "pipe-order-test".to_string(), None)
+    let client3 = connect::connect(socket_path.clone(), "pipe-order-test".to_string(), "test")
         .await
         .unwrap()
         .handle;

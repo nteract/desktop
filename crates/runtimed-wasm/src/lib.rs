@@ -217,12 +217,13 @@ impl NotebookHandle {
         }
     }
 
-    /// Create a handle with an empty Automerge doc (zero operations) for
-    /// sync-only bootstrap.  The sync protocol populates the doc from the
-    /// daemon — no `GetDocBytes` needed.
-    pub fn create_empty() -> NotebookHandle {
+    /// Create a bootstrap handle for sync — no notebook ID, just skeleton + encoding + actor.
+    ///
+    /// This is the preferred constructor for sync-only clients. The daemon
+    /// populates the full document via Automerge sync.
+    pub fn create_bootstrap(actor_label: &str) -> NotebookHandle {
         NotebookHandle {
-            doc: NotebookDoc::empty_with_encoding(notebook_doc::TextEncoding::Utf16CodeUnit),
+            doc: NotebookDoc::bootstrap(notebook_doc::TextEncoding::Utf16CodeUnit, actor_label),
             sync_state: sync::State::new(),
             state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
@@ -230,21 +231,19 @@ impl NotebookHandle {
         }
     }
 
-    /// Create an empty sync-only bootstrap handle with a specific actor identity.
+    /// Create a handle with the bootstrap skeleton for sync.
     ///
-    /// The `actor_label` is a self-attested identity string (e.g., `"human:<session>"`,
-    /// `"agent:claude:<session>"`) that tags all subsequent edits for provenance.
+    /// Deprecated — use [`create_bootstrap()`](Self::create_bootstrap) which
+    /// requires an actor label.
+    pub fn create_empty() -> NotebookHandle {
+        Self::create_bootstrap("anonymous")
+    }
+
+    /// Create a bootstrap handle with a specific actor identity.
+    ///
+    /// Deprecated — use [`create_bootstrap()`](Self::create_bootstrap).
     pub fn create_empty_with_actor(actor_label: &str) -> NotebookHandle {
-        NotebookHandle {
-            doc: NotebookDoc::empty_with_actor_and_encoding(
-                actor_label,
-                notebook_doc::TextEncoding::Utf16CodeUnit,
-            ),
-            sync_state: sync::State::new(),
-            state_doc: RuntimeStateDoc::new_empty(),
-            state_sync_state: sync::State::new(),
-            metadata_fingerprint_cache: None,
-        }
+        Self::create_bootstrap(actor_label)
     }
 
     /// Load a notebook document from saved bytes (e.g., from get_automerge_doc_bytes).
