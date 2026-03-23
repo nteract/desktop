@@ -4,6 +4,7 @@
 //! workspace-specific paths, enabling per-worktree isolation during development.
 
 use sha2::{Digest, Sha256};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -229,6 +230,24 @@ fn open_notebook_dev(path: Option<&Path>, extra_args: &[&str]) -> Result<(), Str
     Ok(())
 }
 
+fn macos_open_args(path: Option<&Path>, extra_args: &[&str]) -> Vec<OsString> {
+    let mut args = Vec::new();
+
+    // Pass the notebook path as a document argument (before --args) so macOS
+    // delivers it via Apple Events (kAEOpenDocuments) whether the app is
+    // freshly launched or already running.
+    if let Some(p) = path {
+        args.push(p.as_os_str().to_os_string());
+    }
+
+    if !extra_args.is_empty() {
+        args.push(OsString::from("--args"));
+        args.extend(extra_args.iter().map(OsString::from));
+    }
+
+    args
+}
+
 fn open_notebook_installed(path: Option<&Path>, extra_args: &[&str]) -> Result<(), String> {
     let mut last_error = None;
 
@@ -237,21 +256,7 @@ fn open_notebook_installed(path: Option<&Path>, extra_args: &[&str]) -> Result<(
         let spawn_result = {
             let mut cmd = Command::new("open");
             cmd.arg("-a").arg(app_name);
-            // Pass the notebook path as a document argument (before --args)
-            // so macOS delivers it via Apple Events (kAEOpenDocuments) whether
-            // the app is freshly launched or already running. Putting the path
-            // after --args only works on fresh launch; for a running app macOS
-            // ignores --args and just activates the existing instance without
-            // opening the file.
-            if let Some(p) = path {
-                cmd.arg(p);
-            }
-            if !extra_args.is_empty() {
-                cmd.arg("--args");
-                for arg in extra_args {
-                    cmd.arg(arg);
-                }
-            }
+            cmd.args(macos_open_args(path, extra_args));
             cmd.spawn()
         };
 
@@ -708,6 +713,44 @@ mod tests {
         assert_eq!(
             daemon_launchd_label_for(BuildChannel::Nightly),
             "io.nteract.runtimed.nightly"
+        );
+    }
+
+    #[test]
+    fn test_macos_open_args_path_and_runtime() {
+        let path = Path::new("/tmp/example.ipynb");
+        let args = macos_open_args(Some(path), &["--runtime", "python"]);
+
+        assert_eq!(
+            args,
+            vec![
+                OsString::from("/tmp/example.ipynb"),
+                OsString::from("--args"),
+                OsString::from("--runtime"),
+                OsString::from("python"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_macos_open_args_path_only() {
+        let path = Path::new("/tmp/example.ipynb");
+        let args = macos_open_args(Some(path), &[]);
+
+        assert_eq!(args, vec![OsString::from("/tmp/example.ipynb")]);
+    }
+
+    #[test]
+    fn test_macos_open_args_runtime_only() {
+        let args = macos_open_args(None, &["--runtime", "deno"]);
+
+        assert_eq!(
+            args,
+            vec![
+                OsString::from("--args"),
+                OsString::from("--runtime"),
+                OsString::from("deno"),
+            ]
         );
     }
 }
