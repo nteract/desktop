@@ -259,6 +259,15 @@ async def run_single_gremlin(
 
     print(f"{prefix} Connecting to notebook {notebook_id[:8]}...")
     notebook = await client.join_notebook(notebook_id)
+
+    # Wait for initial sync — the local doc may be empty until the daemon
+    # sends the first sync message with the document structure.  Without
+    # this, fast gremlins hit "cells map not found" because they try to
+    # operate before the cells map exists in the local replica.
+    sync_deadline = time.monotonic() + 10
+    while not notebook.cells.ids and time.monotonic() < sync_deadline:
+        await asyncio.sleep(0.1)
+
     print(f"{prefix} Connected! Cells: {len(notebook.cells.ids)}")
 
     errors = 0

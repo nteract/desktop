@@ -129,16 +129,23 @@ export class NotebookHandle {
      */
     contributing_actors(): string[];
     /**
-     * Create a handle with an empty Automerge doc (zero operations) for
-     * sync-only bootstrap.  The sync protocol populates the doc from the
-     * daemon — no `GetDocBytes` needed.
+     * Create a bootstrap handle for sync — no notebook ID, just skeleton + encoding + actor.
+     *
+     * This is the preferred constructor for sync-only clients. The daemon
+     * populates the full document via Automerge sync.
+     */
+    static create_bootstrap(actor_label: string): NotebookHandle;
+    /**
+     * Create a handle with the bootstrap skeleton for sync.
+     *
+     * Deprecated — use [`create_bootstrap()`](Self::create_bootstrap) which
+     * requires an actor label.
      */
     static create_empty(): NotebookHandle;
     /**
-     * Create an empty sync-only bootstrap handle with a specific actor identity.
+     * Create a bootstrap handle with a specific actor identity.
      *
-     * The `actor_label` is a self-attested identity string (e.g., `"human:<session>"`,
-     * `"agent:claude:<session>"`) that tags all subsequent edits for provenance.
+     * Deprecated — use [`create_bootstrap()`](Self::create_bootstrap).
      */
     static create_empty_with_actor(actor_label: string): NotebookHandle;
     /**
@@ -495,8 +502,8 @@ export interface InitOutput {
     readonly jscell_metadata_json: (a: number, b: number) => void;
     readonly jscell_resolved_assets_json: (a: number, b: number) => void;
     readonly notebookhandle_new: (a: number, b: number) => number;
+    readonly notebookhandle_create_bootstrap: (a: number, b: number) => number;
     readonly notebookhandle_create_empty: () => number;
-    readonly notebookhandle_create_empty_with_actor: (a: number, b: number) => number;
     readonly notebookhandle_load: (a: number, b: number, c: number) => void;
     readonly notebookhandle_get_actor_id: (a: number, b: number) => void;
     readonly notebookhandle_set_actor: (a: number, b: number, c: number) => void;
@@ -563,6 +570,7 @@ export interface InitOutput {
     readonly encode_focus_presence: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly encode_clear_channel_presence: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly notebookhandle_generate_runtime_state_sync_reply: (a: number, b: number) => void;
+    readonly notebookhandle_create_empty_with_actor: (a: number, b: number) => number;
     readonly __wbindgen_export: (a: number, b: number) => number;
     readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export3: (a: number) => void;
