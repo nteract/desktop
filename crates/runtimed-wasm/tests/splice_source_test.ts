@@ -688,13 +688,47 @@ Deno.test(
     // Frontend deletes " world"
     frontend.splice_source("c1", 5, 6, "");
 
-    const events = syncViaFrame(frontend, daemon);
-    assertExists(events);
+    // The sync protocol may need multiple rounds to deliver changes
+    // (first round can be a heads-only exchange on some platforms).
+    // Collect events across up to 3 rounds of frame-based sync.
+    // deno-lint-ignore no-explicit-any
+    const allEvents: any[] = [];
+    for (let round = 0; round < 3; round++) {
+      const fwdMsg = frontend.flush_local_changes();
+      if (fwdMsg) {
+        const frame = new Uint8Array(1 + fwdMsg.length);
+        frame[0] = 0x00;
+        frame.set(fwdMsg, 1);
+        const events = daemon.receive_frame(frame);
+        if (events) allEvents.push(...events);
+      }
+      // Send daemon's reply back to frontend so protocol advances
+      const replyMsg = daemon.flush_local_changes();
+      if (replyMsg) {
+        const replyFrame = new Uint8Array(1 + replyMsg.length);
+        replyFrame[0] = 0x00;
+        replyFrame.set(replyMsg, 1);
+        frontend.receive_frame(replyFrame);
+      }
+      if (
+        allEvents.some(
+          // deno-lint-ignore no-explicit-any
+          (e: any) => e.type === "sync_applied" && e.changed,
+        )
+      )
+        break;
+    }
 
-    const syncEvent = events.find(
+    const syncEvent = allEvents.find(
       // deno-lint-ignore no-explicit-any
       (e: any) => e.type === "sync_applied" && e.changed,
     );
+    if (!syncEvent) {
+      console.error(
+        "No sync_applied event with changed:true. All events:",
+        JSON.stringify(allEvents, null, 2),
+      );
+    }
     assertExists(syncEvent);
 
     // deno-lint-ignore no-explicit-any
