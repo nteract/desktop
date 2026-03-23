@@ -63,6 +63,12 @@ export function useAutomergeNotebook() {
   const transportRef = useRef<TauriTransport | null>(null);
   const rxSubRef = useRef<RxSubscription | null>(null);
 
+  // Guard: don't emit text_attributions until after the first successful
+  // materialization. During initial sync, CodeMirror hasn't rendered cells
+  // yet — attributions referencing positions in the source will crash with
+  // "splice_source failed: index N is out of bounds".
+  const materializedOnceRef = useRef(false);
+
   // Refresh blob port on mount.
   useEffect(() => {
     refreshBlobPort();
@@ -164,6 +170,8 @@ export function useAutomergeNotebook() {
 
     // ── Subscribe to engine events ───────────────────────────────
 
+    materializedOnceRef.current = false;
+
     engine.on("initial_sync_complete", () => {
       setIsLoading(false);
       // Full materialization on initial sync.
@@ -171,6 +179,7 @@ export function useAutomergeNotebook() {
       if (h) {
         materializeCells(h)
           .then(() => {
+            materializedOnceRef.current = true;
             notifyMetadataChanged();
           })
           .catch((err: unknown) => {
@@ -198,8 +207,10 @@ export function useAutomergeNotebook() {
         const h = handleRef.current;
         if (!h) return;
 
-        // Emit text attributions for CodeMirror remote cursors.
-        if (batch.attributions.length > 0) {
+        // Emit text attributions for CodeMirror remote cursors — but only
+        // after the first materialization. During initial sync, CodeMirror
+        // hasn't rendered the cells yet, so splice positions are invalid.
+        if (batch.attributions.length > 0 && materializedOnceRef.current) {
           emitBroadcast({
             type: "text_attribution",
             attributions: batch.attributions,
