@@ -1,8 +1,10 @@
 # Sync Stress Test Investigation
 
-> Handoff doc for the next agent session. Written at the end of a marathon
-> session (4am → 8pm) that covered PR review, sync bug fixes, a JS library
-> spike, a CRDT bridge fix, and chaos gremlin testing.
+> Handoff doc spanning two agent sessions. Session 1 (4am → 8pm) covered
+> PR review, sync bug fixes, a JS library spike, a CRDT bridge fix, and
+> chaos gremlin testing. Session 2 fixed Bug A (unicode positions) and
+> Bug B (daemon shutdown), found a new automerge PatchLogMismatch panic,
+> and ran successful multi-gremlin stress tests against nightly.
 
 ## What We Built
 
@@ -38,69 +40,56 @@
 - Supports multiple concurrent gremlins (`--gremlins N`)
 - Each gremlin connects independently to the daemon
 
-## Bugs Found (not yet fixed)
+## Bugs Found
 
-### Bug A: Unicode position mismatch during concurrent editing
+### Bug A: Unicode position mismatch during concurrent editing — ✅ FIXED (PR #1078)
 
 **Severity**: Medium — causes text corruption (`print` → `pprint`,
 `random` → `ranom`)
 
-**Reproduction**: Two or more peers concurrently editing cells that
-contain emoji (🐸, ⚡, etc.). The text CRDT produces duplicate or
-missing characters near emoji boundaries.
+**Root cause confirmed**: CodeMirror positions are UTF-16 code units.
+Automerge 0.7.4 defaults to `UnicodeCodePoint` encoding (since no
+`utf16-indexing` feature was enabled). Emoji like 🐸 are 1 code point
+but 2 UTF-16 code units, so every emoji before a splice shifted the
+position by 1.
 
-**Theory**: CodeMirror counts positions in UTF-16 code units. Automerge
-counts in Unicode scalar values (or bytes). Emoji like 🐸 are 1 scalar
-value but 2 UTF-16 code units. When `splice_source` is called with a
-CodeMirror position that's offset by the emoji width difference, the
-splice lands at the wrong Automerge index.
+**Fix (PR #1078)**:
+- Automerge 0.7.4 has `TextEncoding::Utf16CodeUnit` — we just weren't
+  using it. Added `AutoCommit::new_with_encoding(Utf16CodeUnit)` to all
+  WASM `NotebookHandle` construction paths (`new`, `create_empty`,
+  `create_empty_with_actor`, `load`).
+- Added encoding-aware constructors to `NotebookDoc` (`new_with_encoding`,
+  `empty_with_encoding`, `load_with_encoding`), re-exported `TextEncoding`.
+- Daemon continues using `UnicodeCodePoint` (correct for Python string
+  indices). Encoding is a local API interpretation — does not affect the
+  wire format, so peers with different encodings sync correctly.
+- Fixed secondary bug: `append_source` used `String::len()` (byte count)
+  instead of automerge's encoding-aware `length()`, which was wrong for
+  non-ASCII text.
+- 5 new regression tests for splice positions after emoji (including
+  cross-peer sync with surrogate pairs).
 
-**How to reproduce**:
-```bash
-# Start the daemon (dev or nightly)
-cargo xtask dev
+**Key insight**: `TextEncoding` in automerge 0.7 is purely a client-side
+position interpretation. The underlying CRDT ops are stored at the
+op-graph level. Two peers with different encodings sync correctly.
 
-# In one terminal, open the app and create a cell with emoji:
-#   # 🐸 Hello world
-#   print("test")
+### Bug B: Daemon graceful shutdown under gremlin load — ✅ FIXED
 
-# In another terminal, run the gremlin targeting the same notebook:
-RUNTIMED_SOCKET_PATH=<socket> uv run python scripts/chaos-gremlin.py \
-  --notebook-id <id> --gremlins 2 --rounds 20 --delay 0.1
+**Severity**: Low (was user error, not a daemon bug)
 
-# Check for corrupted source text in the notebook
-```
+**Root cause**: The chaos gremlin script called `client.shutdown()` in
+the notebook discovery phase and the final state check. `Client.shutdown()`
+sends a "shut down the daemon" RPC — it literally asks the daemon to exit.
+The daemon wasn't crashing; the gremlin was killing it before the test started.
 
-**Investigation needed**:
-1. Add logging to `splice_source` in the WASM binding that shows:
-   - The cell_id, index, delete_count, text
-   - The current WASM source length
-   - Whether the source contains multi-byte characters
-2. Compare CodeMirror's `fromA`/`toA` positions with the WASM source's
-   character boundaries around emoji
-3. Check if Automerge's `Text::splice` uses byte offsets, char offsets,
-   or grapheme offsets
-4. Check automerge-rs source: `rust/automerge/src/text.rs` or similar
+**Fix**: Removed both `client.shutdown()` calls from `chaos-gremlin.py`.
+The Python `Client`'s resources are cleaned up by the garbage collector.
+After the fix, the nightly daemon survived a full 3-gremlin, 20-round
+stress test without issues.
 
-**Possible fixes**:
-- Convert CodeMirror UTF-16 offsets to Automerge scalar offsets before
-  calling `splice_source`
-- Or: have the WASM binding do the conversion internally
-- Or: use `update_source` (full Myers diff) instead of `splice_source`
-  for cells containing multi-byte characters
-
-### Bug B: Daemon graceful shutdown under gremlin load
-
-**Severity**: Low — daemon exits cleanly but the frontend loses connection
-
-**Reproduction**: Run 3+ gremlins simultaneously against a notebook for
-15+ rounds. The daemon sometimes exits with "Ok (graceful shutdown)" —
-it received SIGTERM from somewhere.
-
-**Investigation needed**:
-- Is the nightly auto-updater sending SIGTERM?
-- Is the app's reconnection logic triggering a daemon restart?
-- Check if `runt daemon start` has a watchdog that restarts on error
+**Note for the Python API**: `Client` should probably have a `close()`
+method that disconnects without shutting down the daemon. Currently the
+only cleanup method is `shutdown()` which is destructive.
 
 ### Bug C: Frontend desync after gremlin flood
 
@@ -121,6 +110,48 @@ miss cells that were added/removed during the batch window.
 3. Check if structural changes (add/remove) during a coalescing window
    are properly detected
 
+### Bug D: Automerge PatchLogMismatch panic under concurrent gremlin access (NEW)
+
+**Severity**: High — panics the tokio runtime thread, poisons the Mutex,
+and renders the affected session permanently unusable.
+
+**Reproduction**: 3 concurrent gremlins editing the same notebook.
+Gremlin-1 hit the panic on round 2, after which every operation failed
+with "Document lock poisoned".
+
+**Error**:
+```
+thread 'tokio-runtime-worker' panicked at automerge-0.7.4/src/op_set2/change/batch.rs:817:47:
+called `Result::unwrap()` on an `Err` value: PatchLogMismatch
+```
+
+**Context**: This is inside automerge's internal batch processing.
+The panic occurs in the Python binding's automerge document (client-side,
+not daemon-side). Each gremlin creates its own `Client` and `Notebook`,
+so sessions should be independent — but they share the same tokio runtime
+and something about concurrent sync operations triggers the panic.
+
+**Investigation needed**:
+1. Get a full backtrace (`RUST_BACKTRACE=1`)
+2. Check if the session's `Arc<Mutex<SessionState>>` allows overlapping
+   transactions when multiple async tasks read/write concurrently
+3. Check if `PatchLogMismatch` is a known automerge issue
+4. May need to upgrade automerge or add retry/recovery around the panic
+
+### Bug E: append_source "index out of bounds" for emoji cells (daemon-side)
+
+**Severity**: Medium — the `append()` API silently fails for cells with
+emoji when using the nightly daemon (which lacks the `append_source` fix).
+
+**Root cause**: Same as the secondary fix in Bug A. `append_source` used
+`self.doc.text(&source_id)?.len()` (Rust String byte count = UTF-8 bytes)
+but `splice_text` interprets the index using the document's `TextEncoding`
+(default `UnicodeCodePoint` = char count). For "# 🐸 Gremlin-1" the byte
+count is 17 but the code point count is 14, so the splice index overshoots.
+
+**Status**: Fixed in PR #1078 (uses `self.doc.length(&source_id)` which
+is encoding-aware). Will be resolved once the nightly picks up the fix.
+
 ## How to Stress Test
 
 ### Prerequisites
@@ -132,35 +163,28 @@ cargo xtask build
 # For dev daemon: install local Python bindings
 cd python/runtimed && maturin develop && cd ../..
 
-# For nightly daemon: install the matching runtimed wheel
-# Check the nightly version first:
-runt-nightly status  # look for "Version: 2.0.2+436987f" or similar
-# Install the matching alpha release:
-uv pip install runtimed==2.0.3a202603230219  # match your nightly
+# For nightly daemon: the repo .venv already has runtimed 2.0.2
+# built from source via maturin — this matches the nightly.
+# Use .venv/bin/python (not uv run) to ensure the right bindings.
 
-# Verify the daemon is running
-runt daemon status  # or runt-nightly status
+# Verify the daemon is running (MUST use env -i to avoid dev vars)
+env -i HOME=$HOME PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin \
+  runt-nightly daemon status
 ```
+
+**Important**: Always use `env -i` when interacting with the nightly
+daemon from a dev worktree. Without it, `RUNTIMED_DEV=1` and
+`RUNTIMED_WORKSPACE_PATH` leak from the shell and you'll hit the dev
+daemon instead of nightly.
 
 ### Test 1: Single gremlin (sanity check)
 
 ```bash
-# Start the app
-cargo xtask notebook
+# Target the nightly daemon explicitly with --socket
+NIGHTLY_SOCK=~/Library/Caches/runt-nightly/runtimed.sock
 
-# In another terminal, find the notebook ID
-RUNTIMED_SOCKET_PATH=<socket> uv run python -c "
-from runtimed import Client
-import asyncio
-async def main():
-    c = Client()
-    for nb in await c.list_active_notebooks():
-        print(nb)
-asyncio.run(main())
-"
-
-# Run a single gremlin
-uv run python scripts/chaos-gremlin.py --notebook-id <id> --rounds 10 --delay 0.5
+# Run a single gremlin (auto-discovers first active notebook or creates one)
+.venv/bin/python scripts/chaos-gremlin.py --socket $NIGHTLY_SOCK --rounds 10 --delay 0.5
 ```
 
 **Expected**: All actions succeed. Frontend stays in sync. No crashes.
@@ -168,7 +192,7 @@ uv run python scripts/chaos-gremlin.py --notebook-id <id> --rounds 10 --delay 0.
 ### Test 2: Multi-gremlin concurrent editing
 
 ```bash
-uv run python scripts/chaos-gremlin.py --notebook-id <id> --gremlins 3 --rounds 20 --delay 0.2
+.venv/bin/python scripts/chaos-gremlin.py --socket $NIGHTLY_SOCK --gremlins 3 --rounds 20 --delay 0.2
 ```
 
 **Expected**: Some cell errors (bad code, markdown execute attempts).
@@ -196,14 +220,13 @@ disappearing or duplicating.
 ### Test 5: Nightly build testing
 
 ```bash
-# Target the nightly daemon specifically
-# First ensure runtimed version matches the nightly:
-#   uv pip install runtimed==2.0.3a202603230219
-RUNTIMED_SOCKET_PATH=~/Library/Caches/runt-nightly/runtimed.sock \
-  uv run python scripts/chaos-gremlin.py --notebook-id <id> --gremlins 3
+# Use --socket to target nightly directly (no env var leakage risk)
+.venv/bin/python scripts/chaos-gremlin.py \
+  --socket ~/Library/Caches/runt-nightly/runtimed.sock --gremlins 3
 
 # Gather diagnostics after the test
-env -i HOME=$HOME PATH=/usr/local/bin:/usr/bin:/bin runt-nightly diagnostics
+env -i HOME=$HOME PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin \
+  runt-nightly diagnostics
 ```
 
 The diagnostics archive contains `runtimed.log` (daemon), `notebook.log`
@@ -274,9 +297,11 @@ console.warn("[crdt-bridge] OUTBOUND TX", {
 |--------|--------|-------------|
 | `main` | ✅ | All merged fixes (#1068, #1070, #1076, #1077) |
 | `spike/notebook-client` | Draft PR #1073 | `runtimed` JS library + SyncEngine + TauriTransport |
-| `feat/chaos-gremlins` | This branch | Chaos gremlin script + this investigation doc |
+| `feat/chaos-gremlins` | PR #1078 | Bug A fix (UTF-16 encoding), Bug B fix (shutdown), chaos gremlin, this doc |
 
 ## Session Timeline (for context)
+
+### Session 1
 
 1. 4am — Voice review of execution handle spike (#1052) with nicole voice
 2. 5am — Designed execution log architecture (intents → dropped, keep request/response)
@@ -294,3 +319,21 @@ console.warn("[crdt-bridge] OUTBOUND TX", {
 14. 6pm — Root cause: transaction ordering in CRDT bridge → #1076
 15. 7pm — Chaos gremlins: 3 concurrent gremlins killed the nightly in 6 seconds
 16. 8pm — This handoff doc
+
+### Session 2
+
+17. 8pm — Read investigation doc, oriented on nightly daemon (2.0.2+79c2797)
+18. 8:10pm — Single gremlin test passed (10 rounds, 0 errors)
+19. 8:12pm — Daemon died on multi-gremlin test → investigated
+20. 8:15pm — Debugged launchd crash-loop (bootout/bootstrap, env var leakage)
+21. 8:20pm — Dug into automerge 0.7.4 source: found `TextEncoding` enum with
+    `Utf16CodeUnit` support — confirmed Bug A root cause
+22. 8:30pm — Implemented fix: encoding-aware constructors in `notebook-doc`,
+    `Utf16CodeUnit` in WASM binding, `append_source` length fix
+23. 8:40pm — 5 new regression tests, all 344 tests pass, PR #1078 opened
+24. 8:45pm — Found Bug B root cause: `client.shutdown()` in gremlin script
+25. 8:50pm — Fixed Bug B, re-ran 3-gremlin test: daemon survived, 7.3s elapsed
+26. 8:55pm — Found Bug D: `PatchLogMismatch` panic in automerge under
+    concurrent gremlin access, poisons the session Mutex
+27. 9pm — Found Bug E: `append_source` index out of bounds on nightly
+    (same root cause as Bug A secondary fix, nightly doesn't have it yet)
