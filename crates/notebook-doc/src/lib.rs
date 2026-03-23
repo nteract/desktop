@@ -711,13 +711,16 @@ impl NotebookDoc {
             doc.set_actor(ActorId::from(label.as_bytes()));
         }
 
-        // Mirror the structure from new_inner() — same keys, same values.
-        // The daemon writes these too, so the CRDT merge is a no-op.
+        // Seed the standard notebook skeleton — schema_version, empty cells
+        // map, and empty metadata map.  The daemon writes these too, so the
+        // CRDT merge converges with no conflicts.
+        //
+        // NOTE: We intentionally do NOT set a default runtime here.  The
+        // runtime is determined by the notebook file or user choice, not
+        // hardcoded in the bootstrap skeleton.
         let _ = doc.put(automerge::ROOT, "schema_version", SCHEMA_VERSION);
         let _ = doc.put_object(automerge::ROOT, "cells", ObjType::Map);
-        if let Ok(meta_id) = doc.put_object(automerge::ROOT, "metadata", ObjType::Map) {
-            let _ = doc.put(&meta_id, "runtime", "python");
-        }
+        let _ = doc.put_object(automerge::ROOT, "metadata", ObjType::Map);
 
         Self { doc }
     }
@@ -2454,13 +2457,15 @@ mod tests {
     #[test]
     fn test_empty_doc_has_bootstrap_skeleton() {
         // empty() now delegates to bootstrap(), which seeds the doc with
-        // schema_version, an empty cells map, and default metadata.
+        // schema_version, an empty cells map, and an empty metadata map.
         let doc = NotebookDoc::empty();
         assert_eq!(doc.notebook_id(), None); // bootstrap doesn't set notebook_id
         assert_eq!(doc.cell_count(), 0);
         assert_eq!(doc.get_cells(), vec![]);
         assert_eq!(doc.schema_version(), Some(SCHEMA_VERSION));
-        assert_eq!(doc.get_metadata("runtime"), Some("python".to_string()));
+        // Bootstrap does NOT set a default runtime — that's determined by
+        // the notebook file or user choice.
+        assert_eq!(doc.get_metadata("runtime"), None);
     }
 
     #[test]
