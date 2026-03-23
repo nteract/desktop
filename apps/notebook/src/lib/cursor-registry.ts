@@ -246,11 +246,6 @@ function handlePresence(payload: unknown): void {
           affectedCells.add(peer.cursor.cell_id);
           peer.cursor = undefined;
         }
-        // Focus replaces selection
-        if (peer.selection) {
-          affectedCells.add(peer.selection.cell_id);
-          peer.selection = undefined;
-        }
         if (peer.focus && peer.focus.cell_id !== data.cell_id) {
           affectedCells.add(peer.focus.cell_id);
         }
