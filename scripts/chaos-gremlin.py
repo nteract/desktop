@@ -316,7 +316,6 @@ async def async_main(
             )
             print(f"   Created: {notebook_id[:8]}")
             await notebook.close()
-        await client.shutdown()
 
     print(f"   Target: {notebook_id}")
     print()
@@ -366,7 +365,6 @@ async def async_main(
             ec = cell.execution_count
             print(f"   [{i}] {cell.cell_type} ec={ec} outs={outs}: {src}")
         await notebook.close()
-        await client.shutdown()
     except Exception as e:
         print(f"   (failed to read final state: {e})")
 
