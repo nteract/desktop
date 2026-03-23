@@ -113,8 +113,21 @@ impl Client {
             .map_err(to_py_err)
     }
 
-    /// Request daemon shutdown.
-    fn shutdown(&self) -> PyResult<()> {
+    /// Close the client connection.
+    ///
+    /// Releases local resources without affecting the daemon. No-op today
+    /// (the native client is stateless), but gives callers a clear,
+    /// non-destructive cleanup path.
+    fn close(&self) -> PyResult<()> {
+        Ok(())
+    }
+
+    /// Request the daemon process to shut down.
+    ///
+    /// This stops the *entire* daemon, disconnecting all peers and notebooks.
+    /// Callers almost certainly want ``close()`` instead.
+    #[pyo3(name = "_shutdown_daemon")]
+    fn shutdown_daemon(&self) -> PyResult<()> {
         self.runtime
             .block_on(self.client.shutdown())
             .map_err(to_py_err)

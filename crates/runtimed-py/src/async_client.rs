@@ -152,8 +152,22 @@ impl AsyncClient {
         })
     }
 
-    /// Request daemon shutdown.
-    fn shutdown<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    /// Close the client connection.
+    ///
+    /// Releases local resources without affecting the daemon. The native
+    /// client is stateless (new connection per RPC), so this is a no-op
+    /// today — but having it lets Python callers use `async with` and
+    /// gives us room to add connection pooling later.
+    fn close<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        future_into_py(py, async move { Ok(()) })
+    }
+
+    /// Request the daemon process to shut down.
+    ///
+    /// This stops the *entire* daemon, disconnecting all peers and notebooks.
+    /// Callers almost certainly want ``close()`` instead.
+    #[pyo3(name = "_shutdown_daemon")]
+    fn shutdown_daemon<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let socket_path = self.socket_path.clone();
         future_into_py(py, async move {
             let client = runtimed::client::PoolClient::new(socket_path);

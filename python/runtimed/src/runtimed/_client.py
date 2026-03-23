@@ -15,11 +15,11 @@ class Client:
 
     Example::
 
-        client = Client()
-        notebook = await client.create_notebook()
-        cell = await notebook.cells.create("print('hello')")
-        print(cell.source)   # sync read
-        result = await cell.run()  # async
+        async with Client() as client:
+            notebook = await client.create_notebook()
+            cell = await notebook.cells.create("print('hello')")
+            print(cell.source)   # sync read
+            result = await cell.run()  # async
     """
 
     def __init__(
@@ -70,9 +70,25 @@ class Client:
         """Flush prewarmed environment pool."""
         await self._native.flush_pool()
 
-    async def shutdown(self) -> None:
-        """Request daemon shutdown."""
+    async def close(self) -> None:
+        """Close the client connection.
+
+        Releases local resources without affecting the daemon.
+        """
+
+    async def _shutdown_daemon(self) -> None:
+        """Request the daemon process to shut down.
+
+        Stops the *entire* daemon, disconnecting all peers and notebooks.
+        You almost certainly want ``close()`` instead.
+        """
         await self._native.shutdown()
+
+    async def __aenter__(self) -> Client:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.close()
 
     def __repr__(self) -> str:
         return "Client()"
