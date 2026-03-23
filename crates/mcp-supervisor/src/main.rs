@@ -209,6 +209,37 @@ fn augmented_path() -> String {
     format!("{prefix}{sep}{base}")
 }
 
+/// Run `cargo build -p runtimed` to rebuild the daemon binary.
+///
+/// Returns `true` on success, `false` on failure.
+fn run_cargo_build_daemon(project_root: &Path) -> bool {
+    info!("Building daemon binary (cargo build -p runtimed)...");
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.arg("build")
+        .arg("-p")
+        .arg("runtimed")
+        .current_dir(project_root)
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit());
+    if use_release_binaries() {
+        cmd.arg("--release");
+    }
+    match cmd.status() {
+        Ok(status) if status.success() => {
+            info!("cargo build -p runtimed succeeded");
+            true
+        }
+        Ok(status) => {
+            error!("cargo build -p runtimed failed with {status}");
+            false
+        }
+        Err(e) => {
+            error!("Failed to run cargo build: {e}");
+            false
+        }
+    }
+}
+
 fn run_maturin_develop(project_root: &Path) -> bool {
     // Route stdout to null — the supervisor uses stdout for MCP transport,
     // so maturin output would corrupt the JSON-RPC stream. Stderr goes to
@@ -915,7 +946,7 @@ impl ServerHandler for Supervisor {
         ));
         tools.push(Tool::new(
             "supervisor_rebuild",
-            "Run maturin develop to rebuild the Rust Python bindings, then restart the MCP server child. Use after changing crates/runtimed-py/ or crates/runtimed/ source.",
+            "Full rebuild: compile the daemon binary (cargo build -p runtimed), rebuild the Rust Python bindings (maturin develop), restart the daemon, and restart the MCP server. Use after changing crates/runtimed/, crates/runtimed-py/, or python/ source.",
             empty_schema.clone(),
         ));
         tools.push(Tool::new(
@@ -1117,22 +1148,50 @@ impl ServerHandler for Supervisor {
                     let state = self.state.read().await;
                     state.project_root.clone()
                 };
-                if !run_maturin_develop(&project_root) {
+
+                // 1. Rebuild daemon binary (cargo build -p runtimed)
+                if !run_cargo_build_daemon(&project_root) {
                     return Ok(CallToolResult::success(vec![Content::text(
-                        "maturin develop failed — check the supervisor logs for details",
+                        "cargo build -p runtimed failed — check the supervisor logs for details",
                     )]));
                 }
-                // Clear circuit breaker for manual rebuild
+
+                // 2. Rebuild Python bindings (maturin develop)
+                if !run_maturin_develop(&project_root) {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        "maturin develop failed — check the supervisor logs for details\n\
+                         (daemon binary was rebuilt successfully)",
+                    )]));
+                }
+
+                // 3. Restart daemon so it picks up the new binary
+                {
+                    let mut state = self.state.write().await;
+                    if let Some(ref mut child) = state.daemon_child {
+                        info!("Stopping managed daemon for rebuild...");
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                    state.daemon_child = start_daemon(&project_root);
+                }
+
+                if !wait_for_daemon(&project_root, Duration::from_secs(30)) {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        "Rebuild succeeded but daemon did not become ready within 30s",
+                    )]));
+                }
+
+                // 4. Clear circuit breaker and restart child MCP server
                 {
                     let mut state = self.state.write().await;
                     state.recent_crashes.clear();
                 }
                 match self.restart_child().await {
                     Ok(()) => Ok(CallToolResult::success(vec![Content::text(
-                        "Rebuilt Python bindings and restarted MCP server successfully",
+                        "Rebuilt daemon + Python bindings and restarted everything successfully",
                     )])),
                     Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Rebuild succeeded but MCP server restart failed: {e}"
+                        "Rebuild and daemon restart succeeded but MCP server restart failed: {e}"
                     ))])),
                 }
             }
