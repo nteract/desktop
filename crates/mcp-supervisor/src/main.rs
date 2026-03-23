@@ -621,7 +621,6 @@ impl Supervisor {
                     "--dir",
                     "apps/notebook",
                     "dev",
-                    "--",
                     "--port",
                     &port.to_string(),
                     "--strictPort",
