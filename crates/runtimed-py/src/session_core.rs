@@ -1615,9 +1615,7 @@ pub(crate) async fn get_metadata(
 /// Calls `doc.save()` on the underlying `AutoCommit`, returning the full
 /// serialized Automerge document. Useful for cross-implementation
 /// compatibility testing (e.g., loading the bytes in WASM).
-pub(crate) async fn get_automerge_doc_bytes(
-    state: &Arc<Mutex<SessionState>>,
-) -> PyResult<Vec<u8>> {
+pub(crate) async fn get_automerge_doc_bytes(state: &Arc<Mutex<SessionState>>) -> PyResult<Vec<u8>> {
     let st = state.lock().await;
     let handle = st
         .handle

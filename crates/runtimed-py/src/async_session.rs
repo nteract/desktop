@@ -1164,19 +1164,15 @@ impl AsyncSession {
     /// Get the raw Automerge document bytes from the local replica.
     fn get_automerge_doc_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
-        future_into_py(
-            py,
-            async move { session_core::get_automerge_doc_bytes(&state).await },
-        )
+        future_into_py(py, async move {
+            session_core::get_automerge_doc_bytes(&state).await
+        })
     }
 
     /// Confirm that the daemon has merged all local changes.
     fn confirm_sync<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
-        future_into_py(
-            py,
-            async move { session_core::confirm_sync(&state).await },
-        )
+        future_into_py(py, async move { session_core::confirm_sync(&state).await })
     }
 
     // =========================================================================
