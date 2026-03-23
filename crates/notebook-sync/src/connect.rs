@@ -1,5 +1,13 @@
 //! Connection handshake and initial Automerge sync.
 //!
+//! All connect variants use [`NotebookDoc::bootstrap()`] to create the
+//! initial local document.  This seeds the doc with the standard notebook
+//! skeleton (`schema_version`, empty `cells` map, `metadata`) so that
+//! `Automerge::is_empty()` returns false **before** the first sync
+//! message arrives.  Without this, `load_incremental`'s empty-doc
+//! fast-path replaces `*self` with a freshly-loaded doc, discarding any
+//! encoding or actor settings.
+//!
 //! Establishes a connection to the runtimed daemon, performs the protocol
 //! handshake, and runs the initial Automerge sync exchange to populate
 //! the local document replica.
@@ -200,8 +208,10 @@ async fn connect_with_options_impl(
         .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))?;
     let _caps: ProtocolCapabilities = serde_json::from_slice(&caps_data)?;
 
-    // Initial Automerge sync exchange
-    let mut doc = AutoCommit::new();
+    // Initial Automerge sync exchange — start from the standard notebook
+    // skeleton so load_incremental takes the incremental path.
+    let bootstrap = notebook_doc::NotebookDoc::bootstrap();
+    let mut doc = bootstrap.into_inner();
     let mut peer_state = sync::State::new();
     let mut pending_broadcasts = Vec::new();
     let mut pending_state_sync_frames = Vec::new();
@@ -279,8 +289,10 @@ async fn connect_open_impl(socket_path: PathBuf, path: PathBuf) -> Result<OpenRe
 
     let notebook_id = info.notebook_id.clone();
 
-    // Initial Automerge sync exchange
-    let mut doc = AutoCommit::new();
+    // Initial Automerge sync exchange — start from the standard notebook
+    // skeleton so load_incremental takes the incremental path.
+    let bootstrap = notebook_doc::NotebookDoc::bootstrap();
+    let mut doc = bootstrap.into_inner();
     let mut peer_state = sync::State::new();
     let mut pending_broadcasts = Vec::new();
     let mut pending_state_sync_frames = Vec::new();
@@ -370,8 +382,10 @@ async fn connect_create_impl(
 
     let notebook_id = info.notebook_id.clone();
 
-    // Initial Automerge sync exchange
-    let mut doc = AutoCommit::new();
+    // Initial Automerge sync exchange — start from the standard notebook
+    // skeleton so load_incremental takes the incremental path.
+    let bootstrap = notebook_doc::NotebookDoc::bootstrap();
+    let mut doc = bootstrap.into_inner();
     let mut peer_state = sync::State::new();
     let mut pending_broadcasts = Vec::new();
     let mut pending_state_sync_frames = Vec::new();

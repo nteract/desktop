@@ -650,52 +650,98 @@ impl NotebookDoc {
         self.read_cell(&cell_obj)
     }
 
-    /// Create a document with zero operations for sync-only bootstrap.
+    /// Create a client-side bootstrap document for sync.
     ///
-    /// Unlike `new()`, this does not create a cells list, metadata map, or
-    /// notebook_id. The sync protocol populates everything from the peer.
-    /// All read methods (`cell_count`, `get_cells`, etc.) handle the missing
-    /// keys gracefully (return 0 / empty).
-    pub fn empty() -> Self {
-        Self {
-            doc: AutoCommit::new(),
-        }
+    /// Every client — WASM frontend, Python bindings, future Swift, etc. —
+    /// should start from the same document skeleton before syncing with the
+    /// daemon.  The skeleton mirrors what [`NotebookDoc::new()`] creates:
+    ///
+    /// ```text
+    /// ROOT/
+    ///   schema_version: 2
+    ///   cells: {}          (empty Map)
+    ///   metadata/
+    ///     runtime: "python"
+    /// ```
+    ///
+    /// **Why this matters**: Automerge's `load_incremental` has a fast-path
+    /// for empty documents (`is_empty() == true`) that replaces `*self` with
+    /// a freshly-loaded doc using **default** `LoadOptions` — discarding any
+    /// encoding or actor we set.  A non-empty doc takes the normal
+    /// incremental-apply path which preserves all settings.
+    ///
+    /// Because the daemon creates the same structure, the CRDT merge
+    /// converges to identical values with no conflicts.
+    pub fn bootstrap() -> Self {
+        Self::bootstrap_inner(None, None)
     }
 
-    /// Create a sync-only bootstrap document with a specific text encoding.
+    /// Bootstrap with a specific text encoding.
     ///
-    /// Use `TextEncoding::Utf16CodeUnit` for the WASM/CodeMirror frontend.
+    /// Use `TextEncoding::Utf16CodeUnit` for the WASM/CodeMirror frontend
+    /// (JavaScript strings are UTF-16). The daemon should use
+    /// [`bootstrap()`](Self::bootstrap) which defaults to `UnicodeCodePoint`
+    /// (correct for Python string indices).
     ///
-    /// Seeds the document with a single marker operation so that
-    /// `automerge::Automerge::is_empty()` returns false.  Without this,
-    /// the first `receive_sync_message` / `load_incremental` call hits a
-    /// fast-path that replaces `*self` with a freshly-loaded doc using
-    /// **default** `LoadOptions` — discarding the encoding we set here.
-    /// A non-empty doc takes the normal incremental-apply path which
-    /// preserves the encoding.
-    pub fn empty_with_encoding(encoding: TextEncoding) -> Self {
-        let mut doc = AutoCommit::new_with_encoding(encoding);
-        // Marker op: keeps encoding alive across the first sync.
-        // The daemon also writes schema_version = 2, so the CRDT
-        // merge converges to the same value with no conflict.
+    /// Encoding is a local interpretation — it does not affect the wire
+    /// format, so peers with different encodings sync correctly.
+    pub fn bootstrap_with_encoding(encoding: TextEncoding) -> Self {
+        Self::bootstrap_inner(None, Some(encoding))
+    }
+
+    /// Bootstrap with a specific actor identity.
+    pub fn bootstrap_with_actor(actor_label: &str) -> Self {
+        Self::bootstrap_inner(Some(actor_label), None)
+    }
+
+    /// Bootstrap with both actor identity and text encoding.
+    pub fn bootstrap_with_actor_and_encoding(actor_label: &str, encoding: TextEncoding) -> Self {
+        Self::bootstrap_inner(Some(actor_label), Some(encoding))
+    }
+
+    /// Shared bootstrap constructor.  Seeds the doc with the standard
+    /// notebook skeleton so `is_empty()` is false before the first sync.
+    fn bootstrap_inner(actor_label: Option<&str>, encoding: Option<TextEncoding>) -> Self {
+        let mut doc = match encoding {
+            Some(enc) => AutoCommit::new_with_encoding(enc),
+            None => AutoCommit::new(),
+        };
+
+        if let Some(label) = actor_label {
+            doc.set_actor(ActorId::from(label.as_bytes()));
+        }
+
+        // Mirror the structure from new_inner() — same keys, same values.
+        // The daemon writes these too, so the CRDT merge is a no-op.
         let _ = doc.put(automerge::ROOT, "schema_version", SCHEMA_VERSION);
+        let _ = doc.put_object(automerge::ROOT, "cells", ObjType::Map);
+        if let Ok(meta_id) = doc.put_object(automerge::ROOT, "metadata", ObjType::Map) {
+            let _ = doc.put(&meta_id, "runtime", "python");
+        }
+
         Self { doc }
     }
 
-    /// Create an empty sync-only bootstrap document with a specific actor identity.
-    ///
-    /// Like `empty()`, but sets the actor ID for edit provenance.
-    pub fn empty_with_actor(actor_label: &str) -> Self {
-        let mut s = Self::empty();
-        s.set_actor(actor_label);
-        s
+    // ── Convenience aliases (thin delegates to bootstrap*) ───────────
+
+    /// Alias for [`bootstrap()`](Self::bootstrap).
+    pub fn empty() -> Self {
+        Self::bootstrap()
     }
 
-    /// Like `empty_with_encoding()`, but also sets the actor ID for edit provenance.
+    /// Alias for [`bootstrap_with_encoding()`](Self::bootstrap_with_encoding).
+    pub fn empty_with_encoding(encoding: TextEncoding) -> Self {
+        Self::bootstrap_with_encoding(encoding)
+    }
+
+    /// Alias for [`bootstrap_with_actor()`](Self::bootstrap_with_actor).
+    pub fn empty_with_actor(actor_label: &str) -> Self {
+        Self::bootstrap_with_actor(actor_label)
+    }
+
+    /// Alias for [`bootstrap_with_actor_and_encoding()`](Self::bootstrap_with_actor_and_encoding).
     pub fn empty_with_actor_and_encoding(actor_label: &str, encoding: TextEncoding) -> Self {
-        let mut s = Self::empty_with_encoding(encoding);
-        s.set_actor(actor_label);
-        s
+        Self::bootstrap_with_actor_and_encoding(actor_label, encoding)
     }
 
     /// Load a notebook document from saved bytes.
@@ -2406,14 +2452,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_empty_doc_has_no_cells_or_metadata() {
+    fn test_empty_doc_has_bootstrap_skeleton() {
+        // empty() now delegates to bootstrap(), which seeds the doc with
+        // schema_version, an empty cells map, and default metadata.
         let doc = NotebookDoc::empty();
-        assert_eq!(doc.notebook_id(), None);
+        assert_eq!(doc.notebook_id(), None); // bootstrap doesn't set notebook_id
         assert_eq!(doc.cell_count(), 0);
         assert_eq!(doc.get_cells(), vec![]);
-        assert_eq!(doc.get_metadata("runtime"), None);
-        assert!(doc.get_metadata_snapshot().is_none());
-        assert!(doc.detect_runtime().is_none());
+        assert_eq!(doc.schema_version(), Some(SCHEMA_VERSION));
+        assert_eq!(doc.get_metadata("runtime"), Some("python".to_string()));
     }
 
     #[test]

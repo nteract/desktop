@@ -1404,13 +1404,17 @@ Deno.test("Sync: bidirectional mutations converge", () => {
 
 // ── create_empty() sync-only bootstrap tests (PR #622) ──────────────
 
-Deno.test("create_empty: creates doc with zero cells", () => {
+Deno.test("create_empty: creates doc with bootstrap skeleton", () => {
   const handle = NotebookHandle.create_empty();
+  // Bootstrap seeds the doc with schema_version, empty cells map, and
+  // default metadata — same structure as NotebookDoc::new().  This
+  // prevents automerge's load_incremental empty-doc fast-path from
+  // discarding encoding/actor settings on the first sync.
   assertEquals(handle.cell_count(), 0);
   assertEquals(handle.get_cells().length, 0);
   assertEquals(handle.get_cells_json(), "[]");
-  // Empty doc has no metadata
-  assertEquals(handle.get_metadata("runtime"), undefined);
+  // Bootstrap sets default runtime metadata
+  assertEquals(handle.get_metadata("runtime"), "python");
   handle.free();
 });
 
