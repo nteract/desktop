@@ -2527,9 +2527,14 @@ async fn rekey_ephemeral_room(
     // Spawn a file watcher for the new .ipynb path (same as get_or_create_room
     // does for non-UUID rooms)
     if new_path.extension().is_some_and(|ext| ext == "ipynb") {
-        let shutdown_tx = spawn_notebook_file_watcher(new_path, room_arc);
+        let shutdown_tx = spawn_notebook_file_watcher(new_path, room_arc.clone());
         *room.watcher_shutdown_tx.lock().await = Some(shutdown_tx);
     }
+
+    // Spawn autosave debouncer: ephemeral rooms skip this at creation time
+    // (no file path to write to). Now that the room is saved to disk, start
+    // autosaving so subsequent changes are persisted to the .ipynb file.
+    spawn_autosave_debouncer(canonical.clone(), room_arc);
 
     // Broadcast to all peers so they can update their local notebook_id.
     // Without this, peers that disconnect and reconnect would use the stale
@@ -7311,5 +7316,113 @@ mod tests {
             }
             other => panic!("expected Update message, got {:?}", other),
         }
+    }
+
+    // ── Regression test: autosave after ephemeral room re-key ──────────
+
+    /// Verify the full lifecycle: create ephemeral room → save to disk →
+    /// re-key → edit → autosave flushes the edit to the .ipynb file.
+    ///
+    /// This is the exact scenario that was broken before the autosave
+    /// debouncer was spawned in `rekey_ephemeral_room`.
+    #[tokio::test(start_paused = true)]
+    async fn test_rekey_ephemeral_room_starts_autosave() {
+        use std::time::Duration;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let blob_store = test_blob_store(&tmp);
+        let docs_dir = tmp.path().join("docs");
+        std::fs::create_dir_all(&docs_dir).unwrap();
+
+        // 1. Create an ephemeral room with a UUID notebook_id
+        let uuid_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let room = Arc::new(NotebookRoom::new_fresh(uuid_id, &docs_dir, blob_store));
+        assert!(is_untitled_notebook(uuid_id));
+
+        // Add an initial cell so the first save has content
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "cell-1", "code").unwrap();
+            doc.update_source("cell-1", "x = 1").unwrap();
+        }
+
+        // 2. Insert into rooms map (rekey_ephemeral_room needs this)
+        let rooms: NotebookRooms = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        rooms.lock().await.insert(uuid_id.to_string(), room.clone());
+
+        // 3. Save to disk — creates the .ipynb file that rekey will canonicalize
+        let save_path = tmp.path().join("saved.ipynb");
+        let result = save_notebook_to_disk(&room, Some(save_path.to_str().unwrap())).await;
+        assert!(result.is_ok(), "Initial save should succeed");
+        assert!(save_path.exists());
+
+        // 4. Re-key: transitions UUID → file path, spawns autosave debouncer
+        let new_id =
+            rekey_ephemeral_room(&rooms, uuid_id, save_path.to_str().unwrap(), &room).await;
+        assert!(new_id.is_some(), "Re-key should succeed for UUID room");
+        let new_id = new_id.unwrap();
+
+        // Verify UUID key removed and canonical path key inserted
+        {
+            let guard = rooms.lock().await;
+            assert!(
+                !guard.contains_key(uuid_id),
+                "Old UUID key should be removed"
+            );
+            assert!(
+                guard.contains_key(&new_id),
+                "New path key should be present"
+            );
+        }
+
+        // 5. Add a new cell AFTER re-key (simulates MCP create_cell)
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(1, "cell-2", "code").unwrap();
+            doc.update_source("cell-2", "y = 2").unwrap();
+        }
+        // Signal the change so the autosave debouncer sees it
+        let _ = room.changed_tx.send(());
+
+        // 6. Drive the autosave debouncer through its state machine.
+        //    With `start_paused` we advance time in small steps and yield
+        //    between each so the spawned task can poll its select! branches,
+        //    receive the change, wait for the debounce window, and complete
+        //    the async file write.
+        for _ in 0..100 {
+            tokio::time::advance(Duration::from_millis(100)).await;
+            tokio::task::yield_now().await;
+        }
+
+        // 7. Verify the file on disk contains BOTH cells (initial + post-rekey)
+        let content = tokio::fs::read_to_string(&save_path).await.unwrap();
+        let nb: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let cells = nb["cells"].as_array().expect("cells should be an array");
+        assert_eq!(
+            cells.len(),
+            2,
+            "Both cells should be autosaved; got: {}",
+            serde_json::to_string_pretty(&nb["cells"]).unwrap()
+        );
+
+        // Verify the post-rekey cell's source is present.
+        // nbformat stores source as an array of strings, e.g. ["y = 2"].
+        let sources: Vec<String> = cells
+            .iter()
+            .map(|c| match &c["source"] {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Array(arr) => arr
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(""),
+                _ => String::new(),
+            })
+            .collect();
+        assert!(
+            sources.iter().any(|s| s.contains("y = 2")),
+            "Post-rekey cell should be persisted; sources: {:?}",
+            sources
+        );
     }
 }
