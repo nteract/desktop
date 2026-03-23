@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { from, switchMap, Subscription as RxSubscription } from "rxjs";
+import { SyncEngine } from "runtimed";
+import { from, Subscription as RxSubscription, switchMap } from "rxjs";
 import { getBlobPort, refreshBlobPort } from "../lib/blob-port";
 import { logger } from "../lib/logger";
 import {
@@ -18,9 +19,9 @@ import {
   useCellIds,
 } from "../lib/notebook-cells";
 import {
-  subscribeBroadcast,
   emitBroadcast,
   emitPresence,
+  subscribeBroadcast,
 } from "../lib/notebook-frame-bus";
 import {
   notifyMetadataChanged,
@@ -29,16 +30,15 @@ import {
 import { resetRuntimeState, setRuntimeState } from "../lib/runtime-state";
 import { fromTauriEvent } from "../lib/tauri-rx";
 import { TauriTransport } from "../lib/tauri-transport";
-import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import type { DaemonBroadcast, JupyterOutput } from "../types";
-
-import { SyncEngine } from "runtimed";
+import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
 // ── WASM init ────────────────────────────────────────────────────────
 
 const wasmReady = (async () => {
-  const { default: init } =
-    await import("../wasm/runtimed-wasm/runtimed_wasm.js");
+  const { default: init } = await import(
+    "../wasm/runtimed-wasm/runtimed_wasm.js"
+  );
   await init();
 })();
 
@@ -143,8 +143,9 @@ export function useAutomergeNotebook() {
     await wasmReady;
 
     // Create WASM handle.
-    const { NotebookHandle: NH } =
-      await import("../wasm/runtimed-wasm/runtimed_wasm.js");
+    const { NotebookHandle: NH } = await import(
+      "../wasm/runtimed-wasm/runtimed_wasm.js"
+    );
     const handle: NotebookHandle = (
       NH as typeof NotebookHandle
     ).create_empty_with_actor(`human:${sessionIdRef.current}`);

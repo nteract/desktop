@@ -15,11 +15,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import type {
-  NotebookTransport,
-  FrameTypeValue,
-  Unsubscribe,
-} from "runtimed";
+import type { FrameTypeValue, NotebookTransport, Unsubscribe } from "runtimed";
 
 // ── TauriTransport ──────────────────────────────────────────────────
 
@@ -112,7 +108,9 @@ export class TauriTransport implements NotebookTransport {
     const action = req.action as string;
 
     if (!action) {
-      throw new Error("TauriTransport.sendRequest: request must have an 'action' field");
+      throw new Error(
+        "TauriTransport.sendRequest: request must have an 'action' field",
+      );
     }
 
     // Map action names to Tauri command names.
