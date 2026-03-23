@@ -58,6 +58,13 @@ export interface SyncableHandle {
   /** Generate a sync reply for the RuntimeStateDoc. */
   generate_runtime_state_sync_reply(): Uint8Array | undefined;
 
+  /** Generate an initial RuntimeStateDoc sync message.
+   *  Call during bootstrap so the daemon knows to push queue/kernel state. */
+  flush_runtime_state_sync(): Uint8Array | undefined;
+
+  /** Roll back runtime state sync state after a failed send. */
+  cancel_last_runtime_state_flush(): void;
+
   /** Reset all sync state (reconnection / page reload equivalent). */
   reset_sync_state(): void;
 
@@ -477,6 +484,11 @@ export class SyncEngine {
 
     // Send the first sync message (empty doc requests full state from daemon).
     this.#flushNow();
+
+    // Also initiate RuntimeStateDoc sync so the daemon sends kernel status,
+    // execution queue, trust state, etc. Without this, the frontend never
+    // receives queue_changed updates and run-all appears stuck (#runtime-state-race).
+    this.#flushRuntimeStateNow();
   }
 
   /** Stop processing frames and release resources. */
@@ -771,6 +783,35 @@ export class SyncEngine {
       }
     } catch (err) {
       this.#emit({ type: "error", error: err, context: "flush_local_changes" });
+    }
+  }
+
+  /** Send the initial RuntimeStateDoc sync message to the daemon.
+   *  Called once during start() — after that, replies are generated
+   *  inline by #handleRuntimeStateSync on each inbound frame. */
+  #flushRuntimeStateNow(): void {
+    const handle = this.#getHandle();
+    if (!handle) return;
+    try {
+      const msg = handle.flush_runtime_state_sync();
+      if (msg) {
+        this.#transport
+          .sendFrame(FrameType.RUNTIME_STATE_SYNC, new Uint8Array(msg))
+          .catch((err) => {
+            this.#getHandle()?.cancel_last_runtime_state_flush();
+            this.#emit({
+              type: "error",
+              error: err,
+              context: "runtime_state_flush_send",
+            });
+          });
+      }
+    } catch (err) {
+      this.#emit({
+        type: "error",
+        error: err,
+        context: "flush_runtime_state_sync",
+      });
     }
   }
 
