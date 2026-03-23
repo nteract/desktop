@@ -1277,8 +1277,24 @@ pub(crate) async fn collect_outputs(
     }
 
     // Phase 2: Read canonical cell state from the Automerge doc.
-    // confirm_sync ensures our local replica has all outputs.
-    let (snapshot, blob_base_url, blob_store_path) = {
+    //
+    // The cell has left the execution queue, but the daemon's output writes
+    // may not have synced back to our local replica yet.  confirm_sync only
+    // ensures the daemon has *our* changes — not that we have *theirs*.
+    //
+    // Poll with confirm_sync until outputs appear (or a timeout).  Every
+    // execution produces at least one output or an execution_count change,
+    // so an empty snapshot after queue departure means sync is still lagging.
+    //
+    // TODO(#1048): Replace this sleep-and-retry with the execution handle
+    // abstraction.  Once execution lifecycle (status, outputs) lives in the
+    // RuntimeStateDoc keyed by execution_id, we can wait on the authoritative
+    // "done"/"error" status instead of polling the notebook doc for outputs.
+    let mut snapshot = None;
+    let mut blob_base_url_out = None;
+    let mut blob_store_path_out = None;
+
+    for attempt in 0..5 {
         let st = state.lock().await;
         let handle = st
             .handle
@@ -1287,21 +1303,37 @@ pub(crate) async fn collect_outputs(
 
         handle.confirm_sync().await.map_err(to_py_err)?;
 
-        let snapshot = handle.get_cell(cell_id).ok_or_else(|| {
+        let snap = handle.get_cell(cell_id).ok_or_else(|| {
             to_py_err(format!(
                 "Cell not found in doc after execution: {}",
                 cell_id
             ))
         })?;
 
-        (snapshot, blob_base_url, blob_store_path)
-    };
+        let has_outputs = !snap.outputs.is_empty();
+        let has_ec = snap.execution_count != "null" && !snap.execution_count.is_empty();
+
+        if has_outputs || has_ec || attempt >= 4 {
+            blob_base_url_out = blob_base_url.clone();
+            blob_store_path_out = blob_store_path.clone();
+            snapshot = Some(snap);
+            break;
+        }
+
+        drop(st);
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+
+    let snapshot = snapshot.ok_or_else(|| to_py_err("Failed to read cell after execution"))?;
 
     let execution_count = snapshot.execution_count.parse::<i64>().ok();
 
-    let outputs =
-        output_resolver::resolve_cell_outputs(&snapshot.outputs, &blob_base_url, &blob_store_path)
-            .await;
+    let outputs = output_resolver::resolve_cell_outputs(
+        &snapshot.outputs,
+        &blob_base_url_out,
+        &blob_store_path_out,
+    )
+    .await;
 
     let success = !outputs.iter().any(|o| o.output_type == "error");
 
