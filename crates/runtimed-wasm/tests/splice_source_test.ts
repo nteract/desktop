@@ -901,6 +901,73 @@ Deno.test("unicode: accented characters and combining marks", () => {
   h.free();
 });
 
+Deno.test("unicode: splice AFTER emoji uses UTF-16 positions", () => {
+  // 🐸 is U+1F438 — a surrogate pair in UTF-16 (2 code units), but 1 Unicode code point.
+  // In JavaScript, "🐸".length === 2.  If the WASM binding uses code-point indexing
+  // instead of UTF-16 indexing, splicing after the emoji lands at the wrong position.
+  const h = makeHandle("unicode-5", "c1", "🐸 hello");
+  // JS string: 🐸(2) + space(1) + hello(5) = length 8
+  assertEquals("🐸 hello".length, 8);
+  // Insert "!" right after the space (UTF-16 index 3: 2 for 🐸 + 1 for space)
+  h.splice_source("c1", 3, 0, "!");
+  assertEquals(getSource(h, "c1"), "🐸 !hello");
+  h.free();
+});
+
+Deno.test("unicode: delete after emoji uses UTF-16 positions", () => {
+  const h = makeHandle("unicode-6", "c1", "🐸ab");
+  // UTF-16 positions: 🐸 = [0,1], a = 2, b = 3 → length 4
+  assertEquals("🐸ab".length, 4);
+  // Delete 'a' (UTF-16 index 2, delete 1)
+  h.splice_source("c1", 2, 1, "");
+  assertEquals(getSource(h, "c1"), "🐸b");
+  h.free();
+});
+
+Deno.test("unicode: splice between two emoji", () => {
+  const h = makeHandle("unicode-7", "c1", "🐸🔥");
+  // UTF-16: 🐸=[0,1] 🔥=[2,3] → length 4
+  assertEquals("🐸🔥".length, 4);
+  // Insert between the two emoji (UTF-16 index 2)
+  h.splice_source("c1", 2, 0, " and ");
+  assertEquals(getSource(h, "c1"), "🐸 and 🔥");
+  h.free();
+});
+
+Deno.test("unicode: replace text after multiple emoji", () => {
+  const h = makeHandle("unicode-8", "c1", "🐸🔥⚡ test");
+  // UTF-16: 🐸(2) + 🔥(2) + ⚡(1, BMP) + space(1) + test(4) = 10
+  assertEquals("🐸🔥⚡ test".length, 10);
+  // Replace "test" (starts at UTF-16 index 6, length 4) with "done"
+  h.splice_source("c1", 6, 4, "done");
+  assertEquals(getSource(h, "c1"), "🐸🔥⚡ done");
+  h.free();
+});
+
+Deno.test("unicode: sync splice-after-emoji between two handles", () => {
+  const a = makeHandle("unicode-9", "c1", "# 🐸 Hello");
+  const b = NotebookHandle.load(a.save());
+  syncHandles(a, b);
+
+  // UTF-16: #(1) + space(1) + 🐸(2) + space(1) + Hello(5) = 10
+  assertEquals("# 🐸 Hello".length, 10);
+
+  // Peer A: insert " World" after "Hello" (UTF-16 index 10)
+  a.splice_source("c1", 10, 0, " World");
+  syncHandles(a, b);
+  assertEquals(getSource(a, "c1"), "# 🐸 Hello World");
+  assertEquals(getSource(b, "c1"), "# 🐸 Hello World");
+
+  // Peer B: insert "!" after "World" (UTF-16 index 16)
+  b.splice_source("c1", 16, 0, "!");
+  syncHandles(b, a);
+  assertEquals(getSource(a, "c1"), "# 🐸 Hello World!");
+  assertEquals(getSource(b, "c1"), "# 🐸 Hello World!");
+
+  a.free();
+  b.free();
+});
+
 // ── 14. Newline handling ─────────────────────────────────────────────
 
 Deno.test("newlines: insert newline between lines", () => {

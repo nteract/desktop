@@ -234,7 +234,7 @@ ACTIONS = [
 
 def pick_action():
     """Weighted random action selection."""
-    actions, weights = zip(*ACTIONS)
+    actions, weights = zip(*ACTIONS, strict=True)
     return random.choices(actions, weights=weights, k=1)[0]
 
 

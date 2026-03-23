@@ -55,7 +55,11 @@ pub const SCHEMA_VERSION: u64 = 2;
 use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::transaction::Transactable;
-use automerge::{ActorId, AutoCommit, AutomergeError, ObjId, ObjType, ReadDoc};
+use automerge::{ActorId, AutoCommit, AutomergeError, LoadOptions, ObjId, ObjType, ReadDoc};
+
+/// Re-export so downstream crates (runtimed-wasm) can set text encoding
+/// without depending on automerge directly.
+pub use automerge::TextEncoding;
 use loro_fractional_index::FractionalIndex;
 use serde::{Deserialize, Serialize};
 
@@ -456,7 +460,18 @@ impl NotebookDoc {
 impl NotebookDoc {
     /// Create a new empty notebook document with the given ID.
     pub fn new(notebook_id: &str) -> Self {
-        Self::new_inner(notebook_id, None)
+        Self::new_inner(notebook_id, None, None)
+    }
+
+    /// Create a new notebook document with a specific text encoding.
+    ///
+    /// Use `TextEncoding::Utf16CodeUnit` when positions come from a UTF-16
+    /// environment (JavaScript / CodeMirror). The daemon should use the
+    /// default (`UnicodeCodePoint`) since Python string indices are code points.
+    /// Encoding is a local interpretation — it does not affect the wire format,
+    /// so peers with different encodings sync correctly.
+    pub fn new_with_encoding(notebook_id: &str, encoding: TextEncoding) -> Self {
+        Self::new_inner(notebook_id, None, Some(encoding))
     }
 
     /// Create a new notebook document with a specific actor identity.
@@ -465,7 +480,7 @@ impl NotebookDoc {
     /// operation in the document — including the schema, cells map, and metadata
     /// scaffolding — is attributed to `actor_label`.
     pub fn new_with_actor(notebook_id: &str, actor_label: &str) -> Self {
-        Self::new_inner(notebook_id, Some(actor_label))
+        Self::new_inner(notebook_id, Some(actor_label), None)
     }
 
     /// Shared constructor: optionally sets the actor before any mutations so
@@ -475,8 +490,15 @@ impl NotebookDoc {
     /// changing the actor, so the actor must be set before the first `put`
     /// call — otherwise the initial change would be attributed to a random
     /// UUID instead of the intended label.
-    fn new_inner(notebook_id: &str, actor_label: Option<&str>) -> Self {
-        let mut doc = AutoCommit::new();
+    fn new_inner(
+        notebook_id: &str,
+        actor_label: Option<&str>,
+        encoding: Option<TextEncoding>,
+    ) -> Self {
+        let mut doc = match encoding {
+            Some(enc) => AutoCommit::new_with_encoding(enc),
+            None => AutoCommit::new(),
+        };
 
         // Set actor *before* any puts so the initial structural change is
         // attributed to the caller, not a throwaway random UUID.
@@ -640,6 +662,15 @@ impl NotebookDoc {
         }
     }
 
+    /// Create an empty sync-only bootstrap document with a specific text encoding.
+    ///
+    /// Use `TextEncoding::Utf16CodeUnit` for the WASM/CodeMirror frontend.
+    pub fn empty_with_encoding(encoding: TextEncoding) -> Self {
+        Self {
+            doc: AutoCommit::new_with_encoding(encoding),
+        }
+    }
+
     /// Create an empty sync-only bootstrap document with a specific actor identity.
     ///
     /// Like `empty()`, but sets the actor ID for edit provenance.
@@ -649,9 +680,22 @@ impl NotebookDoc {
         s
     }
 
+    /// Like `empty_with_encoding()`, but also sets the actor ID for edit provenance.
+    pub fn empty_with_actor_and_encoding(actor_label: &str, encoding: TextEncoding) -> Self {
+        let mut s = Self::empty_with_encoding(encoding);
+        s.set_actor(actor_label);
+        s
+    }
+
     /// Load a notebook document from saved bytes.
     pub fn load(data: &[u8]) -> Result<Self, AutomergeError> {
         let doc = AutoCommit::load(data)?;
+        Ok(Self { doc })
+    }
+
+    /// Load a notebook document from saved bytes with a specific text encoding.
+    pub fn load_with_encoding(data: &[u8], encoding: TextEncoding) -> Result<Self, AutomergeError> {
+        let doc = AutoCommit::load_with_options(data, LoadOptions::new().text_encoding(encoding))?;
         Ok(Self { doc })
     }
 
@@ -1204,7 +1248,7 @@ impl NotebookDoc {
             None => return Ok(false),
         };
 
-        let len = self.doc.text(&source_id)?.len();
+        let len = self.doc.length(&source_id);
         self.doc.splice_text(&source_id, len, 0, text)?;
         Ok(true)
     }

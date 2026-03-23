@@ -206,7 +206,10 @@ impl NotebookHandle {
     #[wasm_bindgen(constructor)]
     pub fn new(notebook_id: &str) -> NotebookHandle {
         NotebookHandle {
-            doc: NotebookDoc::new(notebook_id),
+            doc: NotebookDoc::new_with_encoding(
+                notebook_id,
+                notebook_doc::TextEncoding::Utf16CodeUnit,
+            ),
             sync_state: sync::State::new(),
             state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
@@ -219,7 +222,7 @@ impl NotebookHandle {
     /// daemon — no `GetDocBytes` needed.
     pub fn create_empty() -> NotebookHandle {
         NotebookHandle {
-            doc: NotebookDoc::empty(),
+            doc: NotebookDoc::empty_with_encoding(notebook_doc::TextEncoding::Utf16CodeUnit),
             sync_state: sync::State::new(),
             state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
@@ -233,7 +236,10 @@ impl NotebookHandle {
     /// `"agent:claude:<session>"`) that tags all subsequent edits for provenance.
     pub fn create_empty_with_actor(actor_label: &str) -> NotebookHandle {
         NotebookHandle {
-            doc: NotebookDoc::empty_with_actor(actor_label),
+            doc: NotebookDoc::empty_with_actor_and_encoding(
+                actor_label,
+                notebook_doc::TextEncoding::Utf16CodeUnit,
+            ),
             sync_state: sync::State::new(),
             state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
@@ -243,8 +249,8 @@ impl NotebookHandle {
 
     /// Load a notebook document from saved bytes (e.g., from get_automerge_doc_bytes).
     pub fn load(bytes: &[u8]) -> Result<NotebookHandle, JsError> {
-        let doc =
-            NotebookDoc::load(bytes).map_err(|e| JsError::new(&format!("load failed: {}", e)))?;
+        let doc = NotebookDoc::load_with_encoding(bytes, notebook_doc::TextEncoding::Utf16CodeUnit)
+            .map_err(|e| JsError::new(&format!("load failed: {}", e)))?;
         Ok(NotebookHandle {
             doc,
             sync_state: sync::State::new(),
