@@ -17,6 +17,7 @@
 //! Document mutations do NOT go through this task. Callers mutate directly
 //! via `DocHandle::with_doc`. This task is purely for network synchronization.
 
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -319,15 +320,43 @@ async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
                 }
             };
 
-            // Apply and generate ack — lock held only for Automerge operations
+            // Apply and generate ack — lock held only for Automerge operations.
+            //
+            // The receive_sync_message call is wrapped in catch_unwind because
+            // automerge 0.7 has a known panic in BatchApply::apply when the
+            // internal patch log actor table gets out of order during concurrent
+            // sync (automerge/automerge#1187). Without catch_unwind, the panic
+            // poisons the Mutex and renders the session permanently unusable.
+            // By catching it, the MutexGuard drops normally and subsequent
+            // operations can still succeed.
             let ack_bytes = {
                 let mut state = doc.lock().unwrap_or_else(|e| e.into_inner());
-                if let Err(e) = state.receive_sync_message(msg) {
-                    warn!(
-                        "[notebook-sync] Failed to apply sync message for {}: {}",
-                        notebook_id, e
-                    );
-                    return;
+                let recv_result =
+                    std::panic::catch_unwind(AssertUnwindSafe(|| state.receive_sync_message(msg)));
+                match recv_result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        warn!(
+                            "[notebook-sync] Failed to apply sync message for {}: {}",
+                            notebook_id, e
+                        );
+                        return;
+                    }
+                    Err(panic_payload) => {
+                        let msg = if let Some(s) = panic_payload.downcast_ref::<String>() {
+                            s.as_str()
+                        } else if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                            s
+                        } else {
+                            "unknown panic"
+                        };
+                        warn!(
+                            "[notebook-sync] Automerge panicked during sync for {} \
+                             (upstream bug automerge/automerge#1187): {}",
+                            notebook_id, msg
+                        );
+                        return;
+                    }
                 }
                 state.generate_sync_message().map(|msg| msg.encode())
             };
