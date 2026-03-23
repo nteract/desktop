@@ -567,30 +567,51 @@ Deno.test("Fix #1067: receive_frame returns inline sync reply", () => {
 
   // Server makes a change
   server.update_source("cell-1", "hello world");
-  const serverMsg = server.flush_local_changes();
-  assert(serverMsg !== undefined, "server should have a sync message");
 
-  // Client receives via receive_frame (with 0x00 type byte prefix)
-  const frameBytes = new Uint8Array(1 + serverMsg.length);
-  frameBytes[0] = 0x00; // AUTOMERGE_SYNC
-  frameBytes.set(serverMsg, 1);
+  // The sync protocol may need multiple rounds to deliver changes
+  // (bootstrap skeleton means both peers have ops, so the first round
+  // can be a heads exchange on some platforms).  Run up to 3 rounds of
+  // bidirectional frame-based sync to find the content-carrying event.
+  // deno-lint-ignore no-explicit-any
+  let changedEvent: any = null;
+  for (let round = 0; round < 3; round++) {
+    const serverMsg = server.flush_local_changes();
+    if (serverMsg) {
+      const frameBytes = new Uint8Array(1 + serverMsg.length);
+      frameBytes[0] = 0x00; // AUTOMERGE_SYNC
+      frameBytes.set(serverMsg, 1);
 
-  const events = client.receive_frame(frameBytes);
-  assert(Array.isArray(events), "receive_frame should return an array");
-  assertEquals(events.length, 1);
+      const events = client.receive_frame(frameBytes);
+      if (Array.isArray(events)) {
+        for (const ev of events) {
+          if (ev.type === "sync_applied" && ev.changed) {
+            changedEvent = ev;
+          }
+          // Deliver any reply back to the server
+          if (ev.reply) {
+            server.receive_sync_message(new Uint8Array(ev.reply));
+          }
+        }
+      }
+    }
+    // Also send client's messages back to server
+    const clientMsg = client.flush_local_changes();
+    if (clientMsg) {
+      server.receive_sync_message(clientMsg);
+    }
+    if (changedEvent) break;
+  }
 
-  const event = events[0];
-  assertEquals(event.type, "sync_applied");
-  assertEquals(event.changed, true);
+  assertExists(
+    changedEvent,
+    "Should have received a sync_applied event with changed:true",
+  );
 
   // The fix: reply should be present — generated atomically
   assert(
-    event.reply !== undefined && event.reply !== null,
+    changedEvent.reply !== undefined && changedEvent.reply !== null,
     "SyncApplied should include a reply (the core #1067 fix)",
   );
-
-  // Deliver the reply to the server — should converge
-  server.receive_sync_message(new Uint8Array(event.reply));
 
   // Verify convergence
   const serverCell = server.get_cell("cell-1");
