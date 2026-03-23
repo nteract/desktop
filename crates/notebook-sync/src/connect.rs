@@ -160,36 +160,20 @@ macro_rules! connect_stream {
 /// Performs the protocol handshake and initial Automerge sync. Returns a
 /// `DocHandle` for direct document access and a broadcast receiver for
 /// kernel events.
-pub async fn connect(
-    socket_path: PathBuf,
-    notebook_id: String,
-) -> Result<ConnectResult, SyncError> {
-    connect_with_options(socket_path, notebook_id, None, None, None).await
-}
-
-/// Connect to a notebook room with options.
 ///
 /// `actor_label` sets the Automerge actor identity **before** initial sync
 /// so that even the bootstrap operations are attributed to the caller
 /// (e.g., `"agent:claude:abc123"`, `"human:kyle:session42"`).
-pub async fn connect_with_options(
+pub async fn connect(
     socket_path: PathBuf,
     notebook_id: String,
-    working_dir: Option<PathBuf>,
-    initial_metadata: Option<String>,
     actor_label: Option<&str>,
 ) -> Result<ConnectResult, SyncError> {
-    connect_with_options_impl(
-        socket_path,
-        notebook_id,
-        working_dir,
-        initial_metadata,
-        actor_label,
-    )
-    .await
+    connect_with_options(socket_path, notebook_id, None, None, actor_label).await
 }
 
-async fn connect_with_options_impl(
+/// Connect to a notebook room with options.
+pub async fn connect_with_options(
     socket_path: PathBuf,
     notebook_id: String,
     working_dir: Option<PathBuf>,
@@ -274,20 +258,7 @@ async fn connect_with_options_impl(
 }
 
 /// Connect and open an existing notebook file.
-pub async fn connect_open(socket_path: PathBuf, path: PathBuf) -> Result<OpenResult, SyncError> {
-    connect_open_with_actor(socket_path, path, None).await
-}
-
-/// Open a notebook file with a specific actor identity.
-pub async fn connect_open_with_actor(
-    socket_path: PathBuf,
-    path: PathBuf,
-    actor_label: Option<&str>,
-) -> Result<OpenResult, SyncError> {
-    connect_open_impl(socket_path, path, actor_label).await
-}
-
-async fn connect_open_impl(
+pub async fn connect_open(
     socket_path: PathBuf,
     path: PathBuf,
     actor_label: Option<&str>,
@@ -374,21 +345,12 @@ pub async fn connect_create(
     socket_path: PathBuf,
     runtime: &str,
     working_dir: Option<PathBuf>,
-) -> Result<CreateResult, SyncError> {
-    connect_create_impl(socket_path, runtime, working_dir, None, None).await
-}
-
-/// Create a new notebook with a specific actor identity.
-pub async fn connect_create_with_actor(
-    socket_path: PathBuf,
-    runtime: &str,
-    working_dir: Option<PathBuf>,
     actor_label: Option<&str>,
 ) -> Result<CreateResult, SyncError> {
-    connect_create_impl(socket_path, runtime, working_dir, None, actor_label).await
+    connect_create_inner(socket_path, runtime, working_dir, None, actor_label).await
 }
 
-async fn connect_create_impl(
+async fn connect_create_inner(
     socket_path: PathBuf,
     runtime: &str,
     working_dir: Option<PathBuf>,

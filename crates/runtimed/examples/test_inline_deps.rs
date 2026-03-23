@@ -81,7 +81,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Connect to notebook room
     let notebook_id = format!("test-{}", uuid::Uuid::new_v4());
-    let result = notebook_sync::connect::connect(socket_path.clone(), notebook_id.clone()).await?;
+    let result =
+        notebook_sync::connect::connect(socket_path.clone(), notebook_id.clone(), None).await?;
     let handle = result.handle;
     println!("Connected to notebook room: {}", notebook_id);
 
