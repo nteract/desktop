@@ -237,14 +237,20 @@ fn open_notebook_installed(path: Option<&Path>, extra_args: &[&str]) -> Result<(
         let spawn_result = {
             let mut cmd = Command::new("open");
             cmd.arg("-a").arg(app_name);
-            if path.is_some() || !extra_args.is_empty() {
-                cmd.arg("--args");
-            }
+            // Pass the notebook path as a document argument (before --args)
+            // so macOS delivers it via Apple Events (kAEOpenDocuments) whether
+            // the app is freshly launched or already running. Putting the path
+            // after --args only works on fresh launch; for a running app macOS
+            // ignores --args and just activates the existing instance without
+            // opening the file.
             if let Some(p) = path {
                 cmd.arg(p);
             }
-            for arg in extra_args {
-                cmd.arg(arg);
+            if !extra_args.is_empty() {
+                cmd.arg("--args");
+                for arg in extra_args {
+                    cmd.arg(arg);
+                }
             }
             cmd.spawn()
         };
