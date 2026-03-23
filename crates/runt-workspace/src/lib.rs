@@ -4,6 +4,7 @@
 //! workspace-specific paths, enabling per-worktree isolation during development.
 
 use sha2::{Digest, Sha256};
+#[cfg(any(target_os = "macos", test))]
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -230,6 +231,7 @@ fn open_notebook_dev(path: Option<&Path>, extra_args: &[&str]) -> Result<(), Str
     Ok(())
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn macos_open_args(path: Option<&Path>, extra_args: &[&str]) -> Vec<OsString> {
     let mut args = Vec::new();
 
