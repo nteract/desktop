@@ -20,7 +20,6 @@ mod output;
 mod output_resolver;
 mod session;
 mod session_core;
-mod subscription;
 
 use async_client::AsyncClient;
 use async_session::AsyncSession;
@@ -33,7 +32,6 @@ use output::{
     QueueState, SyncEnvironmentResult,
 };
 use session::Session;
-use subscription::{EventIteratorSubscription, EventSubscription};
 
 /// Launch the desktop notebook app, optionally opening a specific notebook.
 ///
@@ -71,10 +69,6 @@ fn runtimed(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Session types (used internally by Python wrappers)
     m.add_class::<Session>()?;
     m.add_class::<AsyncSession>()?;
-
-    // Subscription types for independent event listening
-    m.add_class::<EventSubscription>()?;
-    m.add_class::<EventIteratorSubscription>()?;
 
     // Output types
     m.add_class::<Cell>()?;

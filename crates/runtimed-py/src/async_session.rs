@@ -14,7 +14,6 @@ use tokio::sync::Mutex;
 use crate::error::to_py_err;
 use crate::output::{Cell, PyRuntimeState};
 use crate::session_core::{self, SessionState};
-use crate::subscription::EventSubscription;
 
 /// An async session for executing code via the runtimed daemon.
 ///
@@ -977,29 +976,6 @@ impl AsyncSession {
         })
     }
 
-    /// Create a cell, execute it, and return the result.
-    ///
-    /// Args:
-    ///     code: The code to execute.
-    ///     timeout_secs: Maximum time to wait (default: 60).
-    ///
-    /// Returns a coroutine that resolves to ExecutionResult.
-    #[pyo3(signature = (code, timeout_secs=60.0))]
-    fn run<'py>(
-        &self,
-        py: Python<'py>,
-        code: &str,
-        timeout_secs: f64,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let state = Arc::clone(&self.state);
-        let notebook_id = self.notebook_id.clone();
-        let code = code.to_string();
-
-        future_into_py(py, async move {
-            session_core::run(&state, &notebook_id, &code, timeout_secs).await
-        })
-    }
-
     /// Queue a cell for execution without waiting for the result.
     fn queue_cell<'py>(&self, py: Python<'py>, cell_id: &str) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
@@ -1034,36 +1010,6 @@ impl AsyncSession {
         future_into_py(py, async move {
             session_core::wait_for_execution(&state, &cell_id, &execution_id, timeout_secs).await
         })
-    }
-
-    /// Subscribe to execution events for specific cells or event types.
-    ///
-    /// Returns an async iterator subscription that yields events as they arrive.
-    ///
-    /// Args:
-    ///     cell_ids: Optional list of cell IDs to filter (None = all cells).
-    ///     event_types: Optional list of event types to filter (None = all types).
-    #[pyo3(signature = (cell_ids=None, event_types=None))]
-    fn subscribe(
-        &self,
-        cell_ids: Option<Vec<String>>,
-        event_types: Option<Vec<String>>,
-    ) -> PyResult<EventSubscription> {
-        // Use a temporary runtime since this returns a sync object (the subscription)
-        // not a coroutine.
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| to_py_err(format!("Failed to create runtime: {}", e)))?;
-
-        let (broadcast_rx, blob_base_url, blob_store_path) =
-            rt.block_on(session_core::prepare_subscribe(&self.state))?;
-
-        Ok(EventSubscription::new(
-            broadcast_rx,
-            cell_ids,
-            event_types,
-            blob_base_url,
-            blob_store_path,
-        ))
     }
 
     // =========================================================================
