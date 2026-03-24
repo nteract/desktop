@@ -957,7 +957,12 @@ class NteractServer:
 
         @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
         async def add_dependency(package: str) -> dict[str, Any]:
-            """Add a package dependency (e.g. "pandas>=2.0"). Call sync_environment() to install."""
+            """Add a package dependency (e.g. "pandas>=2.0").
+
+            Call sync_environment() to install. To upgrade an
+            already-installed package, just add the newer version
+            — the resolver handles it without a remove + restart.
+            """
             notebook = await srv._get_notebook()
             deps = await notebook.add_dependency(package)
             return {"dependencies": deps, "added": package}
