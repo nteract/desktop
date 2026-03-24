@@ -51,16 +51,38 @@ async def main():
         print(cell.source)      # "print('hello')"
         print(cell.cell_type)   # "code"
 
-        # Streaming execution (async iterator)
+        # Execution handle (granular lifecycle control)
         cell2 = await notebook.cells.create("for i in range(3): print(i)")
-        async for event in await cell2.stream():
-            print(event)
+        execution = await cell2.execute()
+        print(execution.execution_id)   # UUID
+        print(execution.status)         # "queued" | "running" | "done" | "error"
+        result = await execution.result()  # waits for completion
+
+        # Or queue without waiting
+        execution = await cell2.queue()    # returns Execution immediately
+        await execution.wait()             # explicitly wait later
 
         # Presence (cursor/selection sync)
         await notebook.presence.set_cursor(cell.id, line=0, column=5)
 
 asyncio.run(main())
 ```
+
+### Execution API
+
+`cell.run()` is sugar for `(await cell.execute()).result()`. For granular control use `Execution`:
+
+| Method/Property | Returns | Description |
+|-----------------|---------|-------------|
+| `execution_id` | `str` | UUID for this execution |
+| `status` | `str` | `"queued"`, `"running"`, `"done"`, `"error"` |
+| `done` | `bool` | Whether execution has finished |
+| `success` | `bool \| None` | `None` until done |
+| `execution_count` | `int \| None` | Kernel execution count once started |
+| `result(timeout_secs)` | `Output` | Wait for completion and return output |
+| `wait(timeout_secs)` | `None` | Wait for completion without returning output |
+| `cancel()` | `None` | Cancel the execution |
+| `await execution` | `Output` | Shorthand for `await execution.result()` |
 
 Other `Client` entry points:
 
@@ -114,8 +136,12 @@ await cell.set_source_hidden(True)
 await cell.clear_outputs()
 await cell.delete()
 
-# Runtime state (sync read)
-print(notebook.runtime)
+# Runtime state (sync read from RuntimeStateDoc)
+print(notebook.runtime)               # RuntimeState object
+print(notebook.runtime.kernel)         # KernelState: status, starting_phase, name, language, env_source
+print(notebook.runtime.queue)          # QueueState: executing, queued (list of QueueEntry)
+print(notebook.runtime.env)            # EnvState: in_sync, added, removed
+print(notebook.runtime.executions)     # dict[str, ExecutionState] keyed by execution_id
 
 # Connected peers
 print(notebook.peers)  # list of (peer_id, peer_label)
@@ -159,6 +185,18 @@ uv run nteract
 # Via Inkwell supervisor (recommended, handles lifecycle)
 cargo xtask run-mcp
 ```
+
+### nteract MCP Tools (27 tools)
+
+| Category | Tools |
+|----------|-------|
+| Session | `list_active_notebooks`, `show_notebook`, `join_notebook`, `open_notebook`, `create_notebook`, `save_notebook` |
+| Kernel | `interrupt_kernel`, `restart_kernel` |
+| Dependencies | `add_dependency`, `remove_dependency`, `get_dependencies`, `sync_environment` |
+| Cell CRUD | `create_cell`, `get_cell`, `get_all_cells`, `set_cell`, `delete_cell`, `move_cell` |
+| Cell metadata | `set_cells_source_hidden`, `set_cells_outputs_hidden`, `add_cell_tags`, `remove_cell_tags` |
+| Find/Replace | `replace_match`, `replace_regex` |
+| Execution | `execute_cell`, `run_all_cells`, `clear_outputs` |
 
 Three packages are workspace members:
 

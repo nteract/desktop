@@ -65,6 +65,19 @@ The daemon returns an `env_source` string with `KernelLaunched`:
 - `"uv:inline"` / `"uv:pyproject"` / `"uv:prewarmed"`
 - `"conda:inline"` / `"conda:env_yml"` / `"conda:pixi"` / `"conda:prewarmed"`
 
+## Kernel Starting Phases
+
+When a kernel is starting, the RuntimeStateDoc tracks granular phases via `kernel.starting_phase`:
+
+| Phase | Description |
+|-------|-------------|
+| `"resolving"` | Dependency resolution (reading project files, computing env hash) |
+| `"preparing_env"` | Environment creation or cache lookup (UV install, Conda solve) |
+| `"launching"` | Spawning the kernel process |
+| `"connecting"` | Establishing ZMQ connection to kernel |
+
+Phases are written by the daemon to RuntimeStateDoc. Frontend displays them via `useRuntimeState()`. Cleared when kernel reaches `idle` or `error`.
+
 ## Content-Addressed Caching
 
 Environments are cached by dependency hash so notebooks with identical deps share a single environment.
@@ -78,6 +91,10 @@ Cache hit check: verify `{hash}/bin/python` (Unix) or `{hash}/Scripts/python.exe
 ## Inline Dependency Environments
 
 For notebooks with inline UV deps (`metadata.runt.uv.dependencies`), the daemon creates cached environments in `~/.cache/runt/inline-envs/`. Keyed by hash of sorted dependencies for fast reuse. Cache hit = instant startup.
+
+### PEP 723 Support
+
+`notebook-doc` includes a PEP 723 parser (`crates/notebook-doc/src/pep723.rs`) that extracts inline script metadata from Python cells. This enables reading `# /// script` blocks for dependency declarations within individual cells.
 
 ## Prewarming and Daemon Pool
 

@@ -46,8 +46,23 @@ The Tauri app crate (`crates/notebook/`) is glue -- it wires Tauri commands to d
 | Cell outputs (manifest hashes) | Daemon | Kernel IOPub -> blob store -> hash in doc |
 | Execution count | Daemon | Set on `execute_input` from kernel |
 | Widget state | Daemon (via `CommState`) | Kernel `comm_open`/`comm_msg` |
+| RuntimeStateDoc (kernel status, queue, executions, env, trust) | Daemon | Separate per-notebook Automerge doc synced via frame `0x05` |
 
 Reads are free for both sides. The daemon reads cell source for execution. The frontend reads outputs for rendering. Both use Automerge sync to stay current.
+
+## RuntimeStateDoc
+
+Each notebook room has a daemon-authoritative **RuntimeStateDoc** — a separate Automerge document (frame type `0x05`) that replaces state-carrying broadcasts. It tracks:
+
+- **Kernel state**: status, starting phase (resolving → preparing_env → launching → connecting), name, language, env_source
+- **Execution queue**: executing cell + execution_id, queued entries as `QueueEntry { cell_id, execution_id }`
+- **Execution lifecycle**: per-execution_id map with status (`queued`/`running`/`done`/`error`), execution_count, success
+- **Environment drift**: in_sync flag, added/removed packages
+- **Trust state**: status and needs_approval flag
+
+**The daemon is the sole writer.** Frontend reads via `useRuntimeState()`. Python reads via `notebook.runtime`.
+
+Key files: `crates/notebook-doc/src/runtime_state.rs`, `apps/notebook/src/lib/runtime-state.ts`.
 
 ## Binary vs Text Content -- CRITICAL DISTINCTION
 

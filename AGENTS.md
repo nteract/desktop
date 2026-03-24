@@ -110,15 +110,22 @@ Before diving into a subsystem, read the relevant guide:
 
 | Task | Guide |
 |------|-------|
+| High-level architecture | `contributing/architecture.md` |
+| Development setup | `contributing/development.md` |
 | Python bindings / MCP | `contributing/runtimed.md` § Python Bindings |
 | Running tests | `contributing/testing.md` |
+| E2E tests (WebdriverIO) | `contributing/e2e.md` |
 | Frontend architecture | `contributing/frontend-architecture.md` |
+| UI components (Shadcn) | `contributing/ui.md` |
+| nteract Elements library | `contributing/nteract-elements.md` |
 | Wire protocol / sync | `contributing/protocol.md` |
 | Widget system | `contributing/widget-development.md` |
 | Daemon development | `contributing/runtimed.md` |
 | Environment management | `contributing/environments.md` |
 | Output iframe sandbox | `contributing/iframe-isolation.md` |
 | CRDT mutation rules | `contributing/crdt-mutation-guide.md` |
+| TypeScript bindings (ts-rs) | `contributing/typescript-bindings.md` |
+| Logging guidelines | `contributing/logging.md` |
 | Build dependencies | `contributing/build-dependencies.md` |
 | Releasing | `contributing/releasing.md` |
 
@@ -187,6 +194,8 @@ uv run nteract  # Run MCP server from repo root
 ### Python API Notes
 
 - **`Output.data` is typed by MIME kind**: `str` for text MIME types, `bytes` for binary (raw bytes, no base64), `dict` for JSON MIME types. Image outputs include a synthesized `text/llm+plain` key with blob URLs.
+- **Execution API**: `cell.run()` is sugar for `(await cell.execute()).result()`. For granular control use `Execution` handle: `execution = await cell.execute()` → `execution.status`, `execution.execution_id`, `await execution.result()`, `execution.cancel()`. Or `await cell.queue()` to enqueue without waiting.
+- **RuntimeState**: `notebook.runtime` provides sync reads of kernel status, queue, executions, env sync, and trust from the RuntimeStateDoc.
 - Use `default_socket_path()` for the current process or test harness because it respects `RUNTIMED_SOCKET_PATH`.
 - Use `socket_path_for_channel("stable"|"nightly")` only when you must target a specific channel explicitly or discover the other channel; it intentionally ignores `RUNTIMED_SOCKET_PATH`.
 
@@ -204,7 +213,7 @@ cargo xtask run-mcp --print-config
 
 `uv run nteract --stable` and `uv run nteract --nightly` are channel overrides for direct MCP launches. They only seed `RUNTIMED_SOCKET_PATH` when it is unset, and they also control which app `show_notebook` opens. `--no-show` removes the `show_notebook` tool entirely.
 
-### Available MCP tools
+### Supervisor Tools (from Inkwell / `mcp-supervisor`)
 
 | Tool | Purpose |
 |------|---------|
@@ -214,6 +223,18 @@ cargo xtask run-mcp --print-config
 | `supervisor_logs` | Tail the daemon log file |
 | `supervisor_start_vite` | Start the Vite dev server for hot-reload frontend development |
 | `supervisor_stop` | Stop a managed process by name (e.g. `"vite"`) |
+
+### nteract MCP Tools (27 tools for notebook interaction)
+
+| Category | Tools |
+|----------|-------|
+| Session | `list_active_notebooks`, `show_notebook`, `join_notebook`, `open_notebook`, `create_notebook`, `save_notebook` |
+| Kernel | `interrupt_kernel`, `restart_kernel` |
+| Dependencies | `add_dependency`, `remove_dependency`, `get_dependencies`, `sync_environment` |
+| Cell CRUD | `create_cell`, `get_cell`, `get_all_cells`, `set_cell`, `delete_cell`, `move_cell` |
+| Cell metadata | `set_cells_source_hidden`, `set_cells_outputs_hidden`, `add_cell_tags`, `remove_cell_tags` |
+| Find/Replace | `replace_match`, `replace_regex` |
+| Execution | `execute_cell`, `run_all_cells`, `clear_outputs` |
 
 ### Hot reload
 
@@ -228,9 +249,52 @@ The supervisor watches `python/nteract/src/`, `python/runtimed/src/`, `crates/ru
 - **No MCP server** → use `cargo xtask run-mcp` to set one up
 - **Dev daemon not running** → Inkwell starts it automatically via `supervisor_restart(target="daemon")`
 
+## Workspace Crates (15)
+
+| Crate | Purpose |
+|-------|---------|
+| `runtimed` | Central daemon — env pools, notebook sync, kernel execution |
+| `runtimed-py` | Python bindings for daemon (PyO3/maturin) |
+| `runtimed-wasm` | WASM bindings for notebook doc (Automerge, used by frontend) |
+| `notebook` | Tauri desktop app — main GUI, bundles daemon+CLI as sidecars |
+| `notebook-doc` | Shared Automerge schema — cells, outputs, RuntimeStateDoc, PEP 723 |
+| `notebook-protocol` | Wire types — requests, responses, broadcasts |
+| `notebook-sync` | Automerge sync client — `DocHandle`, per-cell Python accessors |
+| `runt` | CLI — daemon management, kernel control, notebook launching |
+| `runt-trust` | Notebook trust (HMAC-SHA256 over dependency metadata) |
+| `runt-workspace` | Per-worktree daemon isolation, socket path management |
+| `kernel-launch` | Kernel launching, tool bootstrapping (deno, uv, ruff via rattler) |
+| `kernel-env` | Python environment management (UV + Conda) with progress reporting |
+| `tauri-jupyter` | Shared Jupyter message types for Tauri/WebView |
+| `mcp-supervisor` | Inkwell — MCP supervisor proxy, daemon/vite lifecycle management |
+| `xtask` | Build system orchestration |
+
 ## Build System (`cargo xtask`)
 
 All build, lint, and dev commands go through `cargo xtask`. **Run `cargo xtask help` at the start of each session** — it's the source of truth.
+
+### Quick Reference
+
+| Category | Command | Description |
+|----------|---------|-------------|
+| Dev | `cargo xtask dev` | Full setup: deps + build + daemon + app |
+| | `cargo xtask notebook` | Hot-reload dev server (Vite on port 5174) |
+| | `cargo xtask notebook --attach` | Attach Tauri to existing Vite server |
+| | `cargo xtask vite` | Start Vite standalone |
+| | `cargo xtask build` | Full debug build (frontend + Rust) |
+| | `cargo xtask build --rust-only` | Rebuild Rust only, reuse frontend |
+| | `cargo xtask run` | Run bundled debug binary |
+| Daemon | `cargo xtask dev-daemon` | Per-worktree dev daemon |
+| | `cargo xtask install-daemon` | Install runtimed as system daemon |
+| MCP | `cargo xtask run-mcp` | Inkwell supervisor (daemon + MCP + auto-restart) |
+| | `cargo xtask run-mcp --print-config` | Print MCP client config JSON |
+| | `cargo xtask dev-mcp` | Direct nteract MCP (no supervisor) |
+| Lint | `cargo xtask lint` | Check formatting (Rust, JS/TS, Python) |
+| | `cargo xtask lint --fix` | Auto-fix formatting |
+| Test | `cargo xtask integration [filter]` | Python integration tests with isolated daemon |
+| | `cargo xtask e2e` | E2E testing (WebdriverIO) |
+| Other | `cargo xtask wasm` | Rebuild runtimed-wasm |
+| | `cargo xtask icons [source.png]` | Generate icon variants |
 
 ## Runtime Daemon (`runtimed`)
 
@@ -309,6 +373,7 @@ The rule: `image/*` → binary (EXCEPT `image/svg+xml` — that's text). `audio/
 | Notebook metadata (deps, runtime) | Frontend WASM | User edits deps, runtime picker |
 | Cell outputs (manifest hashes) | Daemon | Kernel IOPub → blob store → hash in doc |
 | Execution count | Daemon | Set on `execute_input` from kernel |
+| RuntimeStateDoc (kernel, queue, executions, env, trust) | Daemon | Separate Automerge doc, frame type `0x05` |
 
 **Never write to the CRDT in response to a daemon broadcast.** The daemon already wrote. Writing again creates redundant sync traffic and incorrectly marks the notebook as dirty.
 
