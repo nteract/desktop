@@ -39,14 +39,26 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: python-x86_64-unknown-linux-gnu
+
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Install dev tools
-        run: uv sync --only-group dev
+      - name: Build and stage runtimed binary
+        run: |
+          cargo build -p runtimed
+          cp target/debug/runtimed python/runtimed/src/runtimed/_bin/
+
+      - name: Sync workspace
+        run: uv sync
 
       - name: Ruff check
         run: uv run ruff check --config pyproject.toml python/nteract/src/ python/runtimed/src/ python/runtimed/tests/
@@ -56,18 +68,6 @@ jobs:
 
       - name: Type check
         run: uv run ty check python/
-
-      # runtimed-py unit tests (needs Rust for the native module)
-      - name: Install rust
-        uses: dsherret/rust-toolchain-file@v1
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: python-x86_64-unknown-linux-gnu
-
-      - name: Build runtimed-py
-        working-directory: python/runtimed
-        run: uv run maturin develop --manifest-path ../../crates/runtimed-py/Cargo.toml
 
       - name: Run runtimed-py unit tests
         working-directory: python/runtimed
