@@ -22,6 +22,12 @@
 import type { NotebookTransport } from "./transport.ts";
 import { FrameType } from "./transport.ts";
 import {
+  diffExecutions,
+  type ExecutionState,
+  type ExecutionTransition,
+  type RuntimeState,
+} from "./runtime-state.ts";
+import {
   Subject,
   Observable,
   bufferTime,
@@ -172,7 +178,11 @@ export type SyncEngineEvent =
   | { type: "initial_sync_complete" }
   | { type: "broadcast"; payload: unknown }
   | { type: "presence"; payload: unknown }
-  | { type: "runtime_state_changed"; state: unknown }
+  | { type: "runtime_state_changed"; state: RuntimeState }
+  | {
+      type: "execution_transition";
+      transition: ExecutionTransition;
+    }
   | { type: "sync_retry" }
   | { type: "error"; error: unknown; context: string };
 
@@ -340,6 +350,10 @@ export class SyncEngine {
   // ── Initial sync retry ─────────────────────────────────────────
   #retryTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // ── Runtime state tracking (for execution diffing) ────────────
+  #prevExecutions: Record<string, ExecutionState> = {};
+  #isInitialRuntimeState = true;
+
   // ── Event subscribers ──────────────────────────────────────────
   #listeners: Map<SyncEngineEventType, Set<EventCallback>> = new Map();
 
@@ -457,7 +471,7 @@ export class SyncEngine {
   /**
    * Runtime state changes as an Observable.
    */
-  readonly runtimeState$: Observable<unknown> = this.#events$.pipe(
+  readonly runtimeState$: Observable<RuntimeState> = this.#events$.pipe(
     filter(
       (e): e is Extract<SyncEngineEvent, { type: "runtime_state_changed" }> =>
         e.type === "runtime_state_changed",
@@ -465,6 +479,26 @@ export class SyncEngine {
     map((e) => e.state),
     share(),
   );
+
+  /**
+   * Execution lifecycle transitions as an Observable.
+   *
+   * Emits when an execution changes status (queued→running = "started",
+   * running→done = "done", running→error = "error"). Consumers can use
+   * this to update execution counts, show progress indicators, etc.
+   * without manually diffing the executions map.
+   */
+  readonly executionTransitions$: Observable<ExecutionTransition> =
+    this.#events$.pipe(
+      filter(
+        (
+          e,
+        ): e is Extract<SyncEngineEvent, { type: "execution_transition" }> =>
+          e.type === "execution_transition",
+      ),
+      map((e) => e.transition),
+      share(),
+    );
 
   // ── Lifecycle ──────────────────────────────────────────────────
 
@@ -737,7 +771,25 @@ export class SyncEngine {
   #handleRuntimeStateSync(event: RuntimeStateSyncAppliedEvent): void {
     // Emit state change if the doc changed.
     if (event.changed && event.state) {
-      this.#emit({ type: "runtime_state_changed", state: event.state });
+      const state = event.state as RuntimeState;
+      this.#emit({ type: "runtime_state_changed", state });
+
+      // Diff executions to detect lifecycle transitions.
+      // Skip the first state (slow joiner catch-up) to avoid
+      // false "started" events for already-running executions.
+      const currExecutions = state.executions ?? {};
+      if (this.#isInitialRuntimeState) {
+        this.#isInitialRuntimeState = false;
+      } else {
+        const transitions = diffExecutions(
+          this.#prevExecutions,
+          currExecutions,
+        );
+        for (const transition of transitions) {
+          this.#emit({ type: "execution_transition", transition });
+        }
+      }
+      this.#prevExecutions = currExecutions;
     }
 
     // Send runtime state sync reply so the daemon knows our heads.

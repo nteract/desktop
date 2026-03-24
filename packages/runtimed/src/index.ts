@@ -74,3 +74,17 @@ export type {
   ChangedFields,
   TextAttribution,
 } from "./sync-engine.ts";
+
+// ── Runtime State ───────────────────────────────────────────────────
+
+export { diffExecutions } from "./runtime-state.ts";
+export type {
+  RuntimeState,
+  KernelState,
+  QueueEntry,
+  QueueState,
+  EnvState,
+  TrustState,
+  ExecutionState,
+  ExecutionTransition,
+} from "./runtime-state.ts";
