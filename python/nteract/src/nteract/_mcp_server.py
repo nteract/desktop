@@ -833,9 +833,23 @@ class NteractServer:
 
             client = srv._get_client()
             srv._notebook = await client.open_notebook(path, peer_label=srv._peer_label())
+
+            cell_status = await _get_cell_status_map(srv._notebook)
+            lines = [
+                _format_cell_summary(
+                    i,
+                    cell,
+                    preview_chars=60,
+                    include_outputs=False,
+                    status=cell_status.get(cell.id),
+                )
+                for i, cell in enumerate(srv._notebook.cells)
+            ]
+
             return {
                 "notebook_id": srv._notebook.notebook_id,
                 "path": path,
+                "cells": "\n".join(lines),
             }
 
         @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
