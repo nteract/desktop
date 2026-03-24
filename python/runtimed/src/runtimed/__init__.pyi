@@ -17,5 +17,7 @@ from runtimed.runtimed import RuntimeState as RuntimeState
 from runtimed.runtimed import SyncEnvironmentResult as SyncEnvironmentResult
 from runtimed.runtimed import default_socket_path as default_socket_path
 from runtimed.runtimed import show_notebook_app as show_notebook_app
+from runtimed.runtimed import show_notebook_app_for_channel as show_notebook_app_for_channel
+from runtimed.runtimed import socket_path_for_channel as socket_path_for_channel
 
 __version__: str
