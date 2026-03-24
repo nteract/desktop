@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -469,19 +470,16 @@ async def test_get_all_cells_pagination(mcp_client: ClientSession):
 @pytest.mark.asyncio
 async def test_open_notebook_returns_cells(mcp_client: ClientSession):
     """open_notebook should return a cell summary like join_notebook."""
-    # Create a notebook with cells so we have something to open
-    result = await mcp_client.call_tool("create_notebook", {})
-    data = _parse_json(result)
-    notebook_id = data["notebook_id"]
+    fixture = str(
+        Path(__file__).resolve().parents[3]
+        / "crates"
+        / "notebook"
+        / "fixtures"
+        / "audit-test"
+        / "1-vanilla.ipynb"
+    )
 
-    await mcp_client.call_tool("create_cell", {"source": "# Hello", "cell_type": "markdown"})
-    await mcp_client.call_tool("create_cell", {"source": "x = 1"})
-
-    # Save to a temp path so we can reopen it
-    result = await mcp_client.call_tool("save_notebook", {})
-
-    # Reopen the same notebook by path — this closes and reconnects
-    result = await mcp_client.call_tool("open_notebook", {"path": notebook_id})
+    result = await mcp_client.call_tool("open_notebook", {"path": fixture})
     data = _parse_json(result)
 
     assert "notebook_id" in data
@@ -489,7 +487,6 @@ async def test_open_notebook_returns_cells(mcp_client: ClientSession):
     assert "cells" in data
 
     cells_text = data["cells"]
-    assert "| markdown |" in cells_text
+    # 1-vanilla.ipynb has two code cells, one with `import sys`
     assert "| code |" in cells_text
-    assert "# Hello" in cells_text
-    assert "x = 1" in cells_text
+    assert "import sys" in cells_text
