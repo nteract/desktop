@@ -206,9 +206,11 @@ class CellHandle:
         src = self.source
         preview = (src[:60] + "...") if len(src) > 60 else src
         preview = preview.replace("\n", "\\n")
+        # Use an indented code block — immune to backticks in source
+        indented = "    " + preview
         return (
             f"**Cell** `{self._id[:8]}` ({self.cell_type})\n\n"
-            f"```\n{preview}\n```\n\n"
+            f"{indented}\n\n"
             "| Properties (sync) | Async methods |\n"
             "|-|-|\n"
             "| `source` | `set_source()` `append()` `splice()` |\n"
