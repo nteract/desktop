@@ -5866,6 +5866,7 @@ pub(crate) fn spawn_notebook_file_watcher(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_sanitize_peer_label_basic() {
@@ -7662,5 +7663,229 @@ mod tests {
             "Post-rekey cell should be persisted; sources: {:?}",
             sources
         );
+    }
+
+    // ── verify_trust_from_snapshot tests ───────────────────────────────────
+
+    #[test]
+    fn test_verify_trust_from_snapshot_no_deps() {
+        let snapshot = snapshot_empty();
+        let result = verify_trust_from_snapshot(&snapshot);
+        assert_eq!(result.status, runt_trust::TrustStatus::NoDependencies);
+        assert!(!result.pending_launch);
+    }
+
+    #[test]
+    #[serial]
+    fn test_verify_trust_from_snapshot_unsigned_deps() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let key_path = temp_dir.path().join("trust-key");
+        std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+        let snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
+        let result = verify_trust_from_snapshot(&snapshot);
+        assert_eq!(result.status, runt_trust::TrustStatus::Untrusted);
+        assert!(!result.pending_launch);
+
+        std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    }
+
+    #[test]
+    #[serial]
+    fn test_verify_trust_from_snapshot_signed_trusted() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let key_path = temp_dir.path().join("trust-key");
+        std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+        let mut snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
+
+        // Build the same HashMap that verify_trust_from_snapshot builds, then sign.
+        let mut metadata = std::collections::HashMap::new();
+        if let Ok(runt_value) = serde_json::to_value(&snapshot.runt) {
+            metadata.insert("runt".to_string(), runt_value);
+        }
+        let signature = runt_trust::sign_notebook_dependencies(&metadata).unwrap();
+        snapshot.runt.trust_signature = Some(signature);
+
+        let result = verify_trust_from_snapshot(&snapshot);
+        assert_eq!(result.status, runt_trust::TrustStatus::Trusted);
+        assert!(!result.pending_launch);
+
+        std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    }
+
+    #[test]
+    #[serial]
+    fn test_verify_trust_from_snapshot_invalid_signature() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let key_path = temp_dir.path().join("trust-key");
+        std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+        let mut snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
+        // Set a bogus signature that won't match.
+        snapshot.runt.trust_signature = Some("bad-signature-value".to_string());
+
+        let result = verify_trust_from_snapshot(&snapshot);
+        assert_eq!(result.status, runt_trust::TrustStatus::SignatureInvalid);
+        assert!(!result.pending_launch);
+
+        std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    }
+
+    #[test]
+    #[serial]
+    fn test_verify_trust_from_snapshot_conda_trusted() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let key_path = temp_dir.path().join("trust-key");
+        std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+        let mut snapshot = snapshot_with_conda(vec!["pandas".to_string()]);
+
+        // Build the same HashMap that verify_trust_from_snapshot builds, then sign.
+        let mut metadata = std::collections::HashMap::new();
+        if let Ok(runt_value) = serde_json::to_value(&snapshot.runt) {
+            metadata.insert("runt".to_string(), runt_value);
+        }
+        let signature = runt_trust::sign_notebook_dependencies(&metadata).unwrap();
+        snapshot.runt.trust_signature = Some(signature);
+
+        let result = verify_trust_from_snapshot(&snapshot);
+        assert_eq!(result.status, runt_trust::TrustStatus::Trusted);
+        assert!(!result.pending_launch);
+
+        std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    }
+
+    #[tokio::test]
+    async fn test_check_and_update_trust_state_empty_doc() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _path) = test_room_with_path(&tmp, "empty_doc.ipynb");
+
+        // Doc has no metadata written — should not crash.
+        check_and_update_trust_state(&room).await;
+
+        // trust_state should remain Untrusted (the default from test_room_with_path).
+        let ts = room.trust_state.read().await;
+        assert_eq!(ts.status, runt_trust::TrustStatus::Untrusted);
+    }
+
+    #[tokio::test]
+    async fn test_check_and_update_trust_state_no_deps() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _path) = test_room_with_path(&tmp, "no_deps.ipynb");
+
+        // Align RuntimeStateDoc with the room's initial Untrusted state so we
+        // can verify the function actually writes the new value.
+        {
+            let mut sd = room.state_doc.write().await;
+            sd.set_trust("untrusted", true);
+        }
+
+        // Write an empty metadata snapshot (no dependencies).
+        let snapshot = snapshot_empty();
+        {
+            let mut doc = room.doc.write().await;
+            doc.set_metadata_snapshot(&snapshot).unwrap();
+        }
+
+        check_and_update_trust_state(&room).await;
+
+        // Room trust_state should change from Untrusted → NoDependencies.
+        let ts = room.trust_state.read().await;
+        assert_eq!(ts.status, runt_trust::TrustStatus::NoDependencies);
+        drop(ts);
+
+        // RuntimeStateDoc should reflect "no_dependencies" with needs_approval=false.
+        let sd = room.state_doc.read().await;
+        let state = sd.read_state();
+        assert_eq!(state.trust.status, "no_dependencies");
+        assert!(!state.trust.needs_approval);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_check_and_update_trust_state_approval_updates_room() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let key_path = temp_dir.path().join("trust-key");
+        std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _path) = test_room_with_path(&tmp, "signed.ipynb");
+
+        // Align RuntimeStateDoc with the room's initial Untrusted state.
+        {
+            let mut sd = room.state_doc.write().await;
+            sd.set_trust("untrusted", true);
+        }
+
+        // Build a snapshot with UV deps and a valid trust signature.
+        let mut snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
+        let mut metadata = std::collections::HashMap::new();
+        if let Ok(runt_value) = serde_json::to_value(&snapshot.runt) {
+            metadata.insert("runt".to_string(), runt_value);
+        }
+        let signature = runt_trust::sign_notebook_dependencies(&metadata).unwrap();
+        snapshot.runt.trust_signature = Some(signature);
+
+        {
+            let mut doc = room.doc.write().await;
+            doc.set_metadata_snapshot(&snapshot).unwrap();
+        }
+
+        check_and_update_trust_state(&room).await;
+
+        // Room trust_state should be Trusted.
+        let ts = room.trust_state.read().await;
+        assert_eq!(ts.status, runt_trust::TrustStatus::Trusted);
+        drop(ts);
+
+        // RuntimeStateDoc should have "trusted" with needs_approval=false.
+        let sd = room.state_doc.read().await;
+        let state = sd.read_state();
+        assert_eq!(state.trust.status, "trusted");
+        assert!(!state.trust.needs_approval);
+
+        std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    }
+
+    #[tokio::test]
+    async fn test_check_and_update_trust_state_idempotent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _path) = test_room_with_path(&tmp, "idempotent.ipynb");
+
+        // Align RuntimeStateDoc with the room's initial Untrusted state so the
+        // first transition to NoDependencies actually mutates the doc and fires
+        // a notification.
+        {
+            let mut sd = room.state_doc.write().await;
+            sd.set_trust("untrusted", true);
+        }
+
+        // Write an empty metadata snapshot to trigger Untrusted → NoDependencies.
+        let snapshot = snapshot_empty();
+        {
+            let mut doc = room.doc.write().await;
+            doc.set_metadata_snapshot(&snapshot).unwrap();
+        }
+
+        // Subscribe before either call so we capture all notifications.
+        let mut rx = room.state_changed_tx.subscribe();
+
+        // First call: state changes from Untrusted → NoDependencies → notification sent.
+        check_and_update_trust_state(&room).await;
+
+        // Second call: state is already NoDependencies → no change, no notification.
+        check_and_update_trust_state(&room).await;
+
+        // Drain the channel and count how many notifications arrived.
+        let mut count = 0usize;
+        while rx.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(count, 1, "expected exactly one state_changed notification");
+
+        // Final trust_state should be NoDependencies.
+        let ts = room.trust_state.read().await;
+        assert_eq!(ts.status, runt_trust::TrustStatus::NoDependencies);
     }
 }
