@@ -15,14 +15,24 @@ We're in the preliminary stages of hooking up the realtime system from nteract/d
 #### Claude Code
 
 ```bash
-# Stable desktop 1.4.x / stable MCP
+# Stable
 claude mcp add nteract -- uvx nteract
+
+# Nightly
+claude mcp add nteract-nightly -- uvx --prerelease allow nteract --nightly
 ```
 
-For desktop nightly / the upcoming 2.x transition, use the prerelease MCP package and nightly socket:
+#### Manual JSON config
 
-```bash
-claude mcp add nteract-nightly -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-nightly/runtimed.sock" uvx --prerelease allow nteract
+```json
+{
+  "mcpServers": {
+    "nteract": {
+      "command": "uvx",
+      "args": ["nteract"]
+    }
+  }
+}
 ```
 
 That's it. Now Claude can execute Python code, create visualizations, and work with your data.
@@ -49,54 +59,6 @@ Claude will:
 4. Show you the results
 
 You can open the same notebook in the [nteract desktop app](https://nteract.io) to see changes in real-time and collaborate with the AI.
-
-## Installation
-
-Stable line for desktop `1.4.x`:
-
-```bash
-uvx nteract
-```
-
-Prerelease line for desktop nightly / 2.x transition:
-
-```bash
-uvx --prerelease allow nteract
-```
-
-## Claude Code Setup
-
-Add stable `nteract` as an MCP server:
-
-```bash
-claude mcp add nteract -- uvx nteract
-```
-
-Or manually add to your Claude configuration:
-
-```json
-{
-  "mcpServers": {
-    "nteract": {
-      "command": "uvx",
-      "args": ["nteract"]
-    }
-  }
-}
-```
-
-### Using with Nightly
-
-If you're using nteract desktop nightly builds, point at the nightly socket and allow prereleases:
-
-```bash
-claude mcp add nteract -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-nightly/runtimed.sock" uvx --prerelease allow nteract
-```
-
-### Release Tracks
-
-- `main` publishes prerelease `nteract` builds for the 2.x transition and tracks `runtimed 2.x` prereleases.
-- `release/1.9.x` is the stable maintenance line for desktop `1.4.x` and stays on `runtimed 1.9.0`.
 
 ## Available Tools
 
@@ -125,6 +87,13 @@ claude mcp add nteract -- env RUNTIMED_SOCKET_PATH="$HOME/Library/Caches/runt-ni
 | `remove_dependency` | Remove a dependency |
 | `get_dependencies` | List current dependencies |
 | `sync_environment` | Hot-install new deps without restart |
+
+### CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `--nightly` | Connect to the nightly daemon socket instead of stable |
+| `--no-show` | Disable the `show_notebook` tool (for headless environments) |
 
 ## Architecture
 

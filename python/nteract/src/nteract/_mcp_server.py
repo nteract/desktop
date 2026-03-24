@@ -45,6 +45,18 @@ mcp = FastMCP("nteract")
 # This is useful for headless environments where no desktop app is available.
 _no_show = "--no-show" in sys.argv
 
+# When --nightly is passed, point at the nightly daemon socket automatically.
+# This avoids the need for `env RUNTIMED_SOCKET_PATH=... uvx nteract`.
+if "--nightly" in sys.argv and not os.environ.get("RUNTIMED_SOCKET_PATH"):
+    import platform
+
+    if platform.system() == "Darwin":
+        _nightly_sock = os.path.expanduser("~/Library/Caches/runt-nightly/runtimed.sock")
+    else:
+        _cache = os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
+        _nightly_sock = os.path.join(_cache, "runt-nightly", "runtimed.sock")
+    os.environ["RUNTIMED_SOCKET_PATH"] = _nightly_sock
+
 
 # ── Peer label for remote cursors ─────────────────────────────────────
 # The MCP initialize handshake includes clientInfo with `name` and

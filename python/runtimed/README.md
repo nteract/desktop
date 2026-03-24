@@ -12,7 +12,7 @@ Python bindings for the [nteract](https://nteract.io) runtime daemon. Execute co
 pip install runtimed
 ```
 
-> **Note:** The 2.0 release is currently in pre-release. Use `pip install --pre runtimed` (or `uv pip install --prerelease allow runtimed`) to get the latest 2.x build matching the nteract desktop nightly.
+> **Nightly builds:** To track the nteract desktop nightly, use `pip install --pre runtimed` (or `uv pip install --prerelease allow runtimed`).
 
 ## Quick Start
 
