@@ -1257,8 +1257,8 @@ where
 /// - Strips zero-width and control characters (ZWJ, ZWNJ, ZWSP, etc.)
 /// - Trims whitespace
 /// - Clamps to 64 Unicode scalar values
-/// - Falls back to "peer" if empty/missing
-fn sanitize_peer_label(raw: Option<&str>) -> String {
+/// - Falls back to `fallback` if empty/missing
+fn sanitize_peer_label(raw: Option<&str>, fallback: &str) -> String {
     const MAX_LABEL_CHARS: usize = 64;
 
     fn is_allowed(c: char) -> bool {
@@ -1299,12 +1299,12 @@ fn sanitize_peer_label(raw: Option<&str>) -> String {
                 .collect();
             let trimmed = cleaned.trim();
             if trimmed.is_empty() {
-                "peer".to_string()
+                fallback.to_string()
             } else {
                 trimmed.to_string()
             }
         }
-        None => "peer".to_string(),
+        None => fallback.to_string(),
     }
 }
 
@@ -1564,7 +1564,7 @@ where
                                             // Sanitize peer_label: trim whitespace, clamp length,
                                             // treat empty as fallback. Prevents UI/memory issues
                                             // from malicious or buggy clients.
-                                            let label = sanitize_peer_label(peer_label.as_deref());
+                                            let label = sanitize_peer_label(peer_label.as_deref(), peer_id);
                                             let sanitized_label = Some(label.clone());
                                             // Update the room's presence state (using our known peer_id,
                                             // not the one in the frame — clients don't know their peer_id).
@@ -5875,55 +5875,64 @@ mod tests {
 
     #[test]
     fn test_sanitize_peer_label_basic() {
-        assert_eq!(sanitize_peer_label(None), "peer");
-        assert_eq!(sanitize_peer_label(Some("")), "peer");
-        assert_eq!(sanitize_peer_label(Some("  ")), "peer");
-        assert_eq!(sanitize_peer_label(Some("Codex")), "Codex");
-        assert_eq!(sanitize_peer_label(Some("  Claude  ")), "Claude");
+        assert_eq!(sanitize_peer_label(None, "fb"), "fb");
+        assert_eq!(sanitize_peer_label(Some(""), "fb"), "fb");
+        assert_eq!(sanitize_peer_label(Some("  "), "fb"), "fb");
+        assert_eq!(sanitize_peer_label(Some("Codex"), "fb"), "Codex");
+        assert_eq!(sanitize_peer_label(Some("  Claude  "), "fb"), "Claude");
     }
 
     #[test]
     fn test_sanitize_peer_label_clamps_length() {
         let long = "a".repeat(100);
-        assert_eq!(sanitize_peer_label(Some(&long)).len(), 64);
+        assert_eq!(sanitize_peer_label(Some(&long), "fb").len(), 64);
     }
 
     #[test]
     fn test_sanitize_peer_label_clamps_unicode() {
         // 70 emoji = 70 chars but 280 bytes
         let emoji_label: String = "🦾".repeat(70);
-        let result = sanitize_peer_label(Some(&emoji_label));
+        let result = sanitize_peer_label(Some(&emoji_label), "fb");
         assert_eq!(result.chars().count(), 64);
     }
 
     #[test]
     fn test_sanitize_peer_label_strips_zero_width() {
         // ZWJ, ZWSP, ZWNJ scattered in a label
-        assert_eq!(sanitize_peer_label(Some("Co\u{200B}d\u{200D}ex")), "Codex");
-        // Only zero-width chars → falls back to "peer"
         assert_eq!(
-            sanitize_peer_label(Some("\u{200B}\u{200C}\u{200D}")),
-            "peer"
+            sanitize_peer_label(Some("Co\u{200B}d\u{200D}ex"), "fb"),
+            "Codex"
+        );
+        // Only zero-width chars → falls back to fallback
+        assert_eq!(
+            sanitize_peer_label(Some("\u{200B}\u{200C}\u{200D}"), "fb"),
+            "fb"
         );
     }
 
     #[test]
     fn test_sanitize_peer_label_strips_control_chars() {
-        assert_eq!(sanitize_peer_label(Some("Claude\x00\x1F")), "Claude");
-        assert_eq!(sanitize_peer_label(Some("\x07")), "peer");
+        assert_eq!(sanitize_peer_label(Some("Claude\x00\x1F"), "fb"), "Claude");
+        assert_eq!(sanitize_peer_label(Some("\x07"), "fb"), "fb");
     }
 
     #[test]
     fn test_sanitize_peer_label_strips_bidi_overrides() {
         // RTL override + LTR override
-        assert_eq!(sanitize_peer_label(Some("\u{202E}Agent\u{202C}")), "Agent");
+        assert_eq!(
+            sanitize_peer_label(Some("\u{202E}Agent\u{202C}"), "fb"),
+            "Agent"
+        );
     }
 
     #[test]
     fn test_sanitize_peer_label_strips_bidi_marks() {
         // LRM and RLM
-        assert_eq!(sanitize_peer_label(Some("\u{200E}Agent\u{200F}")), "Agent");
-        assert_eq!(sanitize_peer_label(Some("\u{200E}\u{200F}")), "peer");
+        assert_eq!(
+            sanitize_peer_label(Some("\u{200E}Agent\u{200F}"), "fb"),
+            "Agent"
+        );
+        assert_eq!(sanitize_peer_label(Some("\u{200E}\u{200F}"), "fb"), "fb");
     }
 
     /// Create a test blob store in the given temp directory.

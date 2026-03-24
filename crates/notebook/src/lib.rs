@@ -3932,6 +3932,12 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
             } else {
                 // Create ALL notebook windows immediately. Each shows a loading UI
                 // until the daemon is ready and sync completes.
+                let startup_username = get_username();
+                let startup_init_script = format!(
+                    "window.__NTERACT_USERNAME__ = {};",
+                    serde_json::to_string(&startup_username)
+                        .unwrap_or_else(|_| "\"\"".to_string())
+                );
                 for sw in &startup_windows {
                     match tauri::WebviewWindowBuilder::new(
                         app,
@@ -3939,6 +3945,7 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
                         tauri::WebviewUrl::default(),
                     )
                     .title(&sw.title)
+                    .initialization_script(&startup_init_script)
                     .inner_size(1100.0, 750.0)
                     .min_inner_size(400.0, 250.0)
                     .resizable(true)
