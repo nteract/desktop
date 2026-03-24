@@ -43,12 +43,20 @@ export interface TrustState {
   needs_approval: boolean;
 }
 
+export interface ExecutionState {
+  cell_id: string;
+  status: "queued" | "running" | "done" | "error";
+  execution_count: number | null;
+  success: boolean | null;
+}
+
 export interface RuntimeState {
   kernel: KernelState;
   queue: QueueState;
   env: EnvState;
   trust: TrustState;
   last_saved: string | null;
+  executions: Record<string, ExecutionState>;
 }
 
 // ── Default state ────────────────────────────────────────────────────
@@ -76,6 +84,7 @@ const DEFAULT_RUNTIME_STATE: RuntimeState = {
     needs_approval: false,
   },
   last_saved: null,
+  executions: {},
 };
 
 // ── Store ────────────────────────────────────────────────────────────
