@@ -681,9 +681,18 @@ async def join_notebook(
     client = _get_client()
     _notebook = await client.join_notebook(notebook_id, peer_label=_peer_label())
 
+    cell_status = await _get_cell_status_map(_notebook)
+    lines = [
+        _format_cell_summary(
+            i, cell, preview_chars=60, include_outputs=False, status=cell_status.get(cell.id)
+        )
+        for i, cell in enumerate(_notebook.cells)
+    ]
+
     return {
         "notebook_id": _notebook.notebook_id,
         "connected": True,
+        "cells": "\n".join(lines),
     }
 
 
