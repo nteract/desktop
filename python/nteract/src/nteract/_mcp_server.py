@@ -407,6 +407,7 @@ def _format_header(
     cell_type: str | None = None,
     status: str | None = None,
     execution_count: int | None = None,
+    tags: list[str] | None = None,
 ) -> str:
     """Format a cell header line for terminal display.
 
@@ -426,6 +427,9 @@ def _format_header(
     if execution_count is not None:
         parts.append(f"[{execution_count}]")
 
+    if tags:
+        parts.append(f"tags: {', '.join(tags)}")
+
     parts.append("━━━")
     return " ".join(parts)
 
@@ -436,7 +440,11 @@ def _format_cell(cell: runtimed.CellHandle, status: str | None = None) -> str:
     Used by get_cell to show full cell state.
     """
     header = _format_header(
-        cell.id, cell_type=cell.cell_type, status=status, execution_count=cell.execution_count
+        cell.id,
+        cell_type=cell.cell_type,
+        status=status,
+        execution_count=cell.execution_count,
+        tags=cell.tags,
     )
     output_text = _format_outputs_text(cell.outputs)
 
@@ -456,7 +464,11 @@ def _cell_to_content(cell: runtimed.CellHandle, status: str | None = None) -> li
     Returns a header as TextContent, then each output as its richest type.
     """
     header = _format_header(
-        cell.id, cell_type=cell.cell_type, status=status, execution_count=cell.execution_count
+        cell.id,
+        cell_type=cell.cell_type,
+        status=status,
+        execution_count=cell.execution_count,
+        tags=cell.tags,
     )
     items: list[ContentItem] = []
 
@@ -1306,6 +1318,7 @@ class NteractServer:
                         "source": cell.source,
                         "outputs": [_output_to_dict(o) for o in cell.outputs],
                         "status": cell_status.get(cell.id),
+                        "tags": list(cell.tags),
                     }
                     for cell in cells
                 ]
