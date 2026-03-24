@@ -3842,6 +3842,8 @@ struct NotebookTableRow {
     status: String,
     #[tabled(rename = "PEERS")]
     peers: String,
+    #[tabled(rename = "EVICTION")]
+    eviction: String,
 }
 
 async fn list_notebooks(json_output: bool) -> Result<()> {
@@ -3869,6 +3871,10 @@ async fn list_notebooks(json_output: bool) -> Result<()> {
                         env: r.env_source.clone().unwrap_or_else(|| "-".to_string()),
                         status: r.kernel_status.clone().unwrap_or_else(|| "-".to_string()),
                         peers: r.active_peers.to_string(),
+                        eviction: r
+                            .scheduled_eviction
+                            .clone()
+                            .unwrap_or_else(|| "-".to_string()),
                     })
                     .collect();
 

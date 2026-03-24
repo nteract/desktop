@@ -1878,6 +1878,11 @@ impl Daemon {
                         .map(|(kt, es, st)| (Some(kt), Some(es), Some(st)))
                         .unwrap_or((None, None, None));
 
+                    let scheduled_eviction = room.scheduled_eviction.read().await.map(|t| {
+                        let dt: chrono::DateTime<chrono::Utc> = t.into();
+                        dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                    });
+
                     room_infos.push(crate::protocol::RoomInfo {
                         notebook_id: notebook_id.clone(),
                         active_peers: room.active_peers.load(std::sync::atomic::Ordering::Relaxed),
@@ -1885,6 +1890,7 @@ impl Daemon {
                         kernel_type,
                         env_source,
                         kernel_status,
+                        scheduled_eviction,
                     });
                 }
                 Response::RoomsList { rooms: room_infos }

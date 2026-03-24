@@ -24,6 +24,7 @@ class NotebookInfo:
     active_peers: int = 0
     has_runtime: bool = False
     env_source: str | None = None
+    scheduled_eviction: str | None = None
 
     @property
     def name(self) -> str:
@@ -58,6 +59,7 @@ class NotebookInfo:
             active_peers=int(d.get("active_peers", 0)),
             has_runtime=bool(d.get("has_kernel", False)),
             env_source=d.get("env_source"),
+            scheduled_eviction=d.get("scheduled_eviction"),
         )
 
     def __repr__(self) -> str:
