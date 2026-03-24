@@ -464,3 +464,32 @@ async def test_get_all_cells_pagination(mcp_client: ClientSession):
 
     # Index should be 1 (the original index, not reset to 0)
     assert text.startswith("1 |")
+
+
+@pytest.mark.asyncio
+async def test_open_notebook_returns_cells(mcp_client: ClientSession):
+    """open_notebook should return a cell summary like join_notebook."""
+    # Create a notebook with cells so we have something to open
+    result = await mcp_client.call_tool("create_notebook", {})
+    data = _parse_json(result)
+    notebook_id = data["notebook_id"]
+
+    await mcp_client.call_tool("create_cell", {"source": "# Hello", "cell_type": "markdown"})
+    await mcp_client.call_tool("create_cell", {"source": "x = 1"})
+
+    # Save to a temp path so we can reopen it
+    result = await mcp_client.call_tool("save_notebook", {})
+
+    # Reopen the same notebook by path — this closes and reconnects
+    result = await mcp_client.call_tool("open_notebook", {"path": notebook_id})
+    data = _parse_json(result)
+
+    assert "notebook_id" in data
+    assert "path" in data
+    assert "cells" in data
+
+    cells_text = data["cells"]
+    assert "| markdown |" in cells_text
+    assert "| code |" in cells_text
+    assert "# Hello" in cells_text
+    assert "x = 1" in cells_text
