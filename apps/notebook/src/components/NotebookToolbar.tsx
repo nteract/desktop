@@ -105,9 +105,6 @@ export function NotebookToolbar({
     kernelStatus === KERNEL_STATUS.BUSY ||
     kernelStatus === KERNEL_STATUS.STARTING;
   const kernelStatusText = getKernelStatusLabel(kernelStatus, startingPhase);
-  const isKernelNotStarted =
-    kernelStatus === KERNEL_STATUS.NOT_STARTED ||
-    kernelStatus === KERNEL_STATUS.SHUTDOWN;
   const envErrorMessage = envProgress?.error ?? null;
   const envStatusText = envProgress?.statusText ?? kernelStatusText;
   const kernelStatusDescription = envProgress?.isActive
