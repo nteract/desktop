@@ -168,5 +168,23 @@ class Notebook:
     async def __aexit__(self, *args) -> None:
         await self.close()
 
+    def _repr_markdown_(self) -> str:
+        nid = self.notebook_id[:12]
+        n_cells = len(self.cells)
+        peers = self.peers
+        return (
+            f"**Notebook** `{nid}` — "
+            f"{n_cells} cell{'s' if n_cells != 1 else ''}, "
+            f"{len(peers)} peer{'s' if len(peers) != 1 else ''}\n\n"
+            "| Properties (sync) | Async methods |\n"
+            "|-|-|\n"
+            "| `cells` `peers` | `save()` `save_as()` |\n"
+            "| `presence` `runtime` | `start()` `shutdown()` `restart()` |\n"
+            "| `notebook_id` | `interrupt()` `run_all()` |\n"
+            "| | `add_dependency()` `remove_dependency()` |\n"
+            "| | `get_dependencies()` `sync_environment()` |\n"
+            "| | `is_connected()` `queue_state()` `close()` |\n"
+        )
+
     def __repr__(self) -> str:
         return f"Notebook({self.notebook_id[:12]})"
