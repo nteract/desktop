@@ -516,9 +516,10 @@ impl Session {
     #[pyo3(signature = (path=None))]
     fn save(&mut self, path: Option<&str>) -> PyResult<String> {
         self.connect()?;
+        let resolved = path.map(crate::daemon_paths::resolve_notebook_path);
         let result = self
             .runtime
-            .block_on(session_core::save(&self.state, path))?;
+            .block_on(session_core::save(&self.state, resolved.as_deref()))?;
         // If the daemon re-keyed the room (ephemeral → file-path),
         // store the new ID so the notebook_id getter reflects it.
         if let Some(new_id) = result.new_notebook_id {
