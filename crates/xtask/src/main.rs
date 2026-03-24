@@ -871,6 +871,11 @@ fn cmd_e2e_test_all() {
     // 2. Fixture tests (mirroring CI e2e-fixtures job)
     let fixtures: &[(&str, &str, &str)] = &[
         (
+            "crates/notebook/fixtures/audit-test/14-cell-visibility.ipynb",
+            "e2e/specs/cell-visibility.spec.js",
+            "Cell Visibility Test",
+        ),
+        (
             "crates/notebook/fixtures/audit-test/1-vanilla.ipynb",
             "e2e/specs/prewarmed-uv.spec.js",
             "Prewarmed Pool Test",

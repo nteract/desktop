@@ -5,7 +5,7 @@
  * No kernel launch needed — this tests pure UI behavior.
  *
  * Fixture: crates/notebook/fixtures/audit-test/14-cell-visibility.ipynb
- * Run with: ./e2e/dev.sh test-fixture \
+ * Run with: cargo xtask e2e test-fixture \
  *   crates/notebook/fixtures/audit-test/14-cell-visibility.ipynb \
  *   e2e/specs/cell-visibility.spec.js
  *
@@ -21,6 +21,26 @@ import {
   waitForAppReady,
   waitForNotebookSynced,
 } from "../helpers.js";
+
+/**
+ * Focus a code cell by clicking its editor area.
+ *
+ * The right-gutter buttons (Hide source, Hide outputs, Delete) use
+ * `sm:opacity-0 sm:group-hover:opacity-100` with an `isFocused && "sm:opacity-100"`
+ * override. WebDriver's moveTo() does not reliably trigger CSS :hover in
+ * WebKit/WRY, so we focus the cell instead — setting isFocused makes the
+ * gutter buttons visible at sm:opacity-100.
+ */
+async function focusCell(codeCell) {
+  const editor = await codeCell.$(".cm-content[contenteditable]");
+  if (await editor.isExisting()) {
+    await editor.click();
+  } else {
+    // If source is hidden, click the cell container itself
+    await codeCell.click();
+  }
+  await browser.pause(300);
+}
 
 describe("Cell Visibility Toggles", () => {
   it("should have a cell with source and output from fixture", async () => {
@@ -43,9 +63,9 @@ describe("Cell Visibility Toggles", () => {
   it("should hide source when clicking source toggle button", async () => {
     const codeCell = await $('[data-cell-type="code"]');
 
-    // Hover over the cell to reveal gutter buttons
-    await codeCell.moveTo();
-    await browser.pause(300);
+    // Focus the cell to make gutter buttons visible (isFocused → sm:opacity-100).
+    // moveTo() doesn't trigger CSS :hover in WRY's WebDriver.
+    await focusCell(codeCell);
 
     // Find and click the source toggle button (Code2 icon with "Hide source" title)
     const hideSourceButton = await codeCell.$('button[title="Hide source"]');
@@ -80,9 +100,8 @@ describe("Cell Visibility Toggles", () => {
   it("should hide outputs when clicking output toggle button", async () => {
     const codeCell = await $('[data-cell-type="code"]');
 
-    // Hover over the cell to reveal gutter buttons
-    await codeCell.moveTo();
-    await browser.pause(300);
+    // Focus the cell to make gutter buttons visible
+    await focusCell(codeCell);
 
     // Find and click the output toggle button (EyeOff icon with "Hide outputs" title)
     const hideOutputButton = await codeCell.$('button[title="Hide outputs"]');
@@ -117,17 +136,20 @@ describe("Cell Visibility Toggles", () => {
   it("should show compact layout when both source and outputs are hidden", async () => {
     const codeCell = await $('[data-cell-type="code"]');
 
+    // Focus the cell to make gutter buttons visible
+    await focusCell(codeCell);
+
     // First hide source
-    await codeCell.moveTo();
-    await browser.pause(300);
     const hideSourceButton = await codeCell.$('button[title="Hide source"]');
     await hideSourceButton.waitForClickable({ timeout: 5000 });
     await hideSourceButton.click();
     await browser.pause(300);
 
-    // Then hide outputs (need to hover again to reveal button)
-    await codeCell.moveTo();
+    // Re-focus to keep gutter buttons visible (focus may shift after source collapse)
+    await codeCell.click();
     await browser.pause(300);
+
+    // Then hide outputs
     const hideOutputButton = await codeCell.$('button[title="Hide outputs"]');
     await hideOutputButton.waitForClickable({ timeout: 5000 });
     await hideOutputButton.click();
@@ -174,14 +196,13 @@ describe("Cell Visibility Toggles", () => {
     const codeCell = await $('[data-cell-type="code"]');
 
     // TODO: Use a fixture with pre-existing error output instead of executing code
-    await codeCell.moveTo();
-    await browser.pause(300);
+    await focusCell(codeCell);
     const hideSourceButton = await codeCell.$('button[title="Hide source"]');
     await hideSourceButton.waitForClickable({ timeout: 5000 });
     await hideSourceButton.click();
     await browser.pause(300);
 
-    await codeCell.moveTo();
+    await codeCell.click();
     await browser.pause(300);
     const hideOutputButton = await codeCell.$('button[title="Hide outputs"]');
     await hideOutputButton.waitForClickable({ timeout: 5000 });
