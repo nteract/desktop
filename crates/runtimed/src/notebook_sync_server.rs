@@ -1417,6 +1417,21 @@ where
         connection::send_typed_frame(writer, NotebookFrameType::RuntimeStateSync, &encoded).await?;
     }
 
+    // Phase 1.2: Eagerly send RuntimeState snapshot so the client has
+    // kernel status immediately, without waiting for Automerge sync convergence.
+    // The sync handshake takes multiple roundtrips; by the time it completes,
+    // transient states like starting phases may have already passed.
+    {
+        let sd = room.state_doc.read().await;
+        let state = sd.read_state();
+        connection::send_typed_json_frame(
+            writer,
+            NotebookFrameType::Broadcast,
+            &NotebookBroadcast::RuntimeStateSnapshot { state },
+        )
+        .await?;
+    }
+
     // Phase 1.5: Send comm state sync for widget reconstruction
     // New clients need active comm channels to render widgets created before they connected
     {

@@ -554,4 +554,12 @@ pub enum NotebookBroadcast {
 
     /// Notebook was autosaved to disk by the daemon.
     NotebookAutosaved { path: String },
+
+    /// Eager RuntimeState snapshot sent during connection setup.
+    ///
+    /// Bypasses the Automerge sync handshake so the client has kernel
+    /// status immediately (prevents "not_started" → "idle" jump).
+    RuntimeStateSnapshot {
+        state: notebook_doc::runtime_state::RuntimeState,
+    },
 }

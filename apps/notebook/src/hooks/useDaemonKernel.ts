@@ -21,7 +21,9 @@ import {
   diffExecutions,
   type ExecutionState,
   type QueueEntry,
+  type RuntimeState,
   resetRuntimeState,
+  setRuntimeState,
   useRuntimeState,
 } from "../lib/runtime-state";
 import type {
@@ -435,6 +437,13 @@ export function useDaemonKernel({
         case "queue_changed":
         case "env_sync_state":
           break;
+
+        case "runtime_state_snapshot": {
+          // Eager snapshot from connection setup — apply immediately so the
+          // client has kernel status before the Automerge sync handshake completes.
+          setRuntimeState(broadcast.state as RuntimeState);
+          break;
+        }
 
         case "kernel_error": {
           // Still consume this broadcast for the detailed error message.
