@@ -9,6 +9,7 @@
 //! ROOT/
 //!   kernel/
 //!     status: Str          ("idle" | "busy" | "starting" | "error" | "shutdown" | "not_started")
+//!     starting_phase: Str  ("" | "resolving" | "preparing_env" | "launching" | "connecting")
 //!     name: Str            (e.g. "charming-toucan")
 //!     language: Str        (e.g. "python", "typescript")
 //!     env_source: Str      (e.g. "uv:prewarmed", "conda:pixi", "deno")
@@ -49,6 +50,8 @@ use std::collections::HashMap;
 pub struct KernelState {
     pub status: String,
     #[serde(default)]
+    pub starting_phase: String,
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub language: String,
@@ -60,6 +63,7 @@ impl Default for KernelState {
     fn default() -> Self {
         Self {
             status: "not_started".to_string(),
+            starting_phase: String::new(),
             name: String::new(),
             language: String::new(),
             env_source: String::new(),
@@ -180,6 +184,8 @@ impl RuntimeStateDoc {
             .expect("scaffold kernel.language");
         doc.put(&kernel, "env_source", "")
             .expect("scaffold kernel.env_source");
+        doc.put(&kernel, "starting_phase", "")
+            .expect("scaffold kernel.starting_phase");
 
         // queue/
         let queue = doc
@@ -373,6 +379,8 @@ impl RuntimeStateDoc {
     }
 
     /// Update kernel status. Returns `true` if the doc was mutated.
+    ///
+    /// Automatically clears `starting_phase` when transitioning away from `"starting"`.
     #[allow(clippy::expect_used)]
     pub fn set_kernel_status(&mut self, status: &str) -> bool {
         let kernel = self.get_map("kernel").expect("kernel map must exist");
@@ -383,6 +391,29 @@ impl RuntimeStateDoc {
         self.doc
             .put(&kernel, "status", status)
             .expect("put kernel.status");
+        // Clear starting_phase when leaving "starting"
+        if status != "starting" {
+            let phase = self.read_str(&kernel, "starting_phase");
+            if !phase.is_empty() {
+                self.doc
+                    .put(&kernel, "starting_phase", "")
+                    .expect("clear kernel.starting_phase");
+            }
+        }
+        true
+    }
+
+    /// Update the starting phase sub-status. Returns `true` if the doc was mutated.
+    #[allow(clippy::expect_used)]
+    pub fn set_starting_phase(&mut self, phase: &str) -> bool {
+        let kernel = self.get_map("kernel").expect("kernel map must exist");
+        let current = self.read_str(&kernel, "starting_phase");
+        if current == phase {
+            return false;
+        }
+        self.doc
+            .put(&kernel, "starting_phase", phase)
+            .expect("put kernel.starting_phase");
         true
     }
 
@@ -829,6 +860,7 @@ impl RuntimeStateDoc {
             .as_ref()
             .map(|k| KernelState {
                 status: self.read_str(k, "status"),
+                starting_phase: self.read_str(k, "starting_phase"),
                 name: self.read_str(k, "name"),
                 language: self.read_str(k, "language"),
                 env_source: self.read_str(k, "env_source"),
@@ -1073,6 +1105,38 @@ mod tests {
         let state = doc.read_state();
         assert_eq!(state.trust.status, "trusted");
         assert!(!state.trust.needs_approval);
+    }
+
+    #[test]
+    fn test_set_starting_phase() {
+        let mut doc = RuntimeStateDoc::new();
+        assert!(doc.set_kernel_status("starting"));
+        assert!(doc.set_starting_phase("resolving"));
+        assert_eq!(doc.read_state().kernel.starting_phase, "resolving");
+
+        assert!(doc.set_starting_phase("launching"));
+        assert_eq!(doc.read_state().kernel.starting_phase, "launching");
+
+        // Dedup: same phase is no-op
+        assert!(!doc.set_starting_phase("launching"));
+    }
+
+    #[test]
+    fn test_kernel_status_clears_starting_phase() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_kernel_status("starting");
+        doc.set_starting_phase("connecting");
+        assert_eq!(doc.read_state().kernel.starting_phase, "connecting");
+
+        // Transitioning to "idle" should clear starting_phase
+        doc.set_kernel_status("idle");
+        assert_eq!(doc.read_state().kernel.starting_phase, "");
+
+        // Same for error
+        doc.set_kernel_status("starting");
+        doc.set_starting_phase("launching");
+        doc.set_kernel_status("error");
+        assert_eq!(doc.read_state().kernel.starting_phase, "");
     }
 
     #[test]

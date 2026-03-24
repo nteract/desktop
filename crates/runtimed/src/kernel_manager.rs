@@ -795,6 +795,14 @@ impl RoomKernel {
 
         self.session_id = Uuid::new_v4().to_string();
 
+        // Transition to "connecting" phase — process is alive, now connecting ZMQ
+        {
+            let mut sd = self.state_doc.write().await;
+            if sd.set_starting_phase("connecting") {
+                let _ = self.state_changed_tx.send(());
+            }
+        }
+
         // Create iopub connection and spawn listener
         let mut iopub =
             runtimelib::create_client_iopub_connection(&connection_info, "", &self.session_id)

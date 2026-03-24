@@ -655,6 +655,8 @@ export function useDaemonKernel({
   return {
     /** Current kernel status (with busy throttle applied) */
     kernelStatus,
+    /** Sub-phase detail when status is "starting" */
+    startingPhase: runtimeState.kernel.starting_phase,
     /** Current execution queue state */
     queueState,
     /** Kernel type and environment source */

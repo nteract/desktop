@@ -15,6 +15,7 @@ import { useSyncExternalStore } from "react";
 
 export interface KernelState {
   status: string;
+  starting_phase: string;
   name: string;
   language: string;
   env_source: string;
@@ -131,6 +132,7 @@ export interface RuntimeState {
 const DEFAULT_RUNTIME_STATE: RuntimeState = {
   kernel: {
     status: "not_started",
+    starting_phase: "",
     name: "",
     language: "",
     env_source: "",

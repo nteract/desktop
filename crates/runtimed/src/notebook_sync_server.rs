@@ -1105,6 +1105,16 @@ where
                 let mut auto_launch_at = room.auto_launch_at.write().await;
                 *auto_launch_at = Some(std::time::Instant::now());
             }
+            // Write "starting" immediately so clients never see stale "not_started"
+            {
+                let mut sd = room.state_doc.write().await;
+                let mut changed = false;
+                changed |= sd.set_kernel_status("starting");
+                changed |= sd.set_starting_phase("resolving");
+                if changed {
+                    let _ = room.state_changed_tx.send(());
+                }
+            }
             // Spawn auto-launch in background so we don't block sync
             let room_clone = room.clone();
             let notebook_id_clone = notebook_id.clone();
@@ -1985,14 +1995,6 @@ async fn auto_launch_kernel(
     // Clear any stale comm state from a previous kernel (in case it crashed)
     room.comm_state.clear().await;
 
-    // Write "starting" to state_doc before launch begins
-    {
-        let mut sd = room.state_doc.write().await;
-        if sd.set_kernel_status("starting") {
-            let _ = room.state_changed_tx.send(());
-        }
-    }
-
     // Create new kernel
     let mut kernel = RoomKernel::new(
         room.kernel_broadcast_tx.clone(),
@@ -2195,6 +2197,14 @@ async fn auto_launch_kernel(
         }
     };
 
+    // Transition to "preparing_env" phase now that runtime/env has been resolved
+    {
+        let mut sd = room.state_doc.write().await;
+        if sd.set_starting_phase("preparing_env") {
+            let _ = room.state_changed_tx.send(());
+        }
+    }
+
     // For inline deps, prepare a cached environment with rich progress
     let progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> = std::sync::Arc::new(
         crate::inline_env::BroadcastProgressHandler::new(room.kernel_broadcast_tx.clone()),
@@ -2336,6 +2346,14 @@ async fn auto_launch_kernel(
         venv_path,
         python_path,
     );
+
+    // Transition to "launching" phase before starting the kernel process
+    {
+        let mut sd = room.state_doc.write().await;
+        if sd.set_starting_phase("launching") {
+            let _ = room.state_changed_tx.send(());
+        }
+    }
 
     match kernel
         .launch(
@@ -2734,9 +2752,14 @@ async fn handle_notebook_request(
             room.comm_state.clear().await;
 
             // Trust is approved if user explicitly launches kernel — update RuntimeStateDoc
+            // Also set "starting" + "resolving" phase immediately
             {
                 let mut sd = room.state_doc.write().await;
-                if sd.set_trust("trusted", false) {
+                let mut changed = false;
+                changed |= sd.set_trust("trusted", false);
+                changed |= sd.set_kernel_status("starting");
+                changed |= sd.set_starting_phase("resolving");
+                if changed {
                     let _ = room.state_changed_tx.send(());
                 }
             }
@@ -2849,6 +2872,14 @@ async fn handle_notebook_request(
                 // Use explicit env_source (e.g., "uv:inline", "conda:inline")
                 env_source.clone()
             };
+
+            // Transition to "preparing_env" phase
+            {
+                let mut sd = room.state_doc.write().await;
+                if sd.set_starting_phase("preparing_env") {
+                    let _ = room.state_changed_tx.send(());
+                }
+            }
 
             // Deno kernels don't need pooled environments
             let pooled_env = if resolved_kernel_type == "deno" {
@@ -3069,6 +3100,14 @@ async fn handle_notebook_request(
                 venv_path,
                 python_path,
             );
+
+            // Transition to "launching" phase before starting the kernel process
+            {
+                let mut sd = room.state_doc.write().await;
+                if sd.set_starting_phase("launching") {
+                    let _ = room.state_changed_tx.send(());
+                }
+            }
 
             match kernel
                 .launch(

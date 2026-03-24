@@ -30,6 +30,7 @@ type EnvBadgeVariant = "uv" | "conda" | "pixi";
 
 interface NotebookToolbarProps {
   kernelStatus: KernelStatus;
+  startingPhase?: string;
   kernelErrorMessage?: string | null;
   envSource: string | null;
   /** Pre-start hint: "uv" | "conda" | "pixi" | null, derived from notebook metadata */
@@ -54,6 +55,7 @@ interface NotebookToolbarProps {
 
 export function NotebookToolbar({
   kernelStatus,
+  startingPhase,
   kernelErrorMessage,
   envSource,
   envTypeHint,
@@ -102,7 +104,7 @@ export function NotebookToolbar({
     kernelStatus === KERNEL_STATUS.IDLE ||
     kernelStatus === KERNEL_STATUS.BUSY ||
     kernelStatus === KERNEL_STATUS.STARTING;
-  const kernelStatusText = getKernelStatusLabel(kernelStatus);
+  const kernelStatusText = getKernelStatusLabel(kernelStatus, startingPhase);
   const isKernelNotStarted =
     kernelStatus === KERNEL_STATUS.NOT_STARTED ||
     kernelStatus === KERNEL_STATUS.SHUTDOWN;

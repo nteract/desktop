@@ -26,6 +26,19 @@ export function isKernelStatus(value: string): value is KernelStatus {
   return KERNEL_STATUS_SET.has(value as KernelStatus);
 }
 
-export function getKernelStatusLabel(status: KernelStatus): string {
+const STARTING_PHASE_LABELS: Record<string, string> = {
+  resolving: "resolving environment",
+  preparing_env: "preparing environment",
+  launching: "launching kernel",
+  connecting: "connecting to kernel",
+};
+
+export function getKernelStatusLabel(
+  status: KernelStatus,
+  startingPhase?: string,
+): string {
+  if (status === KERNEL_STATUS.STARTING && startingPhase) {
+    return STARTING_PHASE_LABELS[startingPhase] ?? "starting";
+  }
   return KERNEL_STATUS_LABELS[status];
 }
