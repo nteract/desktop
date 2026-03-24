@@ -122,6 +122,7 @@ pub async fn prepare_environment_in(
     // Cache hit
     if env_path.exists() && python_path.exists() {
         info!("Using cached conda environment at {:?}", env_path);
+        crate::gc::touch_last_used(&env_path).await;
         handler.on_progress(
             "conda",
             EnvProgressPhase::CacheHit {
@@ -161,6 +162,7 @@ pub async fn prepare_environment_in(
         ));
     }
 
+    crate::gc::touch_last_used(&env_path).await;
     handler.on_progress(
         "conda",
         EnvProgressPhase::Ready {

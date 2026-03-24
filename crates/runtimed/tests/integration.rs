@@ -71,6 +71,7 @@ fn test_config(temp_dir: &TempDir) -> DaemonConfig {
         max_age_secs: 3600,
         lock_dir: Some(temp_dir.path().to_path_buf()),
         room_eviction_delay_ms: Some(50), // Fast eviction for tests
+        ..Default::default()
     }
 }
 
@@ -223,6 +224,7 @@ async fn test_singleton_prevents_second_daemon() {
         max_age_secs: 3600,
         lock_dir: Some(temp_dir.path().to_path_buf()),
         room_eviction_delay_ms: Some(50),
+        ..Default::default()
     };
 
     let result = Daemon::new(config2);

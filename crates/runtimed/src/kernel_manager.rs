@@ -257,6 +257,9 @@ pub struct RoomKernel {
     env_source: String,
     /// Environment configuration used at launch (for sync detection)
     launched_config: LaunchedEnvConfig,
+    /// Path to the environment directory backing this kernel (if any).
+    /// Used by the GC to avoid evicting envs that are still in use.
+    pub env_path: Option<PathBuf>,
     /// Connection info for the kernel
     connection_info: Option<ConnectionInfo>,
     /// Path to the connection file
@@ -422,6 +425,7 @@ impl RoomKernel {
             pending_history: Arc::new(StdMutex::new(HashMap::new())),
             pending_completions: Arc::new(StdMutex::new(HashMap::new())),
             stream_terminals: Arc::new(tokio::sync::Mutex::new(StreamTerminals::new())),
+            env_path: None,
             state_doc,
             state_changed_tx,
         }
@@ -518,6 +522,7 @@ impl RoomKernel {
         self.kernel_type = kernel_type.to_string();
         self.env_source = env_source.to_string();
         self.launched_config = launched_config;
+        self.env_path = env.as_ref().map(|e| e.venv_path.clone());
         self.status = KernelStatus::Starting;
 
         // Broadcast starting status

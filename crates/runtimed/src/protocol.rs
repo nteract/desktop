@@ -8,6 +8,7 @@
 //! BlobResponse, DaemonBroadcast) are defined here.
 
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 use crate::{EnvType, PoolError, PoolStats, PooledEnv};
 
@@ -54,6 +55,10 @@ pub enum Request {
         /// The notebook ID (file path used as identifier).
         notebook_id: String,
     },
+
+    /// Get environment paths currently in use by running kernels.
+    /// Used by `runt env clean` to avoid evicting active environments.
+    ActiveEnvPaths,
 }
 
 /// Responses from the daemon to clients.
@@ -104,6 +109,9 @@ pub enum Response {
         /// Whether the notebook was found and shut down.
         found: bool,
     },
+
+    /// Environment paths currently in use by running kernels.
+    ActiveEnvPaths { paths: Vec<PathBuf> },
 }
 
 /// Kernel info for a notebook room.

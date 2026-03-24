@@ -130,6 +130,7 @@ pub async fn prepare_environment_in(
     // Cache hit
     if venv_path.exists() && python_path.exists() {
         info!("Using cached environment at {:?}", venv_path);
+        crate::gc::touch_last_used(&venv_path).await;
         handler.on_progress(
             "uv",
             EnvProgressPhase::CacheHit {
@@ -201,10 +202,15 @@ pub async fn prepare_environment_in(
     ];
     packages.extend(deps.dependencies.iter().cloned());
 
-    // Build install command args
+    // Build install command args.
+    // Use hardlink mode to share files from uv's global cache,
+    // dramatically reducing per-env disk usage. uv falls back to
+    // copies automatically if hardlinks aren't supported.
     let mut install_args = vec![
         "pip".to_string(),
         "install".to_string(),
+        "--link-mode".to_string(),
+        "hardlink".to_string(),
         "--python".to_string(),
         python_path.to_string_lossy().to_string(),
     ];
@@ -236,6 +242,7 @@ pub async fn prepare_environment_in(
             first_stderr
         );
         let mut retry_args = install_args.clone();
+        // Insert --refresh after "pip install" (index 2), before --link-mode
         retry_args.insert(2, "--refresh".to_string());
         tokio::process::Command::new(&uv_path)
             .args(&retry_args)
@@ -261,6 +268,7 @@ pub async fn prepare_environment_in(
     }
 
     info!("Environment ready at {:?}", venv_path);
+    crate::gc::touch_last_used(&venv_path).await;
     handler.on_progress(
         "uv",
         EnvProgressPhase::Ready {
@@ -288,6 +296,8 @@ pub async fn sync_dependencies(env: &UvEnvironment, deps: &[String]) -> Result<(
     let mut install_args = vec![
         "pip".to_string(),
         "install".to_string(),
+        "--link-mode".to_string(),
+        "hardlink".to_string(),
         "--python".to_string(),
         env.python_path.to_string_lossy().to_string(),
     ];
@@ -363,10 +373,13 @@ pub async fn create_prewarmed_environment_in(
         ));
     }
 
-    // Install ipykernel, ipywidgets, uv, and any extra packages
+    // Install ipykernel, ipywidgets, uv, and any extra packages.
+    // Use hardlink mode to share files from uv's global cache.
     let mut install_args = vec![
         "pip".to_string(),
         "install".to_string(),
+        "--link-mode".to_string(),
+        "hardlink".to_string(),
         "--python".to_string(),
         python_path.to_string_lossy().to_string(),
         "ipykernel".to_string(),
@@ -381,7 +394,7 @@ pub async fn create_prewarmed_environment_in(
     handler.on_progress(
         "uv",
         EnvProgressPhase::InstallingPackages {
-            packages: install_args[4..].to_vec(),
+            packages: install_args[6..].to_vec(),
         },
     );
 

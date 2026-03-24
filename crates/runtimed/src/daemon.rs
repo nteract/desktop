@@ -57,6 +57,11 @@ pub struct DaemonConfig {
     /// Override for room eviction delay (milliseconds). Used in tests.
     /// If None, uses the user's `keep_alive_secs` setting.
     pub room_eviction_delay_ms: Option<u64>,
+    /// Maximum age (in seconds) for content-addressed cached environments.
+    /// Environments older than this are evicted by the GC loop.
+    pub env_cache_max_age_secs: u64,
+    /// Maximum number of content-addressed cached environments per cache directory.
+    pub env_cache_max_count: usize,
 }
 
 impl Default for DaemonConfig {
@@ -71,6 +76,8 @@ impl Default for DaemonConfig {
             max_age_secs: 172800, // 2 days
             lock_dir: None,
             room_eviction_delay_ms: None,
+            env_cache_max_age_secs: 604800, // 7 days
+            env_cache_max_count: 10,
         }
     }
 }
@@ -154,6 +161,24 @@ fn parse_uv_error(stderr: &str) -> Option<PackageInstallError> {
     None
 }
 
+/// Spawn background deletion of environment directories.
+fn spawn_env_deletions(paths: Vec<PathBuf>) {
+    if paths.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        for path in &paths {
+            if let Err(e) = tokio::fs::remove_dir_all(path).await {
+                warn!("[runtimed] Failed to delete stale env {:?}: {}", path, e);
+            }
+        }
+        info!(
+            "[runtimed] Cleaned up {} stale/invalid env directories",
+            paths.len()
+        );
+    });
+}
+
 /// Internal pool state.
 struct Pool {
     /// Available environments ready for use.
@@ -179,36 +204,53 @@ impl Pool {
         }
     }
 
-    /// Prune stale environments.
-    fn prune_stale(&mut self) {
+    /// Prune stale environments, returning paths that should be deleted from disk.
+    fn prune_stale(&mut self) -> Vec<PathBuf> {
         let max_age = std::time::Duration::from_secs(self.max_age_secs);
-        let before = self.available.len();
-        self.available.retain(|e| e.created_at.elapsed() < max_age);
-        let removed = before - self.available.len();
-        if removed > 0 {
-            info!("[runtimed] Pruned {} stale environments", removed);
+        let mut removed_paths = Vec::new();
+        let mut kept = VecDeque::new();
+        for entry in self.available.drain(..) {
+            if entry.created_at.elapsed() < max_age {
+                kept.push_back(entry);
+            } else {
+                removed_paths.push(entry.env.venv_path.clone());
+            }
         }
+        self.available = kept;
+        if !removed_paths.is_empty() {
+            info!(
+                "[runtimed] Pruned {} stale environments",
+                removed_paths.len()
+            );
+        }
+        removed_paths
     }
 
     /// Take an environment from the pool.
-    fn take(&mut self) -> Option<PooledEnv> {
-        self.prune_stale();
+    fn take(&mut self) -> (Option<PooledEnv>, Vec<PathBuf>) {
+        let stale_paths = self.prune_stale();
 
         // Try to get a valid environment, skipping any with missing paths or missing warmup
+        let mut invalid_paths = Vec::new();
         while let Some(entry) = self.available.pop_front() {
             if entry.env.venv_path.exists()
                 && entry.env.python_path.exists()
                 && entry.env.venv_path.join(".warmed").exists()
             {
-                return Some(entry.env);
+                let mut all_paths = stale_paths;
+                all_paths.extend(invalid_paths);
+                return (Some(entry.env), all_paths);
             }
             warn!(
                 "[runtimed] Skipping env with missing path or warmup marker: {:?}",
                 entry.env.venv_path
             );
+            invalid_paths.push(entry.env.venv_path);
         }
 
-        None
+        let mut all_paths = stale_paths;
+        all_paths.extend(invalid_paths);
+        (None, all_paths)
     }
 
     /// Add an environment to the pool (success case).
@@ -511,6 +553,12 @@ impl Daemon {
         let conda_daemon = self.clone();
         tokio::spawn(async move {
             conda_daemon.conda_warming_loop().await;
+        });
+
+        // Spawn the environment GC loop
+        let gc_daemon = self.clone();
+        tokio::spawn(async move {
+            gc_daemon.env_gc_loop().await;
         });
 
         // Spawn the settings.json file watcher
@@ -840,6 +888,7 @@ impl Daemon {
 
         let mut uv_found = 0;
         let mut conda_found = 0;
+        let mut orphans: Vec<PathBuf> = Vec::new();
 
         while let Ok(Some(entry)) = entries.next_entry().await {
             let name = entry.file_name().to_string_lossy().to_string();
@@ -864,6 +913,9 @@ impl Daemon {
                             created_at: Instant::now(),
                         });
                         uv_found += 1;
+                    } else {
+                        // Pool is full — this env is an orphan from a previous daemon run
+                        orphans.push(env_path);
                     }
                 } else {
                     // Invalid env, clean up
@@ -889,6 +941,9 @@ impl Daemon {
                             created_at: Instant::now(),
                         });
                         conda_found += 1;
+                    } else {
+                        // Pool is full — this env is an orphan from a previous daemon run
+                        orphans.push(env_path);
                     }
                 } else {
                     // Invalid env, clean up
@@ -902,6 +957,16 @@ impl Daemon {
                 "[runtimed] Found {} existing UV and {} existing Conda environments",
                 uv_found, conda_found
             );
+        }
+
+        // Clean up orphaned pool envs in a background task so startup
+        // isn't blocked when there are hundreds of stale directories.
+        if !orphans.is_empty() {
+            info!(
+                "[runtimed] Scheduling cleanup of {} orphaned pool environments",
+                orphans.len()
+            );
+            spawn_env_deletions(orphans);
         }
     }
 
@@ -1581,7 +1646,8 @@ impl Daemon {
     /// Returns `Some(PooledEnv)` if an environment is available, `None` otherwise.
     /// Automatically triggers replenishment when an environment is taken.
     pub async fn take_uv_env(self: &Arc<Self>) -> Option<PooledEnv> {
-        let env = self.uv_pool.lock().await.take();
+        let (env, stale_paths) = self.uv_pool.lock().await.take();
+        spawn_env_deletions(stale_paths);
         if let Some(ref e) = env {
             info!(
                 "[runtimed] Took UV env for kernel launch: {:?}",
@@ -1601,7 +1667,8 @@ impl Daemon {
     /// Returns `Some(PooledEnv)` if an environment is available, `None` otherwise.
     /// Automatically triggers replenishment when an environment is taken.
     pub async fn take_conda_env(self: &Arc<Self>) -> Option<PooledEnv> {
-        let env = self.conda_pool.lock().await.take();
+        let (env, stale_paths) = self.conda_pool.lock().await.take();
+        spawn_env_deletions(stale_paths);
         if let Some(ref e) = env {
             info!(
                 "[runtimed] Took Conda env for kernel launch: {:?}",
@@ -1620,10 +1687,11 @@ impl Daemon {
     async fn handle_request(self: Arc<Self>, request: Request) -> Response {
         match request {
             Request::Take { env_type } => {
-                let env = match env_type {
+                let (env, stale_paths) = match env_type {
                     EnvType::Uv => self.uv_pool.lock().await.take(),
                     EnvType::Conda => self.conda_pool.lock().await.take(),
                 };
+                spawn_env_deletions(stale_paths);
 
                 match env {
                     Some(env) => {
@@ -1841,7 +1909,162 @@ impl Daemon {
                     Response::NotebookShutdown { found: false }
                 }
             }
+
+            Request::ActiveEnvPaths => {
+                let paths: Vec<PathBuf> =
+                    self.collect_active_env_paths().await.into_iter().collect();
+                Response::ActiveEnvPaths { paths }
+            }
         }
+    }
+
+    /// Collect env paths from all running kernels to protect from GC eviction.
+    async fn collect_active_env_paths(&self) -> std::collections::HashSet<PathBuf> {
+        let mut paths = std::collections::HashSet::new();
+        let rooms = self.notebook_rooms.lock().await;
+        for room in rooms.values() {
+            let kernel_guard = room.kernel.lock().await;
+            if let Some(ref kernel) = *kernel_guard {
+                if kernel.is_running() {
+                    if let Some(ref env_path) = kernel.env_path {
+                        paths.insert(env_path.clone());
+                    }
+                }
+            }
+        }
+        paths
+    }
+
+    /// Background GC loop for content-addressed environment caches.
+    ///
+    /// Runs once after a 60-second startup delay, then every 6 hours.
+    /// Evicts stale cached environments from the global UV, Conda, and inline-env
+    /// cache directories based on `env_cache_max_age_secs` and `env_cache_max_count`.
+    async fn env_gc_loop(&self) {
+        // Wait for warming loops to settle before first GC run
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+
+        let max_age = std::time::Duration::from_secs(self.config.env_cache_max_age_secs);
+        let max_count = self.config.env_cache_max_count;
+
+        // Directories to GC. These are the global content-addressed caches
+        // used by kernel-env (not per-worktree pool dirs).
+        let cache_dirs = [
+            kernel_env::uv::default_cache_dir_uv(),
+            kernel_env::conda::default_cache_dir_conda(),
+            // inline-envs: same parent as uv cache but under "inline-envs"
+            dirs::cache_dir()
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join("runt")
+                .join("inline-envs"),
+        ];
+
+        loop {
+            // Collect env paths from all running kernels so GC won't evict them
+            let in_use = self.collect_active_env_paths().await;
+
+            let mut total_evicted = 0;
+            for dir in &cache_dirs {
+                match kernel_env::gc::evict_stale_envs(dir, max_age, max_count, &in_use).await {
+                    Ok(deleted) => total_evicted += deleted.len(),
+                    Err(e) => {
+                        warn!("[runtimed] GC failed for {:?}: {}", dir, e);
+                    }
+                }
+            }
+            if total_evicted > 0 {
+                info!(
+                    "[runtimed] GC cycle complete: evicted {} cached environments",
+                    total_evicted
+                );
+            }
+
+            // Clean up stale worktree state directories
+            let worktrees_dir = dirs::cache_dir()
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join(crate::cache_namespace())
+                .join("worktrees");
+
+            if let Ok(total_cleaned) = Self::cleanup_stale_worktrees(&worktrees_dir).await {
+                if total_cleaned > 0 {
+                    info!(
+                        "[runtimed] Cleaned up {} stale worktree directories",
+                        total_cleaned
+                    );
+                }
+            }
+
+            // Run every 6 hours
+            tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+        }
+    }
+
+    /// Clean up worktree state directories where the original git worktree
+    /// path no longer exists and the daemon.json is older than 7 days.
+    async fn cleanup_stale_worktrees(worktrees_dir: &std::path::Path) -> anyhow::Result<usize> {
+        if !worktrees_dir.exists() {
+            return Ok(0);
+        }
+
+        let mut entries = tokio::fs::read_dir(worktrees_dir).await?;
+        let mut cleaned = 0;
+        let grace_period = std::time::Duration::from_secs(7 * 24 * 3600); // 7 days
+
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+
+            let daemon_json = path.join("daemon.json");
+            if !daemon_json.exists() {
+                continue;
+            }
+
+            // Check if daemon.json is old enough (grace period)
+            let mtime = tokio::fs::metadata(&daemon_json)
+                .await
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            let age = std::time::SystemTime::now()
+                .duration_since(mtime)
+                .unwrap_or_default();
+            if age < grace_period {
+                continue;
+            }
+
+            // Read daemon.json to get the worktree_path
+            let contents = match tokio::fs::read_to_string(&daemon_json).await {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let info: serde_json::Value = match serde_json::from_str(&contents) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            // Check if the original worktree path still exists
+            if let Some(wt_path) = info.get("worktree_path").and_then(|v| v.as_str()) {
+                if std::path::Path::new(wt_path).exists() {
+                    continue; // Worktree still exists, skip
+                }
+            } else {
+                continue; // No worktree_path field, not a dev worktree
+            }
+
+            // Worktree path is gone and daemon.json is old — safe to delete
+            info!("[runtimed] Removing stale worktree state: {:?}", path);
+            if let Err(e) = tokio::fs::remove_dir_all(&path).await {
+                warn!(
+                    "[runtimed] Failed to remove stale worktree {:?}: {}",
+                    path, e
+                );
+            } else {
+                cleaned += 1;
+            }
+        }
+
+        Ok(cleaned)
     }
 
     /// UV warming loop - maintains the UV pool.
@@ -2520,9 +2743,14 @@ print("warmup complete")
         }
 
         // Install packages (120 second timeout)
+        // Use hardlink mode to share files from uv's global cache,
+        // dramatically reducing per-env disk usage. uv falls back to
+        // copies automatically if hardlinks aren't supported.
         let mut install_args = vec![
             "pip".to_string(),
             "install".to_string(),
+            "--link-mode".to_string(),
+            "hardlink".to_string(),
             "--python".to_string(),
             python_path.to_string_lossy().to_string(),
         ];
@@ -2742,17 +2970,19 @@ mod tests {
 
         assert_eq!(pool.available.len(), 1);
 
-        let taken = pool.take();
+        let (taken, stale) = pool.take();
         assert!(taken.is_some());
         assert_eq!(taken.unwrap().venv_path, env.venv_path);
         assert_eq!(pool.available.len(), 0);
+        assert!(stale.is_empty());
     }
 
     #[test]
     fn test_pool_take_empty() {
         let mut pool = Pool::new(3, 3600);
-        let taken = pool.take();
+        let (taken, stale) = pool.take();
         assert!(taken.is_none());
+        assert!(stale.is_empty());
     }
 
     #[test]
@@ -2776,9 +3006,11 @@ mod tests {
         pool.add(valid_env.clone());
 
         // Take should skip the missing one and return the valid one
-        let taken = pool.take();
+        let (taken, stale) = pool.take();
         assert!(taken.is_some());
         assert_eq!(taken.unwrap().venv_path, valid_env.venv_path);
+        // The missing env path should be in the stale list for cleanup
+        assert!(stale.contains(&PathBuf::from("/nonexistent/path")));
     }
 
     #[test]
@@ -2822,7 +3054,7 @@ mod tests {
         assert_eq!(pool.deficit(), 0); // 3 available = target
 
         // Taking one should increase deficit
-        pool.take();
+        let _ = pool.take();
         assert_eq!(pool.available.len(), 2);
         assert_eq!(pool.deficit(), 1);
     }
@@ -3005,14 +3237,15 @@ mod tests {
         pool.add(unwarmed_env);
 
         // take() should skip the unwarmed env
-        assert!(pool.take().is_none());
+        let (taken, _stale) = pool.take();
+        assert!(taken.is_none());
 
         // Add a properly warmed env
         let warmed_env = create_test_env(&temp_dir, "warmed-env");
         pool.add(warmed_env.clone());
 
         // take() should return the warmed env
-        let taken = pool.take();
+        let (taken, _stale) = pool.take();
         assert!(taken.is_some());
         assert_eq!(taken.unwrap().venv_path, warmed_env.venv_path);
     }

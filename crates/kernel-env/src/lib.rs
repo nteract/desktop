@@ -25,6 +25,7 @@
 //! ```
 
 pub mod conda;
+pub mod gc;
 pub mod progress;
 pub mod uv;
 
