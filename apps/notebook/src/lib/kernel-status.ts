@@ -14,7 +14,7 @@ const KERNEL_STATUS_SET: ReadonlySet<KernelStatus> = new Set(
 );
 
 export const KERNEL_STATUS_LABELS: Record<KernelStatus, string> = {
-  [KERNEL_STATUS.NOT_STARTED]: "not started",
+  [KERNEL_STATUS.NOT_STARTED]: "initializing",
   [KERNEL_STATUS.STARTING]: "starting",
   [KERNEL_STATUS.IDLE]: "idle",
   [KERNEL_STATUS.BUSY]: "busy",

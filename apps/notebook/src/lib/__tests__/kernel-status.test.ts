@@ -31,7 +31,9 @@ describe("getKernelStatusLabel", () => {
   });
 
   it("returns human-readable label for not_started", () => {
-    expect(getKernelStatusLabel(KERNEL_STATUS.NOT_STARTED)).toBe("not started");
+    expect(getKernelStatusLabel(KERNEL_STATUS.NOT_STARTED)).toBe(
+      "initializing",
+    );
   });
 });
 
