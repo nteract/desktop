@@ -717,6 +717,7 @@ impl Supervisor {
         // Phase 2: Derive port and run pnpm install without holding the lock
         let port = std::env::var("RUNTIMED_VITE_PORT")
             .ok()
+            .or_else(|| std::env::var("CONDUCTOR_PORT").ok())
             .and_then(|p| p.parse::<u16>().ok())
             .unwrap_or_else(|| runt_workspace::vite_port_for_workspace(&project_root));
 
