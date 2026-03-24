@@ -1494,6 +1494,14 @@ async fn get_blob_port() -> Result<u16, String> {
         .ok_or_else(|| "Blob server not available".to_string())
 }
 
+/// Get the OS username for peer presence labels.
+#[tauri::command]
+fn get_username() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_default()
+}
+
 /// Complete onboarding and open a fresh notebook window.
 ///
 /// Called from the frontend when the user finishes the onboarding flow.
@@ -1875,9 +1883,16 @@ fn create_notebook_window_for_daemon(
         label
     };
 
+    let username = get_username();
+    let init_script = format!(
+        "window.__NTERACT_USERNAME__ = {};",
+        serde_json::to_string(&username).unwrap_or_else(|_| "\"\"".to_string())
+    );
+
     let window =
         match tauri::WebviewWindowBuilder::new(app, label.clone(), tauri::WebviewUrl::default())
             .title(&title)
+            .initialization_script(&init_script)
             .inner_size(1100.0, 750.0)
             .min_inner_size(400.0, 250.0)
             .resizable(true)
@@ -3881,6 +3896,7 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
             get_git_info,
             get_daemon_info,
             get_blob_port,
+            get_username,
             // Feedback
             open_feedback_window,
             get_feedback_system_info,

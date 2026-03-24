@@ -1150,10 +1150,25 @@ fn extract_cell_source_id(path: &[(automerge::ObjId, Prop)]) -> Option<String> {
 ///
 /// The frontend should prepend the frame type byte (0x04) and send
 /// via `invoke("send_frame", { frameData })`.
+///
+/// `peer_label` is the human-readable name shown in cursor flags
+/// (e.g. the OS username). Pass an empty string to omit.
 #[wasm_bindgen]
-pub fn encode_cursor_presence(peer_id: &str, cell_id: &str, line: u32, column: u32) -> Vec<u8> {
-    presence::encode_cursor_update(
+pub fn encode_cursor_presence(
+    peer_id: &str,
+    peer_label: &str,
+    cell_id: &str,
+    line: u32,
+    column: u32,
+) -> Vec<u8> {
+    let label = if peer_label.is_empty() {
+        None
+    } else {
+        Some(peer_label)
+    };
+    presence::encode_cursor_update_labeled(
         peer_id,
+        label,
         &presence::CursorPosition {
             cell_id: cell_id.to_string(),
             line,
@@ -1166,14 +1181,21 @@ pub fn encode_cursor_presence(peer_id: &str, cell_id: &str, line: u32, column: u
 #[wasm_bindgen]
 pub fn encode_selection_presence(
     peer_id: &str,
+    peer_label: &str,
     cell_id: &str,
     anchor_line: u32,
     anchor_col: u32,
     head_line: u32,
     head_col: u32,
 ) -> Vec<u8> {
-    presence::encode_selection_update(
+    let label = if peer_label.is_empty() {
+        None
+    } else {
+        Some(peer_label)
+    };
+    presence::encode_selection_update_labeled(
         peer_id,
+        label,
         &presence::SelectionRange {
             cell_id: cell_id.to_string(),
             anchor_line,
@@ -1187,8 +1209,13 @@ pub fn encode_selection_presence(
 /// Encode a cell focus as a presence frame payload (CBOR).
 /// Focus means "I'm on this cell" without an editor cursor position.
 #[wasm_bindgen]
-pub fn encode_focus_presence(peer_id: &str, cell_id: &str) -> Vec<u8> {
-    presence::encode_focus_update(peer_id, cell_id)
+pub fn encode_focus_presence(peer_id: &str, peer_label: &str, cell_id: &str) -> Vec<u8> {
+    let label = if peer_label.is_empty() {
+        None
+    } else {
+        Some(peer_label)
+    };
+    presence::encode_focus_update_labeled(peer_id, label, cell_id)
 }
 
 /// Encode a clear-channel message as a presence frame payload (CBOR).

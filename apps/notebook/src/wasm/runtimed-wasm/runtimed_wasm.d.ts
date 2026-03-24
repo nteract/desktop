@@ -472,19 +472,22 @@ export function encode_clear_channel_presence(peer_id: string, channel: string):
  *
  * The frontend should prepend the frame type byte (0x04) and send
  * via `invoke("send_frame", { frameData })`.
+ *
+ * `peer_label` is the human-readable name shown in cursor flags
+ * (e.g. the OS username). Pass an empty string to omit.
  */
-export function encode_cursor_presence(peer_id: string, cell_id: string, line: number, column: number): Uint8Array;
+export function encode_cursor_presence(peer_id: string, peer_label: string, cell_id: string, line: number, column: number): Uint8Array;
 
 /**
  * Encode a cell focus as a presence frame payload (CBOR).
  * Focus means "I'm on this cell" without an editor cursor position.
  */
-export function encode_focus_presence(peer_id: string, cell_id: string): Uint8Array;
+export function encode_focus_presence(peer_id: string, peer_label: string, cell_id: string): Uint8Array;
 
 /**
  * Encode a selection range as a presence frame payload (CBOR).
  */
-export function encode_selection_presence(peer_id: string, cell_id: string, anchor_line: number, anchor_col: number, head_line: number, head_col: number): Uint8Array;
+export function encode_selection_presence(peer_id: string, peer_label: string, cell_id: string, anchor_line: number, anchor_col: number, head_line: number, head_col: number): Uint8Array;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -565,9 +568,9 @@ export interface InitOutput {
     readonly notebookhandle_get_runtime_state: (a: number) => number;
     readonly notebookhandle_reset_sync_state: (a: number) => void;
     readonly notebookhandle_receive_frame: (a: number, b: number, c: number) => number;
-    readonly encode_cursor_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
-    readonly encode_selection_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
-    readonly encode_focus_presence: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly encode_cursor_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
+    readonly encode_selection_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
+    readonly encode_focus_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly encode_clear_channel_presence: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly notebookhandle_generate_runtime_state_sync_reply: (a: number, b: number) => void;
     readonly notebookhandle_create_empty_with_actor: (a: number, b: number) => number;

@@ -33,11 +33,16 @@ const PresenceContext = createContext<PresenceContextValue | null>(null);
 
 interface PresenceProviderProps {
   peerId: string;
+  peerLabel?: string;
   children: ReactNode;
 }
 
-export function PresenceProvider({ peerId, children }: PresenceProviderProps) {
-  const presence = usePresence(peerId);
+export function PresenceProvider({
+  peerId,
+  peerLabel = "",
+  children,
+}: PresenceProviderProps) {
+  const presence = usePresence(peerId, peerLabel);
 
   // Wrap the presence methods to match the interface we want to expose
   // (the hook already has these, but we're making them explicit)

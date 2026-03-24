@@ -98,6 +98,10 @@ function AppContent() {
   // Stable peer ID for presence (generated once per window lifetime)
   const peerIdRef = useRef(crypto.randomUUID());
 
+  // OS username for presence labels (injected by Tauri initialization_script)
+  const peerLabel =
+    (window as unknown as Record<string, string>).__NTERACT_USERNAME__ ?? "";
+
   // Start dispatching presence events to CodeMirror EditorViews
   useEffect(() => {
     return startCursorDispatch(peerIdRef.current);
@@ -1010,7 +1014,7 @@ function AppContent() {
   }, []);
 
   return (
-    <PresenceProvider peerId={peerIdRef.current}>
+    <PresenceProvider peerId={peerIdRef.current} peerLabel={peerLabel}>
       <div className="flex h-full flex-col bg-background overflow-hidden">
         {gitInfo && (
           <DebugBanner

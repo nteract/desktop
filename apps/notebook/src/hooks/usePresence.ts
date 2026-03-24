@@ -83,8 +83,9 @@ type PresenceMessage =
  * `cursorsForCell` / `selectionsForCell` to render remote indicators.
  *
  * @param peerId The local peer's ID. When `null`, the hook is inactive.
+ * @param peerLabel Human-readable label for this peer (e.g. OS username).
  */
-export function usePresence(peerId: string | null) {
+export function usePresence(peerId: string | null, peerLabel: string = "") {
   // Ref-based peers map to avoid re-renders on every cursor move.
   const peersRef = useRef<Map<string, RemotePeer>>(new Map());
 
@@ -182,12 +183,18 @@ export function usePresence(peerId: string | null) {
   const setCursor = useCallback(
     (cellId: string, line: number, column: number) => {
       if (!peerId) return;
-      const payload = encode_cursor_presence(peerId, cellId, line, column);
+      const payload = encode_cursor_presence(
+        peerId,
+        peerLabel,
+        cellId,
+        line,
+        column,
+      );
       sendFrame(frame_types.PRESENCE, payload).catch((e: unknown) =>
         logger.warn("[presence] send cursor failed:", e),
       );
     },
-    [peerId],
+    [peerId, peerLabel],
   );
 
   const setSelection = useCallback(
@@ -201,6 +208,7 @@ export function usePresence(peerId: string | null) {
       if (!peerId) return;
       const payload = encode_selection_presence(
         peerId,
+        peerLabel,
         cellId,
         anchorLine,
         anchorCol,
@@ -211,7 +219,7 @@ export function usePresence(peerId: string | null) {
         logger.warn("[presence] send selection failed:", e),
       );
     },
-    [peerId],
+    [peerId, peerLabel],
   );
 
   // ── Queries ──────────────────────────────────────────────────────
