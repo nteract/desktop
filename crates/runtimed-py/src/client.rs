@@ -12,6 +12,25 @@ use tokio::runtime::Runtime;
 use crate::error::to_py_err;
 use crate::session::Session;
 
+/// Resolve a notebook identifier to a canonical path when it looks like a file path.
+///
+/// UUIDs and opaque identifiers pass through unchanged. Relative paths like
+/// `"notebook.ipynb"` are resolved against the current working directory so
+/// they match the canonical keys the daemon uses for notebook rooms.
+fn resolve_notebook_path(notebook_id: &str) -> String {
+    if uuid::Uuid::parse_str(notebook_id).is_ok() {
+        return notebook_id.to_string();
+    }
+    let path = std::path::Path::new(notebook_id);
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical.to_string_lossy().to_string();
+    }
+    if let Ok(absolute) = std::path::absolute(path) {
+        return absolute.to_string_lossy().to_string();
+    }
+    notebook_id.to_string()
+}
+
 /// Synchronous native client for the runtimed daemon.
 ///
 /// Low-level client — the Python `runtimed.Client` wraps this to return
@@ -167,13 +186,17 @@ impl Client {
 
     /// Join an existing notebook room by ID and return a connected Session.
     ///
+    /// Relative paths (e.g. ``"notebook.ipynb"``) are resolved to absolute
+    /// paths so they match the canonical room keys used by the daemon.
+    ///
     /// Args:
-    ///     notebook_id: The notebook room ID to join.
+    ///     notebook_id: The notebook room ID to join (UUID or file path).
     ///     peer_label: Optional label override (defaults to client's peer_label).
     #[pyo3(signature = (notebook_id, peer_label=None))]
     fn join_notebook(&self, notebook_id: &str, peer_label: Option<String>) -> PyResult<Session> {
         let label = peer_label.or_else(|| self.peer_label.clone());
-        Session::join_notebook_with_socket(self.socket_path.clone(), notebook_id, label)
+        let resolved = resolve_notebook_path(notebook_id);
+        Session::join_notebook_with_socket(self.socket_path.clone(), &resolved, label)
     }
 
     fn __repr__(&self) -> String {

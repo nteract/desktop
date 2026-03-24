@@ -50,7 +50,11 @@ class Client:
         return Notebook(session)
 
     async def join_notebook(self, notebook_id: str, peer_label: str | None = None) -> Notebook:
-        """Join an existing notebook room by ID."""
+        """Join an existing notebook room by ID.
+
+        Relative paths (e.g. ``"notebook.ipynb"``) are resolved to absolute
+        paths so they match the canonical room keys used by the daemon.
+        """
         session = await self._native.join_notebook(notebook_id, peer_label)
         return Notebook(session)
 
