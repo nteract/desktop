@@ -1,18 +1,10 @@
-# nteract/nteract
+# nteract
 
-## What's going on?
+An MCP (Model Context Protocol) server that connects AI assistants to Jupyter notebooks via the [nteract desktop app](https://nteract.io).
 
-If you're here looking for the Electron-based nteract desktop app, you can view the source [in this repo](https://github.com/nteract/archived-desktop-app). **That desktop app is not actively maintained.**
+**[Download the nteract desktop app](https://nteract.io)** — you'll need it to see notebooks, collaborate with agents, and manage environments.
 
-We're actively developing the spiritual successor to the nteract desktop app in the [nteract/desktop repo](https://github.com/nteract/desktop).
-
-### The New Desktop App
-
-We're actively developing the spiritual successor to the nteract desktop app in the [nteract/desktop repo](https://github.com/nteract/desktop).
-
-The new app is a native desktop app with instant startup and intelligent environment management.
-
-<img width="1100" height="750" alt="Screenshot 2025-02-27 at 8 33 13 AM" src="https://github.com/user-attachments/assets/06be5ab5-9390-43a9-993a-ccb07ec9139d" />
+> Looking for the old Electron-based nteract desktop app? The source is archived at [nteract/archived-desktop-app](https://github.com/nteract/archived-desktop-app). The new native app is actively developed at [nteract/desktop](https://github.com/nteract/desktop).
 
 ## Bringing Agents in the Loop
 
@@ -56,7 +48,7 @@ Claude will:
 3. Generate visualizations
 4. Show you the results
 
-You can open the same notebook in the [nteract desktop app](https://github.com/nteract/desktop) to see changes in real-time and collaborate with the AI.
+You can open the same notebook in the [nteract desktop app](https://nteract.io) to see changes in real-time and collaborate with the AI.
 
 ## Installation
 

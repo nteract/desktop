@@ -1,6 +1,10 @@
 # runtimed
 
-Python toolkit for Jupyter runtimes, powered by runtimed Rust binaries. Execute code, manage kernels, and interact with notebooks programmatically.
+Python bindings for the [nteract](https://nteract.io) runtime daemon. Execute code, manage kernels, and interact with notebooks programmatically.
+
+**[Download the nteract desktop app](https://nteract.io)** — it ships the runtimed daemon and gives you a visual interface for your notebooks.
+
+> **Using runtimed with agents?** The [`nteract` MCP server](https://pypi.org/project/nteract/) is built on runtimed and provides a ready-made agentic interface for AI assistants. It's also a great example of how to use runtimed in practice.
 
 ## Installation
 
@@ -110,7 +114,7 @@ await cell.delete()
 
 ## Requirements
 
-- runtimed daemon running (see [CLAUDE.md](../../CLAUDE.md) — use `cargo xtask dev-daemon` for development or `cargo xtask install-daemon` for the system service)
+- The runtimed daemon, which ships with the [nteract desktop app](https://nteract.io). For development, see the [nteract/desktop repo](https://github.com/nteract/desktop).
 - Python 3.10+
 
 ## Documentation
