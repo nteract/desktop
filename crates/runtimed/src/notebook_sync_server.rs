@@ -445,6 +445,61 @@ async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
     }
 }
 
+/// Re-verify trust from the Automerge doc and update room.trust_state + RuntimeStateDoc.
+///
+/// Called after every Automerge sync message to detect when the frontend writes
+/// a trust signature (via approve_notebook_trust). Without this, room.trust_state
+/// would remain stale from initial room creation and the trust banner would
+/// reappear on reconnection.
+async fn check_and_update_trust_state(room: &NotebookRoom) {
+    let current_metadata = {
+        let doc = room.doc.read().await;
+        doc.get_metadata_snapshot()
+    };
+
+    let Some(current_metadata) = current_metadata else {
+        return;
+    };
+
+    let new_trust = verify_trust_from_snapshot(&current_metadata);
+
+    // Check if trust state actually changed
+    let current_status = {
+        let ts = room.trust_state.read().await;
+        ts.status.clone()
+    };
+
+    if current_status != new_trust.status {
+        info!(
+            "[notebook-sync] Trust state changed via doc sync: {:?} -> {:?}",
+            current_status, new_trust.status
+        );
+
+        let needs_approval = !matches!(
+            new_trust.status,
+            runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
+        );
+        let status_str = match &new_trust.status {
+            runt_trust::TrustStatus::Trusted => "trusted",
+            runt_trust::TrustStatus::Untrusted => "untrusted",
+            runt_trust::TrustStatus::SignatureInvalid => "signature_invalid",
+            runt_trust::TrustStatus::NoDependencies => "no_dependencies",
+        };
+
+        // Update room.trust_state so auto-launch and reconnection use fresh state
+        {
+            let mut ts = room.trust_state.write().await;
+            *ts = new_trust;
+        }
+
+        // Update RuntimeStateDoc so the frontend banner reacts immediately
+        let mut sd = room.state_doc.write().await;
+        if sd.set_trust(status_str, needs_approval) {
+            let _ = room.state_changed_tx.send(());
+        }
+    }
+}
+
 /// Resolve the metadata snapshot for a notebook, trying the Automerge doc first
 /// and falling back to disk if the doc doesn't have metadata yet (e.g., before
 /// the first client has synced).
@@ -477,12 +532,12 @@ async fn resolve_metadata_snapshot(
     None
 }
 
-/// Verify trust status of a notebook by reading its file.
+/// Verify trust status of a notebook by reading its file from disk.
 /// Returns TrustState with the verification result.
 ///
-/// Note: Trust verification requires the raw metadata HashMap (including
-/// trust_signature) which is not part of NotebookMetadataSnapshot. This
-/// must read from disk until trust_signature is added to the snapshot.
+/// Used during room creation when the Automerge doc is still empty.
+/// Once the doc is populated, `verify_trust_from_snapshot` is preferred
+/// as it picks up in-memory changes (e.g., newly-written trust signatures).
 fn verify_trust_from_file(notebook_path: &Path) -> TrustState {
     // Read and parse the notebook file
     let metadata = match std::fs::read_to_string(notebook_path) {
@@ -498,6 +553,44 @@ fn verify_trust_from_file(notebook_path: &Path) -> TrustState {
     };
 
     // Verify trust using the shared runt-trust crate
+    match runt_trust::verify_notebook_trust(&metadata) {
+        Ok(info) => TrustState {
+            status: info.status.clone(),
+            info,
+            pending_launch: false,
+        },
+        Err(_) => TrustState {
+            status: runt_trust::TrustStatus::Untrusted,
+            info: runt_trust::TrustInfo {
+                status: runt_trust::TrustStatus::Untrusted,
+                uv_dependencies: vec![],
+                conda_dependencies: vec![],
+                conda_channels: vec![],
+            },
+            pending_launch: false,
+        },
+    }
+}
+
+/// Verify trust status from a `NotebookMetadataSnapshot` (from the Automerge doc).
+///
+/// This provides the same trust verification as `verify_trust_from_file` but
+/// works with the in-memory doc state instead of reading from disk. Used by
+/// `check_and_update_trust_state` to detect trust changes reactively (e.g.,
+/// after the frontend writes a trust signature via approval).
+fn verify_trust_from_snapshot(snapshot: &NotebookMetadataSnapshot) -> TrustState {
+    // Build a metadata HashMap from the snapshot's runt field, matching the
+    // structure that runt_trust::verify_notebook_trust expects.
+    //
+    // We only insert the "runt" key — legacy top-level "uv"/"conda" keys are
+    // already normalized into runt.uv/runt.conda by
+    // NotebookMetadataSnapshot::from_metadata_value before they reach the
+    // Automerge doc, so the legacy fallback in get_uv_metadata is not needed.
+    let mut metadata = std::collections::HashMap::new();
+    if let Ok(runt_value) = serde_json::to_value(&snapshot.runt) {
+        metadata.insert("runt".to_string(), runt_value);
+    }
+
     match runt_trust::verify_notebook_trust(&metadata) {
         Ok(info) => TrustState {
             status: info.status.clone(),
@@ -664,8 +757,8 @@ impl NotebookRoom {
     /// Any existing persisted doc is deleted to avoid clutter.
     ///
     /// Note: Trust state is initialized from disk because the Automerge doc
-    /// starts empty (first client hasn't synced yet). Trust verification
-    /// also requires trust_signature which is not in NotebookMetadataSnapshot.
+    /// starts empty (first client hasn't synced yet). Once the doc is populated,
+    /// `check_and_update_trust_state` keeps room.trust_state current.
     pub fn new_fresh(notebook_id: &str, docs_dir: &Path, blob_store: Arc<BlobStore>) -> Self {
         let filename = notebook_doc_filename(notebook_id);
         let persist_path = docs_dir.join(&filename);
@@ -940,7 +1033,9 @@ where
         }
     }
 
-    // Write trust state to RuntimeStateDoc so frontend can read it reactively
+    // Write trust state to RuntimeStateDoc so frontend can read it reactively.
+    // Start with room.trust_state (from disk at room creation), then re-verify
+    // from the doc in case initial_metadata was just seeded with a trust signature.
     {
         let trust_state = room.trust_state.read().await;
         let needs_approval = !matches!(
@@ -958,6 +1053,10 @@ where
             let _ = room.state_changed_tx.send(());
         }
     }
+    // Re-verify trust from doc metadata — picks up trust signatures that were
+    // written to the Automerge doc (e.g., from a previous approval or from
+    // initial_metadata seeded above).
+    check_and_update_trust_state(&room).await;
 
     room.active_peers.fetch_add(1, Ordering::Relaxed);
     let peers = room.active_peers.load(Ordering::Relaxed);
@@ -1389,6 +1488,9 @@ where
 
                                 // Check if metadata changed and kernel is running - broadcast sync state
                                 check_and_broadcast_sync_state(room).await;
+
+                                // Re-verify trust from doc metadata (detects trust approval)
+                                check_and_update_trust_state(room).await;
 
                                 // Rebuild markdown asset refs after source sync.
                                 process_markdown_assets(room).await;
@@ -3550,9 +3652,10 @@ async fn handle_notebook_request(
                             // Persist
                             let bytes = doc.save();
                             let _ = room.persist_tx.send(Some(bytes));
-                            // Check for env sync state changes
+                            // Check for env sync state and trust changes
                             drop(doc);
                             check_and_broadcast_sync_state(room).await;
+                            check_and_update_trust_state(room).await;
                             NotebookResponse::MetadataSet {}
                         }
                         Err(e) => NotebookResponse::Error {
@@ -3715,18 +3818,37 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
 
                     // Verify kernel wasn't swapped during async install (race protection)
                     // Update the kernel's launched config so future sync checks are accurate
-                    let mut kernel_guard = room.kernel.lock().await;
-                    if let Some(ref mut kernel) = *kernel_guard {
-                        // Check launch_id still matches - if kernel was restarted, skip update
-                        let current_launch_id = kernel.launched_config().launch_id.clone();
-                        if current_launch_id != launch_id {
-                            warn!(
-                                "[notebook-sync] Kernel was swapped during hot-sync, skipping update"
-                            );
-                            // Still report success - packages were installed to the old env
-                            // User will see sync banner again for the new kernel
-                        } else if let Some(ref current_uv) = current_metadata.runt.uv {
-                            kernel.update_launched_uv_deps(current_uv.dependencies.clone());
+                    let launch_id_matched = {
+                        let mut kernel_guard = room.kernel.lock().await;
+                        if let Some(ref mut kernel) = *kernel_guard {
+                            // Check launch_id still matches - if kernel was restarted, skip update
+                            let current_launch_id = kernel.launched_config().launch_id.clone();
+                            if current_launch_id != launch_id {
+                                warn!(
+                                    "[notebook-sync] Kernel was swapped during hot-sync, skipping update"
+                                );
+                                // Still report success - packages were installed to the old env
+                                // User will see sync banner again for the new kernel
+                                false
+                            } else {
+                                if let Some(ref current_uv) = current_metadata.runt.uv {
+                                    kernel.update_launched_uv_deps(current_uv.dependencies.clone());
+                                }
+                                true
+                            }
+                        } else {
+                            false
+                        }
+                    }; // drop kernel_guard before acquiring state_doc
+
+                    // Only mark in_sync when the kernel we installed into is still running.
+                    // If the kernel was swapped (launch_id mismatch), the new kernel may
+                    // still need a reinitialize — let check_and_broadcast_sync_state
+                    // recompute drift on the next doc change instead.
+                    if launch_id_matched {
+                        let mut sd = room.state_doc.write().await;
+                        if sd.set_env_sync(true, &[], &[], false, false) {
+                            let _ = room.state_changed_tx.send(());
                         }
                     }
 
