@@ -1048,54 +1048,34 @@ pub(crate) async fn clear_outputs(state: &Arc<Mutex<SessionState>>, cell_id: &st
 ///
 /// The entire lifecycle (confirm_sync, send_request, collect_outputs)
 /// is wrapped in a single timeout.
+///
+/// Internally uses `queue_cell()` as the single primitive for submitting
+/// execution requests, then waits for outputs via `collect_outputs()`.
 pub(crate) async fn execute_cell(
     state: &Arc<Mutex<SessionState>>,
     notebook_id: &str,
     cell_id: &str,
     timeout_secs: f64,
 ) -> PyResult<ExecutionResult> {
-    // Auto-start kernel if not running
-    {
-        let st = state.lock().await;
-        if !st.kernel_started {
-            drop(st);
-            ensure_kernel_started(state, notebook_id).await?;
-        }
-    }
-
-    // Emit focus presence — running the cell, not editing it
-    emit_focus_presence(state, cell_id).await;
-
     let timeout = std::time::Duration::from_secs_f64(timeout_secs);
     let result = tokio::time::timeout(timeout, async {
-        let st = state.lock().await;
+        // queue_cell is the single primitive: auto-starts kernel, confirms
+        // sync, sends ExecuteCell request, emits focus presence.
+        let execution_id = queue_cell(state, notebook_id, cell_id).await?;
 
-        let handle = st
-            .handle
-            .as_ref()
-            .ok_or_else(|| to_py_err("Not connected"))?;
+        let (blob_base_url, blob_store_path) = {
+            let st = state.lock().await;
+            (st.blob_base_url.clone(), st.blob_store_path.clone())
+        };
 
-        let blob_base_url = st.blob_base_url.clone();
-        let blob_store_path = st.blob_store_path.clone();
-
-        handle.confirm_sync().await.map_err(to_py_err)?;
-
-        let response = handle
-            .send_request(NotebookRequest::ExecuteCell {
-                cell_id: cell_id.to_string(),
-            })
-            .await
-            .map_err(to_py_err)?;
-
-        match response {
-            NotebookResponse::CellQueued { .. } => {}
-            NotebookResponse::Error { error } => return Err(to_py_err(error)),
-            other => return Err(to_py_err(format!("Unexpected response: {:?}", other))),
-        }
-
-        drop(st);
-
-        collect_outputs(state, cell_id, blob_base_url, blob_store_path).await
+        collect_outputs(
+            state,
+            cell_id,
+            Some(&execution_id),
+            blob_base_url,
+            blob_store_path,
+        )
+        .await
     })
     .await;
 
@@ -1171,6 +1151,7 @@ pub(crate) async fn queue_cell(
 pub(crate) async fn collect_outputs(
     state: &Arc<Mutex<SessionState>>,
     cell_id: &str,
+    execution_id: Option<&str>,
     blob_base_url: Option<String>,
     blob_store_path: Option<PathBuf>,
 ) -> PyResult<ExecutionResult> {
@@ -1203,12 +1184,14 @@ pub(crate) async fn collect_outputs(
                         kernel_error = Some("Kernel shut down".to_string());
                         true
                     } else {
-                        let in_executing = rs
-                            .queue
-                            .executing
-                            .as_ref()
-                            .is_some_and(|e| e.cell_id == cell_id);
-                        let in_queued = rs.queue.queued.iter().any(|e| e.cell_id == cell_id);
+                        let in_executing = rs.queue.executing.as_ref().is_some_and(|e| {
+                            e.cell_id == cell_id
+                                && execution_id.is_none_or(|eid| e.execution_id == eid)
+                        });
+                        let in_queued = rs.queue.queued.iter().any(|e| {
+                            e.cell_id == cell_id
+                                && execution_id.is_none_or(|eid| e.execution_id == eid)
+                        });
                         let in_queue = in_executing || in_queued;
 
                         if in_queue {
@@ -1251,9 +1234,11 @@ pub(crate) async fn collect_outputs(
                 {
                     Ok(Some(NotebookBroadcast::ExecutionDone {
                         cell_id: msg_cell_id,
-                        ..
+                        execution_id: msg_exec_id,
                     })) => {
-                        if msg_cell_id == cell_id {
+                        if msg_cell_id == cell_id
+                            && execution_id.is_none_or(|eid| eid == msg_exec_id)
+                        {
                             log::debug!("[session_core] ExecutionDone broadcast for {}", cell_id);
                             break;
                         }
@@ -1295,6 +1280,13 @@ pub(crate) async fn collect_outputs(
     // abstraction.  Once execution lifecycle (status, outputs) lives in the
     // RuntimeStateDoc keyed by execution_id, we can wait on the authoritative
     // "done"/"error" status instead of polling the notebook doc for outputs.
+    //
+    // NOTE(#1066): The cell snapshot below is read by cell_id, not execution_id.
+    // In a multi-client scenario, another peer re-executing the same cell can
+    // overwrite the doc snapshot between our ExecutionDone and this read,
+    // returning outputs from the wrong execution. This is fixed once cells
+    // carry an execution_id pointer and outputs are keyed by execution_id
+    // in the RuntimeStateDoc.
     let mut snapshot = None;
     let mut blob_base_url_out = None;
     let mut blob_store_path_out = None;
@@ -1847,57 +1839,20 @@ pub(crate) async fn set_notebook_metadata(
 // Streaming helpers
 // =========================================================================
 
-/// Prepare for streaming execution: auto-start kernel, confirm sync,
-/// queue the cell, and return a resubscribed broadcast receiver.
+/// Prepare for streaming execution: queue the cell via `queue_cell()`,
+/// then return a broadcast receiver for event streaming.
 ///
-/// The caller wraps the receiver in the appropriate iterator type
-/// (ExecutionEventIterator for sync, ExecutionEventStream for async).
+/// Uses `queue_cell()` as the single primitive for submitting execution
+/// requests. The caller wraps the receiver in the appropriate iterator
+/// type (ExecutionEventIterator for sync, ExecutionEventStream for async).
 pub(crate) async fn prepare_stream_execute(
     state: &Arc<Mutex<SessionState>>,
     notebook_id: &str,
     cell_id: &str,
-) -> PyResult<(BroadcastReceiver, Option<String>, Option<PathBuf>)> {
-    // Auto-start kernel if needed
-    {
-        let st = state.lock().await;
-        if !st.kernel_started {
-            drop(st);
-            ensure_kernel_started(state, notebook_id).await?;
-        }
-    }
-
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
-
-    handle.confirm_sync().await.map_err(to_py_err)?;
-
-    let response = handle
-        .send_request(NotebookRequest::ExecuteCell {
-            cell_id: cell_id.to_string(),
-        })
-        .await
-        .map_err(to_py_err)?;
-
-    match response {
-        NotebookResponse::CellQueued { .. } => {}
-        NotebookResponse::Error { error } => return Err(to_py_err(error)),
-        other => return Err(to_py_err(format!("Unexpected response: {:?}", other))),
-    }
-
-    // Resubscribe for this stream
-    let stream_broadcast_rx = st
-        .broadcast_rx
-        .as_ref()
-        .ok_or_else(|| to_py_err("No broadcast receiver"))?
-        .resubscribe();
-
-    let blob_base_url = st.blob_base_url.clone();
-    let blob_store_path = st.blob_store_path.clone();
-
-    Ok((stream_broadcast_rx, blob_base_url, blob_store_path))
+) -> PyResult<(BroadcastReceiver, String, Option<String>, Option<PathBuf>)> {
+    let execution_id = queue_cell(state, notebook_id, cell_id).await?;
+    let (broadcast_rx, blob_base_url, blob_store_path) = prepare_subscribe(state).await?;
+    Ok((broadcast_rx, execution_id, blob_base_url, blob_store_path))
 }
 
 /// Prepare a broadcast subscription with optional filters.

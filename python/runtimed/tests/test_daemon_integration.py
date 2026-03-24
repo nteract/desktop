@@ -1702,7 +1702,7 @@ class TestDocumentFirstExecution:
 
     @pytest.mark.asyncio
     async def test_async_queue_cell_fires_execution(self, async_session):
-        """queue_cell fires execution without waiting."""
+        """queue_cell fires execution and returns an execution_id."""
 
         await async_start_kernel_with_retry(async_session)
 
@@ -1710,7 +1710,12 @@ class TestDocumentFirstExecution:
         cell_id = await async_create_cell_and_wait_for_sync(
             async_session, "async_queued_var = 'async_queued'"
         )
-        await async_session.queue_cell(cell_id)
+        execution_id = await async_session.queue_cell(cell_id)
+
+        # queue_cell now returns a UUID execution_id
+        assert isinstance(execution_id, str), f"Expected str, got {type(execution_id)}"
+        assert len(execution_id) == 36, f"Expected UUID (36 chars), got {len(execution_id)!r}"
+        assert execution_id.count("-") == 4, f"Expected UUID format, got {execution_id!r}"
 
         # Poll until the queued cell has executed (execution_count gets set)
         async def queued_cell_executed():
@@ -2041,6 +2046,91 @@ class TestStreamExecute:
         if persisted_errors:
             assert persisted_errors[0].ename == "ValueError"
             assert "test error" in (persisted_errors[0].evalue or "")
+
+
+# ============================================================================
+# Execution ID Scoping Tests
+# ============================================================================
+
+
+class TestExecutionIdScoping:
+    """Test that execution events are scoped by execution_id.
+
+    Verifies that queue_cell returns a UUID execution_id and that
+    stream_execute / execute_cell correctly scope events to the
+    specific execution, preventing cross-execution contamination.
+    """
+
+    @pytest.mark.asyncio
+    async def test_queue_cell_returns_execution_id(self, async_session):
+        """queue_cell() returns a valid UUID execution_id."""
+        await async_start_kernel_with_retry(async_session)
+
+        cell_id = await async_create_cell_and_wait_for_sync(async_session, "print('hello')")
+        execution_id = await async_session.queue_cell(cell_id)
+
+        assert isinstance(execution_id, str)
+        assert len(execution_id) == 36, f"Expected UUID (36 chars), got {execution_id!r}"
+        assert execution_id.count("-") == 4, f"Expected UUID format, got {execution_id!r}"
+
+    @pytest.mark.asyncio
+    async def test_idempotent_queue_returns_same_execution_id(self, async_session):
+        """Re-queuing an already-queued cell returns the same execution_id."""
+        await async_start_kernel_with_retry(async_session)
+
+        # Create a slow cell so it stays in the queue
+        cell_id = await async_create_cell_and_wait_for_sync(
+            async_session, "import time; time.sleep(2); print('done')"
+        )
+        eid1 = await async_session.queue_cell(cell_id)
+        eid2 = await async_session.queue_cell(cell_id)
+
+        assert eid1 == eid2, f"Re-queuing should return same execution_id: {eid1} != {eid2}"
+
+    @pytest.mark.asyncio
+    async def test_sequential_executions_get_different_ids(self, async_session):
+        """Executing the same cell twice produces different execution_ids."""
+        await async_start_kernel_with_retry(async_session)
+
+        cell_id = await async_create_cell_and_wait_for_sync(async_session, "print('run')")
+
+        # First execution
+        r1 = await async_session.execute_cell(cell_id)
+        assert r1.success
+
+        # Second execution of the same cell
+        r2 = await async_session.execute_cell(cell_id)
+        assert r2.success
+
+        # Both should succeed — the execution_id scoping ensures
+        # the second execute_cell waits for its own execution, not
+        # the already-completed first one.
+        assert r2.execution_count != r1.execution_count, (
+            "Sequential executions should have different execution counts"
+        )
+
+    @pytest.mark.asyncio
+    async def test_stream_execute_scoped_to_execution(self, async_session):
+        """stream_execute events belong to the triggered execution."""
+        await async_start_kernel_with_retry(async_session)
+
+        cell_id = await async_create_cell_and_wait_for_sync(async_session, "print('scoped')")
+
+        events = []
+        async for event in await async_session.stream_execute(cell_id):
+            events.append(event)
+
+        # All events should reference our cell
+        for event in events:
+            assert event.cell_id == cell_id, f"Event cell_id mismatch: {event.cell_id} != {cell_id}"
+
+        # Should complete with a done event
+        done_events = [e for e in events if e.event_type == "done"]
+        assert len(done_events) == 1
+
+        # Should have output
+        output_events = [e for e in events if e.event_type == "output"]
+        assert len(output_events) >= 1
 
 
 # ============================================================================

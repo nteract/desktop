@@ -42,6 +42,10 @@ struct EventStreamState {
     broadcast_rx: BroadcastReceiver,
     /// Cell ID we're streaming events for
     cell_id: String,
+    /// Optional execution ID for scoped filtering. When set, only events
+    /// matching this execution_id are yielded — prevents cross-execution
+    /// contamination when a cell is re-executed.
+    execution_id: Option<String>,
     /// Whether execution is done
     done: bool,
     /// Timeout for waiting on events
@@ -55,9 +59,14 @@ struct EventStreamState {
 
 impl ExecutionEventStream {
     /// Create a new execution event stream.
+    ///
+    /// When `execution_id` is `Some`, only broadcasts matching that execution
+    /// are yielded. This prevents stale events from a previous (or concurrent)
+    /// execution of the same cell from leaking into the stream.
     pub fn new(
         broadcast_rx: BroadcastReceiver,
         cell_id: String,
+        execution_id: Option<String>,
         timeout_secs: f64,
         blob_base_url: Option<String>,
         blob_store_path: Option<PathBuf>,
@@ -67,6 +76,7 @@ impl ExecutionEventStream {
             state: Arc::new(Mutex::new(EventStreamState {
                 broadcast_rx,
                 cell_id,
+                execution_id,
                 done: false,
                 timeout_secs,
                 blob_base_url,
@@ -114,10 +124,15 @@ impl ExecutionEventStream {
                         match broadcast {
                             NotebookBroadcast::ExecutionStarted {
                                 cell_id: msg_cell_id,
+                                execution_id: msg_exec_id,
                                 execution_count,
-                                ..
                             } => {
-                                if msg_cell_id == cell_id {
+                                if msg_cell_id == cell_id
+                                    && state
+                                        .execution_id
+                                        .as_ref()
+                                        .is_none_or(|eid| eid == &msg_exec_id)
+                                {
                                     return Ok(ExecutionEvent::execution_started(
                                         &cell_id,
                                         execution_count,
@@ -127,12 +142,17 @@ impl ExecutionEventStream {
                             }
                             NotebookBroadcast::Output {
                                 cell_id: msg_cell_id,
+                                execution_id: msg_exec_id,
                                 output_type,
                                 output_json,
                                 output_index,
-                                ..
                             } => {
-                                if msg_cell_id == cell_id {
+                                if msg_cell_id == cell_id
+                                    && state
+                                        .execution_id
+                                        .as_ref()
+                                        .is_none_or(|eid| eid == &msg_exec_id)
+                                {
                                     if signal_only {
                                         // Signal-only mode: include index but not resolved output
                                         return Ok(ExecutionEvent::output_signal(
@@ -161,9 +181,14 @@ impl ExecutionEventStream {
                             }
                             NotebookBroadcast::ExecutionDone {
                                 cell_id: msg_cell_id,
-                                ..
+                                execution_id: msg_exec_id,
                             } => {
-                                if msg_cell_id == cell_id {
+                                if msg_cell_id == cell_id
+                                    && state
+                                        .execution_id
+                                        .as_ref()
+                                        .is_none_or(|eid| eid == &msg_exec_id)
+                                {
                                     state.done = true;
                                     return Ok(ExecutionEvent::done(&cell_id));
                                 }
@@ -213,9 +238,13 @@ pub struct ExecutionEventIterator {
 
 impl ExecutionEventIterator {
     /// Create a new execution event iterator.
+    ///
+    /// When `execution_id` is `Some`, only broadcasts matching that execution
+    /// are yielded.
     pub fn new(
         broadcast_rx: BroadcastReceiver,
         cell_id: String,
+        execution_id: Option<String>,
         timeout_secs: f64,
         blob_base_url: Option<String>,
         blob_store_path: Option<PathBuf>,
@@ -227,6 +256,7 @@ impl ExecutionEventIterator {
             state: Arc::new(Mutex::new(EventStreamState {
                 broadcast_rx,
                 cell_id,
+                execution_id,
                 done: false,
                 timeout_secs,
                 blob_base_url,
@@ -266,10 +296,15 @@ impl ExecutionEventIterator {
                     Ok(Some(broadcast)) => match broadcast {
                         NotebookBroadcast::ExecutionStarted {
                             cell_id: msg_cell_id,
+                            execution_id: msg_exec_id,
                             execution_count,
-                            ..
                         } => {
-                            if msg_cell_id == cell_id {
+                            if msg_cell_id == cell_id
+                                && state
+                                    .execution_id
+                                    .as_ref()
+                                    .is_none_or(|eid| eid == &msg_exec_id)
+                            {
                                 return Ok(Some(ExecutionEvent::execution_started(
                                     &cell_id,
                                     execution_count,
@@ -278,12 +313,17 @@ impl ExecutionEventIterator {
                         }
                         NotebookBroadcast::Output {
                             cell_id: msg_cell_id,
+                            execution_id: msg_exec_id,
                             output_type,
                             output_json,
                             output_index,
-                            ..
                         } => {
-                            if msg_cell_id == cell_id {
+                            if msg_cell_id == cell_id
+                                && state
+                                    .execution_id
+                                    .as_ref()
+                                    .is_none_or(|eid| eid == &msg_exec_id)
+                            {
                                 if signal_only {
                                     return Ok(Some(ExecutionEvent::output_signal(
                                         &cell_id,
@@ -308,9 +348,14 @@ impl ExecutionEventIterator {
                         }
                         NotebookBroadcast::ExecutionDone {
                             cell_id: msg_cell_id,
-                            ..
+                            execution_id: msg_exec_id,
                         } => {
-                            if msg_cell_id == cell_id {
+                            if msg_cell_id == cell_id
+                                && state
+                                    .execution_id
+                                    .as_ref()
+                                    .is_none_or(|eid| eid == &msg_exec_id)
+                            {
                                 state.done = true;
                                 return Ok(Some(ExecutionEvent::done(&cell_id)));
                             }

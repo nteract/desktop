@@ -129,10 +129,12 @@ class CellHandle:
         """Execute this cell and wait for results."""
         return await self._session.execute_cell(self._id, timeout_secs)
 
-    async def queue(self) -> CellHandle:
-        """Queue this cell for execution without waiting."""
-        await self._session.queue_cell(self._id)
-        return self
+    async def queue(self) -> str:
+        """Queue this cell for execution without waiting.
+
+        Returns the execution_id (UUID) for this execution.
+        """
+        return await self._session.queue_cell(self._id)
 
     async def delete(self) -> None:
         """Delete this cell from the document."""
@@ -174,6 +176,10 @@ class CellHandle:
         Yields ``ExecutionEvent`` objects until execution completes.
         Use ``signal_only=True`` to receive only start/done signals
         without output payloads.
+
+        Events are automatically scoped to the execution triggered by
+        this call — concurrent or subsequent executions of the same cell
+        will not leak into this stream.
         """
         return await self._session.stream_execute(
             self._id,

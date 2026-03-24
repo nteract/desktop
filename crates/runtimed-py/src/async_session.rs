@@ -1035,12 +1035,13 @@ impl AsyncSession {
         let cell_id = cell_id.to_string();
 
         future_into_py(py, async move {
-            let (broadcast_rx, blob_base_url, blob_store_path) =
+            let (broadcast_rx, execution_id, blob_base_url, blob_store_path) =
                 session_core::prepare_stream_execute(&state, &notebook_id, &cell_id).await?;
 
             Ok(ExecutionEventStream::new(
                 broadcast_rx,
                 cell_id,
+                Some(execution_id),
                 timeout_secs,
                 blob_base_url,
                 blob_store_path,

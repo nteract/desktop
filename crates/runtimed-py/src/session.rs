@@ -825,13 +825,14 @@ impl Session {
         timeout_secs: f64,
         signal_only: bool,
     ) -> PyResult<ExecutionEventIterator> {
-        let (broadcast_rx, blob_base_url, blob_store_path) = self.runtime.block_on(
+        let (broadcast_rx, execution_id, blob_base_url, blob_store_path) = self.runtime.block_on(
             session_core::prepare_stream_execute(&self.state, &self.notebook_id, cell_id),
         )?;
 
         ExecutionEventIterator::new(
             broadcast_rx,
             cell_id.to_string(),
+            Some(execution_id),
             timeout_secs,
             blob_base_url,
             blob_store_path,
