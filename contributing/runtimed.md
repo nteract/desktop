@@ -51,13 +51,15 @@ The daemon provides a single coordinating entity that prewarms environments in t
 
 | Component | Purpose | Location |
 |-----------|---------|----------|
-| Unix socket | IPC endpoint | `~/Library/Caches/runt/runtimed.sock` (macOS) / `~/.cache/runt/runtimed.sock` (Linux) |
-| Lock file | Singleton guarantee | `~/Library/Caches/runt/daemon.lock` (macOS) / `~/.cache/runt/daemon.lock` (Linux) |
-| Info file | Discovery (PID, endpoint) | `~/Library/Caches/runt/daemon.json` (macOS) / `~/.cache/runt/daemon.json` (Linux) |
-| Environments | Prewarmed venvs | `~/Library/Caches/runt/envs/` (macOS) / `~/.cache/runt/envs/` (Linux) |
-| Blob store | Content-addressed outputs | `~/Library/Caches/runt/blobs/` (macOS) / `~/.cache/runt/blobs/` (Linux) |
-| Notebook docs | Persisted Automerge docs | `~/Library/Caches/runt/notebook-docs/` (macOS) / `~/.cache/runt/notebook-docs/` (Linux) |
-| Snapshots | Pre-delete safety copies | `~/Library/Caches/runt/notebook-docs/snapshots/` (macOS) / `~/.cache/runt/notebook-docs/snapshots/` (Linux) |
+| Unix socket | IPC endpoint | `~/Library/Caches/<cache_namespace>/runtimed.sock` (macOS) / `~/.cache/<cache_namespace>/runtimed.sock` (Linux) |
+| Lock file | Singleton guarantee | `~/Library/Caches/<cache_namespace>/daemon.lock` (macOS) / `~/.cache/<cache_namespace>/daemon.lock` (Linux) |
+| Info file | Discovery (PID, endpoint) | `~/Library/Caches/<cache_namespace>/daemon.json` (macOS) / `~/.cache/<cache_namespace>/daemon.json` (Linux) |
+| Environments | Prewarmed venvs | `~/Library/Caches/<cache_namespace>/envs/` (macOS) / `~/.cache/<cache_namespace>/envs/` (Linux) |
+| Blob store | Content-addressed outputs | `~/Library/Caches/<cache_namespace>/blobs/` (macOS) / `~/.cache/<cache_namespace>/blobs/` (Linux) |
+| Notebook docs | Persisted Automerge docs | `~/Library/Caches/<cache_namespace>/notebook-docs/` (macOS) / `~/.cache/<cache_namespace>/notebook-docs/` (Linux) |
+| Snapshots | Pre-delete safety copies | `~/Library/Caches/<cache_namespace>/notebook-docs/snapshots/` (macOS) / `~/.cache/<cache_namespace>/notebook-docs/snapshots/` (Linux) |
+
+`<cache_namespace>` is `runt` for stable builds and `runt-nightly` for nightly builds. Source builds default to nightly unless `RUNT_BUILD_CHANNEL=stable`.
 
 ## Development Workflow
 
@@ -78,7 +80,7 @@ cargo xtask install-daemon
 This builds runtimed in release mode, stops the running service, replaces the binary, and restarts it. You can verify the version with:
 
 ```bash
-cat ~/.cache/runt/daemon.json   # check "version" field
+cargo run -p runt-cli -- daemon status --json | jq -r '.daemon_info.version'
 ```
 
 ### Fast iteration: Daemon + bundled notebook
@@ -115,6 +117,17 @@ cargo xtask run                   # Run the bundled binary
 ```
 
 The `--rust-only` flag skips `pnpm build`, reusing the existing frontend assets in `apps/notebook/dist/`. This is much faster when you're only changing Rust code.
+
+### Stable vs nightly from source
+
+Source-built binaries default to the nightly channel. That affects daemon cache/socket namespaces, CLI/app naming, and default app launch behavior. Only set `RUNT_BUILD_CHANNEL=stable` when you are intentionally validating the stable flow:
+
+```bash
+RUNT_BUILD_CHANNEL=stable cargo xtask dev-daemon
+RUNT_BUILD_CHANNEL=stable cargo xtask build --rust-only
+RUNT_BUILD_CHANNEL=stable cargo xtask run
+RUNT_BUILD_CHANNEL=stable cargo xtask run-mcp
+```
 
 ### Testing
 
@@ -317,6 +330,10 @@ asyncio.run(main())
 
 See [docs/python-bindings.md](../docs/python-bindings.md) for the full API reference.
 
+### Socket helper choice
+
+Use `default_socket_path()` when you want the current process to honor `RUNTIMED_SOCKET_PATH` and otherwise follow its build channel. Use `socket_path_for_channel("stable"|"nightly")` only for explicit channel targeting or cross-channel discovery; it intentionally ignores `RUNTIMED_SOCKET_PATH`.
+
 ### Output.data Typing
 
 `Output.data` is a `dict[str, str | bytes | dict]`. The value type depends on the MIME type:
@@ -347,17 +364,19 @@ The Python bindings respect the `RUNTIMED_SOCKET_PATH` environment variable. Thi
 
 **System daemon (default):**
 ```python
-# Connects to system daemon at ~/Library/Caches/runt/runtimed.sock
+# Connects using default_socket_path(), which follows the current build
+# channel unless RUNTIMED_SOCKET_PATH is already set.
 client = runtimed.Client()
 ```
 
 **Worktree daemon (for development):**
 ```bash
-# Find your worktree daemon socket
-cat ~/Library/Caches/runt/worktrees/*/daemon.json | grep -A1 worktree_path
-
-# Set the socket path before running Python
-export RUNTIMED_SOCKET_PATH="/Users/you/Library/Caches/runt/worktrees/{hash}/runtimed.sock"
+# Find and export your current worktree daemon socket
+export RUNTIMED_SOCKET_PATH="$(
+  RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH="$(pwd)" \
+  ./target/debug/runt daemon status --json \
+  | jq -r '.socket_path'
+)"
 python your_script.py
 ```
 
@@ -368,8 +387,11 @@ python your_script.py
 cargo xtask dev-daemon
 
 # Find and export the socket path (Terminal 2)
-export RUNTIMED_SOCKET_PATH=$(cat ~/Library/Caches/runt/worktrees/*/daemon.json | \
-  jq -r 'select(.worktree_path == "'$(pwd)'") | .endpoint')
+export RUNTIMED_SOCKET_PATH="$(
+  RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH="$(pwd)" \
+  ./target/debug/runt daemon status --json \
+  | jq -r '.socket_path'
+)"
 
 # Now Python bindings will use the worktree daemon
 python -c "import asyncio, runtimed; asyncio.run(runtimed.Client().ping())"
@@ -381,11 +403,11 @@ python -c "import asyncio, runtimed; asyncio.run(runtimed.Client().ping())"
 
 ```bash
 # Check what's holding the lock
-cat ~/.cache/runt/daemon.json
-lsof ~/.cache/runt/daemon.lock
+cat ~/.cache/<cache_namespace>/daemon.json
+lsof ~/.cache/<cache_namespace>/daemon.lock
 
 # If stale (crashed daemon), remove manually
-rm ~/.cache/runt/daemon.lock ~/.cache/runt/daemon.json
+rm ~/.cache/<cache_namespace>/daemon.lock ~/.cache/<cache_namespace>/daemon.json
 ```
 
 ### Pool not replenishing
@@ -394,7 +416,7 @@ Check that uv/conda are installed and working:
 
 ```bash
 uv --version
-ls -la ~/.cache/runt/envs/
+ls -la ~/.cache/<cache_namespace>/envs/
 ```
 
 ### Python bindings: "Failed to parse output" errors
@@ -407,10 +429,14 @@ If `session.run()` returns outputs like `Output(stream, stderr: "Failed to parse
 
 ```bash
 # Find your worktree daemon
-cat ~/Library/Caches/runt/worktrees/*/daemon.json | jq -r '.worktree_path + " -> " + .endpoint'
+./target/debug/runt dev worktrees
 
 # Export the matching socket path
-export RUNTIMED_SOCKET_PATH="/Users/you/Library/Caches/runt/worktrees/{hash}/runtimed.sock"
+export RUNTIMED_SOCKET_PATH="$(
+  RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH="$(pwd)" \
+  ./target/debug/runt daemon status --json \
+  | jq -r '.socket_path'
+)"
 ```
 
 ### Python bindings: get_cell() returns empty outputs
@@ -431,6 +457,8 @@ When shipped as a release build, the daemon installs as a system service that st
 ### Managing the System Daemon
 
 These commands manage the **system daemon** (production). For development, use `cargo xtask dev-daemon` instead — it provides per-worktree isolation and doesn't interfere with the system daemon.
+
+Examples below use the stable channel names. Nightly builds use the `-nightly` variants such as `runt-nightly`, `runtimed-nightly`, and `io.nteract.runtimed.nightly`.
 
 **Cross-platform:**
 ```bash
@@ -467,8 +495,10 @@ systemctl --user start runtimed.service
 **Key paths (macOS):**
 | File | Path |
 |------|------|
-| Installed binary | `~/Library/Application Support/runt/bin/runtimed` |
-| Service config | `~/Library/LaunchAgents/io.nteract.runtimed.plist` |
-| Socket | `~/Library/Caches/runt/runtimed.sock` |
-| Daemon info | `~/Library/Caches/runt/daemon.json` |
-| Logs | `~/Library/Caches/runt/runtimed.log` |
+| Installed binary | `~/Library/Application Support/<cache_namespace>/bin/<daemon_binary_basename>` |
+| Service config | `~/Library/LaunchAgents/<daemon_launchd_label>.plist` |
+| Socket | `~/Library/Caches/<cache_namespace>/runtimed.sock` |
+| Daemon info | `~/Library/Caches/<cache_namespace>/daemon.json` |
+| Logs | `~/Library/Caches/<cache_namespace>/runtimed.log` |
+
+For stable, these expand to `runt`, `runtimed`, and `io.nteract.runtimed`. For nightly, they expand to `runt-nightly`, `runtimed-nightly`, and `io.nteract.runtimed.nightly`.

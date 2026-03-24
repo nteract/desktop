@@ -184,6 +184,8 @@ VIRTUAL_ENV=../../python/runtimed/.venv maturin develop
 
 > **Tip:** The workspace venv at `.venv` (repo root) is a separate concern — the MCP server and other workspace tooling use it. To install the bindings there instead, run `VIRTUAL_ENV=../../.venv maturin develop` from `crates/runtimed-py`.
 
+Source-built daemon and MCP flows default to the nightly channel. Set `RUNT_BUILD_CHANNEL=stable` only when a test is intentionally validating stable-specific naming or paths.
+
 Configuration in `conftest.py` defines markers and daemon detection.
 
 **Test categories:**
@@ -204,12 +206,18 @@ pytest python/runtimed/tests/test_session_unit.py -v
 # Skip integration tests
 SKIP_INTEGRATION_TESTS=1 pytest python/runtimed/tests/ -v
 
-# Integration tests (requires running dev daemon)
-pytest python/runtimed/tests/test_daemon_integration.py -v
+# Integration tests (requires running dev daemon and an explicit socket)
+RUNTIMED_SOCKET_PATH="$(
+  RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH="$(pwd)" \
+  ./target/debug/runt daemon status --json \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["socket_path"])'
+)" pytest python/runtimed/tests/test_daemon_integration.py -v
 
 # CI mode (spawns its own daemon)
 RUNTIMED_INTEGRATION_TEST=1 pytest python/runtimed/tests/ -v
 ```
+
+When Python code should honor that exported socket, use `default_socket_path()`. Use `socket_path_for_channel("stable"|"nightly")` only for tests that intentionally target a specific release channel.
 
 **Writing tests:**
 

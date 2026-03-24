@@ -7,6 +7,8 @@ Use these venvs intentionally:
 - `.venv` at the repo root: workspace venv for `uv run nteract`, `gremlin`, and general development
 - `python/runtimed/.venv`: test venv for pytest integration runs
 
+Source builds default to the nightly channel. Prefix `cargo xtask ...` with `RUNT_BUILD_CHANNEL=stable` only when you are intentionally validating stable daemon/app behavior.
+
 ## Rebuild into the workspace venv
 
 Use this for MCP server work and most local development:
@@ -53,6 +55,17 @@ uv run nteract
 ```
 
 If the MCP supervisor is available, prefer `cargo xtask run-mcp` or the supervisor tools instead of a manual launch.
+
+Channel overrides for direct launches:
+
+```bash
+uv run nteract --nightly
+uv run nteract --stable
+```
+
+Those flags only set `RUNTIMED_SOCKET_PATH` when it is currently unset. If `cargo xtask dev-mcp`, `cargo xtask run-mcp`, or your shell already exported `RUNTIMED_SOCKET_PATH`, that explicit socket wins.
+
+Use `default_socket_path()` for current-process resolution. Use `socket_path_for_channel("stable"|"nightly")` only when you need an explicit channel path that ignores `RUNTIMED_SOCKET_PATH`.
 
 ## Common failure mode
 

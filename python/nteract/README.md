@@ -95,7 +95,11 @@ You can open the same notebook in the [nteract desktop app](https://nteract.io) 
 | `--version` | Print version and exit |
 | `--nightly` | Connect to the nightly daemon and open nightly app |
 | `--stable` | Connect to the stable daemon and open stable app |
-| `--no-show` | Disable the `show_notebook` tool (for headless environments) |
+| `--no-show` | Do not register the `show_notebook` tool (for headless environments) |
+
+By default, `nteract` lets `runtimed.default_socket_path()` choose the socket. That means `RUNTIMED_SOCKET_PATH` wins when it is set; otherwise the package's build channel decides.
+
+`--stable` and `--nightly` are mutually exclusive convenience overrides. When `RUNTIMED_SOCKET_PATH` is unset, they set it to `runtimed.socket_path_for_channel(...)`. When `RUNTIMED_SOCKET_PATH` is already set, the explicit env var wins. In either case, the selected flag still controls which desktop app `show_notebook` tries to launch.
 
 ## Architecture
 

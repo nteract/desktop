@@ -14,6 +14,8 @@ pip install runtimed
 
 The stable release matches the [nteract desktop stable app](https://nteract.io). If you're running the nightly desktop app, install the pre-release to match: `pip install --pre runtimed` (or `uv pip install --prerelease allow runtimed`). The nightly build automatically discovers the nightly daemon socket.
 
+`Client()` and the high-level Python API use `default_socket_path()` by default. That helper respects `RUNTIMED_SOCKET_PATH`, so exported test or MCP sockets take precedence over the package's default channel.
+
 ## Quick Start
 
 > All examples use `await` — run them inside `asyncio.run(main())`, a Jupyter notebook, or a Python REPL with top-level await (e.g. `python -m asyncio`).
@@ -69,6 +71,18 @@ notebook = await client.open_notebook("/path/to/notebook.ipynb")
 notebook = await client.create_notebook(runtime="python")
 notebook = await client.join_notebook(notebook_id)
 ```
+
+If you need to target a specific release channel instead of the current process default:
+
+```python
+import os
+import runtimed
+
+os.environ["RUNTIMED_SOCKET_PATH"] = runtimed.socket_path_for_channel("nightly")
+client = runtimed.Client()
+```
+
+Use `default_socket_path()` for normal current-process behavior. Use `socket_path_for_channel("stable"|"nightly")` only for explicit channel targeting or cross-channel discovery because it intentionally ignores `RUNTIMED_SOCKET_PATH`.
 
 ### Notebook
 

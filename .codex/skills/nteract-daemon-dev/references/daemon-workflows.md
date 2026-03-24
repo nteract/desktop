@@ -9,10 +9,20 @@ export RUNTIMED_DEV=1
 export RUNTIMED_WORKSPACE_PATH="$(pwd)"
 ```
 
+Source builds default to the nightly channel. To validate stable-specific names or paths from source, prefix the relevant commands with `RUNT_BUILD_CHANNEL=stable`.
+
 Start the worktree daemon:
 
 ```bash
 cargo xtask dev-daemon
+```
+
+Force the stable flow from source:
+
+```bash
+RUNT_BUILD_CHANNEL=stable cargo xtask dev-daemon
+RUNT_BUILD_CHANNEL=stable cargo xtask notebook
+RUNT_BUILD_CHANNEL=stable cargo xtask run-mcp
 ```
 
 Check status or logs:
@@ -35,6 +45,8 @@ export RUNTIMED_SOCKET_PATH="$(
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["socket_path"])'
 )"
 ```
+
+Use `default_socket_path()` when you want code to honor that exported socket. Use `socket_path_for_channel("stable"|"nightly")` only for explicit cross-channel discovery.
 
 ## When to start your own daemon
 

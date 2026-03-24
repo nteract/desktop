@@ -214,7 +214,7 @@ RUNTIMED_DEV=1 cargo xtask notebook
 ./target/debug/runt daemon logs -f          # Tail logs (uses correct log path in dev mode)
 ```
 
-Per-worktree state is stored in `<cache>/runt-nightly/worktrees/{hash}/` (macOS: `~/Library/Caches/`, Linux: `~/.cache/`).
+Per-worktree state is stored in `<cache>/{cache_namespace}/worktrees/{hash}/` (macOS: `~/Library/Caches/`, Linux: `~/.cache/`). Source builds default to `runt-nightly`; set `RUNT_BUILD_CHANNEL=stable` only when you intentionally need the stable flow.
 
 **For AI agents:** If `supervisor_*` tools are available, prefer those — they handle env vars and daemon lifecycle automatically. Otherwise, use `./target/debug/runt` directly (see "Agent Access to Dev Daemon" in CLAUDE.md). When using a raw terminal (not Zed tasks), set the env vars manually:
 
@@ -305,6 +305,8 @@ test-only venv).
 uv run nteract                     # from repo root
 uv run --directory . nteract       # equivalent, explicit
 ```
+
+For direct launches, `--stable` and `--nightly` are mutually exclusive channel overrides. They only set `RUNTIMED_SOCKET_PATH` when it is unset, and they also control which app the `show_notebook` tool opens.
 
 ### Inkwell supervisor (recommended)
 

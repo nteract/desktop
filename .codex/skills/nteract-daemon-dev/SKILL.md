@@ -10,10 +10,11 @@ Use this skill to avoid talking to the wrong daemon and to keep daemon-backed ve
 ## Workflow
 
 1. Prefer `supervisor_*` tools when they are available.
-2. Otherwise, treat the worktree daemon as mandatory for daemon-backed verification.
-3. Export `RUNTIMED_DEV=1` and `RUNTIMED_WORKSPACE_PATH="$(pwd)"` before any manual `runt` command.
-4. Start or restart the daemon before validating changes in `crates/runtimed/**`, notebook sync paths, or Python integration flows.
-5. Derive `RUNTIMED_SOCKET_PATH` from `./target/debug/runt daemon status --json` before running Python or cross-implementation tests.
+2. Decide whether you are validating the default nightly source flow or an explicit stable flow. Source builds are nightly unless `RUNT_BUILD_CHANNEL=stable`.
+3. Otherwise, treat the worktree daemon as mandatory for daemon-backed verification.
+4. Export `RUNTIMED_DEV=1` and `RUNTIMED_WORKSPACE_PATH="$(pwd)"` before any manual `runt` command.
+5. Start or restart the daemon before validating changes in `crates/runtimed/**`, notebook sync paths, or Python integration flows.
+6. Derive `RUNTIMED_SOCKET_PATH` from `./target/debug/runt daemon status --json` before running Python or cross-implementation tests.
 
 ## Guardrails
 
@@ -21,6 +22,7 @@ Use this skill to avoid talking to the wrong daemon and to keep daemon-backed ve
 - Never assume the system daemon is correct for a repo worktree.
 - Never run the notebook GUI from an agent terminal; let the human launch it.
 - If a test or script depends on notebook execution, blob resolution, or MCP server behavior, confirm it is pointed at the worktree daemon first.
+- Use `default_socket_path()` for the current process. Reach for `socket_path_for_channel(...)` only when you intentionally need stable/nightly discovery that ignores `RUNTIMED_SOCKET_PATH`.
 
 ## Quick Start
 

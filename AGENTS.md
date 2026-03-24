@@ -178,9 +178,17 @@ The UV workspace root is the **repository root** — `pyproject.toml` and `.venv
 uv run nteract  # Run MCP server from repo root
 ```
 
+### Stable vs Nightly
+
+- Source builds default to the `nightly` channel. Only `RUNT_BUILD_CHANNEL=stable` opts a source-built `cargo xtask` or `cargo` flow into stable names, app launch behavior, and cache/socket namespaces.
+- Use the default nightly flow for normal repo development. Opt into stable only when you are specifically validating stable branding, stable socket/cache paths, or stable app-launch behavior.
+- `cargo xtask dev-daemon`, `cargo xtask notebook`, `cargo xtask run`, `cargo xtask run-mcp`, and `cargo xtask dev-mcp` all follow `RUNT_BUILD_CHANNEL`.
+
 ### Python API Notes
 
 - **`Output.data` is typed by MIME kind**: `str` for text MIME types, `bytes` for binary (raw bytes, no base64), `dict` for JSON MIME types. Image outputs include a synthesized `text/llm+plain` key with blob URLs.
+- Use `default_socket_path()` for the current process or test harness because it respects `RUNTIMED_SOCKET_PATH`.
+- Use `socket_path_for_channel("stable"|"nightly")` only when you must target a specific channel explicitly or discover the other channel; it intentionally ignores `RUNTIMED_SOCKET_PATH`.
 
 ## MCP Server (Local Development)
 
@@ -193,6 +201,8 @@ cargo xtask run-mcp
 # Or print config JSON for your MCP client
 cargo xtask run-mcp --print-config
 ```
+
+`uv run nteract --stable` and `uv run nteract --nightly` are channel overrides for direct MCP launches. They only seed `RUNTIMED_SOCKET_PATH` when it is unset, and they also control which app `show_notebook` opens. `--no-show` removes the `show_notebook` tool entirely.
 
 ### Available MCP tools
 
