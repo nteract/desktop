@@ -19,6 +19,7 @@ Environment variables:
 """
 
 import asyncio
+import gc
 import inspect
 import os
 import subprocess
@@ -2652,6 +2653,160 @@ class TestPresence:
         """Can query remote cursors via AsyncSession."""
         cursors = await async_session.get_remote_cursors()
         assert isinstance(cursors, list)
+
+
+# ============================================================================
+# Peer cleanup regression tests
+# ============================================================================
+
+
+class TestPeerCleanup:
+    """Regression tests for peer cleanup via __exit__, __aexit__, and __del__.
+
+    Ensures that closing or garbage-collecting a Session / AsyncSession
+    properly decrements the daemon's active_peers counter.  Without these
+    fixes, phantom peers keep rooms alive indefinitely.
+
+    See: https://github.com/nteract/desktop/pull/1123
+    """
+
+    # -- helpers ----------------------------------------------------------
+
+    @staticmethod
+    def _peers_eq_factory_async(async_client, notebook_id, n):
+        """Return an async callable that checks active_peers == n."""
+
+        async def check():
+            rooms = await async_client.list_active_notebooks()
+            room = next((r for r in rooms if r["notebook_id"] == notebook_id), None)
+            return room is not None and room["active_peers"] == n
+
+        return check
+
+    @staticmethod
+    def _peers_eq_factory_sync(client, notebook_id, n):
+        """Return a callable that checks active_peers == n."""
+
+        def check():
+            rooms = client.list_active_notebooks()
+            room = next((r for r in rooms if r["notebook_id"] == notebook_id), None)
+            return room is not None and room["active_peers"] == n
+
+        return check
+
+    # -- async context manager --------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_async_aexit_decrements_peers(self, async_client):
+        """AsyncSession.__aexit__ decrements active_peers."""
+        session1 = await async_client.create_notebook(runtime="python")
+        notebook_id = session1.notebook_id
+
+        try:
+            # Join a second peer via async-with; __aexit__ should close it.
+            async with await async_client.join_notebook(notebook_id):
+                await async_wait_for_sync(
+                    self._peers_eq_factory_async(async_client, notebook_id, 2),
+                    description="2 peers connected",
+                )
+
+            # __aexit__ has fired — peer count should drop back to 1.
+            await async_wait_for_sync(
+                self._peers_eq_factory_async(async_client, notebook_id, 1),
+                description="peers == 1 after __aexit__",
+            )
+        finally:
+            await session1.close()
+
+    # -- sync context manager ---------------------------------------------
+
+    def test_sync_exit_decrements_peers(self, client):
+        """Session.__exit__ decrements active_peers."""
+        session1 = client.create_notebook(runtime="python")
+        notebook_id = session1.notebook_id
+
+        try:
+            # Join a second peer via with-statement; __exit__ should close it.
+            with client.join_notebook(notebook_id):
+                wait_for_sync(
+                    self._peers_eq_factory_sync(client, notebook_id, 2),
+                    description="2 peers connected",
+                )
+
+            # __exit__ has fired — peer count should drop back to 1.
+            wait_for_sync(
+                self._peers_eq_factory_sync(client, notebook_id, 1),
+                description="peers == 1 after __exit__",
+            )
+        finally:
+            session1.close()
+
+    # -- __del__ / garbage collection -------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_del_decrements_peers(self, async_client):
+        """__del__ via GC closes connection when session is not explicitly closed."""
+        session1 = await async_client.create_notebook(runtime="python")
+        notebook_id = session1.notebook_id
+        session2 = await async_client.join_notebook(notebook_id)
+
+        try:
+            await async_wait_for_sync(
+                self._peers_eq_factory_async(async_client, notebook_id, 2),
+                description="2 peers connected",
+            )
+
+            # Drop all references — __del__ should fire on GC.
+            del session2
+            gc.collect()
+
+            await async_wait_for_sync(
+                self._peers_eq_factory_async(async_client, notebook_id, 1),
+                description="peers == 1 after __del__ / GC",
+            )
+        finally:
+            await session1.close()
+
+    # -- cross-notebook phantom peer --------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_cross_notebook_peer_released_on_gc(self, async_client):
+        """Peer for notebook B created from A's context cleans up on GC.
+
+        Regression test for the scenario:
+          1. Connect to A.ipynb
+          2. From A's kernel, create/open B.ipynb
+          3. A's reference to B goes out of scope
+          4. B's peer count must decrement
+
+        Previously B's phantom peer lived until A's kernel process died.
+        """
+        session_a = await async_client.create_notebook(runtime="python")
+
+        # Simulate "from inside A's kernel, open notebook B"
+        session_b = await async_client.create_notebook(runtime="python")
+        notebook_b_id = session_b.notebook_id
+
+        # Keep B alive with a separate peer (simulates the UI or another agent)
+        keeper = await async_client.join_notebook(notebook_b_id)
+
+        try:
+            await async_wait_for_sync(
+                self._peers_eq_factory_async(async_client, notebook_b_id, 2),
+                description="B has 2 peers",
+            )
+
+            # "A's kernel goes away" — drop the session_b reference.
+            del session_b
+            gc.collect()
+
+            await async_wait_for_sync(
+                self._peers_eq_factory_async(async_client, notebook_b_id, 1),
+                description="B drops to 1 peer after A's ref is GC'd",
+            )
+        finally:
+            await keeper.close()
+            await session_a.close()
 
 
 if __name__ == "__main__":
