@@ -16,6 +16,8 @@ Codex-specific repo skills live in `.codex/skills/`. Prefer them when the task m
 
 If your MCP client provides `supervisor_status`, `supervisor_restart`, `supervisor_rebuild`, etc., **prefer those over manual terminal commands**. The supervisor manages the dev daemon lifecycle for you — no env vars, no extra terminals.
 
+**Claude Code has Inkwell locally** — the local dev environment connects Claude Code to the MCP supervisor via `cargo xtask run-mcp`. Cloud/CI sessions (e.g. GitHub-hosted agents) do not have Inkwell and must use `cargo xtask` commands directly.
+
 | Instead of… | Use… |
 |-------------|------|
 | `cargo xtask dev-daemon` (in a terminal) | `supervisor_restart(target="daemon")` |
@@ -24,7 +26,7 @@ If your MCP client provides `supervisor_status`, `supervisor_restart`, `supervis
 | `runt daemon logs` | `supervisor_logs` |
 | `cargo xtask vite` | `supervisor_start_vite` |
 
-The supervisor automatically handles per-worktree isolation, env var plumbing, and daemon restarts. You only need the manual commands below when the supervisor isn't available.
+The supervisor automatically handles per-worktree isolation, env var plumbing, and daemon restarts. You only need the manual commands below when the supervisor isn't available (e.g. cloud sessions, CI).
 
 ### Manual commands (when supervisor is not available)
 
@@ -244,7 +246,8 @@ The supervisor watches `python/nteract/src/`, `python/runtimed/src/`, `crates/ru
 
 ### Tool availability
 
-- **Inkwell active** → all supervisor + nteract tools available. **Prefer supervisor tools for daemon lifecycle** — they handle env vars and isolation automatically.
+- **Local Claude Code / Zed / MCP client** → Inkwell active, all supervisor + nteract tools available. **Prefer supervisor tools for daemon lifecycle** — they handle env vars and isolation automatically.
+- **Cloud agents (GitHub, Codex, remote sessions)** → No MCP server, use `cargo xtask` commands directly for build, daemon, and testing.
 - **nteract MCP only** → nteract tools only, no `supervisor_*`. Use manual terminal commands for daemon management.
 - **No MCP server** → use `cargo xtask run-mcp` to set one up
 - **Dev daemon not running** → Inkwell starts it automatically via `supervisor_restart(target="daemon")`
