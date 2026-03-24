@@ -176,9 +176,14 @@ class CellHandle:
         """Delete this cell from the document."""
         await self._session.delete_cell(self._id)
 
-    async def move_after(self, other: CellHandle | None = None) -> CellHandle:
+    async def move_after(self, other: CellHandle | str | None = None) -> CellHandle:
         """Move this cell after another cell (or to the beginning if None)."""
-        after_id = other._id if other else None
+        if isinstance(other, str):
+            after_id = other
+        elif other is not None:
+            after_id = other._id
+        else:
+            after_id = None
         await self._session.move_cell(self._id, after_id)
         return self
 
