@@ -228,6 +228,8 @@ cargo xtask run-mcp --print-config
 
 ### nteract MCP Tools (27 tools for notebook interaction)
 
+When Inkwell is active, agents also get the full nteract tool suite. **Use these to audit your own work** — open a notebook, execute cells, and inspect outputs to verify changes actually work before committing.
+
 | Category | Tools |
 |----------|-------|
 | Session | `list_active_notebooks`, `show_notebook`, `join_notebook`, `open_notebook`, `create_notebook`, `save_notebook` |
@@ -237,6 +239,8 @@ cargo xtask run-mcp --print-config
 | Cell metadata | `set_cells_source_hidden`, `set_cells_outputs_hidden`, `add_cell_tags`, `remove_cell_tags` |
 | Find/Replace | `replace_match`, `replace_regex` |
 | Execution | `execute_cell`, `run_all_cells`, `clear_outputs` |
+
+**Audit workflow example:** After modifying daemon or kernel code, use `open_notebook` on a test fixture, `execute_cell` to run it, then `get_cell` to inspect outputs — confirming the change works end-to-end without leaving the agent session.
 
 ### Hot reload
 
