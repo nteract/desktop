@@ -89,7 +89,7 @@ Only `0x00` (AutomergeSync) and `0x04` (Presence) are valid outgoing types from 
 | `ExecutionStarted { cell_id, execution_count }` | Cell began executing |
 | `Output { cell_id, output_type, output_json, output_index }` | Cell produced output |
 | `ExecutionDone { cell_id }` | Cell execution completed |
-| `QueueChanged { executing, queued }` | Execution queue state changed |
+| `QueueChanged { executing, queued }` | Execution queue state changed (legacy; RuntimeStateDoc is authoritative) |
 | `Comm { msg_type, content, buffers }` | Jupyter comm message (widget) |
 | `CommSync { comms }` | Full widget state snapshot for new clients |
 | `EnvProgress { env_type, phase }` | Environment setup progress |
@@ -128,9 +128,36 @@ Two-tier blob manifest system. When daemon receives kernel output:
 5. Automerge doc stores only the manifest hash in `cell.outputs[]`
 6. Clients resolve from daemon's HTTP blob server (`GET /blob/{hash}`)
 
-## Architectural Direction
+## RuntimeStateDoc (Shipped)
 
-**RuntimeStateDoc** -- State-carrying broadcasts (kernel status, queue, env sync) are being replaced by a daemon-authoritative, per-notebook Automerge doc synced via frame type `0x05`. Clients read via `useRuntimeState()`.
+State-carrying broadcasts (kernel status, queue, env sync, trust) have been replaced by a **daemon-authoritative, per-notebook Automerge document** synced via frame type `0x05`. Clients read via `useRuntimeState()`.
+
+Schema (in `crates/notebook-doc/src/runtime_state.rs`):
+
+| Path | Type | Description |
+|------|------|-------------|
+| `kernel.status` | Str | `"idle"`, `"busy"`, `"starting"`, `"error"`, `"shutdown"`, `"not_started"` |
+| `kernel.starting_phase` | Str | `""`, `"resolving"`, `"preparing_env"`, `"launching"`, `"connecting"` |
+| `kernel.name`, `kernel.language`, `kernel.env_source` | Str | Kernel metadata |
+| `queue.executing` | Str\|null | Cell ID currently executing |
+| `queue.executing_execution_id` | Str\|null | Execution ID for the executing cell |
+| `queue.queued` | List[Str] | Queued cell IDs |
+| `queue.queued_execution_ids` | List[Str] | Parallel execution IDs for queued entries |
+| `executions.{execution_id}` | Map | `{ cell_id, status, execution_count, success }` |
+| `env.in_sync`, `env.added`, `env.removed` | bool/List | Environment drift state |
+| `trust.status`, `trust.needs_approval` | Str/bool | Trust state |
+| `last_saved` | Str\|null | ISO timestamp of last save |
+
+The daemon is the sole writer. Frontends and Python clients read-only via Automerge sync.
+
+### Execution ID Tracking
+
+Each cell execution is assigned a unique `execution_id` (UUID). The `QueueEntry` struct pairs `cell_id` with `execution_id`, enabling:
+- Multiple executions of the same cell to be tracked independently
+- Python `Execution` handle to poll for lifecycle state
+- Frontend to display per-execution progress
+
+## Architectural Direction
 
 **Comms in doc (#761)** -- Widget state will move into `doc.comms/` in the Automerge document, eliminating `CommSync` and several broadcast variants.
 

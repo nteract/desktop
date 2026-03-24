@@ -38,6 +38,10 @@ Use consistent prefixes for filtering:
 - `[kernel-manager]` -- Kernel lifecycle and execution
 - `[comm_*]` -- Widget communication
 
+### Log File Rotation
+
+Daemon logs rotate on startup — each daemon session gets a clean log file. Previous logs are preserved as `runtimed.log.prev`. This makes `runt daemon logs -f` show only the current session.
+
 ### Enabling Debug Logs
 
 ```bash

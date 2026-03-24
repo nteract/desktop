@@ -138,6 +138,15 @@ crates/runtimed/src/
   settings_doc.rs          — Settings Automerge document, schema, migration
   sync_server.rs           — Settings sync handler
   stream_terminal.rs       — Stream terminal output handling
+  client.rs                — Internal daemon client for programmatic access
+  sync_client.rs           — Sync-flavored client wrapper
+  singleton.rs             — Daemon singleton management (lock file, PID tracking)
+  kernel_pids.rs           — Kernel process ID tracking and cleanup
+  markdown_assets.rs       — Markdown output asset rendering and resolution
+  terminal_size.rs         — Terminal size detection for kernel PTY
+  project_file.rs          — Unified project file discovery (pyproject, pixi, env.yml)
+  runtime.rs               — Runtime enum (Python, Deno) and detection
+  service.rs               — System service install/uninstall (launchd, systemd)
 ```
 
 ## Related Crates
@@ -147,6 +156,48 @@ crates/runtimed/src/
 | `notebook-doc` | `NotebookDoc`: Automerge schema, cell CRUD, per-cell accessors, `CellChangeset` |
 | `notebook-protocol` | Wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast` |
 | `notebook-sync` | `DocHandle`: sync infrastructure, snapshot watch, per-cell accessors for Python |
+
+## RuntimeStateDoc
+
+Each notebook room has a **RuntimeStateDoc** — a daemon-authoritative Automerge document synced via frame type `0x05`. It replaces state-carrying broadcasts for kernel status, queue, env sync, and trust.
+
+### Schema
+
+```
+ROOT/
+  kernel/
+    status: "idle" | "busy" | "starting" | "error" | "shutdown" | "not_started"
+    starting_phase: "" | "resolving" | "preparing_env" | "launching" | "connecting"
+    name, language, env_source: Str
+  queue/
+    executing: Str|null (cell_id)
+    executing_execution_id: Str|null
+    queued: List[Str] (cell_ids)
+    queued_execution_ids: List[Str]
+  executions/ Map (keyed by execution_id)
+    {id}/ { cell_id, status, execution_count, success }
+  env/ { in_sync, added, removed, channels_changed, deno_changed }
+  trust/ { status, needs_approval }
+  last_saved: Str|null (ISO timestamp)
+```
+
+### Who writes what
+
+- **Daemon only** writes to RuntimeStateDoc (kernel status, queue state, execution lifecycle, env sync, trust)
+- **Frontend reads only** via `useRuntimeState()` hook in `apps/notebook/src/lib/runtime-state.ts`
+- **Python reads** via `notebook.runtime` property (`RuntimeState` class)
+
+Key files: `crates/notebook-doc/src/runtime_state.rs` (schema), `apps/notebook/src/lib/runtime-state.ts` (frontend).
+
+## Execution Lifecycle
+
+Each cell execution is tracked by a unique `execution_id` (UUID):
+
+1. Client sends `ExecuteCell { cell_id }` → daemon generates `execution_id`
+2. Daemon writes `QueueEntry { cell_id, execution_id }` to RuntimeStateDoc queue
+3. When execution starts: status → `"running"`, execution_count assigned
+4. When done: status → `"done"` or `"error"`, success flag set
+5. Python `Execution` handle polls RuntimeStateDoc for lifecycle updates
 
 ## Settings Sync
 
