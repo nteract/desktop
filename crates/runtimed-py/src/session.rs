@@ -14,7 +14,6 @@ use tokio::sync::Mutex;
 use crate::error::to_py_err;
 use crate::output::{Cell, ExecutionResult, NotebookConnectionInfo, SyncEnvironmentResult};
 use crate::session_core::{self, SessionState};
-use crate::subscription::EventIteratorSubscription;
 
 /// A session for executing code via the runtimed daemon.
 ///
@@ -773,26 +772,6 @@ impl Session {
         ))
     }
 
-    /// Create a cell, execute it, and return the result.
-    ///
-    /// Convenience method that combines create_cell + execute_cell.
-    ///
-    /// Args:
-    ///     code: The code to execute.
-    ///     timeout_secs: Maximum time to wait (default: 60).
-    ///
-    /// Returns:
-    ///     ExecutionResult with outputs, success status, and execution count.
-    #[pyo3(signature = (code, timeout_secs=60.0))]
-    fn run(&self, code: &str, timeout_secs: f64) -> PyResult<ExecutionResult> {
-        self.runtime.block_on(session_core::run(
-            &self.state,
-            &self.notebook_id,
-            code,
-            timeout_secs,
-        ))
-    }
-
     /// Queue a cell for execution without waiting for the result.
     /// Returns the execution_id for the queued execution.
     fn queue_cell(&self, cell_id: &str) -> PyResult<String> {
@@ -801,32 +780,6 @@ impl Session {
             &self.notebook_id,
             cell_id,
         ))
-    }
-
-    /// Subscribe to execution events for specific cells or event types.
-    ///
-    /// Returns a sync iterator subscription that yields events as they arrive.
-    ///
-    /// Args:
-    ///     cell_ids: Optional list of cell IDs to filter (None = all cells).
-    ///     event_types: Optional list of event types to filter (None = all types).
-    #[pyo3(signature = (cell_ids=None, event_types=None))]
-    fn subscribe(
-        &self,
-        cell_ids: Option<Vec<String>>,
-        event_types: Option<Vec<String>>,
-    ) -> PyResult<EventIteratorSubscription> {
-        let (broadcast_rx, blob_base_url, blob_store_path) = self
-            .runtime
-            .block_on(session_core::prepare_subscribe(&self.state))?;
-
-        EventIteratorSubscription::new(
-            broadcast_rx,
-            cell_ids,
-            event_types,
-            blob_base_url,
-            blob_store_path,
-        )
     }
 
     // =========================================================================

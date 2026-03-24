@@ -377,15 +377,12 @@ async fn test_notebook_sync_via_unified_socket() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
 
-    // Connect first client — should get empty notebook
-    let client1 = connect::connect(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-test00note01".to_string(),
-        "test",
-    )
-    .await
-    .expect("client1 should connect")
-    .handle;
+    // Create first notebook via connect_create — should get empty notebook
+    let result1 = connect::connect_create(socket_path.clone(), "python", None, "test")
+        .await
+        .expect("client1 should connect");
+    let notebook_id_1 = result1.info.notebook_id.clone();
+    let client1 = result1.handle;
 
     let cells = client1.get_cells();
     assert!(cells.is_empty(), "new notebook should have no cells");
@@ -395,14 +392,10 @@ async fn test_notebook_sync_via_unified_socket() {
     client1.update_source("cell-1", "print('hello')").unwrap();
 
     // Connect second client to the same notebook — should see the cell
-    let client2 = connect::connect(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-test00note01".to_string(),
-        "test",
-    )
-    .await
-    .expect("client2 should connect")
-    .handle;
+    let client2 = connect::connect(socket_path.clone(), notebook_id_1, "test")
+        .await
+        .expect("client2 should connect")
+        .handle;
 
     let cells = client2.get_cells();
     assert_eq!(cells.len(), 1, "client2 should see the cell from client1");
@@ -410,15 +403,11 @@ async fn test_notebook_sync_via_unified_socket() {
     assert_eq!(cells[0].source, "print('hello')");
     assert_eq!(cells[0].cell_type, "code");
 
-    // Connect to a different notebook — should be independent
-    let client3 = connect::connect(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-test00note02".to_string(),
-        "test",
-    )
-    .await
-    .expect("client3 should connect")
-    .handle;
+    // Create a different notebook — should be independent
+    let client3 = connect::connect_create(socket_path.clone(), "python", None, "test")
+        .await
+        .expect("client3 should connect")
+        .handle;
 
     let cells = client3.get_cells();
     assert!(cells.is_empty(), "different notebook should have no cells");
@@ -442,23 +431,16 @@ async fn test_notebook_sync_cross_window_propagation() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
 
-    // Both clients connect to the same notebook
-    let client1 = connect::connect(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-shared00nb01".to_string(),
-        "test",
-    )
-    .await
-    .unwrap()
-    .handle;
-    let client2 = connect::connect(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-shared00nb01".to_string(),
-        "test",
-    )
-    .await
-    .unwrap()
-    .handle;
+    // First client creates a notebook; second client joins it
+    let result = connect::connect_create(socket_path.clone(), "python", None, "test")
+        .await
+        .unwrap();
+    let notebook_id = result.info.notebook_id.clone();
+    let client1 = result.handle;
+    let client2 = connect::connect(socket_path.clone(), notebook_id, "test")
+        .await
+        .unwrap()
+        .handle;
 
     // Client1 adds a cell
     client1.add_cell_after("c1", "code", None).unwrap();
@@ -492,13 +474,14 @@ async fn test_notebook_sync_cross_window_propagation() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
-/// Test that room eviction creates a fresh room on reconnection.
+/// Test that untitled notebook state survives room eviction via Automerge persistence.
 ///
-/// Design: The .ipynb file is the source of truth, not persisted Automerge docs.
-/// When all clients disconnect and the room is evicted, a new connection should
-/// get a fresh empty room. The client will populate it from their local .ipynb.
+/// Design: Untitled notebooks (UUID IDs) have no .ipynb on disk — their Automerge
+/// doc is persisted so content survives daemon restarts and room evictions.
+/// When all clients disconnect, the room is evicted from memory. On reconnect,
+/// the daemon reloads the persisted Automerge doc and the cells reappear.
 #[tokio::test]
-async fn test_notebook_room_eviction_and_persistence() {
+async fn test_untitled_notebook_persists_through_eviction() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
@@ -512,23 +495,17 @@ async fn test_notebook_room_eviction_and_persistence() {
     assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
 
     // Phase 1: Two clients connect, add cells, then both disconnect
+    let notebook_id;
     {
-        let client1 = connect::connect(
-            socket_path.clone(),
-            "00000000-0000-0000-0000-evict00test1".to_string(),
-            "test",
-        )
-        .await
-        .unwrap()
-        .handle;
-        let _client2 = connect::connect(
-            socket_path.clone(),
-            "00000000-0000-0000-0000-evict00test1".to_string(),
-            "test",
-        )
-        .await
-        .unwrap()
-        .handle;
+        let result = connect::connect_create(socket_path.clone(), "python", None, "test")
+            .await
+            .unwrap();
+        notebook_id = result.info.notebook_id.clone();
+        let client1 = result.handle;
+        let _client2 = connect::connect(socket_path.clone(), notebook_id.clone(), "test")
+            .await
+            .unwrap()
+            .handle;
 
         client1.add_cell_after("c1", "code", None).unwrap();
         client1.update_source("c1", "persisted = True").unwrap();
@@ -537,30 +514,28 @@ async fn test_notebook_room_eviction_and_persistence() {
             .unwrap();
         client1.update_source("c2", "# Hello World").unwrap();
 
-        // Both clients drop here — the room should be evicted
+        // Both clients drop here — the room should be evicted from memory
     }
 
     // Give the daemon time to process disconnects and evict the room
     sleep(Duration::from_millis(200)).await;
 
-    // Phase 2: Reconnect — the room should be fresh (not loaded from persisted state)
-    // This matches the design: .ipynb is source of truth, Automerge is just sync layer
-    let client3 = connect::connect(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-evict00test1".to_string(),
-        "test",
-    )
-    .await
-    .expect("should reconnect after room eviction")
-    .handle;
+    // Phase 2: Reconnect — untitled notebook state should be restored from
+    // the persisted Automerge doc (there's no .ipynb to load from)
+    let client3 = connect::connect(socket_path.clone(), notebook_id, "test")
+        .await
+        .expect("should reconnect after room eviction")
+        .handle;
 
     let cells = client3.get_cells();
     assert_eq!(
         cells.len(),
-        0,
-        "reconnected client should get fresh empty room (client populates from .ipynb), got: {:?}",
+        2,
+        "reconnected client should see persisted cells for untitled notebook, got: {:?}",
         cells
     );
+    assert_eq!(cells[0].source, "persisted = True");
+    assert_eq!(cells[1].source, "# Hello World");
 
     // Shutdown
     pool_client.shutdown().await.ok();
@@ -581,15 +556,12 @@ async fn test_notebook_cell_delete_propagation() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
 
-    // Client1 creates three cells
-    let client1 = connect::connect(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-delete0test1".to_string(),
-        "test",
-    )
-    .await
-    .unwrap()
-    .handle;
+    // Client1 creates a notebook with three cells
+    let result = connect::connect_create(socket_path.clone(), "python", None, "test")
+        .await
+        .unwrap();
+    let notebook_id = result.info.notebook_id.clone();
+    let client1 = result.handle;
 
     client1.add_cell_after("keep-1", "code", None).unwrap();
     client1
@@ -603,14 +575,10 @@ async fn test_notebook_cell_delete_propagation() {
     client1.update_source("keep-2", "c = 3").unwrap();
 
     // Client2 joins and verifies all three cells
-    let client2 = connect::connect(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-delete0test1".to_string(),
-        "test",
-    )
-    .await
-    .unwrap()
-    .handle;
+    let client2 = connect::connect(socket_path.clone(), notebook_id, "test")
+        .await
+        .unwrap()
+        .handle;
 
     assert_eq!(client2.get_cells().len(), 3);
 
@@ -665,27 +633,21 @@ async fn test_multiple_notebooks_concurrent_isolation() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
 
-    // Create three notebooks concurrently
+    // Create three notebooks concurrently via connect_create
     let (nb_a, nb_b, nb_c) = tokio::join!(
-        connect::connect(
-            socket_path.clone(),
-            "00000000-0000-0000-0000-nb000alpha01".to_string(),
-            "test"
-        ),
-        connect::connect(
-            socket_path.clone(),
-            "00000000-0000-0000-0000-nb0000beta01".to_string(),
-            "test"
-        ),
-        connect::connect(
-            socket_path.clone(),
-            "00000000-0000-0000-0000-nb000gamma01".to_string(),
-            "test"
-        ),
+        connect::connect_create(socket_path.clone(), "python", None, "test"),
+        connect::connect_create(socket_path.clone(), "python", None, "test"),
+        connect::connect_create(socket_path.clone(), "python", None, "test"),
     );
-    let nb_a = nb_a.unwrap().handle;
-    let nb_b = nb_b.unwrap().handle;
-    let nb_c = nb_c.unwrap().handle;
+    let nb_a = nb_a.unwrap();
+    let nb_b = nb_b.unwrap();
+    let nb_c = nb_c.unwrap();
+    let id_a = nb_a.info.notebook_id.clone();
+    let id_b = nb_b.info.notebook_id.clone();
+    let id_c = nb_c.info.notebook_id.clone();
+    let nb_a = nb_a.handle;
+    let nb_b = nb_b.handle;
+    let nb_c = nb_c.handle;
 
     // Add cells to each notebook
     nb_a.add_cell_after("alpha-1", "code", None).unwrap();
@@ -706,21 +668,9 @@ async fn test_multiple_notebooks_concurrent_isolation() {
 
     // Verify each notebook is isolated by connecting fresh clients
     let (fresh_a, fresh_b, fresh_c) = tokio::join!(
-        connect::connect(
-            socket_path.clone(),
-            "00000000-0000-0000-0000-nb000alpha01".to_string(),
-            "test"
-        ),
-        connect::connect(
-            socket_path.clone(),
-            "00000000-0000-0000-0000-nb0000beta01".to_string(),
-            "test"
-        ),
-        connect::connect(
-            socket_path.clone(),
-            "00000000-0000-0000-0000-nb000gamma01".to_string(),
-            "test"
-        ),
+        connect::connect(socket_path.clone(), id_a, "test"),
+        connect::connect(socket_path.clone(), id_b, "test"),
+        connect::connect(socket_path.clone(), id_c, "test"),
     );
 
     let cells_a = fresh_a.unwrap().handle.get_cells();
@@ -762,15 +712,12 @@ async fn test_notebook_append_and_clear_outputs() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client, Duration::from_secs(5)).await);
 
-    // Client1 creates a cell and appends outputs incrementally
-    let client1 = connect::connect(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-output0test1".to_string(),
-        "test",
-    )
-    .await
-    .unwrap()
-    .handle;
+    // Client1 creates a notebook with a cell and appends outputs incrementally
+    let result = connect::connect_create(socket_path.clone(), "python", None, "test")
+        .await
+        .unwrap();
+    let notebook_id = result.info.notebook_id.clone();
+    let client1 = result.handle;
 
     client1.add_cell_after("c1", "code", None).unwrap();
     client1.set_execution_count("c1", "1").unwrap();
@@ -794,14 +741,10 @@ async fn test_notebook_append_and_clear_outputs() {
         .unwrap();
 
     // Client2 connects and should see all 3 outputs
-    let client2 = connect::connect(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-output0test1".to_string(),
-        "test",
-    )
-    .await
-    .unwrap()
-    .handle;
+    let client2 = connect::connect(socket_path.clone(), notebook_id.clone(), "test")
+        .await
+        .unwrap()
+        .handle;
 
     let cell = client2.get_cell("c1").expect("should have c1");
     assert_eq!(cell.outputs.len(), 3, "should have 3 outputs");
@@ -847,14 +790,10 @@ async fn test_notebook_append_and_clear_outputs() {
         .unwrap();
 
     // Verify via a fresh client
-    let client3 = connect::connect(
-        socket_path.clone(),
-        "00000000-0000-0000-0000-output0test1".to_string(),
-        "test",
-    )
-    .await
-    .unwrap()
-    .handle;
+    let client3 = connect::connect(socket_path.clone(), notebook_id, "test")
+        .await
+        .unwrap()
+        .handle;
     let cell = client3.get_cell("c1").expect("should have c1");
     assert_eq!(
         cell.outputs.len(),

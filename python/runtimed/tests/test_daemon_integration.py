@@ -316,7 +316,8 @@ def daemon_health_check(daemon_process):
         session.start_kernel(kernel_type="python", env_source="uv:prewarmed")
         print("[health] Kernel started: OK", file=sys.stderr)
 
-        result = session.run("print('health-check-ok')")
+        cell_id = session.create_cell("print('health-check-ok')")
+        result = session.execute_cell(cell_id)
         assert result.success, f"Health check execution failed: {result.stderr}"
         print("[health] Execute: OK", file=sys.stderr)
 
@@ -1069,7 +1070,9 @@ class TestOutputHandling:
         """Test that both stdout and stderr are captured separately."""
         start_kernel_with_retry(session)
 
-        result = session.run('import sys\nprint("to stdout")\nsys.stderr.write("to stderr\\n")')
+        result = session.execute_cell(
+            session.create_cell('import sys\nprint("to stdout")\nsys.stderr.write("to stderr\\n")')
+        )
 
         assert result.success
         assert "to stdout" in result.stdout
@@ -1080,7 +1083,7 @@ class TestOutputHandling:
         start_kernel_with_retry(session)
 
         # Display a string - should have text/plain
-        result = session.run("display('hello world')")
+        result = session.execute_cell(session.create_cell("display('hello world')"))
 
         assert result.success
         assert len(result.display_data) > 0
@@ -1091,9 +1094,10 @@ class TestOutputHandling:
         """Test that full traceback is captured on error."""
         start_kernel_with_retry(session)
 
-        result = session.run(
+        code = (
             'def inner():\n    raise RuntimeError("deep error")\ndef outer():\n    inner()\nouter()'
         )
+        result = session.execute_cell(session.create_cell(code))
 
         assert not result.success
         assert result.error is not None
@@ -1151,7 +1155,7 @@ class TestKernelLaunchMetadata:
         start_kernel_with_retry(session, kernel_type="python")
 
         # Verify it's actually a Python kernel
-        result = session.run("import sys; print(sys.prefix)")
+        result = session.execute_cell(session.create_cell("import sys; print(sys.prefix)"))
         assert result.success
         # sys.prefix should be a real filesystem path
         assert "/" in result.stdout or "\\" in result.stdout
@@ -1174,7 +1178,7 @@ class TestKernelLaunchMetadata:
 
         # Verify it's truly Python - sys.prefix gives the venv path,
         # and sys.executable should be a python binary
-        result = session.run("import sys; print(sys.prefix)")
+        result = session.execute_cell(session.create_cell("import sys; print(sys.prefix)"))
         assert result.success, f"Expected success, got: {result.stderr}"
         prefix = result.stdout.strip()
         assert prefix, "sys.prefix should not be empty"
@@ -1183,7 +1187,9 @@ class TestKernelLaunchMetadata:
         )
 
         # Double-check: importing a Python-only stdlib module should work
-        result2 = session.run("import json; print(json.dumps({'runtime': 'python'}))")
+        result2 = session.execute_cell(
+            session.create_cell("import json; print(json.dumps({'runtime': 'python'}))")
+        )
         assert result2.success
         assert '"runtime": "python"' in result2.stdout
 
@@ -1256,7 +1262,9 @@ class TestKernelLaunchMetadata:
         assert session.env_source == "uv:inline"
 
         # Verify the dep is actually importable
-        result = session.run("import requests; print(requests.__version__)")
+        result = session.execute_cell(
+            session.create_cell("import requests; print(requests.__version__)")
+        )
         assert result.success, f"Failed to import requests: {result.stderr}"
         assert result.stdout.strip(), "requests version should not be empty"
 
@@ -1269,7 +1277,7 @@ class TestKernelLaunchMetadata:
         shutdown_and_start_kernel(session, kernel_type="python", env_source="uv:inline")
 
         # sys.prefix should point to a venv, not the system Python
-        result = session.run("import sys; print(sys.prefix)")
+        result = session.execute_cell(session.create_cell("import sys; print(sys.prefix)"))
         assert result.success
         prefix = result.stdout.strip()
         assert "inline-env" in prefix or "inline" in prefix or "cache" in prefix, (
@@ -1282,7 +1290,7 @@ class TestKernelLaunchMetadata:
 
         assert session.env_source == "uv:prewarmed"
 
-        result = session.run("import sys; print(sys.prefix)")
+        result = session.execute_cell(session.create_cell("import sys; print(sys.prefix)"))
         assert result.success
 
 
@@ -1312,16 +1320,20 @@ class TestDenoKernel:
 
     def test_deno_kernel_launch(self, deno_session):
         """Deno kernel launches and executes TypeScript."""
-        result = deno_session.run("console.log('hello from deno')")
+        result = deno_session.execute_cell(
+            deno_session.create_cell("console.log('hello from deno')")
+        )
         assert result.success, f"Deno execution failed: {result.stderr}"
         assert "hello from deno" in result.stdout
 
     def test_deno_kernel_typescript_features(self, deno_session):
         """Deno kernel supports TypeScript features."""
         # TypeScript type annotations and template literals
-        result = deno_session.run(
-            "const greet = (name: string): string => `Hello, ${name}!`;\n"
-            "console.log(greet('integration test'))"
+        result = deno_session.execute_cell(
+            deno_session.create_cell(
+                "const greet = (name: string): string => `Hello, ${name}!`;\n"
+                "console.log(greet('integration test'))"
+            )
         )
         assert result.success, f"TypeScript execution failed: {result.stderr}"
         assert "Hello, integration test!" in result.stdout
@@ -1336,7 +1348,9 @@ class TestDenoKernel:
         assert ks.get("language") == "typescript"
 
         # Verify the kernel is actually Deno by executing TypeScript
-        result = deno_session.run("const x: number = 42; console.log(x)")
+        result = deno_session.execute_cell(
+            deno_session.create_cell("const x: number = 42; console.log(x)")
+        )
         assert result.success, f"Deno kernel should execute TypeScript: {result.stderr}"
         assert "42" in result.stdout
 
@@ -1399,7 +1413,9 @@ class TestCondaInlineDeps:
 
         assert session.env_source == "conda:inline"
 
-        result = session.run("import filelock; print(filelock.__version__)")
+        result = session.execute_cell(
+            session.create_cell("import filelock; print(filelock.__version__)")
+        )
         assert result.success, f"Failed to import filelock: {result.stderr}"
         assert result.stdout.strip(), "filelock version should not be empty"
 
@@ -1407,7 +1423,7 @@ class TestCondaInlineDeps:
         """Conda inline env has a working Python in a conda prefix."""
         session = conda_inline_session
 
-        result = session.run("import sys; print(sys.prefix)")
+        result = session.execute_cell(session.create_cell("import sys; print(sys.prefix)"))
         assert result.success
         prefix = result.stdout.strip()
         assert prefix, "sys.prefix should not be empty"
@@ -1478,7 +1494,7 @@ class TestProjectFileDetection:
         assert session.env_source == "uv:pyproject"
 
         # The fixture pyproject.toml declares httpx as a dependency
-        result = session.run("import httpx; print(httpx.__version__)")
+        result = session.execute_cell(session.create_cell("import httpx; print(httpx.__version__)"))
         assert result.success, f"Failed to import httpx from pyproject env: {result.stderr}"
 
     def test_pixi_auto_detection(self, session, isolated_fixtures):
@@ -1506,7 +1522,7 @@ class TestProjectFileDetection:
         assert session.env_source == "conda:pixi"
 
         # Kernel should be functional
-        result = session.run("import sys; print(sys.prefix)")
+        result = session.execute_cell(session.create_cell("import sys; print(sys.prefix)"))
         assert result.success, f"Kernel failed in pixi env: {result.stderr}"
 
     def test_environment_yml_auto_detection(self, session, isolated_fixtures):
@@ -1534,7 +1550,7 @@ class TestProjectFileDetection:
         assert session.env_source == "conda:env_yml"
 
         # Kernel should be functional
-        result = session.run("import sys; print(sys.prefix)")
+        result = session.execute_cell(session.create_cell("import sys; print(sys.prefix)"))
         assert result.success, f"Kernel failed in env_yml env: {result.stderr}"
 
     def test_no_project_file_falls_back_to_prewarmed(self, session):
@@ -1557,7 +1573,7 @@ class TestProjectFileDetection:
 
             assert session.env_source == "uv:prewarmed"
 
-            result = session.run("import sys; print(sys.prefix)")
+            result = session.execute_cell(session.create_cell("import sys; print(sys.prefix)"))
             assert result.success
         finally:
             os.unlink(notebook_path)
@@ -2225,131 +2241,6 @@ class TestAppendSource:
         cell = await s2.get_cell(cell_id)
         assert "a = 1" in cell.source
         assert "b = 2" in cell.source
-
-
-# ============================================================================
-# Subscription Tests (independent event listening)
-# ============================================================================
-
-
-class TestSubscription:
-    """Test subscribe() for independent event listening."""
-
-    @pytest.mark.asyncio
-    async def test_subscribe_receives_execution_events(self, async_session):
-        """subscribe() receives events from cell execution."""
-        await async_start_kernel_with_retry(async_session)
-
-        cell_id = await async_session.create_cell("print('subscribed')")
-
-        # Start subscription before execution
-        subscription = async_session.subscribe()
-        received_events = []
-
-        import asyncio
-
-        async def collect_events():
-            async for event in subscription:
-                received_events.append(event)
-                if event.event_type == "done":
-                    break
-
-        # Run collection with timeout
-        collect_task = asyncio.create_task(collect_events())
-
-        # Execute cell
-        await async_session.execute_cell(cell_id)
-
-        # Wait for events with timeout
-        try:
-            await asyncio.wait_for(collect_task, timeout=10.0)
-        except asyncio.TimeoutError:
-            pass  # May timeout if no done event, that's ok
-
-        # Should have received some events
-        assert len(received_events) >= 1, "Expected to receive events via subscription"
-
-    @pytest.mark.asyncio
-    async def test_subscribe_filters_by_event_type(self, async_session):
-        """subscribe(event_types=[...]) filters events."""
-        await async_start_kernel_with_retry(async_session)
-
-        cell_id = await async_session.create_cell("print('filtered')")
-
-        # Subscribe only to output events
-        subscription = async_session.subscribe(event_types=["output"])
-
-        import asyncio
-
-        received_events = []
-
-        async def collect_outputs():
-            count = 0
-            async for event in subscription:
-                received_events.append(event)
-                count += 1
-                if count >= 1:  # Just get first output
-                    break
-
-        collect_task = asyncio.create_task(collect_outputs())
-
-        await async_session.execute_cell(cell_id)
-
-        try:
-            await asyncio.wait_for(collect_task, timeout=10.0)
-        except asyncio.TimeoutError:
-            pass
-
-        # All received events should be output type
-        for event in received_events:
-            assert event.event_type == "output", (
-                f"Expected only output events, got {event.event_type}"
-            )
-
-    @pytest.mark.asyncio
-    @pytest.mark.skipif(
-        os.environ.get("RUNTIMED_INTEGRATION_TEST") == "1",
-        reason="Flaky on CI: daemon connection timeouts under resource pressure (test 89/99)",
-    )
-    async def test_multiple_subscribers(self, async_session):
-        """Multiple subscribers can listen to same execution."""
-        await async_start_kernel_with_retry(async_session)
-
-        cell_id = await async_session.create_cell("print('multi-sub')")
-
-        # Create two independent subscriptions
-        sub1 = async_session.subscribe()
-        sub2 = async_session.subscribe()
-
-        import asyncio
-
-        events1, events2 = [], []
-
-        async def collect1():
-            async for event in sub1:
-                events1.append(event)
-                if event.event_type == "done":
-                    break
-
-        async def collect2():
-            async for event in sub2:
-                events2.append(event)
-                if event.event_type == "done":
-                    break
-
-        # Start both collectors
-        task1 = asyncio.create_task(collect1())
-        task2 = asyncio.create_task(collect2())
-
-        # Execute
-        await async_session.execute_cell(cell_id)
-
-        # Wait for both
-        await asyncio.wait_for(asyncio.gather(task1, task2), timeout=10.0)
-
-        # Both should have received events
-        assert len(events1) >= 1, "Subscriber 1 should receive events"
-        assert len(events2) >= 1, "Subscriber 2 should receive events"
 
 
 # ============================================================================

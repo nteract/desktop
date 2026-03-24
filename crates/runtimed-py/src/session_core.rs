@@ -534,7 +534,7 @@ pub(crate) async fn restart_kernel(
                 }
                 msg = prx.recv() => {
                     if let Some(NotebookBroadcast::EnvProgress { env_type, phase }) = msg {
-                        let text = crate::subscription::env_progress_message(&phase);
+                        let text = env_progress_message(&phase);
                         progress_messages.push(format!("[{}] {}", env_type, text));
                     }
                     // Continue waiting for launch response
@@ -1128,17 +1128,6 @@ pub(crate) async fn execute_cell(
             timeout_secs
         ))),
     }
-}
-
-/// Create a cell and execute it (convenience wrapper).
-pub(crate) async fn run(
-    state: &Arc<Mutex<SessionState>>,
-    notebook_id: &str,
-    code: &str,
-    timeout_secs: f64,
-) -> PyResult<ExecutionResult> {
-    let cell_id = create_cell(state, code, "code", None).await?;
-    execute_cell(state, notebook_id, &cell_id, timeout_secs).await
 }
 
 /// Queue a cell for execution without waiting for the result.
@@ -1898,30 +1887,6 @@ pub(crate) async fn set_notebook_metadata(
     Ok(())
 }
 
-// =========================================================================
-// Streaming helpers
-// =========================================================================
-
-/// Prepare a broadcast subscription with optional filters.
-///
-/// Returns a resubscribed broadcast receiver and blob config.
-pub(crate) async fn prepare_subscribe(
-    state: &Arc<Mutex<SessionState>>,
-) -> PyResult<(BroadcastReceiver, Option<String>, Option<PathBuf>)> {
-    let st = state.lock().await;
-
-    let broadcast_rx = st
-        .broadcast_rx
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected - call connect() or start_kernel() first"))?
-        .resubscribe();
-
-    let blob_base_url = st.blob_base_url.clone();
-    let blob_store_path = st.blob_store_path.clone();
-
-    Ok((broadcast_rx, blob_base_url, blob_store_path))
-}
-
 /// Sync environment with current metadata and poll for completion.
 pub(crate) async fn sync_environment_impl(
     state: &Arc<Mutex<SessionState>>,
@@ -2146,6 +2111,67 @@ async fn resolve_blob_paths(socket_path: &Path) -> (Option<String>, Option<PathB
         (base_url, store_path)
     } else {
         (None, None)
+    }
+}
+
+// =========================================================================
+// Env progress formatting (moved from subscription.rs)
+// =========================================================================
+
+use kernel_env::EnvProgressPhase;
+
+fn env_progress_message(phase: &EnvProgressPhase) -> String {
+    match phase {
+        EnvProgressPhase::Starting { .. } => "Preparing environment...".to_string(),
+        EnvProgressPhase::CacheHit { .. } => "Using cached environment".to_string(),
+        EnvProgressPhase::FetchingRepodata { channels } => {
+            format!("Fetching package index ({})", channels.join(", "))
+        }
+        EnvProgressPhase::RepodataComplete { record_count, .. } => {
+            format!("Loaded {} packages", record_count)
+        }
+        EnvProgressPhase::Solving { spec_count } => {
+            format!("Solving dependencies ({} specs)", spec_count)
+        }
+        EnvProgressPhase::SolveComplete { package_count, .. } => {
+            format!("Resolved {} packages", package_count)
+        }
+        EnvProgressPhase::Installing { total } => format!("Installing {} packages...", total),
+        EnvProgressPhase::DownloadProgress {
+            completed,
+            total,
+            current_package,
+            bytes_per_second,
+            ..
+        } => {
+            let speed = format_bytes_per_sec(*bytes_per_second);
+            format!(
+                "Downloading {}/{} {} @ {}",
+                completed, total, current_package, speed
+            )
+        }
+        EnvProgressPhase::LinkProgress {
+            completed,
+            total,
+            current_package,
+        } => format!("Installing {}/{} {}", completed, total, current_package),
+        EnvProgressPhase::InstallComplete { .. } => "Installation complete".to_string(),
+        EnvProgressPhase::CreatingVenv => "Creating virtual environment...".to_string(),
+        EnvProgressPhase::InstallingPackages { packages } => {
+            format!("Installing {} packages...", packages.len())
+        }
+        EnvProgressPhase::Ready { .. } => "Environment ready".to_string(),
+        EnvProgressPhase::Error { message } => format!("Environment error: {}", message),
+    }
+}
+
+fn format_bytes_per_sec(bps: f64) -> String {
+    if bps >= 1_048_576.0 {
+        format!("{:.1} MiB/s", bps / 1_048_576.0)
+    } else if bps >= 1024.0 {
+        format!("{:.1} KiB/s", bps / 1024.0)
+    } else {
+        format!("{:.0} B/s", bps)
     }
 }
 

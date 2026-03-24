@@ -6,7 +6,7 @@ Auto-maintained — regenerate from crates/runtimed-py/src/ when the Rust API ch
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator, Coroutine, Iterator
+from collections.abc import Coroutine
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -364,24 +364,6 @@ class NotebookConnectionInfo:
     def needs_trust_approval(self) -> bool: ...
 
 # ---------------------------------------------------------------------------
-# Iterator / stream types
-# ---------------------------------------------------------------------------
-
-class EventSubscription:
-    """Async subscription to notebook broadcasts."""
-
-    def __aiter__(self) -> AsyncIterator[ExecutionEvent]: ...
-    def __anext__(self) -> Coroutine[Any, Any, ExecutionEvent]: ...
-    def close(self) -> Coroutine[Any, Any, None]: ...
-
-class EventIteratorSubscription:
-    """Sync subscription to notebook broadcasts."""
-
-    def __iter__(self) -> Iterator[ExecutionEvent]: ...
-    def __next__(self) -> ExecutionEvent: ...
-    def close(self) -> None: ...
-
-# ---------------------------------------------------------------------------
 # Client (recommended sync API)
 # ---------------------------------------------------------------------------
 
@@ -589,13 +571,7 @@ class Session:
         cell_id: str,
         timeout_secs: float = 60.0,
     ) -> ExecutionResult: ...
-    def run(self, code: str, timeout_secs: float = 60.0) -> ExecutionResult: ...
     def queue_cell(self, cell_id: str) -> str: ...
-    def subscribe(
-        self,
-        cell_ids: list[str] | None = None,
-        event_types: list[str] | None = None,
-    ) -> EventIteratorSubscription: ...
 
     # Environment sync
     def sync_environment(self) -> SyncEnvironmentResult: ...
@@ -753,9 +729,6 @@ class AsyncSession:
         cell_id: str,
         timeout_secs: float = 60.0,
     ) -> Coroutine[Any, Any, ExecutionResult]: ...
-    def run(
-        self, code: str, timeout_secs: float = 60.0
-    ) -> Coroutine[Any, Any, ExecutionResult]: ...
     def queue_cell(self, cell_id: str) -> Coroutine[Any, Any, str]: ...
     def wait_for_execution(
         self,
@@ -763,11 +736,6 @@ class AsyncSession:
         execution_id: str,
         timeout_secs: float = 60.0,
     ) -> Coroutine[Any, Any, ExecutionResult]: ...
-    def subscribe(
-        self,
-        cell_ids: list[str] | None = None,
-        event_types: list[str] | None = None,
-    ) -> EventSubscription: ...
 
     # Environment sync
     def sync_environment(self) -> Coroutine[Any, Any, SyncEnvironmentResult]: ...
