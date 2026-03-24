@@ -3164,10 +3164,19 @@ async fn handle_notebook_request(
             let mut kernel_guard = room.kernel.lock().await;
             if let Some(ref mut kernel) = *kernel_guard {
                 match kernel.queue_cell(cell_id.clone(), code).await {
-                    Ok(execution_id) => NotebookResponse::CellQueued {
-                        cell_id,
-                        execution_id,
-                    },
+                    Ok(execution_id) => {
+                        // Stamp execution_id on the cell so clients can verify
+                        // which execution the cell's outputs belong to.
+                        {
+                            let mut doc = room.doc.write().await;
+                            let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
+                            let _ = room.changed_tx.send(());
+                        }
+                        NotebookResponse::CellQueued {
+                            cell_id,
+                            execution_id,
+                        }
+                    }
                     Err(e) => NotebookResponse::Error {
                         error: format!("Failed to queue cell: {}", e),
                     },
@@ -3232,10 +3241,19 @@ async fn handle_notebook_request(
             let mut kernel_guard = room.kernel.lock().await;
             if let Some(ref mut kernel) = *kernel_guard {
                 match kernel.queue_cell(cell_id.clone(), source).await {
-                    Ok(execution_id) => NotebookResponse::CellQueued {
-                        cell_id,
-                        execution_id,
-                    },
+                    Ok(execution_id) => {
+                        // Stamp execution_id on the cell so clients can verify
+                        // which execution the cell's outputs belong to.
+                        {
+                            let mut doc = room.doc.write().await;
+                            let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
+                            let _ = room.changed_tx.send(());
+                        }
+                        NotebookResponse::CellQueued {
+                            cell_id,
+                            execution_id,
+                        }
+                    }
                     Err(e) => NotebookResponse::Error {
                         error: format!("Failed to queue cell: {}", e),
                     },
@@ -3254,8 +3272,9 @@ async fn handle_notebook_request(
                         error: format!("Failed to clear outputs: {}", e),
                     };
                 }
-                // Also reset execution count
+                // Also reset execution count and execution_id pointer
                 let _ = doc.set_execution_count(&cell_id, "null");
+                let _ = doc.set_execution_id(&cell_id, None);
                 let bytes = doc.save();
                 // Notify other peers of doc change
                 let _ = room.changed_tx.send(());

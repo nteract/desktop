@@ -6,6 +6,7 @@ from runtimed._cell import CellCollection, CellHandle
 
 # Primary API
 from runtimed._client import Client
+from runtimed._execution import Execution
 from runtimed._notebook import Notebook
 from runtimed._notebook_info import NotebookInfo
 from runtimed._presence import Presence
@@ -46,6 +47,7 @@ __all__ = [
     "NotebookInfo",
     "CellHandle",
     "CellCollection",
+    "Execution",
     "Presence",
     # Error type — raisable / catchable
     "RuntimedError",

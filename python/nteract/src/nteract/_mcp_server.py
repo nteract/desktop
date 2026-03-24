@@ -1340,36 +1340,36 @@ async def _execute_cell_internal(
     cell_id: str,
     timeout_secs: float = 30.0,
 ) -> list[ContentItem]:
-    """Internal execution with streaming and partial results."""
+    """Internal execution: queue, wait for outputs, read status from CRDT."""
     notebook = await _get_notebook()
     await _send_cell_focus(cell_id)
     cell = notebook.cells.get_by_id(cell_id)
-    events: list[Any] = []  # list[runtimed.ExecutionEvent]
-    complete = False
 
-    async def collect_events() -> None:
-        nonlocal complete
-        async for event in await cell.stream():
-            events.append(event)
-            if event.event_type in ("done", "error"):
-                complete = True
-                break
+    execution = await cell.execute()
 
-    with contextlib.suppress(asyncio.TimeoutError):
-        await asyncio.wait_for(collect_events(), timeout=timeout_secs)
+    # execution.result() uses the Rust collect_outputs path which has a
+    # confirm-sync retry loop — it waits for ExecutionDone scoped by
+    # execution_id, then polls until outputs are materialized in the CRDT.
+    # On timeout it raises — we fall back to reading partial outputs.
+    # Real failures (transport, sync) are re-raised as tool errors.
+    try:
+        await execution.result(timeout_secs=timeout_secs)
+    except asyncio.TimeoutError:
+        pass  # partial results — read whatever is in the CRDT
+    except Exception as exc:
+        if "timed out" in str(exc).lower():
+            pass  # RuntimedError timeout from Rust side
+        else:
+            raise
 
-    if complete:
-        # Prefer the synced document as the final source of truth once execution
-        # finishes. CellHandle reads from the local CRDT replica.
-        with contextlib.suppress(Exception):
-            has_error_output = any(o.output_type == "error" for o in cell.outputs)
-            status = "error" if has_error_output else "idle"
-            header = _format_header(cell.id, status=status, execution_count=cell.execution_count)
-            items: list[ContentItem] = [TextContent(type="text", text=header)]
-            items.extend(_outputs_to_content(cell.outputs))
-            return items
+    # Status comes from the Execution handle (reads RuntimeStateDoc).
+    # No business logic needed here — the handle knows the state.
+    status = execution.status
 
-    return _execution_result_to_content(cell_id, events, complete)
+    header = _format_header(cell.id, status=status, execution_count=cell.execution_count)
+    items: list[ContentItem] = [TextContent(type="text", text=header)]
+    items.extend(_outputs_to_content(cell.outputs))
+    return items
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))

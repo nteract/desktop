@@ -1046,6 +1046,47 @@ pub(crate) async fn clear_outputs(state: &Arc<Mutex<SessionState>>, cell_id: &st
 
 /// Execute a cell and return the result.
 ///
+/// Wait for an already-queued execution to complete and return its outputs.
+///
+/// Unlike `execute_cell()`, this does NOT re-queue the cell. It assumes
+/// the caller already has an `execution_id` from a prior `queue_cell()`.
+/// This is the correct path for `Execution.result()` — it waits for the
+/// specific execution to finish without risking a duplicate execution.
+pub(crate) async fn wait_for_execution(
+    state: &Arc<Mutex<SessionState>>,
+    cell_id: &str,
+    execution_id: &str,
+    timeout_secs: f64,
+) -> PyResult<ExecutionResult> {
+    let timeout = std::time::Duration::from_secs_f64(timeout_secs);
+    let result = tokio::time::timeout(timeout, async {
+        let (blob_base_url, blob_store_path) = {
+            let st = state.lock().await;
+            (st.blob_base_url.clone(), st.blob_store_path.clone())
+        };
+
+        collect_outputs(
+            state,
+            cell_id,
+            Some(execution_id),
+            blob_base_url,
+            blob_store_path,
+        )
+        .await
+    })
+    .await;
+
+    match result {
+        Ok(Ok(exec_result)) => Ok(exec_result),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(to_py_err(format!(
+            "Execution timed out after {} seconds (execution_id={})",
+            timeout_secs, execution_id
+        ))),
+    }
+}
+
+///
 /// The entire lifecycle (confirm_sync, send_request, collect_outputs)
 /// is wrapped in a single timeout.
 ///
@@ -1176,8 +1217,30 @@ pub(crate) async fn collect_outputs(
             let st = state.lock().await;
             if let Some(handle) = st.handle.as_ref() {
                 if let Ok(rs) = handle.get_runtime_state() {
+                    // Late-consumer fast path: if we have an execution_id and
+                    // the executions map shows it's already done/error, skip
+                    // the queue-watching loop entirely. This handles the case
+                    // where Execution.result() is called after the execution
+                    // has already finished.
+                    if let Some(eid) = execution_id {
+                        if let Some(exec_state) = rs.executions.get(eid) {
+                            if exec_state.status == "done" || exec_state.status == "error" {
+                                log::debug!(
+                                    "[session_core] Late consumer: execution {} already {}",
+                                    eid,
+                                    exec_state.status
+                                );
+                                true
+                            } else {
+                                seen_in_queue = true;
+                                false
+                            }
+                        } else {
+                            false // execution entry not synced yet
+                        }
+                    }
                     // Kernel error or shutdown → stop waiting
-                    if rs.kernel.status == "error" {
+                    else if rs.kernel.status == "error" {
                         kernel_error = Some("Kernel error".to_string());
                         true
                     } else if rs.kernel.status == "shutdown" {
@@ -1838,22 +1901,6 @@ pub(crate) async fn set_notebook_metadata(
 // =========================================================================
 // Streaming helpers
 // =========================================================================
-
-/// Prepare for streaming execution: queue the cell via `queue_cell()`,
-/// then return a broadcast receiver for event streaming.
-///
-/// Uses `queue_cell()` as the single primitive for submitting execution
-/// requests. The caller wraps the receiver in the appropriate iterator
-/// type (ExecutionEventIterator for sync, ExecutionEventStream for async).
-pub(crate) async fn prepare_stream_execute(
-    state: &Arc<Mutex<SessionState>>,
-    notebook_id: &str,
-    cell_id: &str,
-) -> PyResult<(BroadcastReceiver, String, Option<String>, Option<PathBuf>)> {
-    let execution_id = queue_cell(state, notebook_id, cell_id).await?;
-    let (broadcast_rx, blob_base_url, blob_store_path) = prepare_subscribe(state).await?;
-    Ok((broadcast_rx, execution_id, blob_base_url, blob_store_path))
-}
 
 /// Prepare a broadcast subscription with optional filters.
 ///

@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
+from runtimed._execution import Execution
 from runtimed.runtimed import RuntimedError as _RuntimedError
 
 if TYPE_CHECKING:
     from runtimed.runtimed import (
         AsyncSession,
         Cell,
-        ExecutionEvent,
         ExecutionResult,
         Output,
     )
@@ -125,16 +124,38 @@ class CellHandle:
         await self._session.set_cell_type(self._id, cell_type)
         return self
 
-    async def run(self, timeout_secs: float = 60.0) -> ExecutionResult:
-        """Execute this cell and wait for results."""
-        return await self._session.execute_cell(self._id, timeout_secs)
+    async def execute(self) -> Execution:
+        """Execute this cell and return an Execution handle.
 
-    async def queue(self) -> str:
+        The handle provides execution-scoped access to status, results,
+        and streaming events. Use it to wait, stream, or check status::
+
+            execution = await cell.execute()
+            print(execution.status)           # "queued" | "running" | ...
+            result = await execution.result()  # wait for completion
+            # or: result = await execution     # shorthand
+
+        Returns:
+            Execution handle for this specific execution.
+        """
+        execution_id = await self._session.queue_cell(self._id)
+        return Execution(self._session, self._id, execution_id)
+
+    async def run(self, timeout_secs: float = 60.0) -> ExecutionResult:
+        """Execute this cell and wait for results.
+
+        Sugar for ``(await cell.execute()).result(timeout_secs)``.
+        """
+        execution = await self.execute()
+        return await execution.result(timeout_secs)
+
+    async def queue(self) -> Execution:
         """Queue this cell for execution without waiting.
 
-        Returns the execution_id (UUID) for this execution.
+        Returns an Execution handle. Unlike :meth:`run`, this returns
+        immediately — use the handle to check status or wait later.
         """
-        return await self._session.queue_cell(self._id)
+        return await self.execute()
 
     async def delete(self) -> None:
         """Delete this cell from the document."""
@@ -165,27 +186,6 @@ class CellHandle:
         """Show or hide the cell's outputs."""
         await self._session.set_cell_outputs_hidden(self._id, hidden)
         return self
-
-    async def stream(
-        self,
-        timeout_secs: float = 60.0,
-        signal_only: bool = False,
-    ) -> AsyncIterator[ExecutionEvent]:
-        """Execute and stream events as an async iterator.
-
-        Yields ``ExecutionEvent`` objects until execution completes.
-        Use ``signal_only=True`` to receive only start/done signals
-        without output payloads.
-
-        Events are automatically scoped to the execution triggered by
-        this call — concurrent or subsequent executions of the same cell
-        will not leak into this stream.
-        """
-        return await self._session.stream_execute(
-            self._id,
-            timeout_secs,
-            signal_only,
-        )
 
     def __repr__(self) -> str:
         return f"Cell({self._id[:8]}, {self.cell_type})"

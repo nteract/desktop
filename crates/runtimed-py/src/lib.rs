@@ -4,8 +4,6 @@
 //! - `NativeClient`/`NativeAsyncClient`: Daemon operations (status, ping, list active notebooks)
 //! - `Session`: Synchronous notebook interaction with kernel management
 //! - `AsyncSession`: Async notebook interaction with kernel management
-//! - `ExecutionEventStream`: Async iterator over execution events
-//! - `ExecutionEventIterator`: Sync iterator over execution events
 //!
 //! Both sync and async APIs are provided with full feature parity.
 
@@ -17,7 +15,7 @@ mod async_session;
 mod client;
 mod daemon_paths;
 mod error;
-mod event_stream;
+
 mod output;
 mod output_resolver;
 mod session;
@@ -28,7 +26,7 @@ use async_client::AsyncClient;
 use async_session::AsyncSession;
 use client::Client;
 use error::RuntimedError;
-use event_stream::{ExecutionEventIterator, ExecutionEventStream};
+
 use output::{
     Cell, CompletionItem, CompletionResult, ExecutionEvent, ExecutionResult, HistoryEntry,
     NotebookConnectionInfo, Output, PyEnvState, PyKernelState, PyQueueEntry, PyRuntimeState,
@@ -73,10 +71,6 @@ fn runtimed(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Session types (used internally by Python wrappers)
     m.add_class::<Session>()?;
     m.add_class::<AsyncSession>()?;
-
-    // Iterator types for streaming execution
-    m.add_class::<ExecutionEventStream>()?;
-    m.add_class::<ExecutionEventIterator>()?;
 
     // Subscription types for independent event listening
     m.add_class::<EventSubscription>()?;

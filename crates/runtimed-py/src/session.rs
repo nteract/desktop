@@ -12,7 +12,6 @@ use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
 use crate::error::to_py_err;
-use crate::event_stream::ExecutionEventIterator;
 use crate::output::{Cell, ExecutionResult, NotebookConnectionInfo, SyncEnvironmentResult};
 use crate::session_core::{self, SessionState};
 use crate::subscription::EventIteratorSubscription;
@@ -802,42 +801,6 @@ impl Session {
             &self.notebook_id,
             cell_id,
         ))
-    }
-
-    /// Stream execution events for a cell as an iterator.
-    ///
-    /// Unlike execute_cell() which blocks until completion and returns all
-    /// outputs at once, this returns an iterator that yields ExecutionEvent
-    /// objects as they arrive from the kernel, enabling real-time processing.
-    ///
-    /// Args:
-    ///     cell_id: The cell ID to execute.
-    ///     timeout_secs: Maximum time to wait for each event (default: 60).
-    ///     signal_only: If True, output events contain only output_index, not
-    ///         the full output data. Use get_cell() to fetch the data.
-    ///
-    /// Returns:
-    ///     ExecutionEventIterator that yields ExecutionEvent objects.
-    #[pyo3(signature = (cell_id, timeout_secs=60.0, signal_only=false))]
-    fn stream_execute(
-        &self,
-        cell_id: &str,
-        timeout_secs: f64,
-        signal_only: bool,
-    ) -> PyResult<ExecutionEventIterator> {
-        let (broadcast_rx, execution_id, blob_base_url, blob_store_path) = self.runtime.block_on(
-            session_core::prepare_stream_execute(&self.state, &self.notebook_id, cell_id),
-        )?;
-
-        ExecutionEventIterator::new(
-            broadcast_rx,
-            cell_id.to_string(),
-            Some(execution_id),
-            timeout_secs,
-            blob_base_url,
-            blob_store_path,
-            signal_only,
-        )
     }
 
     /// Subscribe to execution events for specific cells or event types.

@@ -278,6 +278,29 @@ class EnvState:
         """Whether deno config differs."""
         ...
 
+class ExecutionState:
+    """Execution lifecycle state for a single execution."""
+
+    @property
+    def cell_id(self) -> str:
+        """Cell that was executed."""
+        ...
+
+    @property
+    def status(self) -> str:
+        """Current status: 'queued', 'running', 'done', 'error'."""
+        ...
+
+    @property
+    def execution_count(self) -> int | None:
+        """Kernel execution count (None if not yet started)."""
+        ...
+
+    @property
+    def success(self) -> bool | None:
+        """Whether the execution succeeded (None if still running)."""
+        ...
+
 class RuntimeState:
     """Full runtime state snapshot from the daemon's RuntimeStateDoc."""
 
@@ -296,6 +319,10 @@ class RuntimeState:
     @property
     def last_saved(self) -> str | None:
         """ISO timestamp of last save, or None."""
+        ...
+    @property
+    def executions(self) -> dict[str, ExecutionState]:
+        """Execution lifecycle entries keyed by execution_id."""
         ...
 
 class HistoryEntry:
@@ -339,18 +366,6 @@ class NotebookConnectionInfo:
 # ---------------------------------------------------------------------------
 # Iterator / stream types
 # ---------------------------------------------------------------------------
-
-class ExecutionEventStream:
-    """Async iterator over execution events for a cell."""
-
-    def __aiter__(self) -> AsyncIterator[ExecutionEvent]: ...
-    def __anext__(self) -> Coroutine[Any, Any, ExecutionEvent]: ...
-
-class ExecutionEventIterator:
-    """Sync iterator over execution events for a cell."""
-
-    def __iter__(self) -> Iterator[ExecutionEvent]: ...
-    def __next__(self) -> ExecutionEvent: ...
 
 class EventSubscription:
     """Async subscription to notebook broadcasts."""
@@ -576,12 +591,6 @@ class Session:
     ) -> ExecutionResult: ...
     def run(self, code: str, timeout_secs: float = 60.0) -> ExecutionResult: ...
     def queue_cell(self, cell_id: str) -> str: ...
-    def stream_execute(
-        self,
-        cell_id: str,
-        timeout_secs: float = 60.0,
-        signal_only: bool = False,
-    ) -> ExecutionEventIterator: ...
     def subscribe(
         self,
         cell_ids: list[str] | None = None,
@@ -748,12 +757,12 @@ class AsyncSession:
         self, code: str, timeout_secs: float = 60.0
     ) -> Coroutine[Any, Any, ExecutionResult]: ...
     def queue_cell(self, cell_id: str) -> Coroutine[Any, Any, str]: ...
-    def stream_execute(
+    def wait_for_execution(
         self,
         cell_id: str,
+        execution_id: str,
         timeout_secs: float = 60.0,
-        signal_only: bool = False,
-    ) -> Coroutine[Any, Any, ExecutionEventStream]: ...
+    ) -> Coroutine[Any, Any, ExecutionResult]: ...
     def subscribe(
         self,
         cell_ids: list[str] | None = None,

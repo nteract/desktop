@@ -12,7 +12,6 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::error::to_py_err;
-use crate::event_stream::ExecutionEventStream;
 use crate::output::{Cell, PyRuntimeState};
 use crate::session_core::{self, SessionState};
 use crate::subscription::EventSubscription;
@@ -1011,42 +1010,29 @@ impl AsyncSession {
         })
     }
 
-    /// Stream execution events for a cell as an async iterator.
+    /// Wait for an already-queued execution to complete and return its outputs.
     ///
-    /// Unlike execute_cell() which blocks until completion, this returns
-    /// an async iterator that yields ExecutionEvent objects as they arrive.
+    /// Unlike execute_cell(), this does NOT re-queue the cell. Use this when
+    /// you already have an execution_id from a prior queue_cell() call.
     ///
     /// Args:
-    ///     cell_id: The cell ID to execute.
-    ///     timeout_secs: Maximum time per event (default: 60).
-    ///     signal_only: If True, output events contain only index, not data.
-    ///
-    /// Returns a coroutine that resolves to ExecutionEventStream.
-    #[pyo3(signature = (cell_id, timeout_secs=60.0, signal_only=false))]
-    fn stream_execute<'py>(
+    ///     cell_id: The cell ID being executed.
+    ///     execution_id: The execution_id from queue_cell().
+    ///     timeout_secs: Maximum time to wait (default: 60).
+    #[pyo3(signature = (cell_id, execution_id, timeout_secs=60.0))]
+    fn wait_for_execution<'py>(
         &self,
         py: Python<'py>,
         cell_id: &str,
+        execution_id: &str,
         timeout_secs: f64,
-        signal_only: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
-        let notebook_id = self.notebook_id.clone();
         let cell_id = cell_id.to_string();
+        let execution_id = execution_id.to_string();
 
         future_into_py(py, async move {
-            let (broadcast_rx, execution_id, blob_base_url, blob_store_path) =
-                session_core::prepare_stream_execute(&state, &notebook_id, &cell_id).await?;
-
-            Ok(ExecutionEventStream::new(
-                broadcast_rx,
-                cell_id,
-                Some(execution_id),
-                timeout_secs,
-                blob_base_url,
-                blob_store_path,
-                signal_only,
-            ))
+            session_core::wait_for_execution(&state, &cell_id, &execution_id, timeout_secs).await
         })
     }
 

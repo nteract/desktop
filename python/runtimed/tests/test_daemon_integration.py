@@ -1608,6 +1608,42 @@ async def two_async_sessions(async_client):
             pass
 
 
+@pytest.fixture
+async def notebook(daemon_process):
+    """Create a Notebook via the high-level runtimed.Client API."""
+    socket_path, _ = daemon_process
+    if socket_path is not None:
+        client = runtimed.Client(socket_path=str(socket_path))
+    else:
+        client = runtimed.Client()
+    nb = await client.create_notebook()
+    yield nb
+    try:
+        await nb.shutdown()
+    except Exception:
+        pass
+    await nb.close()
+
+
+@pytest.fixture
+async def two_notebooks(daemon_process):
+    """Create two Notebooks connected to the same room."""
+    socket_path, _ = daemon_process
+    if socket_path is not None:
+        client = runtimed.Client(socket_path=str(socket_path))
+    else:
+        client = runtimed.Client()
+    nb1 = await client.create_notebook()
+    nb2 = await client.join_notebook(nb1.notebook_id)
+    yield nb1, nb2
+    for nb in [nb1, nb2]:
+        try:
+            await nb.shutdown()
+        except Exception:
+            pass
+        await nb.close()
+
+
 class TestBasicConnectivity:
     """Test basic daemon connectivity."""
 
@@ -1955,97 +1991,85 @@ class TestContextManager:
 # ============================================================================
 
 
-class TestStreamExecute:
-    """Test stream_execute() returns events as an async iterator."""
+class TestExecuteCell:
+    """Test cell execution using the high-level Notebook/CellHandle API."""
 
     @pytest.mark.asyncio
-    async def test_stream_execute_yields_events(self, async_session):
-        """stream_execute() yields events as they arrive, not all at once."""
-        await async_start_kernel_with_retry(async_session)
+    async def test_cell_run_produces_outputs(self, notebook):
+        """cell.run() waits for completion and returns outputs."""
+        await notebook.start()
 
-        cell_id = await async_create_cell_and_wait_for_sync(
-            async_session, "for i in range(3): print(f'line {i}')"
-        )
+        cell = await notebook.cells.create("for i in range(3): print(f'line {i}')")
+        await asyncio.sleep(0.5)
 
-        events = []
-        async for event in await async_session.stream_execute(cell_id):
-            events.append(event)
+        result = await cell.run(timeout_secs=30.0)
 
-        # Should have received multiple events (outputs + done)
-        assert len(events) >= 2, f"Expected multiple events, got {len(events)}"
-
-        # Should have output events
-        output_events = [e for e in events if e.event_type == "output"]
-        assert len(output_events) >= 1, "Expected at least one output event"
-
-        # Should have a done event
-        done_events = [e for e in events if e.event_type == "done"]
-        assert len(done_events) == 1, "Expected exactly one done event"
+        assert result.success, f"Expected success, got error: {result.error}"
+        assert "line 0" in result.stdout
+        assert "line 2" in result.stdout
+        assert result.execution_count is not None
 
     @pytest.mark.asyncio
-    async def test_stream_execute_has_output_events(self, async_session):
-        """stream_execute() yields output events with output data."""
-        await async_start_kernel_with_retry(async_session)
+    async def test_cell_run_captures_error(self, notebook):
+        """cell.run() captures errors with ename and evalue."""
+        await notebook.start()
 
-        cell_id = await async_create_cell_and_wait_for_sync(
-            async_session, "print('first'); print('second')"
-        )
+        cell = await notebook.cells.create("raise ValueError('test error')")
+        await asyncio.sleep(0.5)
 
-        output_events = []
-        async for event in await async_session.stream_execute(cell_id):
-            if event.event_type == "output":
-                output_events.append(event)
+        result = await cell.run(timeout_secs=30.0)
 
-        # Should have output events
-        assert len(output_events) >= 1, "Expected at least one output event"
-
-        # Output events should have output data
-        for event in output_events:
-            assert event.output is not None, "Output event should have output data"
+        assert not result.success, "Expected failure"
+        assert result.error is not None, "Expected error info"
+        assert result.error.ename == "ValueError"
+        assert "test error" in result.error.evalue
 
     @pytest.mark.asyncio
-    async def test_stream_execute_error_in_output(self, async_session):
-        """stream_execute() completes for erroring cells and preserves the error.
+    async def test_error_persisted_to_cell_outputs(self, notebook):
+        """Error outputs are persisted to the cell in the notebook doc."""
+        await notebook.start()
 
-        Depending on how the daemon classifies the failure, Python exceptions
-        may arrive as either:
-        - an output event with output_type="error", or
-        - an error event with error_message set.
+        cell = await notebook.cells.create("raise ValueError('persisted error')")
+        await asyncio.sleep(0.5)
 
-        Until the streaming API is redesigned, we accept either a direct
-        streamed error signal or the canonical error output persisted to
-        the document by the time the stream finishes.
-        """
-        await async_start_kernel_with_retry(async_session)
+        await cell.run(timeout_secs=30.0)
 
-        cell_id = await async_create_cell_and_wait_for_sync(
-            async_session, "raise ValueError('test error')"
-        )
+        error_outputs = [o for o in cell.outputs if o.output_type == "error"]
+        assert len(error_outputs) > 0, "Error should be persisted in cell outputs"
+        assert error_outputs[0].ename == "ValueError"
+        assert "persisted error" in (error_outputs[0].evalue or "")
 
-        events = []
-        async for event in await async_session.stream_execute(cell_id):
-            events.append(event)
+    @pytest.mark.asyncio
+    async def test_cell_execute_returns_execution_handle(self, notebook):
+        """cell.execute() returns an Execution handle with execution_id."""
+        await notebook.start()
 
-        error_outputs = [
-            event
-            for event in events
-            if event.event_type == "output" and event.output and event.output.output_type == "error"
-        ]
-        error_events = [event for event in events if event.event_type == "error"]
-        cell = await async_session.get_cell(cell_id)
-        persisted_errors = [output for output in cell.outputs if output.output_type == "error"]
+        cell = await notebook.cells.create("print('handle test')")
+        await asyncio.sleep(0.5)
 
-        assert error_outputs or error_events or persisted_errors, (
-            "Expected stream_execute to surface or persist ValueError"
-        )
-        if error_outputs:
-            assert error_outputs[0].output.ename == "ValueError"
-            assert "test error" in (error_outputs[0].output.evalue or "")
-        if error_events:
-            assert "test error" in (error_events[0].error_message or "")
-        if persisted_errors:
-            assert persisted_errors[0].ename == "ValueError"
-            assert "test error" in (persisted_errors[0].evalue or "")
+        execution = await cell.execute()
+
+        assert hasattr(execution, "execution_id")
+        assert len(execution.execution_id) == 36
+        assert execution.cell_id == cell.id
+
+        result = await execution.result(timeout_secs=30.0)
+        assert result.success
+        assert "handle test" in result.stdout
+
+    @pytest.mark.asyncio
+    async def test_await_execution_shorthand(self, notebook):
+        """await execution works as shorthand for execution.result()."""
+        await notebook.start()
+
+        cell = await notebook.cells.create("print('shorthand')")
+        await asyncio.sleep(0.5)
+
+        execution = await cell.execute()
+        result = await execution
+
+        assert result.success
+        assert "shorthand" in result.stdout
 
 
 # ============================================================================
@@ -2054,83 +2078,74 @@ class TestStreamExecute:
 
 
 class TestExecutionIdScoping:
-    """Test that execution events are scoped by execution_id.
+    """Test that execution is scoped by execution_id.
 
-    Verifies that queue_cell returns a UUID execution_id and that
-    stream_execute / execute_cell correctly scope events to the
-    specific execution, preventing cross-execution contamination.
+    Verifies that queue returns an Execution handle with a UUID
+    execution_id and that sequential executions are properly isolated.
     """
 
     @pytest.mark.asyncio
-    async def test_queue_cell_returns_execution_id(self, async_session):
-        """queue_cell() returns a valid UUID execution_id."""
-        await async_start_kernel_with_retry(async_session)
+    async def test_queue_returns_execution_handle(self, notebook):
+        """cell.queue() returns an Execution handle with a valid UUID."""
+        await notebook.start()
 
-        cell_id = await async_create_cell_and_wait_for_sync(async_session, "print('hello')")
-        execution_id = await async_session.queue_cell(cell_id)
+        cell = await notebook.cells.create("print('hello')")
+        await asyncio.sleep(0.5)
 
-        assert isinstance(execution_id, str)
-        assert len(execution_id) == 36, f"Expected UUID (36 chars), got {execution_id!r}"
-        assert execution_id.count("-") == 4, f"Expected UUID format, got {execution_id!r}"
+        execution = await cell.queue()
 
-    @pytest.mark.asyncio
-    async def test_idempotent_queue_returns_same_execution_id(self, async_session):
-        """Re-queuing an already-queued cell returns the same execution_id."""
-        await async_start_kernel_with_retry(async_session)
-
-        # Create a slow cell so it stays in the queue
-        cell_id = await async_create_cell_and_wait_for_sync(
-            async_session, "import time; time.sleep(2); print('done')"
+        assert isinstance(execution.execution_id, str)
+        assert len(execution.execution_id) == 36, (
+            f"Expected UUID (36 chars), got {execution.execution_id!r}"
         )
-        eid1 = await async_session.queue_cell(cell_id)
-        eid2 = await async_session.queue_cell(cell_id)
-
-        assert eid1 == eid2, f"Re-queuing should return same execution_id: {eid1} != {eid2}"
+        assert execution.execution_id.count("-") == 4
 
     @pytest.mark.asyncio
-    async def test_sequential_executions_get_different_ids(self, async_session):
-        """Executing the same cell twice produces different execution_ids."""
-        await async_start_kernel_with_retry(async_session)
+    async def test_idempotent_queue_returns_same_execution_id(self, notebook):
+        """Re-queuing an already-queued cell returns the same execution_id."""
+        await notebook.start()
 
-        cell_id = await async_create_cell_and_wait_for_sync(async_session, "print('run')")
+        cell = await notebook.cells.create("import time; time.sleep(2); print('done')")
+        await asyncio.sleep(0.5)
 
-        # First execution
-        r1 = await async_session.execute_cell(cell_id)
+        exec1 = await cell.queue()
+        exec2 = await cell.queue()
+
+        assert exec1.execution_id == exec2.execution_id, (
+            f"Re-queue should return same execution_id: "
+            f"{exec1.execution_id} != {exec2.execution_id}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_sequential_executions_get_different_counts(self, notebook):
+        """Executing the same cell twice produces different execution counts."""
+        await notebook.start()
+
+        cell = await notebook.cells.create("print('run')")
+        await asyncio.sleep(0.5)
+
+        r1 = await cell.run(timeout_secs=30.0)
         assert r1.success
 
-        # Second execution of the same cell
-        r2 = await async_session.execute_cell(cell_id)
+        r2 = await cell.run(timeout_secs=30.0)
         assert r2.success
 
-        # Both should succeed — the execution_id scoping ensures
-        # the second execute_cell waits for its own execution, not
-        # the already-completed first one.
         assert r2.execution_count != r1.execution_count, (
             "Sequential executions should have different execution counts"
         )
 
     @pytest.mark.asyncio
-    async def test_stream_execute_scoped_to_execution(self, async_session):
-        """stream_execute events belong to the triggered execution."""
-        await async_start_kernel_with_retry(async_session)
+    async def test_run_scoped_to_execution(self, notebook):
+        """cell.run() returns outputs for the triggered execution only."""
+        await notebook.start()
 
-        cell_id = await async_create_cell_and_wait_for_sync(async_session, "print('scoped')")
+        cell = await notebook.cells.create("print('scoped')")
+        await asyncio.sleep(0.5)
 
-        events = []
-        async for event in await async_session.stream_execute(cell_id):
-            events.append(event)
+        result = await cell.run(timeout_secs=30.0)
 
-        # All events should reference our cell
-        for event in events:
-            assert event.cell_id == cell_id, f"Event cell_id mismatch: {event.cell_id} != {cell_id}"
-
-        # Should complete with a done event
-        done_events = [e for e in events if e.event_type == "done"]
-        assert len(done_events) == 1
-
-        # Should have output
-        output_events = [e for e in events if e.event_type == "output"]
-        assert len(output_events) >= 1
+        assert result.success
+        assert "scoped" in result.stdout
 
 
 # ============================================================================

@@ -1561,6 +1561,51 @@ impl NotebookDoc {
         Ok(true)
     }
 
+    /// Set the execution_id pointer on a cell.
+    ///
+    /// The daemon stamps this at queue time so the frontend (and Python
+    /// `Execution.result()`) can verify that cell outputs belong to the
+    /// expected execution. Pass `None` to clear (e.g., on "clear outputs").
+    pub fn set_execution_id(
+        &mut self,
+        cell_id: &str,
+        execution_id: Option<&str>,
+    ) -> Result<bool, AutomergeError> {
+        let cells_id = match self.cells_map_id() {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
+            Some(o) => o,
+            None => return Ok(false),
+        };
+
+        match execution_id {
+            Some(eid) => self.doc.put(&cell_obj, "execution_id", eid)?,
+            None => self
+                .doc
+                .put(&cell_obj, "execution_id", automerge::ScalarValue::Null)?,
+        }
+        Ok(true)
+    }
+
+    /// Read the execution_id pointer from a cell, if set.
+    pub fn get_execution_id(&self, cell_id: &str) -> Option<String> {
+        let cells_id = self.cells_map_id()?;
+        let cell_obj = self.cell_obj_id(&cells_id, cell_id)?;
+        self.doc
+            .get(&cell_obj, "execution_id")
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| match value {
+                automerge::Value::Scalar(s) => match s.as_ref() {
+                    automerge::ScalarValue::Str(s) => Some(s.to_string()),
+                    _ => None,
+                },
+                _ => None,
+            })
+    }
+
     // ── Cell type ───────────────────────────────────────────────────
 
     /// Set the cell type for a cell. Valid values: "code", "markdown", "raw".
