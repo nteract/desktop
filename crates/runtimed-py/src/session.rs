@@ -891,6 +891,15 @@ impl Session {
     // Repr, context manager, close
     // =========================================================================
 
+    /// Safety net: drop the connection when the Python object is garbage-collected.
+    /// Uses `try_lock` to avoid blocking the GC thread.
+    fn __del__(&self) {
+        if let Ok(mut st) = self.state.try_lock() {
+            st.handle = None;
+            st.broadcast_rx = None;
+        }
+    }
+
     fn __repr__(&self) -> String {
         let state = self.runtime.block_on(self.state.lock());
         let status = if state.kernel_started {
@@ -914,6 +923,9 @@ impl Session {
         _exc_val: Option<&Bound<'_, PyAny>>,
         _exc_tb: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<bool> {
+        let mut st = self.runtime.block_on(self.state.lock());
+        st.handle = None;
+        st.broadcast_rx = None;
         Ok(false)
     }
 

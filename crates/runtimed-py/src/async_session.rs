@@ -1229,6 +1229,15 @@ impl AsyncSession {
         })
     }
 
+    /// Safety net: drop the connection when the Python object is garbage-collected.
+    /// Uses `try_lock` to avoid blocking the GC thread.
+    fn __del__(&self) {
+        if let Ok(mut st) = self.state.try_lock() {
+            st.handle = None;
+            st.broadcast_rx = None;
+        }
+    }
+
     fn __repr__(&self) -> String {
         format!("AsyncSession(id={})", self.notebook_id)
     }
@@ -1245,6 +1254,12 @@ impl AsyncSession {
         _exc_val: Option<&Bound<'_, PyAny>>,
         _exc_tb: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        future_into_py(py, async move { Ok(false) })
+        let state = Arc::clone(&self.state);
+        future_into_py(py, async move {
+            let mut st = state.lock().await;
+            st.handle = None;
+            st.broadcast_rx = None;
+            Ok(false)
+        })
     }
 }

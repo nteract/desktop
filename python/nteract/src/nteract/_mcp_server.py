@@ -1515,6 +1515,38 @@ async def resource_rooms() -> str:
 # =============================================================================
 
 
+def _cleanup() -> None:
+    """Best-effort cleanup of the active notebook session on exit.
+
+    Drops references to the notebook and client so that ``__del__`` on the
+    underlying session objects can close the daemon connection.  We also
+    attempt an explicit async ``close()`` when possible.
+    """
+    global _notebook, _client
+    nb = _notebook
+    _notebook = None
+    _client = None
+    if nb is not None:
+        try:
+            import asyncio
+
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+
+            if loop is not None and loop.is_running():
+                # We're inside a running event loop (e.g. atexit during async
+                # shutdown).  Schedule the close but don't await — the __del__
+                # safety net will handle it if this doesn't complete.
+                loop.create_task(nb.close())
+            else:
+                # No running loop — create one for the cleanup call.
+                asyncio.run(nb.close())
+        except Exception:
+            pass
+
+
 def main():
     """Run the MCP server."""
     logging.basicConfig(
@@ -1522,10 +1554,15 @@ def main():
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         stream=sys.stderr,
     )
+    import atexit
+
+    atexit.register(_cleanup)
     try:
         mcp.run(transport="stdio")
     except KeyboardInterrupt:
         sys.exit(130)
+    finally:
+        _cleanup()
 
 
 if __name__ == "__main__":
