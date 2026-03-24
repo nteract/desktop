@@ -126,9 +126,9 @@ pub async fn evict_stale_envs(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use anyhow::Result;
     use tempfile::TempDir;
 
     #[test]
@@ -142,55 +142,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_touch_and_read_last_used() {
-        let tmp = TempDir::new().unwrap();
+    async fn test_touch_and_read_last_used() -> Result<()> {
+        let tmp = TempDir::new()?;
         let env_path = tmp.path().join("abcdef0123456789");
-        tokio::fs::create_dir_all(&env_path).await.unwrap();
+        tokio::fs::create_dir_all(&env_path).await?;
 
         touch_last_used(&env_path).await;
 
         let marker = env_path.join(".last-used");
         assert!(marker.exists());
 
-        let contents = tokio::fs::read_to_string(&marker).await.unwrap();
-        let ts: u64 = contents.trim().parse().unwrap();
-        // Should be within the last few seconds
+        let contents = tokio::fs::read_to_string(&marker).await?;
+        let ts: u64 = contents.trim().parse()?;
         let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
+            .duration_since(SystemTime::UNIX_EPOCH)?
             .as_secs();
         assert!(now - ts < 5);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_evict_by_count() {
-        let tmp = TempDir::new().unwrap();
+    async fn test_evict_by_count() -> Result<()> {
+        let tmp = TempDir::new()?;
 
         let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
+            .duration_since(SystemTime::UNIX_EPOCH)?
             .as_secs();
 
         // Create 5 content-addressed dirs with staggered recent timestamps
         for i in 0..5u64 {
             let name = format!("{:016x}", i);
             let dir = tmp.path().join(&name);
-            tokio::fs::create_dir_all(&dir).await.unwrap();
+            tokio::fs::create_dir_all(&dir).await?;
             // Stagger by 1 hour, all recent
             let ts = now - (4 - i) * 3600;
-            tokio::fs::write(dir.join(".last-used"), ts.to_string())
-                .await
-                .unwrap();
+            tokio::fs::write(dir.join(".last-used"), ts.to_string()).await?;
         }
 
         // Also create a pool dir that should be skipped
         let pool_dir = tmp.path().join("runtimed-uv-test");
-        tokio::fs::create_dir_all(&pool_dir).await.unwrap();
+        tokio::fs::create_dir_all(&pool_dir).await?;
 
         // Evict to max_count=2
-        let deleted = evict_stale_envs(tmp.path(), Duration::from_secs(86400 * 365), 2)
-            .await
-            .unwrap();
+        let deleted = evict_stale_envs(tmp.path(), Duration::from_secs(86400 * 365), 2).await?;
 
         // Should have deleted 3 (the 3 oldest)
         assert_eq!(deleted.len(), 3);
@@ -201,31 +195,29 @@ mod tests {
         // The 2 newest should remain
         assert!(tmp.path().join(format!("{:016x}", 4)).exists());
         assert!(tmp.path().join(format!("{:016x}", 3)).exists());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_evict_by_age() {
-        let tmp = TempDir::new().unwrap();
+    async fn test_evict_by_age() -> Result<()> {
+        let tmp = TempDir::new()?;
 
         // Create a dir with a very old timestamp
         let old_dir = tmp.path().join("aaaaaaaaaaaaaaaa");
-        tokio::fs::create_dir_all(&old_dir).await.unwrap();
-        tokio::fs::write(old_dir.join(".last-used"), "1000000")
-            .await
-            .unwrap();
+        tokio::fs::create_dir_all(&old_dir).await?;
+        tokio::fs::write(old_dir.join(".last-used"), "1000000").await?;
 
         // Create a dir with a recent timestamp
         let new_dir = tmp.path().join("bbbbbbbbbbbbbbbb");
-        tokio::fs::create_dir_all(&new_dir).await.unwrap();
+        tokio::fs::create_dir_all(&new_dir).await?;
         touch_last_used(&new_dir).await;
 
         // Evict with max_age=1 day, high max_count
-        let deleted = evict_stale_envs(tmp.path(), Duration::from_secs(86400), 100)
-            .await
-            .unwrap();
+        let deleted = evict_stale_envs(tmp.path(), Duration::from_secs(86400), 100).await?;
 
         assert_eq!(deleted.len(), 1);
         assert!(!old_dir.exists());
         assert!(new_dir.exists());
+        Ok(())
     }
 }
