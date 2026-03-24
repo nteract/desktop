@@ -89,11 +89,13 @@ function getSource(h: Handle, cellId: string): string {
  * the other receives it as a frame and returns events with changesets
  * and attributions.
  *
- * The Automerge sync protocol may need multiple rounds to deliver changes
- * (the first round can be a heads-only exchange on some platforms,
- * especially Linux CI). This runs up to 3 bidirectional rounds and
- * collects events across all of them, breaking early when a sync_applied
- * event with changes is found.
+ * Uses the inline `reply` from SyncApplied events to advance the protocol,
+ * matching what production code does in frame-pipeline.ts. Previously this
+ * called `to.flush_local_changes()` for the reply, but receive_frame()
+ * already generates an inline reply (consuming sync_state). Calling
+ * flush_local_changes() on the same sync_state double-consumed it, so on
+ * rounds where a bloom-filter false positive delayed the change data, the
+ * protocol couldn't recover — the real reply had already been discarded.
  */
 function syncViaFrame(
   from: Handle,
@@ -111,15 +113,23 @@ function syncViaFrame(
       frame.set(fwdMsg, 1);
       const events = to.receive_frame(frame);
       if (events) allEvents.push(...events);
+
+      // Deliver inline replies back to `from` so the protocol advances.
+      // This mirrors frame-pipeline.ts which sends ev.reply via sendFrame.
+      if (Array.isArray(events)) {
+        for (const ev of events) {
+          if (ev.reply) {
+            from.receive_sync_message(new Uint8Array(ev.reply));
+          }
+        }
+      }
     }
 
-    // Send reply back so the protocol advances
-    const replyMsg = to.flush_local_changes();
-    if (replyMsg) {
-      const replyFrame = new Uint8Array(1 + replyMsg.length);
-      replyFrame[0] = 0x00;
-      replyFrame.set(replyMsg, 1);
-      from.receive_frame(replyFrame);
+    // Also flush any independent messages from `to` (e.g. if `to` had
+    // local changes of its own that weren't covered by the inline reply).
+    const extraMsg = to.flush_local_changes();
+    if (extraMsg) {
+      from.receive_sync_message(extraMsg);
     }
 
     // Break early if we found a sync event with actual changes
