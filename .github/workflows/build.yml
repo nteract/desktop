@@ -136,7 +136,7 @@ jobs:
           deno-version: v2.x
 
       - name: Run runtimed-wasm Deno tests
-        run: deno test --allow-read --allow-env --no-check --parallel=false crates/runtimed-wasm/tests/
+        run: deno test --allow-read --allow-env --no-check crates/runtimed-wasm/tests/
 
   build-ui:
     name: Build shared UI artifacts
