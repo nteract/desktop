@@ -3863,13 +3863,17 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
                             },
                         });
 
-                    // Broadcast that we're back in sync
-                    let _ = room
-                        .kernel_broadcast_tx
-                        .send(NotebookBroadcast::EnvSyncState {
-                            in_sync: true,
-                            diff: None,
-                        });
+                    // Only broadcast in_sync when the kernel we installed into
+                    // is still the active one. If it was swapped, the new kernel
+                    // may still need a reinitialize.
+                    if launch_id_matched {
+                        let _ = room
+                            .kernel_broadcast_tx
+                            .send(NotebookBroadcast::EnvSyncState {
+                                in_sync: true,
+                                diff: None,
+                            });
+                    }
 
                     NotebookResponse::SyncEnvironmentComplete {
                         synced_packages: packages_to_install,

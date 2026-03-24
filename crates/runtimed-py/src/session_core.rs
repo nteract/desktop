@@ -1940,35 +1940,6 @@ pub(crate) async fn sync_environment_impl(
     };
 
     match response {
-        NotebookResponse::SyncEnvironmentStarted { packages } => {
-            // Wait for completion via broadcast
-            let mut st = state.lock().await;
-            let broadcast_rx = st.broadcast_rx.as_mut();
-            if let Some(rx) = broadcast_rx {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
-                while std::time::Instant::now() < deadline {
-                    match tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await {
-                        Ok(Some(NotebookBroadcast::EnvSyncState { in_sync: true, .. })) => {
-                            return Ok(SyncEnvironmentResult {
-                                success: true,
-                                synced_packages: packages,
-                                error: None,
-                                needs_restart: false,
-                            });
-                        }
-                        Ok(Some(_)) => continue,
-                        Ok(None) => break,
-                        Err(_) => continue,
-                    }
-                }
-            }
-            Ok(SyncEnvironmentResult {
-                success: true,
-                synced_packages: packages,
-                error: None,
-                needs_restart: false,
-            })
-        }
         NotebookResponse::SyncEnvironmentComplete { synced_packages } => {
             Ok(SyncEnvironmentResult {
                 success: true,
