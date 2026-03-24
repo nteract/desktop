@@ -50,6 +50,7 @@ class TestModuleExports:
         expected = {
             # Primary API
             "Client",
+            "Execution",
             "Notebook",
             "NotebookInfo",
             "CellHandle",
