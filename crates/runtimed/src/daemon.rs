@@ -1912,6 +1912,23 @@ impl Daemon {
         }
     }
 
+    /// Collect env paths from all running kernels to protect from GC eviction.
+    async fn collect_active_env_paths(&self) -> std::collections::HashSet<PathBuf> {
+        let mut paths = std::collections::HashSet::new();
+        let rooms = self.notebook_rooms.lock().await;
+        for room in rooms.values() {
+            let kernel_guard = room.kernel.lock().await;
+            if let Some(ref kernel) = *kernel_guard {
+                if kernel.is_running() {
+                    if let Some(ref env_path) = kernel.env_path {
+                        paths.insert(env_path.clone());
+                    }
+                }
+            }
+        }
+        paths
+    }
+
     /// Background GC loop for content-addressed environment caches.
     ///
     /// Runs once after a 60-second startup delay, then every 6 hours.
@@ -1937,9 +1954,12 @@ impl Daemon {
         ];
 
         loop {
+            // Collect env paths from all running kernels so GC won't evict them
+            let in_use = self.collect_active_env_paths().await;
+
             let mut total_evicted = 0;
             for dir in &cache_dirs {
-                match kernel_env::gc::evict_stale_envs(dir, max_age, max_count).await {
+                match kernel_env::gc::evict_stale_envs(dir, max_age, max_count, &in_use).await {
                     Ok(deleted) => total_evicted += deleted.len(),
                     Err(e) => {
                         warn!("[runtimed] GC failed for {:?}: {}", dir, e);

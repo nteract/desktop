@@ -3602,6 +3602,8 @@ async fn env_clean(
 
     if all {
         println!("Removing ALL cached environments...");
+        println!("Note: pool envs (runtimed-uv-*, runtimed-conda-*) are skipped.");
+        println!("      Use 'runt daemon flush' to reset the pool.\n");
         if dry_run {
             println!("(dry run — nothing will be deleted)\n");
         }
@@ -3614,6 +3616,7 @@ async fn env_clean(
             base.join("runt-nightly").join("envs"),
         ];
 
+        let mut total_removed = 0;
         for dir in &dirs_to_clean {
             if !dir.exists() {
                 continue;
@@ -3621,11 +3624,19 @@ async fn env_clean(
             let size = calculate_dir_size(dir);
             println!("  {} — {}", dir.display(), format_size(size));
             if !dry_run {
-                // Remove all subdirectories but keep the directory itself
+                // Remove content-addressed subdirs only — skip pool envs
+                // (runtimed-uv-*, runtimed-conda-*) which may be backing
+                // live kernels or are managed by the daemon pool.
                 if let Ok(rd) = std::fs::read_dir(dir) {
                     for entry in rd.filter_map(|e| e.ok()) {
-                        if entry.path().is_dir() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if entry.path().is_dir()
+                            && !name.starts_with("runtimed-uv-")
+                            && !name.starts_with("runtimed-conda-")
+                            && !name.starts_with("prewarm-")
+                        {
                             std::fs::remove_dir_all(entry.path()).ok();
+                            total_removed += 1;
                         }
                     }
                 }
@@ -3633,7 +3644,7 @@ async fn env_clean(
         }
 
         if !dry_run {
-            println!("\nDone. Daemon pools will replenish on next warming cycle.");
+            println!("\nRemoved {} cached environments.", total_removed);
         }
         return Ok(());
     }
@@ -3719,7 +3730,10 @@ async fn env_clean(
             }
             println!();
         } else {
-            match kernel_env::gc::evict_stale_envs(dir, max_age, max_count).await {
+            // CLI doesn't have access to daemon state, so we can't check
+            // which envs are in use. The daemon's GC loop handles that.
+            let no_exclusions = std::collections::HashSet::new();
+            match kernel_env::gc::evict_stale_envs(dir, max_age, max_count, &no_exclusions).await {
                 Ok(deleted) => {
                     if !deleted.is_empty() {
                         println!(

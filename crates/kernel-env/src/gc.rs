@@ -56,12 +56,14 @@ fn is_content_addressed_dir(name: &str) -> bool {
 /// Scans `cache_dir` for directories matching the 16-char hex pattern.
 /// Deletes those older than `max_age` or beyond `max_count` (keeping newest).
 /// Skips `runtimed-uv-*` and `runtimed-conda-*` dirs (pool-managed).
+/// Skips any paths in `in_use` (environments backing running kernels).
 ///
 /// Returns the list of deleted directory paths.
 pub async fn evict_stale_envs(
     cache_dir: &Path,
     max_age: Duration,
     max_count: usize,
+    in_use: &std::collections::HashSet<PathBuf>,
 ) -> Result<Vec<PathBuf>> {
     let mut deleted = Vec::new();
 
@@ -82,6 +84,11 @@ pub async fn evict_stale_envs(
 
         let path = entry.path();
         if !path.is_dir() {
+            continue;
+        }
+
+        // Never evict environments that are backing running kernels
+        if in_use.contains(&path) {
             continue;
         }
 
@@ -129,6 +136,7 @@ pub async fn evict_stale_envs(
 mod tests {
     use super::*;
     use anyhow::Result;
+    use std::collections::HashSet;
     use tempfile::TempDir;
 
     #[test]
@@ -184,7 +192,9 @@ mod tests {
         tokio::fs::create_dir_all(&pool_dir).await?;
 
         // Evict to max_count=2
-        let deleted = evict_stale_envs(tmp.path(), Duration::from_secs(86400 * 365), 2).await?;
+        let deleted =
+            evict_stale_envs(tmp.path(), Duration::from_secs(86400 * 365), 2, &HashSet::new())
+                .await?;
 
         // Should have deleted 3 (the 3 oldest)
         assert_eq!(deleted.len(), 3);
@@ -213,7 +223,9 @@ mod tests {
         touch_last_used(&new_dir).await;
 
         // Evict with max_age=1 day, high max_count
-        let deleted = evict_stale_envs(tmp.path(), Duration::from_secs(86400), 100).await?;
+        let deleted =
+            evict_stale_envs(tmp.path(), Duration::from_secs(86400), 100, &HashSet::new())
+                .await?;
 
         assert_eq!(deleted.len(), 1);
         assert!(!old_dir.exists());
