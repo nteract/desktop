@@ -46,6 +46,7 @@ impl Session {
         path: &str,
         peer_label: Option<String>,
     ) -> PyResult<Self> {
+        let peer_label = Some(peer_label.unwrap_or_else(session_core::default_peer_label));
         let runtime = Runtime::new().map_err(to_py_err)?;
         let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
 
@@ -56,6 +57,7 @@ impl Session {
         ))?;
 
         state.peer_label = peer_label.clone();
+        runtime.block_on(session_core::announce_presence(&state));
 
         // Keep the runtime alive — the sync task was spawned on it during
         // connect_open. Dropping the runtime would cancel the sync task and
@@ -86,6 +88,7 @@ impl Session {
             }
         }
 
+        let peer_label = Some(peer_label.unwrap_or_else(session_core::default_peer_label));
         let runtime = Runtime::new().map_err(to_py_err)?;
         let working_dir_buf = working_dir.map(PathBuf::from);
         let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
@@ -98,6 +101,7 @@ impl Session {
         ))?;
 
         state.peer_label = peer_label.clone();
+        runtime.block_on(session_core::announce_presence(&state));
 
         Self::from_state_with_runtime(runtime, notebook_id, state, peer_label)
     }
@@ -108,6 +112,7 @@ impl Session {
         notebook_id: &str,
         peer_label: Option<String>,
     ) -> PyResult<Self> {
+        let peer_label = Some(peer_label.unwrap_or_else(session_core::default_peer_label));
         let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
 
         let mut state = SessionState::new();
@@ -125,6 +130,7 @@ impl Session {
         let state = Arc::try_unwrap(state_arc)
             .map_err(|_| to_py_err("Failed to unwrap session state"))?
             .into_inner();
+        runtime.block_on(session_core::announce_presence(&state));
 
         Self::from_state_with_runtime(runtime, notebook_id.to_string(), state, peer_label)
     }

@@ -69,10 +69,12 @@ impl AsyncSession {
         path: String,
         peer_label: Option<String>,
     ) -> PyResult<Self> {
+        let peer_label = Some(peer_label.unwrap_or_else(session_core::default_peer_label));
         let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
         let (notebook_id, mut state, _info) =
             session_core::connect_open(socket_path, &path, actor_label.as_deref()).await?;
         state.peer_label = peer_label.clone();
+        session_core::announce_presence(&state).await;
         Ok(Self::from_state(notebook_id, state, peer_label))
     }
 
@@ -83,6 +85,7 @@ impl AsyncSession {
         working_dir: Option<PathBuf>,
         peer_label: Option<String>,
     ) -> PyResult<Self> {
+        let peer_label = Some(peer_label.unwrap_or_else(session_core::default_peer_label));
         let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
         let (notebook_id, mut state, _info) = session_core::connect_create(
             socket_path,
@@ -92,6 +95,7 @@ impl AsyncSession {
         )
         .await?;
         state.peer_label = peer_label.clone();
+        session_core::announce_presence(&state).await;
         Ok(Self::from_state(notebook_id, state, peer_label))
     }
 
@@ -101,6 +105,7 @@ impl AsyncSession {
         notebook_id: String,
         peer_label: Option<String>,
     ) -> PyResult<Self> {
+        let peer_label = Some(peer_label.unwrap_or_else(session_core::default_peer_label));
         let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
         let mut state = SessionState::new();
         state.peer_label = peer_label.clone();
@@ -112,6 +117,7 @@ impl AsyncSession {
         let state = Arc::try_unwrap(state_arc)
             .map_err(|_| to_py_err("Failed to unwrap session state"))?
             .into_inner();
+        session_core::announce_presence(&state).await;
 
         Ok(Self::from_state(notebook_id, state, peer_label))
     }

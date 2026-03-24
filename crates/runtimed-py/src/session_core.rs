@@ -87,6 +87,15 @@ impl SessionState {
     }
 }
 
+/// Generate a default peer label when none is provided.
+///
+/// Produces `"peer-<short_random>"`, e.g. `"peer-ab12cd34"`, so each
+/// unnamed session is still distinguishable in the peers list.
+pub(crate) fn default_peer_label() -> String {
+    let short_id = &uuid::Uuid::new_v4().simple().to_string()[..8];
+    format!("peer-{}", short_id)
+}
+
 /// Build an actor label from a peer display name.
 ///
 /// The format is `"agent:<lowercased_name>:<short_random>"`, e.g.
@@ -191,6 +200,26 @@ pub(crate) async fn connect_with_socket(
     hydrate_kernel_state(&mut st);
 
     Ok(())
+}
+
+/// Send an initial presence message so the daemon registers this peer immediately.
+///
+/// Without this, the peer is invisible in `.peers` until it performs an action
+/// that emits presence (e.g. editing a cell). Call after `peer_label` is set.
+pub(crate) async fn announce_presence(state: &SessionState) {
+    let handle = match state.handle.as_ref() {
+        Some(h) => h,
+        None => return,
+    };
+    let peer_label = state.peer_label.as_deref();
+    let first_cell_id = handle.first_cell_id();
+
+    let data = if let Some(cell_id) = first_cell_id {
+        notebook_doc::presence::encode_focus_update_labeled("local", peer_label, &cell_id)
+    } else {
+        notebook_doc::presence::encode_custom_update_labeled("local", peer_label, &[])
+    };
+    let _ = handle.send_presence(data).await;
 }
 
 /// Populate `kernel_started`, `kernel_type`, and `env_source` from the

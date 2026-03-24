@@ -311,6 +311,20 @@ pub fn encode_custom_update(peer_id: &str, data: &[u8]) -> Result<Vec<u8>, Prese
     })
 }
 
+/// Encode a custom channel update message with an optional peer label.
+pub fn encode_custom_update_labeled(
+    peer_id: &str,
+    peer_label: Option<&str>,
+    data: &[u8],
+) -> Vec<u8> {
+    encode_message(&PresenceMessage::Update {
+        peer_id: peer_id.to_string(),
+        peer_label: peer_label.map(|s| s.to_string()),
+        data: ChannelData::Custom(data.to_vec()),
+    })
+    .expect("CBOR encoding of custom update should not fail")
+}
+
 /// Encode a heartbeat message.
 pub fn encode_heartbeat(peer_id: &str) -> Vec<u8> {
     encode_message(&PresenceMessage::Heartbeat {
