@@ -25,7 +25,7 @@ import logging
 import os
 import re
 import sys
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NoReturn
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ImageContent, TextContent, ToolAnnotations
@@ -50,7 +50,7 @@ class _StderrParser(argparse.ArgumentParser):
     def _print_message(self, message: str, file: Any = None) -> None:
         super()._print_message(message, file=sys.stderr)
 
-    def exit(self, status: int = 0, message: str | None = None) -> None:  # type: ignore[override]
+    def exit(self, status: int = 0, message: str | None = None) -> NoReturn:
         if message:
             self._print_message(message, sys.stderr)
         raise SystemExit(status)
