@@ -286,7 +286,7 @@ async def run_single_gremlin(
         await asyncio.sleep(delay + random.uniform(0, delay))
 
     print(f"{prefix} Done: {rounds} rounds, {errors} errors")
-    await notebook.close()
+    await notebook.disconnect()
     return errors
 
 
@@ -324,7 +324,7 @@ async def async_main(
                 cell_type="code",
             )
             print(f"   Created: {notebook_id[:8]}")
-            await notebook.close()
+            await notebook.disconnect()
 
     print(f"   Target: {notebook_id}")
     print()
@@ -373,7 +373,7 @@ async def async_main(
             outs = len(cell.outputs) if cell.outputs else 0
             ec = cell.execution_count
             print(f"   [{i}] {cell.cell_type} ec={ec} outs={outs}: {src}")
-        await notebook.close()
+        await notebook.disconnect()
     except Exception as e:
         print(f"   (failed to read final state: {e})")
 

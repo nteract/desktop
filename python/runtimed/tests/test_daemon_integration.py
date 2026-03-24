@@ -1636,10 +1636,10 @@ async def notebook(daemon_process):
     nb = await client.create_notebook()
     yield nb
     try:
-        await nb.shutdown()
+        await nb.stop_runtime()
     except Exception:
         pass
-    await nb.close()
+    await nb.disconnect()
 
 
 @pytest.fixture
@@ -1655,10 +1655,10 @@ async def two_notebooks(daemon_process):
     yield nb1, nb2
     for nb in [nb1, nb2]:
         try:
-            await nb.shutdown()
+            await nb.stop_runtime()
         except Exception:
             pass
-        await nb.close()
+        await nb.disconnect()
 
 
 class TestBasicConnectivity:

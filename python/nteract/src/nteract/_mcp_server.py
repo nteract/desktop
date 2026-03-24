@@ -700,9 +700,9 @@ class NteractServer:
                     loop = None
 
                 if loop is not None and loop.is_running():
-                    loop.create_task(nb.close())
+                    loop.create_task(nb.disconnect())
                 else:
-                    asyncio.run(nb.close())
+                    asyncio.run(nb.disconnect())
             except Exception:
                 pass
 
@@ -795,7 +795,7 @@ class NteractServer:
 
             if srv._notebook is not None:
                 with contextlib.suppress(Exception):
-                    await srv._notebook.close()
+                    await srv._notebook.disconnect()
 
             client = srv._get_client()
             srv._notebook = await client.join_notebook(notebook_id, peer_label=srv._peer_label())
@@ -829,7 +829,7 @@ class NteractServer:
 
             if srv._notebook is not None:
                 with contextlib.suppress(Exception):
-                    await srv._notebook.close()
+                    await srv._notebook.disconnect()
 
             client = srv._get_client()
             srv._notebook = await client.open_notebook(path, peer_label=srv._peer_label())
@@ -872,7 +872,7 @@ class NteractServer:
 
             if srv._notebook is not None:
                 with contextlib.suppress(Exception):
-                    await srv._notebook.close()
+                    await srv._notebook.disconnect()
 
             client = srv._get_client()
             srv._notebook = await client.create_notebook(

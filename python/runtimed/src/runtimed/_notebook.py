@@ -85,8 +85,8 @@ class Notebook:
         """
         await self._session.start_kernel(runtime, env_source, notebook_path)
 
-    async def shutdown(self) -> None:
-        """Shut down the runtime."""
+    async def stop_runtime(self) -> None:
+        """Stop the runtime (kernel). The session remains connected."""
         await self._session.shutdown_kernel()
 
     async def restart(self, wait_for_ready: bool = True) -> list[str]:
@@ -109,8 +109,8 @@ class Notebook:
         """Get the execution queue state (currently executing + queued cells)."""
         return await self._session.get_queue_state()
 
-    async def close(self) -> None:
-        """Close the notebook session."""
+    async def disconnect(self) -> None:
+        """Disconnect from the notebook session."""
         await self._session.close()
 
     # ── Dependency management ────────────────────────────────────────
@@ -166,7 +166,7 @@ class Notebook:
         return self
 
     async def __aexit__(self, *args) -> None:
-        await self.close()
+        await self.disconnect()
 
     def _repr_markdown_(self) -> str:
         nid = self.notebook_id[:12]
@@ -179,11 +179,11 @@ class Notebook:
             "| Properties (sync) | Async methods |\n"
             "|-|-|\n"
             "| `cells` `peers` | `save()` `save_as()` |\n"
-            "| `presence` `runtime` | `start()` `shutdown()` `restart()` |\n"
+            "| `presence` `runtime` | `start()` `stop_runtime()` `restart()` |\n"
             "| `notebook_id` | `interrupt()` `run_all()` |\n"
             "| | `add_dependency()` `remove_dependency()` |\n"
             "| | `get_dependencies()` `sync_environment()` |\n"
-            "| | `is_connected()` `queue_state()` `close()` |\n"
+            "| | `is_connected()` `queue_state()` `disconnect()` |\n"
         )
 
     def __repr__(self) -> str:

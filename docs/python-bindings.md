@@ -103,7 +103,7 @@ async with await client.create_notebook() as notebook:
     await notebook.start(runtime="deno")
     await notebook.restart()
     await notebook.interrupt()
-    await notebook.shutdown()
+    await notebook.stop_runtime()
 
     # Save
     path = await notebook.save()
@@ -281,7 +281,7 @@ async for event in await cell.stream():
 await nb.presence.set_cursor(cell.id, line=0, column=5)
 peers = nb.peers  # sync read — list of (peer_id, label) tuples
 
-await nb.close()
+await nb.disconnect()
 ```
 
 ### Internal: Native Session API
