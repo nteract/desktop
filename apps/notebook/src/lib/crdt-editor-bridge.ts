@@ -36,6 +36,7 @@ import {
 } from "@codemirror/view";
 import { externalChangeAnnotation } from "@/components/editor/codemirror-editor";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
+import { logger } from "./logger";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -198,7 +199,7 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
               docText.slice(Math.max(0, fromA - 4), fromA + deleteCount + 4),
             );
             if (hasNonBMP || wasmSource.length !== docText.length) {
-              console.warn("[crdt-bridge] SPLICE", {
+              logger.debug("[crdt-bridge] SPLICE", {
                 cellId: cellId.slice(0, 8),
                 fromA,
                 toA,

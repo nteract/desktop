@@ -21,6 +21,7 @@ import {
   setRemoteSelections,
 } from "@/components/editor/remote-cursors";
 import { subscribePresence } from "./notebook-frame-bus";
+import { logger } from "./logger";
 
 // ── Types (presence message shapes from WASM decode) ─────────────────
 
@@ -142,7 +143,7 @@ export function unregisterEditor(cellId: string): void {
 function dispatchToCell(cellId: string): void {
   const view = editors.get(cellId);
   if (!view) {
-    console.log(`[cursor-registry] dispatchToCell: no view for ${cellId}`);
+    logger.debug(`[cursor-registry] dispatchToCell: no view for ${cellId}`);
     return;
   }
 
@@ -175,7 +176,7 @@ function dispatchToCell(cellId: string): void {
     }
   }
 
-  console.log(
+  logger.debug(
     `[cursor-registry] dispatchToCell ${cellId}: ${cursors.length} cursors, ${selections.length} selections`,
   );
   setRemoteCursors(view, cursors);
