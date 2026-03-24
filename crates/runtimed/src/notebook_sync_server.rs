@@ -7665,6 +7665,166 @@ mod tests {
         );
     }
 
+    // ── compute_env_sync_diff tests ───────────────────────────────────────
+
+    #[test]
+    fn test_compute_env_sync_diff_in_sync() {
+        let launched = LaunchedEnvConfig {
+            uv_deps: Some(vec!["numpy".to_string(), "pandas".to_string()]),
+            conda_deps: None,
+            conda_channels: None,
+            deno_config: None,
+            venv_path: None,
+            python_path: None,
+            launch_id: Some("abc".to_string()),
+        };
+        let snapshot = snapshot_with_uv(vec!["numpy".to_string(), "pandas".to_string()]);
+        assert!(
+            compute_env_sync_diff(&launched, &snapshot).is_none(),
+            "identical deps should be in sync"
+        );
+    }
+
+    #[test]
+    fn test_compute_env_sync_diff_added() {
+        let launched = LaunchedEnvConfig {
+            uv_deps: Some(vec!["numpy".to_string()]),
+            conda_deps: None,
+            conda_channels: None,
+            deno_config: None,
+            venv_path: None,
+            python_path: None,
+            launch_id: None,
+        };
+        let snapshot = snapshot_with_uv(vec!["numpy".to_string(), "requests".to_string()]);
+        let diff = compute_env_sync_diff(&launched, &snapshot).expect("should detect drift");
+        assert_eq!(diff.added, vec!["requests".to_string()]);
+        assert!(diff.removed.is_empty());
+        assert!(!diff.channels_changed);
+    }
+
+    #[test]
+    fn test_compute_env_sync_diff_removed() {
+        let launched = LaunchedEnvConfig {
+            uv_deps: Some(vec!["numpy".to_string(), "pandas".to_string()]),
+            conda_deps: None,
+            conda_channels: None,
+            deno_config: None,
+            venv_path: None,
+            python_path: None,
+            launch_id: None,
+        };
+        let snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
+        let diff = compute_env_sync_diff(&launched, &snapshot).expect("should detect drift");
+        assert!(diff.added.is_empty());
+        assert_eq!(diff.removed, vec!["pandas".to_string()]);
+    }
+
+    #[test]
+    fn test_compute_env_sync_diff_added_and_removed() {
+        let launched = LaunchedEnvConfig {
+            uv_deps: Some(vec!["numpy".to_string(), "old-pkg".to_string()]),
+            conda_deps: None,
+            conda_channels: None,
+            deno_config: None,
+            venv_path: None,
+            python_path: None,
+            launch_id: None,
+        };
+        let snapshot = snapshot_with_uv(vec!["numpy".to_string(), "new-pkg".to_string()]);
+        let diff = compute_env_sync_diff(&launched, &snapshot).expect("should detect drift");
+        assert_eq!(diff.added, vec!["new-pkg".to_string()]);
+        assert_eq!(diff.removed, vec!["old-pkg".to_string()]);
+    }
+
+    #[test]
+    fn test_compute_env_sync_diff_conda_channels_changed() {
+        let launched = LaunchedEnvConfig {
+            uv_deps: None,
+            conda_deps: Some(vec!["scipy".to_string()]),
+            conda_channels: Some(vec!["conda-forge".to_string()]),
+            deno_config: None,
+            venv_path: None,
+            python_path: None,
+            launch_id: None,
+        };
+        // Build a conda snapshot with a different channel
+        let mut snapshot = snapshot_with_conda(vec!["scipy".to_string()]);
+        snapshot.runt.conda.as_mut().unwrap().channels = vec!["defaults".to_string()];
+        let diff =
+            compute_env_sync_diff(&launched, &snapshot).expect("should detect channel drift");
+        assert!(diff.added.is_empty());
+        assert!(diff.removed.is_empty());
+        assert!(diff.channels_changed);
+    }
+
+    #[test]
+    fn test_compute_env_sync_diff_no_tracking() {
+        // Prewarmed kernel: no uv_deps, no conda_deps, no deno_config
+        let launched = LaunchedEnvConfig::default();
+        let snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
+        // When the kernel isn't tracking any deps, diff is None (no drift to report)
+        assert!(compute_env_sync_diff(&launched, &snapshot).is_none());
+    }
+
+    // ── check_and_broadcast_sync_state tests ──────────────────────────────
+
+    #[tokio::test]
+    async fn test_check_and_broadcast_sync_state_no_kernel() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _path) = test_room_with_path(&tmp, "no_kernel.ipynb");
+
+        // Write metadata so the function gets past the metadata check
+        let snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
+        {
+            let mut doc = room.doc.write().await;
+            doc.set_metadata_snapshot(&snapshot).unwrap();
+        }
+
+        // Pre-set RuntimeStateDoc env to dirty so we can verify it's NOT changed
+        {
+            let mut sd = room.state_doc.write().await;
+            sd.set_env_sync(false, &["numpy".to_string()], &[], false, false);
+        }
+
+        // No kernel in the room — should be a no-op
+        check_and_broadcast_sync_state(&room).await;
+
+        // Verify env state was NOT touched (still dirty from pre-set)
+        let sd = room.state_doc.read().await;
+        let state = sd.read_state();
+        assert!(
+            !state.env.in_sync,
+            "env should remain dirty when no kernel is present"
+        );
+        assert_eq!(state.env.added, vec!["numpy".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_check_and_broadcast_sync_state_no_metadata() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _path) = test_room_with_path(&tmp, "no_meta.ipynb");
+
+        // Don't write any metadata to the doc
+
+        // Pre-set RuntimeStateDoc env to dirty
+        {
+            let mut sd = room.state_doc.write().await;
+            sd.set_env_sync(false, &["pandas".to_string()], &[], false, false);
+        }
+
+        // No metadata in doc — should return early
+        check_and_broadcast_sync_state(&room).await;
+
+        // Verify env state was NOT touched
+        let sd = room.state_doc.read().await;
+        let state = sd.read_state();
+        assert!(
+            !state.env.in_sync,
+            "env should remain dirty when no metadata is present"
+        );
+    }
+
     // ── verify_trust_from_snapshot tests ───────────────────────────────────
 
     #[test]
