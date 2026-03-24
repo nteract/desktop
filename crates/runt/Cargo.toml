@@ -23,6 +23,7 @@ jupyter-protocol = { workspace = true }
 runtimelib = { workspace = true, features = ["tokio-runtime", "aws-lc-rs"] }
 runtimed = { path = "../runtimed" }
 runt-workspace = { path = "../runt-workspace" }
+kernel-env = { path = "../kernel-env" }
 clap = { version = "4.5.1", features = ["derive", "color"] }
 colored = "2"
 tokio = { version = "1", features = ["full"] }

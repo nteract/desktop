@@ -227,6 +227,12 @@ enum Commands {
     // =========================================================================
     // Development utilities (only shown when RUNTIMED_DEV=1)
     // =========================================================================
+    /// Manage cached Python environments
+    Env {
+        #[command(subcommand)]
+        command: EnvCommands,
+    },
+
     /// Development utilities for runtimed contributors
     #[command(subcommand, hide = true)]
     Dev(DevCommands),
@@ -358,6 +364,30 @@ enum JupyterCommands {
         #[arg(long, default_value = "2")]
         timeout: u64,
         /// Perform a dry run without actually removing files
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+/// Environment management commands
+#[derive(Subcommand)]
+enum EnvCommands {
+    /// Show disk usage for all cached environments
+    Stats,
+    /// List all cached environments with size and age
+    List,
+    /// Remove stale cached environments
+    Clean {
+        /// Remove ALL cached environments (pool + content-addressed + inline)
+        #[arg(long)]
+        all: bool,
+        /// Maximum age in days for cached environments (default: 7)
+        #[arg(long, default_value = "7")]
+        max_age_days: u64,
+        /// Maximum number of cached environments per category (default: 10)
+        #[arg(long, default_value = "10")]
+        max_count: usize,
+        /// Show what would be deleted without actually deleting
         #[arg(long)]
         dry_run: bool,
     },
@@ -537,6 +567,7 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
             daemon_command(DaemonCommands::Logs { follow, lines }).await?
         }
         Some(Commands::Diagnostics { output }) => diagnostics_command(output).await?,
+        Some(Commands::Env { command }) => env_command(command).await?,
 
         // Development commands (requires RUNTIMED_DEV=1)
         Some(Commands::Dev(dev_cmd)) => {
@@ -3405,6 +3436,316 @@ async fn clean_worktree_command(
     if failure_count > 0 {
         eprintln!("{} failed (check permissions)", failure_count);
         std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+// =============================================================================
+// Environment management commands
+// =============================================================================
+
+async fn env_command(command: EnvCommands) -> anyhow::Result<()> {
+    match command {
+        EnvCommands::Stats => env_stats().await,
+        EnvCommands::List => env_list().await,
+        EnvCommands::Clean {
+            all,
+            max_age_days,
+            max_count,
+            dry_run,
+        } => env_clean(all, max_age_days, max_count, dry_run).await,
+    }
+}
+
+/// Cache directories to manage
+struct EnvCacheDir {
+    label: &'static str,
+    path: PathBuf,
+}
+
+fn get_env_cache_dirs() -> Vec<EnvCacheDir> {
+    let base = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    vec![
+        EnvCacheDir {
+            label: "UV envs",
+            path: base.join("runt").join("envs"),
+        },
+        EnvCacheDir {
+            label: "Conda envs",
+            path: base.join("runt").join("conda-envs"),
+        },
+        EnvCacheDir {
+            label: "Inline envs",
+            path: base.join("runt").join("inline-envs"),
+        },
+        EnvCacheDir {
+            label: "UV envs (nightly)",
+            path: base.join("runt-nightly").join("envs"),
+        },
+        EnvCacheDir {
+            label: "Worktrees",
+            path: base.join("runt").join("worktrees"),
+        },
+        EnvCacheDir {
+            label: "Worktrees (nightly)",
+            path: base.join("runt-nightly").join("worktrees"),
+        },
+    ]
+}
+
+async fn env_stats() -> anyhow::Result<()> {
+    println!("Environment cache disk usage:\n");
+
+    let mut total = 0u64;
+    for dir in get_env_cache_dirs() {
+        if !dir.path.exists() {
+            continue;
+        }
+        let size = calculate_dir_size(&dir.path);
+        let count = std::fs::read_dir(&dir.path)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter(|e| e.path().is_dir())
+                    .count()
+            })
+            .unwrap_or(0);
+        println!(
+            "  {:20} {:>10}  ({} dirs)  {}",
+            dir.label,
+            format_size(size),
+            count,
+            dir.path.display()
+        );
+        total += size;
+    }
+
+    println!("\n  {:20} {:>10}", "Total", format_size(total));
+    Ok(())
+}
+
+async fn env_list() -> anyhow::Result<()> {
+    let cache_dirs = get_env_cache_dirs();
+
+    for dir in &cache_dirs {
+        if !dir.path.exists() {
+            continue;
+        }
+
+        let mut entries: Vec<(String, u64, std::time::SystemTime)> = Vec::new();
+
+        if let Ok(rd) = std::fs::read_dir(&dir.path) {
+            for entry in rd.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_string();
+                let size = calculate_dir_size(&path);
+
+                // Try .last-used, then mtime
+                let last_used =
+                    if let Ok(contents) = std::fs::read_to_string(path.join(".last-used")) {
+                        if let Ok(secs) = contents.trim().parse::<u64>() {
+                            std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)
+                        } else {
+                            entry
+                                .metadata()
+                                .and_then(|m| m.modified())
+                                .unwrap_or(std::time::UNIX_EPOCH)
+                        }
+                    } else {
+                        entry
+                            .metadata()
+                            .and_then(|m| m.modified())
+                            .unwrap_or(std::time::UNIX_EPOCH)
+                    };
+
+                entries.push((name, size, last_used));
+            }
+        }
+
+        if entries.is_empty() {
+            continue;
+        }
+
+        // Sort by last-used descending
+        entries.sort_by(|a, b| b.2.cmp(&a.2));
+
+        println!("{}  ({})", dir.label, dir.path.display());
+        for (name, size, last_used) in &entries {
+            let age = std::time::SystemTime::now()
+                .duration_since(*last_used)
+                .unwrap_or_default();
+            let age_str = if age.as_secs() < 3600 {
+                format!("{}m ago", age.as_secs() / 60)
+            } else if age.as_secs() < 86400 {
+                format!("{}h ago", age.as_secs() / 3600)
+            } else {
+                format!("{}d ago", age.as_secs() / 86400)
+            };
+            println!("  {:<40} {:>10}  {}", name, format_size(*size), age_str);
+        }
+        println!();
+    }
+
+    Ok(())
+}
+
+async fn env_clean(
+    all: bool,
+    max_age_days: u64,
+    max_count: usize,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    let max_age = std::time::Duration::from_secs(max_age_days * 86400);
+
+    if all {
+        println!("Removing ALL cached environments...");
+        if dry_run {
+            println!("(dry run — nothing will be deleted)\n");
+        }
+
+        let base = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+        let dirs_to_clean = [
+            base.join("runt").join("envs"),
+            base.join("runt").join("conda-envs"),
+            base.join("runt").join("inline-envs"),
+            base.join("runt-nightly").join("envs"),
+        ];
+
+        for dir in &dirs_to_clean {
+            if !dir.exists() {
+                continue;
+            }
+            let size = calculate_dir_size(dir);
+            println!("  {} — {}", dir.display(), format_size(size));
+            if !dry_run {
+                // Remove all subdirectories but keep the directory itself
+                if let Ok(rd) = std::fs::read_dir(dir) {
+                    for entry in rd.filter_map(|e| e.ok()) {
+                        if entry.path().is_dir() {
+                            std::fs::remove_dir_all(entry.path()).ok();
+                        }
+                    }
+                }
+            }
+        }
+
+        if !dry_run {
+            println!("\nDone. Daemon pools will replenish on next warming cycle.");
+        }
+        return Ok(());
+    }
+
+    // Selective eviction
+    let eviction_dirs = [
+        kernel_env::uv::default_cache_dir_uv(),
+        kernel_env::conda::default_cache_dir_conda(),
+        dirs::cache_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join("runt")
+            .join("inline-envs"),
+    ];
+
+    if dry_run {
+        println!(
+            "Dry run — showing what would be evicted (max_age={}d, max_count={}):\n",
+            max_age_days, max_count
+        );
+    } else {
+        println!(
+            "Evicting stale environments (max_age={}d, max_count={}):\n",
+            max_age_days, max_count
+        );
+    }
+
+    let mut total_evicted = 0;
+    for dir in &eviction_dirs {
+        if !dir.exists() {
+            continue;
+        }
+        if dry_run {
+            // Show what would be evicted without actually deleting
+            // Use a very large max_count to just show ages
+            println!("  {}:", dir.display());
+            if let Ok(rd) = std::fs::read_dir(dir) {
+                let mut candidates: Vec<(PathBuf, std::time::SystemTime, u64)> = Vec::new();
+                for entry in rd.filter_map(|e| e.ok()) {
+                    let path = entry.path();
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.len() != 16 || !name.chars().all(|c| c.is_ascii_hexdigit()) {
+                        continue;
+                    }
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let last_used = if let Ok(c) = std::fs::read_to_string(path.join(".last-used"))
+                    {
+                        if let Ok(s) = c.trim().parse::<u64>() {
+                            std::time::UNIX_EPOCH + std::time::Duration::from_secs(s)
+                        } else {
+                            entry
+                                .metadata()
+                                .and_then(|m| m.modified())
+                                .unwrap_or(std::time::UNIX_EPOCH)
+                        }
+                    } else {
+                        entry
+                            .metadata()
+                            .and_then(|m| m.modified())
+                            .unwrap_or(std::time::UNIX_EPOCH)
+                    };
+                    let size = calculate_dir_size(&path);
+                    candidates.push((path, last_used, size));
+                }
+                candidates.sort_by(|a, b| b.1.cmp(&a.1));
+                let now = std::time::SystemTime::now();
+                for (i, (path, last_used, size)) in candidates.iter().enumerate() {
+                    let age = now.duration_since(*last_used).unwrap_or_default();
+                    let would_delete = i >= max_count || age > max_age;
+                    let marker = if would_delete { "DELETE" } else { "keep" };
+                    println!(
+                        "    [{}] {} — {} ({}d old)",
+                        marker,
+                        path.file_name().unwrap_or_default().to_string_lossy(),
+                        format_size(*size),
+                        age.as_secs() / 86400
+                    );
+                    if would_delete {
+                        total_evicted += 1;
+                    }
+                }
+            }
+            println!();
+        } else {
+            match kernel_env::gc::evict_stale_envs(dir, max_age, max_count).await {
+                Ok(deleted) => {
+                    if !deleted.is_empty() {
+                        println!(
+                            "  {}: evicted {} environments",
+                            dir.display(),
+                            deleted.len()
+                        );
+                        total_evicted += deleted.len();
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  {}: error — {}", dir.display(), e);
+                }
+            }
+        }
+    }
+
+    if total_evicted == 0 {
+        println!("Nothing to evict — cache is within limits.");
+    } else if dry_run {
+        println!(
+            "Would evict {} environments. Run without --dry-run to proceed.",
+            total_evicted
+        );
+    } else {
+        println!("\nEvicted {} environments.", total_evicted);
     }
 
     Ok(())

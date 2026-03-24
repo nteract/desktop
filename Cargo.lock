@@ -5736,6 +5736,7 @@ dependencies = [
  "flate2",
  "futures",
  "jupyter-protocol",
+ "kernel-env",
  "libc",
  "notify",
  "petname",
