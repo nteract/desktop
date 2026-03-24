@@ -409,54 +409,26 @@ Deno.test("Bug #1067: consumed sync message causes protocol stall", () => {
   // previously-dropped reply AND the new change.
   const recoveryReply = client.flush_local_changes();
 
-  // THIS IS THE BUG: if recoveryReply is undefined, the protocol has
-  // stalled. The client thinks it's in sync (because sync_state was
-  // advanced by the dropped message) but the server disagrees.
+  // Automerge's sync protocol self-heals here: receiving serverMsg2
+  // provides new heads that let the client generate a fresh reply,
+  // even though the previous one was consumed and dropped.
   //
-  // If Automerge's sync protocol is resilient to this, recoveryReply
-  // will be defined and delivering it will converge the two docs.
-  if (recoveryReply === undefined) {
-    // Protocol stalled — this is the bug.
-    // Verify the docs have diverged.
-    const serverCell = server.get_cell("cell-1");
-    const clientCell = client.get_cell("cell-1");
-    assertExists(serverCell);
-    assertExists(clientCell);
+  // The old API (flush_local_changes) is vulnerable to permanent stalls
+  // only when the client gets NO further server messages — which can't
+  // happen in practice because the daemon keeps sending frames.
+  // The receive_frame inline reply API (#1067 fix) eliminates this
+  // class of bug entirely.
+  assert(
+    recoveryReply !== undefined,
+    "protocol self-heals: new server message provides fresh heads for reply",
+  );
+  server.receive_sync_message(recoveryReply);
+  syncHandles(server, client);
 
-    // Client should have output-v2 (it received the sync message)
-    assertEquals(clientCell.source, "output-v2");
-    clientCell.free();
-
-    // Server should also have output-v2 (it wrote it)
-    assertEquals(serverCell.source, "output-v2");
-    serverCell.free();
-
-    // But can the server see what the client knows? Without the reply,
-    // the server can't advance. Let's check if a full sync recovers.
-    // This simulates what happens after a page reload (reset_sync_state).
-    console.warn(
-      "BUG #1067 REPRODUCED: generate_sync_message() returned undefined " +
-        "after dropped message. Protocol stalled. Testing reset recovery...",
-    );
-
-    // Reset sync state (simulates page reload)
-    client.reset_sync_state();
-    syncHandles(server, client);
-
-    const recoveredCell = server.get_cell("cell-1");
-    assertExists(recoveredCell);
-    assertEquals(recoveredCell.source, "output-v2");
-    recoveredCell.free();
-  } else {
-    // Protocol recovered — deliver the reply and verify convergence.
-    server.receive_sync_message(recoveryReply);
-    syncHandles(server, client);
-
-    const serverCell = server.get_cell("cell-1");
-    assertExists(serverCell);
-    assertEquals(serverCell.source, "output-v2");
-    serverCell.free();
-  }
+  const serverCell = server.get_cell("cell-1");
+  assertExists(serverCell);
+  assertEquals(serverCell.source, "output-v2");
+  serverCell.free();
 
   server.free();
   client.free();
@@ -501,48 +473,25 @@ Deno.test("Bug #1067: rapid flushSync steals debounced reply", () => {
   // Now the debounced syncReply fires:
   const debouncedReply = client.flush_local_changes(); // generates reply
 
-  // The debounced reply should ideally still work, but if flushMsg
-  // already advanced sync_state, debouncedReply may be undefined.
-  // This demonstrates the consumption race.
+  // The old API has a consumption race: flushSync's flush_local_changes()
+  // advances sync_state, consuming the pending reply. The debounced
+  // syncReply$ call then gets nothing. This is the exact bug that
+  // receive_frame's inline reply (#1067 fix) eliminates.
+  assert(flushMsg !== undefined, "flushSync should produce a message");
+  assertEquals(
+    debouncedReply,
+    undefined,
+    "debounced reply is consumed by the prior flush — the old-API race",
+  );
 
-  if (flushMsg !== undefined && debouncedReply === undefined) {
-    console.warn(
-      "BUG #1067 CONFIRMED: flushSync consumed the debounced reply. " +
-        "If flushMsg delivery fails, no recovery path exists.",
-    );
-
-    // Simulate flushMsg delivery failure (best-effort catch from PR #1053)
-    // The message is lost. Can the protocol recover?
-
-    // Server makes a new change
-    server.update_source("cell-1", "line 1\nline 2\nline 3\nline 4");
-    const msg4 = server.flush_local_changes();
-    assert(msg4 !== undefined, "server should still produce messages");
-    client.receive_sync_message(msg4);
-
-    // Client tries to reply again
-    const retryReply = client.flush_local_changes();
-
-    if (retryReply === undefined) {
-      console.warn(
-        "STALL CONFIRMED: client cannot generate reply after lost flushSync. " +
-          "Only reset_sync_state() (page reload) recovers.",
-      );
-    } else {
-      // Partial recovery — deliver and check convergence
-      server.receive_sync_message(retryReply);
-      syncHandles(server, client);
-    }
-  }
-
-  // Regardless of the race outcome, verify final state consistency
-  // after a full reset + sync (simulates page reload)
+  // If flushMsg delivery failed, the client is now stuck: sent_hashes
+  // filters out the change data, and no recovery path exists without
+  // cancel_last_flush or reset_sync_state. Verify reset recovers.
   client.reset_sync_state();
   syncHandles(server, client);
 
   const clientCell = client.get_cell("cell-1");
   assertExists(clientCell);
-  // Client should have whatever the server's latest source is
   const serverCell = server.get_cell("cell-1");
   assertExists(serverCell);
   assertEquals(clientCell.source, serverCell.source);
@@ -568,10 +517,11 @@ Deno.test("Fix #1067: receive_frame returns inline sync reply", () => {
   // Server makes a change
   server.update_source("cell-1", "hello world");
 
-  // The sync protocol may need multiple rounds to deliver changes
-  // (bootstrap skeleton means both peers have ops, so the first round
-  // can be a heads exchange on some platforms).  Run up to 3 rounds of
-  // bidirectional frame-based sync to find the content-carrying event.
+  // Send the server's change via receive_frame and deliver inline replies.
+  // Peers are already converged via syncHandles, so the change arrives on
+  // the first round. Loop as a safety net for the bootstrap skeleton (both
+  // peers have ops from create_empty, so the first round can be heads-only
+  // on some platforms).
   // deno-lint-ignore no-explicit-any
   let changedEvent: any = null;
   for (let round = 0; round < 3; round++) {
@@ -587,17 +537,14 @@ Deno.test("Fix #1067: receive_frame returns inline sync reply", () => {
           if (ev.type === "sync_applied" && ev.changed) {
             changedEvent = ev;
           }
-          // Deliver any reply back to the server
+          // Deliver inline reply back to server (matches production behavior).
+          // receive_frame already consumed sync_state for this reply — do NOT
+          // also call flush_local_changes() or the state is double-consumed.
           if (ev.reply) {
             server.receive_sync_message(new Uint8Array(ev.reply));
           }
         }
       }
-    }
-    // Also send client's messages back to server
-    const clientMsg = client.flush_local_changes();
-    if (clientMsg) {
-      server.receive_sync_message(clientMsg);
     }
     if (changedEvent) break;
   }
@@ -1280,21 +1227,16 @@ Deno.test("Sync: load from bytes + incremental sync with changed flag", () => {
   daemon.add_cell(1, "new-cell", "markdown");
   daemon.update_source("new-cell", "# New section");
 
-  // Sync the new content. The sync protocol uses bloom filters internally,
-  // so a single message may not carry the change data (bloom false positive
-  // can cause a multi-round exchange). Use the full sync loop to be robust.
-  let sawChange = false;
-  for (let i = 0; i < 10; i++) {
-    const msgD = daemon.flush_local_changes();
-    const msgW = wasm.flush_local_changes();
-    if (!msgD && !msgW) break;
-    if (msgD) {
-      const changed = wasm.receive_sync_message(msgD);
-      if (changed) sawChange = true;
-    }
-    if (msgW) daemon.receive_sync_message(msgW);
-  }
-  assert(sawChange, "receive_sync_message should return true at least once when doc changes");
+  // Sync the new content. Both peers are already converged, so the
+  // daemon's change should arrive in the first sync message.
+  const syncMsg = daemon.flush_local_changes();
+  assert(
+    syncMsg !== undefined,
+    "daemon should have a sync message for the new cell",
+  );
+  const sawChange = wasm.receive_sync_message(syncMsg);
+  assert(sawChange, "receive_sync_message should return true when doc changes");
+  syncHandles(daemon, wasm); // complete any remaining handshake
 
   // WASM should now have the new cell
   assertEquals(wasm.cell_count(), 2);
