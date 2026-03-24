@@ -1280,17 +1280,21 @@ Deno.test("Sync: load from bytes + incremental sync with changed flag", () => {
   daemon.add_cell(1, "new-cell", "markdown");
   daemon.update_source("new-cell", "# New section");
 
-  // Generate sync message from daemon
-  const msg = daemon.flush_local_changes();
-  assertExists(msg, "Daemon should have sync message after mutation");
-
-  // WASM receives and should report changed=true
-  const changed = wasm.receive_sync_message(msg);
-  assertEquals(
-    changed,
-    true,
-    "receive_sync_message should return true when doc changes",
-  );
+  // Sync the new content. The sync protocol uses bloom filters internally,
+  // so a single message may not carry the change data (bloom false positive
+  // can cause a multi-round exchange). Use the full sync loop to be robust.
+  let sawChange = false;
+  for (let i = 0; i < 10; i++) {
+    const msgD = daemon.flush_local_changes();
+    const msgW = wasm.flush_local_changes();
+    if (!msgD && !msgW) break;
+    if (msgD) {
+      const changed = wasm.receive_sync_message(msgD);
+      if (changed) sawChange = true;
+    }
+    if (msgW) daemon.receive_sync_message(msgW);
+  }
+  assert(sawChange, "receive_sync_message should return true at least once when doc changes");
 
   // WASM should now have the new cell
   assertEquals(wasm.cell_count(), 2);
