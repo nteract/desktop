@@ -12,6 +12,7 @@ use crate::daemon_paths::get_socket_path;
 use crate::error::to_py_err;
 
 /// Room info data for async serialization (avoids needing GIL inside future).
+#[derive(IntoPyObject)]
 struct RoomInfoData {
     notebook_id: String,
     active_peers: usize,
@@ -19,29 +20,6 @@ struct RoomInfoData {
     kernel_type: Option<String>,
     kernel_status: Option<String>,
     env_source: Option<String>,
-}
-
-impl<'py> pyo3::IntoPyObject<'py> for RoomInfoData {
-    type Target = pyo3::types::PyDict;
-    type Output = pyo3::Bound<'py, pyo3::types::PyDict>;
-    type Error = PyErr;
-
-    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-        let dict = pyo3::types::PyDict::new(py);
-        dict.set_item("notebook_id", &self.notebook_id)?;
-        dict.set_item("active_peers", self.active_peers)?;
-        dict.set_item("has_kernel", self.has_kernel)?;
-        if let Some(kernel_type) = &self.kernel_type {
-            dict.set_item("kernel_type", kernel_type)?;
-        }
-        if let Some(kernel_status) = &self.kernel_status {
-            dict.set_item("kernel_status", kernel_status)?;
-        }
-        if let Some(env_source) = &self.env_source {
-            dict.set_item("env_source", env_source)?;
-        }
-        Ok(dict)
-    }
 }
 
 /// Async client for the runtimed daemon.
@@ -127,7 +105,6 @@ impl AsyncClient {
         future_into_py(py, async move {
             let client = runtimed::client::PoolClient::new(socket_path);
             let rooms = client.list_rooms().await.map_err(to_py_err)?;
-            // Return as Vec of RoomInfoData which can be converted to Python dicts
             let result: Vec<RoomInfoData> = rooms
                 .into_iter()
                 .map(|room| RoomInfoData {
