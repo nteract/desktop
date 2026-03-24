@@ -127,6 +127,7 @@ pub struct NotebookKernelInfo {
 pub struct RoomInfo {
     pub notebook_id: String,
     pub active_peers: usize,
+    pub had_peers: bool,
     pub has_kernel: bool,
     /// Kernel type if running (e.g., "python", "deno")
     #[serde(skip_serializing_if = "Option::is_none")]

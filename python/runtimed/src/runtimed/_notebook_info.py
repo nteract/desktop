@@ -24,11 +24,12 @@ class NotebookInfo:
     active_peers: int = 0
     has_runtime: bool = False
     env_source: str | None = None
+    had_peers: bool = False
 
     @property
     def is_draining(self) -> bool:
-        """True if the room has no connected peers and is in keep-alive countdown."""
-        return self.active_peers == 0
+        """True if the room previously had peers and is now in keep-alive countdown."""
+        return self.active_peers == 0 and self.had_peers
 
     @property
     def name(self) -> str:
@@ -63,6 +64,7 @@ class NotebookInfo:
             active_peers=int(d.get("active_peers", 0)),
             has_runtime=bool(d.get("has_kernel", False)),
             env_source=d.get("env_source"),
+            had_peers=bool(d.get("had_peers", False)),
         )
 
     def __repr__(self) -> str:

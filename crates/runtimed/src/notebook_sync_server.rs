@@ -632,6 +632,8 @@ pub struct NotebookRoom {
     pub persist_path: PathBuf,
     /// Number of active peer connections in this room.
     pub active_peers: AtomicUsize,
+    /// Whether at least one peer has ever connected to this room.
+    pub had_peers: AtomicBool,
     /// Optional kernel for this room (Phase 8: daemon-owned execution).
     /// Arc-wrapped so spawned command processor task can access it.
     pub kernel: Arc<Mutex<Option<RoomKernel>>>,
@@ -817,6 +819,7 @@ impl NotebookRoom {
             persist_tx,
             persist_path,
             active_peers: AtomicUsize::new(0),
+            had_peers: AtomicBool::new(false),
             kernel: Arc::new(Mutex::new(None)),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
@@ -877,6 +880,7 @@ impl NotebookRoom {
             persist_tx,
             persist_path,
             active_peers: AtomicUsize::new(0),
+            had_peers: AtomicBool::new(false),
             kernel: Arc::new(Mutex::new(None)),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
@@ -1059,6 +1063,7 @@ where
     check_and_update_trust_state(&room).await;
 
     room.active_peers.fetch_add(1, Ordering::Relaxed);
+    room.had_peers.store(true, Ordering::Relaxed);
     let peers = room.active_peers.load(Ordering::Relaxed);
     info!(
         "[notebook-sync] Client connected to room {} ({} peer{})",
@@ -6278,6 +6283,7 @@ mod tests {
             persist_tx,
             persist_path,
             active_peers: AtomicUsize::new(0),
+            had_peers: AtomicBool::new(false),
             kernel: Arc::new(Mutex::new(None)),
             blob_store,
             trust_state: Arc::new(RwLock::new(TrustState {

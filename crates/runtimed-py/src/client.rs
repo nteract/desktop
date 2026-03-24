@@ -91,6 +91,7 @@ impl Client {
             let dict = PyDict::new(py);
             dict.set_item("notebook_id", &room.notebook_id)?;
             dict.set_item("active_peers", room.active_peers)?;
+            dict.set_item("had_peers", room.had_peers)?;
             dict.set_item("has_kernel", room.has_kernel)?;
             if let Some(kernel_type) = &room.kernel_type {
                 dict.set_item("kernel_type", kernel_type)?;

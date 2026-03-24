@@ -15,6 +15,7 @@ use crate::error::to_py_err;
 struct RoomInfoData {
     notebook_id: String,
     active_peers: usize,
+    had_peers: bool,
     has_kernel: bool,
     kernel_type: Option<String>,
     kernel_status: Option<String>,
@@ -30,6 +31,7 @@ impl<'py> pyo3::IntoPyObject<'py> for RoomInfoData {
         let dict = pyo3::types::PyDict::new(py);
         dict.set_item("notebook_id", &self.notebook_id)?;
         dict.set_item("active_peers", self.active_peers)?;
+        dict.set_item("had_peers", self.had_peers)?;
         dict.set_item("has_kernel", self.has_kernel)?;
         if let Some(kernel_type) = &self.kernel_type {
             dict.set_item("kernel_type", kernel_type)?;
@@ -133,6 +135,7 @@ impl AsyncClient {
                 .map(|room| RoomInfoData {
                     notebook_id: room.notebook_id,
                     active_peers: room.active_peers,
+                    had_peers: room.had_peers,
                     has_kernel: room.has_kernel,
                     kernel_type: room.kernel_type,
                     kernel_status: room.kernel_status,

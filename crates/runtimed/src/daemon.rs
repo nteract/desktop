@@ -1881,6 +1881,7 @@ impl Daemon {
                     room_infos.push(crate::protocol::RoomInfo {
                         notebook_id: notebook_id.clone(),
                         active_peers: room.active_peers.load(std::sync::atomic::Ordering::Relaxed),
+                        had_peers: room.had_peers.load(std::sync::atomic::Ordering::Relaxed),
                         has_kernel: room.has_kernel().await,
                         kernel_type,
                         env_source,
