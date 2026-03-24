@@ -43,53 +43,20 @@ ContentItem = TextContent | ImageContent
 mcp = FastMCP("nteract")
 
 # ── CLI argument parsing ──────────────────────────────────────────────
-# We need _no_show resolved before tool registration (module level), so
-# we parse args eagerly here.  --help and --version are handled in main()
-# where we can print to stderr and exit cleanly.
+# Parsed in main() so that importing the module doesn't blow up when the
+# host process has its own argv (e.g. pytest).
 
 
-def _parse_args() -> argparse.Namespace:
-    """Parse CLI flags without triggering --help (that's handled in main())."""
+class _StderrParser(argparse.ArgumentParser):
+    """ArgumentParser that always writes to stderr (stdout is MCP's transport)."""
 
-    class _StderrParser(argparse.ArgumentParser):
-        """ArgumentParser that writes to stderr (stdout is MCP's transport)."""
+    def _print_message(self, message: str, file: Any = None) -> None:
+        super()._print_message(message, file=sys.stderr)
 
-        def _print_message(self, message: str, file: Any = None) -> None:
-            super()._print_message(message, file=file or sys.stderr)
-
-        def exit(self, status: int = 0, message: str | None = None) -> None:  # type: ignore[override]
-            if message:
-                self._print_message(message, sys.stderr)
-            raise SystemExit(status)
-
-    parser = _StderrParser(
-        prog="nteract",
-        description="nteract MCP server — AI-powered Jupyter notebooks.",
-    )
-    parser.add_argument(
-        "--version",
-        action="store_true",
-        help="Print version and exit.",
-    )
-    parser.add_argument(
-        "--nightly",
-        action="store_true",
-        help="Connect to the nteract nightly daemon instead of stable.",
-    )
-    parser.add_argument(
-        "--no-show",
-        action="store_true",
-        help="Disable the show_notebook tool (headless environments).",
-    )
-    return parser.parse_args()
-
-
-_cli = _parse_args()
-
-_no_show = _cli.no_show
-
-if _cli.nightly and not os.environ.get("RUNTIMED_SOCKET_PATH"):
-    os.environ["RUNTIMED_SOCKET_PATH"] = runtimed.socket_path_for_channel("nightly")
+    def exit(self, status: int = 0, message: str | None = None) -> None:  # type: ignore[override]
+        if message:
+            self._print_message(message, sys.stderr)
+        raise SystemExit(status)
 
 
 # ── Peer label for remote cursors ─────────────────────────────────────
@@ -660,49 +627,46 @@ async def list_active_notebooks() -> list[dict[str, Any]]:
     ]
 
 
-if not _no_show:
+async def _show_notebook_impl(
+    notebook_id: Annotated[
+        str | None,
+        Field(
+            description="Notebook ID to show. Defaults to current session's notebook.",
+        ),
+    ] = None,
+) -> dict[str, Any]:
+    """Open the notebook in the nteract desktop app.
 
-    @mcp.tool()
-    async def show_notebook(
-        notebook_id: Annotated[
-            str | None,
-            Field(
-                description="Notebook ID to show. Defaults to current session's notebook.",
-            ),
-        ] = None,
-    ) -> dict[str, Any]:
-        """Open the notebook in the nteract desktop app.
-
-        The notebook must be currently running in the daemon. If no notebook_id
-        is provided, opens the notebook from the current session.
-        """
-        target = notebook_id
-        if target is None:
-            if _notebook is not None:
-                target = _notebook.notebook_id
-            else:
-                raise ValueError(
-                    "No notebook_id provided and no active session. "
-                    "Use list_active_notebooks() to find a notebook_id, or connect to one first."
-                )
-
-        client = _get_client()
-        notebooks = await client.list_active_notebooks()
-        notebook_ids = {info.notebook_id for info in notebooks}
-        if target not in notebook_ids:
+    The notebook must be currently running in the daemon. If no notebook_id
+    is provided, opens the notebook from the current session.
+    """
+    target = notebook_id
+    if target is None:
+        if _notebook is not None:
+            target = _notebook.notebook_id
+        else:
             raise ValueError(
-                f"Notebook '{target}' is not currently running. "
-                f"Use list_active_notebooks() to see active notebooks."
+                "No notebook_id provided and no active session. "
+                "Use list_active_notebooks() to find a notebook_id, or connect to one first."
             )
 
-        if not os.path.isabs(target):
-            raise ValueError(
-                f"Notebook '{target}' is an untitled notebook (not saved to disk). "
-                f"Use save_notebook(path) first, then call show_notebook()."
-            )
+    client = _get_client()
+    notebooks = await client.list_active_notebooks()
+    notebook_ids = {info.notebook_id for info in notebooks}
+    if target not in notebook_ids:
+        raise ValueError(
+            f"Notebook '{target}' is not currently running. "
+            f"Use list_active_notebooks() to see active notebooks."
+        )
 
-        runtimed.show_notebook_app(target)
-        return {"notebook_id": target, "opened": True}
+    if not os.path.isabs(target):
+        raise ValueError(
+            f"Notebook '{target}' is an untitled notebook (not saved to disk). "
+            f"Use save_notebook(path) first, then call show_notebook()."
+        )
+
+    runtimed.show_notebook_app(target)
+    return {"notebook_id": target, "opened": True}
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
@@ -1606,11 +1570,38 @@ def _cleanup() -> None:
 
 def main():
     """Run the MCP server."""
-    if _cli.version:
+    parser = _StderrParser(
+        prog="nteract",
+        description="nteract MCP server — AI-powered Jupyter notebooks.",
+    )
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="Print version and exit.",
+    )
+    parser.add_argument(
+        "--nightly",
+        action="store_true",
+        help="Connect to the nteract nightly daemon instead of stable.",
+    )
+    parser.add_argument(
+        "--no-show",
+        action="store_true",
+        help="Disable the show_notebook tool (headless environments).",
+    )
+    args = parser.parse_args()
+
+    if args.version:
         from importlib.metadata import version
 
         print(f"nteract {version('nteract')}", file=sys.stderr)
         raise SystemExit(0)
+
+    if args.nightly and not os.environ.get("RUNTIMED_SOCKET_PATH"):
+        os.environ["RUNTIMED_SOCKET_PATH"] = runtimed.socket_path_for_channel("nightly")
+
+    if not args.no_show:
+        mcp.tool()(_show_notebook_impl)
 
     logging.basicConfig(
         level=logging.INFO,
