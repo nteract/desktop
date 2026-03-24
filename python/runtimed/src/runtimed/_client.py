@@ -90,5 +90,16 @@ class Client:
     async def __aexit__(self, *exc: object) -> None:
         await self.close()
 
+    def _repr_markdown_(self) -> str:
+        return (
+            "**Client** — async interface to the runtimed daemon\n\n"
+            "| Async methods |\n"
+            "|-|\n"
+            "| `open_notebook()` `create_notebook()` `join_notebook()` |\n"
+            "| `list_active_notebooks()` |\n"
+            "| `ping()` `is_running()` `status()` |\n"
+            "| `flush_pool()` `close()` |\n"
+        )
+
     def __repr__(self) -> str:
         return "Client()"

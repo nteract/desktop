@@ -17,6 +17,21 @@ if TYPE_CHECKING:
     )
 
 
+class _HintList(list):
+    """List that gives a helpful error if accidentally called."""
+
+    __slots__ = ("_attr",)
+
+    def __init__(self, items, attr: str):
+        super().__init__(items)
+        self._attr = attr
+
+    def __call__(self, *a, **kw):
+        raise TypeError(
+            f"'{self._attr}' is a property, not a method — drop the parentheses: .{self._attr}"
+        )
+
+
 class CellHandle:
     """A live reference to a cell in the notebook document.
 
@@ -48,9 +63,9 @@ class CellHandle:
         """Resolved outputs (sync — may do disk I/O for blob resolution)."""
         try:
             cell = self._session.get_cell_sync(self._id)
-            return cell.outputs
+            return _HintList(cell.outputs, "outputs")
         except _RuntimedError:
-            return []
+            return _HintList([], "outputs")
 
     @property
     def execution_count(self) -> int | None:
@@ -78,9 +93,9 @@ class CellHandle:
     def tags(self) -> list[str]:
         """Cell tags (sync read). Uses Rust Cell helpers for key resolution."""
         try:
-            return self._session.get_cell_sync(self._id).tags
+            return _HintList(self._session.get_cell_sync(self._id).tags, "tags")
         except _RuntimedError:
-            return []
+            return _HintList([], "tags")
 
     @property
     def source_hidden(self) -> bool:
@@ -187,6 +202,27 @@ class CellHandle:
         await self._session.set_cell_outputs_hidden(self._id, hidden)
         return self
 
+    def _repr_markdown_(self) -> str:
+        src = self.source
+        preview = (src[:60] + "...") if len(src) > 60 else src
+        preview = preview.replace("\n", "\\n")
+        # Use an indented code block — immune to backticks in source
+        indented = "    " + preview
+        return (
+            f"**Cell** `{self._id[:8]}` ({self.cell_type})\n\n"
+            f"{indented}\n\n"
+            "| Properties (sync) | Async methods |\n"
+            "|-|-|\n"
+            "| `source` | `set_source()` `append()` `splice()` |\n"
+            "| `cell_type` | `set_type()` |\n"
+            "| `outputs` | `execute()` `run()` `queue()` `clear_outputs()` |\n"
+            "| `execution_count` | `delete()` `move_after()` |\n"
+            "| `metadata` `tags` | `set_tags()` |\n"
+            "| `source_hidden` `outputs_hidden` | "
+            "`set_source_hidden()` `set_outputs_hidden()` |\n"
+            "| `id` `snapshot()` | |\n"
+        )
+
     def __repr__(self) -> str:
         return f"Cell({self._id[:8]}, {self.cell_type})"
 
@@ -231,7 +267,7 @@ class CellCollection:
     @property
     def ids(self) -> list[str]:
         """All cell IDs in document order (sync)."""
-        return self._session.get_cell_ids_sync()
+        return _HintList(self._session.get_cell_ids_sync(), "ids")
 
     def __getitem__(self, cell_id: str) -> CellHandle:
         """cells['cell-id'] — sugar for get_by_id."""
@@ -269,6 +305,18 @@ class CellCollection:
         """Insert a new cell at a specific position."""
         cell_id = await self._session.create_cell(source, cell_type, index)
         return self._handle(cell_id)
+
+    def _repr_markdown_(self) -> str:
+        n = len(self)
+        lines = [
+            f"**Cells** ({n} cell{'s' if n != 1 else ''})\n",
+            "| Properties / sync methods | Async methods |",
+            "|-|-|",
+            "| `ids` `len()` `iter()` | `create()` `insert_at()` |",
+            "| `get_by_id()` `get_by_index()` `find()` | |",
+            "| `cells['id']` `'id' in cells` | |",
+        ]
+        return "\n".join(lines) + "\n"
 
     def __repr__(self) -> str:
         return f"Cells({len(self)})"
