@@ -832,6 +832,30 @@ impl PyEnvState {
     }
 }
 
+/// Execution lifecycle state for a single execution.
+#[pyclass(name = "ExecutionState", get_all, skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyExecutionState {
+    /// Cell that was executed.
+    pub cell_id: String,
+    /// Current status: "queued", "running", "done", "error".
+    pub status: String,
+    /// Kernel execution count (set when execution starts).
+    pub execution_count: Option<i64>,
+    /// Whether the execution succeeded (set on completion).
+    pub success: Option<bool>,
+}
+
+#[pymethods]
+impl PyExecutionState {
+    fn __repr__(&self) -> String {
+        format!(
+            "ExecutionState(cell_id={}, status={}, success={:?})",
+            self.cell_id, self.status, self.success
+        )
+    }
+}
+
 /// Full runtime state snapshot from the daemon's RuntimeStateDoc.
 #[pyclass(name = "RuntimeState", get_all, skip_from_py_object)]
 #[derive(Clone, Debug)]
@@ -844,6 +868,8 @@ pub struct PyRuntimeState {
     pub env: PyEnvState,
     /// ISO timestamp of last save, or None.
     pub last_saved: Option<String>,
+    /// Execution lifecycle entries keyed by execution_id.
+    pub executions: std::collections::HashMap<String, PyExecutionState>,
 }
 
 #[pymethods]
@@ -897,6 +923,21 @@ impl From<notebook_doc::runtime_state::RuntimeState> for PyRuntimeState {
                 deno_changed: rs.env.deno_changed,
             },
             last_saved: rs.last_saved,
+            executions: rs
+                .executions
+                .into_iter()
+                .map(|(eid, es)| {
+                    (
+                        eid,
+                        PyExecutionState {
+                            cell_id: es.cell_id,
+                            status: es.status,
+                            execution_count: es.execution_count,
+                            success: es.success,
+                        },
+                    )
+                })
+                .collect(),
         }
     }
 }
