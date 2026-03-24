@@ -3723,8 +3723,15 @@ async fn env_clean(
                 let now = std::time::SystemTime::now();
                 for (i, (path, last_used, size)) in candidates.iter().enumerate() {
                     let age = now.duration_since(*last_used).unwrap_or_default();
-                    let would_delete = i >= max_count || age > max_age;
-                    let marker = if would_delete { "DELETE" } else { "keep" };
+                    let would_delete =
+                        (i >= max_count || age > max_age) && !in_use.contains(path);
+                    let marker = if would_delete {
+                        "DELETE"
+                    } else if in_use.contains(path) {
+                        "in-use"
+                    } else {
+                        "keep"
+                    };
                     println!(
                         "    [{}] {} — {} ({}d old)",
                         marker,
