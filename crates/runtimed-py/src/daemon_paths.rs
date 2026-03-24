@@ -2,6 +2,25 @@
 
 use std::path::{Path, PathBuf};
 
+/// Resolve a notebook identifier to a canonical path when it looks like a file path.
+///
+/// UUIDs and opaque identifiers pass through unchanged. Relative paths like
+/// `"notebook.ipynb"` are resolved against the current working directory so
+/// they match the canonical keys the daemon uses for notebook rooms.
+pub fn resolve_notebook_path(notebook_id: &str) -> String {
+    if uuid::Uuid::parse_str(notebook_id).is_ok() {
+        return notebook_id.to_string();
+    }
+    let path = Path::new(notebook_id);
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical.to_string_lossy().to_string();
+    }
+    if let Ok(absolute) = std::path::absolute(path) {
+        return absolute.to_string_lossy().to_string();
+    }
+    notebook_id.to_string()
+}
+
 /// Get the daemon socket path, respecting RUNTIMED_SOCKET_PATH env var.
 pub fn get_socket_path() -> PathBuf {
     if let Ok(p) = std::env::var("RUNTIMED_SOCKET_PATH") {

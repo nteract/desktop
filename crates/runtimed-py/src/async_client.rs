@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::async_session::AsyncSession;
-use crate::daemon_paths::get_socket_path;
+use crate::daemon_paths::{get_socket_path, resolve_notebook_path};
 use crate::error::to_py_err;
 
 /// Room info data for async serialization (avoids needing GIL inside future).
@@ -241,8 +241,11 @@ impl AsyncClient {
 
     /// Join an existing notebook room by ID and return a connected AsyncSession.
     ///
+    /// Relative paths (e.g. ``"notebook.ipynb"``) are resolved to absolute
+    /// paths so they match the canonical room keys used by the daemon.
+    ///
     /// Args:
-    ///     notebook_id: The notebook room ID to join.
+    ///     notebook_id: The notebook room ID to join (UUID or file path).
     ///     peer_label: Optional label override (defaults to client's peer_label).
     #[pyo3(signature = (notebook_id, peer_label=None))]
     fn join_notebook<'py>(
@@ -253,7 +256,7 @@ impl AsyncClient {
     ) -> PyResult<Bound<'py, PyAny>> {
         let label = peer_label.or_else(|| self.peer_label.clone());
         let socket_path = self.socket_path.clone();
-        let notebook_id = notebook_id.to_string();
+        let notebook_id = resolve_notebook_path(notebook_id);
         future_into_py(py, async move {
             AsyncSession::join_notebook_async(socket_path, notebook_id, label).await
         })

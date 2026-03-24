@@ -9,27 +9,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use tokio::runtime::Runtime;
 
+use crate::daemon_paths::resolve_notebook_path;
 use crate::error::to_py_err;
 use crate::session::Session;
-
-/// Resolve a notebook identifier to a canonical path when it looks like a file path.
-///
-/// UUIDs and opaque identifiers pass through unchanged. Relative paths like
-/// `"notebook.ipynb"` are resolved against the current working directory so
-/// they match the canonical keys the daemon uses for notebook rooms.
-fn resolve_notebook_path(notebook_id: &str) -> String {
-    if uuid::Uuid::parse_str(notebook_id).is_ok() {
-        return notebook_id.to_string();
-    }
-    let path = std::path::Path::new(notebook_id);
-    if let Ok(canonical) = std::fs::canonicalize(path) {
-        return canonical.to_string_lossy().to_string();
-    }
-    if let Ok(absolute) = std::path::absolute(path) {
-        return absolute.to_string_lossy().to_string();
-    }
-    notebook_id.to_string()
-}
 
 /// Synchronous native client for the runtimed daemon.
 ///
