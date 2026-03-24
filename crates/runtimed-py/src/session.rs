@@ -226,6 +226,11 @@ impl Session {
             .unwrap_or_else(|| self.notebook_id.clone());
         self.runtime
             .block_on(session_core::connect(&self.state, &effective_id))?;
+        // Announce presence so the daemon registers this peer immediately
+        self.runtime.block_on(async {
+            let st = self.state.lock().await;
+            session_core::announce_presence(&st).await;
+        });
         // Spawn background task to update notebook_id if a peer re-keys the room
         self.runtime.block_on(async {
             let st = self.state.lock().await;
