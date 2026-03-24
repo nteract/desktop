@@ -97,9 +97,93 @@ fn daemon_status(project_root: &Path) -> Option<DaemonInfo> {
 struct DaemonInfo {
     socket_path: String,
     running: bool,
+    /// Nested daemon_info from `runt daemon status --json` (present when running).
+    #[serde(default)]
+    daemon_info: Option<DaemonProcessInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DaemonProcessInfo {
+    /// PID of the running daemon process.
+    #[serde(default)]
+    pid: Option<u32>,
+    /// Version string, e.g. "2.0.2+6147ffa".
+    #[serde(default)]
+    version: Option<String>,
+}
+
+/// Get the version string from the built runtimed binary (e.g. "runtimed 2.0.2+abc1234").
+/// Returns just the version part after "runtimed " or the full line if parsing fails.
+fn expected_daemon_version(project_root: &Path) -> Option<String> {
+    let runtimed = cargo_binary(project_root, "runtimed");
+    if !runtimed.exists() {
+        return None;
+    }
+    let output = std::process::Command::new(&runtimed)
+        .arg("--version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let full = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // "runtimed 2.0.2+abc1234" → "2.0.2+abc1234"
+    Some(full.strip_prefix("runtimed ").unwrap_or(&full).to_string())
+}
+
+/// Stop a running daemon by PID. Works whether or not we started it.
+/// Tries `runt daemon stop` first (graceful), falls back to kill(pid).
+///
+/// Safety: refuses to act if the workspace path can't be resolved, because
+/// without it the `runt` CLI would target the system nightly daemon instead
+/// of this worktree's dev daemon.
+fn stop_daemon_by_pid(project_root: &Path, pid: u32) {
+    let workspace = match runt_workspace::get_workspace_path() {
+        Some(ws) => ws,
+        None => {
+            error!(
+                "Refusing to stop daemon (PID {pid}): cannot resolve workspace path. \
+                 Without RUNTIMED_WORKSPACE_PATH the stop command would target the \
+                 system nightly daemon, not this worktree's dev daemon."
+            );
+            return;
+        }
+    };
+
+    // Try graceful stop via runt CLI
+    let runt = cargo_binary(project_root, "runt");
+    if runt.exists() {
+        info!(
+            "Stopping daemon (PID {pid}) via runt daemon stop (workspace: {})...",
+            workspace.display()
+        );
+        let mut cmd = std::process::Command::new(&runt);
+        cmd.args(["daemon", "stop"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .env("RUNTIMED_DEV", "1")
+            .env("RUNTIMED_WORKSPACE_PATH", &workspace);
+        if let Ok(status) = cmd.status() {
+            if status.success() {
+                // Give it a moment to release the socket
+                std::thread::sleep(Duration::from_secs(2));
+                return;
+            }
+        }
+    }
+
+    // Fallback: kill by PID
+    info!("Falling back to kill(PID {pid})...");
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid as i32, libc::SIGTERM);
+    }
+    std::thread::sleep(Duration::from_secs(2));
 }
 
 /// Start the dev daemon as a background process. Returns the child handle.
+///
+/// Before starting, checks for a stale daemon on the socket and stops it
+/// if its version doesn't match the built binary.
 fn start_daemon(project_root: &Path) -> Option<std::process::Child> {
     let runtimed = cargo_binary(project_root, "runtimed");
 
@@ -555,6 +639,36 @@ impl Supervisor {
                 )
             })
             .collect();
+
+        // Query daemon version and detect mismatches
+        let daemon_version = daemon_status(&state.project_root)
+            .and_then(|info| info.daemon_info)
+            .and_then(|di| di.version);
+        let expected_version = expected_daemon_version(&state.project_root);
+        let version_mismatch = match (&daemon_version, &expected_version) {
+            (Some(running), Some(expected)) => running != expected,
+            _ => false,
+        };
+
+        // Check if the daemon_child we're tracking is still our process
+        if let Some(ref mut child) = state.daemon_child {
+            match child.try_wait() {
+                Ok(Some(_status)) => {
+                    // Our managed daemon exited (launchd may have replaced it)
+                    warn!(
+                        "Managed daemon (PID {:?}) has exited — \
+                         another process may have taken over the socket",
+                        child.id()
+                    );
+                    state.daemon_child = None;
+                }
+                Ok(None) => {} // still running
+                Err(_) => {
+                    state.daemon_child = None;
+                }
+            }
+        }
+
         SupervisorStatus {
             child_running,
             restart_count: state.restart_count,
@@ -568,6 +682,9 @@ impl Supervisor {
                 "debug"
             }
             .to_string(),
+            daemon_version,
+            expected_version,
+            version_mismatch,
             managed_processes,
         }
     }
@@ -845,6 +962,12 @@ struct SupervisorStatus {
     daemon_managed: bool,
     /// Current build mode for daemon binaries: "debug" or "release".
     build_mode: String,
+    /// Version of the running daemon (e.g. "2.0.2+6147ffa"), if known.
+    daemon_version: Option<String>,
+    /// Version of the built runtimed binary, if available.
+    expected_version: Option<String>,
+    /// True if daemon_version != expected_version (stale daemon).
+    version_mismatch: bool,
     /// Status of managed long-running processes (vite, app, etc.).
     managed_processes: HashMap<String, ManagedProcessStatus>,
 }
@@ -1036,14 +1159,31 @@ impl ServerHandler for Supervisor {
 
                 match target {
                     "daemon" => {
-                        // Restart daemon, then child
+                        // Restart daemon, then child.
+                        // Stop whatever daemon is on the socket — whether we
+                        // started it or launchd did.
                         let mut state = self.state.write().await;
+                        let project_root = state.project_root.clone();
+
                         if let Some(ref mut child) = state.daemon_child {
-                            info!("Stopping managed daemon...");
+                            info!("Stopping managed daemon (PID {:?})...", child.id());
                             let _ = child.kill();
                             let _ = child.wait();
+                            state.daemon_child = None;
                         }
-                        let project_root = state.project_root.clone();
+
+                        // Also stop any unmanaged daemon on the socket
+                        if let Some(info) = daemon_status(&project_root) {
+                            if info.running {
+                                if let Some(di) = &info.daemon_info {
+                                    if let Some(pid) = di.pid {
+                                        info!("Stopping unmanaged daemon (PID {pid})...");
+                                        stop_daemon_by_pid(&project_root, pid);
+                                    }
+                                }
+                            }
+                        }
+
                         state.daemon_child = start_daemon(&project_root);
                         drop(state);
 
@@ -1164,14 +1304,31 @@ impl ServerHandler for Supervisor {
                     )]));
                 }
 
-                // 3. Restart daemon so it picks up the new binary
+                // 3. Stop whatever daemon is running (managed or not) and start fresh
                 {
                     let mut state = self.state.write().await;
                     if let Some(ref mut child) = state.daemon_child {
-                        info!("Stopping managed daemon for rebuild...");
+                        info!(
+                            "Stopping managed daemon (PID {:?}) for rebuild...",
+                            child.id()
+                        );
                         let _ = child.kill();
                         let _ = child.wait();
+                        state.daemon_child = None;
                     }
+
+                    // Also stop any unmanaged daemon on the socket (e.g. launchd)
+                    if let Some(info) = daemon_status(&project_root) {
+                        if info.running {
+                            if let Some(di) = &info.daemon_info {
+                                if let Some(pid) = di.pid {
+                                    info!("Stopping unmanaged daemon (PID {pid}) for rebuild...");
+                                    stop_daemon_by_pid(&project_root, pid);
+                                }
+                            }
+                        }
+                    }
+
                     state.daemon_child = start_daemon(&project_root);
                 }
 
@@ -1181,17 +1338,44 @@ impl ServerHandler for Supervisor {
                     )]));
                 }
 
+                // Verify the running daemon matches the just-built binary
+                let version_ok = match (
+                    daemon_status(&project_root)
+                        .and_then(|i| i.daemon_info)
+                        .and_then(|di| di.version),
+                    expected_daemon_version(&project_root),
+                ) {
+                    (Some(running), Some(expected)) => {
+                        if running != expected {
+                            warn!(
+                                "Daemon version mismatch after rebuild: running={running}, expected={expected}"
+                            );
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    _ => true, // can't determine — assume ok
+                };
+
                 // 4. Clear circuit breaker and restart child MCP server
                 {
                     let mut state = self.state.write().await;
                     state.recent_crashes.clear();
                 }
+                let version_warning = if !version_ok {
+                    "\n\n⚠️  Warning: daemon version mismatch — another process may have \
+                     claimed the socket (e.g. launchd). Run supervisor_restart target=daemon \
+                     to force a clean restart."
+                } else {
+                    ""
+                };
                 match self.restart_child().await {
-                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(
-                        "Rebuilt daemon + Python bindings and restarted everything successfully",
-                    )])),
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Rebuilt daemon + Python bindings and restarted everything successfully{version_warning}",
+                    ))])),
                     Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Rebuild and daemon restart succeeded but MCP server restart failed: {e}"
+                        "Rebuild and daemon restart succeeded but MCP server restart failed: {e}{version_warning}"
                     ))])),
                 }
             }
@@ -1596,6 +1780,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = match daemon_status(&project_root) {
         Some(info) if info.running => {
             info!("Dev daemon already running at {}", info.socket_path);
+            // Check version — warn if stale
+            if let Some(expected) = expected_daemon_version(&project_root) {
+                let running = info
+                    .daemon_info
+                    .as_ref()
+                    .and_then(|di| di.version.as_deref());
+                match running {
+                    Some(v) if v != expected => {
+                        warn!(
+                            "Running daemon version ({v}) doesn't match built binary ({expected}). \
+                             Use supervisor_rebuild or supervisor_restart target=daemon to update."
+                        );
+                    }
+                    Some(v) => info!("Daemon version: {v} (matches built binary)"),
+                    None => {}
+                }
+            }
             info.socket_path
         }
         Some(_info) => {
