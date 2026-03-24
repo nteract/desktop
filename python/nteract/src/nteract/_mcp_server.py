@@ -39,9 +39,6 @@ logger = logging.getLogger(__name__)
 # MCP content types for tool responses
 ContentItem = TextContent | ImageContent
 
-# Create the MCP server
-mcp = FastMCP("nteract")
-
 # ── CLI argument parsing ──────────────────────────────────────────────
 # Parsed in main() so that importing the module doesn't blow up when the
 # host process has its own argv (e.g. pytest).
@@ -57,53 +54,6 @@ class _StderrParser(argparse.ArgumentParser):
         if message:
             self._print_message(message, sys.stderr)
         raise SystemExit(status)
-
-
-# ── Peer label for remote cursors ─────────────────────────────────────
-# The MCP initialize handshake includes clientInfo with `name` and
-# `title` fields. We prefer `title` ("Codex") over `name`
-# ("codex-mcp-client") for the cursor flag.
-
-_client_name: str | None = None
-
-
-def _sniff_client_name(ctx: Context) -> None:
-    """Extract clientInfo from the MCP session. Lazy, first call only."""
-    global _client_name
-    if _client_name is not None:
-        return
-    try:
-        params = ctx.request_context.session.client_params
-        if params and params.clientInfo:
-            info = params.clientInfo
-            _client_name = getattr(info, "title", None) or info.name
-    except Exception:
-        pass
-
-
-def _peer_label() -> str:
-    """Return a label for the cursor flag. Falls back to 'Agent'."""
-    return _client_name or "Agent"
-
-
-# Notebook state - single active notebook at a time
-_notebook: runtimed.Notebook | None = None
-_client: runtimed.Client | None = None
-
-
-def _get_client() -> runtimed.Client:
-    """Get or create the client."""
-    global _client
-    if _client is None:
-        _client = runtimed.Client()
-    return _client
-
-
-async def _get_notebook() -> runtimed.Notebook:
-    """Get the current notebook, raising error if not connected."""
-    if _notebook is None:
-        raise RuntimeError("No active notebook session. Call join_notebook first.")
-    return _notebook
 
 
 # Regex to strip ANSI escape sequences (terminal colors, cursor movement, etc.)
@@ -522,6 +472,30 @@ def _cell_to_content(cell: runtimed.CellHandle, status: str | None = None) -> li
     return items
 
 
+def _output_to_dict(output: runtimed.Output) -> dict[str, Any]:
+    """Convert an output to a dictionary for JSON serialization."""
+    result: dict[str, Any] = {"output_type": output.output_type}
+
+    if output.output_type == "stream":
+        result["name"] = output.name
+        result["text"] = _strip_ansi(output.text) if output.text else ""
+    elif output.output_type == "error":
+        result["ename"] = output.ename or ""
+        result["evalue"] = output.evalue or ""
+        result["traceback"] = output.traceback or []
+    elif output.output_type in ("display_data", "execute_result"):
+        result["data"] = {}
+        if output.data:
+            for mime in _TEXT_MIME_PRIORITY:
+                if mime in output.data:
+                    result["data"][mime] = output.data[mime]
+                    break
+        if output.output_type == "execute_result" and output.execution_count is not None:
+            result["execution_count"] = output.execution_count
+
+    return result
+
+
 def _format_execution_result(
     cell_id: str,
     events: list[Any],  # list[runtimed.ExecutionEvent]
@@ -600,487 +574,8 @@ def _execution_result_to_content(
     return items
 
 
-# =============================================================================
-# Session Management Tools
-# =============================================================================
-
-
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def list_active_notebooks() -> list[dict[str, Any]]:
-    """List all open notebook sessions.
-
-    Returns notebooks currently open by users or other agents.
-    Use join_notebook(notebook_id) to connect to one.
-    """
-    client = _get_client()
-    notebooks = await client.list_active_notebooks()
-    return [
-        {
-            "notebook_id": info.notebook_id,
-            "active_peers": info.active_peers,
-            "has_runtime": info.has_runtime,
-            "runtime_type": info.runtime_type,
-            "status": info.status,
-            "is_draining": info.is_draining,
-        }
-        for info in notebooks
-    ]
-
-
-async def _show_notebook_impl(
-    notebook_id: Annotated[
-        str | None,
-        Field(
-            description="Notebook ID to show. Defaults to current session's notebook.",
-        ),
-    ] = None,
-) -> dict[str, Any]:
-    """Open the notebook in the nteract desktop app.
-
-    The notebook must be currently running in the daemon. If no notebook_id
-    is provided, opens the notebook from the current session.
-    """
-    target = notebook_id
-    if target is None:
-        if _notebook is not None:
-            target = _notebook.notebook_id
-        else:
-            raise ValueError(
-                "No notebook_id provided and no active session. "
-                "Use list_active_notebooks() to find a notebook_id, or connect to one first."
-            )
-
-    client = _get_client()
-    notebooks = await client.list_active_notebooks()
-    notebook_ids = {info.notebook_id for info in notebooks}
-    if target not in notebook_ids:
-        raise ValueError(
-            f"Notebook '{target}' is not currently running. "
-            f"Use list_active_notebooks() to see active notebooks."
-        )
-
-    if not os.path.isabs(target):
-        raise ValueError(
-            f"Notebook '{target}' is an untitled notebook (not saved to disk). "
-            f"Use save_notebook(path) first, then call show_notebook()."
-        )
-
-    runtimed.show_notebook_app(target)
-    return {"notebook_id": target, "opened": True}
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
-async def join_notebook(
-    notebook_id: str,
-    ctx: Context | None = None,
-) -> dict[str, Any]:
-    """Join an existing notebook session by ID.
-
-    Use list_active_notebooks() to see available sessions. To open a file from disk,
-    use open_notebook(path). To create a new notebook, use create_notebook().
-    """
-    global _notebook
-    if ctx:
-        _sniff_client_name(ctx)
-
-    # Close existing notebook if any
-    if _notebook is not None:
-        with contextlib.suppress(Exception):
-            await _notebook.close()
-
-    # Join existing notebook
-    client = _get_client()
-    _notebook = await client.join_notebook(notebook_id, peer_label=_peer_label())
-
-    cell_status = await _get_cell_status_map(_notebook)
-    lines = [
-        _format_cell_summary(
-            i, cell, preview_chars=60, include_outputs=False, status=cell_status.get(cell.id)
-        )
-        for i, cell in enumerate(_notebook.cells)
-    ]
-
-    return {
-        "notebook_id": _notebook.notebook_id,
-        "connected": True,
-        "cells": "\n".join(lines),
-    }
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
-async def open_notebook(path: str, ctx: Context | None = None) -> dict[str, Any]:
-    """Open an existing .ipynb file. The kernel starts automatically.
-
-    Use create_notebook() for new notebooks.
-    """
-    global _notebook
-    if ctx:
-        _sniff_client_name(ctx)
-
-    if _notebook is not None:
-        with contextlib.suppress(Exception):
-            await _notebook.close()
-
-    client = _get_client()
-    _notebook = await client.open_notebook(path, peer_label=_peer_label())
-    return {
-        "notebook_id": _notebook.notebook_id,
-        "path": path,
-    }
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
-async def create_notebook(
-    runtime: Literal["python", "deno"] = "python",
-    working_dir: Annotated[
-        str,
-        Field(
-            description="Working directory for the kernel and"
-            " environment detection (e.g. pyproject.toml)."
-            f" Defaults to {os.getcwd()}"
-        ),
-    ] = os.getcwd(),
-    dependencies: Annotated[
-        list[str] | None,
-        Field(
-            description="Python packages to pre-install (e.g. ['pandas', 'requests'])."
-            " Set before kernel launch so the first start includes them."
-        ),
-    ] = None,
-    ctx: Context | None = None,
-) -> dict[str, Any]:
-    """Create a new notebook with optional pre-installed dependencies.
-
-    The kernel starts automatically. If dependencies are provided, they are
-    added to notebook metadata before the kernel launches, so the environment
-    is prepared on first start (no restart needed).
-
-    Call save_notebook(path) to persist to disk.
-    """
-    global _notebook
-    if ctx:
-        _sniff_client_name(ctx)
-
-    if _notebook is not None:
-        with contextlib.suppress(Exception):
-            await _notebook.close()
-
-    client = _get_client()
-    _notebook = await client.create_notebook(
-        runtime=runtime, working_dir=working_dir, peer_label=_peer_label()
-    )
-
-    if dependencies and runtime == "python":
-        # Add dependencies to notebook metadata
-        for dep in dependencies:
-            await _notebook.add_dependency(dep)
-
-        # The daemon may have auto-launched a kernel (without these deps).
-        # Restart to ensure the kernel picks up the inline deps.
-        with contextlib.suppress(Exception):
-            await _notebook.restart()
-
-    return {
-        "notebook_id": _notebook.notebook_id,
-        "runtime": runtime,
-        "dependencies": dependencies or [],
-    }
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
-async def save_notebook(path: str | None = None) -> dict[str, Any]:
-    """Save notebook to disk.
-
-    The daemon automatically re-keys ephemeral (UUID-based) rooms to the saved
-    file path, so no disconnect/reconnect is needed.
-    """
-    notebook = await _get_notebook()
-    old_notebook_id = notebook.notebook_id
-
-    try:
-        if path is not None:
-            saved_path = await notebook.save_as(path)
-        else:
-            saved_path = await notebook.save()
-    except Exception as e:
-        error_msg = str(e)
-        is_write_error = "Read-only" in error_msg or "Failed to write" in error_msg
-        if is_write_error and path is None:
-            raise RuntimeError(
-                "No path specified. For notebooks created with create_notebook(), "
-                "you must provide a path (e.g., save_notebook('/path/to/file.ipynb'))"
-            ) from e
-        raise
-
-    new_notebook_id = notebook.notebook_id
-    result: dict[str, Any] = {"path": saved_path, "notebook_id": new_notebook_id}
-    if old_notebook_id != new_notebook_id:
-        result["previous_notebook_id"] = old_notebook_id
-    return result
-
-
-# =============================================================================
-# Kernel Management Tools
-# =============================================================================
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def interrupt_kernel() -> dict[str, Any]:
-    """Interrupt the currently executing cell."""
-    notebook = await _get_notebook()
-    await notebook.interrupt()
-
-    return {"interrupted": True}
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def restart_kernel(ctx: Context | None = None) -> dict[str, Any]:
-    """Restart kernel, clearing all state. Use after dependency changes.
-
-    Reports environment preparation progress (package downloads, installs)
-    via MCP log notifications while waiting. Times out after 120s.
-    """
-    notebook = await _get_notebook()
-    progress_messages: list[str] = await notebook.restart()
-
-    # Send progress messages as MCP log notifications (retroactively)
-    if ctx and progress_messages:
-        for msg in progress_messages:
-            with contextlib.suppress(Exception):
-                await ctx.info(msg)
-
-    return {
-        "restarted": True,
-        "env_source": notebook.runtime.kernel.env_source,
-        "progress": progress_messages,
-    }
-
-
-# =============================================================================
-# Dependency Management Tools
-# =============================================================================
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def add_dependency(package: str) -> dict[str, Any]:
-    """Add a package dependency (e.g. "pandas>=2.0"). Call sync_environment() to install."""
-    notebook = await _get_notebook()
-    deps = await notebook.add_dependency(package)
-    return {"dependencies": deps, "added": package}
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def remove_dependency(package: str) -> dict[str, Any]:
-    """Remove a package dependency. Requires restart_kernel() to take effect."""
-    notebook = await _get_notebook()
-    deps = await notebook.remove_dependency(package)
-    return {"dependencies": deps, "removed": package}
-
-
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def get_dependencies() -> dict[str, Any]:
-    """Get the notebook's current package dependencies."""
-    notebook = await _get_notebook()
-    deps = await notebook.get_dependencies()
-    return {"dependencies": deps}
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def sync_environment() -> dict[str, Any]:
-    """Hot-install new dependencies without restarting. Use restart_kernel() if this fails."""
-    notebook = await _get_notebook()
-    result = await notebook.sync_environment()
-    return {
-        "success": result.success,
-        "synced_packages": result.synced_packages,
-        "error": result.error,
-        "needs_restart": result.needs_restart,
-    }
-
-
-# =============================================================================
-# Cell Operations Tools
-# =============================================================================
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
-async def create_cell(
-    source: str = "",
-    cell_type: Literal["code", "markdown", "raw"] = "code",
-    index: Annotated[
-        int | None, Field(description="Position to insert. None appends at end")
-    ] = None,
-    and_run: Annotated[
-        bool, Field(description="Execute the cell immediately after creation")
-    ] = False,
-    timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 30.0,
-) -> list[ContentItem]:
-    """Create a cell, optionally executing it."""
-    notebook = await _get_notebook()
-    if index is not None:
-        cell = await notebook.cells.insert_at(index, source, cell_type)
-    else:
-        cell = await notebook.cells.create(source, cell_type)
-
-    if and_run and cell_type == "code":
-        return await _execute_cell_internal(cell.id, timeout_secs=timeout_secs)
-
-    return [TextContent(type="text", text=f"Created cell: {cell.id}")]
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def set_cell(
-    cell_id: str,
-    source: Annotated[
-        str | None, Field(description="New source code (None to leave unchanged)")
-    ] = None,
-    cell_type: Annotated[
-        Literal["code", "markdown", "raw"] | None,
-        Field(description="New cell type (None to leave unchanged)"),
-    ] = None,
-    and_run: Annotated[
-        bool, Field(description="Execute the cell after changes (code cells only)")
-    ] = False,
-    timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 30.0,
-) -> ContentItem | list[ContentItem]:
-    """Update a cell's source and/or type. Use replace_match for targeted edits."""
-    notebook = await _get_notebook()
-    try:
-        cell = notebook.cells.get_by_id(cell_id)
-    except KeyError:
-        return TextContent(type="text", text=f'Cell "{cell_id}" not found')
-
-    # Update source if provided
-    if source is not None:
-        await cell.set_source(source)
-
-    # Update cell type if provided
-    if cell_type is not None:
-        await cell.set_type(cell_type)
-
-    # If source was changed, ensure the final presence is cursor-at-end (not focus
-    # from set_cell_type, which would clear the cursor on the frontend).
-    if source is not None:
-        await _send_edit_cursor(cell_id, source, len(source))
-
-    # If nothing was changed, return current cell state
-    if source is None and cell_type is None:
-        return TextContent(type="text", text=f'Cell "{cell_id}" unchanged (no updates specified)')
-
-    if and_run and cell.cell_type == "code":
-        return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
-
-    return TextContent(type="text", text=f'Cell "{cell_id}" updated')
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def set_cells_source_hidden(
-    cell_ids: Annotated[list[str], Field(description="IDs of cells to update")],
-    hidden: Annotated[bool, Field(description="True to hide source, False to show")],
-) -> TextContent:
-    """Hide or show the source (code input) of one or more cells."""
-    notebook = await _get_notebook()
-    not_found: list[str] = []
-    for cell_id in cell_ids:
-        try:
-            cell = notebook.cells.get_by_id(cell_id)
-            await cell.set_source_hidden(hidden)
-        except KeyError:
-            not_found.append(cell_id)
-    updated = len(cell_ids) - len(not_found)
-    msg = f"Set source_hidden={hidden} on {updated} cell(s)"
-    if not_found:
-        msg += f"; not found: {not_found}"
-    return TextContent(type="text", text=msg)
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def set_cells_outputs_hidden(
-    cell_ids: Annotated[list[str], Field(description="IDs of cells to update")],
-    hidden: Annotated[bool, Field(description="True to hide outputs, False to show")],
-) -> TextContent:
-    """Hide or show the outputs of one or more cells."""
-    notebook = await _get_notebook()
-    not_found: list[str] = []
-    for cell_id in cell_ids:
-        try:
-            cell = notebook.cells.get_by_id(cell_id)
-            await cell.set_outputs_hidden(hidden)
-        except KeyError:
-            not_found.append(cell_id)
-    updated = len(cell_ids) - len(not_found)
-    msg = f"Set outputs_hidden={hidden} on {updated} cell(s)"
-    if not_found:
-        msg += f"; not found: {not_found}"
-    return TextContent(type="text", text=msg)
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def add_cell_tags(
-    cell_id: Annotated[str, Field(description="ID of the cell")],
-    tags: Annotated[list[str], Field(description="Tags to add")],
-) -> TextContent:
-    """Add tags to a cell's metadata. Existing tags are preserved."""
-    notebook = await _get_notebook()
-    try:
-        cell = notebook.cells.get_by_id(cell_id)
-    except KeyError:
-        return TextContent(type="text", text=f"Cell {cell_id} not found")
-    existing = cell.tags
-    merged = existing + [t for t in tags if t not in existing]
-    await cell.set_tags(merged)
-    return TextContent(type="text", text=f"Tags for {cell_id}: {merged}")
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def remove_cell_tags(
-    cell_id: Annotated[str, Field(description="ID of the cell")],
-    tags: Annotated[list[str], Field(description="Tags to remove")],
-) -> TextContent:
-    """Remove tags from a cell's metadata."""
-    notebook = await _get_notebook()
-    try:
-        cell = notebook.cells.get_by_id(cell_id)
-    except KeyError:
-        return TextContent(type="text", text=f"Cell {cell_id} not found")
-    existing = cell.tags
-    filtered = [t for t in existing if t not in tags]
-    await cell.set_tags(filtered)
-    return TextContent(type="text", text=f"Tags for {cell_id}: {filtered}")
-
-
-async def _send_edit_cursor(cell_id: str, source: str, offset: int) -> None:
-    """Send cursor presence at a character offset (best-effort, non-blocking)."""
-    if _notebook is None:
-        return
-    from nteract._editing import offset_to_line_col
-
-    try:
-        line, col = offset_to_line_col(source, offset)
-        await _notebook.presence.set_cursor(cell_id, line, col)
-    except Exception:
-        pass  # Presence is best-effort — don't fail the edit
-
-
-async def _send_cell_cursor(cell_id: str, line: int = 0, column: int = 0) -> None:
-    """Send cursor presence on a cell (best-effort, errors silently ignored)."""
-    if _notebook is None:
-        return
-    with contextlib.suppress(Exception):
-        await _notebook.presence.set_cursor(cell_id, line, column)
-
-
-async def _send_cell_focus(cell_id: str) -> None:
-    """Send focus presence on a cell (best-effort, errors silently ignored)."""
-    if _notebook is None:
-        return
-    with contextlib.suppress(Exception):
-        await _notebook.presence.focus(cell_id)
-
-
 def _format_edit_diff(cell_id: str, old_text: str, new_text: str) -> str:
     """Format a unified diff for an edit operation."""
-    # splitlines(keepends=False) + manual newlines ensures consistent output
     old_lines = [line + "\n" for line in old_text.splitlines()]
     new_lines = [line + "\n" for line in new_text.splitlines()]
     diff = difflib.unified_diff(old_lines, new_lines, fromfile="before", tofile="after")
@@ -1088,434 +583,146 @@ def _format_edit_diff(cell_id: str, old_text: str, new_text: str) -> str:
     return f'Edited cell "{cell_id}":\n{diff_text}'
 
 
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def replace_match(
-    cell_id: str,
-    match: Annotated[str, Field(description="Literal text to find (must match exactly once)")],
-    content: Annotated[
-        str, Field(description="Literal replacement text — real newlines, no escapes")
-    ],
-    context_before: Annotated[
-        str, Field(description="Text that must appear before the match")
-    ] = "",
-    context_after: Annotated[str, Field(description="Text that must appear after the match")] = "",
-    and_run: Annotated[bool, Field(description="Execute the cell immediately after edit")] = False,
-    timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 30.0,
-) -> ContentItem | list[ContentItem]:
-    """Replace matched text in a cell. Prefer this for simple, targeted edits.
+# =============================================================================
+# MCP Server
+# =============================================================================
 
-    Use context_before/context_after to disambiguate when match appears multiple times.
-    Fails if 0 or >1 matches (reports count + offsets). Use replace_regex for
-    zero-width insertions or structural patterns.
+
+class NteractServer:
+    """Encapsulates MCP server state and tool registration.
+
+    All mutable state (notebook session, client, peer label) lives here
+    instead of module globals. Tools are registered as closures that close
+    over ``self``, so FastMCP sees clean function signatures.
     """
-    from nteract._editing import PatternError
-    from nteract._editing import replace_match as _replace_match
 
-    notebook = await _get_notebook()
-    try:
+    def __init__(self, *, channel: str | None = None, no_show: bool = False):
+        self.mcp = FastMCP("nteract")
+        self._notebook: runtimed.Notebook | None = None
+        self._client: runtimed.Client | None = None
+        self._client_name: str | None = None
+        self._channel: str | None = channel  # "stable", "nightly", or None
+
+        self._register_tools(no_show=no_show)
+        self._register_resources()
+
+    # ── State helpers ─────────────────────────────────────────────────
+
+    def _get_client(self) -> runtimed.Client:
+        if self._client is None:
+            self._client = runtimed.Client()
+        return self._client
+
+    async def _get_notebook(self) -> runtimed.Notebook:
+        if self._notebook is None:
+            raise RuntimeError("No active notebook session. Call join_notebook first.")
+        return self._notebook
+
+    def _sniff_client_name(self, ctx: Context) -> None:
+        if self._client_name is not None:
+            return
+        try:
+            params = ctx.request_context.session.client_params
+            if params and params.clientInfo:
+                info = params.clientInfo
+                self._client_name = getattr(info, "title", None) or info.name
+        except Exception:
+            pass
+
+    def _peer_label(self) -> str:
+        return self._client_name or "Agent"
+
+    async def _send_edit_cursor(self, cell_id: str, source: str, offset: int) -> None:
+        if self._notebook is None:
+            return
+        from nteract._editing import offset_to_line_col
+
+        try:
+            line, col = offset_to_line_col(source, offset)
+            await self._notebook.presence.set_cursor(cell_id, line, col)
+        except Exception:
+            pass
+
+    async def _send_cell_cursor(self, cell_id: str, line: int = 0, column: int = 0) -> None:
+        if self._notebook is None:
+            return
+        with contextlib.suppress(Exception):
+            await self._notebook.presence.set_cursor(cell_id, line, column)
+
+    async def _send_cell_focus(self, cell_id: str) -> None:
+        if self._notebook is None:
+            return
+        with contextlib.suppress(Exception):
+            await self._notebook.presence.focus(cell_id)
+
+    def _show_app(self, notebook_path: str) -> None:
+        """Launch the desktop app, respecting the channel override."""
+        if self._channel is not None:
+            runtimed.show_notebook_app_for_channel(self._channel, notebook_path)
+        else:
+            runtimed.show_notebook_app(notebook_path)
+
+    async def _execute_cell_internal(
+        self, cell_id: str, timeout_secs: float = 30.0
+    ) -> list[ContentItem]:
+        notebook = await self._get_notebook()
+        await self._send_cell_focus(cell_id)
         cell = notebook.cells.get_by_id(cell_id)
-    except KeyError:
-        return TextContent(type="text", text=f'Cell "{cell_id}" not found')
 
-    source = cell.source
+        execution = await cell.execute()
 
-    try:
-        result = _replace_match(source, match, content, context_before, context_after)
-    except PatternError as e:
-        raise RuntimeError(f"{e} (match_count={e.match_count}, source_length={len(source)})") from e
+        try:
+            await execution.result(timeout_secs=timeout_secs)
+        except asyncio.TimeoutError:
+            pass
+        except Exception as exc:
+            if "timed out" in str(exc).lower():
+                pass
+            else:
+                raise
 
-    # Show cursor at edit location before applying
-    await _send_edit_cursor(cell_id, source, result.span.start)
-
-    await cell.splice(result.span.start, result.span.end - result.span.start, content)
-
-    # Move cursor to end of replacement
-    end_offset = result.span.start + len(content)
-    await _send_edit_cursor(cell_id, result.new_source, end_offset)
-
-    if and_run:
-        return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
-
-    diff = _format_edit_diff(cell_id, result.old_text, content)
-    return TextContent(type="text", text=diff)
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def replace_regex(
-    cell_id: str,
-    pattern: Annotated[
-        str,
-        Field(
-            description="Python regex, must match exactly once. "
-            "re.MULTILINE enabled. Use \\Z for end-of-cell, (?=...) for insertions"
-        ),
-    ],
-    content: Annotated[
-        str, Field(description="Literal replacement text — not re.sub syntax, no backreferences")
-    ],
-    and_run: Annotated[bool, Field(description="Execute the cell immediately after edit")] = False,
-    timeout_secs: Annotated[float, Field(description="Max seconds to wait for execution")] = 30.0,
-) -> ContentItem | list[ContentItem]:
-    """Replace a regex-matched span. Use for anchors, lookarounds, or zero-width insertions.
-
-    Fails if 0 or >1 matches (reports count + offsets for disambiguation).
-    """
-    from nteract._editing import PatternError
-    from nteract._editing import replace_regex as _replace_regex
-
-    notebook = await _get_notebook()
-    try:
-        cell = notebook.cells.get_by_id(cell_id)
-    except KeyError:
-        return TextContent(type="text", text=f'Cell "{cell_id}" not found')
-
-    source = cell.source
-
-    try:
-        result = _replace_regex(source, pattern, content)
-    except PatternError as e:
-        raise RuntimeError(f"{e} (match_count={e.match_count}, source_length={len(source)})") from e
-
-    # Show cursor at edit location before applying
-    await _send_edit_cursor(cell_id, source, result.span.start)
-
-    await cell.splice(result.span.start, result.span.end - result.span.start, content)
-
-    # Move cursor to end of replacement
-    end_offset = result.span.start + len(content)
-    await _send_edit_cursor(cell_id, result.new_source, end_offset)
-
-    if and_run:
-        return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
-
-    diff = _format_edit_diff(cell_id, result.old_text, content)
-    return TextContent(type="text", text=diff)
-
-
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def get_cell(
-    cell_id: str,
-) -> list[ContentItem]:
-    """Get a cell's source and outputs by ID."""
-    notebook = await _get_notebook()
-    await _send_cell_focus(cell_id)
-    try:
-        cell = notebook.cells.get_by_id(cell_id)
-    except KeyError:
-        return [TextContent(type="text", text=f'Cell "{cell_id}" not found')]
-    status = await _get_single_cell_status(notebook, cell_id)
-    return _cell_to_content(cell, status=status)
-
-
-def _output_to_dict(output: runtimed.Output) -> dict[str, Any]:
-    """Convert an output to a dictionary for JSON serialization."""
-    result: dict[str, Any] = {"output_type": output.output_type}
-
-    if output.output_type == "stream":
-        result["name"] = output.name
-        result["text"] = _strip_ansi(output.text) if output.text else ""
-    elif output.output_type == "error":
-        result["ename"] = output.ename or ""
-        result["evalue"] = output.evalue or ""
-        result["traceback"] = output.traceback or []
-    elif output.output_type in ("display_data", "execute_result"):
-        # Include text-based data, skip large binary data
-        result["data"] = {}
-        if output.data:
-            for mime in _TEXT_MIME_PRIORITY:
-                if mime in output.data:
-                    result["data"][mime] = output.data[mime]
-                    break
-        if output.output_type == "execute_result" and output.execution_count is not None:
-            result["execution_count"] = output.execution_count
-
-    return result
-
-
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
-async def get_all_cells(
-    format: Annotated[
-        Literal["summary", "json", "rich"],
-        Field(description="'summary' (default), 'json', or 'rich' for full content"),
-    ] = "summary",
-    start: Annotated[int, Field(description="Starting cell index (0-based)")] = 0,
-    count: Annotated[
-        int | None, Field(description="Number of cells to return (None = all)")
-    ] = None,
-    include_outputs: Annotated[
-        bool, Field(description="Include output previews in summary format")
-    ] = False,
-    preview_chars: Annotated[int, Field(description="Max chars for source preview")] = 60,
-) -> str | list[ContentItem] | list[dict[str, Any]]:
-    """Get all cells. Use summary (default) for discovery, get_cell() for details.
-
-    Args:
-        format: "summary" for compact overview, "json" for structured data,
-            "rich" for full content with images.
-        start: Starting cell index for pagination.
-        count: Number of cells to return (None = all remaining).
-        include_outputs: Include output previews in summary format.
-        preview_chars: Max characters for source/output preview in summary format.
-    """
-    # Validate pagination params
-    if start < 0:
-        raise ValueError(f"start must be >= 0, got {start}")
-    if count is not None and count < 0:
-        raise ValueError(f"count must be >= 0 or None, got {count}")
-    if preview_chars < 1:
-        raise ValueError(f"preview_chars must be >= 1, got {preview_chars}")
-
-    notebook = await _get_notebook()
-    all_cells = list(notebook.cells)
-
-    # Fetch execution queue state to annotate running/queued cells
-    cell_status = await _get_cell_status_map(notebook)
-
-    # Apply pagination
-    end = start + count if count is not None else len(all_cells)
-    cells = all_cells[start:end]
-
-    if format == "json":
-        return [
-            {
-                "cell_id": cell.id,
-                "cell_type": cell.cell_type,
-                "execution_count": cell.execution_count,
-                "source": cell.source,
-                "outputs": [_output_to_dict(o) for o in cell.outputs],
-                "status": cell_status.get(cell.id),
-            }
-            for cell in cells
-        ]
-
-    if format == "rich":
-        items: list[ContentItem] = []
-        for cell in cells:
-            for item in _cell_to_content(cell, status=cell_status.get(cell.id)):
-                # Skip images in bulk view — they blow up response size.
-                # Use get_cell() to inspect individual cells with images.
-                if isinstance(item, ImageContent):
-                    items.append(TextContent(type="text", text=f"[image: {item.mimeType}]"))
-                else:
-                    items.append(item)
+        status = execution.status
+        header = _format_header(cell.id, status=status, execution_count=cell.execution_count)
+        items: list[ContentItem] = [TextContent(type="text", text=header)]
+        items.extend(_outputs_to_content(cell.outputs))
         return items
 
-    # Default summary format - compact one-line-per-cell
-    lines = [
-        _format_cell_summary(
-            start + i,
-            cell,
-            preview_chars,
-            include_outputs,
-            status=cell_status.get(cell.id),
-        )
-        for i, cell in enumerate(cells)
-    ]
-    return "\n".join(lines)
+    def cleanup(self) -> None:
+        """Best-effort cleanup of the active notebook session."""
+        nb = self._notebook
+        self._notebook = None
+        self._client = None
+        if nb is not None:
+            try:
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
 
+                if loop is not None and loop.is_running():
+                    loop.create_task(nb.close())
+                else:
+                    asyncio.run(nb.close())
+            except Exception:
+                pass
 
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def delete_cell(cell_id: str) -> dict[str, Any]:
-    """Delete a cell by ID."""
-    notebook = await _get_notebook()
-    cell = notebook.cells.get_by_id(cell_id)
-    await cell.delete()
-    return {"cell_id": cell_id, "deleted": True}
+    # ── Tool registration ─────────────────────────────────────────────
 
+    def _register_tools(self, *, no_show: bool = False) -> None:  # noqa: C901
+        srv = self
 
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def move_cell(
-    cell_id: str,
-    after_cell_id: Annotated[
-        str | None, Field(description="Move after this cell, or null for start")
-    ] = None,
-) -> dict[str, Any]:
-    """Move a cell to a new position."""
-    notebook = await _get_notebook()
-    cell = notebook.cells.get_by_id(cell_id)
-    after = notebook.cells.get_by_id(after_cell_id) if after_cell_id else None
-    await cell.move_after(after)
-    return {
-        "cell_id": cell_id,
-        "after_cell_id": after_cell_id,
-        "moved": True,
-    }
+        # -- Session management --
 
+        @srv.mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+        async def list_active_notebooks() -> list[dict[str, Any]]:
+            """List all open notebook sessions.
 
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def clear_outputs(cell_id: str) -> dict[str, Any]:
-    """Clear a cell's outputs."""
-    notebook = await _get_notebook()
-    cell = notebook.cells.get_by_id(cell_id)
-    await cell.clear_outputs()
-    return {"cell_id": cell_id, "cleared": True}
-
-
-# =============================================================================
-# Execution Tools
-# =============================================================================
-
-
-async def _execute_cell_internal(
-    cell_id: str,
-    timeout_secs: float = 30.0,
-) -> list[ContentItem]:
-    """Internal execution: queue, wait for outputs, read status from CRDT."""
-    notebook = await _get_notebook()
-    await _send_cell_focus(cell_id)
-    cell = notebook.cells.get_by_id(cell_id)
-
-    execution = await cell.execute()
-
-    # execution.result() uses the Rust collect_outputs path which has a
-    # confirm-sync retry loop — it waits for ExecutionDone scoped by
-    # execution_id, then polls until outputs are materialized in the CRDT.
-    # On timeout it raises — we fall back to reading partial outputs.
-    # Real failures (transport, sync) are re-raised as tool errors.
-    try:
-        await execution.result(timeout_secs=timeout_secs)
-    except asyncio.TimeoutError:
-        pass  # partial results — read whatever is in the CRDT
-    except Exception as exc:
-        if "timed out" in str(exc).lower():
-            pass  # RuntimedError timeout from Rust side
-        else:
-            raise
-
-    # Status comes from the Execution handle (reads RuntimeStateDoc).
-    # No business logic needed here — the handle knows the state.
-    status = execution.status
-
-    header = _format_header(cell.id, status=status, execution_count=cell.execution_count)
-    items: list[ContentItem] = [TextContent(type="text", text=header)]
-    items.extend(_outputs_to_content(cell.outputs))
-    return items
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def execute_cell(
-    cell_id: str,
-    timeout_secs: Annotated[
-        float, Field(description="Max seconds to wait; returns partial results if exceeded")
-    ] = 30.0,
-) -> list[ContentItem]:
-    """Execute a cell. Returns partial results if timeout exceeded."""
-    return await _execute_cell_internal(cell_id, timeout_secs=timeout_secs)
-
-
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
-async def run_all_cells() -> dict[str, Any]:
-    """Queue all code cells for execution. Use get_all_cells() to see results."""
-    notebook = await _get_notebook()
-    count = await notebook.run_all()
-    return {"status": "queued", "count": count}
-
-
-# =============================================================================
-# Resources
-# =============================================================================
-
-
-@mcp.resource("notebook://cells")
-async def resource_cells() -> str:
-    """Get all cells in the current notebook as a compact summary."""
-    if _notebook is None:
-        return "Error: No active notebook"
-
-    try:
-        cell_status = await _get_cell_status_map(_notebook)
-        lines = [
-            _format_cell_summary(i, cell, status=cell_status.get(cell.id))
-            for i, cell in enumerate(_notebook.cells)
-        ]
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error: {e}"
-
-
-@mcp.resource("notebook://cell/{cell_id}")
-async def resource_cell(cell_id: str) -> str:
-    """Get a specific cell's source and outputs."""
-    if _notebook is None:
-        return "Error: No active notebook"
-
-    try:
-        await _send_cell_focus(cell_id)
-        cell = _notebook.cells.get_by_id(cell_id)
-        status = await _get_single_cell_status(_notebook, cell_id)
-        return _format_cell(cell, status=status)
-    except Exception as e:
-        return f"Error: {e}"
-
-
-@mcp.resource("notebook://cells/by-index/{index}")
-async def resource_cell_by_index(index: int) -> str:
-    """Get the cell at the specified position (0-based index)."""
-    if _notebook is None:
-        return "Error: No active notebook"
-
-    try:
-        num_cells = len(_notebook.cells)
-        if index < 0 or index >= num_cells:
-            return f"Error: Index {index} out of range (notebook has {num_cells} cells)"
-        cell = _notebook.cells.get_by_index(index)
-        await _send_cell_focus(cell.id)
-        status = await _get_single_cell_status(_notebook, cell.id)
-        return _format_cell(cell, status=status)
-    except Exception as e:
-        return f"Error: {e}"
-
-
-@mcp.resource("notebook://cell/{cell_id}/outputs")
-async def resource_cell_outputs(cell_id: str) -> str:
-    """Get a specific cell's outputs only (text format)."""
-    if _notebook is None:
-        return "Error: No active notebook"
-
-    try:
-        await _send_cell_focus(cell_id)
-        cell = _notebook.cells.get_by_id(cell_id)
-        output_text = _format_outputs_text(cell.outputs)
-        if not output_text:
-            return "(no outputs)"
-        return output_text
-    except Exception as e:
-        return f"Error: {e}"
-
-
-@mcp.resource("notebook://status")
-async def resource_status() -> str:
-    """Get the current notebook and runtime status as JSON."""
-    if _notebook is None:
-        return json.dumps(
-            {
-                "connected": False,
-                "kernel_started": False,
-                "env_source": None,
-            }
-        )
-
-    try:
-        return json.dumps(
-            {
-                "notebook_id": _notebook.notebook_id,
-                "connected": await _notebook.is_connected(),
-                "runtime_status": _notebook.runtime.kernel.status,
-                "env_source": _notebook.runtime.kernel.env_source,
-            }
-        )
-    except Exception as e:
-        return json.dumps({"error": str(e)})
-
-
-@mcp.resource("notebook://rooms")
-async def resource_rooms() -> str:
-    """Get all active notebook rooms as JSON."""
-    try:
-        client = _get_client()
-        notebooks = await client.list_active_notebooks()
-        return json.dumps(
-            [
+            Returns notebooks currently open by users or other agents.
+            Use join_notebook(notebook_id) to connect to one.
+            """
+            client = srv._get_client()
+            notebooks = await client.list_active_notebooks()
+            return [
                 {
                     "notebook_id": info.notebook_id,
                     "active_peers": info.active_peers,
@@ -1526,46 +733,762 @@ async def resource_rooms() -> str:
                 }
                 for info in notebooks
             ]
-        )
-    except Exception as e:
-        return json.dumps({"error": str(e)})
+
+        if not no_show:
+
+            @srv.mcp.tool()
+            async def show_notebook(
+                notebook_id: Annotated[
+                    str | None,
+                    Field(
+                        description="Notebook ID to show. Defaults to current session's notebook.",
+                    ),
+                ] = None,
+            ) -> dict[str, Any]:
+                """Open the notebook in the nteract desktop app.
+
+                The notebook must be currently running in the daemon. If no notebook_id
+                is provided, opens the notebook from the current session.
+                """
+                target = notebook_id
+                if target is None:
+                    if srv._notebook is not None:
+                        target = srv._notebook.notebook_id
+                    else:
+                        raise ValueError(
+                            "No notebook_id provided and no active session. "
+                            "Use list_active_notebooks() to find a notebook_id, "
+                            "or connect to one first."
+                        )
+
+                client = srv._get_client()
+                notebooks = await client.list_active_notebooks()
+                notebook_ids = {info.notebook_id for info in notebooks}
+                if target not in notebook_ids:
+                    raise ValueError(
+                        f"Notebook '{target}' is not currently running. "
+                        f"Use list_active_notebooks() to see active notebooks."
+                    )
+
+                if not os.path.isabs(target):
+                    raise ValueError(
+                        f"Notebook '{target}' is an untitled notebook (not saved to disk). "
+                        f"Use save_notebook(path) first, then call show_notebook()."
+                    )
+
+                srv._show_app(target)
+                return {"notebook_id": target, "opened": True}
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
+        async def join_notebook(
+            notebook_id: str,
+            ctx: Context | None = None,
+        ) -> dict[str, Any]:
+            """Join an existing notebook session by ID.
+
+            Use list_active_notebooks() to see available sessions. To open a file
+            from disk, use open_notebook(path). To create a new notebook, use
+            create_notebook().
+            """
+            if ctx:
+                srv._sniff_client_name(ctx)
+
+            if srv._notebook is not None:
+                with contextlib.suppress(Exception):
+                    await srv._notebook.close()
+
+            client = srv._get_client()
+            srv._notebook = await client.join_notebook(notebook_id, peer_label=srv._peer_label())
+
+            cell_status = await _get_cell_status_map(srv._notebook)
+            lines = [
+                _format_cell_summary(
+                    i,
+                    cell,
+                    preview_chars=60,
+                    include_outputs=False,
+                    status=cell_status.get(cell.id),
+                )
+                for i, cell in enumerate(srv._notebook.cells)
+            ]
+
+            return {
+                "notebook_id": srv._notebook.notebook_id,
+                "connected": True,
+                "cells": "\n".join(lines),
+            }
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
+        async def open_notebook(path: str, ctx: Context | None = None) -> dict[str, Any]:
+            """Open an existing .ipynb file. The kernel starts automatically.
+
+            Use create_notebook() for new notebooks.
+            """
+            if ctx:
+                srv._sniff_client_name(ctx)
+
+            if srv._notebook is not None:
+                with contextlib.suppress(Exception):
+                    await srv._notebook.close()
+
+            client = srv._get_client()
+            srv._notebook = await client.open_notebook(path, peer_label=srv._peer_label())
+            return {
+                "notebook_id": srv._notebook.notebook_id,
+                "path": path,
+            }
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
+        async def create_notebook(
+            runtime: Literal["python", "deno"] = "python",
+            working_dir: Annotated[
+                str,
+                Field(
+                    description="Working directory for the kernel and"
+                    " environment detection (e.g. pyproject.toml)."
+                    f" Defaults to {os.getcwd()}"
+                ),
+            ] = os.getcwd(),
+            dependencies: Annotated[
+                list[str] | None,
+                Field(
+                    description="Python packages to pre-install"
+                    " (e.g. ['pandas', 'requests'])."
+                    " Set before kernel launch so the first start includes them."
+                ),
+            ] = None,
+            ctx: Context | None = None,
+        ) -> dict[str, Any]:
+            """Create a new notebook with optional pre-installed dependencies.
+
+            The kernel starts automatically. If dependencies are provided, they are
+            added to notebook metadata before the kernel launches, so the environment
+            is prepared on first start (no restart needed).
+
+            Call save_notebook(path) to persist to disk.
+            """
+            if ctx:
+                srv._sniff_client_name(ctx)
+
+            if srv._notebook is not None:
+                with contextlib.suppress(Exception):
+                    await srv._notebook.close()
+
+            client = srv._get_client()
+            srv._notebook = await client.create_notebook(
+                runtime=runtime, working_dir=working_dir, peer_label=srv._peer_label()
+            )
+
+            if dependencies and runtime == "python":
+                for dep in dependencies:
+                    await srv._notebook.add_dependency(dep)
+                with contextlib.suppress(Exception):
+                    await srv._notebook.restart()
+
+            return {
+                "notebook_id": srv._notebook.notebook_id,
+                "runtime": runtime,
+                "dependencies": dependencies or [],
+            }
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
+        async def save_notebook(path: str | None = None) -> dict[str, Any]:
+            """Save notebook to disk.
+
+            The daemon automatically re-keys ephemeral (UUID-based) rooms to the
+            saved file path, so no disconnect/reconnect is needed.
+            """
+            notebook = await srv._get_notebook()
+            old_notebook_id = notebook.notebook_id
+
+            try:
+                if path is not None:
+                    saved_path = await notebook.save_as(path)
+                else:
+                    saved_path = await notebook.save()
+            except Exception as e:
+                error_msg = str(e)
+                is_write_error = "Read-only" in error_msg or "Failed to write" in error_msg
+                if is_write_error and path is None:
+                    raise RuntimeError(
+                        "No path specified. For notebooks created with create_notebook(), "
+                        "you must provide a path"
+                        " (e.g., save_notebook('/path/to/file.ipynb'))"
+                    ) from e
+                raise
+
+            new_notebook_id = notebook.notebook_id
+            result: dict[str, Any] = {"path": saved_path, "notebook_id": new_notebook_id}
+            if old_notebook_id != new_notebook_id:
+                result["previous_notebook_id"] = old_notebook_id
+            return result
+
+        # -- Kernel management --
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        async def interrupt_kernel() -> dict[str, Any]:
+            """Interrupt the currently executing cell."""
+            notebook = await srv._get_notebook()
+            await notebook.interrupt()
+            return {"interrupted": True}
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        async def restart_kernel(ctx: Context | None = None) -> dict[str, Any]:
+            """Restart kernel, clearing all state. Use after dependency changes.
+
+            Reports environment preparation progress (package downloads, installs)
+            via MCP log notifications while waiting. Times out after 120s.
+            """
+            notebook = await srv._get_notebook()
+            progress_messages: list[str] = await notebook.restart()
+
+            if ctx and progress_messages:
+                for msg in progress_messages:
+                    with contextlib.suppress(Exception):
+                        await ctx.info(msg)
+
+            return {
+                "restarted": True,
+                "env_source": notebook.runtime.kernel.env_source,
+                "progress": progress_messages,
+            }
+
+        # -- Dependency management --
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        async def add_dependency(package: str) -> dict[str, Any]:
+            """Add a package dependency (e.g. "pandas>=2.0"). Call sync_environment() to install."""
+            notebook = await srv._get_notebook()
+            deps = await notebook.add_dependency(package)
+            return {"dependencies": deps, "added": package}
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        async def remove_dependency(package: str) -> dict[str, Any]:
+            """Remove a package dependency. Requires restart_kernel() to take effect."""
+            notebook = await srv._get_notebook()
+            deps = await notebook.remove_dependency(package)
+            return {"dependencies": deps, "removed": package}
+
+        @srv.mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+        async def get_dependencies() -> dict[str, Any]:
+            """Get the notebook's current package dependencies."""
+            notebook = await srv._get_notebook()
+            deps = await notebook.get_dependencies()
+            return {"dependencies": deps}
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        async def sync_environment() -> dict[str, Any]:
+            """Hot-install new dependencies without restarting.
+
+            Use restart_kernel() if this fails.
+            """
+            notebook = await srv._get_notebook()
+            result = await notebook.sync_environment()
+            return {
+                "success": result.success,
+                "synced_packages": result.synced_packages,
+                "error": result.error,
+                "needs_restart": result.needs_restart,
+            }
+
+        # -- Cell operations --
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
+        async def create_cell(
+            source: str = "",
+            cell_type: Literal["code", "markdown", "raw"] = "code",
+            index: Annotated[
+                int | None, Field(description="Position to insert. None appends at end")
+            ] = None,
+            and_run: Annotated[
+                bool, Field(description="Execute the cell immediately after creation")
+            ] = False,
+            timeout_secs: Annotated[
+                float, Field(description="Max seconds to wait for execution")
+            ] = 30.0,
+        ) -> list[ContentItem]:
+            """Create a cell, optionally executing it."""
+            notebook = await srv._get_notebook()
+            if index is not None:
+                cell = await notebook.cells.insert_at(index, source, cell_type)
+            else:
+                cell = await notebook.cells.create(source, cell_type)
+
+            if and_run and cell_type == "code":
+                return await srv._execute_cell_internal(cell.id, timeout_secs=timeout_secs)
+
+            return [TextContent(type="text", text=f"Created cell: {cell.id}")]
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        async def set_cell(
+            cell_id: str,
+            source: Annotated[
+                str | None, Field(description="New source code (None to leave unchanged)")
+            ] = None,
+            cell_type: Annotated[
+                Literal["code", "markdown", "raw"] | None,
+                Field(description="New cell type (None to leave unchanged)"),
+            ] = None,
+            and_run: Annotated[
+                bool, Field(description="Execute the cell after changes (code cells only)")
+            ] = False,
+            timeout_secs: Annotated[
+                float, Field(description="Max seconds to wait for execution")
+            ] = 30.0,
+        ) -> ContentItem | list[ContentItem]:
+            """Update a cell's source and/or type. Use replace_match for targeted edits."""
+            notebook = await srv._get_notebook()
+            try:
+                cell = notebook.cells.get_by_id(cell_id)
+            except KeyError:
+                return TextContent(type="text", text=f'Cell "{cell_id}" not found')
+
+            if source is not None:
+                await cell.set_source(source)
+            if cell_type is not None:
+                await cell.set_type(cell_type)
+            if source is not None:
+                await srv._send_edit_cursor(cell_id, source, len(source))
+
+            if source is None and cell_type is None:
+                return TextContent(
+                    type="text", text=f'Cell "{cell_id}" unchanged (no updates specified)'
+                )
+
+            if and_run and cell.cell_type == "code":
+                return await srv._execute_cell_internal(cell_id, timeout_secs=timeout_secs)
+
+            return TextContent(type="text", text=f'Cell "{cell_id}" updated')
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        async def set_cells_source_hidden(
+            cell_ids: Annotated[list[str], Field(description="IDs of cells to update")],
+            hidden: Annotated[bool, Field(description="True to hide source, False to show")],
+        ) -> TextContent:
+            """Hide or show the source (code input) of one or more cells."""
+            notebook = await srv._get_notebook()
+            not_found: list[str] = []
+            for cell_id in cell_ids:
+                try:
+                    cell = notebook.cells.get_by_id(cell_id)
+                    await cell.set_source_hidden(hidden)
+                except KeyError:
+                    not_found.append(cell_id)
+            updated = len(cell_ids) - len(not_found)
+            msg = f"Set source_hidden={hidden} on {updated} cell(s)"
+            if not_found:
+                msg += f"; not found: {not_found}"
+            return TextContent(type="text", text=msg)
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        async def set_cells_outputs_hidden(
+            cell_ids: Annotated[list[str], Field(description="IDs of cells to update")],
+            hidden: Annotated[bool, Field(description="True to hide outputs, False to show")],
+        ) -> TextContent:
+            """Hide or show the outputs of one or more cells."""
+            notebook = await srv._get_notebook()
+            not_found: list[str] = []
+            for cell_id in cell_ids:
+                try:
+                    cell = notebook.cells.get_by_id(cell_id)
+                    await cell.set_outputs_hidden(hidden)
+                except KeyError:
+                    not_found.append(cell_id)
+            updated = len(cell_ids) - len(not_found)
+            msg = f"Set outputs_hidden={hidden} on {updated} cell(s)"
+            if not_found:
+                msg += f"; not found: {not_found}"
+            return TextContent(type="text", text=msg)
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        async def add_cell_tags(
+            cell_id: Annotated[str, Field(description="ID of the cell")],
+            tags: Annotated[list[str], Field(description="Tags to add")],
+        ) -> TextContent:
+            """Add tags to a cell's metadata. Existing tags are preserved."""
+            notebook = await srv._get_notebook()
+            try:
+                cell = notebook.cells.get_by_id(cell_id)
+            except KeyError:
+                return TextContent(type="text", text=f"Cell {cell_id} not found")
+            existing = cell.tags
+            merged = existing + [t for t in tags if t not in existing]
+            await cell.set_tags(merged)
+            return TextContent(type="text", text=f"Tags for {cell_id}: {merged}")
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        async def remove_cell_tags(
+            cell_id: Annotated[str, Field(description="ID of the cell")],
+            tags: Annotated[list[str], Field(description="Tags to remove")],
+        ) -> TextContent:
+            """Remove tags from a cell's metadata."""
+            notebook = await srv._get_notebook()
+            try:
+                cell = notebook.cells.get_by_id(cell_id)
+            except KeyError:
+                return TextContent(type="text", text=f"Cell {cell_id} not found")
+            existing = cell.tags
+            filtered = [t for t in existing if t not in tags]
+            await cell.set_tags(filtered)
+            return TextContent(type="text", text=f"Tags for {cell_id}: {filtered}")
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        async def replace_match(
+            cell_id: str,
+            match: Annotated[
+                str, Field(description="Literal text to find (must match exactly once)")
+            ],
+            content: Annotated[
+                str, Field(description="Literal replacement text — real newlines, no escapes")
+            ],
+            context_before: Annotated[
+                str, Field(description="Text that must appear before the match")
+            ] = "",
+            context_after: Annotated[
+                str, Field(description="Text that must appear after the match")
+            ] = "",
+            and_run: Annotated[
+                bool, Field(description="Execute the cell immediately after edit")
+            ] = False,
+            timeout_secs: Annotated[
+                float, Field(description="Max seconds to wait for execution")
+            ] = 30.0,
+        ) -> ContentItem | list[ContentItem]:
+            """Replace matched text in a cell. Prefer this for simple, targeted edits.
+
+            Use context_before/context_after to disambiguate when match appears
+            multiple times. Fails if 0 or >1 matches (reports count + offsets).
+            Use replace_regex for zero-width insertions or structural patterns.
+            """
+            from nteract._editing import PatternError
+            from nteract._editing import replace_match as _replace_match
+
+            notebook = await srv._get_notebook()
+            try:
+                cell = notebook.cells.get_by_id(cell_id)
+            except KeyError:
+                return TextContent(type="text", text=f'Cell "{cell_id}" not found')
+
+            source = cell.source
+            try:
+                result = _replace_match(source, match, content, context_before, context_after)
+            except PatternError as e:
+                raise RuntimeError(
+                    f"{e} (match_count={e.match_count}, source_length={len(source)})"
+                ) from e
+
+            await srv._send_edit_cursor(cell_id, source, result.span.start)
+            await cell.splice(result.span.start, result.span.end - result.span.start, content)
+            end_offset = result.span.start + len(content)
+            await srv._send_edit_cursor(cell_id, result.new_source, end_offset)
+
+            if and_run:
+                return await srv._execute_cell_internal(cell_id, timeout_secs=timeout_secs)
+
+            diff = _format_edit_diff(cell_id, result.old_text, content)
+            return TextContent(type="text", text=diff)
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        async def replace_regex(
+            cell_id: str,
+            pattern: Annotated[
+                str,
+                Field(
+                    description="Python regex, must match exactly once. "
+                    "re.MULTILINE enabled. Use \\Z for end-of-cell, (?=...) for insertions"
+                ),
+            ],
+            content: Annotated[
+                str,
+                Field(
+                    description="Literal replacement text — not re.sub syntax, no backreferences"
+                ),
+            ],
+            and_run: Annotated[
+                bool, Field(description="Execute the cell immediately after edit")
+            ] = False,
+            timeout_secs: Annotated[
+                float, Field(description="Max seconds to wait for execution")
+            ] = 30.0,
+        ) -> ContentItem | list[ContentItem]:
+            """Replace a regex-matched span. Use for anchors, lookarounds, or
+            zero-width insertions.
+
+            Fails if 0 or >1 matches (reports count + offsets for disambiguation).
+            """
+            from nteract._editing import PatternError
+            from nteract._editing import replace_regex as _replace_regex
+
+            notebook = await srv._get_notebook()
+            try:
+                cell = notebook.cells.get_by_id(cell_id)
+            except KeyError:
+                return TextContent(type="text", text=f'Cell "{cell_id}" not found')
+
+            source = cell.source
+            try:
+                result = _replace_regex(source, pattern, content)
+            except PatternError as e:
+                raise RuntimeError(
+                    f"{e} (match_count={e.match_count}, source_length={len(source)})"
+                ) from e
+
+            await srv._send_edit_cursor(cell_id, source, result.span.start)
+            await cell.splice(result.span.start, result.span.end - result.span.start, content)
+            end_offset = result.span.start + len(content)
+            await srv._send_edit_cursor(cell_id, result.new_source, end_offset)
+
+            if and_run:
+                return await srv._execute_cell_internal(cell_id, timeout_secs=timeout_secs)
+
+            diff = _format_edit_diff(cell_id, result.old_text, content)
+            return TextContent(type="text", text=diff)
+
+        # -- Cell retrieval --
+
+        @srv.mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+        async def get_cell(cell_id: str) -> list[ContentItem]:
+            """Get a cell's source and outputs by ID."""
+            notebook = await srv._get_notebook()
+            await srv._send_cell_focus(cell_id)
+            try:
+                cell = notebook.cells.get_by_id(cell_id)
+            except KeyError:
+                return [TextContent(type="text", text=f'Cell "{cell_id}" not found')]
+            status = await _get_single_cell_status(notebook, cell_id)
+            return _cell_to_content(cell, status=status)
+
+        @srv.mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+        async def get_all_cells(
+            format: Annotated[
+                Literal["summary", "json", "rich"],
+                Field(description="'summary' (default), 'json', or 'rich' for full content"),
+            ] = "summary",
+            start: Annotated[int, Field(description="Starting cell index (0-based)")] = 0,
+            count: Annotated[
+                int | None, Field(description="Number of cells to return (None = all)")
+            ] = None,
+            include_outputs: Annotated[
+                bool, Field(description="Include output previews in summary format")
+            ] = False,
+            preview_chars: Annotated[int, Field(description="Max chars for source preview")] = 60,
+        ) -> str | list[ContentItem] | list[dict[str, Any]]:
+            """Get all cells. Use summary (default) for discovery, get_cell() for details.
+
+            Args:
+                format: "summary" for compact overview, "json" for structured data,
+                    "rich" for full content with images.
+                start: Starting cell index for pagination.
+                count: Number of cells to return (None = all remaining).
+                include_outputs: Include output previews in summary format.
+                preview_chars: Max characters for source/output preview in summary format.
+            """
+            if start < 0:
+                raise ValueError(f"start must be >= 0, got {start}")
+            if count is not None and count < 0:
+                raise ValueError(f"count must be >= 0 or None, got {count}")
+            if preview_chars < 1:
+                raise ValueError(f"preview_chars must be >= 1, got {preview_chars}")
+
+            notebook = await srv._get_notebook()
+            all_cells = list(notebook.cells)
+            cell_status = await _get_cell_status_map(notebook)
+
+            end = start + count if count is not None else len(all_cells)
+            cells = all_cells[start:end]
+
+            if format == "json":
+                return [
+                    {
+                        "cell_id": cell.id,
+                        "cell_type": cell.cell_type,
+                        "execution_count": cell.execution_count,
+                        "source": cell.source,
+                        "outputs": [_output_to_dict(o) for o in cell.outputs],
+                        "status": cell_status.get(cell.id),
+                    }
+                    for cell in cells
+                ]
+
+            if format == "rich":
+                items: list[ContentItem] = []
+                for cell in cells:
+                    for item in _cell_to_content(cell, status=cell_status.get(cell.id)):
+                        if isinstance(item, ImageContent):
+                            items.append(TextContent(type="text", text=f"[image: {item.mimeType}]"))
+                        else:
+                            items.append(item)
+                return items
+
+            lines = [
+                _format_cell_summary(
+                    start + i,
+                    cell,
+                    preview_chars,
+                    include_outputs,
+                    status=cell_status.get(cell.id),
+                )
+                for i, cell in enumerate(cells)
+            ]
+            return "\n".join(lines)
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        async def delete_cell(cell_id: str) -> dict[str, Any]:
+            """Delete a cell by ID."""
+            notebook = await srv._get_notebook()
+            cell = notebook.cells.get_by_id(cell_id)
+            await cell.delete()
+            return {"cell_id": cell_id, "deleted": True}
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        async def move_cell(
+            cell_id: str,
+            after_cell_id: Annotated[
+                str | None, Field(description="Move after this cell, or null for start")
+            ] = None,
+        ) -> dict[str, Any]:
+            """Move a cell to a new position."""
+            notebook = await srv._get_notebook()
+            cell = notebook.cells.get_by_id(cell_id)
+            after = notebook.cells.get_by_id(after_cell_id) if after_cell_id else None
+            await cell.move_after(after)
+            return {"cell_id": cell_id, "after_cell_id": after_cell_id, "moved": True}
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        async def clear_outputs(cell_id: str) -> dict[str, Any]:
+            """Clear a cell's outputs."""
+            notebook = await srv._get_notebook()
+            cell = notebook.cells.get_by_id(cell_id)
+            await cell.clear_outputs()
+            return {"cell_id": cell_id, "cleared": True}
+
+        # -- Execution --
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        async def execute_cell(
+            cell_id: str,
+            timeout_secs: Annotated[
+                float,
+                Field(description="Max seconds to wait; returns partial results if exceeded"),
+            ] = 30.0,
+        ) -> list[ContentItem]:
+            """Execute a cell. Returns partial results if timeout exceeded."""
+            return await srv._execute_cell_internal(cell_id, timeout_secs=timeout_secs)
+
+        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        async def run_all_cells() -> dict[str, Any]:
+            """Queue all code cells for execution. Use get_all_cells() to see results."""
+            notebook = await srv._get_notebook()
+            count = await notebook.run_all()
+            return {"status": "queued", "count": count}
+
+    # ── Resource registration ─────────────────────────────────────────
+
+    def _register_resources(self) -> None:
+        srv = self
+
+        @srv.mcp.resource("notebook://cells")
+        async def resource_cells() -> str:
+            """Get all cells in the current notebook as a compact summary."""
+            if srv._notebook is None:
+                return "Error: No active notebook"
+            try:
+                cell_status = await _get_cell_status_map(srv._notebook)
+                lines = [
+                    _format_cell_summary(i, cell, status=cell_status.get(cell.id))
+                    for i, cell in enumerate(srv._notebook.cells)
+                ]
+                return "\n".join(lines)
+            except Exception as e:
+                return f"Error: {e}"
+
+        @srv.mcp.resource("notebook://cell/{cell_id}")
+        async def resource_cell(cell_id: str) -> str:
+            """Get a specific cell's source and outputs."""
+            if srv._notebook is None:
+                return "Error: No active notebook"
+            try:
+                await srv._send_cell_focus(cell_id)
+                cell = srv._notebook.cells.get_by_id(cell_id)
+                status = await _get_single_cell_status(srv._notebook, cell_id)
+                return _format_cell(cell, status=status)
+            except Exception as e:
+                return f"Error: {e}"
+
+        @srv.mcp.resource("notebook://cells/by-index/{index}")
+        async def resource_cell_by_index(index: int) -> str:
+            """Get the cell at the specified position (0-based index)."""
+            if srv._notebook is None:
+                return "Error: No active notebook"
+            try:
+                num_cells = len(srv._notebook.cells)
+                if index < 0 or index >= num_cells:
+                    return f"Error: Index {index} out of range (notebook has {num_cells} cells)"
+                cell = srv._notebook.cells.get_by_index(index)
+                await srv._send_cell_focus(cell.id)
+                status = await _get_single_cell_status(srv._notebook, cell.id)
+                return _format_cell(cell, status=status)
+            except Exception as e:
+                return f"Error: {e}"
+
+        @srv.mcp.resource("notebook://cell/{cell_id}/outputs")
+        async def resource_cell_outputs(cell_id: str) -> str:
+            """Get a specific cell's outputs only (text format)."""
+            if srv._notebook is None:
+                return "Error: No active notebook"
+            try:
+                await srv._send_cell_focus(cell_id)
+                cell = srv._notebook.cells.get_by_id(cell_id)
+                output_text = _format_outputs_text(cell.outputs)
+                if not output_text:
+                    return "(no outputs)"
+                return output_text
+            except Exception as e:
+                return f"Error: {e}"
+
+        @srv.mcp.resource("notebook://status")
+        async def resource_status() -> str:
+            """Get the current notebook and runtime status as JSON."""
+            if srv._notebook is None:
+                return json.dumps({"connected": False, "kernel_started": False, "env_source": None})
+            try:
+                return json.dumps(
+                    {
+                        "notebook_id": srv._notebook.notebook_id,
+                        "connected": await srv._notebook.is_connected(),
+                        "runtime_status": srv._notebook.runtime.kernel.status,
+                        "env_source": srv._notebook.runtime.kernel.env_source,
+                    }
+                )
+            except Exception as e:
+                return json.dumps({"error": str(e)})
+
+        @srv.mcp.resource("notebook://rooms")
+        async def resource_rooms() -> str:
+            """Get all active notebook rooms as JSON."""
+            try:
+                client = srv._get_client()
+                notebooks = await client.list_active_notebooks()
+                return json.dumps(
+                    [
+                        {
+                            "notebook_id": info.notebook_id,
+                            "active_peers": info.active_peers,
+                            "has_runtime": info.has_runtime,
+                            "runtime_type": info.runtime_type,
+                            "status": info.status,
+                            "is_draining": info.is_draining,
+                        }
+                        for info in notebooks
+                    ]
+                )
+            except Exception as e:
+                return json.dumps({"error": str(e)})
 
 
 # =============================================================================
 # Entry Point
 # =============================================================================
-
-
-def _cleanup() -> None:
-    """Best-effort cleanup of the active notebook session on exit.
-
-    Drops references to the notebook and client so that ``__del__`` on the
-    underlying session objects can close the daemon connection.  We also
-    attempt an explicit async ``close()`` when possible.
-    """
-    global _notebook, _client
-    nb = _notebook
-    _notebook = None
-    _client = None
-    if nb is not None:
-        try:
-            import asyncio
-
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-
-            if loop is not None and loop.is_running():
-                # We're inside a running event loop (e.g. atexit during async
-                # shutdown).  Schedule the close but don't await — the __del__
-                # safety net will handle it if this doesn't complete.
-                loop.create_task(nb.close())
-            else:
-                # No running loop — create one for the cleanup call.
-                asyncio.run(nb.close())
-        except Exception:
-            pass
 
 
 def main():
@@ -1579,10 +1502,16 @@ def main():
         action="store_true",
         help="Print version and exit.",
     )
-    parser.add_argument(
+    channel_group = parser.add_mutually_exclusive_group()
+    channel_group.add_argument(
         "--nightly",
         action="store_true",
-        help="Connect to the nteract nightly daemon instead of stable.",
+        help="Connect to the nteract nightly daemon and open nightly app.",
+    )
+    channel_group.add_argument(
+        "--stable",
+        action="store_true",
+        help="Connect to the nteract stable daemon and open stable app.",
     )
     parser.add_argument(
         "--no-show",
@@ -1597,11 +1526,16 @@ def main():
         print(f"nteract {version('nteract')}", file=sys.stderr)
         raise SystemExit(0)
 
-    if args.nightly and not os.environ.get("RUNTIMED_SOCKET_PATH"):
-        os.environ["RUNTIMED_SOCKET_PATH"] = runtimed.socket_path_for_channel("nightly")
+    channel: str | None = None
+    if args.nightly:
+        channel = "nightly"
+    elif args.stable:
+        channel = "stable"
 
-    if not args.no_show:
-        mcp.tool()(_show_notebook_impl)
+    if channel is not None and not os.environ.get("RUNTIMED_SOCKET_PATH"):
+        os.environ["RUNTIMED_SOCKET_PATH"] = runtimed.socket_path_for_channel(channel)
+
+    server = NteractServer(channel=channel, no_show=args.no_show)
 
     logging.basicConfig(
         level=logging.INFO,
@@ -1610,13 +1544,13 @@ def main():
     )
     import atexit
 
-    atexit.register(_cleanup)
+    atexit.register(server.cleanup)
     try:
-        mcp.run(transport="stdio")
+        server.mcp.run(transport="stdio")
     except KeyboardInterrupt:
         sys.exit(130)
     finally:
-        _cleanup()
+        server.cleanup()
 
 
 if __name__ == "__main__":

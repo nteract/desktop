@@ -43,7 +43,7 @@ fn desktop_product_name_for(channel: BuildChannel) -> &'static str {
     }
 }
 
-fn desktop_display_name_for(channel: BuildChannel) -> &'static str {
+pub fn desktop_display_name_for(channel: BuildChannel) -> &'static str {
     match channel {
         BuildChannel::Stable => "nteract",
         BuildChannel::Nightly => "nteract Nightly",
@@ -168,12 +168,12 @@ pub fn daemon_unavailable_guidance() -> String {
 // Desktop App Launching
 // ============================================================================
 
-/// App names to try when launching the desktop notebook app.
+/// App names to try when launching the desktop notebook app for a given channel.
 ///
 /// Returns candidates in priority order. On nightly, tries nightly-specific
 /// names first, falling back to stable. On stable, only tries "nteract".
-pub fn desktop_app_launch_candidates() -> &'static [&'static str] {
-    match build_channel() {
+pub fn desktop_app_launch_candidates_for(channel: BuildChannel) -> &'static [&'static str] {
+    match channel {
         BuildChannel::Stable => &["nteract"],
         BuildChannel::Nightly => &[
             "nteract Nightly",
@@ -184,19 +184,30 @@ pub fn desktop_app_launch_candidates() -> &'static [&'static str] {
     }
 }
 
-/// Launch the desktop notebook app, optionally opening a specific notebook.
+/// App names to try when launching the desktop notebook app.
+pub fn desktop_app_launch_candidates() -> &'static [&'static str] {
+    desktop_app_launch_candidates_for(build_channel())
+}
+
+/// Launch the desktop notebook app for a specific channel.
 ///
-/// In dev mode, uses the local bundled binary at `{workspace}/target/debug/notebook`.
-/// Requires `cargo xtask build` first (checks for `.notebook-bundled` marker).
-/// This ensures the app connects to the worktree daemon, not the system daemon.
-///
-/// In production, tries installed app candidates via platform-specific launch
-/// (macOS: `open -a`, Linux/Windows: direct exec).
-pub fn open_notebook_app(path: Option<&Path>, extra_args: &[&str]) -> Result<(), String> {
+/// In dev mode, uses the local bundled binary (channel is ignored — the local
+/// binary is always used). In production, tries installed app candidates for
+/// the given channel via platform-specific launch.
+pub fn open_notebook_app_for_channel(
+    channel: BuildChannel,
+    path: Option<&Path>,
+    extra_args: &[&str],
+) -> Result<(), String> {
     if is_dev_mode() {
         return open_notebook_dev(path, extra_args);
     }
-    open_notebook_installed(path, extra_args)
+    open_notebook_installed_for(channel, path, extra_args)
+}
+
+/// Launch the desktop notebook app using the compile-time channel.
+pub fn open_notebook_app(path: Option<&Path>, extra_args: &[&str]) -> Result<(), String> {
+    open_notebook_app_for_channel(build_channel(), path, extra_args)
 }
 
 fn open_notebook_dev(path: Option<&Path>, extra_args: &[&str]) -> Result<(), String> {
@@ -250,10 +261,14 @@ fn macos_open_args(path: Option<&Path>, extra_args: &[&str]) -> Vec<OsString> {
     args
 }
 
-fn open_notebook_installed(path: Option<&Path>, extra_args: &[&str]) -> Result<(), String> {
+fn open_notebook_installed_for(
+    channel: BuildChannel,
+    path: Option<&Path>,
+    extra_args: &[&str],
+) -> Result<(), String> {
     let mut last_error = None;
 
-    for app_name in desktop_app_launch_candidates() {
+    for app_name in desktop_app_launch_candidates_for(channel) {
         #[cfg(target_os = "macos")]
         let spawn_result = {
             let mut cmd = Command::new("open");
@@ -285,7 +300,7 @@ fn open_notebook_installed(path: Option<&Path>, extra_args: &[&str]) -> Result<(
         .unwrap_or_else(|| "no launch candidates were attempted".to_string());
     Err(format!(
         "Failed to launch {}: {}",
-        desktop_display_name(),
+        desktop_display_name_for(channel),
         detail
     ))
 }

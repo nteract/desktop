@@ -55,8 +55,9 @@ pub mod terminal_size;
 pub use runt_workspace::{
     build_channel, cache_namespace, cache_namespace_for, config_namespace, daemon_base_dir,
     daemon_base_dir_for, daemon_binary_basename, daemon_binary_basename_for, daemon_launchd_label,
-    daemon_service_basename, default_notebook_log_path, desktop_display_name, desktop_product_name,
-    get_workspace_name, get_workspace_path, is_dev_mode, worktree_hash, BuildChannel,
+    daemon_service_basename, default_notebook_log_path, desktop_display_name,
+    desktop_display_name_for, desktop_product_name, get_workspace_name, get_workspace_path,
+    is_dev_mode, open_notebook_app_for_channel, worktree_hash, BuildChannel,
 };
 
 /// Get the default log path for the daemon.
