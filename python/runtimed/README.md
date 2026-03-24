@@ -12,7 +12,7 @@ Python bindings for the [nteract](https://nteract.io) runtime daemon. Execute co
 pip install runtimed
 ```
 
-> **Nightly builds:** To track the nteract desktop nightly, use `pip install --pre runtimed` (or `uv pip install --prerelease allow runtimed`).
+The stable release matches the [nteract desktop stable app](https://nteract.io). If you're running the nightly desktop app, install the pre-release to match: `pip install --pre runtimed` (or `uv pip install --prerelease allow runtimed`). The nightly build automatically discovers the nightly daemon socket.
 
 ## Quick Start
 

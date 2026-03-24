@@ -59,6 +59,34 @@ fn default_socket_path() -> String {
         .to_string()
 }
 
+/// Get the daemon socket path for a specific channel ("stable" or "nightly").
+///
+/// Unlike `default_socket_path()`, this ignores `RUNTIMED_SOCKET_PATH` and
+/// returns the platform-correct path for the requested channel. Useful for
+/// cross-channel discovery (e.g., a stable build connecting to nightly).
+///
+/// Args:
+///     channel: Either "stable" or "nightly".
+///
+/// Raises:
+///     ValueError: If channel is not "stable" or "nightly".
+#[pyfunction]
+fn socket_path_for_channel(channel: &str) -> PyResult<String> {
+    let ch = match channel {
+        "stable" => ::runtimed::BuildChannel::Stable,
+        "nightly" => ::runtimed::BuildChannel::Nightly,
+        _ => {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "channel must be \"stable\" or \"nightly\", got {:?}",
+                channel
+            )));
+        }
+    };
+    Ok(::runtimed::socket_path_for_channel(ch)
+        .to_string_lossy()
+        .to_string())
+}
+
 /// Python module for runtimed daemon client.
 #[pymodule]
 fn runtimed(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -96,6 +124,7 @@ fn runtimed(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Standalone functions
     m.add_function(wrap_pyfunction!(show_notebook_app, m)?)?;
     m.add_function(wrap_pyfunction!(default_socket_path, m)?)?;
+    m.add_function(wrap_pyfunction!(socket_path_for_channel, m)?)?;
 
     Ok(())
 }

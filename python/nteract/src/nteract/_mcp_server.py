@@ -15,6 +15,7 @@ Requires: pip install nteract
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import base64
 import contextlib
@@ -41,21 +42,54 @@ ContentItem = TextContent | ImageContent
 # Create the MCP server
 mcp = FastMCP("nteract")
 
-# When --no-show is passed, the show_notebook tool is not registered.
-# This is useful for headless environments where no desktop app is available.
-_no_show = "--no-show" in sys.argv
+# ── CLI argument parsing ──────────────────────────────────────────────
+# We need _no_show resolved before tool registration (module level), so
+# we parse args eagerly here.  --help and --version are handled in main()
+# where we can print to stderr and exit cleanly.
 
-# When --nightly is passed, point at the nightly daemon socket automatically.
-# This avoids the need for `env RUNTIMED_SOCKET_PATH=... uvx nteract`.
-if "--nightly" in sys.argv and not os.environ.get("RUNTIMED_SOCKET_PATH"):
-    import platform
 
-    if platform.system() == "Darwin":
-        _nightly_sock = os.path.expanduser("~/Library/Caches/runt-nightly/runtimed.sock")
-    else:
-        _cache = os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
-        _nightly_sock = os.path.join(_cache, "runt-nightly", "runtimed.sock")
-    os.environ["RUNTIMED_SOCKET_PATH"] = _nightly_sock
+def _parse_args() -> argparse.Namespace:
+    """Parse CLI flags without triggering --help (that's handled in main())."""
+
+    class _StderrParser(argparse.ArgumentParser):
+        """ArgumentParser that writes to stderr (stdout is MCP's transport)."""
+
+        def _print_message(self, message: str, file: Any = None) -> None:
+            super()._print_message(message, file=file or sys.stderr)
+
+        def exit(self, status: int = 0, message: str | None = None) -> None:  # type: ignore[override]
+            if message:
+                self._print_message(message, sys.stderr)
+            raise SystemExit(status)
+
+    parser = _StderrParser(
+        prog="nteract",
+        description="nteract MCP server — AI-powered Jupyter notebooks.",
+    )
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="Print version and exit.",
+    )
+    parser.add_argument(
+        "--nightly",
+        action="store_true",
+        help="Connect to the nteract nightly daemon instead of stable.",
+    )
+    parser.add_argument(
+        "--no-show",
+        action="store_true",
+        help="Disable the show_notebook tool (headless environments).",
+    )
+    return parser.parse_args()
+
+
+_cli = _parse_args()
+
+_no_show = _cli.no_show
+
+if _cli.nightly and not os.environ.get("RUNTIMED_SOCKET_PATH"):
+    os.environ["RUNTIMED_SOCKET_PATH"] = runtimed.socket_path_for_channel("nightly")
 
 
 # ── Peer label for remote cursors ─────────────────────────────────────
@@ -1572,6 +1606,12 @@ def _cleanup() -> None:
 
 def main():
     """Run the MCP server."""
+    if _cli.version:
+        from importlib.metadata import version
+
+        print(f"nteract {version('nteract')}", file=sys.stderr)
+        raise SystemExit(0)
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",

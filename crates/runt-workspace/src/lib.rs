@@ -50,7 +50,7 @@ fn desktop_display_name_for(channel: BuildChannel) -> &'static str {
     }
 }
 
-fn cache_namespace_for(channel: BuildChannel) -> &'static str {
+pub fn cache_namespace_for(channel: BuildChannel) -> &'static str {
     match channel {
         BuildChannel::Stable => "runt",
         BuildChannel::Nightly => "runt-nightly",
@@ -64,7 +64,7 @@ fn config_namespace_for(channel: BuildChannel) -> &'static str {
     }
 }
 
-fn daemon_binary_basename_for(channel: BuildChannel) -> &'static str {
+pub fn daemon_binary_basename_for(channel: BuildChannel) -> &'static str {
     match channel {
         BuildChannel::Stable => "runtimed",
         BuildChannel::Nightly => "runtimed-nightly",
@@ -552,6 +552,25 @@ pub fn daemon_base_dir() -> PathBuf {
     let base = dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join(cache_namespace());
+
+    if is_dev_mode() {
+        if let Some(worktree) = get_workspace_path() {
+            let hash = worktree_hash(&worktree);
+            return base.join("worktrees").join(hash);
+        }
+    }
+    base
+}
+
+/// Get the base directory for a specific channel's daemon context.
+///
+/// Like `daemon_base_dir()`, but accepts an explicit channel instead of
+/// using the compile-time default. Useful for cross-channel discovery
+/// (e.g., a stable-compiled binary finding the nightly socket).
+pub fn daemon_base_dir_for(channel: BuildChannel) -> PathBuf {
+    let base = dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(cache_namespace_for(channel));
 
     if is_dev_mode() {
         if let Some(worktree) = get_workspace_path() {
