@@ -50,6 +50,73 @@ export interface ExecutionState {
   success: boolean | null;
 }
 
+/** A detected status transition for a single execution. */
+export interface ExecutionTransition {
+  execution_id: string;
+  cell_id: string;
+  kind: "started" | "done" | "error";
+  execution_count: number | null;
+}
+
+/**
+ * Diff two executions maps to detect status transitions.
+ *
+ * Returns transitions for:
+ * - New entry or "queued"→"running" → "started"
+ * - "running"→"done" → "done"
+ * - "running"→"error" or "queued"→"error" (kernel death) → "error"
+ *
+ * Slow joiners see the final state — no missed transitions. If a sync
+ * batches multiple changes (queued→done in one round), we emit the
+ * terminal event only.
+ */
+export function diffExecutions(
+  prev: Record<string, ExecutionState>,
+  curr: Record<string, ExecutionState>,
+): ExecutionTransition[] {
+  const transitions: ExecutionTransition[] = [];
+
+  for (const [eid, entry] of Object.entries(curr)) {
+    const prevEntry = prev[eid];
+    const prevStatus = prevEntry?.status;
+    const currStatus = entry.status;
+
+    // No change
+    if (prevStatus === currStatus) continue;
+
+    // Terminal states: done or error
+    if (currStatus === "done") {
+      transitions.push({
+        execution_id: eid,
+        cell_id: entry.cell_id,
+        kind: "done",
+        execution_count: entry.execution_count,
+      });
+    } else if (currStatus === "error") {
+      transitions.push({
+        execution_id: eid,
+        cell_id: entry.cell_id,
+        kind: "error",
+        execution_count: entry.execution_count,
+      });
+    } else if (
+      currStatus === "running" &&
+      prevStatus !== "done" &&
+      prevStatus !== "error"
+    ) {
+      // Started (queued→running or new→running)
+      transitions.push({
+        execution_id: eid,
+        cell_id: entry.cell_id,
+        kind: "started",
+        execution_count: entry.execution_count,
+      });
+    }
+  }
+
+  return transitions;
+}
+
 export interface RuntimeState {
   kernel: KernelState;
   queue: QueueState;

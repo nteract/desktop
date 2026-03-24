@@ -18,6 +18,8 @@ import {
 import { logger } from "../lib/logger";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
 import {
+  diffExecutions,
+  type ExecutionState,
   type QueueEntry,
   resetRuntimeState,
   useRuntimeState,
@@ -249,6 +251,33 @@ export function useDaemonKernel({
     }
   }, [queueState]);
 
+  // ── Execution lifecycle transitions (from CRDT, not broadcasts) ───
+
+  const prevExecutionsRef = useRef<Record<string, ExecutionState>>({});
+  useEffect(() => {
+    const prev = prevExecutionsRef.current;
+    const curr = runtimeState.executions;
+    prevExecutionsRef.current = curr;
+
+    // Skip the initial empty→populated transition (slow joiner catch-up)
+    if (Object.keys(prev).length === 0 && Object.keys(curr).length > 0) {
+      return;
+    }
+
+    const transitions = diffExecutions(prev, curr);
+    for (const t of transitions) {
+      if (t.kind === "started") {
+        callbacksRef.current.onExecutionCount(
+          t.cell_id,
+          t.execution_count ?? 0,
+        );
+      } else {
+        // "done" or "error"
+        callbacksRef.current.onExecutionDone(t.cell_id);
+      }
+    }
+  }, [runtimeState.executions]);
+
   // ── Broadcast listener (events only — no state) ──────────────────
 
   useEffect(() => {
@@ -265,14 +294,6 @@ export function useDaemonKernel({
 
       switch (broadcast.event) {
         // ── Events that stay as broadcasts ────────────────────────
-
-        case "execution_started": {
-          callbacksRef.current.onExecutionCount(
-            broadcast.cell_id,
-            broadcast.execution_count,
-          );
-          break;
-        }
 
         case "output": {
           // Skip blob resolution entirely when no onOutput callback is
@@ -323,11 +344,6 @@ export function useDaemonKernel({
           if (cb) {
             cb(broadcast.display_id, broadcast.data, broadcast.metadata);
           }
-          break;
-        }
-
-        case "execution_done": {
-          callbacksRef.current.onExecutionDone(broadcast.cell_id);
           break;
         }
 
@@ -413,6 +429,8 @@ export function useDaemonKernel({
         // Keep cases to avoid "unknown broadcast" log spam, but don't
         // set state — the RuntimeStateDoc is the source of truth.
 
+        case "execution_started":
+        case "execution_done":
         case "kernel_status":
         case "queue_changed":
         case "env_sync_state":
@@ -578,26 +596,6 @@ export function useDaemonKernel({
     }
   }, []);
 
-  /** Refresh queue state from daemon */
-  const refreshQueueState = useCallback(async () => {
-    try {
-      const response = await invoke<DaemonNotebookResponse>(
-        "get_daemon_queue_state",
-      );
-      if (response.result === "queue_state") {
-        // Queue state is now read from RuntimeStateDoc — this is a no-op
-        // for state but kept for backward compatibility.
-        return {
-          executing: response.executing ?? null,
-          queued: response.queued ?? [],
-        };
-      }
-    } catch (e) {
-      logger.error("[daemon-kernel] Refresh queue failed:", e);
-    }
-    return queueState;
-  }, [queueState]);
-
   /** Run all code cells (daemon reads from synced doc) */
   const runAllCells = useCallback(async (): Promise<DaemonNotebookResponse> => {
     logger.debug("[daemon-kernel] Running all cells");
@@ -675,8 +673,6 @@ export function useDaemonKernel({
     shutdownKernel,
     /** Hot-sync environment - install new packages without restart (UV only) */
     syncEnvironment,
-    /** Refresh queue state from daemon */
-    refreshQueueState,
     /** Run all code cells (daemon reads from synced doc) */
     runAllCells,
     /** Send a comm message to the kernel (for widget interactions) */
