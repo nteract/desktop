@@ -959,9 +959,9 @@ class NteractServer:
         async def add_dependency(package: str) -> dict[str, Any]:
             """Add a package dependency (e.g. "pandas>=2.0").
 
-            Call sync_environment() to install. To upgrade an
-            already-installed package, just add the newer version
-            — the resolver handles it without a remove + restart.
+            Call sync_environment() to install. To upgrade a package,
+            just add the newer version — no need to remove_dependency
+            first. A restart_kernel is still needed after sync.
             """
             notebook = await srv._get_notebook()
             deps = await notebook.add_dependency(package)
