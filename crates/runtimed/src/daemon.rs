@@ -959,22 +959,14 @@ impl Daemon {
             );
         }
 
-        // Clean up orphaned pool envs left over from previous daemon runs.
-        // These accumulate because each daemon restart creates fresh UUIDs
-        // and only loads up to `target` from existing dirs on disk.
+        // Clean up orphaned pool envs in a background task so startup
+        // isn't blocked when there are hundreds of stale directories.
         if !orphans.is_empty() {
             info!(
-                "[runtimed] Cleaning up {} orphaned pool environments",
+                "[runtimed] Scheduling cleanup of {} orphaned pool environments",
                 orphans.len()
             );
-            for orphan in orphans {
-                if let Err(e) = tokio::fs::remove_dir_all(&orphan).await {
-                    warn!(
-                        "[runtimed] Failed to remove orphaned env {:?}: {}",
-                        orphan, e
-                    );
-                }
-            }
+            spawn_env_deletions(orphans);
         }
     }
 
