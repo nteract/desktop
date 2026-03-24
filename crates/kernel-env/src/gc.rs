@@ -126,6 +126,7 @@ pub async fn evict_stale_envs(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
