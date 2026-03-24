@@ -20,8 +20,8 @@ import {
   setRemoteCursors,
   setRemoteSelections,
 } from "@/components/editor/remote-cursors";
-import { subscribePresence } from "./notebook-frame-bus";
 import { logger } from "./logger";
+import { subscribePresence } from "./notebook-frame-bus";
 
 // ── Types (presence message shapes from WASM decode) ─────────────────
 
