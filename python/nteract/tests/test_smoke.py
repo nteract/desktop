@@ -11,18 +11,21 @@ def test_import():
 
 
 def test_mcp_server_import():
-    """Verify the MCP server module can be imported."""
-    from nteract._mcp_server import mcp
+    """Verify the MCP server module can be imported and NteractServer works."""
+    from nteract._mcp_server import NteractServer
 
-    assert mcp.name == "nteract"
+    server = NteractServer()
+    assert server.mcp.name == "nteract"
 
 
 def test_keyboard_interrupt_exits_130():
     """Ctrl+C should exit with code 130 (Unix SIGINT convention), not dump a traceback."""
     from nteract._mcp_server import main
 
-    with patch("nteract._mcp_server.mcp") as mock_mcp:
-        mock_mcp.run.side_effect = KeyboardInterrupt
+    with patch("nteract._mcp_server.NteractServer") as MockServer, patch("sys.argv", ["nteract"]):
+        instance = MockServer.return_value
+        instance.mcp.run.side_effect = KeyboardInterrupt
+        instance.cleanup = lambda: None
         try:
             main()
             raised = False

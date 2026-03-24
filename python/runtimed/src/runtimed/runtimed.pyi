@@ -789,3 +789,26 @@ def default_socket_path() -> str:
     Respects the RUNTIMED_SOCKET_PATH environment variable if set.
     """
     ...
+
+def socket_path_for_channel(channel: str) -> str:
+    """Get the daemon socket path for a specific channel ("stable" or "nightly").
+
+    Unlike ``default_socket_path()``, this ignores ``RUNTIMED_SOCKET_PATH``
+    and returns the platform-correct path for the requested channel.
+
+    Raises:
+        ValueError: If *channel* is not ``"stable"`` or ``"nightly"``.
+    """
+    ...
+
+def show_notebook_app_for_channel(
+    channel: str,
+    notebook_path: str | os.PathLike[str] | None = None,
+) -> None:
+    """Launch the desktop app for a specific channel ("stable" or "nightly").
+
+    Raises:
+        ValueError: If *channel* is not ``"stable"`` or ``"nightly"``.
+        RuntimeError: If the app could not be launched.
+    """
+    ...

@@ -27,7 +27,7 @@ import pytest
 from mcp import ClientSession
 from mcp.types import TextContent
 
-from nteract._mcp_server import mcp
+from nteract._mcp_server import NteractServer
 
 
 @pytest.fixture
@@ -37,16 +37,18 @@ async def mcp_client():
     Uses asyncio for task management to avoid anyio cancel scope
     issues with pytest-asyncio fixture teardown.
     """
+    server = NteractServer()
+
     # Bidirectional streams: client->server and server->client
     client_send, server_recv = anyio.create_memory_object_stream[Any](0)
     server_send, client_recv = anyio.create_memory_object_stream[Any](0)
 
     # Start server as asyncio task (not anyio task group)
     server_task = asyncio.create_task(
-        mcp._mcp_server.run(
+        server.mcp._mcp_server.run(
             server_recv,
             server_send,
-            mcp._mcp_server.create_initialization_options(),
+            server.mcp._mcp_server.create_initialization_options(),
             raise_exceptions=True,
         )
     )

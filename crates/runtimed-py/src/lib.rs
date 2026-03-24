@@ -59,6 +59,57 @@ fn default_socket_path() -> String {
         .to_string()
 }
 
+/// Parse a channel name string into a BuildChannel enum.
+fn parse_channel(channel: &str) -> PyResult<::runtimed::BuildChannel> {
+    match channel {
+        "stable" => Ok(::runtimed::BuildChannel::Stable),
+        "nightly" => Ok(::runtimed::BuildChannel::Nightly),
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "channel must be \"stable\" or \"nightly\", got {:?}",
+            channel
+        ))),
+    }
+}
+
+/// Get the daemon socket path for a specific channel ("stable" or "nightly").
+///
+/// Unlike `default_socket_path()`, this ignores `RUNTIMED_SOCKET_PATH` and
+/// returns the platform-correct path for the requested channel. Useful for
+/// cross-channel discovery (e.g., a stable build connecting to nightly).
+///
+/// Args:
+///     channel: Either "stable" or "nightly".
+///
+/// Raises:
+///     ValueError: If channel is not "stable" or "nightly".
+#[pyfunction]
+fn socket_path_for_channel(channel: &str) -> PyResult<String> {
+    let ch = parse_channel(channel)?;
+    Ok(::runtimed::socket_path_for_channel(ch)
+        .to_string_lossy()
+        .to_string())
+}
+
+/// Launch the desktop notebook app for a specific channel ("stable" or "nightly").
+///
+/// Like `show_notebook_app()`, but tries app candidates for the given channel
+/// instead of the compile-time default.
+///
+/// Args:
+///     channel: Either "stable" or "nightly".
+///     notebook_path: Optional filesystem path to the notebook to open.
+///
+/// Raises:
+///     ValueError: If channel is not "stable" or "nightly".
+///     RuntimeError: If the app could not be launched.
+#[pyfunction]
+#[pyo3(signature = (channel, notebook_path=None))]
+fn show_notebook_app_for_channel(channel: &str, notebook_path: Option<PathBuf>) -> PyResult<()> {
+    let ch = parse_channel(channel)?;
+    runt_workspace::open_notebook_app_for_channel(ch, notebook_path.as_deref(), &[])
+        .map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
+}
+
 /// Python module for runtimed daemon client.
 #[pymodule]
 fn runtimed(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -95,7 +146,9 @@ fn runtimed(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Standalone functions
     m.add_function(wrap_pyfunction!(show_notebook_app, m)?)?;
+    m.add_function(wrap_pyfunction!(show_notebook_app_for_channel, m)?)?;
     m.add_function(wrap_pyfunction!(default_socket_path, m)?)?;
+    m.add_function(wrap_pyfunction!(socket_path_for_channel, m)?)?;
 
     Ok(())
 }

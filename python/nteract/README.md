@@ -92,7 +92,9 @@ You can open the same notebook in the [nteract desktop app](https://nteract.io) 
 
 | Flag | Description |
 |------|-------------|
-| `--nightly` | Connect to the nightly daemon socket instead of stable |
+| `--version` | Print version and exit |
+| `--nightly` | Connect to the nightly daemon and open nightly app |
+| `--stable` | Connect to the stable daemon and open stable app |
 | `--no-show` | Disable the `show_notebook` tool (for headless environments) |
 
 ## Architecture

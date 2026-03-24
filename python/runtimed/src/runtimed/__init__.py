@@ -38,6 +38,8 @@ from runtimed.runtimed import (  # noqa: F401
     SyncEnvironmentResult,
     default_socket_path,
     show_notebook_app,
+    show_notebook_app_for_channel,
+    socket_path_for_channel,
 )
 
 __all__ = [
@@ -54,6 +56,8 @@ __all__ = [
     # Standalone functions
     "default_socket_path",
     "show_notebook_app",
+    "show_notebook_app_for_channel",
+    "socket_path_for_channel",
 ]
 
 try:
