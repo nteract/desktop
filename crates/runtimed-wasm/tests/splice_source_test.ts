@@ -88,22 +88,51 @@ function getSource(h: Handle, cellId: string): string {
  * This simulates the relay path: one handle generates a sync message,
  * the other receives it as a frame and returns events with changesets
  * and attributions.
+ *
+ * The Automerge sync protocol may need multiple rounds to deliver changes
+ * (the first round can be a heads-only exchange on some platforms,
+ * especially Linux CI). This runs up to 3 bidirectional rounds and
+ * collects events across all of them, breaking early when a sync_applied
+ * event with changes is found.
  */
 function syncViaFrame(
   from: Handle,
   to: Handle,
   // deno-lint-ignore no-explicit-any
 ): any[] | null {
-  const msg = from.flush_local_changes();
-  if (!msg) return null;
+  // deno-lint-ignore no-explicit-any
+  const allEvents: any[] = [];
 
-  // Build a frame: type byte 0x00 (AUTOMERGE_SYNC) + payload
-  const frame = new Uint8Array(1 + msg.length);
-  frame[0] = 0x00; // AUTOMERGE_SYNC
-  frame.set(msg, 1);
+  for (let round = 0; round < 5; round++) {
+    const fwdMsg = from.flush_local_changes();
+    if (fwdMsg) {
+      const frame = new Uint8Array(1 + fwdMsg.length);
+      frame[0] = 0x00; // AUTOMERGE_SYNC
+      frame.set(fwdMsg, 1);
+      const events = to.receive_frame(frame);
+      if (events) allEvents.push(...events);
+    }
 
-  const events = to.receive_frame(frame);
-  return events ?? null;
+    // Send reply back so the protocol advances
+    const replyMsg = to.flush_local_changes();
+    if (replyMsg) {
+      const replyFrame = new Uint8Array(1 + replyMsg.length);
+      replyFrame[0] = 0x00;
+      replyFrame.set(replyMsg, 1);
+      from.receive_frame(replyFrame);
+    }
+
+    // Break early if we found a sync event with actual changes
+    if (
+      allEvents.some(
+        // deno-lint-ignore no-explicit-any
+        (e: any) => e.type === "sync_applied" && e.changed,
+      )
+    )
+      break;
+  }
+
+  return allEvents.length > 0 ? allEvents : null;
 }
 
 // ── 1. Basic splice operations ───────────────────────────────────────
@@ -688,47 +717,13 @@ Deno.test(
     // Frontend deletes " world"
     frontend.splice_source("c1", 5, 6, "");
 
-    // The sync protocol may need multiple rounds to deliver changes
-    // (first round can be a heads-only exchange on some platforms).
-    // Collect events across up to 3 rounds of frame-based sync.
-    // deno-lint-ignore no-explicit-any
-    const allEvents: any[] = [];
-    for (let round = 0; round < 3; round++) {
-      const fwdMsg = frontend.flush_local_changes();
-      if (fwdMsg) {
-        const frame = new Uint8Array(1 + fwdMsg.length);
-        frame[0] = 0x00;
-        frame.set(fwdMsg, 1);
-        const events = daemon.receive_frame(frame);
-        if (events) allEvents.push(...events);
-      }
-      // Send daemon's reply back to frontend so protocol advances
-      const replyMsg = daemon.flush_local_changes();
-      if (replyMsg) {
-        const replyFrame = new Uint8Array(1 + replyMsg.length);
-        replyFrame[0] = 0x00;
-        replyFrame.set(replyMsg, 1);
-        frontend.receive_frame(replyFrame);
-      }
-      if (
-        allEvents.some(
-          // deno-lint-ignore no-explicit-any
-          (e: any) => e.type === "sync_applied" && e.changed,
-        )
-      )
-        break;
-    }
+    const events = syncViaFrame(frontend, daemon);
+    assertExists(events);
 
-    const syncEvent = allEvents.find(
+    const syncEvent = events.find(
       // deno-lint-ignore no-explicit-any
       (e: any) => e.type === "sync_applied" && e.changed,
     );
-    if (!syncEvent) {
-      console.error(
-        "No sync_applied event with changed:true. All events:",
-        JSON.stringify(allEvents, null, 2),
-      );
-    }
     assertExists(syncEvent);
 
     // deno-lint-ignore no-explicit-any
