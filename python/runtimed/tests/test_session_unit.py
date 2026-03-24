@@ -61,6 +61,8 @@ class TestModuleExports:
             # Standalone functions
             "default_socket_path",
             "show_notebook_app",
+            "show_notebook_app_for_channel",
+            "socket_path_for_channel",
         }
         assert set(runtimed.__all__) == expected
 
