@@ -1551,10 +1551,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project_root_for_log = resolve_project_root();
     let log_dir = project_root_for_log.join(".context");
     let _ = std::fs::create_dir_all(&log_dir);
+
+    // Rotate previous session's log so the current file only contains this session.
+    // Keeps one old copy (.log.1) for debugging daemon-restart-on-failure scenarios.
+    let inkwell_log_path = log_dir.join("inkwell.log");
+    if inkwell_log_path.exists() {
+        let _ = std::fs::rename(&inkwell_log_path, log_dir.join("inkwell.log.1"));
+    }
+
     let log_file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(log_dir.join("inkwell.log"))
+        .open(&inkwell_log_path)
         .ok();
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()

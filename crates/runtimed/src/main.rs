@@ -142,14 +142,6 @@ fn early_log(msg: &str) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Log startup diagnostics BEFORE anything else - helps debug launchd issues
-    early_log(&format!(
-        "runtimed starting: pid={}, HOME={:?}, USER={:?}",
-        std::process::id(),
-        std::env::var("HOME").ok(),
-        std::env::var("USER").ok()
-    ));
-
     // Install panic hook to ensure panics are logged to the daemon log file.
     // Uses early_log_path() which falls back to /tmp if HOME is not set.
     std::panic::set_hook(Box::new(|panic_info| {
@@ -187,6 +179,26 @@ async fn main() -> anyhow::Result<()> {
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
+
+    // Rotate the previous session's log so the current file only contains
+    // this daemon run. Keeps one old copy (.log.1) for crash diagnosis via
+    // `runt diagnostics`. Only runs on the daemon path — subcommands like
+    // `status` or `install` must not touch the live log.
+    if matches!(cli.command, None | Some(Commands::Run { .. })) {
+        let prev = log_path.with_extension("log.1");
+        let _ = std::fs::rename(&log_path, &prev);
+    }
+
+    // Log startup diagnostics after rotation so the breadcrumb lands in the
+    // current session's log file, not in .log.1. The panic hook above still
+    // catches crashes before this point.
+    early_log(&format!(
+        "runtimed starting: pid={}, HOME={:?}, USER={:?}",
+        std::process::id(),
+        std::env::var("HOME").ok(),
+        std::env::var("USER").ok()
+    ));
+
     let log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

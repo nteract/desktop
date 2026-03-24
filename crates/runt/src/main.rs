@@ -2910,13 +2910,20 @@ async fn diagnostics_command(output_dir: Option<PathBuf>) -> Result<()> {
     let enc = GzEncoder::new(file, Compression::default());
     let mut tar = tar::Builder::new(enc);
 
-    // 1. Daemon log
+    // 1. Daemon log (current session)
     let daemon_log = runtimed::default_log_path();
     if daemon_log.exists() {
         tar.append_path_with_name(&daemon_log, "runtimed.log")?;
         println!("  {} runtimed.log", "✓".green());
     } else {
         println!("  {} runtimed.log (not found)", "–".yellow());
+    }
+
+    // 1b. Previous session log (preserved across daemon restart for crash diagnosis)
+    let prev_daemon_log = daemon_log.with_extension("log.1");
+    if prev_daemon_log.exists() {
+        tar.append_path_with_name(&prev_daemon_log, "runtimed.log.1")?;
+        println!("  {} runtimed.log.1 (previous session)", "✓".green());
     }
 
     // 2. Notebook log
