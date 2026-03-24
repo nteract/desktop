@@ -653,9 +653,6 @@ pub struct NotebookRoom {
     /// Timestamp when auto-launch was triggered (for grace period on eviction).
     /// If set, the room won't be evicted for 30 seconds to allow client reconnect.
     pub auto_launch_at: Arc<RwLock<Option<std::time::Instant>>>,
-    /// Wall-clock time when this room is scheduled for eviction (all peers disconnected).
-    /// Set when active_peers drops to 0; cleared when a peer reconnects.
-    pub scheduled_eviction: Arc<RwLock<Option<std::time::SystemTime>>>,
     /// Comm channel state for widgets.
     /// Stores active comms so new windows can sync widget models.
     /// Arc-wrapped so it can be shared with the kernel's iopub task.
@@ -827,7 +824,6 @@ impl NotebookRoom {
             nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
             working_dir: Arc::new(RwLock::new(None)),
             auto_launch_at: Arc::new(RwLock::new(None)),
-            scheduled_eviction: Arc::new(RwLock::new(None)),
             comm_state: Arc::new(CommState::new()),
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
@@ -888,7 +884,6 @@ impl NotebookRoom {
             nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
             working_dir: Arc::new(RwLock::new(None)),
             auto_launch_at: Arc::new(RwLock::new(None)),
-            scheduled_eviction: Arc::new(RwLock::new(None)),
             comm_state: Arc::new(CommState::new()),
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
@@ -1064,7 +1059,6 @@ where
     check_and_update_trust_state(&room).await;
 
     room.active_peers.fetch_add(1, Ordering::Relaxed);
-    *room.scheduled_eviction.write().await = None;
     let peers = room.active_peers.load(Ordering::Relaxed);
     info!(
         "[notebook-sync] Client connected to room {} ({} peer{})",
@@ -1172,8 +1166,6 @@ where
         // 2. Kernel running with no peers (idle timeout)
         // Without this, rooms with kernels would leak indefinitely.
         let eviction_delay = daemon.room_eviction_delay().await;
-        *room.scheduled_eviction.write().await =
-            Some(std::time::SystemTime::now() + eviction_delay);
         let rooms_for_eviction = rooms.clone();
         let room_for_eviction = room.clone();
         let notebook_id_for_eviction = notebook_id.clone();
@@ -6302,7 +6294,6 @@ mod tests {
             nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
             working_dir: Arc::new(RwLock::new(None)),
             auto_launch_at: Arc::new(RwLock::new(None)),
-            scheduled_eviction: Arc::new(RwLock::new(None)),
             comm_state: Arc::new(crate::comm_state::CommState::new()),
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),

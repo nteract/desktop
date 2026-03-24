@@ -101,9 +101,6 @@ impl Client {
             if let Some(env_source) = &room.env_source {
                 dict.set_item("env_source", env_source)?;
             }
-            if let Some(scheduled_eviction) = &room.scheduled_eviction {
-                dict.set_item("scheduled_eviction", scheduled_eviction)?;
-            }
             result.push(dict);
         }
         Ok(result)

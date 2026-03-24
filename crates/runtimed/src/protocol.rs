@@ -137,10 +137,6 @@ pub struct RoomInfo {
     /// Kernel status if running (e.g., "idle", "busy", "starting")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kernel_status: Option<String>,
-    /// ISO 8601 timestamp of when this room is scheduled for eviction, if any.
-    /// Present only when all peers have disconnected and the keep-alive grace period is running.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub scheduled_eviction: Option<String>,
 }
 
 /// Blob channel request.

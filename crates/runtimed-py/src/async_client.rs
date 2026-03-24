@@ -19,7 +19,6 @@ struct RoomInfoData {
     kernel_type: Option<String>,
     kernel_status: Option<String>,
     env_source: Option<String>,
-    scheduled_eviction: Option<String>,
 }
 
 impl<'py> pyo3::IntoPyObject<'py> for RoomInfoData {
@@ -40,9 +39,6 @@ impl<'py> pyo3::IntoPyObject<'py> for RoomInfoData {
         }
         if let Some(env_source) = &self.env_source {
             dict.set_item("env_source", env_source)?;
-        }
-        if let Some(scheduled_eviction) = &self.scheduled_eviction {
-            dict.set_item("scheduled_eviction", scheduled_eviction)?;
         }
         Ok(dict)
     }
@@ -141,7 +137,6 @@ impl AsyncClient {
                     kernel_type: room.kernel_type,
                     kernel_status: room.kernel_status,
                     env_source: room.env_source,
-                    scheduled_eviction: room.scheduled_eviction,
                 })
                 .collect();
             Ok(result)
