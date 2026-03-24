@@ -615,7 +615,7 @@ impl AsyncSession {
             .unwrap()
             .clone()
             .unwrap_or_else(|| self.notebook_id.clone());
-        let path = path.map(|s| s.to_string());
+        let path = path.map(crate::daemon_paths::resolve_notebook_path);
 
         future_into_py(py, async move {
             session_core::connect(&state, &effective_id).await?;
