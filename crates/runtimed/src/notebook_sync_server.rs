@@ -159,6 +159,12 @@ fn build_launched_config(
                 config.conda_channels = Some(get_inline_conda_channels(snapshot));
             }
         }
+        "uv:prewarmed" => {
+            // Store paths so hot-sync can install deps into the prewarmed venv
+            // uv_deps stays None to indicate no baseline deps were installed
+            config.venv_path = venv_path;
+            config.python_path = python_path;
+        }
         _ => {}
     }
 
@@ -3706,12 +3712,18 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
             }
         };
 
-        let launched = kernel.launched_config().clone();
+        let mut launched = kernel.launched_config().clone();
 
-        // Only UV inline deps support hot-sync
+        // For prewarmed UV envs, treat as empty baseline so hot-sync can
+        // install deps added after launch (instead of requiring a restart).
+        if launched.uv_deps.is_none() && kernel.env_source() == "uv:prewarmed" {
+            launched.uv_deps = Some(vec![]);
+        }
+
+        // Hot-sync requires a UV env with tracked deps
         if launched.uv_deps.is_none() {
             return NotebookResponse::SyncEnvironmentFailed {
-                error: "Hot-sync only supported for UV inline dependencies".to_string(),
+                error: "Hot-sync only supported for UV environments".to_string(),
                 needs_restart: true,
             };
         }

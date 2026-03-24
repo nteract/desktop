@@ -510,8 +510,13 @@ pub(crate) async fn restart_kernel(
 
     // Re-launch with the same kernel_type and env_source as before,
     // falling back to "python" / "auto" if no kernel was previously running.
+    // UV prewarmed envs use "auto" on restart so the daemon re-checks metadata
+    // and picks up any deps added after launch (e.g. via add_dependency).
     let restart_kernel_type = prev_kernel_type.unwrap_or_else(|| "python".to_string());
-    let restart_env_source = prev_env_source.unwrap_or_else(|| "auto".to_string());
+    let restart_env_source = match prev_env_source.as_deref() {
+        Some("uv:prewarmed") | None => "auto".to_string(),
+        Some(s) => s.to_string(),
+    };
 
     // Send LaunchKernel with a timeout, collecting progress messages concurrently.
     let mut progress_messages: Vec<String> = Vec::new();
