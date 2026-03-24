@@ -3608,6 +3608,9 @@ async fn env_clean(
             println!("(dry run — nothing will be deleted)\n");
         }
 
+        // Query daemon for in-use env paths to protect running kernels
+        let in_use = query_active_env_paths().await;
+
         let base = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
         let dirs_to_clean = [
             base.join("runt").join("envs"),
@@ -3625,17 +3628,19 @@ async fn env_clean(
             println!("  {} — {}", dir.display(), format_size(size));
             if !dry_run {
                 // Remove content-addressed subdirs only — skip pool envs
-                // (runtimed-uv-*, runtimed-conda-*) which may be backing
-                // live kernels or are managed by the daemon pool.
+                // (runtimed-uv-*, runtimed-conda-*) and envs backing
+                // running kernels.
                 if let Ok(rd) = std::fs::read_dir(dir) {
                     for entry in rd.filter_map(|e| e.ok()) {
                         let name = entry.file_name().to_string_lossy().to_string();
-                        if entry.path().is_dir()
+                        let path = entry.path();
+                        if path.is_dir()
                             && !name.starts_with("runtimed-uv-")
                             && !name.starts_with("runtimed-conda-")
                             && !name.starts_with("prewarm-")
+                            && !in_use.contains(&path)
                         {
-                            std::fs::remove_dir_all(entry.path()).ok();
+                            std::fs::remove_dir_all(&path).ok();
                             total_removed += 1;
                         }
                     }
@@ -3648,6 +3653,10 @@ async fn env_clean(
         }
         return Ok(());
     }
+
+    // Query the daemon for env paths backing running kernels so we
+    // don't evict them. Falls back to empty if daemon isn't reachable.
+    let in_use = query_active_env_paths().await;
 
     // Selective eviction
     let eviction_dirs = [
@@ -3730,10 +3739,7 @@ async fn env_clean(
             }
             println!();
         } else {
-            // CLI doesn't have access to daemon state, so we can't check
-            // which envs are in use. The daemon's GC loop handles that.
-            let no_exclusions = std::collections::HashSet::new();
-            match kernel_env::gc::evict_stale_envs(dir, max_age, max_count, &no_exclusions).await {
+            match kernel_env::gc::evict_stale_envs(dir, max_age, max_count, &in_use).await {
                 Ok(deleted) => {
                     if !deleted.is_empty() {
                         println!(
@@ -3763,6 +3769,29 @@ async fn env_clean(
     }
 
     Ok(())
+}
+
+/// Query the daemon for env paths backing running kernels.
+/// Returns an empty set if the daemon isn't running or unreachable.
+async fn query_active_env_paths() -> std::collections::HashSet<PathBuf> {
+    use runtimed::client::PoolClient;
+    use runtimed::singleton::get_running_daemon_info;
+
+    let info = match get_running_daemon_info() {
+        Some(info) => info,
+        None => return std::collections::HashSet::new(),
+    };
+
+    let client = PoolClient::new(PathBuf::from(&info.endpoint));
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        client.active_env_paths(),
+    )
+    .await
+    {
+        Ok(Ok(paths)) => paths.into_iter().collect(),
+        _ => std::collections::HashSet::new(),
+    }
 }
 
 /// Calculate total size of a directory

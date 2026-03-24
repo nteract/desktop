@@ -167,6 +167,18 @@ impl PoolClient {
         }
     }
 
+    /// Get environment paths currently in use by running kernels.
+    pub async fn active_env_paths(&self) -> Result<Vec<std::path::PathBuf>, ClientError> {
+        let response = self.send_request(Request::ActiveEnvPaths).await?;
+        match response {
+            Response::ActiveEnvPaths { paths } => Ok(paths),
+            Response::Error { message } => Err(ClientError::DaemonError(message)),
+            _ => Err(ClientError::ProtocolError(
+                "Unexpected response".to_string(),
+            )),
+        }
+    }
+
     /// Flush all pooled environments and trigger rebuild with current settings.
     pub async fn flush_pool(&self) -> Result<(), ClientError> {
         let response = self.send_request(Request::FlushPool).await?;
