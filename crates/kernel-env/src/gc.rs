@@ -192,9 +192,13 @@ mod tests {
         tokio::fs::create_dir_all(&pool_dir).await?;
 
         // Evict to max_count=2
-        let deleted =
-            evict_stale_envs(tmp.path(), Duration::from_secs(86400 * 365), 2, &HashSet::new())
-                .await?;
+        let deleted = evict_stale_envs(
+            tmp.path(),
+            Duration::from_secs(86400 * 365),
+            2,
+            &HashSet::new(),
+        )
+        .await?;
 
         // Should have deleted 3 (the 3 oldest)
         assert_eq!(deleted.len(), 3);
@@ -224,8 +228,7 @@ mod tests {
 
         // Evict with max_age=1 day, high max_count
         let deleted =
-            evict_stale_envs(tmp.path(), Duration::from_secs(86400), 100, &HashSet::new())
-                .await?;
+            evict_stale_envs(tmp.path(), Duration::from_secs(86400), 100, &HashSet::new()).await?;
 
         assert_eq!(deleted.len(), 1);
         assert!(!old_dir.exists());

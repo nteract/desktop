@@ -1911,11 +1911,8 @@ impl Daemon {
             }
 
             Request::ActiveEnvPaths => {
-                let paths: Vec<PathBuf> = self
-                    .collect_active_env_paths()
-                    .await
-                    .into_iter()
-                    .collect();
+                let paths: Vec<PathBuf> =
+                    self.collect_active_env_paths().await.into_iter().collect();
                 Response::ActiveEnvPaths { paths }
             }
         }

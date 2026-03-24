@@ -3723,8 +3723,7 @@ async fn env_clean(
                 let now = std::time::SystemTime::now();
                 for (i, (path, last_used, size)) in candidates.iter().enumerate() {
                     let age = now.duration_since(*last_used).unwrap_or_default();
-                    let would_delete =
-                        (i >= max_count || age > max_age) && !in_use.contains(path);
+                    let would_delete = (i >= max_count || age > max_age) && !in_use.contains(path);
                     let marker = if would_delete {
                         "DELETE"
                     } else if in_use.contains(path) {
@@ -3790,12 +3789,7 @@ async fn query_active_env_paths() -> std::collections::HashSet<PathBuf> {
     };
 
     let client = PoolClient::new(PathBuf::from(&info.endpoint));
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        client.active_env_paths(),
-    )
-    .await
-    {
+    match tokio::time::timeout(std::time::Duration::from_secs(3), client.active_env_paths()).await {
         Ok(Ok(paths)) => paths.into_iter().collect(),
         _ => std::collections::HashSet::new(),
     }
