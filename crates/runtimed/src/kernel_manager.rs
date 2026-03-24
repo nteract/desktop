@@ -284,6 +284,10 @@ pub struct RoomKernel {
     queue: VecDeque<QueuedCell>,
     /// Currently executing cell: (cell_id, execution_id)
     executing: Option<(String, String)>,
+    /// Whether the current execution has seen an error output.
+    /// Set by the iopub error handler, read by `execution_done()` to
+    /// determine success/failure for the RuntimeStateDoc lifecycle entry.
+    execution_had_error: bool,
     /// Current kernel status
     status: KernelStatus,
     /// Broadcast channel for sending outputs to peers
@@ -326,7 +330,10 @@ pub enum QueueCommand {
         execution_id: String,
     },
     /// A cell produced an error (for stop-on-error behavior)
-    CellError { cell_id: String },
+    CellError {
+        cell_id: String,
+        execution_id: String,
+    },
     /// The kernel process died (iopub connection lost).
     /// Unblocks the execution queue and notifies the frontend.
     KernelDied,
@@ -385,6 +392,7 @@ impl RoomKernel {
         state_changed_tx: broadcast::Sender<()>,
     ) -> Self {
         Self {
+            execution_had_error: false,
             kernel_type: String::new(),
             env_source: String::new(),
             launched_config: LaunchedEnvConfig::default(),
@@ -919,6 +927,14 @@ impl RoomKernel {
                                     };
                                     let _ = persist_tx.send(Some(persist_bytes));
 
+                                    // Write execution_count to RuntimeStateDoc
+                                    if let Some(ref eid) = execution_id {
+                                        let mut sd = state_doc_for_iopub.write().await;
+                                        if sd.set_execution_count(eid, execution_count) {
+                                            let _ = state_changed_for_iopub.send(());
+                                        }
+                                    }
+
                                     let _ =
                                         broadcast_tx.send(NotebookBroadcast::ExecutionStarted {
                                             cell_id: cid.clone(),
@@ -1354,6 +1370,7 @@ impl RoomKernel {
                                     // Signal cell error for stop-on-error
                                     let _ = iopub_cmd_tx.try_send(QueueCommand::CellError {
                                         cell_id: cid.clone(),
+                                        execution_id: execution_id.clone().unwrap_or_default(),
                                     });
                                 }
                             }
@@ -1859,7 +1876,9 @@ impl RoomKernel {
             let doc_exec = self.executing_entry().as_ref().map(to_doc_entry);
             let doc_queued = to_doc_entries(&self.queued_cells());
             let mut sd = self.state_doc.write().await;
-            if sd.set_queue(doc_exec.as_ref(), &doc_queued) {
+            let mut changed = sd.create_execution(&execution_id, &cell_id);
+            changed |= sd.set_queue(doc_exec.as_ref(), &doc_queued);
+            if changed {
                 let _ = self.state_changed_tx.send(());
             }
         }
@@ -1910,7 +1929,9 @@ impl RoomKernel {
             let doc_exec = self.executing_entry().as_ref().map(to_doc_entry);
             let doc_queued = to_doc_entries(&self.queued_cells());
             let mut sd = self.state_doc.write().await;
-            if sd.set_queue(doc_exec.as_ref(), &doc_queued) {
+            let mut changed = sd.set_execution_running(&cell.execution_id);
+            changed |= sd.set_queue(doc_exec.as_ref(), &doc_queued);
+            if changed {
                 let _ = self.state_changed_tx.send(());
             }
         }
@@ -1944,6 +1965,13 @@ impl RoomKernel {
         Ok(())
     }
 
+    /// Record that the current execution produced an error output.
+    ///
+    /// Called by the sync server's `CellError` handler before `execution_done`.
+    pub fn mark_execution_error(&mut self) {
+        self.execution_had_error = true;
+    }
+
     /// Mark a cell execution as complete and process next.
     pub async fn execution_done(&mut self, cell_id: &str, execution_id: &str) -> Result<()> {
         let matches = self
@@ -1951,7 +1979,9 @@ impl RoomKernel {
             .as_ref()
             .is_some_and(|(cid, _)| cid == cell_id);
         if matches {
+            let success = !self.execution_had_error;
             self.executing = None;
+            self.execution_had_error = false;
             self.status = KernelStatus::Idle;
 
             // Note: cell_id_map cleanup happens when a cell is RE-EXECUTED (in
@@ -1974,7 +2004,9 @@ impl RoomKernel {
             {
                 let doc_queued = to_doc_entries(&self.queued_cells());
                 let mut sd = self.state_doc.write().await;
-                if sd.set_queue(None, &doc_queued) {
+                let mut changed = sd.set_execution_done(execution_id, success);
+                changed |= sd.set_queue(None, &doc_queued);
+                if changed {
                     let _ = self.state_changed_tx.send(());
                 }
             }
@@ -1990,15 +2022,15 @@ impl RoomKernel {
     /// Unblocks the execution queue by clearing the executing cell and queue,
     /// and broadcasts an error status to all connected peers.
     ///
-    /// Returns the (cell_id, execution_id) of the interrupted execution, if any.
+    /// Returns the interrupted execution (if any) and the cleared queue entries.
     ///
     /// This method is idempotent - multiple calls (e.g., from both process
     /// watcher and heartbeat monitor) are safe.
-    pub fn kernel_died(&mut self) -> Option<(String, String)> {
+    pub fn kernel_died(&mut self) -> (Option<(String, String)>, Vec<QueueEntry>) {
         // Idempotent: if already dead, don't re-broadcast
         if self.status == KernelStatus::Dead {
             debug!("[kernel-manager] kernel_died called but already dead, ignoring");
-            return None;
+            return (None, vec![]);
         }
 
         warn!(
@@ -2036,8 +2068,9 @@ impl RoomKernel {
         // Note: state_doc writes for kernel_died happen in the async command
         // processor (notebook_sync_server.rs QueueCommand::KernelDied handler).
         // state_doc.set_kernel_status("error") + set_queue(None, &[])
+        // + set_execution_done for interrupted + cleared entries
 
-        interrupted
+        (interrupted, cleared)
     }
 
     /// Interrupt the currently executing cell and clear the execution queue.

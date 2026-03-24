@@ -17,6 +17,12 @@
 //!     executing_execution_id: Str|null (execution_id for the executing cell)
 //!     queued: List[Str]                (cell_ids waiting)
 //!     queued_execution_ids: List[Str]  (parallel execution_ids for queued entries)
+//!   executions/             Map (keyed by execution_id)
+//!     {execution_id}/       Map
+//!       cell_id: Str
+//!       status: Str         ("queued" | "running" | "done" | "error")
+//!       execution_count: Int|null
+//!       success: Bool|null
 //!   env/
 //!     in_sync: bool
 //!     added: List[Str]     (packages in metadata but not in kernel)
@@ -34,6 +40,7 @@ use automerge::{
     ReadDoc, ScalarValue, Value, ROOT,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 // ── Snapshot types for reading/comparing state ──────────────────────
 
@@ -72,6 +79,24 @@ pub struct QueueEntry {
 pub struct QueueState {
     pub executing: Option<QueueEntry>,
     pub queued: Vec<QueueEntry>,
+}
+
+/// Execution lifecycle state for a single execution.
+///
+/// Tracks the status of an execution from queue to completion.
+/// Stored in `executions/{execution_id}/` in the RuntimeStateDoc.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionState {
+    /// Cell that was executed.
+    pub cell_id: String,
+    /// Current status: "queued", "running", "done", "error".
+    pub status: String,
+    /// Kernel execution count (set when execution starts).
+    #[serde(default)]
+    pub execution_count: Option<i64>,
+    /// Whether the execution succeeded (set on completion).
+    #[serde(default)]
+    pub success: Option<bool>,
 }
 
 /// Environment sync state snapshot.
@@ -117,6 +142,9 @@ pub struct RuntimeState {
     pub env: EnvState,
     pub trust: TrustRuntimeState,
     pub last_saved: Option<String>,
+    /// Execution lifecycle entries keyed by execution_id.
+    #[serde(default)]
+    pub executions: HashMap<String, ExecutionState>,
 }
 
 // ── RuntimeStateDoc ─────────────────────────────────────────────────
@@ -165,6 +193,10 @@ impl RuntimeStateDoc {
             .expect("scaffold queue.queued");
         doc.put_object(&queue, "queued_execution_ids", ObjType::List)
             .expect("scaffold queue.queued_execution_ids");
+
+        // executions/ — keyed by execution_id, tracks lifecycle
+        doc.put_object(&ROOT, "executions", ObjType::Map)
+            .expect("scaffold executions");
 
         // env/
         let env = doc
@@ -468,6 +500,207 @@ impl RuntimeStateDoc {
         true
     }
 
+    // ── Execution lifecycle ─────────────────────────────────────────
+
+    /// Create a new execution entry with status "queued".
+    ///
+    /// Called by the daemon when `queue_cell()` generates an execution_id.
+    #[allow(clippy::expect_used)]
+    pub fn create_execution(&mut self, execution_id: &str, cell_id: &str) -> bool {
+        let executions = self
+            .get_map("executions")
+            .expect("executions map must exist");
+
+        // Don't overwrite if it already exists (idempotent queue)
+        if self
+            .doc
+            .get(&executions, execution_id)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return false;
+        }
+
+        let entry = self
+            .doc
+            .put_object(&executions, execution_id, ObjType::Map)
+            .expect("put execution entry");
+        self.doc
+            .put(&entry, "cell_id", cell_id)
+            .expect("put execution.cell_id");
+        self.doc
+            .put(&entry, "status", "queued")
+            .expect("put execution.status");
+        self.doc
+            .put(&entry, "execution_count", ScalarValue::Null)
+            .expect("put execution.execution_count");
+        self.doc
+            .put(&entry, "success", ScalarValue::Null)
+            .expect("put execution.success");
+        true
+    }
+
+    /// Mark an execution as running.
+    ///
+    /// The execution_count is not known yet at this point — it arrives later
+    /// from the kernel's `execute_input` message. Use [`set_execution_count`]
+    /// to record it when it arrives.
+    #[allow(clippy::expect_used)]
+    pub fn set_execution_running(&mut self, execution_id: &str) -> bool {
+        let executions = self
+            .get_map("executions")
+            .expect("executions map must exist");
+
+        let Some((_, entry)) = self.doc.get(&executions, execution_id).ok().flatten() else {
+            return false;
+        };
+
+        let cur_status = self.read_str(&entry, "status");
+        if cur_status == "running" {
+            return false;
+        }
+
+        self.doc
+            .put(&entry, "status", "running")
+            .expect("put execution.status");
+        true
+    }
+
+    /// Set the execution_count for an execution (from kernel's execute_input).
+    #[allow(clippy::expect_used)]
+    pub fn set_execution_count(&mut self, execution_id: &str, execution_count: i64) -> bool {
+        let executions = self
+            .get_map("executions")
+            .expect("executions map must exist");
+
+        let Some((_, entry)) = self.doc.get(&executions, execution_id).ok().flatten() else {
+            return false;
+        };
+
+        self.doc
+            .put(&entry, "execution_count", execution_count)
+            .expect("put execution.execution_count");
+        true
+    }
+
+    /// Mark an execution as done or error.
+    #[allow(clippy::expect_used)]
+    pub fn set_execution_done(&mut self, execution_id: &str, success: bool) -> bool {
+        let executions = self
+            .get_map("executions")
+            .expect("executions map must exist");
+
+        let Some((_, entry)) = self.doc.get(&executions, execution_id).ok().flatten() else {
+            return false;
+        };
+
+        let status = if success { "done" } else { "error" };
+        self.doc
+            .put(&entry, "status", status)
+            .expect("put execution.status");
+        self.doc
+            .put(&entry, "success", success)
+            .expect("put execution.success");
+        true
+    }
+
+    /// Read a single execution's state.
+    pub fn get_execution(&self, execution_id: &str) -> Option<ExecutionState> {
+        let executions = self.get_map("executions")?;
+
+        let (_, entry) = self.doc.get(&executions, execution_id).ok().flatten()?;
+
+        let cell_id = self.read_str(&entry, "cell_id");
+        let status = self.read_str(&entry, "status");
+
+        let execution_count = self
+            .doc
+            .get(&entry, "execution_count")
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| match value {
+                Value::Scalar(s) => match s.as_ref() {
+                    ScalarValue::Int(n) => Some(*n),
+                    ScalarValue::Uint(n) => Some(*n as i64),
+                    _ => None,
+                },
+                _ => None,
+            });
+
+        let success = self
+            .doc
+            .get(&entry, "success")
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| match value {
+                Value::Scalar(s) => match s.as_ref() {
+                    ScalarValue::Boolean(b) => Some(*b),
+                    _ => None,
+                },
+                _ => None,
+            });
+
+        Some(ExecutionState {
+            cell_id,
+            status,
+            execution_count,
+            success,
+        })
+    }
+
+    /// Remove old executions, keeping the most recent `max` entries.
+    ///
+    /// Entries are removed in insertion order (oldest first). Always keeps
+    /// the most recent execution for each cell_id regardless of `max`.
+    #[allow(clippy::expect_used)]
+    pub fn trim_executions(&mut self, max: usize) -> usize {
+        let Some(executions) = self.get_map("executions") else {
+            return 0;
+        };
+
+        // Collect all execution_ids and their cell_ids
+        let keys: Vec<(String, String)> = self
+            .doc
+            .keys(&executions)
+            .filter_map(|key| {
+                let (_, entry) = self.doc.get(&executions, &key).ok().flatten()?;
+                let cell_id = self.read_str(&entry, "cell_id");
+                Some((key, cell_id))
+            })
+            .collect();
+
+        let total = keys.len();
+        if total <= max {
+            return 0;
+        }
+
+        // Find the last occurrence index for each cell_id (those we must keep)
+        let mut last_per_cell: HashMap<&str, usize> = HashMap::new();
+        for (i, (_, cell_id)) in keys.iter().enumerate() {
+            last_per_cell.insert(cell_id.as_str(), i);
+        }
+
+        // Remove oldest entries that aren't the last-per-cell, until we're at max
+        let mut removed = 0;
+        let to_remove = total - max;
+        for (i, (exec_id, _)) in keys.iter().enumerate() {
+            if removed >= to_remove {
+                break;
+            }
+            // Skip if this is the most recent execution for its cell
+            let cell_id = &keys[i].1;
+            if last_per_cell.get(cell_id.as_str()) == Some(&i) {
+                continue;
+            }
+            self.doc
+                .delete(&executions, exec_id.as_str())
+                .expect("delete execution entry");
+            removed += 1;
+        }
+        removed
+    }
+
     /// Update environment sync state. Returns `true` if mutated.
     #[allow(clippy::expect_used)]
     pub fn set_env_sync(
@@ -631,6 +864,20 @@ impl RuntimeStateDoc {
             })
             .unwrap_or_default();
 
+        // Read executions map
+        let executions = self
+            .get_map("executions")
+            .map(|exec_obj| {
+                let mut map = HashMap::new();
+                for key in self.doc.keys(&exec_obj) {
+                    if let Some(es) = self.get_execution(&key) {
+                        map.insert(key, es);
+                    }
+                }
+                map
+            })
+            .unwrap_or_default();
+
         let env_state = env
             .as_ref()
             .map(|e| EnvState {
@@ -670,6 +917,7 @@ impl RuntimeStateDoc {
             env: env_state,
             trust: trust_state,
             last_saved,
+            executions,
         }
     }
 
@@ -943,5 +1191,173 @@ mod tests {
             client_state.last_saved,
             Some("2025-01-15T12:00:00Z".to_string()),
         );
+    }
+
+    // ── Execution lifecycle tests ───────────────────────────────────
+
+    #[test]
+    fn test_create_execution() {
+        let mut doc = RuntimeStateDoc::new();
+        assert!(doc.create_execution("exec-1", "cell-1"));
+
+        let es = doc.get_execution("exec-1").unwrap();
+        assert_eq!(es.cell_id, "cell-1");
+        assert_eq!(es.status, "queued");
+        assert_eq!(es.execution_count, None);
+        assert_eq!(es.success, None);
+    }
+
+    #[test]
+    fn test_create_execution_idempotent() {
+        let mut doc = RuntimeStateDoc::new();
+        assert!(doc.create_execution("exec-1", "cell-1"));
+        // Second create for same execution_id is a no-op
+        assert!(!doc.create_execution("exec-1", "cell-1"));
+    }
+
+    #[test]
+    fn test_execution_lifecycle_success() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
+
+        // queued → running
+        assert!(doc.set_execution_running("exec-1"));
+        let es = doc.get_execution("exec-1").unwrap();
+        assert_eq!(es.status, "running");
+        assert_eq!(es.execution_count, None);
+
+        // Set execution_count separately (from kernel execute_input)
+        assert!(doc.set_execution_count("exec-1", 5));
+        let es = doc.get_execution("exec-1").unwrap();
+        assert_eq!(es.execution_count, Some(5));
+
+        // running → done
+        assert!(doc.set_execution_done("exec-1", true));
+        let es = doc.get_execution("exec-1").unwrap();
+        assert_eq!(es.status, "done");
+        assert_eq!(es.success, Some(true));
+    }
+
+    #[test]
+    fn test_execution_lifecycle_error() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
+        doc.set_execution_running("exec-1");
+        doc.set_execution_count("exec-1", 3);
+
+        // running → error
+        assert!(doc.set_execution_done("exec-1", false));
+        let es = doc.get_execution("exec-1").unwrap();
+        assert_eq!(es.status, "error");
+        assert_eq!(es.success, Some(false));
+    }
+
+    #[test]
+    fn test_get_execution_nonexistent() {
+        let doc = RuntimeStateDoc::new();
+        assert!(doc.get_execution("nope").is_none());
+    }
+
+    #[test]
+    fn test_set_execution_running_idempotent() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
+        assert!(doc.set_execution_running("exec-1"));
+        // Already running — no-op
+        assert!(!doc.set_execution_running("exec-1"));
+    }
+
+    #[test]
+    fn test_executions_in_read_state() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
+        doc.set_execution_running("exec-1");
+        doc.set_execution_count("exec-1", 7);
+        doc.create_execution("exec-2", "cell-2");
+
+        let state = doc.read_state();
+        assert_eq!(state.executions.len(), 2);
+
+        let e1 = &state.executions["exec-1"];
+        assert_eq!(e1.cell_id, "cell-1");
+        assert_eq!(e1.status, "running");
+        assert_eq!(e1.execution_count, Some(7));
+
+        let e2 = &state.executions["exec-2"];
+        assert_eq!(e2.cell_id, "cell-2");
+        assert_eq!(e2.status, "queued");
+    }
+
+    #[test]
+    fn test_trim_executions() {
+        let mut doc = RuntimeStateDoc::new();
+        // Create 5 executions for 2 cells
+        doc.create_execution("e1", "cell-a");
+        doc.create_execution("e2", "cell-a");
+        doc.create_execution("e3", "cell-b");
+        doc.create_execution("e4", "cell-a");
+        doc.create_execution("e5", "cell-b");
+
+        // Trim to 3 — should keep e4 (latest cell-a), e5 (latest cell-b),
+        // and one more. Oldest non-latest-per-cell are removed first.
+        let removed = doc.trim_executions(3);
+        assert!(removed > 0);
+
+        let state = doc.read_state();
+        // Must keep latest per cell: e4 (cell-a) and e5 (cell-b)
+        assert!(state.executions.contains_key("e4"));
+        assert!(state.executions.contains_key("e5"));
+        assert!(state.executions.len() <= 3);
+    }
+
+    #[test]
+    fn test_trim_executions_noop_when_under_max() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("e1", "cell-1");
+        doc.create_execution("e2", "cell-2");
+        assert_eq!(doc.trim_executions(10), 0);
+        assert_eq!(doc.read_state().executions.len(), 2);
+    }
+
+    #[test]
+    fn test_execution_lifecycle_syncs_between_docs() {
+        let mut daemon_doc = RuntimeStateDoc::new();
+        daemon_doc.create_execution("exec-1", "cell-1");
+        daemon_doc.set_execution_running("exec-1");
+        daemon_doc.set_execution_count("exec-1", 3);
+        daemon_doc.set_execution_done("exec-1", true);
+
+        // Sync to client (use raw automerge sync for client receive,
+        // change-stripping receive for daemon — matches real topology).
+        let mut client_doc = RuntimeStateDoc::new_empty();
+        let mut daemon_sync = sync::State::new();
+        let mut client_sync = sync::State::new();
+
+        for _ in 0..10 {
+            if let Some(msg) = daemon_doc.generate_sync_message(&mut daemon_sync) {
+                client_doc
+                    .doc_mut()
+                    .sync()
+                    .receive_sync_message(&mut client_sync, msg)
+                    .expect("client receive");
+            }
+            if let Some(msg) = client_doc
+                .doc_mut()
+                .sync()
+                .generate_sync_message(&mut client_sync)
+            {
+                daemon_doc
+                    .receive_sync_message(&mut daemon_sync, msg)
+                    .expect("daemon receive");
+            }
+        }
+
+        let client_state = client_doc.read_state();
+        assert_eq!(client_state.executions.len(), 1);
+        let es = &client_state.executions["exec-1"];
+        assert_eq!(es.cell_id, "cell-1");
+        assert_eq!(es.status, "done");
+        assert_eq!(es.success, Some(true));
+        assert_eq!(es.execution_count, Some(3));
     }
 }
