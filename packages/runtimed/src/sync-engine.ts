@@ -1,0 +1,474 @@
+/**
+ * SyncEngine — transport-agnostic notebook sync engine.
+ *
+ * Owns all sync state between a local WASM NotebookHandle and the daemon:
+ *   - Inbound frame processing (WASM demux → typed events)
+ *   - Inline sync reply with rollback on transport failure
+ *   - Initial sync handshake with retry
+ *   - Coalescing buffer (32ms) for cell changesets
+ *   - RuntimeStateDoc sync + execution lifecycle diffing
+ *   - Debounced outbound flush of local CRDT mutations
+ *
+ * Emits typed RxJS observables that consumers subscribe to for
+ * materialization, broadcast dispatch, presence routing, etc.
+ *
+ * Zero Tauri / React / browser dependencies.
+ */
+
+import {
+  bufferTime,
+  concatMap,
+  debounceTime,
+  EMPTY,
+  filter,
+  from,
+  mergeMap,
+  Observable,
+  ReplaySubject,
+  share,
+  Subject,
+  Subscription,
+  switchMap,
+  timer,
+} from "rxjs";
+
+import { type CellChangeset, mergeChangesets } from "./cell-changeset";
+import type { FrameEvent, SyncableHandle } from "./handle";
+import {
+  type ExecutionTransition,
+  type RuntimeState,
+  type ExecutionState,
+  diffExecutions,
+} from "./runtime-state";
+import { FrameType } from "./transport";
+import type { NotebookTransport } from "./transport";
+
+// ── Constants ────────────────────────────────────────────────────────
+
+/** Coalescing window for incoming sync frames (ms). */
+const COALESCE_MS = 32;
+
+/** Timeout before retrying sync if initial sync hasn't produced cells (ms). */
+const SYNC_RETRY_MS = 3000;
+
+/** Debounce interval for outbound source sync (ms). */
+const FLUSH_DEBOUNCE_MS = 20;
+
+// ── Logger interface ─────────────────────────────────────────────────
+
+export interface SyncEngineLogger {
+  info(msg: string, ...args: unknown[]): void;
+  warn(msg: string, ...args: unknown[]): void;
+  error(msg: string, ...args: unknown[]): void;
+}
+
+const nullLogger: SyncEngineLogger = {
+  info() {},
+  warn() {},
+  error() {},
+};
+
+// ── Options ──────────────────────────────────────────────────────────
+
+export interface SyncEngineOptions {
+  /**
+   * Read the current WASM handle (null during bootstrap).
+   *
+   * A getter rather than a direct reference so the engine never holds
+   * a stale handle across bootstrap cycles.
+   */
+  getHandle: () => SyncableHandle | null;
+
+  /** Pluggable transport to the daemon. */
+  transport: NotebookTransport;
+
+  /** Optional logger (defaults to silent). */
+  logger?: SyncEngineLogger;
+}
+
+// ── SyncEngine ───────────────────────────────────────────────────────
+
+export class SyncEngine {
+  private readonly opts: Required<SyncEngineOptions>;
+  private subscription: Subscription | null = null;
+  private awaitingInitialSync = true;
+  private prevExecutions: Record<string, ExecutionState> = {};
+
+  // Internal subjects
+  private readonly frameIn$ = new Subject<number[]>();
+  private readonly flushRequest$ = new Subject<void>();
+
+  // ── Public observables ───────────────────────────────────────────
+
+  /**
+   * Coalesced cell changesets from inbound sync frames.
+   *
+   * Each emission is a merged CellChangeset covering a 32ms window,
+   * or `null` when a full materialization is needed (no changeset
+   * available from WASM).
+   */
+  readonly cellChanges$: Observable<CellChangeset | null>;
+
+  /** Daemon broadcast payloads (kernel status, output, env progress, text attributions). */
+  readonly broadcasts$: Observable<unknown>;
+
+  /** Remote peer presence updates (cursor, selection, snapshot, left, heartbeat). */
+  readonly presence$: Observable<unknown>;
+
+  /** RuntimeState snapshots from the daemon's RuntimeStateDoc. */
+  readonly runtimeState$: Observable<RuntimeState>;
+
+  /** Execution lifecycle transitions detected from RuntimeState diffs. */
+  readonly executionTransitions$: Observable<ExecutionTransition[]>;
+
+  /**
+   * Fires once when the initial sync handshake completes (daemon has
+   * sent document content). Consumers should do their first full
+   * materialization in response.
+   */
+  readonly initialSyncComplete$: Observable<void>;
+
+  // Backing subjects for public observables
+  private readonly _cellChanges$ = new Subject<CellChangeset | null>();
+  private readonly _broadcasts$ = new Subject<unknown>();
+  private readonly _presence$ = new Subject<unknown>();
+  private readonly _runtimeState$ = new Subject<RuntimeState>();
+  private readonly _executionTransitions$ = new Subject<
+    ExecutionTransition[]
+  >();
+  private readonly _initialSyncComplete$ = new ReplaySubject<void>(1);
+
+  constructor(opts: SyncEngineOptions) {
+    this.opts = {
+      ...opts,
+      logger: opts.logger ?? nullLogger,
+    };
+
+    // Expose as readonly Observable (hide Subject internals)
+    this.cellChanges$ = this._cellChanges$.asObservable();
+    this.broadcasts$ = this._broadcasts$.asObservable();
+    this.presence$ = this._presence$.asObservable();
+    this.runtimeState$ = this._runtimeState$.asObservable();
+    this.executionTransitions$ = this._executionTransitions$.asObservable();
+    this.initialSyncComplete$ = this._initialSyncComplete$.asObservable();
+  }
+
+  // ── Lifecycle ────────────────────────────────────────────────────
+
+  /**
+   * Start processing frames from the transport.
+   *
+   * Subscribes to the transport's frame listener and wires up all
+   * internal RxJS pipelines. Call `stop()` to tear everything down.
+   */
+  start(): void {
+    if (this.subscription) return; // already running
+
+    const sub = (this.subscription = new Subscription());
+    const log = this.opts.logger;
+
+    // Wire transport frames into the internal subject
+    const unlisten = this.opts.transport.onFrame((payload) => {
+      this.frameIn$.next(payload);
+    });
+    sub.add(() => unlisten());
+
+    // Subject for the sync retry timer
+    const retrySync$ = new Subject<void>();
+    sub.add(() => retrySync$.complete());
+
+    // Arm the retry timer immediately
+    retrySync$.next();
+
+    // Subject bridging sync_applied events into the coalescing buffer
+    const materialize$ = new Subject<CellChangeset | null>();
+    sub.add(() => materialize$.complete());
+
+    // ── Source: frames → WASM demux → individual FrameEvents ──────
+
+    const frameEvents$ = this.frameIn$.pipe(
+      mergeMap((payload) => {
+        try {
+          const handle = this.opts.getHandle();
+          if (!handle) return EMPTY;
+          const bytes = new Uint8Array(payload);
+          const result = handle.receive_frame(bytes);
+          if (!result || !Array.isArray(result)) return EMPTY;
+          return from(result as FrameEvent[]);
+        } catch (e) {
+          log.warn("[sync-engine] receive_frame failed:", e);
+          return EMPTY;
+        }
+      }),
+      share(),
+    );
+
+    // ── Sub-pipeline: sync_applied → initial sync / coalesce ──────
+
+    sub.add(
+      frameEvents$
+        .pipe(
+          filter((e) => e.type === "sync_applied"),
+          concatMap((e) => {
+            // Attributions → broadcast
+            if (e.attributions && e.attributions.length > 0) {
+              this._broadcasts$.next({
+                type: "text_attribution",
+                attributions: e.attributions,
+              });
+            }
+
+            // Send inline sync reply
+            if (e.reply) {
+              this.opts.transport
+                .sendFrame(
+                  FrameType.AUTOMERGE_SYNC,
+                  new Uint8Array(e.reply),
+                )
+                .catch((err: unknown) => {
+                  const handle = this.opts.getHandle();
+                  if (handle) {
+                    handle.cancel_last_flush();
+                  }
+                  log.warn(
+                    "[sync-engine] inline sync reply send failed, rolled back sync state:",
+                    err,
+                  );
+                });
+            }
+
+            // Initial sync
+            if (this.awaitingInitialSync) {
+              if (e.changed) {
+                this.awaitingInitialSync = false;
+                this._initialSyncComplete$.next();
+                this._initialSyncComplete$.complete();
+              }
+              // Restart retry timer on handshake rounds
+              retrySync$.next();
+              return EMPTY;
+            }
+
+            // Steady-state: push changeset into coalescing buffer
+            if (e.changed) {
+              materialize$.next(e.changeset ?? null);
+            }
+            return EMPTY;
+          }),
+        )
+        .subscribe(),
+    );
+
+    // ── Sync retry timer ──────────────────────────────────────────
+
+    sub.add(
+      retrySync$
+        .pipe(
+          switchMap(() => timer(SYNC_RETRY_MS)),
+          filter(() => this.awaitingInitialSync),
+        )
+        .subscribe(() => {
+          log.info("[sync-engine] Retrying sync after timeout");
+          this.resetAndResync();
+        }),
+    );
+
+    // ── Coalescing buffer → cellChanges$ ──────────────────────────
+
+    sub.add(
+      materialize$
+        .pipe(
+          bufferTime(COALESCE_MS),
+          filter((batch) => batch.length > 0),
+          concatMap((batch) => {
+            // Merge all changesets in the batch
+            let merged: CellChangeset | null = null;
+            let needsFull = false;
+
+            for (const cs of batch) {
+              if (cs === null) {
+                needsFull = true;
+              } else if (merged === null) {
+                merged = cs;
+              } else {
+                merged = mergeChangesets(merged, cs);
+              }
+            }
+
+            this._cellChanges$.next(needsFull ? null : merged);
+            return EMPTY;
+          }),
+        )
+        .subscribe(),
+    );
+
+    // ── Sub-pipeline: broadcasts ──────────────────────────────────
+
+    sub.add(
+      frameEvents$
+        .pipe(filter((e) => e.type === "broadcast" && e.payload != null))
+        .subscribe((e) => this._broadcasts$.next(e.payload)),
+    );
+
+    // ── Sub-pipeline: presence ────────────────────────────────────
+
+    sub.add(
+      frameEvents$
+        .pipe(filter((e) => e.type === "presence" && e.payload != null))
+        .subscribe((e) => this._presence$.next(e.payload)),
+    );
+
+    // ── Sub-pipeline: runtime state sync ──────────────────────────
+
+    sub.add(
+      frameEvents$
+        .pipe(
+          filter((e) => e.type === "runtime_state_sync_applied"),
+          concatMap((e) => {
+            if (e.changed && e.state) {
+              const state = e.state as RuntimeState;
+
+              // Diff executions for lifecycle transitions
+              const transitions = diffExecutions(
+                this.prevExecutions,
+                state.executions,
+              );
+              this.prevExecutions = state.executions;
+
+              this._runtimeState$.next(state);
+              if (transitions.length > 0) {
+                this._executionTransitions$.next(transitions);
+              }
+            }
+
+            // Send sync reply so the daemon knows our heads
+            const handle = this.opts.getHandle();
+            if (handle) {
+              try {
+                const reply = handle.generate_runtime_state_sync_reply();
+                if (reply) {
+                  return from(
+                    this.opts.transport
+                      .sendFrame(FrameType.RUNTIME_STATE_SYNC, reply)
+                      .catch((err: unknown) =>
+                        log.warn(
+                          "[sync-engine] runtime state sync reply failed:",
+                          err,
+                        ),
+                      ),
+                  );
+                }
+              } catch (err) {
+                log.warn(
+                  "[sync-engine] generate_runtime_state_sync_reply failed:",
+                  err,
+                );
+              }
+            }
+            return EMPTY;
+          }),
+        )
+        .subscribe(),
+    );
+
+    // ── Debounced outbound flush ──────────────────────────────────
+
+    sub.add(
+      this.flushRequest$.pipe(debounceTime(FLUSH_DEBOUNCE_MS)).subscribe(() => {
+        this.flush();
+      }),
+    );
+  }
+
+  /**
+   * Stop all pipelines and clean up subscriptions.
+   */
+  stop(): void {
+    if (!this.subscription) return;
+    this.subscription.unsubscribe();
+    this.subscription = null;
+  }
+
+  /** Whether the engine is currently running. */
+  get running(): boolean {
+    return this.subscription !== null;
+  }
+
+  // ── Outbound sync ────────────────────────────────────────────────
+
+  /**
+   * Flush local CRDT mutations to the daemon immediately.
+   *
+   * Sends both the notebook doc sync message and the RuntimeStateDoc
+   * sync message. On transport failure, rolls back sync state to
+   * prevent the consumption race from #1067.
+   */
+  flush(): void {
+    const handle = this.opts.getHandle();
+    if (!handle) return;
+
+    const msg = handle.flush_local_changes();
+    if (msg) {
+      this.opts.transport
+        .sendFrame(FrameType.AUTOMERGE_SYNC, msg)
+        .catch((e: unknown) => {
+          handle.cancel_last_flush();
+          this.opts.logger.warn(
+            "[sync-engine] sync to relay failed:",
+            e,
+          );
+        });
+    }
+
+    // Also flush RuntimeStateDoc sync so the daemon sends kernel status,
+    // trust state, etc. Without this, if the daemon's initial RuntimeStateSync
+    // frame arrived before the WASM handle was ready, the frontend would stay
+    // stuck on "not_started" (#runtime-state-race).
+    const stateMsg = handle.flush_runtime_state_sync();
+    if (stateMsg) {
+      this.opts.transport
+        .sendFrame(FrameType.RUNTIME_STATE_SYNC, stateMsg)
+        .catch((e: unknown) => {
+          handle.cancel_last_runtime_state_flush();
+          this.opts.logger.warn(
+            "[sync-engine] runtime state sync to relay failed:",
+            e,
+          );
+        });
+    }
+  }
+
+  /**
+   * Schedule a debounced flush (for batching rapid keystrokes).
+   *
+   * Each call resets the 20ms debounce timer. Call `flush()` directly
+   * when you need an immediate sync (e.g. before execute or save).
+   */
+  scheduleFlush(): void {
+    this.flushRequest$.next();
+  }
+
+  /**
+   * Reset sync state and resend the initial sync message.
+   *
+   * Used when the initial handshake stalls — resets the WASM handle's
+   * sync state so `flush_local_changes()` produces a fresh request.
+   */
+  resetAndResync(): void {
+    const handle = this.opts.getHandle();
+    if (!handle) return;
+    handle.reset_sync_state();
+    this.flush();
+  }
+
+  /**
+   * Reset the engine for a new bootstrap cycle (e.g. daemon:ready).
+   *
+   * Clears the initial sync gate and execution tracking state so the
+   * next round of frames is treated as a fresh connection.
+   */
+  resetForBootstrap(): void {
+    this.awaitingInitialSync = true;
+    this.prevExecutions = {};
+  }
+}

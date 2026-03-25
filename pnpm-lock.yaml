@@ -357,6 +357,9 @@ importers:
       remark-math:
         specifier: ^6.0.0
         version: 6.0.0
+      runtimed:
+        specifier: workspace:*
+        version: link:../../packages/runtimed
       rxjs:
         specifier: ^7.8.2
         version: 7.8.2
@@ -391,6 +394,12 @@ importers:
       vite:
         specifier: ^6.3.5
         version: 6.4.1(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.31.1)
+
+  packages/runtimed:
+    dependencies:
+      rxjs:
+        specifier: ^7.8.2
+        version: 7.8.2
 
 packages:
 

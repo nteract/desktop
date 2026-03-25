@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "runtimed": "workspace:*",
     "@codemirror/autocomplete": "^6.20.0",
     "@codemirror/commands": "^6.10.2",
     "@codemirror/lang-html": "^6.4.11",
