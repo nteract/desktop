@@ -268,7 +268,7 @@ See [contributing/runtimed.md](./runtimed.md) for full daemon development docs.
 
 ## MCP Server Development
 
-The [nteract MCP server](https://github.com/nteract/nteract) lets AI agents
+The [nteract MCP server](../python/nteract/) lets AI agents
 (Claude, Zed, etc.) interact with notebooks via the daemon. There are two ways
 to run it locally.
 
