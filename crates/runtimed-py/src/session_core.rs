@@ -1240,11 +1240,11 @@ pub(crate) async fn collect_outputs(
             let st = state.lock().await;
             if let Some(handle) = st.handle.as_ref() {
                 if let Ok(rs) = handle.get_runtime_state() {
-                    // Late-consumer fast path: if we have an execution_id and
-                    // the executions map shows it's already done/error, skip
-                    // the queue-watching loop entirely. This handles the case
-                    // where Execution.result() is called after the execution
-                    // has already finished.
+                    // Fast path: if we have an execution_id and the executions
+                    // map shows it's already done/error, we're finished. This
+                    // handles the late-consumer case where Execution.result()
+                    // is called after the execution has already completed.
+                    let mut done = false;
                     if let Some(eid) = execution_id {
                         if let Some(exec_state) = rs.executions.get(eid) {
                             if exec_state.status == "done" || exec_state.status == "error" {
@@ -1253,23 +1253,33 @@ pub(crate) async fn collect_outputs(
                                     eid,
                                     exec_state.status
                                 );
-                                true
+                                done = true;
                             } else {
                                 seen_in_queue = true;
-                                false
                             }
-                        } else {
-                            false // execution entry not synced yet
+                        }
+                        // else: execution entry not synced yet — fall through
+                    }
+
+                    // Fallback: kernel error or shutdown → stop waiting.
+                    // These must run even when we have an execution_id,
+                    // otherwise a kernel crash leaves us spinning until
+                    // the outer timeout fires.
+                    if !done {
+                        if rs.kernel.status == "error" {
+                            kernel_error = Some("Kernel error".to_string());
+                            done = true;
+                        } else if rs.kernel.status == "shutdown" {
+                            kernel_error = Some("Kernel shut down".to_string());
+                            done = true;
                         }
                     }
-                    // Kernel error or shutdown → stop waiting
-                    else if rs.kernel.status == "error" {
-                        kernel_error = Some("Kernel error".to_string());
-                        true
-                    } else if rs.kernel.status == "shutdown" {
-                        kernel_error = Some("Kernel shut down".to_string());
-                        true
-                    } else {
+
+                    // Fallback: queue-presence tracking. If the cell was
+                    // seen in the queue and has since left, execution is
+                    // done regardless of whether the executions map or
+                    // broadcasts caught up.
+                    if !done {
                         let in_executing = rs.queue.executing.as_ref().is_some_and(|e| {
                             e.cell_id == cell_id
                                 && execution_id.is_none_or(|eid| e.execution_id == eid)
@@ -1282,16 +1292,14 @@ pub(crate) async fn collect_outputs(
 
                         if in_queue {
                             seen_in_queue = true;
-                            false // still running
                         } else if seen_in_queue {
                             // Was in queue, now gone → done
-                            true
-                        } else {
-                            // Never seen in queue — doc hasn't synced yet.
-                            // Don't treat absence as completion.
-                            false
+                            done = true;
                         }
+                        // else: never seen in queue — doc hasn't synced yet
                     }
+
+                    done
                 } else {
                     false
                 }
