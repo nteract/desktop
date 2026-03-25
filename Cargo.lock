@@ -3585,29 +3585,22 @@ dependencies = [
  "cocoa",
  "dirs 5.0.1",
  "env_logger",
- "hex",
- "hmac",
  "log",
  "nbformat",
  "nix 0.30.1",
  "notebook-sync",
  "pathdiff",
- "petname",
  "pyproject-toml",
- "rand 0.8.5",
  "rfd 0.17.2",
  "runt-trust",
  "runt-workspace",
  "runtimed",
- "schemars 1.2.1",
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2 0.10.9",
  "strsim",
  "tauri",
  "tauri-build",
- "tauri-jupyter",
  "tauri-plugin-dialog",
  "tauri-plugin-process",
  "tauri-plugin-shell",
@@ -3617,7 +3610,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml 0.8.2",
- "ts-rs",
  "uuid",
 ]
 
@@ -7029,19 +7021,6 @@ dependencies = [
  "url",
  "uuid",
  "walkdir",
-]
-
-[[package]]
-name = "tauri-jupyter"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "bytes",
- "jupyter-protocol",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
 ]
 
 [[package]]
