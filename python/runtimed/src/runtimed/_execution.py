@@ -10,8 +10,6 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
-from runtimed._guards import sync_guard
-
 if TYPE_CHECKING:
     from runtimed._internals import (
         AsyncSession,
@@ -53,12 +51,12 @@ class Execution:
     @property
     def execution_id(self) -> str:
         """UUID for this execution."""
-        return sync_guard("execution_id", self._execution_id)
+        return self._execution_id
 
     @property
     def cell_id(self) -> str:
         """Cell ID being executed."""
-        return sync_guard("cell_id", self._cell_id)
+        return self._cell_id
 
     @property
     def status(self) -> str:
@@ -71,10 +69,10 @@ class Execution:
             rs = self._session.get_runtime_state_sync()
             entry = rs.executions.get(self._execution_id)
             if entry is not None:
-                return sync_guard("status", entry.status)
+                return entry.status
         except Exception:
             pass
-        return sync_guard("status", "unknown")
+        return "unknown"
 
     @property
     def success(self) -> bool | None:
@@ -83,7 +81,7 @@ class Execution:
             rs = self._session.get_runtime_state_sync()
             entry = rs.executions.get(self._execution_id)
             if entry is not None:
-                return sync_guard("success", entry.success)
+                return entry.success
         except Exception:
             pass
         return None
@@ -95,7 +93,7 @@ class Execution:
             rs = self._session.get_runtime_state_sync()
             entry = rs.executions.get(self._execution_id)
             if entry is not None:
-                return sync_guard("execution_count", entry.execution_count)
+                return entry.execution_count
         except Exception:
             pass
         return None
@@ -103,7 +101,7 @@ class Execution:
     @property
     def done(self) -> bool:
         """Whether the execution has reached a terminal state."""
-        return sync_guard("done", self.status in ("done", "error"))
+        return self.status in ("done", "error")
 
     async def result(self, timeout_secs: float = 60.0) -> ExecutionResult:
         """Wait for the execution to complete and return collected results.

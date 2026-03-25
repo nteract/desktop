@@ -139,73 +139,7 @@ class TestNotebookInfo:
 
 
 class TestSyncGuards:
-    """Test sync_guard wrapper and _HintList guards."""
-
-    def test_guard_str_value(self):
-        """Guarded string equals original and passes isinstance."""
-        from runtimed._guards import sync_guard
-
-        v = sync_guard("source", "hello")
-        assert v == "hello"
-        assert isinstance(v, str)
-
-    def test_guard_str_await(self):
-        """Guarded string raises TypeError on __await__."""
-        from runtimed._guards import sync_guard
-
-        v = sync_guard("source", "hello")
-        with pytest.raises(TypeError, match="sync property"):
-            v.__await__()
-
-    def test_guard_str_call(self):
-        """Guarded string raises TypeError on __call__."""
-        from runtimed._guards import sync_guard
-
-        v = sync_guard("source", "hello")
-        with pytest.raises(TypeError, match="not a method"):
-            v()
-
-    def test_guard_bool(self):
-        """Guarded bool compares equal and works as boolean."""
-        from runtimed._guards import sync_guard
-
-        v = sync_guard("is_connected", True)
-        assert v == True  # noqa: E712
-        assert bool(v) is True
-
-    def test_guard_bool_await(self):
-        """Guarded bool raises TypeError on __await__."""
-        from runtimed._guards import sync_guard
-
-        v = sync_guard("is_connected", True)
-        with pytest.raises(TypeError, match="sync property"):
-            v.__await__()
-
-    def test_guard_none_passthrough(self):
-        """None passes through unwrapped."""
-        from runtimed._guards import sync_guard
-
-        v = sync_guard("execution_count", None)
-        assert v is None
-
-    def test_guard_int(self):
-        """Guarded int equals original and supports arithmetic."""
-        from runtimed._guards import sync_guard
-
-        v = sync_guard("execution_count", 42)
-        assert v == 42
-        assert isinstance(v, int)
-        assert v + 1 == 43
-
-    def test_guard_dict(self):
-        """Guarded dict supports key access and raises on await."""
-        from runtimed._guards import sync_guard
-
-        v = sync_guard("metadata", {"key": "val"})
-        assert v["key"] == "val"
-        assert isinstance(v, dict)
-        with pytest.raises(TypeError, match="sync property"):
-            v.__await__()
+    """Test __await__ guards on sync return types."""
 
     def test_hint_list_await(self):
         """_HintList raises TypeError on __await__."""
@@ -222,6 +156,18 @@ class TestSyncGuards:
         v = _HintList([1, 2, 3], "outputs")
         with pytest.raises(TypeError, match="not a method"):
             v()
+
+    def test_runtime_state_has_await_guard(self):
+        """RuntimeState has __await__ guard method."""
+        assert hasattr(runtimed.RuntimeState, "__await__")
+
+    def test_kernel_state_has_await_guard(self):
+        """KernelState has __await__ guard method."""
+        assert hasattr(runtimed.KernelState, "__await__")
+
+    def test_env_state_has_await_guard(self):
+        """EnvState has __await__ guard method."""
+        assert hasattr(runtimed.EnvState, "__await__")
 
 
 class TestCreateNotebookValidation:

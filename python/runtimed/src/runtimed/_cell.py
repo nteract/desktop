@@ -6,7 +6,6 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from runtimed._execution import Execution
-from runtimed._guards import sync_guard
 from runtimed._internals import RuntimedError as _RuntimedError
 
 if TYPE_CHECKING:
@@ -59,12 +58,12 @@ class CellHandle:
     @property
     def source(self) -> str:
         """The cell's source text, read from the local replica."""
-        return sync_guard("source", self._session.get_cell_source_sync(self._id) or "")
+        return self._session.get_cell_source_sync(self._id) or ""
 
     @property
     def cell_type(self) -> str:
         """The cell type: ``'code'``, ``'markdown'``, or ``'raw'``."""
-        return sync_guard("cell_type", self._session.get_cell_type_sync(self._id) or "code")
+        return self._session.get_cell_type_sync(self._id) or "code"
 
     @property
     def outputs(self) -> list[Output]:
@@ -82,7 +81,7 @@ class CellHandle:
         if raw is None:
             return None
         try:
-            return sync_guard("execution_count", int(raw))
+            return int(raw)
         except (ValueError, TypeError):
             return None
 
@@ -91,11 +90,11 @@ class CellHandle:
         """Cell metadata as a parsed dict, read from the local replica."""
         raw = self._session.get_cell_metadata_sync(self._id)
         if raw is None:
-            return sync_guard("metadata", {})
+            return {}
         try:
-            return sync_guard("metadata", json.loads(raw))
+            return json.loads(raw)
         except (json.JSONDecodeError, TypeError):
-            return sync_guard("metadata", {})
+            return {}
 
     @property
     def tags(self) -> list[str]:
@@ -109,21 +108,17 @@ class CellHandle:
     def source_hidden(self) -> bool:
         """Whether cell source is hidden."""
         try:
-            return sync_guard(
-                "source_hidden", self._session.get_cell_sync(self._id).is_source_hidden
-            )
+            return self._session.get_cell_sync(self._id).is_source_hidden
         except _RuntimedError:
-            return sync_guard("source_hidden", False)
+            return False
 
     @property
     def outputs_hidden(self) -> bool:
         """Whether cell outputs are hidden."""
         try:
-            return sync_guard(
-                "outputs_hidden", self._session.get_cell_sync(self._id).is_outputs_hidden
-            )
+            return self._session.get_cell_sync(self._id).is_outputs_hidden
         except _RuntimedError:
-            return sync_guard("outputs_hidden", False)
+            return False
 
     def snapshot(self) -> Cell:
         """Full Cell snapshot from the local replica, including resolved outputs."""
