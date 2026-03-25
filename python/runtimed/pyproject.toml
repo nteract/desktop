@@ -20,6 +20,7 @@ build-backend = "maturin"
 
 [tool.maturin]
 manifest-path = "../../crates/runtimed-py/Cargo.toml"
+module-name = "runtimed._internals"
 python-source = "src"
 bindings = "pyo3"
 
