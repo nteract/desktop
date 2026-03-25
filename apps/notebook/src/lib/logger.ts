@@ -20,7 +20,17 @@ import {
 /** Serialize arguments to a single log message string. */
 function formatArgs(args: unknown[]): string {
   return args
-    .map((a) => (typeof a === "string" ? a : JSON.stringify(a)))
+    .map((a) => {
+      if (typeof a === "string") return a;
+      // Preserve Error messages and stacks (JSON.stringify(Error) is just "{}")
+      if (a instanceof Error) return a.stack ?? `${a.name}: ${a.message}`;
+      try {
+        return JSON.stringify(a);
+      } catch {
+        // Circular references, proxies, etc.
+        return String(a);
+      }
+    })
     .join(" ");
 }
 

@@ -2934,7 +2934,10 @@ async fn diagnostics_command(output_dir: Option<PathBuf>) -> Result<()> {
         tar.append_path_with_name(&prev_daemon_log, "runtimed.log.1")?;
         println!("  {} runtimed.log.1 (previous session)", "✓".green());
     } else {
-        println!("  {} runtimed.log.1 (previous session not found)", "–".yellow());
+        println!(
+            "  {} runtimed.log.1 (previous session not found)",
+            "–".yellow()
+        );
     }
 
     // 2. Notebook log (current session)
@@ -2946,13 +2949,16 @@ async fn diagnostics_command(output_dir: Option<PathBuf>) -> Result<()> {
         println!("  {} notebook.log (not found)", "–".yellow());
     }
 
-    // 2b. Previous notebook session log (rotated by tauri-plugin-log)
-    let prev_notebook_log = notebook_log.with_extension("log.0");
+    // 2b. Previous notebook session log (rotated on app startup)
+    let prev_notebook_log = notebook_log.with_extension("log.1");
     if prev_notebook_log.exists() {
-        tar.append_path_with_name(&prev_notebook_log, "notebook.log.0")?;
-        println!("  {} notebook.log.0 (previous session)", "✓".green());
+        tar.append_path_with_name(&prev_notebook_log, "notebook.log.1")?;
+        println!("  {} notebook.log.1 (previous session)", "✓".green());
     } else {
-        println!("  {} notebook.log.0 (previous session not found)", "–".yellow());
+        println!(
+            "  {} notebook.log.1 (previous session not found)",
+            "–".yellow()
+        );
     }
 
     // 3. daemon status --json

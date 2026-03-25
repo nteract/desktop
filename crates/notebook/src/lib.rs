@@ -3689,6 +3689,15 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
+
+    // Rotate previous session's log before the plugin opens the file.
+    // tauri-plugin-log's RotationStrategy is size-based, not per-startup,
+    // so we do our own rename here to preserve the previous session.
+    let prev_log = log_path.with_extension("log.1");
+    if log_path.exists() {
+        let _ = std::fs::rename(&log_path, &prev_log);
+    }
+
     let log_dir = log_path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("log path has no parent directory"))?
@@ -3698,7 +3707,7 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
         .map(|n| n.to_string_lossy().into_owned());
 
     let log_plugin = {
-        use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
+        use tauri_plugin_log::{Target, TargetKind, TimezoneStrategy};
         let mut log_builder = tauri_plugin_log::Builder::new()
             .clear_targets()
             .targets([
@@ -3713,7 +3722,6 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
                 Target::new(TargetKind::Webview),
             ])
             .timezone_strategy(TimezoneStrategy::UseLocal)
-            .rotation_strategy(RotationStrategy::KeepOne)
             .level(log::LevelFilter::Info)
             .format(move |out, message, record| {
                 out.finish(format_args!(
@@ -3724,10 +3732,23 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
                     message
                 ))
             });
-        // Respect RUST_LOG for level override (matches previous env_logger behavior)
+        // Respect RUST_LOG for level override. Supports both bare levels
+        // (e.g. "debug") and module-level filters (e.g. "notebook=debug,info").
+        // Module filters use the plugin's level_for() API; the global default
+        // comes from the last bare level or stays at info.
         if let Ok(rust_log) = std::env::var("RUST_LOG") {
-            if let Ok(level) = rust_log.parse::<log::LevelFilter>() {
-                log_builder = log_builder.level(level);
+            for directive in rust_log.split(',') {
+                let directive = directive.trim();
+                if directive.is_empty() {
+                    continue;
+                }
+                if let Some((module, level_str)) = directive.split_once('=') {
+                    if let Ok(level) = level_str.parse::<log::LevelFilter>() {
+                        log_builder = log_builder.level_for(module.to_string(), level);
+                    }
+                } else if let Ok(level) = directive.parse::<log::LevelFilter>() {
+                    log_builder = log_builder.level(level);
+                }
             }
         }
         log_builder.build()
