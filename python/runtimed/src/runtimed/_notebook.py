@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from runtimed._cell import CellCollection, _HintList
+from runtimed._guards import sync_guard
 from runtimed._presence import Presence
 
 if TYPE_CHECKING:
@@ -35,7 +36,7 @@ class Notebook:
     @property
     def notebook_id(self) -> str:
         """File path or UUID identifying this notebook."""
-        return self._session.notebook_id
+        return sync_guard("notebook_id", self._session.notebook_id)
 
     @property
     def cells(self) -> CellCollection:
@@ -68,7 +69,7 @@ class Notebook:
     @property
     def is_connected(self) -> bool:
         """Whether the session is connected to the daemon."""
-        return self._session.is_connected_sync()
+        return sync_guard("is_connected", self._session.is_connected_sync())
 
     # ── Async operations ─────────────────────────────────────────────
 

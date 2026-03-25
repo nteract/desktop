@@ -560,6 +560,12 @@ impl PyQueueEntry {
             self.cell_id, self.execution_id
         )
     }
+
+    fn __await__(&self) -> PyResult<()> {
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "QueueEntry is a sync value — use it directly, no await needed",
+        ))
+    }
 }
 
 #[pyclass(get_all, skip_from_py_object)]
@@ -582,6 +588,12 @@ impl QueueState {
             ),
             None => format!("QueueState(idle, queued={})", self.queued.len()),
         }
+    }
+
+    fn __await__(&self) -> PyResult<()> {
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "QueueState is a sync value — use it directly, no await needed",
+        ))
     }
 }
 
@@ -797,6 +809,12 @@ impl PyKernelState {
             self.status, self.env_source
         )
     }
+
+    fn __await__(&self) -> PyResult<()> {
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "KernelState is a sync value — use it directly, no await needed",
+        ))
+    }
 }
 
 /// Environment sync state from the RuntimeStateDoc.
@@ -830,6 +848,12 @@ impl PyEnvState {
             )
         }
     }
+
+    fn __await__(&self) -> PyResult<()> {
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "EnvState is a sync value — use it directly, no await needed",
+        ))
+    }
 }
 
 /// Execution lifecycle state for a single execution.
@@ -853,6 +877,12 @@ impl PyExecutionState {
             "ExecutionState(cell_id={}, status={}, success={:?})",
             self.cell_id, self.status, self.success
         )
+    }
+
+    fn __await__(&self) -> PyResult<()> {
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "ExecutionState is a sync value — use it directly, no await needed",
+        ))
     }
 }
 
@@ -888,6 +918,12 @@ impl PyRuntimeState {
                 "drifted"
             },
         )
+    }
+
+    fn __await__(&self) -> PyResult<()> {
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "'runtime' is a sync property — use it directly, no await needed: .runtime",
+        ))
     }
 }
 

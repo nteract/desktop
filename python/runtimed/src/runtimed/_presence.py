@@ -68,5 +68,10 @@ class Presence:
         """
         return await self._session.get_remote_cursors()
 
+    def __await__(self):
+        raise TypeError(
+            "'presence' is a sync property — use it directly, no await needed: .presence"
+        )
+
     def __repr__(self) -> str:
         return "Presence()"
