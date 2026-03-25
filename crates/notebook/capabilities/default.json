@@ -23,6 +23,7 @@
     },
     "shell:default",
     "updater:default",
-    "window-state:default"
+    "window-state:default",
+    "log:default"
   ]
 }
