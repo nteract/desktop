@@ -29,14 +29,18 @@ export const notebookEditorTheme = EditorView.theme({
   // (overrides theme's background)
   "&.cm-editor": {
     backgroundColor: "transparent",
+    // Pull the editor up to compensate for the extra .cm-content paddingTop
+    // that reserves space for peer cursor labels above line 1.
+    marginTop: "-0.5rem",
   },
   // Remove focus dotted outline
   "&.cm-focused": {
     outline: "none",
   },
   // Top padding inside editor so peer cursor labels have room above line 1
+  // Flag is ~19px tall (11px font × 1.2 line-height + 4px padding + 1px margin)
   ".cm-content": {
-    paddingTop: "0.75rem",
+    paddingTop: "1.25rem",
   },
   // Reset line padding so code aligns with output areas
   // (CodeMirror's base theme adds "padding: 0 2px 0 6px" to .cm-line)
