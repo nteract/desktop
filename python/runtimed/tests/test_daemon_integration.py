@@ -169,8 +169,14 @@ async def async_shutdown_and_start_kernel(
     raise last_err
 
 
-async def async_start_kernel_with_retry(session, *, retries=5, delay=1.0, **kwargs):
-    """Async retry wrapper for start_kernel (tolerates connection timeouts on CI)."""
+async def async_start_kernel_with_retry(session, *, retries=15, delay=1.0, **kwargs):
+    """Async retry wrapper for start_kernel.
+
+    Tolerates connection timeouts on CI and UV pool exhaustion under
+    heavy test load.  When the pool is empty the daemon returns an error
+    immediately — we back off and wait for a fresh environment to become
+    available rather than failing fast.
+    """
     last_err: Exception = Exception("max retries exceeded")
     for attempt in range(retries):
         try:
@@ -179,7 +185,12 @@ async def async_start_kernel_with_retry(session, *, retries=5, delay=1.0, **kwar
         except runtimed.RuntimedError as e:
             last_err = e
             if attempt < retries - 1:
-                await asyncio.sleep(delay)
+                # Pool-empty errors need longer backoff — the daemon is
+                # warming a new environment which takes several seconds.
+                if "pool empty" in str(e).lower():
+                    await asyncio.sleep(delay * 2)
+                else:
+                    await asyncio.sleep(delay)
     raise last_err
 
 
