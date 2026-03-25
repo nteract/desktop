@@ -163,7 +163,7 @@ async def test_create_notebook_and_cell(mcp_client: ClientSession):
     result = await mcp_client.call_tool("create_notebook", {})
     data = _parse_json(result)
     assert "notebook_id" in data
-    assert data["runtime"] == "python"
+    assert data["runtime"]["language"] == "python"
 
     # Create cell (returns plain text)
     result = await mcp_client.call_tool(
