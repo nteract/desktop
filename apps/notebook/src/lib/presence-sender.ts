@@ -39,8 +39,10 @@ export function presenceSenderExtension(
   let pendingUpdate = false;
 
   return EditorView.updateListener.of((update) => {
-    // Only act on selection changes
-    if (!update.selectionSet) return;
+    // Only act on selection changes in focused editors — an unfocused editor
+    // must never send presence, otherwise the throttle timer can fire after
+    // the user moves to another cell and re-broadcast a stale position.
+    if (!update.selectionSet || !update.view.hasFocus) return;
 
     // If a timer is pending, mark that we have a pending update
     if (throttleTimer) {
@@ -53,10 +55,15 @@ export function presenceSenderExtension(
 
     throttleTimer = setTimeout(() => {
       throttleTimer = null;
-      // If there was a pending update during the throttle window, send it now
+      // If there was a pending update during the throttle window, send it
+      // now — but only if the editor still has focus. If the user clicked
+      // into a different cell during the throttle window, skip the send
+      // to avoid overwriting their new cursor position with a stale one.
       if (pendingUpdate) {
         pendingUpdate = false;
-        sendPresence(update.view, cellId, callbacks);
+        if (update.view.hasFocus) {
+          sendPresence(update.view, cellId, callbacks);
+        }
       }
     }, THROTTLE_MS);
   });

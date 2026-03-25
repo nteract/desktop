@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,7 +20,7 @@ describe("presenceSenderExtension", () => {
     vi.useRealTimers();
   });
 
-  function createView(doc: string) {
+  function createView(doc: string, focused = true) {
     const state = EditorState.create({
       doc,
       extensions: [
@@ -29,7 +30,16 @@ describe("presenceSenderExtension", () => {
         }),
       ],
     });
-    return new EditorView({ state });
+    const v = new EditorView({ state });
+    // In jsdom, hasFocus is always false — override for test control.
+    if (focused) {
+      Object.defineProperty(v, "hasFocus", {
+        value: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+    return v;
   }
 
   it("sends cursor position when selection changes to a point", () => {
@@ -120,5 +130,35 @@ describe("presenceSenderExtension", () => {
     });
 
     expect(onSelection).toHaveBeenCalledWith("cell-1", 0, 2, 1, 3);
+  });
+
+  it("does not send stale cursor from throttle after editor loses focus", () => {
+    view = createView("hello");
+
+    // First change — sent immediately, starts throttle window
+    view.dispatch({ selection: { anchor: 1 } });
+    expect(onCursor).toHaveBeenCalledTimes(1);
+
+    // Second change within throttle — marks pendingUpdate
+    view.dispatch({ selection: { anchor: 3 } });
+    expect(onCursor).toHaveBeenCalledTimes(1);
+
+    // Simulate losing focus (user clicked into another cell)
+    (view as unknown as Record<string, unknown>).hasFocus = false;
+
+    // Advance past throttle interval
+    vi.advanceTimersByTime(75);
+
+    // The pending update should NOT have been sent — the editor lost focus
+    expect(onCursor).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not send cursor when selection changes in unfocused editor", () => {
+    view = createView("hello", false);
+
+    view.dispatch({ selection: { anchor: 2 } });
+
+    // Should not send — editor is unfocused
+    expect(onCursor).not.toHaveBeenCalled();
   });
 });
