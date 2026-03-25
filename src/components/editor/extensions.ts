@@ -34,6 +34,10 @@ export const notebookEditorTheme = EditorView.theme({
   "&.cm-focused": {
     outline: "none",
   },
+  // Top padding inside editor so peer cursor labels have room above line 1
+  ".cm-content": {
+    paddingTop: "0.75rem",
+  },
   // Reset line padding so code aligns with output areas
   // (CodeMirror's base theme adds "padding: 0 2px 0 6px" to .cm-line)
   ".cm-line": {

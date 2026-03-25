@@ -105,7 +105,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                   isDragging && "cursor-grabbing",
                 )}
               />
-              <div className="min-w-0 flex-1 py-3 pl-6 pr-3">{codeContent}</div>
+              <div className="min-w-0 flex-1 pb-3 pl-6 pr-3">{codeContent}</div>
               {/* Code row right gutter */}
               {rightGutterContent && (
                 <div
@@ -167,7 +167,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                   isDragging && "cursor-grabbing",
                 )}
               />
-              <div className="min-w-0 flex-1 py-3 pl-6 pr-3">{children}</div>
+              <div className="min-w-0 flex-1 pb-3 pl-6 pr-3">{children}</div>
             </div>
             {/* Right margin for legacy layout */}
             {rightGutterContent && (
