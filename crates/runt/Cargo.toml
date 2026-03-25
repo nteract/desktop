@@ -22,6 +22,7 @@ uuid = { workspace = true }
 jupyter-protocol = { workspace = true }
 runtimelib = { workspace = true, features = ["tokio-runtime", "aws-lc-rs"] }
 runtimed = { path = "../runtimed" }
+notebook-doc = { path = "../notebook-doc" }
 runt-workspace = { path = "../runt-workspace" }
 kernel-env = { path = "../kernel-env" }
 clap = { version = "4.5.1", features = ["derive", "color"] }

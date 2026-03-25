@@ -5733,6 +5733,7 @@ dependencies = [
  "jupyter-protocol",
  "kernel-env",
  "libc",
+ "notebook-doc",
  "notify",
  "petname",
  "rpassword",

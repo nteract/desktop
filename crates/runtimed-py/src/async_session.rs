@@ -677,7 +677,7 @@ impl AsyncSession {
         future_into_py(py, async move {
             session_core::connect(&state, &notebook_id).await?;
             let mut snapshot = session_core::get_notebook_metadata(&state).await?;
-            snapshot.kernelspec = Some(runtimed::notebook_metadata::KernelspecSnapshot {
+            snapshot.kernelspec = Some(notebook_doc::metadata::KernelspecSnapshot {
                 name,
                 display_name,
                 language,

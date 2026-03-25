@@ -316,7 +316,7 @@ impl Cell {
 
     /// Create a Cell from a CellSnapshot without resolving outputs.
     /// Use `from_snapshot_with_outputs` to include resolved outputs.
-    pub fn from_snapshot(snapshot: runtimed::notebook_doc::CellSnapshot) -> Self {
+    pub fn from_snapshot(snapshot: notebook_doc::CellSnapshot) -> Self {
         // Parse execution_count from JSON string ("5" or "null")
         let execution_count = snapshot.execution_count.parse::<i64>().ok();
         let metadata_json =
@@ -335,7 +335,7 @@ impl Cell {
 
     /// Create a Cell from a CellSnapshot with pre-resolved outputs.
     pub fn from_snapshot_with_outputs(
-        snapshot: runtimed::notebook_doc::CellSnapshot,
+        snapshot: notebook_doc::CellSnapshot,
         outputs: Vec<Output>,
     ) -> Self {
         let execution_count = snapshot.execution_count.parse::<i64>().ok();
