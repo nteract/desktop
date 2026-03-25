@@ -15,13 +15,14 @@ if TYPE_CHECKING:
 
 
 class Notebook:
-    """A connected notebook with sync reads and async writes.
+    """A connected notebook backed by a local Automerge CRDT replica.
 
     Created by ``Client.open_notebook()``, ``Client.create_notebook()``,
     or ``Client.join_notebook()``.
 
-    Properties are sync reads from the local CRDT replica — no ``await``.
-    Methods are async writes that sync to peers via the daemon.
+    Properties read directly from the local replica and return instantly.
+    Methods go through the daemon to mutate the document or manage the
+    runtime, so they must be awaited.
     """
 
     __slots__ = ("_session", "_cells", "_presence")
@@ -33,12 +34,12 @@ class Notebook:
 
     @property
     def notebook_id(self) -> str:
-        """File path or UUID for this notebook."""
+        """File path or UUID identifying this notebook."""
         return self._session.notebook_id
 
     @property
     def cells(self) -> CellCollection:
-        """The cell collection (sync reads, async writes)."""
+        """Cells in this notebook. Iterate, index, or search without awaiting."""
         if self._cells is None:
             self._cells = CellCollection(self._session)
         return self._cells
@@ -52,17 +53,21 @@ class Notebook:
 
     @property
     def runtime(self):
-        """Runtime state snapshot (sync). Access ``.kernel.status``, ``.queue``, ``.env``."""
+        """Current runtime state read from the local replica.
+
+        Returns a ``RuntimeState`` with ``.kernel``, ``.queue``, ``.env``,
+        and ``.executions`` — useful for polling kernel status or queue depth.
+        """
         return self._session.get_runtime_state_sync()
 
     @property
     def peers(self) -> list[tuple[str, str]]:
-        """Connected peers as (peer_id, peer_label) tuples (sync)."""
+        """Connected peers as ``(peer_id, peer_label)`` tuples, read from the local replica."""
         return _HintList(self._session.get_peers_sync(), "peers")
 
     @property
     def is_connected(self) -> bool:
-        """Whether the session is connected to the daemon (sync)."""
+        """Whether the session is connected to the daemon."""
         return self._session.is_connected_sync()
 
     # ── Async operations ─────────────────────────────────────────────
@@ -91,7 +96,7 @@ class Notebook:
         await self._session.start_kernel(runtime, env_source, notebook_path)
 
     async def stop_runtime(self) -> None:
-        """Stop the runtime (kernel). The session remains connected."""
+        """Shut down the kernel. The notebook session stays connected."""
         await self._session.shutdown_kernel()
 
     async def restart(self, wait_for_ready: bool = True) -> list[str]:
@@ -103,7 +108,7 @@ class Notebook:
         await self._session.interrupt()
 
     async def run_all(self) -> int:
-        """Queue all code cells for execution. Returns number of cells queued."""
+        """Queue every code cell for execution. Returns the number queued."""
         return await self._session.run_all_cells()
 
     async def disconnect(self) -> None:
@@ -126,7 +131,7 @@ class Notebook:
         return "uv"
 
     async def add_dependency(self, package: str) -> list[str]:
-        """Add a package dependency. Returns updated dependency list."""
+        """Add a package dependency and return the updated list."""
         pm = await self._package_manager()
         if pm == "conda":
             await self._session.add_conda_dependency(package)
@@ -136,7 +141,7 @@ class Notebook:
             return await self._session.get_uv_dependencies()
 
     async def add_dependencies(self, packages: list[str]) -> list[str]:
-        """Add multiple dependencies in a single operation. Returns updated list."""
+        """Add multiple dependencies at once and return the updated list."""
         pm = await self._package_manager()
         if pm == "conda":
             await self._session.add_conda_dependencies(packages)
@@ -146,7 +151,7 @@ class Notebook:
             return await self._session.get_uv_dependencies()
 
     async def remove_dependency(self, package: str) -> list[str]:
-        """Remove a package dependency. Returns updated dependency list."""
+        """Remove a package dependency and return the updated list."""
         pm = await self._package_manager()
         if pm == "conda":
             await self._session.remove_conda_dependency(package)
@@ -164,7 +169,7 @@ class Notebook:
             return await self._session.get_uv_dependencies()
 
     async def sync_environment(self) -> SyncEnvironmentResult:
-        """Hot-install dependencies without restarting."""
+        """Install pending dependency changes into the running kernel."""
         return await self._session.sync_environment()
 
     # ── Context manager ──────────────────────────────────────────────

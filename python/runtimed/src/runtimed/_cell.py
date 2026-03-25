@@ -40,8 +40,9 @@ class _HintList(list):
 class CellHandle:
     """A live reference to a cell in the notebook document.
 
-    Properties are sync reads from the local CRDT replica — no ``await``.
-    Methods are async writes that sync to peers via the daemon.
+    Properties read directly from the local Automerge CRDT replica and
+    return instantly. Methods go through the daemon to mutate the document,
+    so they must be awaited.
     """
 
     __slots__ = ("_id", "_session")
@@ -56,17 +57,17 @@ class CellHandle:
 
     @property
     def source(self) -> str:
-        """Cell source text (sync)."""
+        """The cell's source text, read from the local replica."""
         return self._session.get_cell_source_sync(self._id) or ""
 
     @property
     def cell_type(self) -> str:
-        """Cell type: 'code', 'markdown', or 'raw' (sync)."""
+        """The cell type: ``'code'``, ``'markdown'``, or ``'raw'``."""
         return self._session.get_cell_type_sync(self._id) or "code"
 
     @property
     def outputs(self) -> list[Output]:
-        """Resolved outputs (sync; may do disk I/O for blob resolution)."""
+        """Resolved outputs from the local replica. May do disk I/O to read blobs."""
         try:
             cell = self._session.get_cell_sync(self._id)
             return _HintList(cell.outputs, "outputs")
@@ -75,7 +76,7 @@ class CellHandle:
 
     @property
     def execution_count(self) -> int | None:
-        """Execution count, or None if never executed (sync)."""
+        """Execution count from the local replica, or ``None`` if never executed."""
         raw = self._session.get_cell_execution_count_sync(self._id)
         if raw is None:
             return None
@@ -86,7 +87,7 @@ class CellHandle:
 
     @property
     def metadata(self) -> Any:
-        """Parsed metadata dict (sync)."""
+        """Cell metadata as a parsed dict, read from the local replica."""
         raw = self._session.get_cell_metadata_sync(self._id)
         if raw is None:
             return {}
@@ -97,7 +98,7 @@ class CellHandle:
 
     @property
     def tags(self) -> list[str]:
-        """Cell tags (sync)."""
+        """Cell tags read from the local replica."""
         try:
             return _HintList(self._session.get_cell_sync(self._id).tags, "tags")
         except _RuntimedError:
@@ -105,7 +106,7 @@ class CellHandle:
 
     @property
     def source_hidden(self) -> bool:
-        """Whether cell source is hidden (sync)."""
+        """Whether cell source is hidden."""
         try:
             return self._session.get_cell_sync(self._id).is_source_hidden
         except _RuntimedError:
@@ -113,14 +114,14 @@ class CellHandle:
 
     @property
     def outputs_hidden(self) -> bool:
-        """Whether cell outputs are hidden (sync)."""
+        """Whether cell outputs are hidden."""
         try:
             return self._session.get_cell_sync(self._id).is_outputs_hidden
         except _RuntimedError:
             return False
 
     def snapshot(self) -> Cell:
-        """Return the full Cell object with resolved outputs (sync)."""
+        """Full Cell snapshot from the local replica, including resolved outputs."""
         return self._session.get_cell_sync(self._id)
 
     # ── Async mutations ──────────────────────────────────────────────
@@ -241,8 +242,9 @@ class CellHandle:
 class CellCollection:
     """The cells in a notebook. Access via ``notebook.cells``.
 
-    Properties and iteration are sync reads from the local CRDT replica — no ``await``.
-    ``create()`` and ``insert_at()`` are async writes that sync to peers.
+    Iteration, indexing, and search read from the local Automerge CRDT
+    replica and return instantly. ``create()`` and ``insert_at()`` go
+    through the daemon to mutate the document, so they must be awaited.
     """
 
     __slots__ = ("_session",)
@@ -256,19 +258,19 @@ class CellCollection:
     # ── Sync reads ───────────────────────────────────────────────────
 
     def get_by_id(self, cell_id: str) -> CellHandle:
-        """Get a cell by its exact ID (sync)."""
+        """Look up a cell by its exact ID."""
         ids = self._session.get_cell_ids_sync()
         if cell_id not in ids:
             raise KeyError(f"No cell with ID {cell_id!r}")
         return self._handle(cell_id)
 
     def get_by_index(self, index: int) -> CellHandle:
-        """Get a cell by position (sync, supports negative indexing)."""
+        """Get a cell by position. Supports negative indexing."""
         ids = self._session.get_cell_ids_sync()
         return self._handle(ids[index])
 
     def find(self, substring: str) -> list[CellHandle]:
-        """Find cells whose source contains a substring (sync)."""
+        """Find cells whose source contains a substring."""
         result = []
         for cell_id in self._session.get_cell_ids_sync():
             source = self._session.get_cell_source_sync(cell_id) or ""
@@ -278,7 +280,7 @@ class CellCollection:
 
     @property
     def ids(self) -> list[str]:
-        """All cell IDs in document order (sync)."""
+        """All cell IDs in document order."""
         return _HintList(self._session.get_cell_ids_sync(), "ids")
 
     def __getitem__(self, cell_id: str) -> CellHandle:
