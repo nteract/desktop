@@ -37,20 +37,27 @@ let windowFocused = true;
 // ── Editor focus tracking ────────────────────────────────────────────
 
 /**
- * Track which CM editor last received focus. Uses `focusin` on the
- * document (capture phase) so we always have a reference to the active
- * editor, independent of React state or the cursor registry.
+ * Track which CM editor has focus, clearing state when focus moves
+ * elsewhere. Uses `focusin` on the document (capture phase) so we
+ * always know whether an editor is active, independent of React state
+ * or the cursor registry.
  *
- * This is more reliable than reading `document.activeElement` at blur
- * time, because some platforms reset activeElement before the blur
- * handler runs.
+ * When focus moves to a non-editor element (find bar, dependency input,
+ * dialog, etc.) we clear savedView so that window refocus doesn't steal
+ * focus back from the legitimate target.
  */
 function trackEditorFocus(e: FocusEvent): void {
   const target = e.target as HTMLElement | null;
   if (!target) return;
 
   const cmEditor = target.closest?.(".cm-editor");
-  if (!cmEditor) return;
+  if (!cmEditor) {
+    // Focus moved to a non-editor control — clear saved state so
+    // window refocus doesn't steal focus from dialogs, find bar, etc.
+    savedView = null;
+    savedSelection = null;
+    return;
+  }
 
   const cmContent = cmEditor.querySelector(".cm-content");
   if (!cmContent) return;
