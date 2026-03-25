@@ -55,10 +55,10 @@ const ENABLE_UNDERLINE = true;
 // ── Configuration ────────────────────────────────────────────────────
 
 /** How long (ms) a highlight remains fully visible before starting to fade. */
-const HOLD_MS = 400;
+const HOLD_MS = 800;
 
 /** How long (ms) the fade-out transition takes after the hold period. */
-const FADE_MS = 600;
+const FADE_MS = 1200;
 
 /** Total lifetime of a highlight (hold + fade). */
 const TOTAL_MS = HOLD_MS + FADE_MS;
