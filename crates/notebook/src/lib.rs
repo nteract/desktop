@@ -3698,7 +3698,7 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
         .map(|n| n.to_string_lossy().into_owned());
 
     let log_plugin = {
-        use tauri_plugin_log::{Target, TargetKind, TimezoneStrategy};
+        use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
         let mut log_builder = tauri_plugin_log::Builder::new()
             .clear_targets()
             .targets([
@@ -3713,6 +3713,7 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
                 Target::new(TargetKind::Webview),
             ])
             .timezone_strategy(TimezoneStrategy::UseLocal)
+            .rotation_strategy(RotationStrategy::KeepOne)
             .level(log::LevelFilter::Info)
             .format(move |out, message, record| {
                 out.finish(format_args!(
