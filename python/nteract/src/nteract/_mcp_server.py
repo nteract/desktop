@@ -323,32 +323,28 @@ def _build_cell_status_map(queue_state: QueueState) -> dict[str, str]:
     return cell_status
 
 
-async def _get_cell_status_map(notebook: runtimed.Notebook) -> dict[str, str]:
-    """Fetch queue state and return cell status map, empty on failure.
+def _get_cell_status_map(notebook: runtimed.Notebook) -> dict[str, str]:
+    """Read queue state and return cell status map, empty on failure.
 
     Status is a best-effort annotation — errors should never prevent
     get_all_cells or get_cell from returning results.
     """
     try:
-        queue_state = await notebook.queue_state()
+        queue_state = notebook.runtime.queue
         return _build_cell_status_map(queue_state)
-    except asyncio.CancelledError:
-        raise
     except Exception:
         return {}
 
 
-async def _get_single_cell_status(notebook: runtimed.Notebook, cell_id: str) -> str | None:
-    """Fetch queue status for a single cell, None on failure."""
+def _get_single_cell_status(notebook: runtimed.Notebook, cell_id: str) -> str | None:
+    """Read queue status for a single cell, None on failure."""
     try:
-        queue_state = await notebook.queue_state()
+        queue_state = notebook.runtime.queue
         if queue_state.executing and queue_state.executing.cell_id == cell_id:
             return "running"
         if any(entry.cell_id == cell_id for entry in queue_state.queued):
             return "queued"
         return None
-    except asyncio.CancelledError:
-        raise
     except Exception:
         return None
 
@@ -800,7 +796,7 @@ class NteractServer:
             client = srv._get_client()
             srv._notebook = await client.join_notebook(notebook_id, peer_label=srv._peer_label())
 
-            cell_status = await _get_cell_status_map(srv._notebook)
+            cell_status = _get_cell_status_map(srv._notebook)
             lines = [
                 _format_cell_summary(
                     i,
@@ -834,7 +830,7 @@ class NteractServer:
             client = srv._get_client()
             srv._notebook = await client.open_notebook(path, peer_label=srv._peer_label())
 
-            cell_status = await _get_cell_status_map(srv._notebook)
+            cell_status = _get_cell_status_map(srv._notebook)
             lines = [
                 _format_cell_summary(
                     i,
@@ -1274,7 +1270,7 @@ class NteractServer:
                 cell = notebook.cells.get_by_id(cell_id)
             except KeyError:
                 return [TextContent(type="text", text=f'Cell "{cell_id}" not found')]
-            status = await _get_single_cell_status(notebook, cell_id)
+            status = _get_single_cell_status(notebook, cell_id)
             return _cell_to_content(cell, status=status)
 
         @srv.mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
@@ -1311,7 +1307,7 @@ class NteractServer:
 
             notebook = await srv._get_notebook()
             all_cells = list(notebook.cells)
-            cell_status = await _get_cell_status_map(notebook)
+            cell_status = _get_cell_status_map(notebook)
 
             end = start + count if count is not None else len(all_cells)
             cells = all_cells[start:end]
@@ -1412,7 +1408,7 @@ class NteractServer:
             if srv._notebook is None:
                 return "Error: No active notebook"
             try:
-                cell_status = await _get_cell_status_map(srv._notebook)
+                cell_status = _get_cell_status_map(srv._notebook)
                 lines = [
                     _format_cell_summary(i, cell, status=cell_status.get(cell.id))
                     for i, cell in enumerate(srv._notebook.cells)
@@ -1429,7 +1425,7 @@ class NteractServer:
             try:
                 await srv._send_cell_focus(cell_id)
                 cell = srv._notebook.cells.get_by_id(cell_id)
-                status = await _get_single_cell_status(srv._notebook, cell_id)
+                status = _get_single_cell_status(srv._notebook, cell_id)
                 return _format_cell(cell, status=status)
             except Exception as e:
                 return f"Error: {e}"
@@ -1445,7 +1441,7 @@ class NteractServer:
                     return f"Error: Index {index} out of range (notebook has {num_cells} cells)"
                 cell = srv._notebook.cells.get_by_index(index)
                 await srv._send_cell_focus(cell.id)
-                status = await _get_single_cell_status(srv._notebook, cell.id)
+                status = _get_single_cell_status(srv._notebook, cell.id)
                 return _format_cell(cell, status=status)
             except Exception as e:
                 return f"Error: {e}"
@@ -1474,7 +1470,7 @@ class NteractServer:
                 return json.dumps(
                     {
                         "notebook_id": srv._notebook.notebook_id,
-                        "connected": await srv._notebook.is_connected(),
+                        "connected": srv._notebook.is_connected,
                         "runtime_status": srv._notebook.runtime.kernel.status,
                         "env_source": srv._notebook.runtime.kernel.env_source,
                     }

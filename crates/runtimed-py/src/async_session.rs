@@ -1211,6 +1211,12 @@ impl AsyncSession {
         Ok(rs.into())
     }
 
+    /// Whether the session is connected (sync read — no future needed).
+    fn is_connected_sync(&self) -> bool {
+        let st = self.state.blocking_lock();
+        st.handle.is_some()
+    }
+
     /// Get connected peers (sync read from local doc).
     fn get_peers_sync(&self) -> PyResult<Vec<(String, String)>> {
         let st = self.state.blocking_lock();

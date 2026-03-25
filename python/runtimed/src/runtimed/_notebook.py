@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from runtimed._cell import CellCollection
+from runtimed._cell import CellCollection, _HintList
 from runtimed._presence import Presence
 
 if TYPE_CHECKING:
     from runtimed.runtimed import (
         AsyncSession,
-        QueueState,
         SyncEnvironmentResult,
     )
 
@@ -58,7 +57,12 @@ class Notebook:
     @property
     def peers(self) -> list[tuple[str, str]]:
         """Connected peers as (peer_id, peer_label) tuples (sync read)."""
-        return self._session.get_peers_sync()
+        return _HintList(self._session.get_peers_sync(), "peers")
+
+    @property
+    def is_connected(self) -> bool:
+        """Whether the session is connected to the daemon (sync read)."""
+        return self._session.is_connected_sync()
 
     # ── Async operations ─────────────────────────────────────────────
 
@@ -100,14 +104,6 @@ class Notebook:
     async def run_all(self) -> int:
         """Queue all code cells for execution. Returns number of cells queued."""
         return await self._session.run_all_cells()
-
-    async def is_connected(self) -> bool:
-        """Check if the session is connected to the daemon."""
-        return await self._session.is_connected()
-
-    async def queue_state(self) -> QueueState:
-        """Get the execution queue state (currently executing + queued cells)."""
-        return await self._session.get_queue_state()
 
     async def disconnect(self) -> None:
         """Disconnect from the notebook session."""
@@ -180,10 +176,10 @@ class Notebook:
             "|-|-|\n"
             "| `cells` `peers` | `save()` `save_as()` |\n"
             "| `presence` `runtime` | `start()` `stop_runtime()` `restart()` |\n"
-            "| `notebook_id` | `interrupt()` `run_all()` |\n"
+            "| `notebook_id` `is_connected` | `interrupt()` `run_all()` |\n"
             "| | `add_dependency()` `remove_dependency()` |\n"
             "| | `get_dependencies()` `sync_environment()` |\n"
-            "| | `is_connected()` `queue_state()` `disconnect()` |\n"
+            "| | `disconnect()` |\n"
         )
 
     def __repr__(self) -> str:
