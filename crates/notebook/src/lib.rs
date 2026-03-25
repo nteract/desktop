@@ -3727,6 +3727,17 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
         }]
     };
 
+    // Deduplicate by label — if the same notebook path was open in multiple
+    // windows, session restore regenerates the same deterministic label for
+    // each, which would crash registry.insert() with "Context already exists".
+    let startup_windows = {
+        let mut seen = std::collections::HashSet::new();
+        startup_windows
+            .into_iter()
+            .filter(|sw| seen.insert(sw.label.clone()))
+            .collect::<Vec<_>>()
+    };
+
     // If session restore yielded no valid windows, fall back to a fresh notebook
     let startup_windows = if !needs_onboarding && startup_windows.is_empty() {
         vec![StartupWindow {
