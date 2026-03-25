@@ -45,6 +45,7 @@ import { KERNEL_STATUS } from "./lib/kernel-status";
 import { logger } from "./lib/logger";
 import { getNotebookCellsSnapshot } from "./lib/notebook-cells";
 import { useDetectRuntime } from "./lib/notebook-metadata";
+import { startWindowFocusHandler } from "./lib/window-focus";
 import type { JupyterMessage } from "./types";
 
 /** MIME bundle type for page payloads */
@@ -110,6 +111,12 @@ function AppContent() {
   // Start dispatching text attribution events to CodeMirror EditorViews
   useEffect(() => {
     return startAttributionDispatch();
+  }, []);
+
+  // Re-establish CodeMirror input context on window reactivation.
+  // Without this, WKWebView may drop the first few keystrokes after Cmd+Tab.
+  useEffect(() => {
+    return startWindowFocusHandler();
   }, []);
 
   const {
