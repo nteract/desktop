@@ -34,7 +34,7 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
+asyncio_default_fixture_loop_scope = "module"
 # Global timeout catches truly stuck tests. Must be high enough
 # to cover the daemon_process fixture startup (up to 150s for socket +
 # pool warmup on first test in the module) and survive at least one
