@@ -112,10 +112,26 @@ function handleBroadcast(payload: unknown): void {
   const event = payload as TextAttributionEvent;
   if (!event.attributions || event.attributions.length === 0) return;
 
+  // Defer mark creation by one microtask. The CRDT bridge also
+  // subscribes to this broadcast and applies text changes to the CM
+  // editor synchronously. If we create marks immediately, we read the
+  // pre-change document (old positions, old length), and the subsequent
+  // CRDT bridge transaction remaps the marks — typically collapsing
+  // insert-then-delete pairs to zero width. By deferring, we guarantee
+  // the CM document already reflects the new content when we read
+  // positions, so marks land on the correct text.
+  const attributions = event.attributions;
+  queueMicrotask(() => dispatchAttributionMarks(attributions));
+}
+
+/** Create and dispatch attribution marks after the CRDT bridge has applied text changes. */
+function dispatchAttributionMarks(
+  attributions: TextAttributionEvent["attributions"],
+): void {
   // Group attributions by cell_id for batch dispatch
   const byCellId = new Map<string, AttributionMark[]>();
 
-  for (const attr of event.attributions) {
+  for (const attr of attributions) {
     const view = editors.get(attr.cell_id);
     if (!view) continue;
 
