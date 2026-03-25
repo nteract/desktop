@@ -121,13 +121,20 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ubuntu-latest
+          shared-key: ubuntu-wasm
 
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build runtimed-wasm
         run: wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm
+
+      - name: Check WASM artifacts are up to date
+        run: |
+          git diff --exit-code apps/notebook/src/wasm/runtimed-wasm/ || {
+            echo "::error::Checked-in WASM artifacts are stale. Run: wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm"
+            exit 1
+          }
 
       - name: Install Deno
         uses: denoland/setup-deno@v2
@@ -246,7 +253,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ubuntu-latest
+          shared-key: ubuntu-release
 
       - name: Build external binaries
         shell: bash
@@ -324,7 +331,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ubuntu-latest
+          shared-key: ubuntu-clippy
 
       # Excludes: notebook (needs bundled binaries, checked in build-linux),
       # runtimed-wasm (needs wasm-pack, tested in wasm-deno),
@@ -642,7 +649,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ubuntu-latest
+          shared-key: ubuntu-py-integration
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
