@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from runtimed.runtimed import AsyncSession
+    from runtimed._internals import AsyncSession
 
 
 class Presence:

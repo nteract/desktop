@@ -292,7 +292,7 @@ await nb.disconnect()
 > not yet wrapped), import them explicitly:
 >
 > ```python
-> from runtimed.runtimed import NativeAsyncClient, AsyncSession
+> from runtimed._internals import NativeAsyncClient, AsyncSession
 > ```
 
 ## Error Handling

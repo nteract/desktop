@@ -105,7 +105,7 @@ fn show_notebook_app_for_channel(channel: &str, notebook_path: Option<PathBuf>) 
 
 /// Python module for runtimed daemon client.
 #[pymodule]
-fn runtimed(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _internals(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Core classes
     m.add_class::<AsyncClient>()?;
 

@@ -11,7 +11,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from runtimed.runtimed import (
+    from runtimed._internals import (
         AsyncSession,
         ExecutionResult,
     )

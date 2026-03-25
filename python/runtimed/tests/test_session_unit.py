@@ -28,10 +28,10 @@ class TestModuleExports:
         """CellHandle is exported from runtimed."""
         assert hasattr(runtimed, "CellHandle")
 
-    def test_native_types_exported(self):
-        """Native types are accessible for advanced use."""
-        assert hasattr(runtimed, "NativeAsyncClient")
-        assert hasattr(runtimed, "AsyncSession")
+    def test_internal_types_not_exported(self):
+        """Internal native types are not re-exported from the package."""
+        assert not hasattr(runtimed, "NativeAsyncClient")
+        assert not hasattr(runtimed, "AsyncSession")
 
     def test_runtime_state_types_exported(self):
         """Runtime state types use clean names."""

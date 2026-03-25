@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from runtimed._internals import NativeAsyncClient
 from runtimed._notebook import Notebook
 from runtimed._notebook_info import NotebookInfo
-from runtimed.runtimed import NativeAsyncClient
 
 
 class Client:

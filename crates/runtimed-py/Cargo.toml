@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [lib]
-name = "runtimed"
+name = "_internals"
 crate-type = ["cdylib"]
 
 [dependencies]

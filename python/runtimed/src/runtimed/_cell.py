@@ -6,10 +6,10 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from runtimed._execution import Execution
-from runtimed.runtimed import RuntimedError as _RuntimedError
+from runtimed._internals import RuntimedError as _RuntimedError
 
 if TYPE_CHECKING:
-    from runtimed.runtimed import (
+    from runtimed._internals import (
         AsyncSession,
         Cell,
         ExecutionResult,

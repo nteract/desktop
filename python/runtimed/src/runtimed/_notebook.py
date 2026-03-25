@@ -8,7 +8,7 @@ from runtimed._cell import CellCollection, _HintList
 from runtimed._presence import Presence
 
 if TYPE_CHECKING:
-    from runtimed.runtimed import (
+    from runtimed._internals import (
         AsyncSession,
         SyncEnvironmentResult,
     )

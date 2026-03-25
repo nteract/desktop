@@ -32,7 +32,7 @@ from mcp.types import ImageContent, TextContent, ToolAnnotations
 from pydantic import Field
 
 import runtimed
-from runtimed.runtimed import QueueState
+from runtimed._internals import QueueState
 
 logger = logging.getLogger(__name__)
 
