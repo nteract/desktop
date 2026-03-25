@@ -454,7 +454,6 @@ export const CodeCell = memo(function CodeCell({
                 keyMap={keyMap}
                 extensions={editorExtensions}
                 placeholder="Enter code..."
-
                 autoFocus={isFocused}
               />
             )}
