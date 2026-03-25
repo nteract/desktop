@@ -341,6 +341,10 @@ function handlePresence(payload: unknown): void {
 
 // ── Lifecycle ────────────────────────────────────────────────────────
 
+/** Reconciliation interval — re-dispatches all cells from canonical peer
+ * state to correct any rendering that diverged from the registry. */
+const RECONCILE_INTERVAL_MS = 5_000;
+
 /**
  * Start dispatching presence events to registered CodeMirror EditorViews.
  *
@@ -353,8 +357,18 @@ export function startCursorDispatch(peerId: string): () => void {
 
   const unsubscribe = subscribePresence(handlePresence);
 
+  // Periodic reconciliation: re-dispatch every registered cell from the
+  // canonical peers map. This self-heals if individual update messages
+  // were lost, misordered, or if the rendering diverged from state.
+  const reconcileTimer = setInterval(() => {
+    for (const cellId of editors.keys()) {
+      dispatchToCell(cellId);
+    }
+  }, RECONCILE_INTERVAL_MS);
+
   return () => {
     unsubscribe();
+    clearInterval(reconcileTimer);
     localPeerId = null;
     peers.clear();
     // Clear all editors' cursors on shutdown
