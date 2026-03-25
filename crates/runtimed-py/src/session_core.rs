@@ -1199,8 +1199,9 @@ pub(crate) async fn queue_cell(
 
     match response {
         NotebookResponse::CellQueued { execution_id, .. } => {
-            // Emit focus presence — queuing cell for execution
-            emit_focus_presence(state, cell_id).await;
+            // Don't emit focus here — it would overwrite any cursor presence
+            // set by a prior edit (e.g. splice_source, set_source). The cursor
+            // from the edit should persist through execution.
             Ok(execution_id)
         }
         NotebookResponse::Error { error } => Err(to_py_err(error)),
@@ -1483,9 +1484,8 @@ pub(crate) async fn run_all_cells(
                             .map(|c| c.id.clone())
                     })
                 };
-                if let Some(cell_id) = last_code_cell_id {
-                    emit_focus_presence(state, &cell_id).await;
-                }
+                // Don't emit focus — it would overwrite any existing cursor presence.
+                let _ = last_code_cell_id;
             }
             Ok(count)
         }
