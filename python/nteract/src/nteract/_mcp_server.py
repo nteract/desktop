@@ -353,6 +353,41 @@ async def _get_single_cell_status(notebook: runtimed.Notebook, cell_id: str) -> 
         return None
 
 
+def _collect_runtime_info(notebook: runtimed.Notebook) -> dict[str, Any]:
+    """Collect runtime info from the notebook's local CRDT replica."""
+    info: dict[str, Any] = {}
+    try:
+        rs = notebook.runtime
+        kernel = rs.kernel
+
+        info["kernel_status"] = kernel.status
+
+        if kernel.language:
+            info["language"] = kernel.language
+
+        if kernel.name:
+            info["kernel_name"] = kernel.name
+
+        if kernel.env_source:
+            info["env_source"] = kernel.env_source
+            if kernel.env_source.startswith("conda:"):
+                info["package_manager"] = "conda"
+            elif kernel.env_source.startswith("uv:"):
+                info["package_manager"] = "uv"
+            elif kernel.env_source == "deno":
+                info["package_manager"] = "deno"
+
+        env = rs.env
+        if not env.in_sync:
+            info["env_in_sync"] = False
+
+    except Exception:
+        if not info:
+            info["kernel_status"] = "unknown"
+
+    return info
+
+
 def _format_cell_summary(
     index: int,
     cell: runtimed.CellHandle,
@@ -826,9 +861,16 @@ class NteractServer:
                 for i, cell in enumerate(srv._notebook.cells)
             ]
 
+            runtime_info = _collect_runtime_info(srv._notebook)
+            deps: list[str] = []
+            with contextlib.suppress(Exception):
+                deps = await srv._notebook.get_dependencies()
+
             return {
                 "notebook_id": srv._notebook.notebook_id,
                 "connected": True,
+                "runtime": runtime_info,
+                "dependencies": deps,
                 "cells": "\n".join(lines),
             }
 
@@ -860,9 +902,16 @@ class NteractServer:
                 for i, cell in enumerate(srv._notebook.cells)
             ]
 
+            runtime_info = _collect_runtime_info(srv._notebook)
+            deps: list[str] = []
+            with contextlib.suppress(Exception):
+                deps = await srv._notebook.get_dependencies()
+
             return {
                 "notebook_id": srv._notebook.notebook_id,
                 "path": path,
+                "runtime": runtime_info,
+                "dependencies": deps,
                 "cells": "\n".join(lines),
             }
 
@@ -914,9 +963,13 @@ class NteractServer:
                 with contextlib.suppress(Exception):
                     await srv._notebook.restart()
 
+            runtime_info = _collect_runtime_info(srv._notebook)
+            if "language" not in runtime_info:
+                runtime_info["language"] = runtime
+
             return {
                 "notebook_id": srv._notebook.notebook_id,
-                "runtime": runtime,
+                "runtime": runtime_info,
                 "dependencies": dependencies or [],
             }
 
