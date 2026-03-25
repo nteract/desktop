@@ -31,9 +31,7 @@ class TestModuleExports:
     def test_native_types_exported(self):
         """Native types are accessible for advanced use."""
         assert hasattr(runtimed, "NativeAsyncClient")
-        assert hasattr(runtimed, "NativeClient")
         assert hasattr(runtimed, "AsyncSession")
-        assert hasattr(runtimed, "Session")
 
     def test_runtime_state_types_exported(self):
         """Runtime state types use clean names."""
@@ -42,8 +40,10 @@ class TestModuleExports:
         assert hasattr(runtimed, "EnvState")
 
     def test_deprecated_types_removed(self):
-        """DaemonClient is no longer exported."""
+        """Removed types are no longer exported."""
         assert not hasattr(runtimed, "DaemonClient")
+        assert not hasattr(runtimed, "NativeClient")
+        assert not hasattr(runtimed, "Session")
 
     def test_all_exports(self):
         """Check __all__ exports match expected items exactly."""
@@ -90,11 +90,6 @@ class TestClientConstruction:
         """Client can be instantiated without a daemon."""
         client = runtimed.Client()
         assert repr(client) == "Client()"
-
-    def test_native_client_creates(self):
-        """NativeClient can be instantiated."""
-        client = runtimed.NativeClient()
-        assert "NativeClient" in repr(client) or "Client" in repr(client)
 
 
 class TestNotebookInfo:
