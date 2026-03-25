@@ -1,29 +1,23 @@
 //! Python bindings for runtimed daemon client.
 //!
 //! Provides Python classes for:
-//! - `NativeClient`/`NativeAsyncClient`: Daemon operations (status, ping, list active notebooks)
-//! - `Session`: Synchronous notebook interaction with kernel management
+//! - `NativeAsyncClient`: Async daemon operations (status, ping, list active notebooks)
 //! - `AsyncSession`: Async notebook interaction with kernel management
-//!
-//! Both sync and async APIs are provided with full feature parity.
 
 use pyo3::prelude::*;
 use std::path::PathBuf;
 
 mod async_client;
 mod async_session;
-mod client;
 mod daemon_paths;
 mod error;
 
 mod output;
 mod output_resolver;
-mod session;
 mod session_core;
 
 use async_client::AsyncClient;
 use async_session::AsyncSession;
-use client::Client;
 use error::RuntimedError;
 
 use output::{
@@ -31,7 +25,6 @@ use output::{
     NotebookConnectionInfo, Output, PyEnvState, PyKernelState, PyQueueEntry, PyRuntimeState,
     QueueState, SyncEnvironmentResult,
 };
-use session::Session;
 
 /// Launch the desktop notebook app, optionally opening a specific notebook.
 ///
@@ -113,12 +106,10 @@ fn show_notebook_app_for_channel(channel: &str, notebook_path: Option<PathBuf>) 
 /// Python module for runtimed daemon client.
 #[pymodule]
 fn runtimed(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Core classes - new API (recommended)
-    m.add_class::<Client>()?;
+    // Core classes
     m.add_class::<AsyncClient>()?;
 
     // Session types (used internally by Python wrappers)
-    m.add_class::<Session>()?;
     m.add_class::<AsyncSession>()?;
 
     // Output types
