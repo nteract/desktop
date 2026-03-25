@@ -64,7 +64,14 @@ impl WindowNotebookRegistry {
         if contexts.contains_key(&label) {
             return Err(format!("Context already exists for window '{}'", label));
         }
-        contexts.insert(label, context);
+        let has_path = context.path.lock().is_ok_and(|p| p.is_some());
+        contexts.insert(label.clone(), context);
+        log::info!(
+            "[registry] Registered context for '{}' (has_path={}, total={})",
+            label,
+            has_path,
+            contexts.len()
+        );
         Ok(())
     }
 
@@ -87,21 +94,31 @@ impl WindowNotebookRegistry {
             .filter(|label| is_stale(label))
             .cloned()
             .collect();
+        if stale.is_empty() {
+            log::debug!(
+                "[registry] Prune found no stale entries ({} total)",
+                contexts.len()
+            );
+        }
         for label in stale {
             contexts.remove(&label);
             log::info!(
-                "[registry] Pruned stale entry for destroyed window: {}",
-                label
+                "[registry] Pruned stale entry '{}' ({} remaining)",
+                label,
+                contexts.len()
             );
         }
     }
 
     fn get(&self, label: &str) -> Result<WindowNotebookContext, String> {
         let contexts = self.contexts.lock().map_err(|e| e.to_string())?;
-        contexts
-            .get(label)
-            .cloned()
-            .ok_or_else(|| format!("No notebook context for window '{label}'"))
+        contexts.get(label).cloned().ok_or_else(|| {
+            format!(
+                "No notebook context for window '{}' (registry has {} entries)",
+                label,
+                contexts.len()
+            )
+        })
     }
 
     /// Find the first window label whose stored path matches `target`.
@@ -126,11 +143,13 @@ impl WindowNotebookRegistry {
             if app.get_webview_window(label).is_some() {
                 if let Ok(guard) = ctx.path.lock() {
                     if guard.is_none() {
+                        log::info!("[registry] find_empty_window_label: found '{}'", label);
                         return Some(label.clone());
                     }
                 }
             }
         }
+        log::debug!("[registry] find_empty_window_label: no empty window found");
         None
     }
 }
@@ -1843,6 +1862,10 @@ fn create_notebook_window_for_daemon(
 
     // Remove registry entries for windows that no longer exist. Without this,
     // ghost notebooks appear in the upgrade dialog and saved session.
+    log::debug!(
+        "[window] Pruning stale entries before creating window '{}'",
+        label
+    );
     registry.prune_stale_entries(app);
 
     // If a window with this label already exists, focus it instead of opening a
@@ -1966,6 +1989,84 @@ fn open_notebook_window(
         None,
     )
     .map(|_| ())
+}
+
+/// Process a single file-open URL: focus existing window, reuse empty window, or open new.
+/// Extracted from RunEvent::Opened handler so it can be reused for deferred URLs.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn handle_open_url(
+    app_handle: &tauri::AppHandle,
+    registry: &WindowNotebookRegistry,
+    url: &tauri::Url,
+) {
+    let path = match url.scheme() {
+        "file" => url.to_file_path().ok(),
+        _ => None,
+    };
+    let Some(path) = path else { return };
+    if path.extension().and_then(|e| e.to_str()) != Some("ipynb") {
+        return;
+    }
+
+    // Focus an existing window for this notebook if one is open.
+    if let Some(label) = registry.find_label_by_path(&path) {
+        if let Some(existing) = app_handle.get_webview_window(&label) {
+            log::info!(
+                "[file-open] Focusing existing window '{}' for {}",
+                label,
+                path.display()
+            );
+            let _ = existing.set_focus();
+            return;
+        }
+    }
+
+    // Reuse an empty (untitled) window if one exists, otherwise open new.
+    if let Some(empty_label) = registry.find_empty_window_label(app_handle) {
+        if let Ok(context) = registry.get(&empty_label) {
+            // Update path in context
+            if let Ok(mut p) = context.path.lock() {
+                *p = Some(path.clone());
+            }
+
+            if let Some(window) = app_handle.get_webview_window(&empty_label) {
+                log::info!(
+                    "[file-open] Reusing empty window '{}' for {}",
+                    empty_label,
+                    path.display()
+                );
+                let title = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("Untitled.ipynb");
+                let _ = window.set_title(title);
+                refresh_native_menu(app_handle, registry);
+
+                // Disconnect existing sync and reconnect with the file path
+                let notebook_sync = context.notebook_sync.clone();
+                let sync_generation = context.sync_generation.clone();
+                let notebook_id = context.notebook_id.clone();
+                let open_path = path.clone();
+                tauri::async_runtime::spawn(async move {
+                    // Clear existing handle
+                    *notebook_sync.lock().await = None;
+                    if let Err(e) = initialize_notebook_sync_open(
+                        window,
+                        open_path,
+                        notebook_sync,
+                        sync_generation,
+                        notebook_id,
+                    )
+                    .await
+                    {
+                        log::error!("[file-open] Daemon sync failed for reused window: {}", e);
+                    }
+                });
+            }
+        }
+    } else if let Err(e) = open_notebook_window(app_handle, registry, &path) {
+        log::error!("[file-open] Failed to open notebook in new window: {}", e);
+    }
 }
 
 fn next_available_sample_path(base_dir: &Path, file_name: &str) -> PathBuf {
@@ -3787,6 +3888,14 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
             .insert(&sw.label, context)
             .map_err(anyhow::Error::msg)?;
     }
+    log::info!(
+        "[startup] Registered {} startup window context(s): {:?}",
+        startup_windows.len(),
+        startup_windows
+            .iter()
+            .map(|sw| &sw.label)
+            .collect::<Vec<_>>()
+    );
 
     // Guard against concurrent reconnect attempts
     let reconnect_in_progress = ReconnectInProgress(Arc::new(AtomicBool::new(false)));
@@ -3811,6 +3920,11 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
     // Clone for auto-launch coordination
     let daemon_sync_complete_for_autolaunch = daemon_sync_complete.clone();
     let daemon_sync_success_for_autolaunch = daemon_sync_success.clone();
+
+    // Deferred file-open URLs — queued when RunEvent::Opened arrives before
+    // startup sync completes, preventing prune_stale_entries from removing
+    // contexts for startup windows whose Tauri webviews haven't been created yet.
+    let deferred_open_urls: Arc<Mutex<Vec<tauri::Url>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Migrate stale "main" window geometry before the window-state plugin loads.
     // Pre-97b0422f versions used a hardcoded "main" label for the first window.
@@ -3977,6 +4091,10 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
                         ),
                     }
                 }
+                log::info!(
+                    "[startup] All {} startup window(s) created",
+                    startup_windows.len()
+                );
                 refresh_native_menu(
                     app.handle(),
                     app.state::<WindowNotebookRegistry>().inner(),
@@ -4057,6 +4175,15 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
                 if daemon_available && !skip_notebook_sync {
                     let mut any_success = false;
                     for sw in startup_windows {
+                        log::info!(
+                            "[startup] Initializing sync for '{}' (mode={})",
+                            sw.label,
+                            match &sw.mode {
+                                OpenMode::Open { path } =>
+                                    format!("open:{}", path.display()),
+                                OpenMode::Create { .. } => "create".into(),
+                            }
+                        );
                         match (
                             app_for_notebook_sync.get_webview_window(&sw.label),
                             registry_for_notebook_sync.get(&sw.label),
@@ -4403,10 +4530,35 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
 
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     let registry_for_open = window_registry.clone();
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    let daemon_sync_complete_for_open = daemon_sync_complete.clone();
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    let deferred_urls_for_open = deferred_open_urls.clone();
     let registry_for_session = window_registry.clone();
     let registry_for_exit_session = window_registry.clone();
     let registry_for_window_close = window_registry.clone();
     app.run(move |app_handle, event| {
+        // Drain deferred file-open URLs once startup sync is complete.
+        // These were queued by RunEvent::Opened events that arrived before
+        // startup windows were fully created and synced.
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        if daemon_sync_complete_for_open.load(Ordering::SeqCst) {
+            if let Ok(mut q) = deferred_urls_for_open.lock() {
+                if !q.is_empty() {
+                    let urls: Vec<tauri::Url> = std::mem::take(&mut *q);
+                    drop(q);
+                    log::info!(
+                        "[file-open] Processing {} deferred open event(s)",
+                        urls.len()
+                    );
+                    registry_for_open.prune_stale_entries(app_handle);
+                    for url in &urls {
+                        handle_open_url(app_handle, &registry_for_open, url);
+                    }
+                }
+            }
+        }
+
         // Save session at ExitRequested — before windows are destroyed.
         // WindowEvent::Destroyed removes registry entries, so by RunEvent::Exit
         // the registry is empty and save_session() would no-op.
@@ -4475,77 +4627,31 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
             }
         }
 
-        // Handle file associations (macOS only)
+        // Handle file associations (macOS only).
+        // During startup, incoming Apple Events are deferred to prevent
+        // prune_stale_entries from removing contexts for startup windows
+        // whose Tauri webviews haven't been created yet.
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         if let RunEvent::Opened { urls } = &event {
-            // Prune stale entries so a destroyed main window isn't reused
-            registry_for_open.prune_stale_entries(app_handle);
-            for url in urls {
-                let path = match url.scheme() {
-                    "file" => url.to_file_path().ok(),
-                    _ => None,
-                };
-                let Some(path) = path else { continue };
-                if path.extension().and_then(|e| e.to_str()) != Some("ipynb") {
-                    continue;
+            log::info!(
+                "[file-open] RunEvent::Opened with {} URL(s): {:?}",
+                urls.len(),
+                urls.iter()
+                    .filter_map(|u| u.to_file_path().ok())
+                    .collect::<Vec<_>>()
+            );
+            if !daemon_sync_complete_for_open.load(Ordering::SeqCst) {
+                log::info!(
+                    "[file-open] Deferring {} open event(s) until startup completes",
+                    urls.len()
+                );
+                if let Ok(mut q) = deferred_urls_for_open.lock() {
+                    q.extend(urls.iter().cloned());
                 }
-
-                // For file association (Finder double-click), focus an existing window
-                // for this notebook if one is open — expected macOS behavior. Scan the
-                // registry by path rather than label.
-                if let Some(label) = registry_for_open.find_label_by_path(&path) {
-                    if let Some(existing) = app_handle.get_webview_window(&label) {
-                        let _ = existing.set_focus();
-                        continue;
-                    }
-                }
-
-                // Reuse an empty (untitled) window if one exists, otherwise open new.
-                // Note: only checks path, not dirty/content state. Cell edits
-                // no longer set NotebookState.dirty (mutations go through sync
-                // handle), so an untitled notebook with user edits may be reused.
-                if let Some(empty_label) = registry_for_open.find_empty_window_label(app_handle) {
-                    if let Ok(context) = registry_for_open.get(&empty_label) {
-                        // Update path in context
-                        if let Ok(mut p) = context.path.lock() {
-                            *p = Some(path.clone());
-                        }
-
-                        if let Some(window) = app_handle.get_webview_window(&empty_label) {
-                            let title = path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("Untitled.ipynb");
-                            let _ = window.set_title(title);
-                            refresh_native_menu(app_handle, &registry_for_open);
-
-                            // Disconnect existing sync and reconnect with the file path
-                            let notebook_sync = context.notebook_sync.clone();
-                            let sync_generation = context.sync_generation.clone();
-                            let notebook_id = context.notebook_id.clone();
-                            let open_path = path.clone();
-                            tauri::async_runtime::spawn(async move {
-                                // Clear existing handle
-                                *notebook_sync.lock().await = None;
-                                if let Err(e) = initialize_notebook_sync_open(
-                                    window,
-                                    open_path,
-                                    notebook_sync,
-                                    sync_generation,
-                                    notebook_id,
-                                )
-                                .await
-                                {
-                                    log::error!(
-                                        "[file-open] Daemon sync failed for reused window: {}",
-                                        e
-                                    );
-                                }
-                            });
-                        }
-                    }
-                } else if let Err(e) = open_notebook_window(app_handle, &registry_for_open, &path) {
-                    log::error!("Failed to open notebook in new window: {}", e);
+            } else {
+                registry_for_open.prune_stale_entries(app_handle);
+                for url in urls {
+                    handle_open_url(app_handle, &registry_for_open, url);
                 }
             }
         }
