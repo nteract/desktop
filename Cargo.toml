@@ -9,7 +9,6 @@ members = [
     "crates/notebook-doc",
     "crates/notebook-protocol",
     "crates/notebook-sync",
-    "crates/tauri-jupyter",
     "crates/xtask",
     "crates/runtimed",
     "crates/runtimed-py",

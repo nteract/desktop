@@ -31,29 +31,20 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
-tauri-jupyter = { path = "../tauri-jupyter" }
 runtimed = { path = "../runtimed" }
 notebook-sync = { path = "../notebook-sync" }
 runt-trust = { path = "../runt-trust" }
 runt-workspace = { path = "../runt-workspace" }
 nbformat = "1.2.1"
-petname = "2"
 log = "0.4"
 env_logger = "0.11"
-sha2 = "0.10"
-hmac = "0.12"
-rand = "0.8"
 strsim = "0.11"  # For Levenshtein distance (typosquat detection)
-hex = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 dirs = "5"
 toml = "0.8"
 serde_yaml = "0.9"
 pathdiff = "0.2"
 pyproject-toml = "0.13"
-schemars = { workspace = true }
-ts-rs = { workspace = true }
-
 rfd = "0.17"  # Native dialogs for pre-window error display
 
 # WebDriver plugin for E2E testing
