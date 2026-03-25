@@ -665,6 +665,18 @@ impl Session {
             .block_on(session_core::set_notebook_metadata(&self.state, &snapshot))
     }
 
+    /// Add multiple UV dependencies in a single operation (one metadata roundtrip).
+    fn add_uv_dependencies(&self, packages: Vec<String>) -> PyResult<()> {
+        let mut snapshot = self
+            .runtime
+            .block_on(session_core::get_notebook_metadata(&self.state))?;
+        for package in &packages {
+            snapshot.add_uv_dependency(package);
+        }
+        self.runtime
+            .block_on(session_core::set_notebook_metadata(&self.state, &snapshot))
+    }
+
     /// Remove a UV dependency by package name. Returns True if removed.
     fn remove_uv_dependency(&self, package: &str) -> PyResult<bool> {
         let mut snapshot = self
@@ -696,6 +708,18 @@ impl Session {
             .runtime
             .block_on(session_core::get_notebook_metadata(&self.state))?;
         snapshot.add_conda_dependency(package);
+        self.runtime
+            .block_on(session_core::set_notebook_metadata(&self.state, &snapshot))
+    }
+
+    /// Add multiple Conda dependencies in a single operation (one metadata roundtrip).
+    fn add_conda_dependencies(&self, packages: Vec<String>) -> PyResult<()> {
+        let mut snapshot = self
+            .runtime
+            .block_on(session_core::get_notebook_metadata(&self.state))?;
+        for package in &packages {
+            snapshot.add_conda_dependency(package);
+        }
         self.runtime
             .block_on(session_core::set_notebook_metadata(&self.state, &snapshot))
     }

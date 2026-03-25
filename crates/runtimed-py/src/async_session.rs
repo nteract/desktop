@@ -848,6 +848,22 @@ impl AsyncSession {
         })
     }
 
+    /// Add multiple UV dependencies in a single operation (one metadata roundtrip).
+    fn add_uv_dependencies<'py>(
+        &self,
+        py: Python<'py>,
+        packages: Vec<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future_into_py(py, async move {
+            let mut snapshot = session_core::get_notebook_metadata(&state).await?;
+            for package in &packages {
+                snapshot.add_uv_dependency(package);
+            }
+            session_core::set_notebook_metadata(&state, &snapshot).await
+        })
+    }
+
     /// Remove a UV dependency by package name. Returns True if removed.
     fn remove_uv_dependency<'py>(
         &self,
@@ -890,6 +906,22 @@ impl AsyncSession {
         future_into_py(py, async move {
             let mut snapshot = session_core::get_notebook_metadata(&state).await?;
             snapshot.add_conda_dependency(&package);
+            session_core::set_notebook_metadata(&state, &snapshot).await
+        })
+    }
+
+    /// Add multiple Conda dependencies in a single operation (one metadata roundtrip).
+    fn add_conda_dependencies<'py>(
+        &self,
+        py: Python<'py>,
+        packages: Vec<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future_into_py(py, async move {
+            let mut snapshot = session_core::get_notebook_metadata(&state).await?;
+            for package in &packages {
+                snapshot.add_conda_dependency(package);
+            }
             session_core::set_notebook_metadata(&state, &snapshot).await
         })
     }

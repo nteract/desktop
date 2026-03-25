@@ -138,6 +138,16 @@ class Notebook:
             await self._session.add_uv_dependency(package)
             return await self._session.get_uv_dependencies()
 
+    async def add_dependencies(self, packages: list[str]) -> list[str]:
+        """Add multiple dependencies in a single operation. Returns updated list."""
+        pm = await self._package_manager()
+        if pm == "conda":
+            await self._session.add_conda_dependencies(packages)
+            return await self._session.get_conda_dependencies()
+        else:
+            await self._session.add_uv_dependencies(packages)
+            return await self._session.get_uv_dependencies()
+
     async def remove_dependency(self, package: str) -> list[str]:
         """Remove a package dependency. Returns updated dependency list."""
         pm = await self._package_manager()

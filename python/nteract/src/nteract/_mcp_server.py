@@ -876,12 +876,13 @@ class NteractServer:
 
             client = srv._get_client()
             srv._notebook = await client.create_notebook(
-                runtime=runtime, working_dir=working_dir, peer_label=srv._peer_label()
+                runtime=runtime,
+                working_dir=working_dir,
+                peer_label=srv._peer_label(),
+                dependencies=dependencies if runtime == "python" else None,
             )
 
             if dependencies and runtime == "python":
-                for dep in dependencies:
-                    await srv._notebook.add_dependency(dep)
                 with contextlib.suppress(Exception):
                     await srv._notebook.restart()
 
