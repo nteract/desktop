@@ -1,4 +1,4 @@
-"""runtimed - Python toolkit for Jupyter runtimes."""
+"""runtimed - Python toolkit for Jupyter runtimes, powered by the runtimed daemon."""
 
 from importlib.metadata import PackageNotFoundError, version
 
