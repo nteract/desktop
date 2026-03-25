@@ -43,13 +43,22 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 
+// ── Toggles ──────────────────────────────────────────────────────────
+// Flip these to compare effects independently. Vite HMR picks up changes.
+
+/** Show the ghostly → solid text opacity fade-in. */
+const ENABLE_FADEIN = false;
+
+/** Show the left-to-right underline sweep. */
+const ENABLE_UNDERLINE = true;
+
 // ── Configuration ────────────────────────────────────────────────────
 
 /** How long (ms) a highlight remains fully visible before starting to fade. */
-const HOLD_MS = 1500;
+const HOLD_MS = 400;
 
 /** How long (ms) the fade-out transition takes after the hold period. */
-const FADE_MS = 2000;
+const FADE_MS = 600;
 
 /** Total lifetime of a highlight (hold + fade). */
 const TOTAL_MS = HOLD_MS + FADE_MS;
@@ -234,7 +243,9 @@ function buildDecorations(marks: TimedMark[]): DecorationSet {
 
     // ── Text opacity fade-in ──
     const opacityStyle =
-      textOpacity < 0.995 ? `opacity: ${textOpacity.toFixed(3)};` : "";
+      ENABLE_FADEIN && textOpacity < 0.995
+        ? `opacity: ${textOpacity.toFixed(3)};`
+        : "";
 
     // ── Underline sweep (left-to-right via CSS animation) ──
     //
@@ -246,7 +257,7 @@ function buildDecorations(marks: TimedMark[]): DecorationSet {
     // After the sweep completes (age > SWEEP_MS), we skip the animation
     // and just set background-size: 100% 2px directly.
     let underlineStyle = "";
-    if (underlineAlpha > 0.005) {
+    if (ENABLE_UNDERLINE && underlineAlpha > 0.005) {
       const color = `rgba(${mark.color}, ${underlineAlpha.toFixed(3)})`;
       const bg = `background-image: linear-gradient(${color}, ${color}); background-repeat: no-repeat; background-position: bottom left;`;
 
