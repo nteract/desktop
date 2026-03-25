@@ -24,7 +24,6 @@ import {
   from,
   mergeMap,
   Observable,
-  ReplaySubject,
   share,
   Subject,
   Subscription,
@@ -122,9 +121,11 @@ export class SyncEngine {
   readonly executionTransitions$: Observable<ExecutionTransition[]>;
 
   /**
-   * Fires once when the initial sync handshake completes (daemon has
-   * sent document content). Consumers should do their first full
-   * materialization in response.
+   * Fires each time the initial sync handshake completes (daemon has
+   * sent document content). Emits once per bootstrap cycle — after
+   * `resetForBootstrap()`, the next `changed:true` frame triggers
+   * another emission. Consumers should do a full materialization in
+   * response.
    */
   readonly initialSyncComplete$: Observable<void>;
 
@@ -136,7 +137,7 @@ export class SyncEngine {
   private readonly _executionTransitions$ = new Subject<
     ExecutionTransition[]
   >();
-  private readonly _initialSyncComplete$ = new ReplaySubject<void>(1);
+  private readonly _initialSyncComplete$ = new Subject<void>();
 
   constructor(opts: SyncEngineOptions) {
     this.opts = {
@@ -242,7 +243,6 @@ export class SyncEngine {
               if (e.changed) {
                 this.awaitingInitialSync = false;
                 this._initialSyncComplete$.next();
-                this._initialSyncComplete$.complete();
               }
               // Restart retry timer on handshake rounds
               retrySync$.next();

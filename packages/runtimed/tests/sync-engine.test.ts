@@ -510,25 +510,74 @@ describe("SyncEngine", () => {
   // ── resetForBootstrap ─────────────────────────────────────────
 
   describe("resetForBootstrap", () => {
-    it("resets initial sync gate so next changed:true fires initialSyncComplete$", async () => {
-      let callCount = 0;
-      (handle.receive_frame as ReturnType<typeof vi.fn>).mockImplementation(() => {
-        callCount++;
-        return [syncAppliedEvent({ changed: true })];
-      });
+    it("emits initialSyncComplete$ again after resetForBootstrap + changed:true", async () => {
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        syncAppliedEvent({ changed: true }),
+      ]);
 
       engine.start();
+
+      // Track all emissions
+      let emitCount = 0;
+      engine.initialSyncComplete$.subscribe(() => {
+        emitCount++;
+      });
 
       // Complete first initial sync
       transport.deliver(Array.from([0x00, 1]));
       await vi.advanceTimersByTimeAsync(0);
+      expect(emitCount).toBe(1);
 
-      // Reset for bootstrap — engine should wait for initial sync again
+      // Simulate daemon:ready — reset for a new bootstrap cycle
       engine.resetForBootstrap();
 
-      // The ReplaySubject already completed, but resetForBootstrap should
-      // still allow the engine to process new frames correctly
-      expect(callCount).toBe(1);
+      // Second initial sync should emit again
+      transport.deliver(Array.from([0x00, 2]));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(emitCount).toBe(2);
+    });
+
+    it("does not emit cellChanges$ during initial sync phase", async () => {
+      let callCount = 0;
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        callCount++;
+        return [
+          syncAppliedEvent({
+            changed: true,
+            changeset: {
+              changed: [{ cell_id: "c1", fields: { source: true } }],
+              added: [],
+              removed: [],
+              order_changed: false,
+            },
+          }),
+        ];
+      });
+
+      engine.start();
+
+      let cellChangeCount = 0;
+      engine.cellChanges$.subscribe(() => {
+        cellChangeCount++;
+      });
+
+      // First frame completes initial sync — should NOT go to cellChanges$
+      transport.deliver(Array.from([0x00, 1]));
+      await vi.advanceTimersByTimeAsync(50);
+      expect(cellChangeCount).toBe(0);
+
+      // After initial sync, steady-state frames go to cellChanges$
+      transport.deliver(Array.from([0x00, 2]));
+      await vi.advanceTimersByTimeAsync(50);
+      expect(cellChangeCount).toBe(1);
+
+      // Reset for bootstrap — back to initial sync phase
+      engine.resetForBootstrap();
+
+      // This frame should NOT go to cellChanges$ (awaiting initial sync)
+      transport.deliver(Array.from([0x00, 3]));
+      await vi.advanceTimersByTimeAsync(50);
+      expect(cellChangeCount).toBe(1); // unchanged
     });
   });
 

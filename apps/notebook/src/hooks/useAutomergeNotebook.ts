@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SyncableHandle } from "runtimed";
 import { FrameType, SyncEngine } from "runtimed";
-import { from, switchMap } from "rxjs";
+import { concatMap, from, switchMap } from "rxjs";
 import { getBlobPort, refreshBlobPort } from "../lib/blob-port";
 import { materializeChangeset } from "../lib/frame-pipeline";
 import { logger } from "../lib/logger";
@@ -205,15 +205,26 @@ export function useAutomergeNotebook() {
     });
 
     // Steady-state cell changes → incremental materialization.
-    const cellChangesSub = engine.cellChanges$.subscribe((changeset) => {
-      materializeChangeset(changeset, {
-        getHandle: () => handleRef.current,
-        materializeCells,
-        outputCache: outputCacheRef.current,
-      }).catch((err: unknown) =>
-        logger.warn("[automerge-notebook] materialize changeset failed:", err),
-      );
-    });
+    // concatMap serializes async work — if a batch awaits blob resolution,
+    // subsequent batches queue rather than overlapping store writes.
+    const cellChangesSub = engine.cellChanges$
+      .pipe(
+        concatMap((changeset) =>
+          from(
+            materializeChangeset(changeset, {
+              getHandle: () => handleRef.current,
+              materializeCells,
+              outputCache: outputCacheRef.current,
+            }).catch((err: unknown) =>
+              logger.warn(
+                "[automerge-notebook] materialize changeset failed:",
+                err,
+              ),
+            ),
+          ),
+        ),
+      )
+      .subscribe();
 
     // Broadcasts → frame bus.
     const broadcastsSub = engine.broadcasts$.subscribe((payload) =>
