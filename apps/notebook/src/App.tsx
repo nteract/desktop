@@ -136,6 +136,7 @@ function AppContent() {
     flushSync,
     getHandle,
     triggerSync,
+    localActor,
   } = useAutomergeNotebook();
 
   // Global find (Cmd+F)
@@ -1217,6 +1218,7 @@ function AppContent() {
           getHandle={getHandle}
           onSyncNeeded={triggerSync}
           setDirty={setDirty}
+          localActor={localActor}
         >
           <NotebookView
             cellIds={cellIds}

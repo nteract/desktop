@@ -43,6 +43,8 @@ interface CrdtBridgeContextValue {
   onSyncNeeded: () => void;
   /** Mark the notebook as dirty (unsaved changes). */
   setDirty: (dirty: boolean) => void;
+  /** Local actor label (e.g. "human:abcd1234") for filtering self-echo attributions. */
+  localActor: string;
 }
 
 const CrdtBridgeContext = createContext<CrdtBridgeContextValue | null>(null);
@@ -53,6 +55,7 @@ interface CrdtBridgeProviderProps {
   getHandle: () => NotebookHandle | null;
   onSyncNeeded: () => void;
   setDirty: (dirty: boolean) => void;
+  localActor: string;
   children: ReactNode;
 }
 
@@ -60,6 +63,7 @@ export function CrdtBridgeProvider({
   getHandle,
   onSyncNeeded,
   setDirty,
+  localActor,
   children,
 }: CrdtBridgeProviderProps) {
   // Stable ref so the context value doesn't change on every render.
@@ -67,10 +71,12 @@ export function CrdtBridgeProvider({
     getHandle,
     onSyncNeeded,
     setDirty,
+    localActor,
   });
   valueRef.current.getHandle = getHandle;
   valueRef.current.onSyncNeeded = onSyncNeeded;
   valueRef.current.setDirty = setDirty;
+  valueRef.current.localActor = localActor;
 
   // The context value object itself is stable (same ref every render).
   const value = valueRef.current;
@@ -151,10 +157,18 @@ export function useCrdtBridge(cellId: string): {
         ),
       );
 
-      // Filter to attributions for this cell.
+      // Filter to attributions for this cell, skipping self-echo.
+      // When the UI's own edits echo back through the daemon (amplified
+      // by other peers' sync rounds), they produce attributions where the
+      // only actor is the local human actor. CodeMirror already has these
+      // changes, so applying them again would corrupt the editor state.
+      const localActor = ctxRef.current.localActor;
       const changes: RemoteChange[] = [];
       for (const attr of event.attributions) {
         if (attr.cell_id !== cellId) continue;
+        if (attr.actors.length === 1 && attr.actors[0] === localActor) {
+          continue;
+        }
         changes.push({
           index: attr.index,
           text: attr.text,

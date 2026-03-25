@@ -510,6 +510,8 @@ export function useAutomergeNotebook() {
   // Trigger a debounced sync to the daemon (same Subject the old
   // updateCellSource used via sourceSync$).
   const triggerSync = useCallback(() => sourceSync$.current.next(), []);
+  // Stable local actor label for filtering self-echo text attributions.
+  const localActor = `human:${sessionIdRef.current}`;
 
   return {
     cellIds,
@@ -536,5 +538,6 @@ export function useAutomergeNotebook() {
     // CRDT bridge context deps
     getHandle,
     triggerSync,
+    localActor,
   };
 }

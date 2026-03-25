@@ -443,7 +443,16 @@ async function materializeFromBatch(
           cache,
           getCellById(cellId),
         );
-        if (cell) updateCellById(cellId, () => cell);
+        if (cell) {
+          // Preserve store source when changeset says source didn't change.
+          // WASM source may include a CRDT merge that hasn't been applied
+          // to CodeMirror yet — using it would desync the store from CM.
+          if (!fields.source) {
+            const existing = getCellById(cellId);
+            if (existing) cell.source = existing.source;
+          }
+          updateCellById(cellId, () => cell);
+        }
       } else {
         // Cache miss — resolve this cell's outputs async (fetch manifests
         // from blob store) without re-serializing the entire document.
@@ -483,14 +492,21 @@ async function materializeFromBatch(
         }));
       }
     } else {
-      // No output changes — always use fast sync path.
+      // No output changes — fast sync path.
       const cell = materializeCellFromWasm(
         handle,
         cellId,
         cache,
         getCellById(cellId),
       );
-      if (cell) updateCellById(cellId, () => cell);
+      if (cell) {
+        // Preserve store source when changeset says source didn't change.
+        if (!fields.source) {
+          const existing = getCellById(cellId);
+          if (existing) cell.source = existing.source;
+        }
+        updateCellById(cellId, () => cell);
+      }
     }
   }
 

@@ -265,6 +265,19 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
     // them to CM would be an echo.
     if (isProcessingOutbound) return;
 
+    // If CodeMirror and WASM are already in sync, skip — the changes
+    // are already reflected. This guards against stale text_attributions
+    // from delayed sync convergence (e.g., after the app returns from
+    // background with multiple peers connected). Without this check,
+    // patches computed from WASM's pre-merge state can have indices
+    // that don't match CM's current state, wiping the user's edits.
+    const handle = getHandle();
+    if (handle) {
+      const wasmSource = handle.get_cell_source(cellId);
+      const cmSource = view.state.doc.toString();
+      if (wasmSource === cmSource) return;
+    }
+
     try {
       // Apply each change as a separate dispatch so positions are
       // cumulative (each change's index is relative to the doc state
