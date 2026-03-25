@@ -4358,27 +4358,28 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
                         }
                     }
                 }
-                _ => {
-                    if let Some(sample) = crate::menu::sample_for_menu_item_id(menu_id) {
-                        if let Err(e) = open_bundled_sample_notebook(app, registry.inner(), sample) {
-                            log::error!(
-                                "[sample_notebooks] Failed to open sample {}: {}",
-                                sample.id,
-                                e
-                            );
-                            let app_handle = app.clone();
-                            tauri::async_runtime::spawn(async move {
-                                let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
-                                    .message(format!(
-                                        "Failed to open sample notebook '{}': {}",
-                                        sample.title, e
-                                    ))
-                                    .title("Sample Notebook Error")
-                                    .kind(tauri_plugin_dialog::MessageDialogKind::Error)
-                                    .blocking_show();
-                            });
-                        }
+                crate::menu::MENU_OPEN_SAMPLE => {
+                    let sample = &crate::menu::BUNDLED_SAMPLE_NOTEBOOK;
+                    if let Err(e) = open_bundled_sample_notebook(app, registry.inner(), sample) {
+                        log::error!(
+                            "[sample_notebooks] Failed to open sample {}: {}",
+                            sample.file_name,
+                            e
+                        );
+                        let app_handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
+                                .message(format!(
+                                    "Failed to open sample notebook '{}': {}",
+                                    sample.title, e
+                                ))
+                                .title("Sample Notebook Error")
+                                .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                                .blocking_show();
+                        });
                     }
+                }
+                _ => {
                 }
             }
         })
