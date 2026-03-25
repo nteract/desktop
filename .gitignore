@@ -77,6 +77,7 @@ crates/notebook/fixtures/**/uv.lock
 # Keep settings local (not shared)
 .claude/settings.json
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # E2E test screenshots
 e2e-screenshots/
