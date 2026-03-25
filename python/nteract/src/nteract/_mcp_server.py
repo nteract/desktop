@@ -678,7 +678,9 @@ class NteractServer:
         self, cell_id: str, timeout_secs: float = 30.0
     ) -> list[ContentItem]:
         notebook = await self._get_notebook()
-        await self._send_cell_focus(cell_id)
+        # Don't emit focus here — it would overwrite any cursor presence
+        # set by a prior edit (e.g. replace_match, set_cell). The cursor
+        # from the edit should persist through execution.
         cell = notebook.cells.get_by_id(cell_id)
 
         execution = await cell.execute()
