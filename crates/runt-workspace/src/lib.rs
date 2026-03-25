@@ -489,8 +489,9 @@ fn launchd_bootstrap(plist: &Path, domain: &str) -> Result<(), String> {
             return Ok(());
         }
 
-        // Error 5: I/O error — transient, launchd still cleaning up
-        if stderr.contains("5:") || stderr.contains("Input/output") {
+        // Error 5: I/O error — transient, launchd still cleaning up.
+        // Match " 5: " precisely to avoid catching 15:, 25:, etc.
+        if stderr.contains(" 5: ") || stderr.contains("Input/output") {
             last_err = format!("launchctl bootstrap failed: {}", stderr.trim());
             continue;
         }
