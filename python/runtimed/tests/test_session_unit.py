@@ -143,15 +143,19 @@ class TestCreateNotebookValidation:
 
     def test_create_notebook_rejects_nonexistent_path(self):
         """create_notebook raises FileNotFoundError for non-existent working_dir."""
-        client = runtimed.NativeAsyncClient()
+        from runtimed._internals import NativeAsyncClient
+
+        client = NativeAsyncClient()
         with pytest.raises(FileNotFoundError, match="working_dir does not exist"):
             client.create_notebook(working_dir="/sessions/fake-path")
 
     def test_create_notebook_rejects_file_as_working_dir(self, tmp_path):
         """create_notebook raises NotADirectoryError when working_dir is a file."""
+        from runtimed._internals import NativeAsyncClient
+
         test_file = tmp_path / "test_file.txt"
         test_file.write_text("test")
-        client = runtimed.NativeAsyncClient()
+        client = NativeAsyncClient()
         with pytest.raises(NotADirectoryError, match="working_dir is not a directory"):
             client.create_notebook(working_dir=str(test_file))
 

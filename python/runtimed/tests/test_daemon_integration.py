@@ -270,9 +270,9 @@ async def daemon_health_check(daemon_process):
     # 1. Create client and ping
     try:
         if socket_path is not None:
-            client = runtimed.NativeAsyncClient(socket_path=str(socket_path))
+            client = runtimed._internals.NativeAsyncClient(socket_path=str(socket_path))
         else:
-            client = runtimed.NativeAsyncClient()
+            client = runtimed._internals.NativeAsyncClient()
         assert await client.ping(), "Daemon did not respond to ping"
         print("[health] Ping: OK", file=sys.stderr)
     except Exception as e:
@@ -497,8 +497,8 @@ def client(daemon_process):
     """
     socket_path, _ = daemon_process
     if socket_path is not None:
-        return runtimed.NativeAsyncClient(socket_path=str(socket_path))
-    return runtimed.NativeAsyncClient()
+        return runtimed._internals.NativeAsyncClient(socket_path=str(socket_path))
+    return runtimed._internals.NativeAsyncClient()
 
 
 @pytest.fixture
@@ -1379,9 +1379,9 @@ class TestCondaInlineDeps:
         """Create a session with conda inline deps, shared across tests in this class."""
         socket_path, _ = daemon_process
         client = (
-            runtimed.NativeAsyncClient(socket_path=str(socket_path))
+            runtimed._internals.NativeAsyncClient(socket_path=str(socket_path))
             if socket_path
-            else runtimed.NativeAsyncClient()
+            else runtimed._internals.NativeAsyncClient()
         )
         sess = await client.create_notebook(runtime="python")
 
