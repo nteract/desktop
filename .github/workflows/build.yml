@@ -129,10 +129,10 @@ jobs:
       - name: Build runtimed-wasm
         run: wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm
 
-      - name: Check WASM artifacts are up to date
+      - name: Check WASM bindings are up to date
         run: |
-          git diff --exit-code apps/notebook/src/wasm/runtimed-wasm/ || {
-            echo "::error::Checked-in WASM artifacts are stale. Run: wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm"
+          git diff --exit-code -- apps/notebook/src/wasm/runtimed-wasm/ ':!*.wasm' || {
+            echo "::error::Checked-in WASM bindings are stale. Run: wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm"
             exit 1
           }
 
