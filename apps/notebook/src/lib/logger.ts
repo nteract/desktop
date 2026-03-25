@@ -9,6 +9,7 @@
  * to await — the IPC call happens in the background.
  */
 
+import { isTauri } from "@tauri-apps/api/core";
 import {
   attachConsole,
   debug as logDebug,
@@ -34,8 +35,16 @@ function formatArgs(args: unknown[]): string {
     .join(" ");
 }
 
+/** Whether Tauri IPC is available (false in Vitest, Storybook, etc.) */
+const hasTauri = isTauri();
+
 /** Fire-and-forget wrapper — log calls are async IPC but callers stay sync. */
 function send(fn: (message: string) => Promise<void>, args: unknown[]): void {
+  if (!hasTauri) {
+    // Fall back to console when Tauri isn't available (tests, SSR)
+    console.log(formatArgs(args));
+    return;
+  }
   fn(formatArgs(args)).catch(() => {});
 }
 
@@ -74,7 +83,8 @@ export const logger = {
 };
 
 // In development, also forward all logs to the browser console so
-// devtools show them alongside the file output.
-if (import.meta.env.DEV) {
+// devtools show them alongside the file output. Guard against test
+// environments where Tauri internals aren't available.
+if (import.meta.env.DEV && hasTauri) {
   attachConsole();
 }
