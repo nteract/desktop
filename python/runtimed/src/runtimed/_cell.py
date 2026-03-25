@@ -40,7 +40,8 @@ class _HintList(list):
 class CellHandle:
     """A live reference to a cell in the notebook document.
 
-    Reads are sync (local Automerge replica). Writes are async (synced to peers).
+    Properties are sync reads from the local CRDT replica — no ``await``.
+    Methods are async writes that sync to peers via the daemon.
     """
 
     __slots__ = ("_id", "_session")
@@ -55,17 +56,17 @@ class CellHandle:
 
     @property
     def source(self) -> str:
-        """Cell source text (sync read from local doc)."""
+        """Cell source text (sync)."""
         return self._session.get_cell_source_sync(self._id) or ""
 
     @property
     def cell_type(self) -> str:
-        """Cell type: 'code', 'markdown', or 'raw' (sync read)."""
+        """Cell type: 'code', 'markdown', or 'raw' (sync)."""
         return self._session.get_cell_type_sync(self._id) or "code"
 
     @property
     def outputs(self) -> list[Output]:
-        """Resolved outputs (sync — may do disk I/O for blob resolution)."""
+        """Resolved outputs (sync; may do disk I/O for blob resolution)."""
         try:
             cell = self._session.get_cell_sync(self._id)
             return _HintList(cell.outputs, "outputs")
@@ -74,7 +75,7 @@ class CellHandle:
 
     @property
     def execution_count(self) -> int | None:
-        """Execution count, or None if never executed (sync read)."""
+        """Execution count, or None if never executed (sync)."""
         raw = self._session.get_cell_execution_count_sync(self._id)
         if raw is None:
             return None
@@ -85,7 +86,7 @@ class CellHandle:
 
     @property
     def metadata(self) -> Any:
-        """Parsed metadata dict (sync read)."""
+        """Parsed metadata dict (sync)."""
         raw = self._session.get_cell_metadata_sync(self._id)
         if raw is None:
             return {}
@@ -96,7 +97,7 @@ class CellHandle:
 
     @property
     def tags(self) -> list[str]:
-        """Cell tags (sync read). Uses Rust Cell helpers for key resolution."""
+        """Cell tags (sync)."""
         try:
             return _HintList(self._session.get_cell_sync(self._id).tags, "tags")
         except _RuntimedError:
@@ -104,7 +105,7 @@ class CellHandle:
 
     @property
     def source_hidden(self) -> bool:
-        """Whether cell source is hidden (sync read). Uses Rust Cell helpers."""
+        """Whether cell source is hidden (sync)."""
         try:
             return self._session.get_cell_sync(self._id).is_source_hidden
         except _RuntimedError:
@@ -112,14 +113,14 @@ class CellHandle:
 
     @property
     def outputs_hidden(self) -> bool:
-        """Whether cell outputs are hidden (sync read). Uses Rust Cell helpers."""
+        """Whether cell outputs are hidden (sync)."""
         try:
             return self._session.get_cell_sync(self._id).is_outputs_hidden
         except _RuntimedError:
             return False
 
     def snapshot(self) -> Cell:
-        """Return the full Cell object (sync — includes resolved outputs)."""
+        """Return the full Cell object with resolved outputs (sync)."""
         return self._session.get_cell_sync(self._id)
 
     # ── Async mutations ──────────────────────────────────────────────
@@ -238,9 +239,10 @@ class CellHandle:
 
 
 class CellCollection:
-    """The cells in a notebook. Sync reads, async mutations.
+    """The cells in a notebook. Access via ``notebook.cells``.
 
-    Access via ``notebook.cells``.
+    Properties and iteration are sync reads from the local CRDT replica — no ``await``.
+    ``create()`` and ``insert_at()`` are async writes that sync to peers.
     """
 
     __slots__ = ("_session",)

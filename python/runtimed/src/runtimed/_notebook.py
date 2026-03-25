@@ -20,8 +20,8 @@ class Notebook:
     Created by ``Client.open_notebook()``, ``Client.create_notebook()``,
     or ``Client.join_notebook()``.
 
-    Properties read from the local Automerge replica (sync).
-    Mutation methods are async (synced to peers).
+    Properties are sync reads from the local CRDT replica — no ``await``.
+    Methods are async writes that sync to peers via the daemon.
     """
 
     __slots__ = ("_session", "_cells", "_presence")
@@ -33,6 +33,7 @@ class Notebook:
 
     @property
     def notebook_id(self) -> str:
+        """File path or UUID for this notebook."""
         return self._session.notebook_id
 
     @property
@@ -51,17 +52,17 @@ class Notebook:
 
     @property
     def runtime(self):
-        """Runtime state snapshot (sync read from local RuntimeStateDoc)."""
+        """Runtime state snapshot (sync). Access ``.kernel.status``, ``.queue``, ``.env``."""
         return self._session.get_runtime_state_sync()
 
     @property
     def peers(self) -> list[tuple[str, str]]:
-        """Connected peers as (peer_id, peer_label) tuples (sync read)."""
+        """Connected peers as (peer_id, peer_label) tuples (sync)."""
         return _HintList(self._session.get_peers_sync(), "peers")
 
     @property
     def is_connected(self) -> bool:
-        """Whether the session is connected to the daemon (sync read)."""
+        """Whether the session is connected to the daemon (sync)."""
         return self._session.is_connected_sync()
 
     # ── Async operations ─────────────────────────────────────────────
