@@ -16,11 +16,7 @@
  */
 
 import { browser } from "@wdio/globals";
-import {
-  setCellSource,
-  waitForAppReady,
-  waitForNotebookSynced,
-} from "../helpers.js";
+import { waitForAppReady, waitForNotebookSynced } from "../helpers.js";
 
 /**
  * Focus a code cell by clicking its editor area.

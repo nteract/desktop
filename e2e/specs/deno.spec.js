@@ -10,7 +10,6 @@
  *   e2e/specs/deno.spec.js
  */
 
-import { browser } from "@wdio/globals";
 import {
   setCellSource,
   waitForCellOutput,

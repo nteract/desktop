@@ -95,7 +95,7 @@ pub enum FrameEvent {
         changed: bool,
         /// The full current runtime state snapshot (only when changed).
         #[serde(skip_serializing_if = "Option::is_none")]
-        state: Option<RuntimeState>,
+        state: Option<Box<RuntimeState>>,
     },
     /// Unknown frame type — frontend can log and ignore.
     Unknown { frame_type: u8 },
@@ -1025,7 +1025,7 @@ impl NotebookHandle {
                 let changed = heads_before != heads_after;
 
                 let state = if changed {
-                    Some(self.state_doc.read_state())
+                    Some(Box::new(self.state_doc.read_state()))
                 } else {
                     None
                 };
