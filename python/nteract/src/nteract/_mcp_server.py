@@ -1277,7 +1277,7 @@ class NteractServer:
         async def get_all_cells(
             format: Annotated[
                 Literal["summary", "json", "rich"],
-                Field(description="'summary' (default), 'json', or 'rich' for full content"),
+                Field(description="'summary' (default), 'json', or 'rich' for full text content"),
             ] = "summary",
             start: Annotated[int, Field(description="Starting cell index (0-based)")] = 0,
             count: Annotated[
@@ -1292,7 +1292,9 @@ class NteractServer:
 
             Args:
                 format: "summary" for compact overview, "json" for structured data,
-                    "rich" for full content with images.
+                    "rich" for full content as text (image outputs use text/llm+plain
+                    descriptions; use the blob URL in the description to read the
+                    image directly if needed).
                 start: Starting cell index for pagination.
                 count: Number of cells to return (None = all remaining).
                 include_outputs: Include output previews in summary format.

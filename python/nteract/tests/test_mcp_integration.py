@@ -468,6 +468,46 @@ async def test_get_all_cells_pagination(mcp_client: ClientSession):
 
 
 @pytest.mark.asyncio
+async def test_image_output_returns_text_not_image_content(mcp_client: ClientSession):
+    """Image-producing cells should return TextContent (text/llm+plain), not ImageContent.
+
+    MCP clients like Claude Code don't render ImageContent inline — the base64
+    data just wastes context window. The daemon synthesizes a text/llm+plain
+    representation with blob URLs that agents can follow with their Read tool.
+    """
+    await mcp_client.call_tool("create_notebook", {"dependencies": ["matplotlib"]})
+
+    # Create a cell that produces a matplotlib plot
+    result = await mcp_client.call_tool(
+        "create_cell",
+        {
+            "source": (
+                "import matplotlib.pyplot as plt\n"
+                "fig, ax = plt.subplots()\n"
+                "ax.plot([1, 2, 3], [1, 4, 9])\n"
+                "plt.show()"
+            ),
+            "and_run": True,
+            "timeout_secs": 60,
+        },
+    )
+
+    # Every content item must be TextContent — no ImageContent
+    assert result.content, "Expected at least one content item"
+    for item in result.content:
+        assert isinstance(item, TextContent), (
+            f"Expected TextContent, got {type(item).__name__}. "
+            "Image outputs should use text/llm+plain, not ImageContent."
+        )
+
+    # The text/llm+plain representation should include a blob URL pointer
+    text = _get_text(result)
+    assert "blob:" in text or "image" in text.lower(), (
+        "Image output text should include a blob URL or image description"
+    )
+
+
+@pytest.mark.asyncio
 async def test_open_notebook_returns_cells(mcp_client: ClientSession):
     """open_notebook should return a cell summary like join_notebook."""
     fixture = str(
