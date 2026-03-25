@@ -539,11 +539,14 @@ pub(crate) async fn restart_kernel(
 
     // Re-launch with the same kernel_type and env_source as before,
     // falling back to "python" / "auto" if no kernel was previously running.
-    // UV prewarmed envs use "auto" on restart so the daemon re-checks metadata
-    // and picks up any deps added after launch (e.g. via add_dependency).
+    // Prewarmed envs use scoped auto-detect on restart so the daemon re-checks
+    // metadata and picks up any deps added after launch (e.g. via add_dependency),
+    // while staying within the original package manager family.
     let restart_kernel_type = prev_kernel_type.unwrap_or_else(|| "python".to_string());
     let restart_env_source = match prev_env_source.as_deref() {
-        Some("uv:prewarmed") | None => "auto".to_string(),
+        Some("uv:prewarmed") => "auto:uv".to_string(),
+        Some("conda:prewarmed") => "auto:conda".to_string(),
+        None => "auto".to_string(),
         Some(s) => s.to_string(),
     };
 
@@ -2286,5 +2289,37 @@ mod tests {
             Some("notebooks/test.ipynb"),
             "spawn_rekey_watcher should update notebook_id_override on RoomRenamed"
         );
+    }
+
+    /// Helper that mirrors the restart env_source mapping logic in restart_kernel().
+    fn restart_env_source(prev: Option<&str>) -> String {
+        match prev {
+            Some("uv:prewarmed") => "auto:uv".to_string(),
+            Some("conda:prewarmed") => "auto:conda".to_string(),
+            None => "auto".to_string(),
+            Some(s) => s.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_restart_env_source_uv_prewarmed() {
+        assert_eq!(restart_env_source(Some("uv:prewarmed")), "auto:uv");
+    }
+
+    #[test]
+    fn test_restart_env_source_conda_prewarmed() {
+        assert_eq!(restart_env_source(Some("conda:prewarmed")), "auto:conda");
+    }
+
+    #[test]
+    fn test_restart_env_source_none_defaults_to_unscoped_auto() {
+        assert_eq!(restart_env_source(None), "auto");
+    }
+
+    #[test]
+    fn test_restart_env_source_explicit_passes_through() {
+        assert_eq!(restart_env_source(Some("uv:inline")), "uv:inline");
+        assert_eq!(restart_env_source(Some("conda:inline")), "conda:inline");
+        assert_eq!(restart_env_source(Some("uv:pyproject")), "uv:pyproject");
     }
 }

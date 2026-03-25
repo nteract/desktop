@@ -165,6 +165,12 @@ fn build_launched_config(
             config.venv_path = venv_path;
             config.python_path = python_path;
         }
+        "conda:prewarmed" => {
+            // Store paths so hot-sync can install deps into the prewarmed conda env
+            // conda_deps stays None to indicate no baseline deps were installed
+            config.venv_path = venv_path;
+            config.python_path = python_path;
+        }
         _ => {}
     }
 
@@ -2847,6 +2853,8 @@ async fn handle_notebook_request(
             let resolved_env_source = if resolved_kernel_type == "deno" {
                 if !env_source.is_empty()
                     && env_source != "auto"
+                    && env_source != "auto:uv"
+                    && env_source != "auto:conda"
                     && env_source != "deno"
                     && env_source != "prewarmed"
                 {
@@ -2859,14 +2867,44 @@ async fn handle_notebook_request(
                     info!("[notebook-sync] Deno kernel detected, using 'deno' env_source");
                 }
                 "deno".to_string()
-            } else if env_source == "auto" || env_source.is_empty() || env_source == "prewarmed" {
-                // Auto-detect Python environment
+            } else if env_source == "auto"
+                || env_source == "auto:uv"
+                || env_source == "auto:conda"
+                || env_source.is_empty()
+                || env_source == "prewarmed"
+            {
+                // Auto-detect Python environment, optionally scoped to a package manager family.
+                // "auto:uv" constrains to UV sources, "auto:conda" to conda sources.
+                let auto_scope = if env_source == "auto:uv" {
+                    Some("uv")
+                } else if env_source == "auto:conda" {
+                    Some("conda")
+                } else {
+                    None
+                };
 
                 // Priority 1: Check inline deps in notebook metadata (filter out "deno" - we're resolving Python env)
-                if let Some(inline_source) = metadata_snapshot
-                    .as_ref()
-                    .and_then(check_inline_deps)
-                    .filter(|s| s != "deno")
+                // When scoped, check the target family directly instead of relying on
+                // check_inline_deps() which has UV-first priority and would miss conda
+                // deps in notebooks that have both UV and conda dependency blocks.
+                if let Some(inline_source) =
+                    metadata_snapshot
+                        .as_ref()
+                        .and_then(|snap| match auto_scope {
+                            Some("uv") => snap
+                                .runt
+                                .uv
+                                .as_ref()
+                                .filter(|uv| !uv.dependencies.is_empty())
+                                .map(|_| "uv:inline".to_string()),
+                            Some("conda") => snap
+                                .runt
+                                .conda
+                                .as_ref()
+                                .filter(|c| !c.dependencies.is_empty())
+                                .map(|_| "conda:inline".to_string()),
+                            _ => check_inline_deps(snap).filter(|s| s != "deno"),
+                        })
                 {
                     info!(
                         "[notebook-sync] Found inline deps in notebook metadata -> {}",
@@ -2876,7 +2914,10 @@ async fn handle_notebook_request(
                 } else {
                     // Priority 2: Check PEP 723 script blocks in cell source
                     // Only parsed if metadata check above didn't find inline deps (lazy evaluation).
-                    let has_pep723_deps = {
+                    // Skipped for conda scope — we only have uv:pep723 today (#1176).
+                    let has_pep723_deps = if auto_scope == Some("conda") {
+                        false
+                    } else {
                         let cells = room.doc.read().await.get_cells();
                         match notebook_doc::pep723::find_pep723_in_cells(&cells) {
                             Ok(Some(ref m)) if !m.dependencies.is_empty() => true,
@@ -2896,9 +2937,21 @@ async fn handle_notebook_request(
                         "uv:pep723".to_string()
                     }
                     // Priority 3: Detect project files near notebook path
-                    else if let Some(detected) = notebook_path
-                        .as_ref()
-                        .and_then(|path| crate::project_file::detect_project_file(path))
+                    else if let Some(detected) =
+                        notebook_path.as_ref().and_then(|path| match auto_scope {
+                            Some("uv") => crate::project_file::find_nearest_project_file(
+                                path,
+                                &[crate::project_file::ProjectFileKind::PyprojectToml],
+                            ),
+                            Some("conda") => crate::project_file::find_nearest_project_file(
+                                path,
+                                &[
+                                    crate::project_file::ProjectFileKind::PixiToml,
+                                    crate::project_file::ProjectFileKind::EnvironmentYml,
+                                ],
+                            ),
+                            _ => crate::project_file::detect_project_file(path),
+                        })
                     {
                         info!(
                             "[notebook-sync] Auto-detected project file: {:?} -> {}",
@@ -2907,10 +2960,17 @@ async fn handle_notebook_request(
                         );
                         detected.to_env_source().to_string()
                     }
-                    // Priority 4: Fall back to prewarmed
+                    // Priority 4: Fall back to prewarmed (scoped to family)
                     else {
-                        info!("[notebook-sync] No project file detected, using prewarmed");
-                        "uv:prewarmed".to_string()
+                        let fallback = match auto_scope {
+                            Some("conda") => "conda:prewarmed",
+                            _ => "uv:prewarmed",
+                        };
+                        info!(
+                            "[notebook-sync] No project file detected, using {}",
+                            fallback
+                        );
+                        fallback.to_string()
                     }
                 }
             } else {
@@ -7917,20 +7977,25 @@ mod tests {
     }
 
     #[test]
-    fn test_build_launched_config_conda_prewarmed_no_paths() {
-        // conda:prewarmed falls through to the default branch — no paths stored
+    fn test_build_launched_config_conda_prewarmed_stores_paths() {
+        // conda:prewarmed stores paths so hot-sync can install deps later
+        let venv = PathBuf::from("/tmp/conda-env");
+        let python = PathBuf::from("/tmp/conda-env/bin/python");
         let config = build_launched_config(
             "python",
             "conda:prewarmed",
             None,
             None,
-            Some(PathBuf::from("/tmp/conda-env")),
-            Some(PathBuf::from("/tmp/conda-env/bin/python")),
+            Some(venv.clone()),
+            Some(python.clone()),
         );
-        assert!(config.venv_path.is_none());
-        assert!(config.python_path.is_none());
+        assert_eq!(config.venv_path.as_ref(), Some(&venv));
+        assert_eq!(config.python_path.as_ref(), Some(&python));
         assert!(config.uv_deps.is_none());
-        assert!(config.conda_deps.is_none());
+        assert!(
+            config.conda_deps.is_none(),
+            "prewarmed should not set conda_deps"
+        );
     }
 
     // ── check_and_broadcast_sync_state tests ──────────────────────────────
