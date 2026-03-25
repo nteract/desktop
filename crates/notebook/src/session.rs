@@ -52,7 +52,7 @@ pub(crate) fn save_session<R: tauri::Runtime>(
     registry: &WindowNotebookRegistry,
     app: &tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    save_session_to(registry, app, &runtimed::session_state_path())
+    save_session_to(registry, app, &runt_workspace::session_state_path())
 }
 
 /// Save the current session state to a specific path.
@@ -160,7 +160,7 @@ fn write_session(windows: Vec<WindowSession>, dest: &std::path::Path) -> Result<
 /// - Session is too old (> 24 hours)
 /// - Session file is corrupted
 pub fn load_session() -> Option<SessionState> {
-    load_session_from(&runtimed::session_state_path())
+    load_session_from(&runt_workspace::session_state_path())
 }
 
 /// Load session state from a specific path.
@@ -209,7 +209,7 @@ pub(crate) fn load_session_from(path: &std::path::Path) -> Option<SessionState> 
 /// Used for one-time migrations (e.g., renaming stale window labels) where
 /// the session data is needed even if it would be too old for restore.
 pub fn load_session_ignoring_age() -> Option<SessionState> {
-    let path = runtimed::session_state_path();
+    let path = runt_workspace::session_state_path();
     if !path.exists() {
         return None;
     }
@@ -219,7 +219,7 @@ pub fn load_session_ignoring_age() -> Option<SessionState> {
 
 /// Delete the session file after successful restore.
 pub fn clear_session() {
-    clear_session_at(&runtimed::session_state_path());
+    clear_session_at(&runt_workspace::session_state_path());
 }
 
 /// Delete a specific session file.
@@ -239,7 +239,7 @@ pub(crate) fn clear_session_at(path: &std::path::Path) {
 pub fn window_label_for_session(session: &WindowSession) -> String {
     if let Some(path) = &session.path {
         // Hash the path for a stable label
-        let hash = runtimed::worktree_hash(path);
+        let hash = runt_workspace::worktree_hash(path);
         format!("notebook-{}", &hash[..8])
     } else if let Some(env_id) = &session.env_id {
         // Use env_id prefix for untitled notebooks
@@ -254,8 +254,8 @@ pub fn window_label_for_session(session: &WindowSession) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::Runtime;
     use crate::WindowNotebookContext;
-    use runtimed::runtime::Runtime;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicU64};
     use std::sync::{Arc, Mutex};

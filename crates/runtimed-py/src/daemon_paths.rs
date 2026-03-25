@@ -26,7 +26,7 @@ pub fn get_socket_path() -> PathBuf {
     if let Ok(p) = std::env::var("RUNTIMED_SOCKET_PATH") {
         PathBuf::from(p)
     } else {
-        runtimed::default_socket_path()
+        runt_workspace::default_socket_path()
     }
 }
 

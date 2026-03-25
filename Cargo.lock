@@ -3588,6 +3588,8 @@ dependencies = [
  "log",
  "nbformat",
  "nix 0.30.1",
+ "notebook-doc",
+ "notebook-protocol",
  "notebook-sync",
  "pathdiff",
  "pyproject-toml",

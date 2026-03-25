@@ -47,16 +47,16 @@ fn show_notebook_app(notebook_path: Option<PathBuf>) -> PyResult<()> {
 /// In dev mode (RUNTIMED_WORKSPACE_PATH set), returns the per-worktree socket path.
 #[pyfunction]
 fn default_socket_path() -> String {
-    ::runtimed::default_socket_path()
+    runt_workspace::default_socket_path()
         .to_string_lossy()
         .to_string()
 }
 
 /// Parse a channel name string into a BuildChannel enum.
-fn parse_channel(channel: &str) -> PyResult<::runtimed::BuildChannel> {
+fn parse_channel(channel: &str) -> PyResult<runt_workspace::BuildChannel> {
     match channel {
-        "stable" => Ok(::runtimed::BuildChannel::Stable),
-        "nightly" => Ok(::runtimed::BuildChannel::Nightly),
+        "stable" => Ok(runt_workspace::BuildChannel::Stable),
+        "nightly" => Ok(runt_workspace::BuildChannel::Nightly),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
             "channel must be \"stable\" or \"nightly\", got {:?}",
             channel
@@ -78,7 +78,7 @@ fn parse_channel(channel: &str) -> PyResult<::runtimed::BuildChannel> {
 #[pyfunction]
 fn socket_path_for_channel(channel: &str) -> PyResult<String> {
     let ch = parse_channel(channel)?;
-    Ok(::runtimed::socket_path_for_channel(ch)
+    Ok(runt_workspace::socket_path_for_channel(ch)
         .to_string_lossy()
         .to_string())
 }

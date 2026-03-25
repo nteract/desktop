@@ -15,8 +15,10 @@ pub mod uv_env;
 
 pub use runtimed::runtime::Runtime;
 
+use notebook_protocol::protocol::{
+    CompletionItem, HistoryEntry, NotebookRequest, NotebookResponse,
+};
 use notebook_sync::RelayHandle;
-use runtimed::protocol::{CompletionItem, HistoryEntry, NotebookRequest, NotebookResponse};
 
 use log::{debug, info, warn};
 use serde::Serialize;
@@ -271,7 +273,7 @@ where
 /// Returns the deserialized NotebookMetadataSnapshot, or None if not available.
 async fn get_metadata_snapshot(
     handle: &RelayHandle,
-) -> Option<runtimed::notebook_metadata::NotebookMetadataSnapshot> {
+) -> Option<notebook_doc::metadata::NotebookMetadataSnapshot> {
     match handle
         .send_request(NotebookRequest::GetMetadataSnapshot {})
         .await
@@ -286,7 +288,7 @@ async fn get_metadata_snapshot(
 /// Write a NotebookMetadataSnapshot to the daemon's canonical Automerge doc.
 async fn set_metadata_snapshot(
     handle: &RelayHandle,
-    snapshot: &runtimed::notebook_metadata::NotebookMetadataSnapshot,
+    snapshot: &notebook_doc::metadata::NotebookMetadataSnapshot,
 ) -> Result<(), String> {
     let snapshot_json =
         serde_json::to_string(snapshot).map_err(|e| format!("serialize metadata: {}", e))?;
@@ -334,7 +336,7 @@ async fn set_raw_trust_in_metadata(
 /// Reconstruct an nbformat Metadata from a NotebookMetadataSnapshot.
 /// Used to bridge sync-handle metadata to extraction functions that expect nbformat types.
 fn metadata_from_snapshot(
-    snapshot: &runtimed::notebook_metadata::NotebookMetadataSnapshot,
+    snapshot: &notebook_doc::metadata::NotebookMetadataSnapshot,
 ) -> nbformat::v4::Metadata {
     let mut metadata = nbformat::v4::Metadata {
         kernelspec: snapshot
@@ -366,11 +368,11 @@ fn metadata_from_snapshot(
 }
 
 /// Helper to create a default empty NotebookMetadataSnapshot.
-fn default_metadata_snapshot() -> runtimed::notebook_metadata::NotebookMetadataSnapshot {
-    runtimed::notebook_metadata::NotebookMetadataSnapshot {
+fn default_metadata_snapshot() -> notebook_doc::metadata::NotebookMetadataSnapshot {
+    notebook_doc::metadata::NotebookMetadataSnapshot {
         kernelspec: None,
         language_info: None,
-        runt: runtimed::notebook_metadata::RuntMetadata {
+        runt: notebook_doc::metadata::RuntMetadata {
             schema_version: "1".to_string(),
             env_id: None,
             uv: None,
@@ -389,8 +391,8 @@ fn default_metadata_snapshot() -> runtimed::notebook_metadata::NotebookMetadataS
 /// locally then need to push it to the daemon as a typed snapshot.
 fn snapshot_from_nbformat(
     metadata: &nbformat::v4::Metadata,
-) -> runtimed::notebook_metadata::NotebookMetadataSnapshot {
-    use runtimed::notebook_metadata::*;
+) -> notebook_doc::metadata::NotebookMetadataSnapshot {
+    use notebook_doc::metadata::*;
 
     let kernelspec = metadata.kernelspec.as_ref().map(|ks| KernelspecSnapshot {
         name: ks.name.clone(),
@@ -490,7 +492,7 @@ async fn initialize_notebook_sync_open(
 ) -> Result<(), String> {
     let current_generation = sync_generation.fetch_add(1, Ordering::SeqCst) + 1;
 
-    let socket_path = runtimed::default_socket_path();
+    let socket_path = runt_workspace::default_socket_path();
     info!(
         "[notebook-sync] Opening notebook via daemon: {} ({})",
         path.display(),
@@ -551,7 +553,7 @@ async fn initialize_notebook_sync_create(
 ) -> Result<(), String> {
     let current_generation = sync_generation.fetch_add(1, Ordering::SeqCst) + 1;
 
-    let socket_path = runtimed::default_socket_path();
+    let socket_path = runt_workspace::default_socket_path();
     info!(
         "[notebook-sync] Creating notebook via daemon: runtime={}, working_dir={:?}, notebook_id_hint={:?} ({})",
         runtime,
@@ -830,7 +832,7 @@ where
         });
 
         if client.ping().await.is_ok() {
-            let endpoint = runtimed::default_socket_path()
+            let endpoint = runt_workspace::default_socket_path()
                 .to_string_lossy()
                 .to_string();
             log::info!(
@@ -1198,7 +1200,7 @@ where
     let client = PoolClient::default();
     if let Ok(()) = client.ping().await {
         // Daemon is running - check version alignment (production only)
-        if !runtimed::is_dev_mode() {
+        if !runt_workspace::is_dev_mode() {
             let bundled_version = bundled_daemon_version();
             if let Some(info) = runtimed::singleton::get_running_daemon_info() {
                 // Compare commit hashes only - CI appends "+{git_sha}" to the version
@@ -1222,7 +1224,7 @@ where
             }
         }
 
-        let endpoint = runtimed::default_socket_path()
+        let endpoint = runt_workspace::default_socket_path()
             .to_string_lossy()
             .to_string();
         log::info!("[startup] Daemon already running at {}", endpoint);
@@ -1233,7 +1235,7 @@ where
     }
 
     // In dev mode, don't auto-install - user should run dev-daemon manually
-    if runtimed::is_dev_mode() {
+    if runt_workspace::is_dev_mode() {
         log::info!("[startup] Dev mode: daemon not running, skipping auto-install");
         let guidance = "Start it with: cargo xtask dev-daemon".to_string();
         on_progress(DaemonProgress::Failed {
@@ -1242,7 +1244,7 @@ where
         });
         return Err(format!(
             "Dev daemon not running at {:?}. {}",
-            runtimed::default_socket_path(),
+            runt_workspace::default_socket_path(),
             guidance
         ));
     }
@@ -1310,7 +1312,7 @@ where
         });
 
         if client.ping().await.is_ok() {
-            let endpoint = runtimed::default_socket_path()
+            let endpoint = runt_workspace::default_socket_path()
                 .to_string_lossy()
                 .to_string();
             log::info!(
@@ -1389,7 +1391,7 @@ async fn get_daemon_info() -> Option<DaemonInfoForBanner> {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| {
-                runtimed::default_socket_path()
+                runt_workspace::default_socket_path()
                     .to_string_lossy()
                     .to_string()
             });
@@ -1404,7 +1406,7 @@ async fn get_daemon_info() -> Option<DaemonInfoForBanner> {
         } else {
             socket_path_full
         };
-        let is_dev_mode = runtimed::is_dev_mode();
+        let is_dev_mode = runt_workspace::is_dev_mode();
         Some(DaemonInfoForBanner {
             version,
             socket_path,
@@ -1834,7 +1836,7 @@ fn create_notebook_window_for_daemon(
         {
             format!("notebook-{}", &id[..8.min(id.len())])
         } else if let Some(ref p) = path {
-            let hash = runtimed::worktree_hash(p);
+            let hash = runt_workspace::worktree_hash(p);
             format!("notebook-{}", &hash[..8])
         } else {
             format!("notebook-{}", uuid::Uuid::new_v4())
@@ -2491,7 +2493,7 @@ async fn reconnect_to_daemon(
             info!("[daemon-kernel] Daemon appears dead: {}", e);
 
             // In dev mode, don't attempt recovery - show helpful guidance
-            if runtimed::is_dev_mode() {
+            if runt_workspace::is_dev_mode() {
                 reset_flag();
                 return Err(
                     "Dev daemon not running. Start it with: cargo xtask dev-daemon".to_string(),
@@ -2627,7 +2629,7 @@ async fn send_frame_bytes(
     let guard = notebook_sync.lock().await;
     let handle = guard.as_ref().ok_or("Not connected to daemon")?;
 
-    use runtimed::notebook_doc::frame_types;
+    use notebook_doc::frame_types;
 
     let frame_type = frame_data[0];
     let payload = &frame_data[1..];
@@ -3080,7 +3082,7 @@ async fn get_synced_settings() -> Result<runtimed::settings_doc::SyncedSettings,
 /// after receiving the sync message.
 #[tauri::command]
 async fn set_synced_setting(key: String, value: serde_json::Value) -> Result<(), String> {
-    let socket_path = runtimed::default_socket_path();
+    let socket_path = runt_workspace::default_socket_path();
     let mut client = runtimed::sync_client::SyncClient::connect_with_timeout(
         socket_path,
         std::time::Duration::from_millis(500),
@@ -3325,7 +3327,7 @@ async fn get_default_save_directory() -> Result<String, String> {
 async fn run_settings_sync(app: tauri::AppHandle) {
     use tauri::Emitter;
 
-    let socket_path = runtimed::default_socket_path();
+    let socket_path = runt_workspace::default_socket_path();
 
     loop {
         match runtimed::sync_client::SyncClient::connect(socket_path.clone()).await {
@@ -3580,7 +3582,7 @@ fn correct_window_scale(window: &tauri::WebviewWindow, saved_scale_factor: Optio
 /// for project file detection (pyproject.toml, pixi.toml, environment.yaml).
 pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::Result<()> {
     // Initialize logging - write to both stderr and log file (same pattern as runtimed)
-    let log_path = runtimed::default_notebook_log_path();
+    let log_path = runt_workspace::default_notebook_log_path();
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
@@ -3669,7 +3671,7 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
             .and_then(|n| n.to_str())
             .unwrap_or("Untitled.ipynb")
             .to_string();
-        let hash = runtimed::worktree_hash(path);
+        let hash = runt_workspace::worktree_hash(path);
         vec![StartupWindow {
             label: format!("notebook-{}", &hash[..8]),
             title,

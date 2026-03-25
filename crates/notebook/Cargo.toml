@@ -32,6 +32,8 @@ uuid = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 runtimed = { path = "../runtimed" }
+notebook-doc = { path = "../notebook-doc" }
+notebook-protocol = { path = "../notebook-protocol" }
 notebook-sync = { path = "../notebook-sync" }
 runt-trust = { path = "../runt-trust" }
 runt-workspace = { path = "../runt-workspace" }

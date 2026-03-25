@@ -55,9 +55,10 @@ pub mod terminal_size;
 pub use runt_workspace::{
     build_channel, cache_namespace, cache_namespace_for, config_namespace, daemon_base_dir,
     daemon_base_dir_for, daemon_binary_basename, daemon_binary_basename_for, daemon_launchd_label,
-    daemon_service_basename, default_notebook_log_path, desktop_display_name,
+    daemon_service_basename, default_notebook_log_path, default_socket_path, desktop_display_name,
     desktop_display_name_for, desktop_product_name, get_workspace_name, get_workspace_path,
-    is_dev_mode, open_notebook_app_for_channel, worktree_hash, BuildChannel,
+    is_dev_mode, open_notebook_app_for_channel, session_state_path, settings_json_path,
+    socket_path_for_channel, worktree_hash, BuildChannel,
 };
 
 /// Get the default log path for the daemon.
@@ -133,62 +134,6 @@ pub struct PoolError {
     pub retry_in_secs: u64,
 }
 
-/// Get the default endpoint path for runtimed using the compile-time channel.
-///
-/// Respects `RUNTIMED_SOCKET_PATH` if set. Otherwise delegates to
-/// `socket_path_for_channel(build_channel())`.
-pub fn default_socket_path() -> PathBuf {
-    if let Some(path) = socket_path_from_env() {
-        return path;
-    }
-    socket_path_for_channel(build_channel())
-}
-
-/// Get the endpoint path for a specific channel's daemon.
-///
-/// On Unix: `~/.cache/{namespace}/runtimed.sock` (or per-worktree in dev mode).
-/// On Windows: `\\.\pipe\{daemon_name}` (with worktree hash suffix in dev mode).
-///
-/// Does **not** check `RUNTIMED_SOCKET_PATH` — that's an override for the
-/// caller's own daemon, not for cross-channel discovery.
-#[cfg(unix)]
-pub fn socket_path_for_channel(channel: BuildChannel) -> PathBuf {
-    daemon_base_dir_for(channel).join("runtimed.sock")
-}
-
-/// Get the endpoint path for a specific channel's daemon (Windows).
-#[cfg(windows)]
-pub fn socket_path_for_channel(channel: BuildChannel) -> PathBuf {
-    let pipe_name = daemon_binary_basename_for(channel);
-    if is_dev_mode() {
-        if let Some(worktree) = get_workspace_path() {
-            let hash = worktree_hash(&worktree);
-            return PathBuf::from(format!(r"\\.\pipe\{}-{}", pipe_name, hash));
-        }
-    }
-    PathBuf::from(format!(r"\\.\pipe\{}", pipe_name))
-}
-
-/// Check `RUNTIMED_SOCKET_PATH` env var and return the path if valid.
-fn socket_path_from_env() -> Option<PathBuf> {
-    let p = std::env::var("RUNTIMED_SOCKET_PATH").ok()?;
-    let p = p.trim();
-    if p.is_empty() {
-        return None;
-    }
-    let path = PathBuf::from(p);
-    if let Some(parent) = path.parent() {
-        if parent.exists() {
-            return Some(path);
-        }
-        panic!(
-            "RUNTIMED_SOCKET_PATH directory does not exist: {}",
-            parent.display()
-        );
-    }
-    Some(path)
-}
-
 /// Get the default cache directory for environments.
 pub fn default_cache_dir() -> PathBuf {
     daemon_base_dir().join("envs")
@@ -212,31 +157,6 @@ pub fn connections_dir() -> PathBuf {
 /// Get the default path for the persisted Automerge settings document.
 pub fn default_settings_doc_path() -> PathBuf {
     daemon_base_dir().join("settings.automerge")
-}
-
-/// Get the path to the JSON settings file (for migration and fallback).
-pub fn settings_json_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(config_namespace())
-        .join("settings.json")
-}
-
-/// Get the path to the session state file.
-///
-/// In dev mode: stored per-worktree for isolation during development.
-/// In production: stored in config directory alongside settings.
-pub fn session_state_path() -> PathBuf {
-    if is_dev_mode() {
-        // Per-worktree session for dev isolation
-        daemon_base_dir().join("session.json")
-    } else {
-        // Production: config directory
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(config_namespace())
-            .join("session.json")
-    }
 }
 
 /// Get the path to the settings JSON Schema file.

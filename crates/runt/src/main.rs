@@ -1480,14 +1480,14 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
             } else {
                 None
             };
-            let is_dev = runtimed::is_dev_mode();
+            let is_dev = runt_workspace::is_dev_mode();
 
             // Get socket path from daemon info or default
             let socket_path = daemon_info
                 .as_ref()
                 .map(|i| i.endpoint.clone())
                 .unwrap_or_else(|| {
-                    runtimed::default_socket_path()
+                    runt_workspace::default_socket_path()
                         .to_string_lossy()
                         .to_string()
                 });
@@ -1855,7 +1855,7 @@ async fn doctor_command(
     ) -> DoctorReport {
         // Get expected paths - use service.rs paths for consistency
         let binary_path = runtimed::service::default_binary_path();
-        let socket_path = runtimed::default_socket_path();
+        let socket_path = runt_workspace::default_socket_path();
         let daemon_json_path = runtimed::singleton::daemon_info_path();
         let service_config_path = runtimed::service::service_config_path();
 
@@ -2275,7 +2275,7 @@ async fn doctor_command(
 
     // Get paths for fix operations
     let binary_path = runtimed::service::default_binary_path();
-    let socket_path = runtimed::default_socket_path();
+    let socket_path = runt_workspace::default_socket_path();
     let daemon_json_path = runtimed::singleton::daemon_info_path();
     let service_config_path = runtimed::service::service_config_path();
 
@@ -2927,7 +2927,7 @@ async fn diagnostics_command(output_dir: Option<PathBuf>) -> Result<()> {
     }
 
     // 2. Notebook log
-    let notebook_log = runtimed::default_notebook_log_path();
+    let notebook_log = runt_workspace::default_notebook_log_path();
     if notebook_log.exists() {
         tar.append_path_with_name(&notebook_log, "notebook.log")?;
         println!("  {} notebook.log", "✓".green());

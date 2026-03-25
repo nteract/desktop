@@ -20,7 +20,7 @@ pub use runtimed::settings_doc::{CondaDefaults, PythonEnvType, ThemeMode, UvDefa
 
 /// Get the path to the settings file
 fn settings_path() -> PathBuf {
-    runtimed::settings_json_path()
+    runt_workspace::settings_json_path()
 }
 
 /// Load settings from disk, returning defaults if file doesn't exist.
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn test_settings_path_is_valid() {
         let path = settings_path();
-        let expected = format!("{}/settings.json", runtimed::config_namespace());
+        let expected = format!("{}/settings.json", runt_workspace::config_namespace());
         assert!(path.ends_with(&expected));
     }
 
