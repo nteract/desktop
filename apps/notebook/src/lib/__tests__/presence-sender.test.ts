@@ -144,7 +144,7 @@ describe("presenceSenderExtension", () => {
     expect(onCursor).toHaveBeenCalledTimes(1);
 
     // Simulate losing focus (user clicked into another cell)
-    (view as Record<string, unknown>).hasFocus = false;
+    (view as unknown as Record<string, unknown>).hasFocus = false;
 
     // Advance past throttle interval
     vi.advanceTimersByTime(75);
