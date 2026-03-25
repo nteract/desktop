@@ -29,7 +29,42 @@ pip install nteract
 
 ## MCP Server
 
-For AI agent integration with Jupyter notebooks, see the [nteract MCP server](https://github.com/nteract/nteract).
+The nteract MCP server connects AI assistants to Jupyter notebooks through the daemon. Agents get 27 tools for working with notebooks — executing code, reading and writing cells, managing dependencies, and collaborating in real-time alongside humans in the desktop app.
+
+### Quick Start
+
+#### Claude Code
+
+```bash
+# Stable
+claude mcp add nteract -- uvx nteract
+
+# Nightly
+claude mcp add nteract-nightly -- uvx --prerelease allow nteract --nightly
+```
+
+#### Manual JSON config
+
+```json
+{
+  "mcpServers": {
+    "nteract": {
+      "command": "uvx",
+      "args": ["nteract"]
+    }
+  }
+}
+```
+
+### CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `--nightly` | Connect to the nightly daemon and open nightly app |
+| `--stable` | Connect to the stable daemon and open stable app |
+| `--no-show` | Do not register the `show_notebook` tool (for headless environments) |
+
+See [`python/nteract/`](python/nteract/) for the full tools reference, architecture, and development guide.
 
 ## Usage
 

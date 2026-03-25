@@ -278,7 +278,7 @@ cargo run -p runt-cli -- notebooks            # List open notebooks with kernel 
 
 ## Python Bindings (runtimed-py)
 
-The `runtimed-py` crate provides Python bindings for interacting with the daemon programmatically. This is used by the [nteract MCP server](https://github.com/nteract/nteract) and can be used for testing.
+The `runtimed-py` crate provides Python bindings for interacting with the daemon programmatically. This is used by the [nteract MCP server](../python/nteract/) and can be used for testing.
 
 ### Installation
 
