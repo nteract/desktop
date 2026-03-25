@@ -124,7 +124,7 @@ impl WindowNotebookRegistry {
     }
 
     /// Find the first window label whose stored path matches `target`.
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[cfg(target_os = "macos")]
     fn find_label_by_path(&self, target: &Path) -> Option<String> {
         let contexts = self.contexts.lock().ok()?;
         for (label, ctx) in contexts.iter() {
@@ -138,7 +138,7 @@ impl WindowNotebookRegistry {
     }
 
     /// Find the first live window that has no file path (untitled/empty notebook).
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[cfg(target_os = "macos")]
     fn find_empty_window_label(&self, app: &tauri::AppHandle) -> Option<String> {
         let contexts = self.contexts.lock().ok()?;
         for (label, ctx) in contexts.iter() {
@@ -1995,7 +1995,7 @@ fn open_notebook_window(
 
 /// Process a single file-open URL: focus existing window, reuse empty window, or open new.
 /// Extracted from RunEvent::Opened handler so it can be reused for deferred URLs.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(target_os = "macos")]
 fn handle_open_url(
     app_handle: &tauri::AppHandle,
     registry: &WindowNotebookRegistry,
@@ -3926,6 +3926,7 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
     // Deferred file-open URLs — queued when RunEvent::Opened arrives before
     // startup sync completes, preventing prune_stale_entries from removing
     // contexts for startup windows whose Tauri webviews haven't been created yet.
+    #[cfg(target_os = "macos")]
     let deferred_open_urls: Arc<Mutex<Vec<tauri::Url>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Migrate stale "main" window geometry before the window-state plugin loads.
@@ -4530,11 +4531,11 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
         .build(tauri::generate_context!())
         .map_err(|e| anyhow::anyhow!("Tauri build error: {}", e))?;
 
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[cfg(target_os = "macos")]
     let registry_for_open = window_registry.clone();
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[cfg(target_os = "macos")]
     let daemon_sync_complete_for_open = daemon_sync_complete.clone();
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[cfg(target_os = "macos")]
     let deferred_urls_for_open = deferred_open_urls.clone();
     let registry_for_session = window_registry.clone();
     let registry_for_exit_session = window_registry.clone();
@@ -4543,7 +4544,7 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
         // Drain deferred file-open URLs once startup sync is complete.
         // These were queued by RunEvent::Opened events that arrived before
         // startup windows were fully created and synced.
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        #[cfg(target_os = "macos")]
         if daemon_sync_complete_for_open.load(Ordering::SeqCst) {
             if let Ok(mut q) = deferred_urls_for_open.lock() {
                 if !q.is_empty() {
@@ -4633,7 +4634,7 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
         // During startup, incoming Apple Events are deferred to prevent
         // prune_stale_entries from removing contexts for startup windows
         // whose Tauri webviews haven't been created yet.
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        #[cfg(target_os = "macos")]
         if let RunEvent::Opened { urls } = &event {
             log::info!(
                 "[file-open] RunEvent::Opened with {} URL(s): {:?}",
