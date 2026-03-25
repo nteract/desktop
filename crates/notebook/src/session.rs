@@ -460,4 +460,33 @@ mod tests {
         assert!(labels.contains(&"notebook-real"));
         assert!(!labels.contains(&"notebook-ghost"));
     }
+
+    /// Regression test: if the session file contains two entries for the same
+    /// notebook path (e.g., same notebook was open in two windows with different
+    /// labels), `window_label_for_session()` produces the same deterministic
+    /// label for both. Without dedup at restore time, the second
+    /// `registry.insert()` would crash with "Context already exists".
+    #[test]
+    fn test_duplicate_path_produces_same_label() {
+        let path = PathBuf::from("/Users/test/notebooks/div.ipynb");
+
+        let ws1 = WindowSession {
+            label: "notebook-c79d8e59".to_string(),
+            path: Some(path.clone()),
+            env_id: None,
+            runtime: "python".to_string(),
+            scale_factor: None,
+        };
+        let ws2 = WindowSession {
+            label: "notebook-c79d8e59-ab123456".to_string(),
+            path: Some(path),
+            env_id: None,
+            runtime: "python".to_string(),
+            scale_factor: None,
+        };
+
+        let label1 = window_label_for_session(&ws1);
+        let label2 = window_label_for_session(&ws2);
+        assert_eq!(label1, label2, "same path must produce same label");
+    }
 }
