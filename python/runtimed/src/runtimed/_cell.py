@@ -299,6 +299,9 @@ class CellCollection:
     def __contains__(self, cell_id: str) -> bool:
         return cell_id in self._session.get_cell_ids_sync()
 
+    def __await__(self):
+        raise TypeError("'cells' is a sync property — use it directly, no await needed: .cells")
+
     # ── Async mutations ──────────────────────────────────────────────
 
     async def create(

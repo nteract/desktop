@@ -138,6 +138,38 @@ class TestNotebookInfo:
         assert "3 peers" in r
 
 
+class TestSyncGuards:
+    """Test __await__ guards on sync return types."""
+
+    def test_hint_list_await(self):
+        """_HintList raises TypeError on __await__."""
+        from runtimed._cell import _HintList
+
+        v = _HintList([1, 2, 3], "outputs")
+        with pytest.raises(TypeError, match="sync property"):
+            v.__await__()
+
+    def test_hint_list_call(self):
+        """_HintList raises TypeError on __call__."""
+        from runtimed._cell import _HintList
+
+        v = _HintList([1, 2, 3], "outputs")
+        with pytest.raises(TypeError, match="not a method"):
+            v()
+
+    def test_runtime_state_has_await_guard(self):
+        """RuntimeState has __await__ guard method."""
+        assert hasattr(runtimed.RuntimeState, "__await__")
+
+    def test_kernel_state_has_await_guard(self):
+        """KernelState has __await__ guard method."""
+        assert hasattr(runtimed.KernelState, "__await__")
+
+    def test_env_state_has_await_guard(self):
+        """EnvState has __await__ guard method."""
+        assert hasattr(runtimed.EnvState, "__await__")
+
+
 class TestCreateNotebookValidation:
     """Test create_notebook working_dir validation on NativeAsyncClient."""
 
