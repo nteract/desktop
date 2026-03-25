@@ -2933,6 +2933,8 @@ async fn diagnostics_command(output_dir: Option<PathBuf>) -> Result<()> {
     if prev_daemon_log.exists() {
         tar.append_path_with_name(&prev_daemon_log, "runtimed.log.1")?;
         println!("  {} runtimed.log.1 (previous session)", "✓".green());
+    } else {
+        println!("  {} runtimed.log.1 (previous session not found)", "–".yellow());
     }
 
     // 2. Notebook log (current session)
@@ -2949,6 +2951,8 @@ async fn diagnostics_command(output_dir: Option<PathBuf>) -> Result<()> {
     if prev_notebook_log.exists() {
         tar.append_path_with_name(&prev_notebook_log, "notebook.log.0")?;
         println!("  {} notebook.log.0 (previous session)", "✓".green());
+    } else {
+        println!("  {} notebook.log.0 (previous session not found)", "–".yellow());
     }
 
     // 3. daemon status --json
