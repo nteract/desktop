@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 
 class _HintList(list):
-    """List that gives a helpful error if accidentally called."""
+    """List that gives a helpful error if accidentally called or awaited."""
 
     __slots__ = ("_attr",)
 
@@ -29,6 +29,11 @@ class _HintList(list):
     def __call__(self, *a, **kw):
         raise TypeError(
             f"'{self._attr}' is a property, not a method — drop the parentheses: .{self._attr}"
+        )
+
+    def __await__(self):
+        raise TypeError(
+            f"'{self._attr}' is a sync property — use it directly, no await needed: .{self._attr}"
         )
 
 
