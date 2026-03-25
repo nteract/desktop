@@ -394,9 +394,8 @@ pub fn launchd_start() -> Result<(), String> {
     // as Ok, so ? propagates only unexpected failures.
     launchd_stop()?;
 
-    // Brief pause for launchd to clean up
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
+    // launchd_bootstrap retries with backoff if launchd needs time to
+    // clean up after the bootout above.
     launchd_bootstrap(&plist, &domain)
 }
 
@@ -449,24 +448,59 @@ pub fn launchd_ensure_loaded() -> Result<bool, String> {
 }
 
 /// Run `launchctl bootstrap` for the given plist in the given domain.
+///
+/// Retries with increasing delays on transient errors (e.g. error 5 —
+/// I/O error) that occur when launchd hasn't fully cleaned up after a
+/// recent `bootout`.
 #[cfg(target_os = "macos")]
 fn launchd_bootstrap(plist: &Path, domain: &str) -> Result<(), String> {
-    let output = Command::new("launchctl")
-        .arg("bootstrap")
-        .arg(domain)
-        .arg(plist)
-        .output()
-        .map_err(|e| format!("Failed to run launchctl bootstrap: {e}"))?;
+    // First attempt immediate, then backoff. Total max wait ~3.7s.
+    let delays_ms: &[u64] = &[0, 200, 500, 1000, 2000];
+    let mut last_err = String::new();
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // Error 37 means service is already loaded (which is fine)
-        if !stderr.contains("37") {
-            return Err(format!("launchctl bootstrap failed: {}", stderr.trim()));
+    for (attempt, &delay_ms) in delays_ms.iter().enumerate() {
+        if delay_ms > 0 {
+            eprintln!(
+                "[launchd] bootstrap attempt {} after {}ms delay",
+                attempt + 1,
+                delay_ms,
+            );
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
         }
+
+        let output = Command::new("launchctl")
+            .arg("bootstrap")
+            .arg(domain)
+            .arg(plist)
+            .output()
+            .map_err(|e| format!("Failed to run launchctl bootstrap: {e}"))?;
+
+        if output.status.success() {
+            if attempt > 0 {
+                eprintln!("[launchd] bootstrap succeeded on attempt {}", attempt + 1);
+            }
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // Error 37: service already loaded — that's fine
+        if stderr.contains("37") {
+            return Ok(());
+        }
+
+        // Error 5: I/O error — transient, launchd still cleaning up.
+        // Match " 5: " precisely to avoid catching 15:, 25:, etc.
+        if stderr.contains(" 5: ") || stderr.contains("Input/output") {
+            last_err = format!("launchctl bootstrap failed: {}", stderr.trim());
+            continue;
+        }
+
+        // Any other error — fail immediately
+        return Err(format!("launchctl bootstrap failed: {}", stderr.trim()));
     }
 
-    Ok(())
+    Err(last_err)
 }
 
 // ============================================================================
