@@ -105,7 +105,6 @@ impl WindowNotebookRegistry {
     }
 
     /// Find the first window label whose stored path matches `target`.
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
     fn find_label_by_path(&self, target: &Path) -> Option<String> {
         let contexts = self.contexts.lock().ok()?;
         for (label, ctx) in contexts.iter() {
@@ -1845,15 +1844,17 @@ fn create_notebook_window_for_daemon(
     // ghost notebooks appear in the upgrade dialog and saved session.
     registry.prune_stale_entries(app);
 
-    // If a window with this label already exists, append a unique suffix so the same
-    // notebook can be open in multiple windows simultaneously. The first window keeps
-    // the deterministic label (window-state geometry persists); additional windows get
-    // a UUID suffix and connect as additional peers to the same daemon room.
-    let label = if app.get_webview_window(&label).is_some() {
-        format!("{}-{}", label, &uuid::Uuid::new_v4().to_string()[..8])
-    } else {
-        label
-    };
+    // If a window with this label already exists, focus it instead of opening a
+    // duplicate. Opening the same file in multiple windows causes state
+    // inconsistencies (dirty flags, titles, session restore). See #1173.
+    if let Some(existing) = app.get_webview_window(&label) {
+        info!(
+            "[window] Focusing existing window '{}' instead of opening duplicate",
+            label
+        );
+        let _ = existing.set_focus();
+        return Ok(label);
+    }
 
     // Placeholder notebook_id — daemon will provide the canonical one.
     let placeholder_id = match &mode {
