@@ -1852,6 +1852,8 @@ fn create_notebook_window_for_daemon(
             "[window] Focusing existing window '{}' instead of opening duplicate",
             label
         );
+        let _ = existing.show();
+        let _ = existing.unminimize();
         let _ = existing.set_focus();
         return Ok(label);
     }
