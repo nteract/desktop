@@ -22,6 +22,20 @@ Untitled*.ipynb
 # Local environment
 .env
 
+# OS-generated files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.directory
+
 # Hone directory
 .hone
 
