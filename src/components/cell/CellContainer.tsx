@@ -86,7 +86,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         onMouseDown={onFocus}
       >
         {/* Gutter area - action content only (ribbon moves to content rows for segmented) */}
-        <div className="flex w-10 flex-shrink-0 flex-col items-end justify-start gap-0.5 pr-1 pt-3 select-none">
+        <div className="flex w-10 flex-shrink-0 flex-col items-end justify-start gap-0.5 pr-1 pt-4 select-none">
           {gutterContent}
           {presenceIndicators}
         </div>
@@ -105,7 +105,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                   isDragging && "cursor-grabbing",
                 )}
               />
-              <div className="min-w-0 flex-1 pb-3 pl-6 pr-3">{codeContent}</div>
+              <div className="min-w-0 flex-1 pt-1.5 pb-3 pl-6 pr-3">{codeContent}</div>
               {/* Code row right gutter */}
               {rightGutterContent && (
                 <div
@@ -167,7 +167,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                   isDragging && "cursor-grabbing",
                 )}
               />
-              <div className="min-w-0 flex-1 pb-3 pl-6 pr-3">{children}</div>
+              <div className="min-w-0 flex-1 pt-1.5 pb-3 pl-6 pr-3">{children}</div>
             </div>
             {/* Right margin for legacy layout */}
             {rightGutterContent && (
