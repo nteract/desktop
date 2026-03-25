@@ -41,3 +41,7 @@ export {
   DEFAULT_RUNTIME_STATE,
   diffExecutions,
 } from "./runtime-state";
+
+// Testing
+export { DirectTransport } from "./direct-transport";
+export type { ServerHandle } from "./direct-transport";
