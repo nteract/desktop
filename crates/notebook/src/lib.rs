@@ -4577,6 +4577,7 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
     let registry_for_session = window_registry.clone();
     let registry_for_exit_session = window_registry.clone();
     let registry_for_window_close = window_registry.clone();
+    let app_quitting = Arc::new(AtomicBool::new(false));
     app.run(move |app_handle, event| {
         // Drain deferred file-open URLs once startup sync is complete.
         // These were queued by RunEvent::Opened events that arrived before
@@ -4614,6 +4615,7 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
                 api.prevent_exit();
             } else {
                 // Real quit (Cmd+Q or code-initiated). Save now while windows are alive.
+                app_quitting.store(true, Ordering::SeqCst);
                 log::info!("[session] Saving session before windows are destroyed");
                 registry_for_exit_session.prune_stale_entries(app_handle);
                 if let Err(e) = session::save_session(&registry_for_exit_session, app_handle) {
@@ -4624,6 +4626,7 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
 
         #[cfg(not(target_os = "macos"))]
         if let RunEvent::ExitRequested { .. } = &event {
+            app_quitting.store(true, Ordering::SeqCst);
             log::info!("[session] Saving session before windows are destroyed");
             registry_for_exit_session.prune_stale_entries(app_handle);
             if let Err(e) = session::save_session(&registry_for_exit_session, app_handle) {
@@ -4654,7 +4657,9 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
                     );
                 }
             }
-            refresh_native_menu(app_handle, &registry_for_window_close);
+            if !app_quitting.load(Ordering::SeqCst) {
+                refresh_native_menu(app_handle, &registry_for_window_close);
+            }
         }
 
         // Fallback session save. ExitRequested (above) is the primary save point;
