@@ -17,17 +17,11 @@ export type {
   QueueState,
   RuntimeState,
   TrustState,
-} from "runtimed/src/runtime-state";
+} from "runtimed";
 
-export {
-  DEFAULT_RUNTIME_STATE,
-  diffExecutions,
-} from "runtimed/src/runtime-state";
+export { DEFAULT_RUNTIME_STATE, diffExecutions } from "runtimed";
 
-import {
-  DEFAULT_RUNTIME_STATE,
-  type RuntimeState,
-} from "runtimed/src/runtime-state";
+import { DEFAULT_RUNTIME_STATE, type RuntimeState } from "runtimed";
 
 // ── Store ────────────────────────────────────────────────────────────
 

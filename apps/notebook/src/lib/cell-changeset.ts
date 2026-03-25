@@ -9,4 +9,4 @@ export {
   type ChangedCell,
   type ChangedFields,
   mergeChangesets,
-} from "runtimed/src/cell-changeset";
+} from "runtimed";

@@ -9,8 +9,7 @@
 import type { JupyterOutput } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { getBlobPort, refreshBlobPort } from "./blob-port";
-import { type CellChangeset, mergeChangesets } from "./cell-changeset";
-import { logger } from "./logger";
+import type { CellChangeset } from "./cell-changeset";
 import {
   isManifestHash,
   materializeCellFromWasm,
