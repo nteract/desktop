@@ -353,8 +353,8 @@ async def _get_single_cell_status(notebook: runtimed.Notebook, cell_id: str) -> 
         return None
 
 
-def _collect_runtime_info(notebook: runtimed.Notebook) -> dict[str, Any]:
-    """Collect runtime info from the notebook's local CRDT replica."""
+def _read_runtime_info(notebook: runtimed.Notebook) -> dict[str, Any]:
+    """Read runtime info snapshot from the notebook's local CRDT replica."""
     info: dict[str, Any] = {}
     try:
         rs = notebook.runtime
@@ -385,6 +385,25 @@ def _collect_runtime_info(notebook: runtimed.Notebook) -> dict[str, Any]:
         if not info:
             info["kernel_status"] = "unknown"
 
+    return info
+
+
+async def _collect_runtime_info(notebook: runtimed.Notebook) -> dict[str, Any]:
+    """Collect runtime info, waiting briefly for the RuntimeStateDoc to sync.
+
+    The daemon writes kernel status (e.g. "starting") to the RuntimeStateDoc
+    after the peer joins, so there's a brief window where the client sees
+    "not_started" even though the kernel is being launched. Poll for up to
+    ~500ms to let the state doc catch up.
+    """
+    info = _read_runtime_info(notebook)
+    if info.get("kernel_status") not in ("not_started", "unknown", ""):
+        return info
+    for _ in range(5):
+        await asyncio.sleep(0.1)
+        info = _read_runtime_info(notebook)
+        if info.get("kernel_status") not in ("not_started", "unknown", ""):
+            return info
     return info
 
 
@@ -861,7 +880,7 @@ class NteractServer:
                 for i, cell in enumerate(srv._notebook.cells)
             ]
 
-            runtime_info = _collect_runtime_info(srv._notebook)
+            runtime_info = await _collect_runtime_info(srv._notebook)
             deps: list[str] = []
             with contextlib.suppress(Exception):
                 deps = await srv._notebook.get_dependencies()
@@ -902,7 +921,7 @@ class NteractServer:
                 for i, cell in enumerate(srv._notebook.cells)
             ]
 
-            runtime_info = _collect_runtime_info(srv._notebook)
+            runtime_info = await _collect_runtime_info(srv._notebook)
             deps: list[str] = []
             with contextlib.suppress(Exception):
                 deps = await srv._notebook.get_dependencies()
@@ -963,7 +982,7 @@ class NteractServer:
                 with contextlib.suppress(Exception):
                     await srv._notebook.restart()
 
-            runtime_info = _collect_runtime_info(srv._notebook)
+            runtime_info = await _collect_runtime_info(srv._notebook)
             if "language" not in runtime_info:
                 runtime_info["language"] = runtime
 
