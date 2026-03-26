@@ -109,6 +109,8 @@ interface CodeCellProps {
   isLastCell?: boolean;
   /** Whether this cell is immediately before the focused cell */
   isPreviousCellFromFocused?: boolean;
+  /** Whether this cell is immediately after the focused cell */
+  isNextCellFromFocused?: boolean;
   /** Props for dnd-kit drag handle (applied to ribbon) */
   dragHandleProps?: Record<string, unknown>;
   /** Whether this cell is currently being dragged */
@@ -147,6 +149,7 @@ export const CodeCell = memo(function CodeCell({
   onClearPagePayload,
   isLastCell = false,
   isPreviousCellFromFocused,
+  isNextCellFromFocused,
   dragHandleProps,
   isDragging,
   onToggleSourceHidden,
@@ -385,6 +388,7 @@ export const CodeCell = memo(function CodeCell({
         cellType="code"
         isFocused={isFocused}
         isPreviousCellFromFocused={isPreviousCellFromFocused}
+        isNextCellFromFocused={isNextCellFromFocused}
         onFocus={onFocus}
         gutterContent={gutterContent}
         rightGutterContent={rightGutterContent}

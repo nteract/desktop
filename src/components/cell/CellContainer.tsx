@@ -27,6 +27,8 @@ interface CellContainerProps {
   customGutterColors?: Record<string, GutterColorConfig>;
   /** Whether this cell is immediately before the focused cell (keeps output bright) */
   isPreviousCellFromFocused?: boolean;
+  /** Whether this cell is immediately after the focused cell (keeps output bright) */
+  isNextCellFromFocused?: boolean;
   /** Props for dnd-kit drag handle (applied to ribbon) */
   dragHandleProps?: Record<string, unknown>;
   /** Whether this cell is currently being dragged */
@@ -51,6 +53,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
       presenceIndicators,
       customGutterColors,
       isPreviousCellFromFocused = false,
+      isNextCellFromFocused = false,
       dragHandleProps,
       isDragging = false,
       className,
@@ -135,7 +138,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 <div
                   className={cn(
                     "min-w-0 flex-1 py-2 pl-6 pr-3 transition-opacity duration-150",
-                    !isFocused && !isPreviousCellFromFocused && "opacity-70",
+                    !isFocused && !isPreviousCellFromFocused && !isNextCellFromFocused && "opacity-70",
                   )}
                 >
                   {outputContent}
