@@ -1233,7 +1233,9 @@ impl RoomKernel {
                                     // write lock during potentially slow blob store operations.
                                     let mut fork = {
                                         let mut doc_guard = doc.write().await;
-                                        doc_guard.fork()
+                                        let mut f = doc_guard.fork();
+                                        f.set_actor("runtimed:kernel");
+                                        f
                                     };
 
                                     let updated = update_output_by_display_id_with_manifests(

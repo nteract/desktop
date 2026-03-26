@@ -312,7 +312,8 @@ async fn process_markdown_assets(room: &NotebookRoom) {
             .filter(|cell| cell.cell_type == "markdown")
             .map(|cell| (cell.id, cell.source, cell.resolved_assets))
             .collect();
-        let fork = doc.fork();
+        let mut fork = doc.fork();
+        fork.set_actor("runtimed:assets");
         (cells, fork)
     };
 
@@ -3528,6 +3529,8 @@ async fn handle_notebook_request(
                             if let Some(runtime) = detect_room_runtime(&room_clone).await {
                                 if let Some(formatted) = format_source(&source, &runtime).await {
                                     let mut fork = fork;
+                                    let actor = formatter_actor(&runtime);
+                                    fork.set_actor(&actor);
                                     if fork.update_source(&cell_id_clone, &formatted).is_ok() {
                                         let mut doc = room_clone.doc.write().await;
                                         let _ = doc.merge(&mut fork);
@@ -3739,6 +3742,8 @@ async fn handle_notebook_request(
                 tokio::spawn(async move {
                     if let Some(runtime) = detect_room_runtime(&room_clone).await {
                         let mut fork = fork;
+                        let actor = formatter_actor(&runtime);
+                        fork.set_actor(&actor);
                         let mut any_formatted = false;
                         for (cell_id, source) in &cell_sources {
                             if let Some(fmt) = format_source(source, &runtime).await {
@@ -4218,6 +4223,15 @@ async fn format_source(source: &str, runtime: &str) -> Option<String> {
     }
 }
 
+/// Map a runtime name to its formatter's CRDT actor label.
+fn formatter_actor(runtime: &str) -> String {
+    let tool = match runtime {
+        "python" => "ruff",
+        other => other, // "deno" stays "deno"
+    };
+    format!("runtimed:{tool}")
+}
+
 /// Detect the runtime from room metadata, returning "python", "deno", or None.
 async fn detect_room_runtime(room: &NotebookRoom) -> Option<String> {
     let doc = room.doc.read().await;
@@ -4258,7 +4272,9 @@ async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
     // live doc, and Automerge's text CRDT merges them cleanly.
     let mut fork = {
         let mut doc = room.doc.write().await;
-        doc.fork()
+        let mut f = doc.fork();
+        f.set_actor(&formatter_actor(&runtime));
+        f
     };
 
     let mut formatted_count = 0;
@@ -5808,6 +5824,7 @@ async fn apply_ipynb_changes(
         } else {
             doc.fork()
         };
+        fork.set_actor("runtimed:filesystem");
 
         // Delete all current cells and re-add in external order on the fork
         for cell in &current_cells {
@@ -5875,7 +5892,10 @@ async fn apply_ipynb_changes(
     // (e.g., background formatting) rather than overwriting them.
     let save_heads = room.last_save_heads.read().await.clone();
     let mut source_fork = if !save_heads.is_empty() {
-        doc.fork_at(&save_heads).ok()
+        doc.fork_at(&save_heads).ok().map(|mut f| {
+            f.set_actor("runtimed:filesystem");
+            f
+        })
     } else {
         None
     };

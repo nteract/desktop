@@ -138,6 +138,12 @@ function dispatchAttributionMarks(
     // Skip pure deletions — nothing to highlight (the text is gone)
     if (attr.text.length === 0) continue;
 
+    // Skip automated daemon changes (formatting, file watcher, kernel
+    // display updates). The text is applied via CRDT sync, but the
+    // visual animation (fade-in, underline sweep) is distracting for
+    // non-human edits. Human and agent actors don't start with "runtimed:".
+    if (attr.actors.every((a) => a.startsWith("runtimed:"))) continue;
+
     const docLen = view.state.doc.length;
     const from = Math.min(attr.index, docLen);
     const to = Math.min(attr.index + attr.text.length, docLen);
