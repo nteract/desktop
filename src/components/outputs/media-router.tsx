@@ -368,6 +368,18 @@ export function MediaRouter({
       );
     }
 
+    // Unknown text/* types — render with a MIME type label for distinction
+    if (mimeType.startsWith("text/")) {
+      return (
+        <div>
+          <span className="inline-block mb-1 px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground bg-muted rounded">
+            {mimeType}
+          </span>
+          <AnsiOutput className={className}>{String(content)}</AnsiOutput>
+        </div>
+      );
+    }
+
     // Fallback: render as plain text
     return <AnsiOutput className={className}>{String(content)}</AnsiOutput>;
   };

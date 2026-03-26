@@ -373,6 +373,32 @@ describe("MediaRouter component", () => {
     });
   });
 
+  describe("unknown text/* MIME types", () => {
+    it("renders unknown text/* type with a MIME type label", async () => {
+      render(
+        <MediaProvider>
+          <MediaRouter data={{ "text/snazzy": "hello from custom type" }} />
+        </MediaProvider>,
+      );
+      await waitFor(() => {
+        expect(screen.getByText("hello from custom type")).toBeInTheDocument();
+        expect(screen.getByText("text/snazzy")).toBeInTheDocument();
+      });
+    });
+
+    it("does NOT show a MIME type label for text/plain", async () => {
+      render(
+        <MediaProvider>
+          <MediaRouter data={{ "text/plain": "regular plain text" }} />
+        </MediaProvider>,
+      );
+      await waitFor(() => {
+        expect(screen.getByText("regular plain text")).toBeInTheDocument();
+      });
+      expect(screen.queryByText("text/plain")).not.toBeInTheDocument();
+    });
+  });
+
   describe("custom renderers", () => {
     it("uses custom renderer when provided", () => {
       render(

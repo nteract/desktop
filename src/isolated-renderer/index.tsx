@@ -284,6 +284,29 @@ function OutputRenderer({ payload }: { payload: RenderPayload }) {
     return <AnsiOutput>{String(content)}</AnsiOutput>;
   }
 
+  // Unknown text/* types — render with a MIME type label for distinction
+  if (mimeType.startsWith("text/")) {
+    return (
+      <div>
+        <span
+          style={{
+            display: "inline-block",
+            marginBottom: "4px",
+            padding: "1px 6px",
+            fontSize: "10px",
+            fontFamily: "monospace",
+            color: "var(--text-secondary)",
+            background: "var(--bg-secondary)",
+            borderRadius: "4px",
+          }}
+        >
+          {mimeType}
+        </span>
+        <AnsiOutput>{String(content)}</AnsiOutput>
+      </div>
+    );
+  }
+
   // Fallback: render as plain text
   return (
     <pre style={{ whiteSpace: "pre-wrap", wordWrap: "break-word" }}>
