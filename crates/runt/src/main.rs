@@ -2084,15 +2084,20 @@ async fn doctor_command(
         let conflicting_services: Option<CheckResult> = None;
 
         // Check 2e: On macOS, check .ipynb file association
+        // Accept any nteract bundle ID (stable or nightly) as OK — a source-built
+        // nightly runt should not warn about the stable app being the handler.
         #[cfg(target_os = "macos")]
         let file_association = {
-            let expected = runt_workspace::bundle_identifier();
             match runt_workspace::launch_services::get_default_ipynb_handler() {
-                Some(handler) if handler == expected => Some(CheckResult {
-                    path: ".ipynb handler".to_string(),
-                    status: "ok".to_string(),
-                    detail: Some(handler),
-                }),
+                Some(handler)
+                    if runt_workspace::NTERACT_BUNDLE_IDENTIFIERS.contains(&handler.as_str()) =>
+                {
+                    Some(CheckResult {
+                        path: ".ipynb handler".to_string(),
+                        status: "ok".to_string(),
+                        detail: Some(handler),
+                    })
+                }
                 Some(handler)
                     if runt_workspace::STALE_BUNDLE_IDENTIFIERS.contains(&handler.as_str()) =>
                 {
@@ -2261,10 +2266,16 @@ async fn doctor_command(
         let is_quarantined = false;
 
         let version_mismatch = version_match.status == "mismatch";
+        let file_assoc_issue = file_association
+            .as_ref()
+            .map(|c| c.status != "ok")
+            .unwrap_or(false);
 
         // Determine diagnosis
         let diagnosis = if daemon_running_result && version_mismatch {
             "Daemon is running but version mismatch detected. Run 'runt daemon doctor --fix' or restart the app.".to_string()
+        } else if daemon_running_result && file_assoc_issue {
+            "Daemon is healthy but .ipynb file association needs attention. Run 'runt daemon doctor --fix'.".to_string()
         } else if daemon_running_result {
             "Daemon is healthy and running.".to_string()
         } else if !binary_exists && !config_exists {
@@ -2362,11 +2373,11 @@ async fn doctor_command(
     let is_quarantined = false;
 
     // On macOS, check if .ipynb file association needs fixing
+    // Accept any nteract bundle ID (stable or nightly) as OK
     #[cfg(target_os = "macos")]
     let file_assoc_needs_fix = {
-        let expected = runt_workspace::bundle_identifier();
         runt_workspace::launch_services::get_default_ipynb_handler()
-            .map(|h| h != expected)
+            .map(|h| !runt_workspace::NTERACT_BUNDLE_IDENTIFIERS.contains(&h.as_str()))
             .unwrap_or(true) // No handler set → needs fix
     };
     #[cfg(not(target_os = "macos"))]
@@ -2468,22 +2479,27 @@ async fn doctor_command(
         }
 
         // Fix .ipynb file association (macOS only)
+        // Use whichever nteract app is actually installed, not the compile-time channel
         #[cfg(target_os = "macos")]
         if file_assoc_needs_fix {
-            let bundle_id = runt_workspace::bundle_identifier();
-            // Re-register app bundle with Launch Services if installed
-            if let Some(app_path) = runt_workspace::find_installed_app_bundle() {
+            if let Some((app_path, bundle_id)) = runt_workspace::find_any_installed_nteract_bundle()
+            {
+                // Re-register app bundle with Launch Services
                 if let Err(e) = runt_workspace::launch_services::register_app_bundle(&app_path) {
                     eprintln!("Warning: lsregister failed: {e}");
                 }
-            }
-            match runt_workspace::launch_services::set_default_ipynb_handler(bundle_id) {
-                Ok(()) => {
-                    actions_taken.push(format!("Set .ipynb file association to {}", bundle_id));
+                match runt_workspace::launch_services::set_default_ipynb_handler(bundle_id) {
+                    Ok(()) => {
+                        actions_taken.push(format!("Set .ipynb file association to {}", bundle_id));
+                    }
+                    Err(status) => {
+                        eprintln!("Failed to set .ipynb file association (OSStatus {status})");
+                    }
                 }
-                Err(status) => {
-                    eprintln!("Failed to set .ipynb file association (OSStatus {status})");
-                }
+            } else {
+                eprintln!(
+                    "No nteract app bundle found in /Applications or ~/Applications — cannot fix .ipynb association"
+                );
             }
         }
 
@@ -2713,13 +2729,23 @@ async fn doctor_command(
             .map(|c| c.status == "not_loaded" || c.status == "error")
             .unwrap_or(false);
         let version_mismatch = report.version_match.status == "mismatch";
-        let diagnosis_colored = if report.daemon_running.status == "ok" && !version_mismatch {
-            report.diagnosis.green()
-        } else if version_mismatch || report.daemon_state.status == "stale" || launchd_has_issue {
-            report.diagnosis.yellow()
-        } else {
-            report.diagnosis.red()
-        };
+        let file_assoc_issue = report
+            .file_association
+            .as_ref()
+            .map(|c| c.status != "ok")
+            .unwrap_or(false);
+        let diagnosis_colored =
+            if report.daemon_running.status == "ok" && !version_mismatch && !file_assoc_issue {
+                report.diagnosis.green()
+            } else if version_mismatch
+                || report.daemon_state.status == "stale"
+                || launchd_has_issue
+                || file_assoc_issue
+            {
+                report.diagnosis.yellow()
+            } else {
+                report.diagnosis.red()
+            };
         println!("{} {}", "Diagnosis:".bold(), diagnosis_colored);
 
         if !report.actions_taken.is_empty() {
@@ -2728,7 +2754,7 @@ async fn doctor_command(
             for action in &report.actions_taken {
                 println!("  {} {}", "✓".green(), action);
             }
-        } else if report.daemon_running.status != "ok" && !fix {
+        } else if (report.daemon_running.status != "ok" || file_assoc_issue) && !fix {
             println!();
             println!(
                 "{}",

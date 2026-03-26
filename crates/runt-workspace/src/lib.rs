@@ -153,6 +153,13 @@ pub fn bundle_identifier() -> &'static str {
     bundle_identifier_for(build_channel())
 }
 
+/// All valid nteract bundle identifiers (stable + nightly).
+///
+/// Either is acceptable as the default `.ipynb` handler — a source-built
+/// nightly `runt` should not warn about the stable app being the handler.
+pub const NTERACT_BUNDLE_IDENTIFIERS: &[&str] =
+    &["org.nteract.desktop", "org.nteract.desktop.nightly"];
+
 /// Legacy bundle identifiers that should no longer be the default `.ipynb` handler.
 pub const STALE_BUNDLE_IDENTIFIERS: &[&str] = &["com.runtimed.notebook"];
 
@@ -204,14 +211,20 @@ pub fn desktop_app_launch_candidates() -> &'static [&'static str] {
     desktop_app_launch_candidates_for(build_channel())
 }
 
-/// Find the installed `.app` bundle on macOS.
+/// Find the installed `.app` bundle on macOS for the current channel.
 ///
 /// Searches `/Applications/` and `~/Applications/` for known app name candidates.
 /// Returns the first match found.
 #[cfg(target_os = "macos")]
 pub fn find_installed_app_bundle() -> Option<PathBuf> {
+    find_installed_app_bundle_for(build_channel())
+}
+
+/// Find the installed `.app` bundle on macOS for a specific channel.
+#[cfg(target_os = "macos")]
+pub fn find_installed_app_bundle_for(channel: BuildChannel) -> Option<PathBuf> {
     let home_apps = dirs::home_dir().map(|h| h.join("Applications"));
-    for app_name in desktop_app_launch_candidates() {
+    for app_name in desktop_app_launch_candidates_for(channel) {
         let bundle_name = format!("{app_name}.app");
         let system = PathBuf::from("/Applications").join(&bundle_name);
         if system.exists() {
@@ -223,6 +236,29 @@ pub fn find_installed_app_bundle() -> Option<PathBuf> {
                 return Some(user);
             }
         }
+    }
+    None
+}
+
+/// Find any installed nteract app bundle and return its bundle identifier.
+///
+/// Tries the current channel first, then falls back to the other channel.
+/// This ensures a source-built nightly `runt` finds the stable app if that's
+/// what's installed.
+#[cfg(target_os = "macos")]
+pub fn find_any_installed_nteract_bundle() -> Option<(PathBuf, &'static str)> {
+    let current = build_channel();
+    let other = match current {
+        BuildChannel::Stable => BuildChannel::Nightly,
+        BuildChannel::Nightly => BuildChannel::Stable,
+    };
+    // Try current channel first
+    if let Some(path) = find_installed_app_bundle_for(current) {
+        return Some((path, bundle_identifier_for(current)));
+    }
+    // Fall back to other channel
+    if let Some(path) = find_installed_app_bundle_for(other) {
+        return Some((path, bundle_identifier_for(other)));
     }
     None
 }
