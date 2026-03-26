@@ -13,9 +13,20 @@
 - Do not write to the CRDT in response to daemon broadcasts. That re-authors the same change and can create dirty-state or sync bugs.
 - Treat CodeMirror source editing as a dedicated bridge. Avoid bypassing it with ad hoc source update flows.
 
+## Fork+Merge for Daemon Async Mutations
+
+Any daemon code that reads from the CRDT doc, does async work (subprocess, I/O, network), then writes back **must** use `fork()` + `merge()`. Direct mutation after an async gap can silently overwrite concurrent edits.
+
+- **Async pattern:** `fork()` before the `.await`, mutate the fork, `merge()` after. The fork must be created *before* async work starts.
+- **Sync pattern:** `doc.fork_and_merge(|fork| { ... })` — handles fork/merge ordering automatically.
+- **Historic point:** `doc.fork_at_and_merge(&save_heads, |fork| { ... })` — for external content relative to a known save point.
+
+Key methods on `NotebookDoc`: `fork()`, `fork_at(heads)`, `get_heads()`, `merge()`, `fork_and_merge(f)`, `fork_at_and_merge(heads, f)`.
+
 ## Common review questions
 
 - Is this change writing to the store without a matching CRDT write?
 - Is this change re-writing daemon-authored state from the frontend?
 - Is the change on the local-mutation path, inbound sync path, or both?
 - Does the sync rollback or retry logic preserve convergence if delivery fails?
+- Does this code read doc state, await something, then write back? If so, is it using fork+merge?

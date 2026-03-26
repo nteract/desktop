@@ -51,6 +51,8 @@ interface MarkdownCellProps {
   isLastCell?: boolean;
   /** Whether this cell is immediately before the focused cell */
   isPreviousCellFromFocused?: boolean;
+  /** Whether this cell is immediately after the focused cell */
+  isNextCellFromFocused?: boolean;
   /** Props for dnd-kit drag handle (applied to ribbon) */
   dragHandleProps?: Record<string, unknown>;
   /** Whether this cell is currently being dragged */
@@ -70,6 +72,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   onInsertCellAfter,
   isLastCell = false,
   isPreviousCellFromFocused,
+  isNextCellFromFocused,
   dragHandleProps,
   isDragging,
   rightGutterContent,
@@ -418,6 +421,7 @@ export const MarkdownCell = memo(function MarkdownCell({
       cellType="markdown"
       isFocused={isFocused}
       isPreviousCellFromFocused={isPreviousCellFromFocused}
+      isNextCellFromFocused={isNextCellFromFocused}
       onFocus={onFocus}
       presenceIndicators={<CellPresenceIndicators cellId={cell.id} />}
       dragHandleProps={dragHandleProps}

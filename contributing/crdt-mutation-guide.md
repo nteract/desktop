@@ -126,7 +126,38 @@ doc.merge(&mut fork).ok();
 
 **`fork_at(heads)`** is for changes relative to a known historic point (e.g., the file watcher forking at the last save point so disk content merges cleanly with post-save CRDT changes).
 
-Current fork+merge usage: background cell formatting, save-on-demand formatting, file watcher source updates. See [#1216](https://github.com/nteract/desktop/issues/1216) for the adoption plan.
+### Helpers for Synchronous Blocks
+
+For mutation blocks with no `.await` between fork and merge, use the helpers to avoid ordering mistakes:
+
+```rust
+// Fork at current heads, apply mutations, merge back
+doc.fork_and_merge(|fork| {
+    fork.update_source("cell-1", "x = 1\n");
+    fork.set_cell_resolved_assets("cell-2", &assets);
+});
+
+// Fork at a historic point (e.g., file watcher at last save)
+doc.fork_at_and_merge(&save_heads, |fork| {
+    fork.update_source("cell-1", &disk_source);
+})?;
+```
+
+These encapsulate the fork-before/merge-after pattern. For **async** work between fork and merge, use `fork()` and `merge()` directly — the fork must be created before the `.await` and merged after.
+
+### Adoption Status
+
+All async CRDT mutation paths in the daemon are now protected:
+
+| Path | Protection |
+|------|-----------|
+| ExecuteCell / RunAllCells formatting | `fork()` before `tokio::spawn`, merge in task |
+| `format_notebook_cells` (Cmd+S) | `fork()` before format loop, merge after |
+| File watcher source updates | `fork_at(last_save_heads)` + merge |
+| File watcher order-changed rebuild | `fork_at(last_save_heads)` + merge |
+| `UpdateDisplayData` IOPub | `fork()` before blob I/O, merge after |
+| `process_markdown_assets` | `fork()` before async resolution, merge after |
+| `handle_sync_environment` | Fresh read (no CRDT write, only in-memory state) |
 
 ## Future Direction
 

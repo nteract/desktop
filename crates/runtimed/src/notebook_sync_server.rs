@@ -301,16 +301,23 @@ async fn process_markdown_assets(room: &NotebookRoom) {
     let notebook_path = notebook_path_val.exists().then_some(notebook_path_val);
     let nbformat_attachments = room.nbformat_attachments.read().await.clone();
 
-    let markdown_cells: Vec<(String, String, HashMap<String, String>)> = {
-        let doc = room.doc.read().await;
-        doc.get_cells()
+    // Fork BEFORE async resolution so the fork's baseline predates
+    // any concurrent edits. Asset updates on the fork are treated as
+    // concurrent with user edits via Automerge's CRDT merge.
+    let (markdown_cells, mut fork) = {
+        let mut doc = room.doc.write().await;
+        let cells: Vec<(String, String, HashMap<String, String>)> = doc
+            .get_cells()
             .into_iter()
             .filter(|cell| cell.cell_type == "markdown")
             .map(|cell| (cell.id, cell.source, cell.resolved_assets))
-            .collect()
+            .collect();
+        let mut fork = doc.fork();
+        fork.set_actor("runtimed:assets");
+        (cells, fork)
     };
 
-    let mut updates = Vec::new();
+    let mut any_changed = false;
     for (cell_id, source, existing_assets) in markdown_cells {
         let desired_assets = resolve_markdown_assets(
             &source,
@@ -321,24 +328,23 @@ async fn process_markdown_assets(room: &NotebookRoom) {
         .await;
 
         if desired_assets != existing_assets {
-            updates.push((cell_id, desired_assets));
-        }
-    }
-
-    if updates.is_empty() {
-        return;
-    }
-
-    let persist_bytes = {
-        let mut doc = room.doc.write().await;
-        for (cell_id, resolved_assets) in &updates {
-            if let Err(e) = doc.set_cell_resolved_assets(cell_id, resolved_assets) {
+            if let Err(e) = fork.set_cell_resolved_assets(&cell_id, &desired_assets) {
                 warn!(
                     "[notebook-sync] Failed to sync resolved markdown assets for {}: {}",
                     cell_id, e
                 );
             }
+            any_changed = true;
         }
+    }
+
+    if !any_changed {
+        return;
+    }
+
+    let persist_bytes = {
+        let mut doc = room.doc.write().await;
+        let _ = doc.merge(&mut fork);
         doc.save()
     };
 
@@ -3523,6 +3529,8 @@ async fn handle_notebook_request(
                             if let Some(runtime) = detect_room_runtime(&room_clone).await {
                                 if let Some(formatted) = format_source(&source, &runtime).await {
                                     let mut fork = fork;
+                                    let actor = formatter_actor(&runtime);
+                                    fork.set_actor(&actor);
                                     if fork.update_source(&cell_id_clone, &formatted).is_ok() {
                                         let mut doc = room_clone.doc.write().await;
                                         let _ = doc.merge(&mut fork);
@@ -3734,6 +3742,8 @@ async fn handle_notebook_request(
                 tokio::spawn(async move {
                     if let Some(runtime) = detect_room_runtime(&room_clone).await {
                         let mut fork = fork;
+                        let actor = formatter_actor(&runtime);
+                        fork.set_actor(&actor);
                         let mut any_formatted = false;
                         for (cell_id, source) in &cell_sources {
                             if let Some(fmt) = format_source(source, &runtime).await {
@@ -4213,6 +4223,15 @@ async fn format_source(source: &str, runtime: &str) -> Option<String> {
     }
 }
 
+/// Map a runtime name to its formatter's CRDT actor label.
+fn formatter_actor(runtime: &str) -> String {
+    let tool = match runtime {
+        "python" => "ruff",
+        other => other, // "deno" stays "deno"
+    };
+    format!("runtimed:{tool}")
+}
+
 /// Detect the runtime from room metadata, returning "python", "deno", or None.
 async fn detect_room_runtime(room: &NotebookRoom) -> Option<String> {
     let doc = room.doc.read().await;
@@ -4253,7 +4272,9 @@ async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
     // live doc, and Automerge's text CRDT merges them cleanly.
     let mut fork = {
         let mut doc = room.doc.write().await;
-        doc.fork()
+        let mut f = doc.fork();
+        f.set_actor(&formatter_actor(&runtime));
+        f
     };
 
     let mut formatted_count = 0;
@@ -5780,53 +5801,75 @@ async fn apply_ipynb_changes(
 
     let mut changed = false;
 
-    // If order changed, we need to rebuild the cell list
-    // This is expensive but necessary to match external order
+    // If order changed, we need to rebuild the cell list.
+    // Use fork_at(last_save_heads) + merge so the structural rebuild
+    // from disk composes with any post-save CRDT changes (e.g.,
+    // background formatting) rather than overwriting them.
+    //
+    // Known limitation: cells inserted or moved locally after the last
+    // save may end up at slightly wrong positions after merge, because
+    // the fork's fractional indices don't account for post-save
+    // insertions. This is cosmetic — source text is preserved, and the
+    // user or agent can reorder manually. Still better than the old
+    // direct-mutation path which would clobber post-save source edits.
     if order_changed {
         debug!("[notebook-watch] Cell order changed, rebuilding cell list");
 
-        // Delete all current cells and re-add in external order
+        let save_heads = room.last_save_heads.read().await.clone();
+        let mut fork = if !save_heads.is_empty() {
+            match doc.fork_at(&save_heads) {
+                Ok(f) => f,
+                Err(_) => doc.fork(),
+            }
+        } else {
+            doc.fork()
+        };
+        fork.set_actor("runtimed:filesystem");
+
+        // Delete all current cells and re-add in external order on the fork
         for cell in &current_cells {
-            let _ = doc.delete_cell(&cell.id);
+            let _ = fork.delete_cell(&cell.id);
         }
 
         for (index, ext_cell) in external_cells.iter().enumerate() {
-            if doc
+            if fork
                 .add_cell(index, &ext_cell.id, &ext_cell.cell_type)
                 .is_ok()
             {
-                let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
+                let _ = fork.update_source(&ext_cell.id, &ext_cell.source);
 
                 // For existing cells with running kernel: preserve current outputs/execution_count
                 // For new cells: always use external values (they don't have in-progress state)
                 if has_running_kernel {
                     if let Some(current) = current_map.get(ext_cell.id.as_str()) {
                         // Existing cell - preserve in-progress state
-                        let _ = doc.set_outputs(&ext_cell.id, &current.outputs);
-                        let _ = doc.set_execution_count(&ext_cell.id, &current.execution_count);
+                        let _ = fork.set_outputs(&ext_cell.id, &current.outputs);
+                        let _ = fork.set_execution_count(&ext_cell.id, &current.execution_count);
                     } else {
                         // New cell - use external values
                         let ext_outputs = converted_outputs
                             .get(ext_cell.id.as_str())
                             .map(|v| v.as_slice())
                             .unwrap_or(&[]);
-                        let _ = doc.set_outputs(&ext_cell.id, ext_outputs);
-                        let _ = doc.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
+                        let _ = fork.set_outputs(&ext_cell.id, ext_outputs);
+                        let _ = fork.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
                     }
                 } else {
                     let ext_outputs = converted_outputs
                         .get(ext_cell.id.as_str())
                         .map(|v| v.as_slice())
                         .unwrap_or(&[]);
-                    let _ = doc.set_outputs(&ext_cell.id, ext_outputs);
-                    let _ = doc.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
+                    let _ = fork.set_outputs(&ext_cell.id, ext_outputs);
+                    let _ = fork.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
                 }
                 let ext_assets = converted_assets
                     .get(ext_cell.id.as_str())
                     .unwrap_or(&empty_assets);
-                let _ = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets);
+                let _ = fork.set_cell_resolved_assets(&ext_cell.id, ext_assets);
             }
         }
+
+        let _ = doc.merge(&mut fork);
         return true;
     }
 
@@ -5849,7 +5892,10 @@ async fn apply_ipynb_changes(
     // (e.g., background formatting) rather than overwriting them.
     let save_heads = room.last_save_heads.read().await.clone();
     let mut source_fork = if !save_heads.is_empty() {
-        doc.fork_at(&save_heads).ok()
+        doc.fork_at(&save_heads).ok().map(|mut f| {
+            f.set_actor("runtimed:filesystem");
+            f
+        })
     } else {
         None
     };

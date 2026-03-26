@@ -110,6 +110,8 @@ interface CodeCellProps {
   isLastCell?: boolean;
   /** Whether this cell is immediately before the focused cell */
   isPreviousCellFromFocused?: boolean;
+  /** Whether this cell is immediately after the focused cell */
+  isNextCellFromFocused?: boolean;
   /** Props for dnd-kit drag handle (applied to ribbon) */
   dragHandleProps?: Record<string, unknown>;
   /** Whether this cell is currently being dragged */
@@ -150,6 +152,7 @@ export const CodeCell = memo(function CodeCell({
   onClearPagePayload,
   isLastCell = false,
   isPreviousCellFromFocused,
+  isNextCellFromFocused,
   dragHandleProps,
   isDragging,
   onToggleSourceHidden,
@@ -357,6 +360,7 @@ export const CodeCell = memo(function CodeCell({
         cellType="code"
         isFocused={isFocused}
         isPreviousCellFromFocused={isPreviousCellFromFocused}
+        isNextCellFromFocused={isNextCellFromFocused}
         onFocus={onFocus}
         gutterContent={gutterContent}
         rightGutterContent={rightGutterContent}
@@ -367,7 +371,7 @@ export const CodeCell = memo(function CodeCell({
           <>
             {/* Source visibility toggle + Editor */}
             {bothHidden ? (
-              <div className="flex justify-start">
+              <div className="flex items-center justify-start min-h-[1.75rem]">
                 <button
                   type="button"
                   onClick={() => {
@@ -404,7 +408,7 @@ export const CodeCell = memo(function CodeCell({
                 </button>
               </div>
             ) : isSourceHidden ? (
-              <div className="flex justify-start">
+              <div className="flex items-center justify-start min-h-[1.75rem]">
                 <button
                   type="button"
                   onClick={() => onToggleSourceHidden?.(false)}
@@ -452,7 +456,7 @@ export const CodeCell = memo(function CodeCell({
         }
         outputContent={
           isOutputsHidden && cell.outputs.length > 0 ? (
-            <div className="flex justify-start">
+            <div className="flex items-center justify-start min-h-[1.75rem]">
               <button
                 type="button"
                 onClick={() => onToggleOutputsHidden?.(false)}
