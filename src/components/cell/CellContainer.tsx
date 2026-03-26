@@ -83,10 +83,12 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
           isDragging && "opacity-50",
           className,
         )}
-        onMouseDown={onFocus}
       >
         {/* Gutter area - action content only (ribbon moves to content rows for segmented) */}
-        <div className="flex w-10 flex-shrink-0 flex-col items-end justify-start gap-0.5 pr-1 pt-4 select-none">
+        <div
+          className="flex w-10 flex-shrink-0 flex-col items-end justify-start gap-0.5 pr-1 pt-4 select-none"
+          onMouseDown={onFocus}
+        >
           {gutterContent}
           {presenceIndicators}
         </div>
@@ -94,7 +96,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         {useSegmentedRibbon ? (
           <div className="flex min-w-0 flex-1 flex-col">
             {/* Code row - ribbon + content + right gutter */}
-            <div className="flex">
+            <div className="flex" onMouseDown={onFocus}>
               <div
                 {...dragHandleProps}
                 className={cn(
@@ -120,9 +122,10 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 </div>
               )}
             </div>
-            {/* Output row - ribbon + content + right gutter */}
+            {/* Output row - ribbon + content + right gutter
+                onMouseDown sets visual focus (ribbon/bg) without stealing editor focus */}
             {hasOutput && (
-              <div className={cn("flex", hideOutput && "hidden")}>
+              <div className={cn("flex", hideOutput && "hidden")} onMouseDown={onFocus}>
                 <div
                   className={cn(
                     "w-1 transition-colors duration-150",
@@ -156,7 +159,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         ) : (
           <>
             {/* Legacy layout - ribbon + content side by side */}
-            <div className="flex min-w-0 flex-1">
+            <div className="flex min-w-0 flex-1" onMouseDown={onFocus}>
               <div
                 {...dragHandleProps}
                 className={cn(

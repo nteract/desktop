@@ -272,13 +272,12 @@ export const CodeMirrorEditor = forwardRef<
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // Focus when autoFocus becomes true after mount (e.g. notebook
-    // auto-seeds a cell then sets focusedCellId).
-    useEffect(() => {
-      if (autoFocus && viewRef.current && !viewRef.current.hasFocus) {
-        requestAnimationFrame(() => viewRef.current?.focus());
-      }
-    }, [autoFocus]);
+    // Editor focus is handled explicitly:
+    //  - On mount: autoFocus prop (above) focuses via requestAnimationFrame
+    //  - Keyboard nav: focusCell() from useEditorRegistry calls view.focus()
+    //  - Mouse clicks: native DOM focus on the editor element
+    // No post-mount autoFocus effect needed — it caused the editor to steal
+    // focus from outputs/iframes whenever isFocused toggled.
 
     // ── Dynamic reconfiguration via compartments ─────────────────────
 

@@ -377,6 +377,8 @@ function NotebookViewContent({
   onSetCellOutputsHidden,
 }: NotebookViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // Track whether focus change was keyboard-driven (should scroll) or mouse-driven (already visible)
+  const focusSourceRef = useRef<"mouse" | "keyboard">("keyboard");
   const { focusCell } = useEditorRegistry();
 
   // Track full materializations for cross-cell derived state
@@ -513,6 +515,12 @@ function NotebookViewContent({
 
   useEffect(() => {
     if (!focusedCellId) return;
+    // Only scroll for keyboard-driven focus changes (arrows, shift-enter).
+    // Mouse clicks don't need scrolling — the cell is already visible.
+    if (focusSourceRef.current !== "keyboard") {
+      focusSourceRef.current = "keyboard"; // reset for next time
+      return;
+    }
     const cellEl = containerRef.current?.querySelector(
       `[data-cell-id="${CSS.escape(focusedCellId)}"]`,
     );
@@ -561,6 +569,7 @@ function NotebookViewContent({
         logger.debug(
           `[cell-nav] onFocusPrevious called: cell=${cell.id.slice(0, 8)} index=${index} cellIds=${cellIds.map((id) => id.slice(0, 8)).join(",")}`,
         );
+        focusSourceRef.current = "keyboard";
         let prevIndex = index - 1;
         while (prevIndex >= 0 && !isVisibleCell(cellIds[prevIndex])) {
           prevIndex--;
@@ -581,6 +590,7 @@ function NotebookViewContent({
         logger.debug(
           `[cell-nav] onFocusNext called: cell=${cell.id.slice(0, 8)} index=${index} cellIds=${cellIds.map((id) => id.slice(0, 8)).join(",")}`,
         );
+        focusSourceRef.current = "keyboard";
         let nextIndex = index + 1;
         while (
           nextIndex < cellIds.length &&
@@ -626,7 +636,10 @@ function NotebookViewContent({
                 ? (count: number) => onReportOutputMatchCount(cell.id, count)
                 : undefined
             }
-            onFocus={() => onFocusCell(cell.id)}
+            onFocus={() => {
+              focusSourceRef.current = "mouse";
+              onFocusCell(cell.id);
+            }}
             onExecute={() => onExecuteCell(cell.id)}
             onInterrupt={onInterruptKernel}
             onDelete={() => onDeleteCell(cell.id)}
@@ -681,7 +694,10 @@ function NotebookViewContent({
             isFocused={isFocused}
             isPreviousCellFromFocused={cell.id === previousCellId}
             searchQuery={searchQuery}
-            onFocus={() => onFocusCell(cell.id)}
+            onFocus={() => {
+              focusSourceRef.current = "mouse";
+              onFocusCell(cell.id);
+            }}
             onDelete={() => onDeleteCell(cell.id)}
             onFocusPrevious={onFocusPrevious}
             onFocusNext={onFocusNext}
@@ -701,7 +717,10 @@ function NotebookViewContent({
           isFocused={isFocused}
           isPreviousCellFromFocused={cell.id === previousCellId}
           searchQuery={searchQuery}
-          onFocus={() => onFocusCell(cell.id)}
+          onFocus={() => {
+            focusSourceRef.current = "mouse";
+            onFocusCell(cell.id);
+          }}
           onDelete={() => onDeleteCell(cell.id)}
           onFocusPrevious={onFocusPrevious}
           onFocusNext={onFocusNext}
