@@ -16,6 +16,7 @@
  */
 
 import {
+  type SchedulerLike,
   bufferTime,
   concatMap,
   debounceTime,
@@ -85,12 +86,15 @@ export interface SyncEngineOptions {
 
   /** Optional logger (defaults to silent). */
   logger?: SyncEngineLogger;
+
+  /** Optional RxJS scheduler for time-based operators (for testing). */
+  scheduler?: SchedulerLike;
 }
 
 // ── SyncEngine ───────────────────────────────────────────────────────
 
 export class SyncEngine {
-  private readonly opts: Required<SyncEngineOptions>;
+  private readonly opts: Required<Pick<SyncEngineOptions, "getHandle" | "transport" | "logger">> & Pick<SyncEngineOptions, "scheduler">;
   private subscription: Subscription | null = null;
   private awaitingInitialSync = true;
   private prevExecutions: Record<string, ExecutionState> = {};
@@ -145,6 +149,7 @@ export class SyncEngine {
     this.opts = {
       ...opts,
       logger: opts.logger ?? nullLogger,
+      scheduler: opts.scheduler,
     };
 
     // Expose as readonly Observable (hide Subject internals)
@@ -298,7 +303,7 @@ export class SyncEngine {
     sub.add(
       retrySync$
         .pipe(
-          switchMap(() => timer(SYNC_RETRY_MS)),
+          switchMap(() => timer(SYNC_RETRY_MS, this.opts.scheduler)),
           filter(() => this.awaitingInitialSync),
         )
         .subscribe(() => {
@@ -312,7 +317,7 @@ export class SyncEngine {
     sub.add(
       materialize$
         .pipe(
-          bufferTime(COALESCE_MS),
+          bufferTime(COALESCE_MS, this.opts.scheduler),
           filter((batch) => batch.length > 0),
           concatMap((batch) => {
             // Merge all changesets in the batch
@@ -452,7 +457,7 @@ export class SyncEngine {
     // ── Debounced outbound flush ──────────────────────────────────
 
     sub.add(
-      this.flushRequest$.pipe(debounceTime(FLUSH_DEBOUNCE_MS)).subscribe(() => {
+      this.flushRequest$.pipe(debounceTime(FLUSH_DEBOUNCE_MS, this.opts.scheduler)).subscribe(() => {
         this.flush();
       }),
     );

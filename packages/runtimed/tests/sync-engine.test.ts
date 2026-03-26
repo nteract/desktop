@@ -3,10 +3,12 @@
  *
  * Proves the engine's lifecycle, coalescing, rollback, retry, and
  * observable emission without requiring WASM or a real daemon.
+ *
+ * Time-dependent tests use RxJS VirtualTimeScheduler instead of vi.useFakeTimers.
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { firstValueFrom } from "rxjs";
+import { VirtualTimeScheduler, VirtualAction } from "rxjs";
 import { SyncEngine } from "../src/sync-engine";
 import { DirectTransport } from "../src/direct-transport";
 import { FrameType } from "../src/transport";
@@ -67,6 +69,34 @@ function runtimeStateSyncEvent(state: RuntimeState): FrameEvent {
   return { type: "runtime_state_sync_applied", changed: true, state };
 }
 
+function makeRuntimeState(
+  executions: Record<
+    string,
+    { cell_id: string; status: string; execution_count: number | null; success: boolean | null }
+  >,
+): RuntimeState {
+  return {
+    kernel: {
+      status: "idle",
+      starting_phase: "",
+      name: "python3",
+      language: "python",
+      env_source: "",
+    },
+    queue: { executing: null, queued: [] },
+    env: {
+      in_sync: true,
+      added: [],
+      removed: [],
+      channels_changed: false,
+      deno_changed: false,
+    },
+    trust: { status: "trusted", needs_approval: false },
+    last_saved: null,
+    executions: executions as RuntimeState["executions"],
+  };
+}
+
 const EMPTY_CHANGESET: CellChangeset = {
   changed: [],
   added: [],
@@ -74,34 +104,50 @@ const EMPTY_CHANGESET: CellChangeset = {
   order_changed: false,
 };
 
+// ── Helper: advance scheduler to a given time ───────────────────────
+
+/**
+ * Advance the virtual clock by `ms` milliseconds.
+ *
+ * Sets `maxFrames` so `flush()` stops at the target time instead of
+ * spinning forever on repeating operators like `bufferTime`.
+ */
+function advanceBy(scheduler: VirtualTimeScheduler, ms: number): void {
+  const target = scheduler.frame + ms;
+  scheduler.maxFrames = target;
+  scheduler.schedule(() => {}, ms);
+  scheduler.flush();
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe("SyncEngine", () => {
   let handle: SyncableHandle;
   let server: ReturnType<typeof createMockServerHandle>;
   let transport: DirectTransport;
-  let engine: SyncEngine;
+  let scheduler: VirtualTimeScheduler;
 
   beforeEach(() => {
-    vi.useFakeTimers();
     handle = createMockHandle();
     server = createMockServerHandle();
     transport = new DirectTransport(server);
-    engine = new SyncEngine({
-      getHandle: () => handle,
-      transport,
-    });
+    scheduler = new VirtualTimeScheduler(VirtualAction, Infinity);
   });
 
-  afterEach(() => {
-    engine.stop();
-    vi.useRealTimers();
-  });
+  /** Helper: create engine with the VirtualTimeScheduler injected */
+  function createEngine(opts?: { getHandle?: () => SyncableHandle | null }): SyncEngine {
+    return new SyncEngine({
+      getHandle: opts?.getHandle ?? (() => handle),
+      transport,
+      scheduler,
+    });
+  }
 
   // ── Lifecycle ──────────────────────────────────────────────────
 
   describe("lifecycle", () => {
     it("starts and stops cleanly", () => {
+      const engine = createEngine();
       expect(engine.running).toBe(false);
       engine.start();
       expect(engine.running).toBe(true);
@@ -110,12 +156,15 @@ describe("SyncEngine", () => {
     });
 
     it("start is idempotent", () => {
+      const engine = createEngine();
       engine.start();
       engine.start(); // should not throw or double-subscribe
       expect(engine.running).toBe(true);
+      engine.stop();
     });
 
     it("stop is idempotent", () => {
+      const engine = createEngine();
       engine.start();
       engine.stop();
       engine.stop(); // should not throw
@@ -126,23 +175,12 @@ describe("SyncEngine", () => {
   // ── Initial sync ──────────────────────────────────────────────
 
   describe("initial sync", () => {
-    it("emits initialSyncComplete$ when changed:true arrives", async () => {
+    it("emits initialSyncComplete$ when changed:true arrives", () => {
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
         syncAppliedEvent({ changed: true }),
       ]);
 
-      engine.start();
-
-      const completed = firstValueFrom(engine.initialSyncComplete$);
-      transport.deliver(Array.from([0x00, 1, 2, 3])); // dummy frame
-      await completed; // should resolve
-    });
-
-    it("does not emit initialSyncComplete$ on changed:false", async () => {
-      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
-        syncAppliedEvent({ changed: false }),
-      ]);
-
+      const engine = createEngine();
       engine.start();
 
       let completed = false;
@@ -151,11 +189,31 @@ describe("SyncEngine", () => {
       });
 
       transport.deliver(Array.from([0x00, 1, 2, 3]));
-      await vi.advanceTimersByTimeAsync(100);
-      expect(completed).toBe(false);
+      expect(completed).toBe(true);
+      engine.stop();
     });
 
-    it("retries sync after timeout when initial sync stalls", async () => {
+    it("does not emit initialSyncComplete$ on changed:false", () => {
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        syncAppliedEvent({ changed: false }),
+      ]);
+
+      const engine = createEngine();
+      engine.start();
+
+      let completed = false;
+      engine.initialSyncComplete$.subscribe(() => {
+        completed = true;
+      });
+
+      transport.deliver(Array.from([0x00, 1, 2, 3]));
+      advanceBy(scheduler, 100);
+
+      expect(completed).toBe(false);
+      engine.stop();
+    });
+
+    it("retries sync after timeout when initial sync stalls", () => {
       // First frame: changed:false (handshake, no content)
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
         syncAppliedEvent({ changed: false }),
@@ -166,35 +224,41 @@ describe("SyncEngine", () => {
         new Uint8Array([1, 2, 3]),
       );
 
+      const engine = createEngine();
       engine.start();
       transport.deliver(Array.from([0x00, 1, 2, 3]));
 
       // Advance past the 3s retry timeout
-      await vi.advanceTimersByTimeAsync(3100);
+      advanceBy(scheduler, 3100);
 
       // Engine should have called reset_sync_state + flush for retry
       expect(handle.reset_sync_state).toHaveBeenCalled();
+      engine.stop();
     });
   });
 
   // ── Broadcasts ────────────────────────────────────────────────
 
   describe("broadcasts", () => {
-    it("emits broadcast payloads on broadcasts$", async () => {
+    it("emits broadcast payloads on broadcasts$", () => {
       const broadcastPayload = { event: "kernel_status", status: "busy" };
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
         broadcastEvent(broadcastPayload),
       ]);
 
+      const engine = createEngine();
       engine.start();
 
-      const received = firstValueFrom(engine.broadcasts$);
-      transport.deliver(Array.from([0x03, 1])); // dummy frame
-      const payload = await received;
-      expect(payload).toEqual(broadcastPayload);
+      const received: unknown[] = [];
+      engine.broadcasts$.subscribe((p) => received.push(p));
+
+      transport.deliver(Array.from([0x03, 1]));
+      expect(received).toHaveLength(1);
+      expect(received[0]).toEqual(broadcastPayload);
+      engine.stop();
     });
 
-    it("emits text_attribution as broadcast", async () => {
+    it("emits text_attribution as broadcast", () => {
       const attributions = [
         { cell_id: "c1", index: 0, text: "hi", deleted: 0, actors: ["a"] },
       ];
@@ -202,40 +266,48 @@ describe("SyncEngine", () => {
         syncAppliedEvent({ changed: true, attributions }),
       ]);
 
+      const engine = createEngine();
       engine.start();
 
-      const received = firstValueFrom(engine.broadcasts$);
+      const received: unknown[] = [];
+      engine.broadcasts$.subscribe((p) => received.push(p));
+
       transport.deliver(Array.from([0x00, 1]));
-      const payload = await received;
-      expect(payload).toEqual({
+      expect(received).toHaveLength(1);
+      expect(received[0]).toEqual({
         type: "text_attribution",
         attributions,
       });
+      engine.stop();
     });
   });
 
   // ── Presence ──────────────────────────────────────────────────
 
   describe("presence", () => {
-    it("emits presence payloads on presence$", async () => {
+    it("emits presence payloads on presence$", () => {
       const presencePayload = { type: "update", peer: "alice", cursor: {} };
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
         presenceEvent(presencePayload),
       ]);
 
+      const engine = createEngine();
       engine.start();
 
-      const received = firstValueFrom(engine.presence$);
+      const received: unknown[] = [];
+      engine.presence$.subscribe((p) => received.push(p));
+
       transport.deliver(Array.from([0x04, 1]));
-      const payload = await received;
-      expect(payload).toEqual(presencePayload);
+      expect(received).toHaveLength(1);
+      expect(received[0]).toEqual(presencePayload);
+      engine.stop();
     });
   });
 
   // ── Cell changes (coalescing) ─────────────────────────────────
 
   describe("cellChanges$", () => {
-    it("emits coalesced changesets after initial sync", async () => {
+    it("emits coalesced changesets after initial sync", () => {
       let callCount = 0;
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockImplementation(() => {
         callCount++;
@@ -257,28 +329,31 @@ describe("SyncEngine", () => {
         ];
       });
 
+      const engine = createEngine();
       engine.start();
 
       // Complete initial sync
       transport.deliver(Array.from([0x00, 1]));
-      await vi.advanceTimersByTimeAsync(0);
 
       // Subscribe to cell changes
-      const changePromise = firstValueFrom(engine.cellChanges$);
+      const emissions: (CellChangeset | null)[] = [];
+      engine.cellChanges$.subscribe((cs) => emissions.push(cs));
 
       // Send steady-state frame
       transport.deliver(Array.from([0x00, 2]));
 
       // Advance past coalescing window (32ms)
-      await vi.advanceTimersByTimeAsync(50);
+      advanceBy(scheduler, 50);
 
-      const changeset = await changePromise;
+      expect(emissions).toHaveLength(1);
+      const changeset = emissions[0];
       expect(changeset).not.toBeNull();
       expect(changeset!.changed[0].cell_id).toBe("c1");
       expect(changeset!.changed[0].fields.source).toBe(true);
+      engine.stop();
     });
 
-    it("emits null changeset when WASM has no changeset", async () => {
+    it("emits null changeset when WASM has no changeset", () => {
       let callCount = 0;
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockImplementation(() => {
         callCount++;
@@ -288,25 +363,28 @@ describe("SyncEngine", () => {
         return [syncAppliedEvent({ changed: true })]; // no changeset
       });
 
+      const engine = createEngine();
       engine.start();
 
       // Complete initial sync
       transport.deliver(Array.from([0x00, 1]));
-      await vi.advanceTimersByTimeAsync(0);
 
-      const changePromise = firstValueFrom(engine.cellChanges$);
+      const emissions: (CellChangeset | null)[] = [];
+      engine.cellChanges$.subscribe((cs) => emissions.push(cs));
+
       transport.deliver(Array.from([0x00, 2]));
-      await vi.advanceTimersByTimeAsync(50);
+      advanceBy(scheduler, 50);
 
-      const changeset = await changePromise;
-      expect(changeset).toBeNull();
+      expect(emissions).toHaveLength(1);
+      expect(emissions[0]).toBeNull();
+      engine.stop();
     });
   });
 
   // ── Runtime state ─────────────────────────────────────────────
 
   describe("runtimeState$", () => {
-    it("emits runtime state on state sync", async () => {
+    it("emits runtime state on state sync", () => {
       const state: RuntimeState = {
         kernel: {
           status: "busy",
@@ -332,20 +410,25 @@ describe("SyncEngine", () => {
         runtimeStateSyncEvent(state),
       ]);
 
+      const engine = createEngine();
       engine.start();
 
-      const received = firstValueFrom(engine.runtimeState$);
+      const received: RuntimeState[] = [];
+      engine.runtimeState$.subscribe((s) => received.push(s));
+
       transport.deliver(Array.from([0x05, 1]));
-      const result = await received;
-      expect(result.kernel.status).toBe("busy");
-      expect(result.kernel.name).toBe("python3");
+
+      expect(received).toHaveLength(1);
+      expect(received[0].kernel.status).toBe("busy");
+      expect(received[0].kernel.name).toBe("python3");
+      engine.stop();
     });
   });
 
   // ── Execution transitions ─────────────────────────────────────
 
   describe("executionTransitions$", () => {
-    it("detects started transition", async () => {
+    it("detects started transition", () => {
       const state: RuntimeState = {
         kernel: {
           status: "busy",
@@ -378,15 +461,20 @@ describe("SyncEngine", () => {
         runtimeStateSyncEvent(state),
       ]);
 
+      const engine = createEngine();
       engine.start();
 
-      const received = firstValueFrom(engine.executionTransitions$);
+      const received: import("../src/runtime-state").ExecutionTransition[][] = [];
+      engine.executionTransitions$.subscribe((t) => received.push(t));
+
       transport.deliver(Array.from([0x05, 1]));
-      const transitions = await received;
-      expect(transitions).toHaveLength(1);
-      expect(transitions[0].kind).toBe("started");
-      expect(transitions[0].cell_id).toBe("c1");
-      expect(transitions[0].execution_id).toBe("exec-1");
+
+      expect(received).toHaveLength(1);
+      expect(received[0]).toHaveLength(1);
+      expect(received[0][0].kind).toBe("started");
+      expect(received[0][0].cell_id).toBe("c1");
+      expect(received[0][0].execution_id).toBe("exec-1");
+      engine.stop();
     });
   });
 
@@ -399,6 +487,7 @@ describe("SyncEngine", () => {
         syncAppliedEvent({ changed: true, reply }),
       ]);
 
+      const engine = createEngine();
       engine.start();
       transport.deliver(Array.from([0x00, 1]));
 
@@ -407,6 +496,7 @@ describe("SyncEngine", () => {
         (f) => f.frameType === FrameType.AUTOMERGE_SYNC,
       );
       expect(syncFrames.length).toBeGreaterThanOrEqual(1);
+      engine.stop();
     });
 
     it("rolls back sync state on send failure", async () => {
@@ -416,13 +506,15 @@ describe("SyncEngine", () => {
       ]);
 
       transport.simulateFailure = true;
+      const engine = createEngine();
       engine.start();
       transport.deliver(Array.from([0x00, 1]));
 
       // Let the promise rejection propagate
-      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
 
       expect(handle.cancel_last_flush).toHaveBeenCalled();
+      engine.stop();
     });
   });
 
@@ -433,6 +525,7 @@ describe("SyncEngine", () => {
       const syncMsg = new Uint8Array([1, 2, 3]);
       (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(syncMsg);
 
+      const engine = createEngine();
       engine.start();
       engine.flush();
 
@@ -441,12 +534,14 @@ describe("SyncEngine", () => {
       );
       expect(syncFrames).toHaveLength(1);
       expect(syncFrames[0].payload).toEqual(syncMsg);
+      engine.stop();
     });
 
     it("flush() also sends RuntimeStateDoc sync", () => {
       const stateMsg = new Uint8Array([4, 5, 6]);
       (handle.flush_runtime_state_sync as ReturnType<typeof vi.fn>).mockReturnValue(stateMsg);
 
+      const engine = createEngine();
       engine.start();
       engine.flush();
 
@@ -455,6 +550,7 @@ describe("SyncEngine", () => {
       );
       expect(stateFrames).toHaveLength(1);
       expect(stateFrames[0].payload).toEqual(stateMsg);
+      engine.stop();
     });
 
     it("flush() rolls back on transport failure", async () => {
@@ -462,17 +558,20 @@ describe("SyncEngine", () => {
       (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(syncMsg);
 
       transport.simulateFailure = true;
+      const engine = createEngine();
       engine.start();
       engine.flush();
 
-      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
       expect(handle.cancel_last_flush).toHaveBeenCalled();
+      engine.stop();
     });
 
-    it("scheduleFlush() debounces at 20ms", async () => {
+    it("scheduleFlush() debounces at 20ms", () => {
       const syncMsg = new Uint8Array([1]);
       (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(syncMsg);
 
+      const engine = createEngine();
       engine.start();
       engine.scheduleFlush();
       engine.scheduleFlush();
@@ -482,13 +581,14 @@ describe("SyncEngine", () => {
       expect(transport.sentFrames).toHaveLength(0);
 
       // Advance past debounce (20ms)
-      await vi.advanceTimersByTimeAsync(25);
+      advanceBy(scheduler, 25);
 
       // Should have flushed exactly once
       const syncFrames = transport.sentFrames.filter(
         (f) => f.frameType === FrameType.AUTOMERGE_SYNC,
       );
       expect(syncFrames).toHaveLength(1);
+      engine.stop();
     });
   });
 
@@ -499,22 +599,25 @@ describe("SyncEngine", () => {
       const syncMsg = new Uint8Array([7, 8, 9]);
       (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(syncMsg);
 
+      const engine = createEngine();
       engine.start();
       engine.resetAndResync();
 
       expect(handle.reset_sync_state).toHaveBeenCalled();
       expect(transport.sentFrames.length).toBeGreaterThanOrEqual(1);
+      engine.stop();
     });
   });
 
   // ── resetForBootstrap ─────────────────────────────────────────
 
   describe("resetForBootstrap", () => {
-    it("emits initialSyncComplete$ again after resetForBootstrap + changed:true", async () => {
+    it("emits initialSyncComplete$ again after resetForBootstrap + changed:true", () => {
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
         syncAppliedEvent({ changed: true }),
       ]);
 
+      const engine = createEngine();
       engine.start();
 
       // Track all emissions
@@ -525,7 +628,6 @@ describe("SyncEngine", () => {
 
       // Complete first initial sync
       transport.deliver(Array.from([0x00, 1]));
-      await vi.advanceTimersByTimeAsync(0);
       expect(emitCount).toBe(1);
 
       // Simulate daemon:ready — reset for a new bootstrap cycle
@@ -533,11 +635,11 @@ describe("SyncEngine", () => {
 
       // Second initial sync should emit again
       transport.deliver(Array.from([0x00, 2]));
-      await vi.advanceTimersByTimeAsync(0);
       expect(emitCount).toBe(2);
+      engine.stop();
     });
 
-    it("does not emit cellChanges$ during initial sync phase", async () => {
+    it("does not emit cellChanges$ during initial sync phase", () => {
       let callCount = 0;
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockImplementation(() => {
         callCount++;
@@ -554,6 +656,7 @@ describe("SyncEngine", () => {
         ];
       });
 
+      const engine = createEngine();
       engine.start();
 
       let cellChangeCount = 0;
@@ -563,12 +666,12 @@ describe("SyncEngine", () => {
 
       // First frame completes initial sync — should NOT go to cellChanges$
       transport.deliver(Array.from([0x00, 1]));
-      await vi.advanceTimersByTimeAsync(50);
+      advanceBy(scheduler, 50);
       expect(cellChangeCount).toBe(0);
 
       // After initial sync, steady-state frames go to cellChanges$
       transport.deliver(Array.from([0x00, 2]));
-      await vi.advanceTimersByTimeAsync(50);
+      advanceBy(scheduler, 50);
       expect(cellChangeCount).toBe(1);
 
       // Reset for bootstrap — back to initial sync phase
@@ -576,8 +679,9 @@ describe("SyncEngine", () => {
 
       // This frame should NOT go to cellChanges$ (awaiting initial sync)
       transport.deliver(Array.from([0x00, 3]));
-      await vi.advanceTimersByTimeAsync(50);
+      advanceBy(scheduler, 50);
       expect(cellChangeCount).toBe(1); // unchanged
+      engine.stop();
     });
   });
 
@@ -588,6 +692,7 @@ describe("SyncEngine", () => {
       const nullEngine = new SyncEngine({
         getHandle: () => null,
         transport,
+        scheduler,
       });
 
       nullEngine.start();
@@ -596,6 +701,265 @@ describe("SyncEngine", () => {
       nullEngine.scheduleFlush();
       nullEngine.resetAndResync();
       nullEngine.stop();
+    });
+  });
+
+  // ── Execution lifecycle changesets ─────────────────────────────
+
+  describe("execution lifecycle changesets", () => {
+    // Registry to map frame bytes → FrameEvents for runtime state frames
+    let runtimeStateFrameRegistry: Map<string, FrameEvent[]>;
+    let runtimeStateFrameCounter: number;
+
+    beforeEach(() => {
+      runtimeStateFrameRegistry = new Map();
+      runtimeStateFrameCounter = 0;
+    });
+
+    function deliverRuntimeState(state: RuntimeState): void {
+      runtimeStateFrameCounter++;
+      const frameBytes = [0x05, runtimeStateFrameCounter];
+      const key = Array.from(frameBytes).join(",");
+      runtimeStateFrameRegistry.set(key, [runtimeStateSyncEvent(state)]);
+      transport.deliver(frameBytes);
+    }
+
+    /**
+     * Helper: complete initial sync so the engine enters steady state.
+     * Sets up handle.receive_frame to route runtime state frames via the registry,
+     * and automerge sync frames through the standard initial sync path.
+     */
+    function setupWithInitialSync(): SyncEngine {
+      let callCount = 0;
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockImplementation(
+        (bytes: Uint8Array) => {
+          // Route based on frame type byte
+          const frameType = bytes[0];
+
+          if (frameType === 0x05) {
+            // Runtime state sync frame — look up from registry
+            const key = Array.from(bytes).join(",");
+            const events = runtimeStateFrameRegistry.get(key);
+            if (events) return events;
+            return [];
+          }
+
+          // Automerge sync frame
+          callCount++;
+          if (callCount === 1) {
+            return [syncAppliedEvent({ changed: true })];
+          }
+          return [syncAppliedEvent({ changed: true })];
+        },
+      );
+
+      const engine = createEngine();
+      engine.start();
+
+      // Complete initial sync
+      transport.deliver(Array.from([0x00, 1]));
+
+      return engine;
+    }
+
+    it("started transition injects clear changeset into cellChanges$", () => {
+      const engine = setupWithInitialSync();
+
+      const emissions: (CellChangeset | null)[] = [];
+      engine.cellChanges$.subscribe((cs) => emissions.push(cs));
+
+      // Deliver runtime state with a new "running" execution
+      deliverRuntimeState(
+        makeRuntimeState({
+          e1: { cell_id: "c1", status: "running", execution_count: 1, success: null },
+        }),
+      );
+
+      // Flush scheduler past coalescing window
+      advanceBy(scheduler, 50);
+
+      expect(emissions).toHaveLength(1);
+      expect(emissions[0]).not.toBeNull();
+      const cs = emissions[0]!;
+      expect(cs.changed).toHaveLength(1);
+      expect(cs.changed[0].cell_id).toBe("c1");
+      expect(cs.changed[0].fields.outputs).toBe(true);
+      expect(cs.changed[0].fields.execution_count).toBe(true);
+      engine.stop();
+    });
+
+    it("done transition injects reconciliation changeset", () => {
+      const engine = setupWithInitialSync();
+
+      // Deliver "running" first to establish prev state
+      deliverRuntimeState(
+        makeRuntimeState({
+          e1: { cell_id: "c1", status: "running", execution_count: 1, success: null },
+        }),
+      );
+
+      // Flush past coalescing to clear the "started" emission
+      advanceBy(scheduler, 50);
+
+      const emissions: (CellChangeset | null)[] = [];
+      engine.cellChanges$.subscribe((cs) => emissions.push(cs));
+
+      // Now deliver "done"
+      deliverRuntimeState(
+        makeRuntimeState({
+          e1: { cell_id: "c1", status: "done", execution_count: 1, success: true },
+        }),
+      );
+
+      advanceBy(scheduler, 50);
+
+      expect(emissions).toHaveLength(1);
+      expect(emissions[0]).not.toBeNull();
+      const cs = emissions[0]!;
+      expect(cs.changed).toHaveLength(1);
+      expect(cs.changed[0].cell_id).toBe("c1");
+      expect(cs.changed[0].fields.outputs).toBe(true);
+      expect(cs.changed[0].fields.execution_count).toBe(true);
+      engine.stop();
+    });
+
+    it("error transition injects reconciliation changeset", () => {
+      const engine = setupWithInitialSync();
+
+      // Deliver "running" first to establish prev state
+      deliverRuntimeState(
+        makeRuntimeState({
+          e1: { cell_id: "c1", status: "running", execution_count: 1, success: null },
+        }),
+      );
+
+      // Flush past coalescing
+      advanceBy(scheduler, 50);
+
+      const emissions: (CellChangeset | null)[] = [];
+      engine.cellChanges$.subscribe((cs) => emissions.push(cs));
+
+      // Now deliver "error"
+      deliverRuntimeState(
+        makeRuntimeState({
+          e1: { cell_id: "c1", status: "error", execution_count: 1, success: false },
+        }),
+      );
+
+      advanceBy(scheduler, 50);
+
+      expect(emissions).toHaveLength(1);
+      expect(emissions[0]).not.toBeNull();
+      const cs = emissions[0]!;
+      expect(cs.changed).toHaveLength(1);
+      expect(cs.changed[0].cell_id).toBe("c1");
+      expect(cs.changed[0].fields.outputs).toBe(true);
+      expect(cs.changed[0].fields.execution_count).toBe(true);
+      engine.stop();
+    });
+
+    it("multiple transitions in one update coalesce into single emission", () => {
+      const engine = setupWithInitialSync();
+
+      // Set up prev state with e2 running
+      deliverRuntimeState(
+        makeRuntimeState({
+          e2: { cell_id: "c2", status: "running", execution_count: 1, success: null },
+        }),
+      );
+
+      // Flush past coalescing
+      advanceBy(scheduler, 50);
+
+      const emissions: (CellChangeset | null)[] = [];
+      engine.cellChanges$.subscribe((cs) => emissions.push(cs));
+
+      // Deliver update with e1 newly started and e2 done
+      deliverRuntimeState(
+        makeRuntimeState({
+          e1: { cell_id: "c1", status: "running", execution_count: 2, success: null },
+          e2: { cell_id: "c2", status: "done", execution_count: 1, success: true },
+        }),
+      );
+
+      advanceBy(scheduler, 50);
+
+      // Should get a single coalesced emission covering both cells
+      expect(emissions).toHaveLength(1);
+      expect(emissions[0]).not.toBeNull();
+      const cs = emissions[0]!;
+      expect(cs.changed).toHaveLength(2);
+      const cellIds = cs.changed.map((c) => c.cell_id).sort();
+      expect(cellIds).toEqual(["c1", "c2"]);
+      engine.stop();
+    });
+
+    it("unchanged runtime state does not inject changesets", () => {
+      const engine = setupWithInitialSync();
+
+      const state = makeRuntimeState({
+        e1: { cell_id: "c1", status: "running", execution_count: 1, success: null },
+      });
+
+      // Deliver state first time
+      deliverRuntimeState(state);
+
+      // Flush past coalescing to process the first emission
+      advanceBy(scheduler, 50);
+
+      const emissions: (CellChangeset | null)[] = [];
+      engine.cellChanges$.subscribe((cs) => emissions.push(cs));
+
+      // Deliver same state again — no transitions, no changeset
+      deliverRuntimeState(state);
+
+      advanceBy(scheduler, 50);
+
+      expect(emissions).toHaveLength(0);
+      engine.stop();
+    });
+
+    it("runtime state transitions flow through even before initial sync completes", () => {
+      // Set up handle that does NOT complete initial sync on automerge frames
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockImplementation(
+        (bytes: Uint8Array) => {
+          const frameType = bytes[0];
+
+          if (frameType === 0x05) {
+            const key = Array.from(bytes).join(",");
+            const events = runtimeStateFrameRegistry.get(key);
+            if (events) return events;
+            return [];
+          }
+
+          // Automerge sync — always changed:false (never completes initial sync)
+          return [syncAppliedEvent({ changed: false })];
+        },
+      );
+
+      const engine = createEngine();
+      engine.start();
+
+      // Deliver a sync frame that does NOT complete initial sync
+      transport.deliver(Array.from([0x00, 1]));
+
+      const cellEmissions: (CellChangeset | null)[] = [];
+      engine.cellChanges$.subscribe((cs) => cellEmissions.push(cs));
+
+      // Deliver runtime state with a transition — this should still inject into cellChanges$
+      deliverRuntimeState(
+        makeRuntimeState({
+          e1: { cell_id: "c1", status: "running", execution_count: 1, success: null },
+        }),
+      );
+
+      advanceBy(scheduler, 50);
+
+      // Runtime state lifecycle changesets are NOT gated by initial sync
+      expect(cellEmissions).toHaveLength(1);
+      expect(cellEmissions[0]).not.toBeNull();
+      expect(cellEmissions[0]!.changed[0].cell_id).toBe("c1");
+      engine.stop();
     });
   });
 });
