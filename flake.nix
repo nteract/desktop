@@ -128,6 +128,7 @@
             gobject-introspection
             perl  # Needed for some build scripts
             git
+            git-lfs
             curl
             cacert
           ];
