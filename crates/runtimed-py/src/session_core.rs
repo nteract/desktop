@@ -1049,32 +1049,26 @@ pub(crate) async fn move_cell(
 }
 
 /// Clear a cell's outputs.
+///
+/// Writes directly to the Automerge document via DocHandle — no IPC
+/// round-trip through NotebookRequest. The daemon sees the cleared
+/// state via CRDT sync.
 pub(crate) async fn clear_outputs(state: &Arc<Mutex<SessionState>>, cell_id: &str) -> PyResult<()> {
-    let response = {
-        let st = state.lock().await;
-        let handle = st
-            .handle
-            .as_ref()
-            .ok_or_else(|| to_py_err("Not connected"))?;
+    let st = state.lock().await;
+    let handle = st
+        .handle
+        .as_ref()
+        .ok_or_else(|| to_py_err("Not connected"))?;
 
-        // clear_outputs still goes through send_request (daemon clears kernel state too)
-        handle
-            .send_request(NotebookRequest::ClearOutputs {
-                cell_id: cell_id.to_string(),
-            })
-            .await
-            .map_err(to_py_err)?
-    };
+    handle.clear_outputs(cell_id).map_err(to_py_err)?;
+    handle
+        .set_execution_count(cell_id, "null")
+        .map_err(to_py_err)?;
 
-    match response {
-        NotebookResponse::OutputsCleared { .. } => {
-            // Emit focus presence — cell-level operation on outputs, not source
-            emit_focus_presence(state, cell_id).await;
-            Ok(())
-        }
-        NotebookResponse::Error { error } => Err(to_py_err(error)),
-        other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
-    }
+    // Emit focus presence — cell-level operation on outputs, not source
+    drop(st);
+    emit_focus_presence(state, cell_id).await;
+    Ok(())
 }
 
 // =========================================================================
