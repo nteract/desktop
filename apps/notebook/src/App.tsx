@@ -610,13 +610,7 @@ function AppContent() {
         logger.warn("[App] handleExecuteCell: no kernel available");
       }
     },
-    [
-      clearOutputs,
-      flushSync,
-      kernelStatus,
-      tryStartKernel,
-      executeCell,
-    ],
+    [clearOutputs, flushSync, kernelStatus, tryStartKernel, executeCell],
   );
 
   const handleAddCell = useCallback(
