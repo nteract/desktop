@@ -103,3 +103,5 @@ The bridge uses `externalChangeAnnotation` to prevent echo: inbound changes are 
 3. **Do not use `updateCellById` for persistent state changes.** Use it only for instant visual feedback *after* a CRDT write, or in `*FromDaemon` store projections.
 
 4. **Do not bypass the bridge for source text.** The CodeMirror bridge handles character-level sync. Using `update_source` (Myers diff) from the UI would conflict with the bridge's splice tracking.
+
+5. **Do not mutate the doc directly after an async gap.** If you read doc state, await something, then write back, use `NotebookDoc::fork()` before the async work and `merge()` after. This treats your changes as concurrent with any edits that arrived during the gap. See `contributing/crdt-mutation-guide.md` for the full pattern.

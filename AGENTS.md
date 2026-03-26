@@ -351,6 +351,40 @@ Use `./target/debug/runt` to interact with the worktree daemon (or `supervisor_s
 
 These invariants prevent bad edits. Read before modifying the relevant subsystems.
 
+### Fork+Merge for Async CRDT Mutations
+
+**Any code path that reads from the CRDT doc, does async work, then writes back MUST use `fork()` + `merge()`.** Direct mutation after an async gap can silently overwrite concurrent edits from other peers, the frontend, or background tasks.
+
+```rust
+// 1. Fork BEFORE the async work (captures the doc baseline)
+let fork = {
+    let mut doc = room.doc.write().await;
+    doc.fork()
+};
+
+// 2. Do async work (subprocess, network, I/O)
+let result = do_async_work().await;
+
+// 3. Apply result on the fork (diffs against the pre-async baseline)
+let mut fork = fork;
+fork.update_source(&cell_id, &result).ok();
+
+// 4. Merge back — concurrent edits compose via Automerge's text CRDT
+let mut doc = room.doc.write().await;
+doc.merge(&mut fork).ok();
+```
+
+For mutations relative to a known historic point (e.g., the file watcher applying disk content relative to the last save):
+
+```rust
+let save_heads = room.last_save_heads.read().await.clone();
+let mut fork = doc.fork_at(&save_heads)?;
+fork.update_source(&cell_id, &disk_source).ok();
+doc.merge(&mut fork).ok();
+```
+
+**Key methods on `NotebookDoc`:** `fork()`, `fork_at(heads)`, `get_heads()`, `merge()`. See nteract/desktop#1216 for the full adoption plan.
+
 ### The `is_binary_mime` Contract
 
 Three implementations **must stay in sync** — if you change MIME classification, update all three:

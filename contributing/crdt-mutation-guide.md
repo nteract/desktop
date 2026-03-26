@@ -99,6 +99,35 @@ The bridge uses `externalChangeAnnotation` to prevent echo: inbound changes are 
 
 4. **Don't bypass the bridge for source text.** The CodeMirror bridge handles character-level sync. Using `update_source` (Myers diff) from the UI would conflict with the bridge's splice tracking.
 
+5. **Don't mutate the doc directly after an async gap.** If you read doc state, await something (subprocess, network, I/O), then write back, use `fork()` + `merge()` instead. Direct mutation after an async gap overwrites concurrent edits. See below.
+
+## Fork+Merge for Async Mutations (Daemon-Side)
+
+When daemon code needs to read from the CRDT, do async work, and write results back, it **must** fork the doc before the async work and merge afterward. This treats the daemon's changes as concurrent with any edits that arrived during the async gap.
+
+```rust
+// 1. Fork BEFORE async work
+let fork = {
+    let mut doc = room.doc.write().await;
+    doc.fork()
+};
+
+// 2. Do async work
+let result = expensive_subprocess().await;
+
+// 3. Apply on fork, merge back
+let mut fork = fork;
+fork.update_source(&cell_id, &result).ok();
+let mut doc = room.doc.write().await;
+doc.merge(&mut fork).ok();
+```
+
+**Why this matters:** Without fork+merge, the async gap is a data loss window. If a user types while ruff formats, or another peer edits while the file watcher processes, the write-back silently overwrites those changes. Fork+merge lets Automerge's text CRDT compose both sets of changes.
+
+**`fork_at(heads)`** is for changes relative to a known historic point (e.g., the file watcher forking at the last save point so disk content merges cleanly with post-save CRDT changes).
+
+Current fork+merge usage: background cell formatting, save-on-demand formatting, file watcher source updates. See [#1216](https://github.com/nteract/desktop/issues/1216) for the adoption plan.
+
 ## Future Direction
 
 - **Execution lifecycle states** (queued, executing, done) should be UI-only derived state, not CRDT fields. The daemon broadcasts queue changes; the frontend tracks them in React state for rendering cell status indicators.

@@ -120,6 +120,38 @@ O(1) cell reads that avoid full-document materialization:
 
 Prefer these over `get_cells()` which materializes everything.
 
+## Fork+Merge for Async CRDT Mutations
+
+**Critical invariant:** Any daemon code that reads doc state, does async work (subprocess, I/O, network), then writes back MUST use `fork()` + `merge()`. Direct mutation after an async gap overwrites concurrent edits.
+
+```rust
+// Fork BEFORE async work — captures the baseline
+let fork = {
+    let mut doc = room.doc.write().await;
+    doc.fork()
+};
+
+// Async work happens here (ruff, network, etc.)
+let result = do_async_work().await;
+
+// Apply on fork, then merge back
+let mut fork = fork;
+fork.update_source(&cell_id, &result).ok();
+let mut doc = room.doc.write().await;
+doc.merge(&mut fork).ok();
+```
+
+For changes relative to a saved snapshot (e.g., file watcher):
+```rust
+let mut fork = doc.fork_at(&save_heads)?;
+fork.update_source(&cell_id, &disk_source).ok();
+doc.merge(&mut fork).ok();
+```
+
+Key methods on `NotebookDoc`: `fork()`, `fork_at(heads)`, `get_heads()`, `merge()`.
+
+See nteract/desktop#1216 for the full adoption plan across the codebase.
+
 ## Code Structure
 
 ```
