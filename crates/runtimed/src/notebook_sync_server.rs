@@ -5780,53 +5780,67 @@ async fn apply_ipynb_changes(
 
     let mut changed = false;
 
-    // If order changed, we need to rebuild the cell list
-    // This is expensive but necessary to match external order
+    // If order changed, we need to rebuild the cell list.
+    // Use fork_at(last_save_heads) + merge so the structural rebuild
+    // from disk composes with any post-save CRDT changes (e.g.,
+    // background formatting) rather than overwriting them.
     if order_changed {
         debug!("[notebook-watch] Cell order changed, rebuilding cell list");
 
-        // Delete all current cells and re-add in external order
+        let save_heads = room.last_save_heads.read().await.clone();
+        let mut fork = if !save_heads.is_empty() {
+            match doc.fork_at(&save_heads) {
+                Ok(f) => f,
+                Err(_) => doc.fork(),
+            }
+        } else {
+            doc.fork()
+        };
+
+        // Delete all current cells and re-add in external order on the fork
         for cell in &current_cells {
-            let _ = doc.delete_cell(&cell.id);
+            let _ = fork.delete_cell(&cell.id);
         }
 
         for (index, ext_cell) in external_cells.iter().enumerate() {
-            if doc
+            if fork
                 .add_cell(index, &ext_cell.id, &ext_cell.cell_type)
                 .is_ok()
             {
-                let _ = doc.update_source(&ext_cell.id, &ext_cell.source);
+                let _ = fork.update_source(&ext_cell.id, &ext_cell.source);
 
                 // For existing cells with running kernel: preserve current outputs/execution_count
                 // For new cells: always use external values (they don't have in-progress state)
                 if has_running_kernel {
                     if let Some(current) = current_map.get(ext_cell.id.as_str()) {
                         // Existing cell - preserve in-progress state
-                        let _ = doc.set_outputs(&ext_cell.id, &current.outputs);
-                        let _ = doc.set_execution_count(&ext_cell.id, &current.execution_count);
+                        let _ = fork.set_outputs(&ext_cell.id, &current.outputs);
+                        let _ = fork.set_execution_count(&ext_cell.id, &current.execution_count);
                     } else {
                         // New cell - use external values
                         let ext_outputs = converted_outputs
                             .get(ext_cell.id.as_str())
                             .map(|v| v.as_slice())
                             .unwrap_or(&[]);
-                        let _ = doc.set_outputs(&ext_cell.id, ext_outputs);
-                        let _ = doc.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
+                        let _ = fork.set_outputs(&ext_cell.id, ext_outputs);
+                        let _ = fork.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
                     }
                 } else {
                     let ext_outputs = converted_outputs
                         .get(ext_cell.id.as_str())
                         .map(|v| v.as_slice())
                         .unwrap_or(&[]);
-                    let _ = doc.set_outputs(&ext_cell.id, ext_outputs);
-                    let _ = doc.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
+                    let _ = fork.set_outputs(&ext_cell.id, ext_outputs);
+                    let _ = fork.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
                 }
                 let ext_assets = converted_assets
                     .get(ext_cell.id.as_str())
                     .unwrap_or(&empty_assets);
-                let _ = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets);
+                let _ = fork.set_cell_resolved_assets(&ext_cell.id, ext_assets);
             }
         }
+
+        let _ = doc.merge(&mut fork);
         return true;
     }
 
