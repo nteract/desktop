@@ -483,6 +483,8 @@ function NotebookViewContent({
     }
     return groups;
   }, [cellIds, materializeVersion]);
+  const hiddenGroupsRef = useRef(hiddenGroups);
+  hiddenGroupsRef.current = hiddenGroups;
 
   // Compute the cell ID that precedes the focused cell (keeps its output bright)
   const previousCellId = useMemo(() => {
@@ -575,7 +577,7 @@ function NotebookViewContent({
 
       // Navigation callbacks — skip cells that are collapsed into a hidden group
       const isVisibleCell = (id: string) => {
-        const g = hiddenGroups.get(id);
+        const g = hiddenGroupsRef.current.get(id);
         return !g || g.isFirst;
       };
 
@@ -678,19 +680,21 @@ function NotebookViewContent({
                 ? (hidden: boolean) => onSetCellOutputsHidden(cell.id, hidden)
                 : undefined
             }
-            hiddenGroupCount={hiddenGroups.get(cell.id)?.count}
-            hiddenGroupErrorCount={hiddenGroups.get(cell.id)?.errorCount}
+            hiddenGroupCount={hiddenGroupsRef.current.get(cell.id)?.count}
+            hiddenGroupErrorCount={
+              hiddenGroupsRef.current.get(cell.id)?.errorCount
+            }
             isGroupExecuting={
-              hiddenGroups
+              hiddenGroupsRef.current
                 .get(cell.id)
                 ?.groupCellIds.some((id) => executingCellIds.has(id)) ?? false
             }
             onExpandHiddenGroup={
-              hiddenGroups.has(cell.id) &&
+              hiddenGroupsRef.current.has(cell.id) &&
               onSetCellSourceHidden &&
               onSetCellOutputsHidden
                 ? () => {
-                    const group = hiddenGroups.get(cell.id);
+                    const group = hiddenGroupsRef.current.get(cell.id);
                     if (group) {
                       for (const id of group.groupCellIds) {
                         onSetCellSourceHidden(id, false);
@@ -770,7 +774,6 @@ function NotebookViewContent({
       onReportOutputMatchCount,
       onSetCellSourceHidden,
       onSetCellOutputsHidden,
-      hiddenGroups,
       focusCell,
     ],
   );
