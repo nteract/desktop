@@ -1,0 +1,17 @@
+{
+  "name": "nteract-plugins",
+  "owner": {
+    "name": "nteract"
+  },
+  "metadata": {
+    "description": "Claude Code plugins for the nteract desktop project"
+  },
+  "plugins": [
+    {
+      "name": "biome-lsp",
+      "source": "./biome-lsp",
+      "description": "Biome language server for JavaScript/TypeScript code intelligence",
+      "version": "1.0.0"
+    }
+  ]
+}

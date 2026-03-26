@@ -74,8 +74,9 @@ crates/notebook/fixtures/**/uv.lock
 !.claude/rules/**
 !.claude/skills/
 !.claude/skills/**
-# Keep settings local (not shared)
-.claude/settings.json
+!.claude/plugins/
+!.claude/plugins/**
+# Keep local settings private
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 

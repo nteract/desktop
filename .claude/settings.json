@@ -1,15 +1,13 @@
 {
-  "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "startup",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/linux_cloud_dev.sh"
-          }
-        ]
+  "enabledPlugins": {
+    "biome-lsp@nteract-plugins": true
+  },
+  "extraKnownMarketplaces": {
+    "nteract-plugins": {
+      "source": {
+        "source": "directory",
+        "path": "./.claude/plugins"
       }
-    ]
+    }
   }
 }
