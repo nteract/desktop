@@ -379,6 +379,11 @@ function NotebookViewContent({
   const containerRef = useRef<HTMLDivElement>(null);
   // Track whether focus change was keyboard-driven (should scroll) or mouse-driven (already visible)
   const focusSourceRef = useRef<"mouse" | "keyboard">("keyboard");
+  // Ref for cellIds so renderCell can read the latest list without
+  // depending on the array identity. This prevents recreating
+  // renderCell (and remounting widget iframes) on structural changes.
+  const cellIdsRef = useRef(cellIds);
+  cellIdsRef.current = cellIds;
   const { focusCell } = useEditorRegistry();
 
   // Track full materializations for cross-cell derived state
@@ -576,15 +581,18 @@ function NotebookViewContent({
 
       const onFocusPrevious = (cursorPosition: "start" | "end") => {
         logger.debug(
-          `[cell-nav] onFocusPrevious called: cell=${cell.id.slice(0, 8)} index=${index} cellIds=${cellIds.map((id) => id.slice(0, 8)).join(",")}`,
+          `[cell-nav] onFocusPrevious called: cell=${cell.id.slice(0, 8)} index=${index} cellIds=${cellIdsRef.current.map((id) => id.slice(0, 8)).join(",")}`,
         );
         focusSourceRef.current = "keyboard";
         let prevIndex = index - 1;
-        while (prevIndex >= 0 && !isVisibleCell(cellIds[prevIndex])) {
+        while (
+          prevIndex >= 0 &&
+          !isVisibleCell(cellIdsRef.current[prevIndex])
+        ) {
           prevIndex--;
         }
         if (prevIndex >= 0) {
-          const prevCellId = cellIds[prevIndex];
+          const prevCellId = cellIdsRef.current[prevIndex];
           logger.debug(
             `[cell-nav] Focusing previous: ${prevCellId.slice(0, 8)}`,
           );
@@ -597,18 +605,18 @@ function NotebookViewContent({
 
       const onFocusNext = (cursorPosition: "start" | "end") => {
         logger.debug(
-          `[cell-nav] onFocusNext called: cell=${cell.id.slice(0, 8)} index=${index} cellIds=${cellIds.map((id) => id.slice(0, 8)).join(",")}`,
+          `[cell-nav] onFocusNext called: cell=${cell.id.slice(0, 8)} index=${index} cellIds=${cellIdsRef.current.map((id) => id.slice(0, 8)).join(",")}`,
         );
         focusSourceRef.current = "keyboard";
         let nextIndex = index + 1;
         while (
-          nextIndex < cellIds.length &&
-          !isVisibleCell(cellIds[nextIndex])
+          nextIndex < cellIdsRef.current.length &&
+          !isVisibleCell(cellIdsRef.current[nextIndex])
         ) {
           nextIndex++;
         }
-        if (nextIndex < cellIds.length) {
-          const nextCellId = cellIds[nextIndex];
+        if (nextIndex < cellIdsRef.current.length) {
+          const nextCellId = cellIdsRef.current[nextIndex];
           logger.debug(`[cell-nav] Focusing next: ${nextCellId.slice(0, 8)}`);
           onFocusCell(nextCellId);
           focusCell(nextCellId, cursorPosition);
@@ -657,7 +665,7 @@ function NotebookViewContent({
             onFocusNext={onFocusNext}
             onInsertCellAfter={() => onAddCell("code", cell.id)}
             onClearPagePayload={() => onClearPagePayload(cell.id)}
-            isLastCell={index === cellIds.length - 1}
+            isLastCell={index === cellIdsRef.current.length - 1}
             dragHandleProps={dragHandleProps}
             isDragging={isDragging}
             onToggleSourceHidden={
@@ -713,7 +721,7 @@ function NotebookViewContent({
             onFocusPrevious={onFocusPrevious}
             onFocusNext={onFocusNext}
             onInsertCellAfter={() => onAddCell("markdown", cell.id)}
-            isLastCell={index === cellIds.length - 1}
+            isLastCell={index === cellIdsRef.current.length - 1}
             dragHandleProps={dragHandleProps}
             isDragging={isDragging}
           />
@@ -737,7 +745,7 @@ function NotebookViewContent({
           onFocusPrevious={onFocusPrevious}
           onFocusNext={onFocusNext}
           onInsertCellAfter={() => onAddCell("code", cell.id)}
-          isLastCell={index === cellIds.length - 1}
+          isLastCell={index === cellIdsRef.current.length - 1}
           dragHandleProps={dragHandleProps}
           isDragging={isDragging}
         />
@@ -753,7 +761,6 @@ function NotebookViewContent({
       runtime,
       searchQuery,
       searchCurrentMatch,
-      cellIds,
       onFocusCell,
       onExecuteCell,
       onInterruptKernel,
