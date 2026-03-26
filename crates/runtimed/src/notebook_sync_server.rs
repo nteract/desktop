@@ -4052,28 +4052,30 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
                     );
 
                     // Verify kernel wasn't swapped during async install (race protection).
-                    // Re-read metadata from the doc (NOT the stale pre-install snapshot)
-                    // so the kernel's launched config reflects any dependency edits the
-                    // user made while the install was running.
-                    let fresh_metadata =
-                        resolve_metadata_snapshot(room, Some(&notebook_path)).await;
+                    // Update launched deps to reflect what's actually installed:
+                    // the original baseline + what we just installed. We do NOT
+                    // re-read from the doc — the user may have edited deps during
+                    // the install, and those edits aren't installed yet. The next
+                    // check_and_broadcast_sync_state will detect the remaining drift.
                     let launch_id_matched = {
                         let mut kernel_guard = room.kernel.lock().await;
                         if let Some(ref mut kernel) = *kernel_guard {
-                            // Check launch_id still matches - if kernel was restarted, skip update
                             let current_launch_id = kernel.launched_config().launch_id.clone();
                             if current_launch_id != launch_id {
                                 warn!(
                                     "[notebook-sync] Kernel was swapped during hot-sync, skipping update"
                                 );
-                                // Still report success - packages were installed to the old env
-                                // User will see sync banner again for the new kernel
                                 false
                             } else {
-                                let metadata = fresh_metadata.as_ref().unwrap_or(&current_metadata);
-                                if let Some(ref uv) = metadata.runt.uv {
-                                    kernel.update_launched_uv_deps(uv.dependencies.clone());
+                                // Build the new baseline: what was launched + what we installed
+                                let mut installed_deps =
+                                    launched.uv_deps.clone().unwrap_or_default();
+                                for pkg in &packages_to_install {
+                                    if !installed_deps.contains(pkg) {
+                                        installed_deps.push(pkg.clone());
+                                    }
                                 }
+                                kernel.update_launched_uv_deps(installed_deps);
                                 true
                             }
                         } else {
