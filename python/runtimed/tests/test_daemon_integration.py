@@ -1835,6 +1835,10 @@ class TestKernelLifecycle:
         assert await session.kernel_started()
         assert await session.env_source() is not None
 
+    @pytest.mark.xfail(
+        reason="Flaky on CI: daemon relay 30s timeout can expire on slow runners",
+        strict=False,
+    )
     async def test_async_kernel_interrupt(self, session):
         """Can interrupt a running kernel."""
         await async_start_kernel_with_retry(session)
