@@ -3722,7 +3722,10 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
                 Target::new(TargetKind::Webview),
             ])
             .timezone_strategy(TimezoneStrategy::UseLocal)
-            .level(log::LevelFilter::Info)
+            .level(match runt_workspace::build_channel() {
+                runt_workspace::BuildChannel::Nightly => log::LevelFilter::Debug,
+                runt_workspace::BuildChannel::Stable => log::LevelFilter::Info,
+            })
             .format(move |out, message, record| {
                 out.finish(format_args!(
                     "{} [{}] {}: {}",

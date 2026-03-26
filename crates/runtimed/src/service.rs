@@ -413,6 +413,8 @@ impl ServiceManager {
     <key>ProgramArguments</key>
     <array>
         <string>{binary}</string>
+        <string>--log-level</string>
+        <string>{log_level}</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -439,6 +441,11 @@ impl ServiceManager {
 "#,
             label = daemon_launchd_label(),
             binary = self.config.binary_path.display(),
+            log_level = match runt_workspace::build_channel() {
+                runt_workspace::BuildChannel::Nightly =>
+                    "info,notebook_sync=debug,runtimed::notebook_sync_server=debug",
+                runt_workspace::BuildChannel::Stable => "warn",
+            },
             log = self.config.log_path.display(),
             home = home_str,
             user = user,
