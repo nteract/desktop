@@ -301,16 +301,22 @@ async fn process_markdown_assets(room: &NotebookRoom) {
     let notebook_path = notebook_path_val.exists().then_some(notebook_path_val);
     let nbformat_attachments = room.nbformat_attachments.read().await.clone();
 
-    let markdown_cells: Vec<(String, String, HashMap<String, String>)> = {
-        let doc = room.doc.read().await;
-        doc.get_cells()
+    // Fork BEFORE async resolution so the fork's baseline predates
+    // any concurrent edits. Asset updates on the fork are treated as
+    // concurrent with user edits via Automerge's CRDT merge.
+    let (markdown_cells, mut fork) = {
+        let mut doc = room.doc.write().await;
+        let cells: Vec<(String, String, HashMap<String, String>)> = doc
+            .get_cells()
             .into_iter()
             .filter(|cell| cell.cell_type == "markdown")
             .map(|cell| (cell.id, cell.source, cell.resolved_assets))
-            .collect()
+            .collect();
+        let fork = doc.fork();
+        (cells, fork)
     };
 
-    let mut updates = Vec::new();
+    let mut any_changed = false;
     for (cell_id, source, existing_assets) in markdown_cells {
         let desired_assets = resolve_markdown_assets(
             &source,
@@ -321,24 +327,23 @@ async fn process_markdown_assets(room: &NotebookRoom) {
         .await;
 
         if desired_assets != existing_assets {
-            updates.push((cell_id, desired_assets));
-        }
-    }
-
-    if updates.is_empty() {
-        return;
-    }
-
-    let persist_bytes = {
-        let mut doc = room.doc.write().await;
-        for (cell_id, resolved_assets) in &updates {
-            if let Err(e) = doc.set_cell_resolved_assets(cell_id, resolved_assets) {
+            if let Err(e) = fork.set_cell_resolved_assets(&cell_id, &desired_assets) {
                 warn!(
                     "[notebook-sync] Failed to sync resolved markdown assets for {}: {}",
                     cell_id, e
                 );
             }
+            any_changed = true;
         }
+    }
+
+    if !any_changed {
+        return;
+    }
+
+    let persist_bytes = {
+        let mut doc = room.doc.write().await;
+        let _ = doc.merge(&mut fork);
         doc.save()
     };
 

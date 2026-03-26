@@ -383,7 +383,21 @@ fork.update_source(&cell_id, &disk_source).ok();
 doc.merge(&mut fork).ok();
 ```
 
-**Key methods on `NotebookDoc`:** `fork()`, `fork_at(heads)`, `get_heads()`, `merge()`. See nteract/desktop#1216 for the full adoption plan.
+For synchronous mutation blocks (no `.await` between fork and merge), use the helpers:
+
+```rust
+// Fork at current heads, apply mutations, merge back
+doc.fork_and_merge(|fork| {
+    fork.update_source("cell-1", "x = 1\n");
+});
+
+// Fork at a historic point (e.g., last save), apply mutations, merge back
+doc.fork_at_and_merge(&save_heads, |fork| {
+    fork.update_source("cell-1", &disk_source);
+})?;
+```
+
+**Key methods on `NotebookDoc`:** `fork()`, `fork_at(heads)`, `get_heads()`, `merge()`, `fork_and_merge(f)`, `fork_at_and_merge(heads, f)`.
 
 ### The `is_binary_mime` Contract
 

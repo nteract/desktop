@@ -221,6 +221,55 @@ impl NotebookDoc {
         self.doc.merge(&mut other.doc)
     }
 
+    /// Fork the document, apply mutations on the fork, and merge back.
+    ///
+    /// This is the preferred way to apply mutations that should compose
+    /// with concurrent edits rather than overwriting them. The closure
+    /// receives a forked doc; any mutations on it are merged back after
+    /// the closure returns.
+    ///
+    /// ```ignore
+    /// doc.fork_and_merge(|fork| {
+    ///     fork.update_source("cell-1", "x = 1\n");
+    ///     fork.delete_cell("cell-2");
+    /// });
+    /// ```
+    ///
+    /// For async work between fork and merge, use [`fork`](Self::fork)
+    /// and [`merge`](Self::merge) directly — the fork must be created
+    /// before the `.await` and merged after.
+    pub fn fork_and_merge<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut NotebookDoc),
+    {
+        let mut fork = self.fork();
+        f(&mut fork);
+        let _ = self.merge(&mut fork);
+    }
+
+    /// Fork at a historic point, apply mutations, and merge back.
+    ///
+    /// Same as [`fork_and_merge`](Self::fork_and_merge) but forks at the
+    /// given heads instead of the current state. Use this when applying
+    /// external content (e.g., from disk) that corresponds to a known
+    /// save point — the mutations are treated as concurrent with any
+    /// changes after `heads`.
+    ///
+    /// Returns `Err` if the heads are unknown to this document.
+    pub fn fork_at_and_merge<F>(
+        &mut self,
+        heads: &[automerge::ChangeHash],
+        f: F,
+    ) -> Result<(), AutomergeError>
+    where
+        F: FnOnce(&mut NotebookDoc),
+    {
+        let mut fork = self.fork_at(heads)?;
+        f(&mut fork);
+        let _ = self.merge(&mut fork);
+        Ok(())
+    }
+
     /// Set the actor identity for this document.
     ///
     /// Every Automerge operation is tagged with the actor ID of the document
