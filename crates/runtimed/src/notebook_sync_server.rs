@@ -4354,12 +4354,16 @@ async fn save_notebook_to_disk(
         }
     };
 
-    // Read cells and metadata from the Automerge doc
-    let (cells, metadata_snapshot) = {
-        let doc = room.doc.read().await;
+    // Read cells, metadata, and heads from the Automerge doc.
+    // Heads are captured NOW (at snapshot time) so last_save_heads
+    // matches what we serialize to disk, not what the doc looks like
+    // after the async file write completes.
+    let (cells, metadata_snapshot, snapshot_heads) = {
+        let mut doc = room.doc.write().await;
         let cells = doc.get_cells();
         let metadata_snapshot = doc.get_metadata_snapshot();
-        (cells, metadata_snapshot)
+        let heads = doc.get_heads();
+        (cells, metadata_snapshot, heads)
     };
     let nbformat_attachments = room.nbformat_attachments.read().await.clone();
 
@@ -4468,13 +4472,14 @@ async fn save_notebook_to_disk(
         .unwrap_or(0);
     room.last_self_write.store(now, Ordering::Relaxed);
 
-    // Record the doc heads at save time so the file watcher can fork_at
-    // this point, treating disk changes as concurrent with post-save
-    // CRDT mutations (e.g., background formatting).
-    {
-        let mut doc = room.doc.write().await;
-        let heads = doc.get_heads();
-        *room.last_save_heads.write().await = heads;
+    // Record snapshot-time heads so the file watcher can fork_at this
+    // point. Only update when saving to the primary path — saving to an
+    // alternate path (Save As) must not corrupt the fork base for the
+    // watcher on room.notebook_path.
+    let is_primary_path =
+        target_path.is_none() || notebook_path == *room.notebook_path.read().await;
+    if is_primary_path {
+        *room.last_save_heads.write().await = snapshot_heads;
     }
 
     info!(
