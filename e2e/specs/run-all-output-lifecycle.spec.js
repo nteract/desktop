@@ -50,14 +50,16 @@ describe("Run All Output Lifecycle", () => {
     // disappear before new execution starts.
     await browser.pause(500);
 
-    // While cell 1 is running (2s sleep), cell 2 should not show stale output.
-    // Check that at least one cell has been cleared (no "stale-output" text).
-    const cell2MidRun = await cells[1]
-      .$('[data-testid="cell-output"]')
-      .catch(() => null);
-    if (cell2MidRun && (await cell2MidRun.isExisting())) {
-      const midText = await cell2MidRun.getText();
-      expect(midText).not.toContain("stale-output-2");
+    // While cell 1 is running (2s sleep), neither cell should show stale output.
+    // Both cells' outputs should have been cleared up front by Run All.
+    for (let i = 0; i < 2; i++) {
+      const outputEl = await cells[i]
+        .$('[data-testid="cell-output"]')
+        .catch(() => null);
+      if (outputEl && (await outputEl.isExisting())) {
+        const midText = await outputEl.getText();
+        expect(midText).not.toContain(`stale-output-${i + 1}`);
+      }
     }
 
     // Wait for cell 1 to complete (2s sleep + buffer)
