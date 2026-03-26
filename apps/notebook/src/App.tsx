@@ -520,6 +520,10 @@ function AppContent() {
       // Flush pending source sync so daemon has latest code
       await flushSync();
 
+      // Clear all outputs via daemon before restarting so the user sees
+      // every cell go blank up front.
+      await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
+
       // Shutdown existing kernel
       await shutdownKernel();
 
@@ -541,6 +545,7 @@ function AppContent() {
       runAllInFlightRef.current = false;
     }
   }, [
+    clearOutputs,
     flushSync,
     shutdownKernel,
     tryStartKernel,
@@ -651,6 +656,10 @@ function AppContent() {
       // Flush pending source sync so daemon has latest code
       await flushSync();
 
+      // Clear all outputs via daemon before queueing so the user sees
+      // every cell go blank up front (not one-at-a-time as they start).
+      await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
+
       // Start kernel via daemon if not running
       if (kernelStatus === KERNEL_STATUS.NOT_STARTED) {
         const started = await tryStartKernel();
@@ -673,6 +682,7 @@ function AppContent() {
   }, [
     kernelStatus,
     tryStartKernel,
+    clearOutputs,
     flushSync,
     daemonRunAllCells,
   ]);
