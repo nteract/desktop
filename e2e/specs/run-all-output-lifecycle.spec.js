@@ -31,8 +31,13 @@ describe("Run All Output Lifecycle", () => {
   });
 
   it("Run All should clear stale outputs and show new results", async () => {
+    // Wait for both cells to render — CRDT sync may not have delivered
+    // the second cell immediately after notebook sync completes.
+    await browser.waitUntil(
+      async () => (await $$('[data-cell-type="code"]')).length >= 2,
+      { timeout: 15000, timeoutMsg: "Expected 2+ code cells to render" },
+    );
     const cells = await $$('[data-cell-type="code"]');
-    expect(cells.length).toBeGreaterThanOrEqual(2);
 
     // Verify stale outputs are visible from the fixture
     const cell1OutputBefore = await waitForCellOutput(cells[0], 10000);

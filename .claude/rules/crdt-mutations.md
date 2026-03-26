@@ -25,7 +25,7 @@ All persistent notebook state lives in the Automerge document. The React cell st
 | Notebook metadata (dependencies, runtime) | **Frontend** or **MCP agent** | Author -- `add_uv_dependency`, `set_metadata`, etc. |
 | Execution count | **Daemon** (kernel reports it) | Read-only -- apply from daemon broadcast |
 | Cell outputs | **Daemon** (kernel produces them) | Read-only -- materialize from CRDT sync |
-| Output clearing (pre-execute) | **Frontend** initiates, **daemon** also writes | Author for local clear, read-only for daemon broadcast |
+| Output clearing (pre-execute) | **Daemon** (on `execute_input` IOPub) | Read-only -- SyncEngine injects changeset on execution start |
 | Kernel status | **Daemon** | Read-only -- UI state, not in CRDT |
 | Queue state (executing, queued) | **Daemon** | Read-only -- UI state, not in CRDT |
 
@@ -42,7 +42,6 @@ User action -> WASM handle mutation -> sourceSync$ (debounced) -> daemon
 
 Examples:
 - Typing in a cell (`splice_source`)
-- Clearing outputs before execution (`handle.clear_outputs`)
 - Adding/deleting/moving cells (`commitMutation`)
 - Changing cell visibility (`set_cell_source_hidden`)
 
@@ -74,9 +73,14 @@ Daemon broadcast -> useDaemonKernel callback -> store-only update
 | `apply*FromDaemon` | Same as above -- applies daemon state to the store. |
 
 Examples:
-- `clearOutputsLocal(cellId)` -- user hit Ctrl-Enter, clear in CRDT + store
+- `updateCellSource(cellId, source)` -- user typing, writes to CRDT + store
 - `clearOutputsFromDaemon(cellId)` -- daemon broadcast, store only
 - `applyExecutionCountFromDaemon(cellId, count)` -- daemon broadcast, store only
+
+> **Note:** `clearOutputsLocal` is a historical no-op. Output clearing is
+> handled by the SyncEngine's execution lifecycle -- when the daemon reports
+> execution started, the SyncEngine injects a synthetic changeset that
+> triggers re-materialization from the CRDT.
 
 ## The CodeMirror CRDT Bridge
 

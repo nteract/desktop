@@ -914,9 +914,12 @@ impl RoomKernel {
 
                                     // Clear outputs and set execution count in Automerge before
                                     // notifying clients so UI reads the updated value immediately.
-                                    // Clearing outputs here (when execution truly starts) ensures
-                                    // a single source of truth - both frontend and MCP-triggered
-                                    // executions get outputs cleared authoritatively by the daemon.
+                                    // This is the authoritative clear — the daemon owns output
+                                    // state in the CRDT. The frontend SyncEngine detects the
+                                    // "started" execution transition and injects a synthetic
+                                    // changeset to trigger re-materialization from this cleared
+                                    // state. Both frontend and MCP-triggered executions go
+                                    // through this same path.
                                     let execution_count = input.execution_count.0 as i64;
                                     let persist_bytes = {
                                         let mut doc_guard = doc.write().await;

@@ -195,7 +195,12 @@ class CellHandle:
         return self
 
     async def clear_outputs(self) -> CellHandle:
-        """Clear this cell's outputs."""
+        """Clear this cell's outputs.
+
+        Sends a ClearOutputs request to the daemon, which clears the
+        output manifests in the Automerge document. Frontend clients
+        see the cleared state via CRDT sync.
+        """
         await self._session.clear_outputs(self._id)
         return self
 
