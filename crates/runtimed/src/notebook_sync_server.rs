@@ -3482,12 +3482,16 @@ async fn handle_notebook_request(
                 };
             }
 
-            // Format before execution (best-effort, non-blocking on failure).
-            // The kernel must execute the same source the notebook displays.
+            // Format before execution using fork+merge so concurrent user
+            // edits are preserved. We fork the doc, apply formatting on the
+            // fork, then merge back — Automerge's text CRDT handles position
+            // mapping for any edits that arrived while the formatter ran.
             let source = if let Some(runtime) = detect_room_runtime(room).await {
                 if let Some(formatted) = format_source(&source, &runtime).await {
                     let mut doc = room.doc.write().await;
-                    if doc.update_source(&cell_id, &formatted).is_ok() {
+                    let mut fork = doc.fork();
+                    if fork.update_source(&cell_id, &formatted).is_ok() {
+                        let _ = doc.merge(&mut fork);
                         let _ = room.changed_tx.send(());
                         debug!("[format] Formatted cell {} before execution", cell_id);
                     }
@@ -3668,8 +3672,8 @@ async fn handle_notebook_request(
                     .filter(|c| c.cell_type == "code")
                     .collect();
 
-                // Best-effort format all code cells before queuing so the
-                // kernel executes exactly what the notebook displays.
+                // Best-effort format all code cells before queuing using
+                // fork+merge so concurrent user edits are preserved.
                 let runtime = detect_room_runtime(room).await;
                 let mut formatted_sources: Vec<(String, String)> = Vec::new();
                 let mut any_formatted = false;
@@ -3687,12 +3691,15 @@ async fn handle_notebook_request(
                     formatted_sources.push((cell.id.clone(), source));
                 }
 
-                // Write formatted sources to the doc in one batch
+                // Apply formatting via fork+merge — Automerge's text CRDT
+                // merges formatter splices with any concurrent user edits.
                 if any_formatted {
                     let mut doc = room.doc.write().await;
+                    let mut fork = doc.fork();
                     for (cell_id, source) in &formatted_sources {
-                        let _ = doc.update_source(cell_id, source);
+                        let _ = fork.update_source(cell_id, source);
                     }
+                    let _ = doc.merge(&mut fork);
                     let _ = room.changed_tx.send(());
                     debug!("[format] Formatted cells before run-all execution");
                 }
@@ -4217,19 +4224,23 @@ async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
         return Ok(0);
     }
 
-    let mut formatted_count = 0;
-
+    // Format all cells, collecting results
+    let mut formatted: Vec<(String, String)> = Vec::new();
     for (cell_id, source) in cells {
-        if let Some(formatted) = format_source(&source, &runtime).await {
-            let mut doc = room.doc.write().await;
-            if doc.update_source(&cell_id, &formatted).is_ok() {
-                formatted_count += 1;
-            }
+        if let Some(fmt) = format_source(&source, &runtime).await {
+            formatted.push((cell_id, fmt));
         }
     }
 
-    // Broadcast changes to connected peers if any cells were formatted
+    // Apply via fork+merge so concurrent edits are preserved
+    let formatted_count = formatted.len();
     if formatted_count > 0 {
+        let mut doc = room.doc.write().await;
+        let mut fork = doc.fork();
+        for (cell_id, source) in &formatted {
+            let _ = fork.update_source(cell_id, source);
+        }
+        let _ = doc.merge(&mut fork);
         let _ = room.changed_tx.send(());
         info!(
             "[format] Formatted {} code cells (runtime: {})",

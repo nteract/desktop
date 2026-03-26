@@ -176,6 +176,31 @@ impl NotebookDoc {
         self.doc
     }
 
+    /// Fork the document, creating an independent copy that shares history up
+    /// to this point.
+    ///
+    /// Changes made on the fork are independent of the original. Call
+    /// [`merge`](Self::merge) to reconcile them — Automerge's CRDT semantics
+    /// handle concurrent edits (e.g., user typing while a formatter runs on
+    /// the fork).
+    pub fn fork(&mut self) -> Self {
+        Self {
+            doc: self.doc.fork(),
+        }
+    }
+
+    /// Merge another document's changes into this one.
+    ///
+    /// Returns the change hashes that were applied. Changes made on both
+    /// sides since the fork point are merged using Automerge's CRDT rules —
+    /// concurrent text edits at different positions compose cleanly.
+    pub fn merge(
+        &mut self,
+        other: &mut NotebookDoc,
+    ) -> Result<Vec<automerge::ChangeHash>, AutomergeError> {
+        self.doc.merge(&mut other.doc)
+    }
+
     /// Set the actor identity for this document.
     ///
     /// Every Automerge operation is tagged with the actor ID of the document
