@@ -1338,7 +1338,7 @@ fn sanitize_peer_label(raw: Option<&str>, fallback: &str) -> String {
 async fn run_sync_loop_v2<R, W>(
     reader: &mut R,
     writer: &mut W,
-    room: &NotebookRoom,
+    room: &Arc<NotebookRoom>,
     rooms: NotebookRooms,
     mut notebook_id: String,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
@@ -2774,7 +2774,7 @@ async fn rekey_ephemeral_room(
 
 /// Handle a NotebookRequest and return a NotebookResponse.
 async fn handle_notebook_request(
-    room: &NotebookRoom,
+    room: &Arc<NotebookRoom>,
     request: NotebookRequest,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
 ) -> NotebookResponse {
@@ -3482,30 +3482,13 @@ async fn handle_notebook_request(
                 };
             }
 
-            // Format before execution using fork+merge so concurrent user
-            // edits are preserved. We fork the doc, apply formatting on the
-            // fork, then merge back — Automerge's text CRDT handles position
-            // mapping for any edits that arrived while the formatter ran.
-            let source = if let Some(runtime) = detect_room_runtime(room).await {
-                if let Some(formatted) = format_source(&source, &runtime).await {
-                    let mut doc = room.doc.write().await;
-                    let mut fork = doc.fork();
-                    if fork.update_source(&cell_id, &formatted).is_ok() {
-                        let _ = doc.merge(&mut fork);
-                        let _ = room.changed_tx.send(());
-                        debug!("[format] Formatted cell {} before execution", cell_id);
-                    }
-                    formatted
-                } else {
-                    source
-                }
-            } else {
-                source
-            };
-
+            // Queue the user's source immediately — no formatter delay.
+            // Formatting is applied afterward via fork+merge (see below).
+            // This is safe because ruff/deno fmt are semantic no-ops:
+            // the formatted code produces identical outputs.
             let mut kernel_guard = room.kernel.lock().await;
             if let Some(ref mut kernel) = *kernel_guard {
-                match kernel.queue_cell(cell_id.clone(), source).await {
+                match kernel.queue_cell(cell_id.clone(), source.clone()).await {
                     Ok(execution_id) => {
                         // Clear outputs and stamp execution_id at queue time
                         // so clients see immediate feedback via CRDT sync.
@@ -3516,6 +3499,30 @@ async fn handle_notebook_request(
                             let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
                             let _ = room.changed_tx.send(());
                         }
+
+                        // Best-effort background formatting via fork+merge.
+                        // The fork captures the doc at this point; formatting
+                        // is applied on the fork, then merged back. Automerge's
+                        // text CRDT preserves any concurrent user edits.
+                        let room_clone = Arc::clone(room);
+                        let cell_id_clone = cell_id.clone();
+                        tokio::spawn(async move {
+                            if let Some(runtime) = detect_room_runtime(&room_clone).await {
+                                if let Some(formatted) = format_source(&source, &runtime).await {
+                                    let mut doc = room_clone.doc.write().await;
+                                    let mut fork = doc.fork();
+                                    if fork.update_source(&cell_id_clone, &formatted).is_ok() {
+                                        let _ = doc.merge(&mut fork);
+                                        let _ = room_clone.changed_tx.send(());
+                                        debug!(
+                                            "[format] Formatted cell {} after queuing",
+                                            cell_id_clone
+                                        );
+                                    }
+                                }
+                            }
+                        });
+
                         NotebookResponse::CellQueued {
                             cell_id,
                             execution_id,
@@ -3666,58 +3673,28 @@ async fn handle_notebook_request(
                     doc.get_cells()
                 }; // release read lock before writing
 
-                // Collect code cells for formatting and queuing
-                let code_cells: Vec<_> = cells
-                    .into_iter()
-                    .filter(|c| c.cell_type == "code")
-                    .collect();
-
-                // Best-effort format all code cells before queuing using
-                // fork+merge so concurrent user edits are preserved.
-                let runtime = detect_room_runtime(room).await;
-                let mut formatted_sources: Vec<(String, String)> = Vec::new();
-                let mut any_formatted = false;
-                for cell in &code_cells {
-                    let source = if let Some(ref rt) = runtime {
-                        if let Some(formatted) = format_source(&cell.source, rt).await {
-                            any_formatted = true;
-                            formatted
-                        } else {
-                            cell.source.clone()
-                        }
-                    } else {
-                        cell.source.clone()
-                    };
-                    formatted_sources.push((cell.id.clone(), source));
-                }
-
-                // Apply formatting via fork+merge — Automerge's text CRDT
-                // merges formatter splices with any concurrent user edits.
-                if any_formatted {
-                    let mut doc = room.doc.write().await;
-                    let mut fork = doc.fork();
-                    for (cell_id, source) in &formatted_sources {
-                        let _ = fork.update_source(cell_id, source);
-                    }
-                    let _ = doc.merge(&mut fork);
-                    let _ = room.changed_tx.send(());
-                    debug!("[format] Formatted cells before run-all execution");
-                }
-
-                // Queue all code cells in document order
+                // Queue all code cells immediately with original source —
+                // no formatter delay. See ExecuteCell comment for rationale.
                 let mut queued = Vec::new();
-                for (cell_id, source) in &formatted_sources {
-                    match kernel.queue_cell(cell_id.clone(), source.clone()).await {
-                        Ok(execution_id) => {
-                            queued.push(QueueEntry {
-                                cell_id: cell_id.clone(),
-                                execution_id,
-                            });
-                        }
-                        Err(e) => {
-                            return NotebookResponse::Error {
-                                error: format!("Failed to queue cell {}: {}", cell_id, e),
-                            };
+                let mut cell_sources: Vec<(String, String)> = Vec::new();
+                for cell in cells {
+                    if cell.cell_type == "code" {
+                        match kernel
+                            .queue_cell(cell.id.clone(), cell.source.clone())
+                            .await
+                        {
+                            Ok(execution_id) => {
+                                cell_sources.push((cell.id.clone(), cell.source.clone()));
+                                queued.push(QueueEntry {
+                                    cell_id: cell.id.clone(),
+                                    execution_id,
+                                });
+                            }
+                            Err(e) => {
+                                return NotebookResponse::Error {
+                                    error: format!("Failed to queue cell {}: {}", cell.id, e),
+                                };
+                            }
                         }
                     }
                 }
@@ -3733,6 +3710,34 @@ async fn handle_notebook_request(
                     }
                     let _ = room.changed_tx.send(());
                 }
+
+                // Best-effort background formatting via fork+merge.
+                let room_clone = Arc::clone(room);
+                tokio::spawn(async move {
+                    if let Some(runtime) = detect_room_runtime(&room_clone).await {
+                        let mut any_formatted = false;
+                        let mut formatted: Vec<(String, String)> = Vec::new();
+                        for (cell_id, source) in &cell_sources {
+                            if let Some(fmt) = format_source(source, &runtime).await {
+                                any_formatted = true;
+                                formatted.push((cell_id.clone(), fmt));
+                            }
+                        }
+                        if any_formatted {
+                            let mut doc = room_clone.doc.write().await;
+                            let mut fork = doc.fork();
+                            for (cell_id, source) in &formatted {
+                                let _ = fork.update_source(cell_id, source);
+                            }
+                            let _ = doc.merge(&mut fork);
+                            let _ = room_clone.changed_tx.send(());
+                            debug!(
+                                "[format] Formatted {} cells after run-all queuing",
+                                formatted.len()
+                            );
+                        }
+                    }
+                });
 
                 NotebookResponse::AllCellsQueued { queued }
             } else {
