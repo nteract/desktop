@@ -677,6 +677,11 @@ pub struct NotebookRoom {
     /// Timestamp (ms since epoch) of last self-write to the .ipynb file.
     /// Used to skip file watcher events triggered by our own saves.
     pub last_self_write: Arc<AtomicU64>,
+    /// Automerge heads at the time of the last save to disk.
+    /// The file watcher uses `fork_at(last_save_heads)` so that external
+    /// disk changes merge cleanly with post-save CRDT changes (e.g.,
+    /// background formatting that completed after the save).
+    pub last_save_heads: Arc<RwLock<Vec<automerge::ChangeHash>>>,
     /// Shutdown signal for the file watcher task.
     /// Wrapped in Mutex to allow setting after Arc creation.
     /// Sent when the room is evicted to stop the watcher.
@@ -842,6 +847,7 @@ impl NotebookRoom {
             comm_state: Arc::new(CommState::new()),
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
+            last_save_heads: Arc::new(RwLock::new(Vec::new())),
             watcher_shutdown_tx: Mutex::new(None),
             state_doc,
             state_changed_tx,
@@ -903,6 +909,7 @@ impl NotebookRoom {
             comm_state: Arc::new(CommState::new()),
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
+            last_save_heads: Arc::new(RwLock::new(Vec::new())),
             watcher_shutdown_tx: Mutex::new(None),
             state_doc,
             state_changed_tx,
@@ -4461,6 +4468,15 @@ async fn save_notebook_to_disk(
         .unwrap_or(0);
     room.last_self_write.store(now, Ordering::Relaxed);
 
+    // Record the doc heads at save time so the file watcher can fork_at
+    // this point, treating disk changes as concurrent with post-save
+    // CRDT mutations (e.g., background formatting).
+    {
+        let mut doc = room.doc.write().await;
+        let heads = doc.get_heads();
+        *room.last_save_heads.write().await = heads;
+    }
+
     info!(
         "[notebook-sync] Saved notebook to disk: {:?} ({} cells)",
         notebook_path, cell_count
@@ -5816,13 +5832,27 @@ async fn apply_ipynb_changes(
         }
     }
 
+    // For source updates on existing cells, use fork_at(last_save_heads)
+    // + merge so that external edits compose with post-save CRDT changes
+    // (e.g., background formatting) rather than overwriting them.
+    let save_heads = room.last_save_heads.read().await.clone();
+    let mut source_fork = if !save_heads.is_empty() {
+        doc.fork_at(&save_heads).ok()
+    } else {
+        None
+    };
+
     // Process external cells in order (add new or update existing)
     for (index, ext_cell) in external_cells.iter().enumerate() {
         if let Some(current_cell) = current_map.get(ext_cell.id.as_str()) {
             // Cell exists - check if source changed
             if current_cell.source != ext_cell.source {
                 debug!("[notebook-watch] Updating source for cell: {}", ext_cell.id);
-                if let Ok(true) = doc.update_source(&ext_cell.id, &ext_cell.source) {
+                if let Some(ref mut fork) = source_fork {
+                    // Apply on fork at save point, merge later
+                    let _ = fork.update_source(&ext_cell.id, &ext_cell.source);
+                    changed = true;
+                } else if let Ok(true) = doc.update_source(&ext_cell.id, &ext_cell.source) {
                     changed = true;
                 }
             }
@@ -5900,6 +5930,12 @@ async fn apply_ipynb_changes(
                 let _ = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets);
             }
         }
+    }
+
+    // Merge source fork back — source changes from disk compose with
+    // post-save CRDT changes via Automerge's text CRDT merge.
+    if let Some(ref mut fork) = source_fork {
+        let _ = doc.merge(fork);
     }
 
     changed
@@ -6542,6 +6578,7 @@ mod tests {
             comm_state: Arc::new(crate::comm_state::CommState::new()),
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
+            last_save_heads: Arc::new(RwLock::new(Vec::new())),
             watcher_shutdown_tx: Mutex::new(None),
             state_doc,
             state_changed_tx,
