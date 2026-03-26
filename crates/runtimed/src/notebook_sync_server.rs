@@ -329,16 +329,20 @@ async fn process_markdown_assets(room: &NotebookRoom) {
         return;
     }
 
+    // Apply asset updates via fork+merge so they compose with any
+    // concurrent CRDT changes that happened during async resolution.
     let persist_bytes = {
         let mut doc = room.doc.write().await;
-        for (cell_id, resolved_assets) in &updates {
-            if let Err(e) = doc.set_cell_resolved_assets(cell_id, resolved_assets) {
-                warn!(
-                    "[notebook-sync] Failed to sync resolved markdown assets for {}: {}",
-                    cell_id, e
-                );
+        doc.fork_and_merge(|fork| {
+            for (cell_id, resolved_assets) in &updates {
+                if let Err(e) = fork.set_cell_resolved_assets(cell_id, resolved_assets) {
+                    warn!(
+                        "[notebook-sync] Failed to sync resolved markdown assets for {}: {}",
+                        cell_id, e
+                    );
+                }
             }
-        }
+        });
         doc.save()
     };
 
