@@ -82,6 +82,13 @@ fn daemon_launchd_label_for(channel: BuildChannel) -> &'static str {
     }
 }
 
+fn bundle_identifier_for(channel: BuildChannel) -> &'static str {
+    match channel {
+        BuildChannel::Stable => "org.nteract.desktop",
+        BuildChannel::Nightly => "org.nteract.desktop.nightly",
+    }
+}
+
 fn cli_command_name_for(channel: BuildChannel) -> &'static str {
     match channel {
         BuildChannel::Stable => "runt",
@@ -141,6 +148,14 @@ pub fn cli_notebook_alias_name() -> &'static str {
     cli_notebook_alias_name_for(build_channel())
 }
 
+/// macOS bundle identifier for the desktop app.
+pub fn bundle_identifier() -> &'static str {
+    bundle_identifier_for(build_channel())
+}
+
+/// Legacy bundle identifiers that should no longer be the default `.ipynb` handler.
+pub const STALE_BUNDLE_IDENTIFIERS: &[&str] = &["com.runtimed.notebook"];
+
 /// Human-readable channel name for display.
 pub fn channel_display_name() -> &'static str {
     match build_channel() {
@@ -187,6 +202,29 @@ pub fn desktop_app_launch_candidates_for(channel: BuildChannel) -> &'static [&'s
 /// App names to try when launching the desktop notebook app.
 pub fn desktop_app_launch_candidates() -> &'static [&'static str] {
     desktop_app_launch_candidates_for(build_channel())
+}
+
+/// Find the installed `.app` bundle on macOS.
+///
+/// Searches `/Applications/` and `~/Applications/` for known app name candidates.
+/// Returns the first match found.
+#[cfg(target_os = "macos")]
+pub fn find_installed_app_bundle() -> Option<PathBuf> {
+    let home_apps = dirs::home_dir().map(|h| h.join("Applications"));
+    for app_name in desktop_app_launch_candidates() {
+        let bundle_name = format!("{app_name}.app");
+        let system = PathBuf::from("/Applications").join(&bundle_name);
+        if system.exists() {
+            return Some(system);
+        }
+        if let Some(ref home) = home_apps {
+            let user = home.join(&bundle_name);
+            if user.exists() {
+                return Some(user);
+            }
+        }
+    }
+    None
 }
 
 /// Launch the desktop notebook app for a specific channel.
@@ -303,6 +341,117 @@ fn open_notebook_installed_for(
         desktop_display_name_for(channel),
         detail
     ))
+}
+
+// ============================================================================
+// macOS Launch Services (File Associations)
+// ============================================================================
+
+#[cfg(target_os = "macos")]
+pub mod launch_services {
+    use core_foundation::base::TCFType;
+    use core_foundation::string::{CFString, CFStringRef};
+    use std::path::Path;
+    use std::process::Command;
+
+    type OSStatus = i32;
+    type LSRolesMask = u32;
+    #[allow(non_upper_case_globals)]
+    const kLSRolesAll: LSRolesMask = 0xFFFFFFFF;
+
+    #[link(name = "CoreServices", kind = "framework")]
+    extern "C" {
+        static kUTTagClassFilenameExtension: CFStringRef;
+        fn UTTypeCreatePreferredIdentifierForTag(
+            tag_class: CFStringRef,
+            tag: CFStringRef,
+            conforming_to: CFStringRef,
+        ) -> CFStringRef;
+        fn LSCopyDefaultRoleHandlerForContentType(
+            content_type: CFStringRef,
+            role: LSRolesMask,
+        ) -> CFStringRef;
+        fn LSSetDefaultRoleHandlerForContentType(
+            content_type: CFStringRef,
+            role: LSRolesMask,
+            handler_bundle_id: CFStringRef,
+        ) -> OSStatus;
+    }
+
+    /// Resolve the UTI for the `.ipynb` file extension.
+    fn ipynb_uti() -> Option<CFString> {
+        let ext = CFString::new("ipynb");
+        unsafe {
+            let uti = UTTypeCreatePreferredIdentifierForTag(
+                kUTTagClassFilenameExtension,
+                ext.as_concrete_TypeRef(),
+                std::ptr::null(),
+            );
+            if uti.is_null() {
+                return None;
+            }
+            Some(CFString::wrap_under_create_rule(uti))
+        }
+    }
+
+    /// Query the default handler bundle ID for `.ipynb` files.
+    ///
+    /// Returns the lowercase bundle identifier of the app registered as the
+    /// default handler, or `None` if no handler is set.
+    pub fn get_default_ipynb_handler() -> Option<String> {
+        let uti = ipynb_uti()?;
+        unsafe {
+            let handler =
+                LSCopyDefaultRoleHandlerForContentType(uti.as_concrete_TypeRef(), kLSRolesAll);
+            if handler.is_null() {
+                return None;
+            }
+            let cf = CFString::wrap_under_create_rule(handler);
+            Some(cf.to_string().to_lowercase())
+        }
+    }
+
+    /// Set the default handler for `.ipynb` files to the given bundle ID.
+    ///
+    /// Returns `Ok(())` on success, or `Err(status)` with the OSStatus error code.
+    pub fn set_default_ipynb_handler(bundle_id: &str) -> Result<(), i32> {
+        let uti = ipynb_uti().ok_or(-1)?;
+        let handler = CFString::new(bundle_id);
+        let status = unsafe {
+            LSSetDefaultRoleHandlerForContentType(
+                uti.as_concrete_TypeRef(),
+                kLSRolesAll,
+                handler.as_concrete_TypeRef(),
+            )
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(status)
+        }
+    }
+
+    /// Path to the `lsregister` tool in CoreServices framework.
+    const LSREGISTER_PATH: &str = "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister";
+
+    /// Re-register an app bundle with Launch Services.
+    ///
+    /// This forces Launch Services to re-read the app's Info.plist and update
+    /// its knowledge of file type claims. Equivalent to `lsregister -f <path>`.
+    pub fn register_app_bundle(app_path: &Path) -> Result<(), String> {
+        let output = Command::new(LSREGISTER_PATH)
+            .args(["-f"])
+            .arg(app_path)
+            .output()
+            .map_err(|e| format!("Failed to run lsregister: {e}"))?;
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(format!("lsregister failed: {}", stderr.trim()))
+        }
+    }
 }
 
 // ============================================================================
@@ -868,6 +1017,15 @@ mod tests {
         assert_eq!(
             daemon_launchd_label_for(BuildChannel::Nightly),
             "io.nteract.runtimed.nightly"
+        );
+
+        assert_eq!(
+            bundle_identifier_for(BuildChannel::Stable),
+            "org.nteract.desktop"
+        );
+        assert_eq!(
+            bundle_identifier_for(BuildChannel::Nightly),
+            "org.nteract.desktop.nightly"
         );
     }
 

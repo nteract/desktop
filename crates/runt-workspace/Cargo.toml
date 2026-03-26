@@ -10,3 +10,6 @@ license.workspace = true
 dirs = "5"
 hex = "0.4"
 sha2 = "0.10"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"

@@ -1832,6 +1832,8 @@ async fn doctor_command(
         launchd_service: Option<CheckResult>, // macOS only: actual launchd registration state
         #[serde(skip_serializing_if = "Option::is_none")]
         conflicting_services: Option<CheckResult>, // macOS only: stale/conflicting daemon services
+        #[serde(skip_serializing_if = "Option::is_none")]
+        file_association: Option<CheckResult>, // macOS only: .ipynb default handler check
         socket_file: CheckResult,
         daemon_state: CheckResult,
         version_match: CheckResult,
@@ -2081,6 +2083,40 @@ async fn doctor_command(
         #[cfg(not(target_os = "macos"))]
         let conflicting_services: Option<CheckResult> = None;
 
+        // Check 2e: On macOS, check .ipynb file association
+        #[cfg(target_os = "macos")]
+        let file_association = {
+            let expected = runt_workspace::bundle_identifier();
+            match runt_workspace::launch_services::get_default_ipynb_handler() {
+                Some(handler) if handler == expected => Some(CheckResult {
+                    path: ".ipynb handler".to_string(),
+                    status: "ok".to_string(),
+                    detail: Some(handler),
+                }),
+                Some(handler)
+                    if runt_workspace::STALE_BUNDLE_IDENTIFIERS.contains(&handler.as_str()) =>
+                {
+                    Some(CheckResult {
+                        path: ".ipynb handler".to_string(),
+                        status: "stale".to_string(),
+                        detail: Some(format!("{} (legacy)", handler)),
+                    })
+                }
+                Some(handler) => Some(CheckResult {
+                    path: ".ipynb handler".to_string(),
+                    status: "warning".to_string(),
+                    detail: Some(handler),
+                }),
+                None => Some(CheckResult {
+                    path: ".ipynb handler".to_string(),
+                    status: "warning".to_string(),
+                    detail: Some("no default handler for .ipynb".to_string()),
+                }),
+            }
+        };
+        #[cfg(not(target_os = "macos"))]
+        let file_association: Option<CheckResult> = None;
+
         // Check 3: Socket file
         let socket_exists = socket_path.exists();
         let socket_file = CheckResult {
@@ -2262,6 +2298,7 @@ async fn doctor_command(
             plist_home_env,
             launchd_service,
             conflicting_services,
+            file_association,
             socket_file,
             daemon_state,
             version_match,
@@ -2323,6 +2360,18 @@ async fn doctor_command(
     #[cfg(not(target_os = "macos"))]
     #[allow(unused_variables)]
     let is_quarantined = false;
+
+    // On macOS, check if .ipynb file association needs fixing
+    #[cfg(target_os = "macos")]
+    let file_assoc_needs_fix = {
+        let expected = runt_workspace::bundle_identifier();
+        runt_workspace::launch_services::get_default_ipynb_handler()
+            .map(|h| h != expected)
+            .unwrap_or(true) // No handler set → needs fix
+    };
+    #[cfg(not(target_os = "macos"))]
+    #[allow(unused_variables)]
+    let file_assoc_needs_fix = false;
 
     // Check daemon state for fix operations
     let daemon_state_status = if let Some(info) = daemon_info {
@@ -2414,6 +2463,26 @@ async fn doctor_command(
                 }
                 Err(e) => {
                     eprintln!("Failed to reset launchd registration: {e}");
+                }
+            }
+        }
+
+        // Fix .ipynb file association (macOS only)
+        #[cfg(target_os = "macos")]
+        if file_assoc_needs_fix {
+            let bundle_id = runt_workspace::bundle_identifier();
+            // Re-register app bundle with Launch Services if installed
+            if let Some(app_path) = runt_workspace::find_installed_app_bundle() {
+                if let Err(e) = runt_workspace::launch_services::register_app_bundle(&app_path) {
+                    eprintln!("Warning: lsregister failed: {e}");
+                }
+            }
+            match runt_workspace::launch_services::set_default_ipynb_handler(bundle_id) {
+                Ok(()) => {
+                    actions_taken.push(format!("Set .ipynb file association to {}", bundle_id));
+                }
+                Err(status) => {
+                    eprintln!("Failed to set .ipynb file association (OSStatus {status})");
                 }
             }
         }
@@ -2580,6 +2649,18 @@ async fn doctor_command(
                     .detail
                     .as_ref()
                     .map(|d| format!(" {}", d).dimmed().to_string())
+                    .unwrap_or_default()
+            );
+        }
+        if let Some(ref file_assoc_check) = report.file_association {
+            println!(
+                "{:<20} {}{}",
+                "File association:".bold(),
+                colored_status_icon(&file_assoc_check.status),
+                file_assoc_check
+                    .detail
+                    .as_ref()
+                    .map(|d| format!(" ({})", d).dimmed().to_string())
                     .unwrap_or_default()
             );
         }

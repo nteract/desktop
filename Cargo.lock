@@ -5937,6 +5937,7 @@ dependencies = [
 name = "runt-workspace"
 version = "0.1.0"
 dependencies = [
+ "core-foundation",
  "dirs 5.0.1",
  "hex",
  "sha2 0.10.9",
