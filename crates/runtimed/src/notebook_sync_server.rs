@@ -3497,17 +3497,29 @@ async fn handle_notebook_request(
                             let _ = room.changed_tx.send(());
                         }
 
-                        // Best-effort background formatting
+                        // Best-effort background formatting.
+                        // The kernel executes the original source (formatting is
+                        // cosmetic — ruff/deno fmt are semantic no-ops). We guard
+                        // against overwriting user edits that arrived after queuing
+                        // by comparing the current doc source before writing back.
                         let room_clone = Arc::clone(room);
                         let cell_id_clone = cell_id.clone();
                         tokio::spawn(async move {
                             if let Some(runtime) = detect_room_runtime(&room_clone).await {
                                 if let Some(formatted) = format_source(&source, &runtime).await {
                                     let mut doc = room_clone.doc.write().await;
-                                    if doc.update_source(&cell_id_clone, &formatted).is_ok() {
-                                        let _ = room_clone.changed_tx.send(());
+                                    let current = doc.get_cell(&cell_id_clone).map(|c| c.source);
+                                    if current.as_deref() == Some(&source) {
+                                        if doc.update_source(&cell_id_clone, &formatted).is_ok() {
+                                            let _ = room_clone.changed_tx.send(());
+                                            debug!(
+                                                "[format] Formatted cell {} after queuing",
+                                                cell_id_clone
+                                            );
+                                        }
+                                    } else {
                                         debug!(
-                                            "[format] Formatted cell {} after queuing",
+                                            "[format] Skipped formatting cell {} — source changed since queuing",
                                             cell_id_clone
                                         );
                                     }
@@ -3703,7 +3715,8 @@ async fn handle_notebook_request(
                     let _ = room.changed_tx.send(());
                 }
 
-                // Best-effort background formatting for all queued cells
+                // Best-effort background formatting for all queued cells.
+                // Guards against overwriting user edits — see ExecuteCell comment.
                 let room_clone = Arc::clone(room);
                 tokio::spawn(async move {
                     if let Some(runtime) = detect_room_runtime(&room_clone).await {
@@ -3711,7 +3724,10 @@ async fn handle_notebook_request(
                         for (cell_id, source) in cell_sources {
                             if let Some(formatted) = format_source(&source, &runtime).await {
                                 let mut doc = room_clone.doc.write().await;
-                                if doc.update_source(&cell_id, &formatted).is_ok() {
+                                let current = doc.get_cell(&cell_id).map(|c| c.source);
+                                if current.as_deref() == Some(&source)
+                                    && doc.update_source(&cell_id, &formatted).is_ok()
+                                {
                                     any_changed = true;
                                 }
                             }
