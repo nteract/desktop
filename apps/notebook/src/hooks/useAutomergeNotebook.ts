@@ -342,39 +342,15 @@ export function useAutomergeNotebook() {
     setDirty(true);
   }, []);
 
-  const clearOutputsLocal = useCallback((cellId: string) => {
-    const handle = handleRef.current;
-    const engine = engineRef.current;
-    if (handle) {
-      handle.clear_outputs(cellId);
-      handle.set_execution_count(cellId, "null");
-      engine?.scheduleFlush();
-      setDirty(true);
-    }
-
-    updateCellById(cellId, (c) =>
-      c.cell_type === "code" ? { ...c, outputs: [], execution_count: null } : c,
-    );
+  const clearOutputsLocal = useCallback((_cellId: string) => {
+    // No-op: the SyncEngine clears outputs via cellChanges$ when the
+    // RuntimeStateDoc reports execution started for this cell. Clearing
+    // here previously caused a CRDT race under rapid ctrl-enter.
   }, []);
 
   const clearAllOutputsLocal = useCallback(() => {
-    const handle = handleRef.current;
-    const engine = engineRef.current;
-    if (!handle) return;
-    const clearedIds: string[] = handle.clear_all_outputs();
-    if (clearedIds.length === 0) return;
-
-    engine?.scheduleFlush();
-    setDirty(true);
-
-    const clearedSet = new Set(clearedIds);
-    updateNotebookCells((prev) =>
-      prev.map((c) =>
-        clearedSet.has(c.id) && c.cell_type === "code"
-          ? { ...c, outputs: [], execution_count: null }
-          : c,
-      ),
-    );
+    // No-op: each cell is cleared individually by the SyncEngine
+    // when the RuntimeStateDoc reports execution started.
   }, []);
 
   const clearOutputsFromDaemon = useCallback((cellId: string) => {

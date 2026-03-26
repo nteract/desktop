@@ -386,6 +386,36 @@ export class SyncEngine {
               this._runtimeState$.next(state);
               if (transitions.length > 0) {
                 this._executionTransitions$.next(transitions);
+
+                // Inject synthetic changesets on execution lifecycle transitions
+                // so the materialization pipeline stays in sync with the CRDT.
+                //
+                // "started": the daemon cleared outputs in the CRDT on
+                //   execute_input — re-read from WASM to show empty outputs.
+                // "done"/"error": reconcile the store with the CRDT's final
+                //   state in case earlier materializations were missed.
+                for (const t of transitions) {
+                  if (t.kind === "started") {
+                    log.debug(
+                      `[sync-engine] execution started for ${t.cell_id.slice(0, 8)} — clearing outputs`,
+                    );
+                  } else {
+                    log.debug(
+                      `[sync-engine] execution ${t.kind} for ${t.cell_id.slice(0, 8)} — reconciling outputs`,
+                    );
+                  }
+                  materialize$.next({
+                    changed: [
+                      {
+                        cell_id: t.cell_id,
+                        fields: { outputs: true, execution_count: true },
+                      },
+                    ],
+                    added: [],
+                    removed: [],
+                    order_changed: false,
+                  });
+                }
               }
             }
 
