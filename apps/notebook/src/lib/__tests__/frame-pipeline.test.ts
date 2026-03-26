@@ -1,11 +1,11 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { JupyterOutput } from "../../types";
 import {
   type CellChangeset,
   type ChangedFields,
   mergeChangesets,
 } from "../cell-changeset";
-import { materializeChangeset, type MaterializeDeps } from "../frame-pipeline";
-import type { JupyterOutput } from "../../types";
+import { type MaterializeDeps, materializeChangeset } from "../frame-pipeline";
 
 // ── Mocks ──────────────────────────────────────────────────────────────
 
@@ -17,7 +17,10 @@ const updateCalls: Array<{ cellId: string; cell: Record<string, unknown> }> =
 
 vi.mock("../notebook-cells", () => ({
   getCellById: (id: string) => cellStore.get(id) ?? null,
-  updateCellById: (id: string, fn: (prev: Record<string, unknown>) => Record<string, unknown>) => {
+  updateCellById: (
+    id: string,
+    fn: (prev: Record<string, unknown>) => Record<string, unknown>,
+  ) => {
     const prev = cellStore.get(id) ?? {};
     const next = fn(prev);
     cellStore.set(id, next);
@@ -58,7 +61,8 @@ vi.mock("../materialize-cells", () => ({
     const outputs = rawOutputs
       .map((o: string) => cache.get(o) ?? null)
       .filter((o: JupyterOutput | null): o is JupyterOutput => o !== null);
-    const metadata = (handle.get_cell_metadata(cellId) as Record<string, unknown>) ?? {};
+    const metadata =
+      (handle.get_cell_metadata(cellId) as Record<string, unknown>) ?? {};
     return {
       id: cellId,
       cell_type: cellType,
@@ -346,13 +350,18 @@ describe("mergeChangesets", () => {
 
 describe("materializeChangeset", () => {
   // Mock handle factory
-  function createMockHandle(cells: Record<string, {
-    type?: string;
-    source?: string;
-    outputs?: string[];
-    execution_count?: string;
-    metadata?: Record<string, unknown>;
-  }>) {
+  function createMockHandle(
+    cells: Record<
+      string,
+      {
+        type?: string;
+        source?: string;
+        outputs?: string[];
+        execution_count?: string;
+        metadata?: Record<string, unknown>;
+      }
+    >,
+  ) {
     return {
       get_cell_type: vi.fn((id: string) => cells[id]?.type ?? "code"),
       get_cell_source: vi.fn((id: string) => cells[id]?.source ?? ""),
@@ -565,9 +574,7 @@ describe("materializeChangeset", () => {
 
     await materializeChangeset(
       {
-        changed: [
-          { cell_id: "c1", fields: { outputs: true, source: true } },
-        ],
+        changed: [{ cell_id: "c1", fields: { outputs: true, source: true } }],
         added: [],
         removed: [],
         order_changed: false,
@@ -589,9 +596,7 @@ describe("materializeChangeset", () => {
 
     await materializeChangeset(
       {
-        changed: [
-          { cell_id: "c1", fields: { outputs: true } },
-        ],
+        changed: [{ cell_id: "c1", fields: { outputs: true } }],
         added: [],
         removed: [],
         order_changed: false,
