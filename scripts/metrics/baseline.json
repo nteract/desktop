@@ -1,0 +1,46 @@
+{
+  "generated_at": "2026-03-26T17:01:27Z",
+  "git_ref": "b0396bfa",
+  "git_branch": "quill/agent-harness-research",
+  "metrics": {
+    "execution_latency": {
+      "metric": "execution_latency",
+      "cold_start_ms": 480.34,
+      "warm_p50_ms": 245.0,
+      "warm_p95_ms": 261.93,
+      "warm_p99_ms": 261.93,
+      "warm_mean_ms": 245.83,
+      "warm_min_ms": 223.8,
+      "warm_max_ms": 261.93,
+      "n_executions": 10,
+      "n_successful": 10,
+      "n_failed": 0
+    },
+    "kernel_reliability": {
+      "metric": "kernel_reliability",
+      "total": 18,
+      "completed": 18,
+      "timed_out": 0,
+      "zombie": 0,
+      "wrong_outcome": 0,
+      "reliability_pct": 100.0,
+      "p50_ms": 297.23,
+      "p95_ms": 556.19,
+      "mean_ms": 292.8
+    },
+    "sync_correctness": {
+      "metric": "sync_correctness",
+      "gremlins": 2,
+      "rounds": 10,
+      "total_actions": 20,
+      "errors": 0,
+      "chaos_elapsed_s": 5.02,
+      "peers_compared": 2,
+      "convergence": {
+        "all_agree": true,
+        "divergent_cells": 0,
+        "details": []
+      }
+    }
+  }
+}
