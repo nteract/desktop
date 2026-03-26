@@ -3501,17 +3501,23 @@ async fn handle_notebook_request(
                         }
 
                         // Best-effort background formatting via fork+merge.
-                        // The fork captures the doc at this point; formatting
-                        // is applied on the fork, then merged back. Automerge's
-                        // text CRDT preserves any concurrent user edits.
+                        // Fork the doc NOW (before the formatter runs) so
+                        // update_source on the fork diffs against the original
+                        // text. When merged back, Automerge treats formatting
+                        // ops as concurrent with any user edits that arrived
+                        // on the live doc while the formatter was running.
+                        let fork = {
+                            let mut doc = room.doc.write().await;
+                            doc.fork()
+                        };
                         let room_clone = Arc::clone(room);
                         let cell_id_clone = cell_id.clone();
                         tokio::spawn(async move {
                             if let Some(runtime) = detect_room_runtime(&room_clone).await {
                                 if let Some(formatted) = format_source(&source, &runtime).await {
-                                    let mut doc = room_clone.doc.write().await;
-                                    let mut fork = doc.fork();
+                                    let mut fork = fork;
                                     if fork.update_source(&cell_id_clone, &formatted).is_ok() {
+                                        let mut doc = room_clone.doc.write().await;
                                         let _ = doc.merge(&mut fork);
                                         let _ = room_clone.changed_tx.send(());
                                         debug!(
@@ -3712,29 +3718,28 @@ async fn handle_notebook_request(
                 }
 
                 // Best-effort background formatting via fork+merge.
+                // Fork NOW so the baseline is the pre-format doc state.
+                let fork = {
+                    let mut doc = room.doc.write().await;
+                    doc.fork()
+                };
                 let room_clone = Arc::clone(room);
                 tokio::spawn(async move {
                     if let Some(runtime) = detect_room_runtime(&room_clone).await {
+                        let mut fork = fork;
                         let mut any_formatted = false;
-                        let mut formatted: Vec<(String, String)> = Vec::new();
                         for (cell_id, source) in &cell_sources {
                             if let Some(fmt) = format_source(source, &runtime).await {
-                                any_formatted = true;
-                                formatted.push((cell_id.clone(), fmt));
+                                if fork.update_source(cell_id, &fmt).is_ok() {
+                                    any_formatted = true;
+                                }
                             }
                         }
                         if any_formatted {
                             let mut doc = room_clone.doc.write().await;
-                            let mut fork = doc.fork();
-                            for (cell_id, source) in &formatted {
-                                let _ = fork.update_source(cell_id, source);
-                            }
                             let _ = doc.merge(&mut fork);
                             let _ = room_clone.changed_tx.send(());
-                            debug!(
-                                "[format] Formatted {} cells after run-all queuing",
-                                formatted.len()
-                            );
+                            debug!("[format] Formatted cells after run-all queuing");
                         }
                     }
                 });
@@ -4229,22 +4234,25 @@ async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
         return Ok(0);
     }
 
-    // Format all cells, collecting results
-    let mut formatted: Vec<(String, String)> = Vec::new();
+    // Fork BEFORE formatting so the baseline is the pre-format doc state.
+    // Formatting ops on the fork are concurrent with any user edits on the
+    // live doc, and Automerge's text CRDT merges them cleanly.
+    let mut fork = {
+        let mut doc = room.doc.write().await;
+        doc.fork()
+    };
+
+    let mut formatted_count = 0;
     for (cell_id, source) in cells {
         if let Some(fmt) = format_source(&source, &runtime).await {
-            formatted.push((cell_id, fmt));
+            if fork.update_source(&cell_id, &fmt).is_ok() {
+                formatted_count += 1;
+            }
         }
     }
 
-    // Apply via fork+merge so concurrent edits are preserved
-    let formatted_count = formatted.len();
     if formatted_count > 0 {
         let mut doc = room.doc.write().await;
-        let mut fork = doc.fork();
-        for (cell_id, source) in &formatted {
-            let _ = fork.update_source(cell_id, source);
-        }
         let _ = doc.merge(&mut fork);
         let _ = room.changed_tx.send(());
         info!(
