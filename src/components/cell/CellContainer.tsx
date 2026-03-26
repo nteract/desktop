@@ -108,19 +108,17 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 )}
               />
               <div className="min-w-0 flex-1 pt-1.5 pb-3 pl-6 pr-3">{codeContent}</div>
-              {/* Code row right gutter */}
-              {rightGutterContent && (
-                <div
-                  className={cn(
-                    "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none",
-                    "opacity-100 transition-opacity duration-150",
-                    "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
-                    isFocused && "sm:opacity-100",
-                  )}
-                >
-                  {rightGutterContent}
-                </div>
-              )}
+              {/* Code row right gutter — always rendered as spacer for consistent width */}
+              <div
+                className={cn(
+                  "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none",
+                  rightGutterContent && "opacity-100 transition-opacity duration-150",
+                  rightGutterContent && "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
+                  rightGutterContent && isFocused && "sm:opacity-100",
+                )}
+              >
+                {rightGutterContent}
+              </div>
             </div>
             {/* Output row - ribbon + content + right gutter
                 onMouseDown sets visual focus (ribbon/bg) without stealing editor focus */}
@@ -134,25 +132,23 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 />
                 <div
                   className={cn(
-                    "min-w-0 flex-1 py-2 pl-6 pr-3 transition-opacity duration-150",
+                    "min-w-0 flex-1 py-2 pr-3 transition-opacity duration-150",
                     !isFocused && !isPreviousCellFromFocused && "opacity-70",
                   )}
                 >
                   {outputContent}
                 </div>
-                {/* Output row right gutter */}
-                {outputRightGutterContent && (
-                  <div
-                    className={cn(
-                      "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none",
-                      "opacity-100 transition-opacity duration-150",
-                      "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
-                      isFocused && "sm:opacity-100",
-                    )}
-                  >
-                    {outputRightGutterContent}
-                  </div>
-                )}
+                {/* Output row right gutter — always rendered as spacer for consistent width */}
+                <div
+                  className={cn(
+                    "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-1 select-none",
+                    outputRightGutterContent && "opacity-100 transition-opacity duration-150",
+                    outputRightGutterContent && "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
+                    outputRightGutterContent && isFocused && "sm:opacity-100",
+                  )}
+                >
+                  {outputRightGutterContent}
+                </div>
               </div>
             )}
           </div>
@@ -172,19 +168,17 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
               />
               <div className="min-w-0 flex-1 pt-1.5 pb-3 pl-6 pr-3">{children}</div>
             </div>
-            {/* Right margin for legacy layout */}
-            {rightGutterContent && (
-              <div
-                className={cn(
-                  "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-3 select-none",
-                  "opacity-100 transition-opacity duration-150",
-                  "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
-                  isFocused && "sm:opacity-100",
-                )}
-              >
-                {rightGutterContent}
-              </div>
-            )}
+            {/* Right margin for legacy layout — always rendered as spacer */}
+            <div
+              className={cn(
+                "flex w-10 flex-shrink-0 flex-col items-center gap-1 pt-3 select-none",
+                rightGutterContent && "opacity-100 transition-opacity duration-150",
+                rightGutterContent && "sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100",
+                rightGutterContent && isFocused && "sm:opacity-100",
+              )}
+            >
+              {rightGutterContent}
+            </div>
           </>
         )}
       </div>

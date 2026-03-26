@@ -16,7 +16,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS as DndCSS } from "@dnd-kit/utilities";
-import { Plus, RotateCcw, X } from "lucide-react";
+import { Code2, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { Runtime } from "@/hooks/useSyncedSettings";
@@ -608,6 +608,57 @@ function NotebookViewContent({
         }
       };
 
+      // Build right gutter content — delete button for all cells,
+      // plus source toggle for code cells
+      const deleteButton = (
+        <button
+          type="button"
+          tabIndex={-1}
+          onClick={() => onDeleteCell(cell.id)}
+          className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-destructive"
+          title="Delete cell"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      );
+
+      let rightGutterContent: React.ReactNode;
+      if (cell.cell_type === "code") {
+        const isSourceHidden =
+          (cell.metadata?.jupyter as { source_hidden?: boolean })
+            ?.source_hidden === true;
+        const isOutputsHidden =
+          (cell.metadata?.jupyter as { outputs_hidden?: boolean })
+            ?.outputs_hidden === true;
+        const bothHidden = isSourceHidden && isOutputsHidden;
+
+        rightGutterContent = (
+          <div className="flex flex-col gap-0.5">
+            {onSetCellSourceHidden && !bothHidden && (
+              <button
+                type="button"
+                tabIndex={-1}
+                onClick={() => onSetCellSourceHidden(cell.id, !isSourceHidden)}
+                className={cn(
+                  "flex items-center justify-center rounded p-1 transition-colors hover:text-foreground",
+                  isSourceHidden
+                    ? "text-muted-foreground/70"
+                    : "text-muted-foreground/40",
+                )}
+                title={isSourceHidden ? "Show source" : "Hide source"}
+              >
+                <Code2 className="h-3.5 w-3.5" />
+              </button>
+            )}
+            {deleteButton}
+          </div>
+        );
+      } else {
+        rightGutterContent = (
+          <div className="flex flex-col gap-0.5">{deleteButton}</div>
+        );
+      }
+
       if (cell.cell_type === "code") {
         const pagePayload = pagePayloads.get(cell.id) ?? null;
         // Use TypeScript for Deno, IPython otherwise (for magic/shell highlighting)
@@ -650,6 +701,7 @@ function NotebookViewContent({
             isLastCell={index === cellIds.length - 1}
             dragHandleProps={dragHandleProps}
             isDragging={isDragging}
+            rightGutterContent={rightGutterContent}
             onToggleSourceHidden={
               onSetCellSourceHidden
                 ? (hidden: boolean) => onSetCellSourceHidden(cell.id, hidden)
@@ -705,6 +757,7 @@ function NotebookViewContent({
             isLastCell={index === cellIds.length - 1}
             dragHandleProps={dragHandleProps}
             isDragging={isDragging}
+            rightGutterContent={rightGutterContent}
           />
         );
       }
@@ -728,6 +781,7 @@ function NotebookViewContent({
           isLastCell={index === cellIds.length - 1}
           dragHandleProps={dragHandleProps}
           isDragging={isDragging}
+          rightGutterContent={rightGutterContent}
         />
       );
     },
@@ -758,7 +812,7 @@ function NotebookViewContent({
   return (
     <div
       ref={containerRef}
-      className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain py-4 pl-8 pr-4"
+      className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain py-4 pl-8 pr-2"
       style={{ contain: "paint" }}
       data-notebook-synced={!isLoading && cellIds.length > 0}
       data-cell-count={cellIds.length}

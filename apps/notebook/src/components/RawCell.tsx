@@ -1,6 +1,12 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import { Trash2 } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef } from "react";
+import {
+  memo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+} from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import {
   CodeMirrorEditor,
@@ -35,6 +41,8 @@ interface RawCellProps {
   isPreviousCellFromFocused?: boolean;
   dragHandleProps?: Record<string, unknown>;
   isDragging?: boolean;
+  /** Content for the right gutter (e.g., delete button) */
+  rightGutterContent?: ReactNode;
 }
 
 export const RawCell = memo(function RawCell({
@@ -50,6 +58,7 @@ export const RawCell = memo(function RawCell({
   isPreviousCellFromFocused,
   dragHandleProps,
   isDragging,
+  rightGutterContent,
 }: RawCellProps) {
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const presence = usePresenceContext();
@@ -191,37 +200,29 @@ export const RawCell = memo(function RawCell({
       presenceIndicators={<CellPresenceIndicators cellId={cell.id} />}
       dragHandleProps={dragHandleProps}
       isDragging={isDragging}
-    >
-      <div className="flex items-center gap-1 py-1">
-        <span className="text-xs text-muted-foreground font-mono">
-          {format === "plain" ? "raw" : `raw (${format})`}
-        </span>
-        <div className="flex-1" />
-        <div className="cell-controls opacity-0 group-hover:opacity-100 transition-opacity">
-          <button
-            type="button"
-            tabIndex={-1}
-            onClick={onDelete}
-            className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-destructive"
-            title="Delete cell"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      </div>
-      <div>
-        <CodeMirrorEditor
-          ref={editorRef}
-          initialValue={cell.source}
-          language={language}
-          lineWrapping
-          keyMap={keyMap}
-          extensions={[crdtBridgeExt, ...searchExtensions]}
-          placeholder="Enter raw content..."
-          className="min-h-[2rem]"
-          autoFocus={isFocused}
-        />
-      </div>
-    </CellContainer>
+      rightGutterContent={rightGutterContent}
+      codeContent={
+        <>
+          <div className="flex items-center gap-1 py-1">
+            <span className="text-xs text-muted-foreground font-mono">
+              {format === "plain" ? "raw" : `raw (${format})`}
+            </span>
+          </div>
+          <div>
+            <CodeMirrorEditor
+              ref={editorRef}
+              initialValue={cell.source}
+              language={language}
+              lineWrapping
+              keyMap={keyMap}
+              extensions={[crdtBridgeExt, ...searchExtensions]}
+              placeholder="Enter raw content..."
+              className="min-h-[2rem]"
+              autoFocus={isFocused}
+            />
+          </div>
+        </>
+      }
+    />
   );
 });

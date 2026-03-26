@@ -1,8 +1,9 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import { ChevronRight, Code2, EyeOff, Trash2, X } from "lucide-react";
+import { ChevronRight, Code2, EyeOff, X } from "lucide-react";
 import {
   lazy,
   memo,
+  type ReactNode,
   Suspense,
   useCallback,
   useEffect,
@@ -125,6 +126,8 @@ interface CodeCellProps {
   isGroupExecuting?: boolean;
   /** Number of error outputs across all cells in a hidden group */
   hiddenGroupErrorCount?: number;
+  /** Content for the right gutter (e.g., delete button, source toggle) */
+  rightGutterContent?: ReactNode;
 }
 
 export const CodeCell = memo(function CodeCell({
@@ -155,6 +158,7 @@ export const CodeCell = memo(function CodeCell({
   onExpandHiddenGroup,
   isGroupExecuting,
   hiddenGroupErrorCount,
+  rightGutterContent,
 }: CodeCellProps) {
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
@@ -344,38 +348,6 @@ export const CodeCell = memo(function CodeCell({
       onExecute={handleExecute}
       onInterrupt={onInterrupt}
     />
-  );
-
-  const rightGutterContent = (
-    <div className="flex flex-col gap-0.5">
-      {/* Toggle source visibility (not shown when both hidden - badges handle it) */}
-      {onToggleSourceHidden && !bothHidden && (
-        <button
-          type="button"
-          tabIndex={-1}
-          onClick={() => onToggleSourceHidden(!isSourceHidden)}
-          className={cn(
-            "flex items-center justify-center rounded p-1 transition-colors hover:text-foreground",
-            isSourceHidden
-              ? "text-muted-foreground/70"
-              : "text-muted-foreground/40",
-          )}
-          title={isSourceHidden ? "Show source" : "Hide source"}
-        >
-          <Code2 className="h-3.5 w-3.5" />
-        </button>
-      )}
-      {/* Delete button */}
-      <button
-        type="button"
-        tabIndex={-1}
-        onClick={onDelete}
-        className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-destructive"
-        title="Delete cell"
-      >
-        <Trash2 className="h-3.5 w-3.5" />
-      </button>
-    </div>
   );
 
   return (

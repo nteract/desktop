@@ -1,6 +1,14 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import { Pencil, Trash2 } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Pencil } from "lucide-react";
+import {
+  memo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import {
   CodeMirrorEditor,
@@ -47,6 +55,8 @@ interface MarkdownCellProps {
   dragHandleProps?: Record<string, unknown>;
   /** Whether this cell is currently being dragged */
   isDragging?: boolean;
+  /** Content for the right gutter (e.g., delete button) */
+  rightGutterContent?: ReactNode;
 }
 
 export const MarkdownCell = memo(function MarkdownCell({
@@ -62,6 +72,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   isPreviousCellFromFocused,
   dragHandleProps,
   isDragging,
+  rightGutterContent,
 }: MarkdownCellProps) {
   const applyInlineFormatting = useCallback(
     (prefix: string, suffix = prefix) =>
@@ -411,81 +422,83 @@ export const MarkdownCell = memo(function MarkdownCell({
       presenceIndicators={<CellPresenceIndicators cellId={cell.id} />}
       dragHandleProps={dragHandleProps}
       isDragging={isDragging}
-    >
-      {/* Editor section - hidden when not editing */}
-      <div className={editing ? "block" : "hidden"}>
-        <div className="flex items-center gap-1 py-1">
-          <span className="text-xs text-muted-foreground font-mono">md</span>
-          <div className="flex-1" />
-          <div className="cell-controls opacity-0 group-hover:opacity-100 transition-opacity">
+      rightGutterContent={
+        editing ? (
+          rightGutterContent
+        ) : (
+          <div className="flex flex-col gap-0.5">
             <button
               type="button"
               tabIndex={-1}
-              onClick={onDelete}
-              className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-destructive"
-              title="Delete cell"
+              onClick={() => setEditing(true)}
+              className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-foreground"
+              title="Edit"
             >
-              <Trash2 className="h-3.5 w-3.5" />
+              <Pencil className="h-3.5 w-3.5" />
             </button>
+            {rightGutterContent}
           </div>
-        </div>
-        <div>
-          <CodeMirrorEditor
-            ref={editorRef}
-            initialValue={cell.source}
-            language="markdown"
-            lineWrapping
-            onBlur={handleBlur}
-            keyMap={keyMap}
-            extensions={[crdtBridgeExt, ...searchExtensions]}
-            placeholder="Enter markdown..."
-            className="min-h-[2rem]"
-            autoFocus={editing}
-          />
-        </div>
-      </div>
+        )
+      }
+      codeContent={
+        <>
+          {/* Editor section - hidden when not editing */}
+          <div className={editing ? "block" : "hidden"}>
+            <div className="flex items-center gap-1 py-1">
+              <span className="text-xs text-muted-foreground font-mono">
+                md
+              </span>
+            </div>
+            <div>
+              <CodeMirrorEditor
+                ref={editorRef}
+                initialValue={cell.source}
+                language="markdown"
+                lineWrapping
+                onBlur={handleBlur}
+                keyMap={keyMap}
+                extensions={[crdtBridgeExt, ...searchExtensions]}
+                placeholder="Enter markdown..."
+                className="min-h-[2rem]"
+                autoFocus={editing}
+              />
+            </div>
+          </div>
 
-      {/* View section - hidden when editing */}
-      <div
-        ref={viewRef}
-        role="textbox"
-        aria-readonly
-        aria-label="Markdown cell content"
-        tabIndex={0}
-        className={cn(
-          "py-2 cursor-text relative group/md outline-none",
-          editing && "hidden",
-        )}
-        onDoubleClick={handleDoubleClick}
-        onKeyDown={handleViewKeyDown}
-      >
-        {/* Always render IsolatedFrame to preload it (hidden when no content) */}
-        <div className={cell.source ? undefined : "hidden"}>
-          <IsolatedFrame
-            ref={frameRef}
-            darkMode={darkMode}
-            minHeight={24}
-            autoHeight
-            revealOnRender
-            onReady={handleFrameReady}
-            onLinkClick={handleLinkClick}
+          {/* View section - hidden when editing */}
+          <div
+            ref={viewRef}
+            role="textbox"
+            aria-readonly
+            aria-label="Markdown cell content"
+            tabIndex={0}
+            className={cn("py-2 cursor-text outline-none", editing && "hidden")}
             onDoubleClick={handleDoubleClick}
-            onError={handleIframeError}
-            className="w-full"
-          />
-        </div>
-        {!cell.source && (
-          <p className="text-muted-foreground italic">Double-click to edit</p>
-        )}
-        <button
-          type="button"
-          onClick={() => setEditing(true)}
-          className="absolute top-2 right-2 opacity-0 group-hover/md:opacity-100 rounded p-1 text-muted-foreground transition-opacity hover:text-foreground"
-          title="Edit"
-        >
-          <Pencil className="h-3.5 w-3.5" />
-        </button>
-      </div>
-    </CellContainer>
+            onKeyDown={handleViewKeyDown}
+          >
+            {/* Always render IsolatedFrame to preload it (hidden when no content) */}
+            <div className={cell.source ? undefined : "hidden"}>
+              <IsolatedFrame
+                ref={frameRef}
+                darkMode={darkMode}
+                minHeight={24}
+                autoHeight
+                revealOnRender
+                onReady={handleFrameReady}
+                onLinkClick={handleLinkClick}
+                onDoubleClick={handleDoubleClick}
+                onError={handleIframeError}
+                className="w-full"
+              />
+            </div>
+            {!cell.source && (
+              <p className="text-muted-foreground italic">
+                Double-click to edit
+              </p>
+            )}
+          </div>
+        </>
+      }
+    />
   );
 });
