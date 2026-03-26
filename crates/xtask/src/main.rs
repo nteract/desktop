@@ -536,6 +536,13 @@ fn ensure_maturin_develop() {
     }
 
     println!("Building runtimed Python bindings (maturin develop)...");
+    // Resolve absolute path — maturin warns on relative VIRTUAL_ENV.
+    // cargo xtask always runs from the workspace root (all paths in this
+    // file are relative to it), so current_dir() is the repo root.
+    let Ok(cwd) = std::env::current_dir() else {
+        eprintln!("Warning: failed to get current directory for maturin develop");
+        return;
+    };
     let status = Command::new("uv")
         .args([
             "run",
@@ -544,7 +551,7 @@ fn ensure_maturin_develop() {
             "maturin",
             "develop",
         ])
-        .env("VIRTUAL_ENV", ".venv")
+        .env("VIRTUAL_ENV", cwd.join(".venv"))
         .env_remove("CONDA_PREFIX")
         .status();
 

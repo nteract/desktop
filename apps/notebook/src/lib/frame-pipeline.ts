@@ -10,6 +10,7 @@ import type { JupyterOutput } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { getBlobPort, refreshBlobPort } from "./blob-port";
 import type { CellChangeset } from "./cell-changeset";
+import { logger } from "./logger";
 import {
   isManifestHash,
   materializeCellFromWasm,
@@ -64,6 +65,9 @@ export async function materializeChangeset(
   // ── Full materialization fallback ──────────────────────────────────
 
   if (!changeset) {
+    logger.debug(
+      "[frame-pipeline] full materialization: no changeset from WASM",
+    );
     await deps.materializeCells(handle);
     notifyMetadataChanged();
     return;
@@ -76,6 +80,9 @@ export async function materializeChangeset(
     changeset.removed.length > 0 ||
     changeset.order_changed
   ) {
+    logger.debug(
+      `[frame-pipeline] full materialization: +${changeset.added.length} -${changeset.removed.length} reorder=${changeset.order_changed}`,
+    );
     await deps.materializeCells(handle);
     notifyMetadataChanged();
     return;
@@ -84,6 +91,8 @@ export async function materializeChangeset(
   // ── Per-cell incremental materialization ───────────────────────────
 
   const cache = deps.outputCache;
+  let cacheHits = 0;
+  let cacheMisses = 0;
 
   for (const { cell_id: cellId, fields } of changeset.changed) {
     if (fields.outputs) {
@@ -94,6 +103,7 @@ export async function materializeChangeset(
       );
 
       if (allCached) {
+        cacheHits++;
         // All outputs resolved from cache — fast sync path.
         const cell = materializeCellFromWasm(
           handle,
@@ -109,6 +119,7 @@ export async function materializeChangeset(
           updateCellById(cellId, () => cell);
         }
       } else {
+        cacheMisses++;
         // Cache miss — resolve this cell's outputs async.
         let blobPort = getBlobPort();
         if (blobPort === null) {
@@ -155,6 +166,24 @@ export async function materializeChangeset(
         updateCellById(cellId, () => cell);
       }
     }
+  }
+
+  if (changeset.changed.length > 0) {
+    const fieldSummary = changeset.changed
+      .map((c) => {
+        const f = c.fields;
+        const flags = [
+          f.source && "src",
+          f.outputs && "out",
+          f.execution_count && "ec",
+          f.metadata && "meta",
+        ].filter(Boolean);
+        return `${c.cell_id.slice(0, 8)}(${flags.join(",")})`;
+      })
+      .join(" ");
+    logger.debug(
+      `[frame-pipeline] incremental: ${changeset.changed.length} cells [${fieldSummary}] cache=${cacheHits}hit/${cacheMisses}miss`,
+    );
   }
 
   notifyMetadataChanged();

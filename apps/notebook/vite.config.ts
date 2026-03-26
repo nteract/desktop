@@ -16,6 +16,7 @@ export default defineConfig(({ command }) => {
       react(),
       tailwindcss(),
       isolatedRendererPlugin({
+        minify: command !== "serve",
         sourcemap: isolatedRendererSourceMapsEnabled ? "inline" : false,
       }),
       visualizer({
@@ -35,6 +36,7 @@ export default defineConfig(({ command }) => {
       outDir: "dist",
       emptyOutDir: true,
       sourcemap: debugBundleSourceMapsEnabled,
+      chunkSizeWarningLimit: 10000,
       rollupOptions: {
         input: {
           main: path.resolve(__dirname, "index.html"),

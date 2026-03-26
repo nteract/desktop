@@ -93,6 +93,7 @@ export function useAutomergeNotebook() {
 
   /** Full materialization: WASM doc → resolve manifests → write to store. */
   const materializeCells = useCallback(async (handle: NotebookHandle) => {
+    const start = performance.now();
     const json = handle.get_cells_json();
     const snapshots: CellSnapshot[] = JSON.parse(json);
     let blobPort = getBlobPort();
@@ -105,6 +106,9 @@ export function useAutomergeNotebook() {
       outputCacheRef.current,
     );
     replaceNotebookCells(newCells);
+    logger.debug(
+      `[automerge-notebook] Full materialization: ${snapshots.length} cells in ${(performance.now() - start).toFixed(1)}ms`,
+    );
   }, []);
 
   /** Sync re-read cells from WASM (cache-only, no blob fetches). */
@@ -126,7 +130,12 @@ export function useAutomergeNotebook() {
     (mutate: (handle: NotebookHandle) => boolean) => {
       const handle = handleRef.current;
       const engine = engineRef.current;
-      if (!handle || !engine) return false;
+      if (!handle || !engine) {
+        logger.debug(
+          "[automerge-notebook] commitMutation skipped: no handle/engine",
+        );
+        return false;
+      }
       if (!mutate(handle)) return false;
       rematerializeCellsSync(handle);
       engine.flush();
@@ -185,12 +194,14 @@ export function useAutomergeNotebook() {
 
     // Initial sync completion → full materialization.
     const initialSyncSub = engine.initialSyncComplete$.subscribe(() => {
+      logger.info("[automerge-notebook] Initial sync complete, materializing");
       const handle = handleRef.current;
       if (handle) {
         materializeCells(handle)
           .then(() => {
             setIsLoading(false);
             notifyMetadataChanged();
+            logger.info("[automerge-notebook] Initial materialization done");
           })
           .catch((err: unknown) => {
             logger.warn(
@@ -256,6 +267,7 @@ export function useAutomergeNotebook() {
     const lifecycleSub = fromTauriEvent("daemon:ready")
       .pipe(
         switchMap(() => {
+          logger.info("[automerge-notebook] daemon:ready — re-bootstrapping");
           refreshBlobPort();
           resetNotebookCells();
           resetRuntimeState();
@@ -289,6 +301,7 @@ export function useAutomergeNotebook() {
 
     return () => {
       cancelled = true;
+      logger.info("[automerge-notebook] Cleanup: flushing and stopping engine");
 
       // Flush pending local changes before stopping.
       engine.flush();
@@ -329,39 +342,15 @@ export function useAutomergeNotebook() {
     setDirty(true);
   }, []);
 
-  const clearOutputsLocal = useCallback((cellId: string) => {
-    const handle = handleRef.current;
-    const engine = engineRef.current;
-    if (handle) {
-      handle.clear_outputs(cellId);
-      handle.set_execution_count(cellId, "null");
-      engine?.scheduleFlush();
-      setDirty(true);
-    }
-
-    updateCellById(cellId, (c) =>
-      c.cell_type === "code" ? { ...c, outputs: [], execution_count: null } : c,
-    );
+  const clearOutputsLocal = useCallback((_cellId: string) => {
+    // No-op: the SyncEngine clears outputs via cellChanges$ when the
+    // RuntimeStateDoc reports execution started for this cell. Clearing
+    // here previously caused a CRDT race under rapid ctrl-enter.
   }, []);
 
   const clearAllOutputsLocal = useCallback(() => {
-    const handle = handleRef.current;
-    const engine = engineRef.current;
-    if (!handle) return;
-    const clearedIds: string[] = handle.clear_all_outputs();
-    if (clearedIds.length === 0) return;
-
-    engine?.scheduleFlush();
-    setDirty(true);
-
-    const clearedSet = new Set(clearedIds);
-    updateNotebookCells((prev) =>
-      prev.map((c) =>
-        clearedSet.has(c.id) && c.cell_type === "code"
-          ? { ...c, outputs: [], execution_count: null }
-          : c,
-      ),
-    );
+    // No-op: each cell is cleared individually by the SyncEngine
+    // when the RuntimeStateDoc reports execution started.
   }, []);
 
   const clearOutputsFromDaemon = useCallback((cellId: string) => {
@@ -461,10 +450,14 @@ export function useAutomergeNotebook() {
   const flushSync = useCallback(async () => {
     const handle = handleRef.current;
     const transport = transportRef.current;
-    if (!handle || !transport) return;
+    if (!handle || !transport) {
+      logger.debug("[flushSync] skipped: no handle/transport");
+      return;
+    }
 
     const msg = handle.flush_local_changes();
     if (msg) {
+      logger.debug(`[flushSync] sending ${msg.byteLength}B sync message`);
       try {
         await transport.sendFrame(FrameType.AUTOMERGE_SYNC, msg);
       } catch (e) {

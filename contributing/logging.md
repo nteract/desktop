@@ -29,19 +29,42 @@ use log::{debug, info, warn, error};
 ### Prefixes
 
 Use consistent prefixes for filtering:
+
+**Rust (daemon):**
 - `[runtimed]` - Daemon core operations
 - `[notebook-sync]` - Automerge sync server
 - `[kernel-manager]` - Kernel lifecycle and execution
+- `[doc-handle]` - CRDT document mutations and requests
 - `[comm_*]` - Widget communication
 
-### Enabling Debug Logs
+**TypeScript (frontend):**
+- `[automerge-notebook]` - WASM handle, bootstrap, materialization
+- `[sync-engine]` - Frame processing, sync state, coalescing
+- `[crdt-bridge]` - CodeMirror ↔ CRDT character-level sync
+- `[frame-pipeline]` - Changeset materialization, cache behavior
+- `[daemon-kernel]` - Kernel execution, broadcasts, comms
+- `[flushSync]` - Outbound sync flush
+
+### Default Log Levels by Channel
+
+| Channel | Daemon default | Notebook app default |
+|---------|---------------|---------------------|
+| **Nightly** | `info` (with `debug` for `notebook_sync` and `notebook_sync_server`) | `Debug` |
+| **Stable** | `warn` | `Info` |
+
+Nightly builds are intentionally more verbose to aid debugging in the field. The defaults are channel-aware — no configuration needed.
+
+### Overriding Log Levels
 
 ```bash
-# All debug logs
+# All debug logs (overrides channel default)
 RUST_LOG=debug cargo xtask dev-daemon
 
 # Specific module
 RUST_LOG=runtimed::notebook_sync_server=debug cargo xtask dev-daemon
+
+# Daemon CLI flag (overrides channel default)
+runtimed --log-level debug
 ```
 
 ## TypeScript Logging
@@ -59,8 +82,9 @@ logger.error("[component] Failure:", error);
 
 ### Log Level Behavior
 
-- `logger.debug()` - Suppressed in production unless debug mode is enabled
-- `logger.info()`, `logger.warn()`, `logger.error()` - Always enabled
+- **Nightly**: All levels (`debug`, `info`, `warn`, `error`) are enabled by default
+- **Stable**: `logger.debug()` is suppressed; `info`, `warn`, `error` are always enabled
+- The level filter is applied server-side by `tauri-plugin-log`, not in JavaScript
 
 ### What NOT to Log at Info Level
 

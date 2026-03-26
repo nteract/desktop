@@ -1,11 +1,7 @@
 import { Check, Copy } from "lucide-react";
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import {
-  oneDark,
-  oneLight,
-} from "react-syntax-highlighter/dist/esm/styles/prism";
+import { SyntaxHighlighter, oneDark, oneLight } from "./syntax-highlighter";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";

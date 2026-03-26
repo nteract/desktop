@@ -135,8 +135,6 @@ function AppContent() {
 
     updateOutputByDisplayId,
     applyExecutionCountFromDaemon,
-    clearOutputsLocal,
-    clearAllOutputsLocal,
     clearOutputsFromDaemon,
     setCellSourceHidden,
     setCellOutputsHidden,
@@ -522,10 +520,9 @@ function AppContent() {
       // Flush pending source sync so daemon has latest code
       await flushSync();
 
-      // Clear all outputs via WASM CRDT (syncs to daemon via Automerge)
-      for (const cell of codeCells) {
-        clearOutputsLocal(cell.id);
-      }
+      // Clear all outputs via daemon before restarting so the user sees
+      // every cell go blank up front.
+      await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
 
       // Shutdown existing kernel
       await shutdownKernel();
@@ -548,7 +545,7 @@ function AppContent() {
       runAllInFlightRef.current = false;
     }
   }, [
-    clearOutputsLocal,
+    clearOutputs,
     flushSync,
     shutdownKernel,
     tryStartKernel,
@@ -595,10 +592,8 @@ function AppContent() {
       // Flush pending source sync so daemon has latest code before executing
       await flushSync();
 
-      // Clear outputs immediately so user sees feedback
-      clearOutputsLocal(cellId);
-
-      // Broadcast clear to other windows
+      // Tell daemon to clear outputs — the SyncEngine will clear the store
+      // when the RuntimeStateDoc reports execution started.
       await clearOutputs(cellId);
 
       // Start kernel via daemon if not running, then queue cell.
@@ -615,14 +610,7 @@ function AppContent() {
         logger.warn("[App] handleExecuteCell: no kernel available");
       }
     },
-    [
-      clearOutputsLocal,
-      clearOutputs,
-      flushSync,
-      kernelStatus,
-      tryStartKernel,
-      executeCell,
-    ],
+    [clearOutputs, flushSync, kernelStatus, tryStartKernel, executeCell],
   );
 
   const handleAddCell = useCallback(
@@ -662,10 +650,9 @@ function AppContent() {
       // Flush pending source sync so daemon has latest code
       await flushSync();
 
-      // Clear all outputs via WASM CRDT (syncs to daemon via Automerge)
-      for (const cell of codeCells) {
-        clearOutputsLocal(cell.id);
-      }
+      // Clear all outputs via daemon before queueing so the user sees
+      // every cell go blank up front (not one-at-a-time as they start).
+      await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
 
       // Start kernel via daemon if not running
       if (kernelStatus === KERNEL_STATUS.NOT_STARTED) {
@@ -689,7 +676,7 @@ function AppContent() {
   }, [
     kernelStatus,
     tryStartKernel,
-    clearOutputsLocal,
+    clearOutputs,
     flushSync,
     daemonRunAllCells,
   ]);
@@ -822,13 +809,12 @@ function AppContent() {
         (c) => c.id === focusedCellId,
       );
       if (!cell || cell.cell_type !== "code") return;
-      clearOutputsLocal(focusedCellId);
       await clearOutputs(focusedCellId);
     });
     return () => {
       unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
     };
-  }, [focusedCellId, clearOutputsLocal, clearOutputs]);
+  }, [focusedCellId, clearOutputs]);
 
   // Cell menu: Clear All Outputs
   useEffect(() => {
@@ -836,8 +822,6 @@ function AppContent() {
     const unlistenPromise = webview.listen(
       "menu:clear-all-outputs",
       async () => {
-        // Single WASM call clears all code cells in the CRDT
-        clearAllOutputsLocal();
         // Tell daemon to clear kernel output tracking for each cell
         const codeCells = getNotebookCellsSnapshot().filter(
           (c) => c.cell_type === "code",
@@ -848,7 +832,7 @@ function AppContent() {
     return () => {
       unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
     };
-  }, [clearAllOutputsLocal, clearOutputs]);
+  }, [clearOutputs]);
 
   // Kernel menu: Run All Cells
   useEffect(() => {
