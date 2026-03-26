@@ -513,16 +513,8 @@ function AppContent() {
     }
     runAllInFlightRef.current = true;
     try {
-      const codeCells = getNotebookCellsSnapshot().filter(
-        (c) => c.cell_type === "code",
-      );
-
       // Flush pending source sync so daemon has latest code
       await flushSync();
-
-      // Clear all outputs via daemon before restarting so the user sees
-      // every cell go blank up front.
-      await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
 
       // Shutdown existing kernel
       await shutdownKernel();
@@ -544,13 +536,7 @@ function AppContent() {
     } finally {
       runAllInFlightRef.current = false;
     }
-  }, [
-    clearOutputs,
-    flushSync,
-    shutdownKernel,
-    tryStartKernel,
-    daemonRunAllCells,
-  ]);
+  }, [flushSync, shutdownKernel, tryStartKernel, daemonRunAllCells]);
 
   // Handle trust approval from dialog
   const handleTrustApprove = useCallback(async () => {
@@ -592,9 +578,9 @@ function AppContent() {
       // Flush pending source sync so daemon has latest code before executing
       await flushSync();
 
-      // Tell daemon to clear outputs — the SyncEngine will clear the store
+      // No explicit ClearOutputs IPC needed — the daemon clears outputs
+      // on execute_input and the SyncEngine injects a clear changeset
       // when the RuntimeStateDoc reports execution started.
-      await clearOutputs(cellId);
 
       // Start kernel via daemon if not running, then queue cell.
       if (kernelStatus === KERNEL_STATUS.NOT_STARTED) {
@@ -610,7 +596,7 @@ function AppContent() {
         logger.warn("[App] handleExecuteCell: no kernel available");
       }
     },
-    [clearOutputs, flushSync, kernelStatus, tryStartKernel, executeCell],
+    [flushSync, kernelStatus, tryStartKernel, executeCell],
   );
 
   const handleAddCell = useCallback(
@@ -641,18 +627,8 @@ function AppContent() {
     }
     runAllInFlightRef.current = true;
     try {
-      // Daemon reads cells from synced Automerge doc
-      const codeCells = getNotebookCellsSnapshot().filter(
-        (c) => c.cell_type === "code",
-      );
-      if (codeCells.length === 0) return;
-
       // Flush pending source sync so daemon has latest code
       await flushSync();
-
-      // Clear all outputs via daemon before queueing so the user sees
-      // every cell go blank up front (not one-at-a-time as they start).
-      await Promise.all(codeCells.map((cell) => clearOutputs(cell.id)));
 
       // Start kernel via daemon if not running
       if (kernelStatus === KERNEL_STATUS.NOT_STARTED) {
@@ -673,13 +649,7 @@ function AppContent() {
     } finally {
       runAllInFlightRef.current = false;
     }
-  }, [
-    kernelStatus,
-    tryStartKernel,
-    clearOutputs,
-    flushSync,
-    daemonRunAllCells,
-  ]);
+  }, [kernelStatus, tryStartKernel, flushSync, daemonRunAllCells]);
 
   const handleRestartAndRunAll = useCallback(async () => {
     // Backend clears outputs and emits cells:outputs_cleared before queuing,
