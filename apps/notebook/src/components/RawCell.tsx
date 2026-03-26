@@ -33,6 +33,7 @@ interface RawCellProps {
   onInsertCellAfter?: () => void;
   isLastCell?: boolean;
   isPreviousCellFromFocused?: boolean;
+  isNextCellFromFocused?: boolean;
   dragHandleProps?: Record<string, unknown>;
   isDragging?: boolean;
 }
@@ -48,6 +49,7 @@ export const RawCell = memo(function RawCell({
   onInsertCellAfter,
   isLastCell = false,
   isPreviousCellFromFocused,
+  isNextCellFromFocused,
   dragHandleProps,
   isDragging,
 }: RawCellProps) {
@@ -187,6 +189,7 @@ export const RawCell = memo(function RawCell({
       cellType="raw"
       isFocused={isFocused}
       isPreviousCellFromFocused={isPreviousCellFromFocused}
+      isNextCellFromFocused={isNextCellFromFocused}
       onFocus={onFocus}
       presenceIndicators={<CellPresenceIndicators cellId={cell.id} />}
       dragHandleProps={dragHandleProps}
