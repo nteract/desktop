@@ -1229,31 +1229,40 @@ impl RoomKernel {
                             // Supports both manifest hashes and raw JSON (backward compatibility).
                             JupyterMessageContent::UpdateDisplayData(update) => {
                                 if let Some(ref display_id) = update.transient.display_id {
+                                    // Fork before async blob I/O to avoid holding the doc
+                                    // write lock during potentially slow blob store operations.
+                                    let mut fork = {
+                                        let mut doc_guard = doc.write().await;
+                                        doc_guard.fork()
+                                    };
+
+                                    let updated = update_output_by_display_id_with_manifests(
+                                        &mut fork,
+                                        display_id,
+                                        &serde_json::to_value(&update.data).unwrap_or_default(),
+                                        &update.metadata,
+                                        &blob_store,
+                                    )
+                                    .await;
+
                                     let persist_bytes = {
                                         let mut doc_guard = doc.write().await;
-                                        match update_output_by_display_id_with_manifests(
-                                            &mut doc_guard,
-                                            display_id,
-                                            &serde_json::to_value(&update.data).unwrap_or_default(),
-                                            &update.metadata,
-                                            &blob_store,
-                                        )
-                                        .await
-                                        {
+                                        match updated {
                                             Ok(true) => {
+                                                doc_guard.merge(&mut fork).ok();
                                                 debug!(
                                                     "[kernel-manager] Updated display_id={}",
                                                     display_id
                                                 );
                                             }
                                             Ok(false) => {
-                                                warn!(
+                                                error!(
                                                     "[kernel-manager] No output found for display_id={}",
                                                     display_id
                                                 );
                                             }
                                             Err(e) => {
-                                                warn!(
+                                                error!(
                                                     "[kernel-manager] Failed to update display: {}",
                                                     e
                                                 );
