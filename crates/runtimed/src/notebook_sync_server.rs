@@ -7739,7 +7739,6 @@ mod tests {
     /// This is the exact scenario that was broken before the autosave
     /// debouncer was spawned in `rekey_ephemeral_room`.
     #[tokio::test(start_paused = true)]
-    #[ignore = "flaky: single yield_now per advance step starves the autosave debouncer on slow CI"]
     async fn test_rekey_ephemeral_room_starts_autosave() {
         use std::time::Duration;
 
@@ -7798,15 +7797,14 @@ mod tests {
         // Signal the change so the autosave debouncer sees it
         let _ = room.changed_tx.send(());
 
-        // 6. Drive the autosave debouncer through its state machine.
-        //    With `start_paused` we advance time in small steps and yield
-        //    between each so the spawned task can poll its select! branches,
-        //    receive the change, wait for the debounce window, and complete
-        //    the async file write.
-        for _ in 0..100 {
-            tokio::time::advance(Duration::from_millis(100)).await;
-            tokio::task::yield_now().await;
-        }
+        // 6. Wait for the autosave debouncer to flush.
+        //    Use sleep() instead of advance()+yield_now() — sleep properly
+        //    advances the paused clock AND yields to the runtime, giving all
+        //    spawned tasks (debouncer select! loop, check interval, async
+        //    file write) enough scheduling opportunities to complete.
+        //    Default config: 2s debounce + 500ms check interval, so 3s is
+        //    enough for the debounce window plus a check tick plus the save.
+        tokio::time::sleep(Duration::from_secs(3)).await;
 
         // 7. Verify the file on disk contains BOTH cells (initial + post-rekey)
         let content = tokio::fs::read_to_string(&save_path).await.unwrap();
