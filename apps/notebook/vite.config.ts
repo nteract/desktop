@@ -16,6 +16,7 @@ export default defineConfig(({ command }) => {
       react(),
       tailwindcss(),
       isolatedRendererPlugin({
+        minify: command !== "serve",
         sourcemap: isolatedRendererSourceMapsEnabled ? "inline" : false,
       }),
       visualizer({
