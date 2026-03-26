@@ -101,3 +101,4 @@ uv.lock
 .direnv
 result
 .cargo
+test-focus-scroll.ipynb
