@@ -1338,7 +1338,7 @@ fn sanitize_peer_label(raw: Option<&str>, fallback: &str) -> String {
 async fn run_sync_loop_v2<R, W>(
     reader: &mut R,
     writer: &mut W,
-    room: &NotebookRoom,
+    room: &Arc<NotebookRoom>,
     rooms: NotebookRooms,
     mut notebook_id: String,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
@@ -2774,7 +2774,7 @@ async fn rekey_ephemeral_room(
 
 /// Handle a NotebookRequest and return a NotebookResponse.
 async fn handle_notebook_request(
-    room: &NotebookRoom,
+    room: &Arc<NotebookRoom>,
     request: NotebookRequest,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
 ) -> NotebookResponse {
@@ -3482,27 +3482,10 @@ async fn handle_notebook_request(
                 };
             }
 
-            // Format before execution (best-effort, non-blocking on failure)
-            let source = if let Some(runtime) = detect_room_runtime(room).await {
-                if let Some(formatted) = format_source(&source, &runtime).await {
-                    // Write formatted source back to the Automerge doc
-                    let mut doc = room.doc.write().await;
-                    if doc.update_source(&cell_id, &formatted).is_ok() {
-                        let _ = room.changed_tx.send(());
-                        debug!("[format] Formatted cell {} before execution", cell_id);
-                    }
-                    formatted
-                } else {
-                    source
-                }
-            } else {
-                source
-            };
-
-            // NOW lock kernel for the queue operation
+            // Queue immediately — format asynchronously after
             let mut kernel_guard = room.kernel.lock().await;
             if let Some(ref mut kernel) = *kernel_guard {
-                match kernel.queue_cell(cell_id.clone(), source).await {
+                match kernel.queue_cell(cell_id.clone(), source.clone()).await {
                     Ok(execution_id) => {
                         // Clear outputs and stamp execution_id at queue time
                         // so clients see immediate feedback via CRDT sync.
@@ -3513,6 +3496,25 @@ async fn handle_notebook_request(
                             let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
                             let _ = room.changed_tx.send(());
                         }
+
+                        // Best-effort background formatting
+                        let room_clone = Arc::clone(room);
+                        let cell_id_clone = cell_id.clone();
+                        tokio::spawn(async move {
+                            if let Some(runtime) = detect_room_runtime(&room_clone).await {
+                                if let Some(formatted) = format_source(&source, &runtime).await {
+                                    let mut doc = room_clone.doc.write().await;
+                                    if doc.update_source(&cell_id_clone, &formatted).is_ok() {
+                                        let _ = room_clone.changed_tx.send(());
+                                        debug!(
+                                            "[format] Formatted cell {} after queuing",
+                                            cell_id_clone
+                                        );
+                                    }
+                                }
+                            }
+                        });
+
                         NotebookResponse::CellQueued {
                             cell_id,
                             execution_id,
@@ -3666,6 +3668,7 @@ async fn handle_notebook_request(
                 // Queue all code cells in document order, clearing outputs
                 // up front so clients see all cells go blank immediately.
                 let mut queued = Vec::new();
+                let mut cell_sources: Vec<(String, String)> = Vec::new();
                 for cell in cells {
                     if cell.cell_type == "code" {
                         match kernel
@@ -3673,6 +3676,7 @@ async fn handle_notebook_request(
                             .await
                         {
                             Ok(execution_id) => {
+                                cell_sources.push((cell.id.clone(), cell.source.clone()));
                                 queued.push(QueueEntry {
                                     cell_id: cell.id.clone(),
                                     execution_id,
@@ -3698,6 +3702,26 @@ async fn handle_notebook_request(
                     }
                     let _ = room.changed_tx.send(());
                 }
+
+                // Best-effort background formatting for all queued cells
+                let room_clone = Arc::clone(room);
+                tokio::spawn(async move {
+                    if let Some(runtime) = detect_room_runtime(&room_clone).await {
+                        let mut any_changed = false;
+                        for (cell_id, source) in cell_sources {
+                            if let Some(formatted) = format_source(&source, &runtime).await {
+                                let mut doc = room_clone.doc.write().await;
+                                if doc.update_source(&cell_id, &formatted).is_ok() {
+                                    any_changed = true;
+                                }
+                            }
+                        }
+                        if any_changed {
+                            let _ = room_clone.changed_tx.send(());
+                            debug!("[format] Formatted cells after run-all queuing");
+                        }
+                    }
+                });
 
                 NotebookResponse::AllCellsQueued { queued }
             } else {
