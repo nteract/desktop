@@ -4051,24 +4051,31 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
                         packages_to_install
                     );
 
-                    // Verify kernel wasn't swapped during async install (race protection)
-                    // Update the kernel's launched config so future sync checks are accurate
+                    // Verify kernel wasn't swapped during async install (race protection).
+                    // Update launched deps to reflect what's actually installed:
+                    // the original baseline + what we just installed. We do NOT
+                    // re-read from the doc — the user may have edited deps during
+                    // the install, and those edits aren't installed yet. The next
+                    // check_and_broadcast_sync_state will detect the remaining drift.
                     let launch_id_matched = {
                         let mut kernel_guard = room.kernel.lock().await;
                         if let Some(ref mut kernel) = *kernel_guard {
-                            // Check launch_id still matches - if kernel was restarted, skip update
                             let current_launch_id = kernel.launched_config().launch_id.clone();
                             if current_launch_id != launch_id {
                                 warn!(
                                     "[notebook-sync] Kernel was swapped during hot-sync, skipping update"
                                 );
-                                // Still report success - packages were installed to the old env
-                                // User will see sync banner again for the new kernel
                                 false
                             } else {
-                                if let Some(ref current_uv) = current_metadata.runt.uv {
-                                    kernel.update_launched_uv_deps(current_uv.dependencies.clone());
+                                // Build the new baseline: what was launched + what we installed
+                                let mut installed_deps =
+                                    launched.uv_deps.clone().unwrap_or_default();
+                                for pkg in &packages_to_install {
+                                    if !installed_deps.contains(pkg) {
+                                        installed_deps.push(pkg.clone());
+                                    }
                                 }
+                                kernel.update_launched_uv_deps(installed_deps);
                                 true
                             }
                         } else {
