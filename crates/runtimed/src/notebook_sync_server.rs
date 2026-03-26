@@ -3425,10 +3425,12 @@ async fn handle_notebook_request(
             if let Some(ref mut kernel) = *kernel_guard {
                 match kernel.queue_cell(cell_id.clone(), code).await {
                     Ok(execution_id) => {
-                        // Stamp execution_id on the cell so clients can verify
-                        // which execution the cell's outputs belong to.
+                        // Clear outputs and stamp execution_id at queue time
+                        // so clients see immediate feedback via CRDT sync.
                         {
                             let mut doc = room.doc.write().await;
+                            let _ = doc.clear_outputs(&cell_id);
+                            let _ = doc.set_execution_count(&cell_id, "null");
                             let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
                             let _ = room.changed_tx.send(());
                         }
@@ -3502,10 +3504,12 @@ async fn handle_notebook_request(
             if let Some(ref mut kernel) = *kernel_guard {
                 match kernel.queue_cell(cell_id.clone(), source).await {
                     Ok(execution_id) => {
-                        // Stamp execution_id on the cell so clients can verify
-                        // which execution the cell's outputs belong to.
+                        // Clear outputs and stamp execution_id at queue time
+                        // so clients see immediate feedback via CRDT sync.
                         {
                             let mut doc = room.doc.write().await;
+                            let _ = doc.clear_outputs(&cell_id);
+                            let _ = doc.set_execution_count(&cell_id, "null");
                             let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
                             let _ = room.changed_tx.send(());
                         }
@@ -3654,10 +3658,13 @@ async fn handle_notebook_request(
             let mut kernel_guard = room.kernel.lock().await;
             if let Some(ref mut kernel) = *kernel_guard {
                 // Read all cells from the synced Automerge document
-                let doc = room.doc.read().await;
-                let cells = doc.get_cells();
+                let cells = {
+                    let doc = room.doc.read().await;
+                    doc.get_cells()
+                }; // release read lock before writing
 
-                // Queue all code cells in document order
+                // Queue all code cells in document order, clearing outputs
+                // up front so clients see all cells go blank immediately.
                 let mut queued = Vec::new();
                 for cell in cells {
                     if cell.cell_type == "code" {
@@ -3678,6 +3685,18 @@ async fn handle_notebook_request(
                             }
                         }
                     }
+                }
+
+                // Bulk-clear outputs and stamp execution_ids in one
+                // CRDT transaction so clients see all cells cleared at once.
+                {
+                    let mut doc = room.doc.write().await;
+                    for entry in &queued {
+                        let _ = doc.clear_outputs(&entry.cell_id);
+                        let _ = doc.set_execution_count(&entry.cell_id, "null");
+                        let _ = doc.set_execution_id(&entry.cell_id, Some(&entry.execution_id));
+                    }
+                    let _ = room.changed_tx.send(());
                 }
 
                 NotebookResponse::AllCellsQueued { queued }
