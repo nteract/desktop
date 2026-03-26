@@ -4051,8 +4051,12 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
                         packages_to_install
                     );
 
-                    // Verify kernel wasn't swapped during async install (race protection)
-                    // Update the kernel's launched config so future sync checks are accurate
+                    // Verify kernel wasn't swapped during async install (race protection).
+                    // Re-read metadata from the doc (NOT the stale pre-install snapshot)
+                    // so the kernel's launched config reflects any dependency edits the
+                    // user made while the install was running.
+                    let fresh_metadata =
+                        resolve_metadata_snapshot(room, Some(&notebook_path)).await;
                     let launch_id_matched = {
                         let mut kernel_guard = room.kernel.lock().await;
                         if let Some(ref mut kernel) = *kernel_guard {
@@ -4066,8 +4070,9 @@ async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
                                 // User will see sync banner again for the new kernel
                                 false
                             } else {
-                                if let Some(ref current_uv) = current_metadata.runt.uv {
-                                    kernel.update_launched_uv_deps(current_uv.dependencies.clone());
+                                let metadata = fresh_metadata.as_ref().unwrap_or(&current_metadata);
+                                if let Some(ref uv) = metadata.runt.uv {
+                                    kernel.update_launched_uv_deps(uv.dependencies.clone());
                                 }
                                 true
                             }
