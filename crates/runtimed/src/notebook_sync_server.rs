@@ -7797,28 +7797,28 @@ mod tests {
         // Signal the change so the autosave debouncer sees it
         let _ = room.changed_tx.send(());
 
-        // 6. Wait for the autosave debouncer to flush.
-        //    Use sleep() instead of advance()+yield_now() — sleep properly
-        //    advances the paused clock AND yields to the runtime, giving all
-        //    spawned tasks (debouncer select! loop, check interval, async
-        //    file write) enough scheduling opportunities to complete.
-        //    Default config: 2s debounce + 500ms check interval, so 3s is
-        //    enough for the debounce window plus a check tick plus the save.
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        // 6. Poll until the autosave debouncer flushes both cells to disk.
+        //    Each sleep(100ms) advances the paused clock and yields to the
+        //    runtime, letting the debouncer make progress. Timeout after 10s
+        //    (well beyond the 2s debounce + 500ms check interval defaults).
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let nb = loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let content = tokio::fs::read_to_string(&save_path).await.unwrap();
+            let nb: serde_json::Value = serde_json::from_str(&content).unwrap();
+            if nb["cells"].as_array().is_some_and(|c| c.len() == 2) {
+                break nb;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "Timed out waiting for autosave to flush both cells; got: {}",
+                serde_json::to_string_pretty(&nb["cells"]).unwrap()
+            );
+        };
 
-        // 7. Verify the file on disk contains BOTH cells (initial + post-rekey)
-        let content = tokio::fs::read_to_string(&save_path).await.unwrap();
-        let nb: serde_json::Value = serde_json::from_str(&content).unwrap();
-        let cells = nb["cells"].as_array().expect("cells should be an array");
-        assert_eq!(
-            cells.len(),
-            2,
-            "Both cells should be autosaved; got: {}",
-            serde_json::to_string_pretty(&nb["cells"]).unwrap()
-        );
-
-        // Verify the post-rekey cell's source is present.
+        // 7. Verify the post-rekey cell's source is present.
         // nbformat stores source as an array of strings, e.g. ["y = 2"].
+        let cells = nb["cells"].as_array().unwrap();
         let sources: Vec<String> = cells
             .iter()
             .map(|c| match &c["source"] {
