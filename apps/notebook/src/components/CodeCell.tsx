@@ -399,7 +399,7 @@ export const CodeCell = memo(function CodeCell({
           <>
             {/* Source visibility toggle + Editor */}
             {bothHidden ? (
-              <div className="flex justify-start">
+              <div className="flex items-center justify-start min-h-[1.75rem]">
                 <button
                   type="button"
                   onClick={() => {
@@ -436,7 +436,7 @@ export const CodeCell = memo(function CodeCell({
                 </button>
               </div>
             ) : isSourceHidden ? (
-              <div className="flex justify-start">
+              <div className="flex items-center justify-start min-h-[1.75rem]">
                 <button
                   type="button"
                   onClick={() => onToggleSourceHidden?.(false)}
@@ -484,7 +484,7 @@ export const CodeCell = memo(function CodeCell({
         }
         outputContent={
           isOutputsHidden && cell.outputs.length > 0 ? (
-            <div className="flex justify-start">
+            <div className="flex items-center justify-start min-h-[1.75rem]">
               <button
                 type="button"
                 onClick={() => onToggleOutputsHidden?.(false)}
