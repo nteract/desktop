@@ -29,7 +29,7 @@ All persistent notebook state lives in the Automerge document. The React cell st
 The user does something in the UI → write to the WASM CRDT handle → sync to daemon → materialization updates the store.
 
 ```
-User action → WASM handle mutation → sourceSync$ (debounced) → daemon
+User action → WASM handle mutation → scheduleFlush() (debounced) → daemon
                                    → store update (instant feedback)
 ```
 

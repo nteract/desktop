@@ -195,7 +195,7 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
 
 ### Mutation flow
 
-Cell mutations (add, delete, edit) go through the WASM handle for instant response. Source edits are batched via `debouncedSyncToRelay` (20ms), with `flushSync()` before execute/save. The fast path for typing: `updateCellSource()` → WASM `update_source()` → `updateCellById()` (one cell, one subscriber) → debounced sync to daemon.
+Cell mutations (add, delete, edit) go through the WASM handle for instant response. Source edits are batched via `engine.scheduleFlush()` (20ms debounce), with `engine.flush()` before execute/save. The fast path for typing: `updateCellSource()` → WASM `update_source()` → `updateCellById()` (one cell, one subscriber) → debounced sync to daemon.
 
 Execution requests go to the daemon via dedicated Tauri commands (`execute_cell_via_daemon`, etc.).
 

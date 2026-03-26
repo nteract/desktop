@@ -162,7 +162,7 @@ Both sides use the same Rust `automerge = "0.7"` crate, which guarantees schema 
 User types in cell
   → React calls WASM handle.update_source(cell_id, text)
   → WASM applies mutation locally (instant)
-  → debouncedSyncToRelay (20ms batch) → handle.generate_sync_message() → sync bytes
+  → engine.scheduleFlush() (20ms debounce) → flush_local_changes() → sync bytes
   → sendFrame(frame_types.AUTOMERGE_SYNC, msg) → raw binary via tauri::ipc::Request
   → Tauri send_frame dispatches by type → relay pipes to daemon socket
   → Daemon applies sync, updates canonical doc

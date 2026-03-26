@@ -235,6 +235,37 @@ describe("SyncEngine", () => {
       expect(handle.reset_sync_state).toHaveBeenCalled();
       engine.stop();
     });
+
+    it("handshake round restarts the retry timer via switchMap", () => {
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        syncAppliedEvent({ changed: false }),
+      ]);
+      (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(
+        new Uint8Array([1, 2, 3]),
+      );
+
+      const engine = createEngine();
+      engine.start();
+
+      // First handshake round at t=0 — arms the 3s retry timer
+      transport.deliver(Array.from([0x00, 1]));
+
+      // Advance 2.5s — timer not yet fired
+      advanceBy(scheduler, 2500);
+      expect(handle.reset_sync_state).not.toHaveBeenCalled();
+
+      // Another handshake round restarts the 3s timer (switchMap)
+      transport.deliver(Array.from([0x00, 2]));
+
+      // Advance 2.5s more (5s total, but only 2.5s since last round)
+      advanceBy(scheduler, 2500);
+      expect(handle.reset_sync_state).not.toHaveBeenCalled();
+
+      // Advance 1s more (3.5s since last round — past 3s timeout)
+      advanceBy(scheduler, 1000);
+      expect(handle.reset_sync_state).toHaveBeenCalled();
+      engine.stop();
+    });
   });
 
   // ── Broadcasts ────────────────────────────────────────────────
@@ -375,6 +406,141 @@ describe("SyncEngine", () => {
       transport.deliver(Array.from([0x00, 2]));
       advanceBy(scheduler, 50);
 
+      expect(emissions).toHaveLength(1);
+      expect(emissions[0]).toBeNull();
+      engine.stop();
+    });
+
+    it("merges multiple frames within the 32ms coalescing window", () => {
+      let callCount = 0;
+      const changesets: CellChangeset[] = [
+        { changed: [{ cell_id: "c1", fields: { source: true } }], added: [], removed: [], order_changed: false },
+        { changed: [{ cell_id: "c2", fields: { outputs: true } }], added: [], removed: [], order_changed: false },
+        { changed: [{ cell_id: "c1", fields: { metadata: true } }], added: [], removed: [], order_changed: false },
+      ];
+
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return [syncAppliedEvent({ changed: true })]; // initial sync
+        }
+        // Return different changesets for each subsequent frame
+        return [syncAppliedEvent({ changed: true, changeset: changesets[callCount - 2] })];
+      });
+
+      const engine = createEngine();
+      engine.start();
+
+      // Complete initial sync
+      transport.deliver(Array.from([0x00, 1]));
+
+      const emissions: (CellChangeset | null)[] = [];
+      engine.cellChanges$.subscribe((cs) => emissions.push(cs));
+
+      // Send 3 frames within the 32ms window
+      transport.deliver(Array.from([0x00, 2]));
+      advanceBy(scheduler, 10);
+      transport.deliver(Array.from([0x00, 3]));
+      advanceBy(scheduler, 10);
+      transport.deliver(Array.from([0x00, 4]));
+
+      // Advance past coalescing window
+      advanceBy(scheduler, 50);
+
+      // Should get a single merged emission
+      expect(emissions).toHaveLength(1);
+      const cs = emissions[0]!;
+      expect(cs).not.toBeNull();
+
+      // c1 should have source + metadata merged, c2 should have outputs
+      const c1 = cs.changed.find((c) => c.cell_id === "c1");
+      const c2 = cs.changed.find((c) => c.cell_id === "c2");
+      expect(c1).toBeDefined();
+      expect(c1!.fields.source).toBe(true);
+      expect(c1!.fields.metadata).toBe(true);
+      expect(c2).toBeDefined();
+      expect(c2!.fields.outputs).toBe(true);
+      engine.stop();
+    });
+
+    it("emits separately for frames in different coalescing windows", () => {
+      let callCount = 0;
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return [syncAppliedEvent({ changed: true })]; // initial sync
+        }
+        return [
+          syncAppliedEvent({
+            changed: true,
+            changeset: {
+              changed: [{ cell_id: `c${callCount}`, fields: { source: true } }],
+              added: [],
+              removed: [],
+              order_changed: false,
+            },
+          }),
+        ];
+      });
+
+      const engine = createEngine();
+      engine.start();
+      transport.deliver(Array.from([0x00, 1])); // initial sync
+
+      const emissions: (CellChangeset | null)[] = [];
+      engine.cellChanges$.subscribe((cs) => emissions.push(cs));
+
+      // First frame + flush its coalescing window
+      transport.deliver(Array.from([0x00, 2]));
+      advanceBy(scheduler, 50);
+      expect(emissions).toHaveLength(1);
+
+      // Second frame in a new coalescing window
+      transport.deliver(Array.from([0x00, 3]));
+      advanceBy(scheduler, 50);
+      expect(emissions).toHaveLength(2);
+
+      engine.stop();
+    });
+
+    it("mixed null and valid changeset in same window forces full materialization", () => {
+      let callCount = 0;
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return [syncAppliedEvent({ changed: true })]; // initial sync
+        }
+        if (callCount === 2) {
+          // Valid changeset
+          return [
+            syncAppliedEvent({
+              changed: true,
+              changeset: {
+                changed: [{ cell_id: "c1", fields: { source: true } }],
+                added: [],
+                removed: [],
+                order_changed: false,
+              },
+            }),
+          ];
+        }
+        // No changeset (null) — forces full materialization
+        return [syncAppliedEvent({ changed: true })];
+      });
+
+      const engine = createEngine();
+      engine.start();
+      transport.deliver(Array.from([0x00, 1])); // initial sync
+
+      const emissions: (CellChangeset | null)[] = [];
+      engine.cellChanges$.subscribe((cs) => emissions.push(cs));
+
+      // Send valid changeset and null changeset within same window
+      transport.deliver(Array.from([0x00, 2]));
+      transport.deliver(Array.from([0x00, 3]));
+      advanceBy(scheduler, 50);
+
+      // Should emit null (full materialization needed)
       expect(emissions).toHaveLength(1);
       expect(emissions[0]).toBeNull();
       engine.stop();
@@ -590,6 +756,37 @@ describe("SyncEngine", () => {
       expect(syncFrames).toHaveLength(1);
       engine.stop();
     });
+
+    it("scheduleFlush() resets debounce timer on each call", () => {
+      const syncMsg = new Uint8Array([1]);
+      (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(syncMsg);
+
+      const engine = createEngine();
+      engine.start();
+
+      // First call at t=0
+      engine.scheduleFlush();
+
+      // Advance 15ms (not yet past 20ms debounce)
+      advanceBy(scheduler, 15);
+      expect(transport.sentFrames).toHaveLength(0);
+
+      // Second call resets the timer at t=15
+      engine.scheduleFlush();
+
+      // Advance 15ms more (t=30, but only 15ms since last call)
+      advanceBy(scheduler, 15);
+      expect(transport.sentFrames).toHaveLength(0);
+
+      // Advance 10ms more (t=40, 25ms since last call — past 20ms debounce)
+      advanceBy(scheduler, 10);
+
+      const syncFrames = transport.sentFrames.filter(
+        (f) => f.frameType === FrameType.AUTOMERGE_SYNC,
+      );
+      expect(syncFrames).toHaveLength(1);
+      engine.stop();
+    });
   });
 
   // ── resetAndResync ────────────────────────────────────────────
@@ -701,6 +898,90 @@ describe("SyncEngine", () => {
       nullEngine.scheduleFlush();
       nullEngine.resetAndResync();
       nullEngine.stop();
+    });
+
+    it("handle becomes null mid-pipeline after initial sync", () => {
+      let returnHandle: SyncableHandle | null = handle;
+
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        syncAppliedEvent({ changed: true }),
+      ]);
+
+      const engine = new SyncEngine({
+        getHandle: () => returnHandle,
+        transport,
+        scheduler,
+      });
+      engine.start();
+
+      // Complete initial sync with valid handle
+      transport.deliver(Array.from([0x00, 1]));
+
+      // Now null out the handle
+      returnHandle = null;
+
+      // Deliver frame — should not crash
+      transport.deliver(Array.from([0x00, 2]));
+      advanceBy(scheduler, 50);
+
+      // Flush — should not crash or send frames
+      transport.clearSentFrames();
+      engine.flush();
+      expect(transport.sentFrames).toHaveLength(0);
+      engine.stop();
+    });
+  });
+
+  // ── Multicast (frameEvents$ share) ─────────────────────────────
+
+  describe("frameEvents$ multicast", () => {
+    it("delivers events to multiple subscribers via shared observable", () => {
+      const broadcastPayload = { event: "kernel_status", status: "idle" };
+      const presencePayload = { type: "update", peer: "alice" };
+
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        broadcastEvent(broadcastPayload),
+        presenceEvent(presencePayload),
+      ]);
+
+      const engine = createEngine();
+      engine.start();
+
+      const broadcasts: unknown[] = [];
+      const presences: unknown[] = [];
+      engine.broadcasts$.subscribe((p) => broadcasts.push(p));
+      engine.presence$.subscribe((p) => presences.push(p));
+
+      // Single frame produces both event types
+      transport.deliver(Array.from([0x03, 1]));
+
+      expect(broadcasts).toHaveLength(1);
+      expect(broadcasts[0]).toEqual(broadcastPayload);
+      expect(presences).toHaveLength(1);
+      expect(presences[0]).toEqual(presencePayload);
+      engine.stop();
+    });
+  });
+
+  // ── Edge cases ─────────────────────────────────────────────────
+
+  describe("edge cases", () => {
+    it("frame delivered after stop() does not crash or emit", () => {
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValue([
+        broadcastEvent({ event: "test" }),
+      ]);
+
+      const engine = createEngine();
+      engine.start();
+
+      const received: unknown[] = [];
+      engine.broadcasts$.subscribe((p) => received.push(p));
+
+      // Stop and then deliver — should not crash
+      engine.stop();
+      transport.deliver(Array.from([0x03, 1]));
+
+      expect(received).toHaveLength(0);
     });
   });
 

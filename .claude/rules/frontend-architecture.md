@@ -114,7 +114,7 @@ The frontend has a single ingress point for daemon frames. All data flows throug
 
 ## Mutation Flow
 
-Cell mutations go through the WASM handle for instant response. Source edits are batched via `debouncedSyncToRelay` (20ms), with `flushSync()` before execute/save. Fast path for typing: `updateCellSource()` -> WASM `update_source()` -> `updateCellById()` (one cell, one subscriber) -> debounced sync.
+Cell mutations go through the WASM handle for instant response. Source edits are batched via `engine.scheduleFlush()` (20ms debounce), with `engine.flush()` before execute/save. Fast path for typing: `updateCellSource()` -> WASM `update_source()` -> `updateCellById()` (one cell, one subscriber) -> debounced sync.
 
 Execution requests go to the daemon via dedicated Tauri commands (`execute_cell_via_daemon`, etc.).
 
