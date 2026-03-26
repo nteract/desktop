@@ -5784,6 +5784,13 @@ async fn apply_ipynb_changes(
     // Use fork_at(last_save_heads) + merge so the structural rebuild
     // from disk composes with any post-save CRDT changes (e.g.,
     // background formatting) rather than overwriting them.
+    //
+    // Known limitation: cells inserted or moved locally after the last
+    // save may end up at slightly wrong positions after merge, because
+    // the fork's fractional indices don't account for post-save
+    // insertions. This is cosmetic — source text is preserved, and the
+    // user or agent can reorder manually. Still better than the old
+    // direct-mutation path which would clobber post-save source edits.
     if order_changed {
         debug!("[notebook-watch] Cell order changed, rebuilding cell list");
 
