@@ -56,12 +56,14 @@ const FLUSH_DEBOUNCE_MS = 20;
 // ── Logger interface ─────────────────────────────────────────────────
 
 export interface SyncEngineLogger {
+  debug(msg: string, ...args: unknown[]): void;
   info(msg: string, ...args: unknown[]): void;
   warn(msg: string, ...args: unknown[]): void;
   error(msg: string, ...args: unknown[]): void;
 }
 
 const nullLogger: SyncEngineLogger = {
+  debug() {},
   info() {},
   warn() {},
   error() {},
@@ -164,6 +166,7 @@ export class SyncEngine {
    */
   start(): void {
     if (this.subscription) return; // already running
+    this.opts.logger.info("[sync-engine] Starting");
 
     const sub = (this.subscription = new Subscription());
     const log = this.opts.logger;
@@ -187,14 +190,32 @@ export class SyncEngine {
 
     // ── Source: frames → WASM demux → individual FrameEvents ──────
 
+    let frameCount = 0;
+    let lastFrameLogTime = Date.now();
+
     const frameEvents$ = this.frameIn$.pipe(
       mergeMap((payload) => {
         try {
           const handle = this.opts.getHandle();
-          if (!handle) return EMPTY;
+          if (!handle) {
+            log.debug("[sync-engine] frame dropped: no handle");
+            return EMPTY;
+          }
           const bytes = new Uint8Array(payload);
           const result = handle.receive_frame(bytes);
           if (!result || !Array.isArray(result)) return EMPTY;
+
+          // Log frame throughput every 5 seconds
+          frameCount++;
+          const now = Date.now();
+          if (now - lastFrameLogTime >= 5000) {
+            log.debug(
+              `[sync-engine] ${frameCount} frames processed in ${now - lastFrameLogTime}ms (${bytes.length}B last)`,
+            );
+            frameCount = 0;
+            lastFrameLogTime = now;
+          }
+
           return from(result as FrameEvent[]);
         } catch (e) {
           log.warn("[sync-engine] receive_frame failed:", e);
@@ -242,7 +263,10 @@ export class SyncEngine {
             if (this.awaitingInitialSync) {
               if (e.changed) {
                 this.awaitingInitialSync = false;
+                log.info("[sync-engine] Initial sync complete");
                 this._initialSyncComplete$.next();
+              } else {
+                log.debug("[sync-engine] Initial sync round (awaiting content)");
               }
               // Restart retry timer on handshake rounds
               retrySync$.next();
@@ -251,7 +275,17 @@ export class SyncEngine {
 
             // Steady-state: push changeset into coalescing buffer
             if (e.changed) {
-              materialize$.next(e.changeset ?? null);
+              const cs = e.changeset;
+              if (cs) {
+                log.debug(
+                  `[sync-engine] changeset: ${cs.changed.length} changed, ${cs.added.length} added, ${cs.removed.length} removed, order_changed=${cs.order_changed}`,
+                );
+              } else {
+                log.debug(
+                  "[sync-engine] sync_applied with change but no changeset (full materialization needed)",
+                );
+              }
+              materialize$.next(cs ?? null);
             }
             return EMPTY;
           }),
@@ -295,7 +329,17 @@ export class SyncEngine {
               }
             }
 
-            this._cellChanges$.next(needsFull ? null : merged);
+            const result = needsFull ? null : merged;
+            if (needsFull) {
+              log.debug(
+                `[sync-engine] coalesced ${batch.length} changesets → full materialization`,
+              );
+            } else if (result) {
+              log.debug(
+                `[sync-engine] coalesced ${batch.length} changesets → ${result.changed.length} changed, ${result.added.length} added, ${result.removed.length} removed`,
+              );
+            }
+            this._cellChanges$.next(result);
             return EMPTY;
           }),
         )
@@ -334,6 +378,10 @@ export class SyncEngine {
                 state.executions,
               );
               this.prevExecutions = state.executions;
+
+              log.debug(
+                `[sync-engine] runtime state: kernel=${state.kernel?.status ?? "?"}, transitions=${transitions.length}`,
+              );
 
               this._runtimeState$.next(state);
               if (transitions.length > 0) {
@@ -385,6 +433,7 @@ export class SyncEngine {
    */
   stop(): void {
     if (!this.subscription) return;
+    this.opts.logger.info("[sync-engine] Stopping");
     this.subscription.unsubscribe();
     this.subscription = null;
   }
@@ -405,10 +454,16 @@ export class SyncEngine {
    */
   flush(): void {
     const handle = this.opts.getHandle();
-    if (!handle) return;
+    if (!handle) {
+      this.opts.logger.debug("[sync-engine] flush skipped: no handle");
+      return;
+    }
 
     const msg = handle.flush_local_changes();
     if (msg) {
+      this.opts.logger.debug(
+        `[sync-engine] flushing sync message (${msg.byteLength}B)`,
+      );
       this.opts.transport
         .sendFrame(FrameType.AUTOMERGE_SYNC, msg)
         .catch((e: unknown) => {
@@ -468,6 +523,7 @@ export class SyncEngine {
    * next round of frames is treated as a fresh connection.
    */
   resetForBootstrap(): void {
+    this.opts.logger.info("[sync-engine] Resetting for bootstrap");
     this.awaitingInitialSync = true;
     this.prevExecutions = {};
   }

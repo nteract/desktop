@@ -32,6 +32,7 @@
 use std::sync::{Arc, Mutex};
 
 use automerge::AutoCommit;
+use log::debug;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use notebook_doc::runtime_state::RuntimeState;
@@ -194,6 +195,8 @@ impl DocHandle {
         let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
 
         let result = f(&mut state.doc);
+
+        debug!("[doc-handle] mutation applied ({})", self.notebook_id);
 
         // Publish a fresh snapshot so readers see the mutation immediately.
         // This happens before the sync task sends it to the daemon — local
@@ -516,6 +519,11 @@ impl DocHandle {
         &self,
         request: NotebookRequest,
     ) -> Result<NotebookResponse, SyncError> {
+        debug!(
+            "[doc-handle] send_request: {:?} ({})",
+            std::mem::discriminant(&request),
+            self.notebook_id
+        );
         let (reply_tx, reply_rx) = oneshot::channel();
         self.cmd_tx
             .send(SyncCommand::SendRequest {

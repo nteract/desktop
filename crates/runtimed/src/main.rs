@@ -20,9 +20,9 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Log level
-    #[arg(long, global = true, default_value = "warn")]
-    log_level: String,
+    /// Log level (defaults to "info" on nightly, "warn" on stable)
+    #[arg(long, global = true)]
+    log_level: Option<String>,
 
     /// Run in development mode (per-worktree isolation)
     ///
@@ -204,8 +204,17 @@ async fn main() -> anyhow::Result<()> {
         .append(true)
         .open(&log_path);
 
-    let mut builder =
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(&cli.log_level));
+    let effective_log_level =
+        cli.log_level
+            .unwrap_or_else(|| match runt_workspace::build_channel() {
+                runt_workspace::BuildChannel::Nightly => {
+                    "info,notebook_sync=debug,runtimed::notebook_sync_server=debug".to_string()
+                }
+                runt_workspace::BuildChannel::Stable => "warn".to_string(),
+            });
+    let mut builder = env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(&effective_log_level),
+    );
 
     // If we can open the log file, write to it; otherwise just use stderr
     if let Ok(file) = log_file {

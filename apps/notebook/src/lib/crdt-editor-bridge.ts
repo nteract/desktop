@@ -230,6 +230,9 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
             );
             if (!ok) {
               // Cell was deleted or handle is stale — abort all remaining.
+              logger.warn(
+                `[crdt-bridge] splice_source failed for cell=${cellId.slice(0, 8)} at ${fromA}..${toA}, aborting remaining splices`,
+              );
               aborted = true;
               break;
             }
@@ -263,7 +266,12 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
     // Skip if we're in the middle of processing outbound changes.
     // The CRDT already has these changes from our splices; applying
     // them to CM would be an echo.
-    if (isProcessingOutbound) return;
+    if (isProcessingOutbound) {
+      logger.debug(
+        `[crdt-bridge] skipping ${changes.length} remote changes (outbound in progress) cell=${cellId.slice(0, 8)}`,
+      );
+      return;
+    }
 
     // If CodeMirror and WASM are already in sync, skip — the changes
     // are already reflected. This guards against stale text_attributions
@@ -275,8 +283,17 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
     if (handle) {
       const wasmSource = handle.get_cell_source(cellId);
       const cmSource = view.state.doc.toString();
-      if (wasmSource === cmSource) return;
+      if (wasmSource === cmSource) {
+        logger.debug(
+          `[crdt-bridge] skipping ${changes.length} remote changes (already in sync) cell=${cellId.slice(0, 8)}`,
+        );
+        return;
+      }
     }
+
+    logger.debug(
+      `[crdt-bridge] applying ${changes.length} remote changes to cell=${cellId.slice(0, 8)}`,
+    );
 
     try {
       // Apply each change as a separate dispatch so positions are
@@ -322,6 +339,10 @@ export function createCrdtBridge(config: CrdtBridgeConfig): CrdtBridge {
 
     const currentContent = view.state.doc.toString();
     if (currentContent === source) return;
+
+    logger.debug(
+      `[crdt-bridge] applyFullSource cell=${cellId.slice(0, 8)} (${currentContent.length} → ${source.length} chars)`,
+    );
 
     try {
       view.dispatch({

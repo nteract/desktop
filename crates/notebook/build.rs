@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn merge_json(base: &mut Value, overlay: Value) {
@@ -14,7 +14,7 @@ fn merge_json(base: &mut Value, overlay: Value) {
     }
 }
 
-fn target_sidecar_path(manifest_dir: &PathBuf, target: &str, binary_name: &str) -> PathBuf {
+fn target_sidecar_path(manifest_dir: &Path, target: &str, binary_name: &str) -> PathBuf {
     let executable_suffix = if target.contains("windows") {
         ".exe"
     } else {
@@ -31,9 +31,13 @@ fn maybe_disable_external_bin_for_local_checks() {
         return;
     }
 
-    let manifest_dir =
-        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set"));
-    let target = env::var("TARGET").expect("TARGET must be set");
+    let Ok(manifest_dir_str) = env::var("CARGO_MANIFEST_DIR") else {
+        return;
+    };
+    let manifest_dir = PathBuf::from(manifest_dir_str);
+    let Ok(target) = env::var("TARGET") else {
+        return;
+    };
 
     let expected_sidecars = [
         target_sidecar_path(&manifest_dir, &target, "runtimed"),
@@ -58,10 +62,9 @@ fn maybe_disable_external_bin_for_local_checks() {
         .and_then(|value| serde_json::from_str(&value).ok())
         .unwrap_or_else(|| json!({}));
     merge_json(&mut config, json!({ "bundle": { "externalBin": [] } }));
-    env::set_var(
-        "TAURI_CONFIG",
-        serde_json::to_string(&config).expect("TAURI_CONFIG override must serialize"),
-    );
+    if let Ok(serialized) = serde_json::to_string(&config) {
+        env::set_var("TAURI_CONFIG", serialized);
+    }
 
     let missing_paths = missing_sidecars
         .iter()

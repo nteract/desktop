@@ -36,7 +36,15 @@ Use consistent prefixes for filtering:
 - `[runtimed]` -- Daemon core operations
 - `[notebook-sync]` -- Automerge sync server
 - `[kernel-manager]` -- Kernel lifecycle and execution
+- `[doc-handle]` -- CRDT document mutations and requests
 - `[comm_*]` -- Widget communication
+
+### Default Log Levels by Channel
+
+| Channel | Daemon default | Notebook app default |
+|---------|---------------|---------------------|
+| **Nightly** | `info` (with `debug` for sync modules) | `Debug` |
+| **Stable** | `warn` | `Info` |
 
 ### Log File Rotation
 
@@ -45,7 +53,7 @@ Daemon logs rotate on startup — each daemon session gets a clean log file. Pre
 ### Enabling Debug Logs
 
 ```bash
-# All debug logs
+# All debug logs (overrides channel default)
 RUST_LOG=debug cargo xtask dev-daemon
 
 # Specific module
@@ -67,8 +75,9 @@ logger.error("[component] Failure:", error);
 
 ### Log Level Behavior
 
-- `logger.debug()` -- Suppressed in production unless debug mode is enabled
-- `logger.info()`, `logger.warn()`, `logger.error()` -- Always enabled
+- **Nightly**: All levels (`debug`, `info`, `warn`, `error`) enabled by default
+- **Stable**: `logger.debug()` suppressed; `info`, `warn`, `error` always enabled
+- Level filter applied server-side by `tauri-plugin-log`
 
 ### What NOT to Log at Info Level
 
