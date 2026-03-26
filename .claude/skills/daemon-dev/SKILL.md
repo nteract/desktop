@@ -148,9 +148,21 @@ fork.update_source(&cell_id, &disk_source).ok();
 doc.merge(&mut fork).ok();
 ```
 
-Key methods on `NotebookDoc`: `fork()`, `fork_at(heads)`, `get_heads()`, `merge()`.
+For synchronous mutation blocks (no `.await` between fork and merge), prefer the helpers:
+```rust
+doc.fork_and_merge(|fork| {
+    fork.update_source(&cell_id, &new_source);
+});
 
-See nteract/desktop#1216 for the full adoption plan across the codebase.
+// Or at a historic point (e.g., file watcher at last save)
+doc.fork_at_and_merge(&save_heads, |fork| {
+    fork.update_source(&cell_id, &disk_source);
+})?;
+```
+
+Key methods on `NotebookDoc`: `fork()`, `fork_at(heads)`, `get_heads()`, `merge()`, `fork_and_merge(f)`, `fork_at_and_merge(heads, f)`.
+
+All async CRDT mutation paths in the daemon are now protected — see #1216.
 
 ## Code Structure
 

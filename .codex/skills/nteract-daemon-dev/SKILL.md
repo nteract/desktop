@@ -23,6 +23,7 @@ Use this skill to avoid talking to the wrong daemon and to keep daemon-backed ve
 - Never run the notebook GUI from an agent terminal; let the human launch it.
 - If a test or script depends on notebook execution, blob resolution, or MCP server behavior, confirm it is pointed at the worktree daemon first.
 - Use `default_socket_path()` for the current process. Reach for `socket_path_for_channel(...)` only when you intentionally need stable/nightly discovery that ignores `RUNTIMED_SOCKET_PATH`.
+- **Any daemon code that reads CRDT state, does async work, then writes back must use `fork()` + `merge()`.** For synchronous blocks use `doc.fork_and_merge(|fork| { ... })`. See `contributing/crdt-mutation-guide.md` and `.codex/skills/nteract-notebook-sync/references/crdt-ownership.md`.
 
 ## Quick Start
 
