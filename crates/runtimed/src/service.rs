@@ -142,23 +142,26 @@ impl ServiceManager {
 
     /// Install the daemon as a system service.
     ///
-    /// On macOS, if the binary path is inside an app bundle, the plist is
-    /// pointed directly at the in-bundle binary — no copy is needed. This
-    /// avoids the macOS "App Management" permission prompt and code-signature
-    /// issues during upgrades.
-    pub fn install(&self, source_binary: &PathBuf) -> ServiceResult<()> {
+    /// On macOS, if the source binary is inside an app bundle, the plist is
+    /// pointed directly at it — no copy is needed. This avoids the macOS
+    /// "App Management" permission prompt and code-signature issues during
+    /// upgrades. If the source is a custom path (e.g. `--binary /path/to/runtimed`),
+    /// it is honored and copied to the configured install location as before.
+    pub fn install(&mut self, source_binary: &PathBuf) -> ServiceResult<()> {
         if !source_binary.exists() {
             return Err(ServiceError::BinaryNotFound(source_binary.clone()));
         }
 
-        if Self::is_in_app_bundle(&self.config.binary_path) {
+        if Self::is_in_app_bundle(source_binary) {
+            // Source is inside an app bundle — point the plist directly at it.
+            self.config.binary_path = source_binary.clone();
             info!(
                 "[service] Using in-bundle binary at {:?}",
                 self.config.binary_path
             );
             Self::cleanup_legacy_binary();
         } else {
-            // Non-bundle path (Linux, Windows, or edge cases) — copy the binary
+            // Custom or non-bundle path — copy the binary to the install location
             if let Some(parent) = self.config.binary_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -231,7 +234,19 @@ impl ServiceManager {
         // Remove service configuration
         self.remove_service_config()?;
 
-        if Self::is_in_app_bundle(&self.config.binary_path) {
+        // Determine what binary the plist was pointing at (if readable)
+        #[cfg(target_os = "macos")]
+        let plist_bin = runt_workspace::plist_binary_path();
+        #[cfg(target_os = "macos")]
+        let binary_was_in_bundle = plist_bin
+            .as_ref()
+            .map(|p| Self::is_in_app_bundle(p))
+            .unwrap_or_else(|| Self::is_in_app_bundle(&self.config.binary_path));
+
+        #[cfg(not(target_os = "macos"))]
+        let binary_was_in_bundle = false;
+
+        if binary_was_in_bundle {
             // Don't delete the in-bundle binary — it belongs to the app.
             // Only clean up the legacy standalone binary if it still exists.
             Self::cleanup_legacy_binary();
@@ -256,7 +271,7 @@ impl ServiceManager {
     /// the running daemon and the bundled version. On macOS with in-bundle
     /// binaries, the binary is already updated (the app was replaced), so this
     /// just regenerates the plist and restarts launchd.
-    pub fn upgrade(&self, source_binary: &PathBuf) -> ServiceResult<()> {
+    pub fn upgrade(&mut self, source_binary: &PathBuf) -> ServiceResult<()> {
         if !source_binary.exists() {
             return Err(ServiceError::BinaryNotFound(source_binary.clone()));
         }
@@ -266,9 +281,9 @@ impl ServiceManager {
         // Stop the running daemon (ignore errors - may not be running)
         self.stop().ok();
 
-        if Self::is_in_app_bundle(&self.config.binary_path) {
-            // In-bundle: no copy needed — the app update already replaced the binary.
-            // Just clean up any legacy standalone binary from a pre-migration install.
+        if Self::is_in_app_bundle(source_binary) {
+            // Source is inside an app bundle — point the plist directly at it.
+            self.config.binary_path = source_binary.clone();
             info!("[service] In-bundle binary, skipping copy");
             Self::cleanup_legacy_binary();
         } else {

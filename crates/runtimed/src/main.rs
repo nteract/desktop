@@ -418,7 +418,7 @@ fn install_service(binary: Option<PathBuf>) -> anyhow::Result<()> {
     println!("Installing {} service...", daemon_service_name());
     println!("Source binary: {}", source_binary.display());
 
-    let manager = ServiceManager::default();
+    let mut manager = ServiceManager::default();
 
     if manager.is_installed() {
         // Already installed - upgrade the binary instead of failing

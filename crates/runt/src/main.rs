@@ -1452,7 +1452,7 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
     use runtimed::service::ServiceManager;
     use runtimed::singleton::get_running_daemon_info;
 
-    let manager = ServiceManager::default();
+    let mut manager = ServiceManager::default();
 
     // Get daemon info first so we can use its endpoint for the client
     let daemon_info = get_running_daemon_info();
@@ -1627,7 +1627,7 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
             }
         }
         DaemonCommands::Doctor { fix, json } => {
-            doctor_command(&manager, &client, daemon_info.as_ref(), fix, json).await?;
+            doctor_command(&mut manager, &client, daemon_info.as_ref(), fix, json).await?;
         }
         DaemonCommands::Start => {
             if runt_workspace::is_dev_mode() {
@@ -1812,7 +1812,7 @@ async fn dev_command(command: DevCommands) -> Result<()> {
 
 /// Diagnose daemon installation issues and optionally fix them.
 async fn doctor_command(
-    manager: &runtimed::service::ServiceManager,
+    manager: &mut runtimed::service::ServiceManager,
     client: &runtimed::client::PoolClient,
     daemon_info: Option<&runtimed::singleton::DaemonInfo>,
     fix: bool,
@@ -1857,7 +1857,13 @@ async fn doctor_command(
         daemon_info: Option<&runtimed::singleton::DaemonInfo>,
         actions_taken: Vec<String>,
     ) -> DoctorReport {
-        // Get expected paths - use service.rs paths for consistency
+        // On macOS, check what binary the plist actually points to (what launchd
+        // runs), rather than what default_binary_path() prefers. This ensures we
+        // diagnose the *actual* running binary, not the one we'd install next time.
+        #[cfg(target_os = "macos")]
+        let binary_path = runt_workspace::plist_binary_path()
+            .unwrap_or_else(runtimed::service::default_binary_path);
+        #[cfg(not(target_os = "macos"))]
         let binary_path = runtimed::service::default_binary_path();
         let socket_path = runt_workspace::default_socket_path();
         let daemon_json_path = runtimed::singleton::daemon_info_path();
@@ -2369,7 +2375,12 @@ async fn doctor_command(
 
     let mut actions_taken: Vec<String> = Vec::new();
 
-    // Get paths for fix operations
+    // Get paths for fix operations — on macOS, check what the plist actually
+    // points to so we diagnose/fix the real running binary, not the preferred one.
+    #[cfg(target_os = "macos")]
+    let binary_path =
+        runt_workspace::plist_binary_path().unwrap_or_else(runtimed::service::default_binary_path);
+    #[cfg(not(target_os = "macos"))]
     let binary_path = runtimed::service::default_binary_path();
     let socket_path = runt_workspace::default_socket_path();
     let daemon_json_path = runtimed::singleton::daemon_info_path();
@@ -2504,7 +2515,7 @@ async fn doctor_command(
                     binary_path: bundled_path.clone(),
                     ..runtimed::service::ServiceConfig::default()
                 };
-                let migrated_manager = runtimed::service::ServiceManager::new(migrated_config);
+                let mut migrated_manager = runtimed::service::ServiceManager::new(migrated_config);
                 match migrated_manager.upgrade(&bundled_path) {
                     Ok(()) => {
                         actions_taken.push(format!(

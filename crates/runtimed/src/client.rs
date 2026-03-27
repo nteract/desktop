@@ -445,7 +445,7 @@ where
     }
 
     // Production mode: full service management
-    let manager = ServiceManager::default();
+    let mut manager = ServiceManager::default();
 
     // Version of the bundled/calling binary (includes git commit for dev builds)
     let bundled_version = format!("{}+{}", env!("CARGO_PKG_VERSION"), env!("GIT_COMMIT"));
