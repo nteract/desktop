@@ -100,7 +100,8 @@ export function useSourceVersion(): number {
 
 // ── Subscription helpers ────────────────────────────────────────────────
 
-function subscribeIds(callback: () => void): () => void {
+/** Subscribe to structural changes (add/delete/move). Exported for cell-ui-state neighbor hooks. */
+export function subscribeIds(callback: () => void): () => void {
   _idsSubscribers.add(callback);
   return () => _idsSubscribers.delete(callback);
 }
@@ -314,6 +315,11 @@ export function updateNotebookCells(
 /** Read the current cells as an ordered array (no subscription). */
 export function getNotebookCellsSnapshot(): NotebookCell[] {
   return _cellIds.map((id) => _cellMap.get(id)!);
+}
+
+/** Read the current cell ID list (no subscription). */
+export function getCellIdsSnapshot(): string[] {
+  return _cellIds;
 }
 
 /** Get a single cell by ID (no subscription). */

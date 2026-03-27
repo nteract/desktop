@@ -22,12 +22,11 @@ import { Button } from "@/components/ui/button";
 import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
-import type { CellPagePayload } from "../App";
 import {
   EditorRegistryProvider,
   useEditorRegistry,
 } from "../hooks/useEditorRegistry";
-import type { FindMatch } from "../hooks/useGlobalFind";
+import { useFocusedCellId, useSearchCurrentMatch } from "../lib/cell-ui-state";
 import { logger } from "../lib/logger";
 import {
   getNotebookCellsSnapshot,
@@ -43,20 +42,13 @@ import { RawCell } from "./RawCell";
 interface NotebookViewProps {
   cellIds: string[];
   isLoading?: boolean;
-  focusedCellId: string | null;
-  executingCellIds: Set<string>;
-  queuedCellIds: Set<string>;
-  pagePayloads: Map<string, CellPagePayload>;
   runtime?: Runtime | null;
-  searchQuery?: string;
-  searchCurrentMatch?: FindMatch | null;
   onFocusCell: (cellId: string) => void;
   onExecuteCell: (cellId: string) => void;
   onInterruptKernel: () => void;
   onDeleteCell: (cellId: string) => void;
   onAddCell: (type: "code" | "markdown", afterCellId?: string | null) => void;
   onMoveCell: (cellId: string, afterCellId?: string | null) => void;
-  onClearPagePayload: (cellId: string) => void;
   onReportOutputMatchCount?: (cellId: string, count: number) => void;
   onSetCellSourceHidden?: (cellId: string, hidden: boolean) => void;
   onSetCellOutputsHidden?: (cellId: string, hidden: boolean) => void;
@@ -358,20 +350,13 @@ function SortableCell({
 function NotebookViewContent({
   cellIds,
   isLoading = false,
-  focusedCellId,
-  executingCellIds,
-  queuedCellIds,
-  pagePayloads,
   runtime = "python",
-  searchQuery,
-  searchCurrentMatch,
   onFocusCell,
   onExecuteCell,
   onInterruptKernel,
   onDeleteCell,
   onAddCell,
   onMoveCell,
-  onClearPagePayload,
   onReportOutputMatchCount,
   onSetCellSourceHidden,
   onSetCellOutputsHidden,
@@ -379,6 +364,10 @@ function NotebookViewContent({
   const containerRef = useRef<HTMLDivElement>(null);
   // Track whether focus change was keyboard-driven (should scroll) or mouse-driven (already visible)
   const focusSourceRef = useRef<"mouse" | "keyboard">("keyboard");
+
+  // Read transient UI state from the store instead of props
+  const focusedCellId = useFocusedCellId();
+  const searchCurrentMatch = useSearchCurrentMatch();
   // Ref for cellIds so renderCell can read the latest list without
   // depending on the array identity. This prevents recreating
   // renderCell (and remounting widget iframes) on structural changes.
@@ -486,22 +475,6 @@ function NotebookViewContent({
   const hiddenGroupsRef = useRef(hiddenGroups);
   hiddenGroupsRef.current = hiddenGroups;
 
-  // Compute the cell ID that precedes the focused cell (keeps its output bright)
-  const previousCellId = useMemo(() => {
-    if (!focusedCellId) return null;
-    const focusedIndex = cellIds.indexOf(focusedCellId);
-    return focusedIndex > 0 ? cellIds[focusedIndex - 1] : null;
-  }, [focusedCellId, cellIds]);
-
-  // Compute the cell ID that follows the focused cell (keeps its output bright)
-  const nextCellId = useMemo(() => {
-    if (!focusedCellId) return null;
-    const focusedIndex = cellIds.indexOf(focusedCellId);
-    return focusedIndex >= 0 && focusedIndex < cellIds.length - 1
-      ? cellIds[focusedIndex + 1]
-      : null;
-  }, [focusedCellId, cellIds]);
-
   // Prevent horizontal scroll drift (can happen during text selection)
   useEffect(() => {
     const container = containerRef.current;
@@ -571,10 +544,6 @@ function NotebookViewContent({
       dragHandleProps?: Record<string, unknown>,
       isDragging?: boolean,
     ) => {
-      const isFocused = cell.id === focusedCellId;
-      const isExecuting = executingCellIds.has(cell.id);
-      const isQueued = queuedCellIds.has(cell.id);
-
       // Navigation callbacks — skip cells that are collapsed into a hidden group
       const isVisibleCell = (id: string) => {
         const g = hiddenGroupsRef.current.get(id);
@@ -679,29 +648,13 @@ function NotebookViewContent({
       }
 
       if (cell.cell_type === "code") {
-        const pagePayload = pagePayloads.get(cell.id) ?? null;
         // Use TypeScript for Deno, IPython otherwise (for magic/shell highlighting)
         const language = runtime === "deno" ? "typescript" : "ipython";
-        // Determine active match offset for this cell's source
-        const activeSourceOffset =
-          searchCurrentMatch &&
-          searchCurrentMatch.cellId === cell.id &&
-          searchCurrentMatch.type === "source"
-            ? searchCurrentMatch.offset
-            : -1;
         return (
           <CodeCell
             key={cell.id}
             cell={cell}
             language={language}
-            isFocused={isFocused}
-            isPreviousCellFromFocused={cell.id === previousCellId}
-            isNextCellFromFocused={cell.id === nextCellId}
-            isExecuting={isExecuting}
-            isQueued={isQueued}
-            pagePayload={pagePayload}
-            searchQuery={searchQuery}
-            searchActiveOffset={activeSourceOffset}
             onSearchMatchCount={
               onReportOutputMatchCount
                 ? (count: number) => onReportOutputMatchCount(cell.id, count)
@@ -717,7 +670,6 @@ function NotebookViewContent({
             onFocusPrevious={onFocusPrevious}
             onFocusNext={onFocusNext}
             onInsertCellAfter={() => onAddCell("code", cell.id)}
-            onClearPagePayload={() => onClearPagePayload(cell.id)}
             isLastCell={index === cellIdsRef.current.length - 1}
             dragHandleProps={dragHandleProps}
             isDragging={isDragging}
@@ -736,10 +688,8 @@ function NotebookViewContent({
             hiddenGroupErrorCount={
               hiddenGroupsRef.current.get(cell.id)?.errorCount
             }
-            isGroupExecuting={
-              hiddenGroupsRef.current
-                .get(cell.id)
-                ?.groupCellIds.some((id) => executingCellIds.has(id)) ?? false
+            hiddenGroupCellIds={
+              hiddenGroupsRef.current.get(cell.id)?.groupCellIds
             }
             onExpandHiddenGroup={
               hiddenGroupsRef.current.has(cell.id) &&
@@ -765,10 +715,6 @@ function NotebookViewContent({
           <MarkdownCell
             key={cell.id}
             cell={cell}
-            isFocused={isFocused}
-            isPreviousCellFromFocused={cell.id === previousCellId}
-            isNextCellFromFocused={cell.id === nextCellId}
-            searchQuery={searchQuery}
             onFocus={() => {
               focusSourceRef.current = "mouse";
               onFocusCell(cell.id);
@@ -790,10 +736,6 @@ function NotebookViewContent({
         <RawCell
           key={cell.id}
           cell={cell}
-          isFocused={isFocused}
-          isPreviousCellFromFocused={cell.id === previousCellId}
-          isNextCellFromFocused={cell.id === nextCellId}
-          searchQuery={searchQuery}
           onFocus={() => {
             focusSourceRef.current = "mouse";
             onFocusCell(cell.id);
@@ -810,21 +752,12 @@ function NotebookViewContent({
       );
     },
     [
-      focusedCellId,
-      previousCellId,
-      nextCellId,
-      executingCellIds,
-      queuedCellIds,
-      pagePayloads,
       runtime,
-      searchQuery,
-      searchCurrentMatch,
       onFocusCell,
       onExecuteCell,
       onInterruptKernel,
       onDeleteCell,
       onAddCell,
-      onClearPagePayload,
       onReportOutputMatchCount,
       onSetCellSourceHidden,
       onSetCellOutputsHidden,

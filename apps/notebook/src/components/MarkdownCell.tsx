@@ -28,6 +28,12 @@ import {
   unregisterAttributionEditor,
 } from "../lib/attribution-registry";
 import { useBlobPort } from "../lib/blob-port";
+import {
+  useIsCellFocused,
+  useIsNextCellFromFocused,
+  useIsPreviousCellFromFocused,
+  useSearchQuery,
+} from "../lib/cell-ui-state";
 import { registerEditor, unregisterEditor } from "../lib/cursor-registry";
 import { logger } from "../lib/logger";
 import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
@@ -41,18 +47,12 @@ const handleIframeError = (err: { message: string; stack?: string }) =>
 
 interface MarkdownCellProps {
   cell: MarkdownCellType;
-  isFocused: boolean;
-  searchQuery?: string;
   onFocus: () => void;
   onDelete: () => void;
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
   onInsertCellAfter?: () => void;
   isLastCell?: boolean;
-  /** Whether this cell is immediately before the focused cell */
-  isPreviousCellFromFocused?: boolean;
-  /** Whether this cell is immediately after the focused cell */
-  isNextCellFromFocused?: boolean;
   /** Props for dnd-kit drag handle (applied to ribbon) */
   dragHandleProps?: Record<string, unknown>;
   /** Whether this cell is currently being dragged */
@@ -63,20 +63,20 @@ interface MarkdownCellProps {
 
 export const MarkdownCell = memo(function MarkdownCell({
   cell,
-  isFocused,
-  searchQuery,
   onFocus,
   onDelete,
   onFocusPrevious,
   onFocusNext,
   onInsertCellAfter,
   isLastCell = false,
-  isPreviousCellFromFocused,
-  isNextCellFromFocused,
   dragHandleProps,
   isDragging,
   rightGutterContent,
 }: MarkdownCellProps) {
+  const isFocused = useIsCellFocused(cell.id);
+  const isPreviousCellFromFocused = useIsPreviousCellFromFocused(cell.id);
+  const isNextCellFromFocused = useIsNextCellFromFocused(cell.id);
+  const searchQuery = useSearchQuery();
   const applyInlineFormatting = useCallback(
     (prefix: string, suffix = prefix) =>
       (view: EditorView) => {
