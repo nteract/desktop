@@ -223,9 +223,10 @@ async fn install_conda_env(
 
     specs.push(MatchSpec::from_str("ipykernel", match_spec_options)?);
     specs.push(MatchSpec::from_str("ipywidgets", match_spec_options)?);
+    specs.push(MatchSpec::from_str("anywidget", match_spec_options)?);
 
     for dep in &deps.dependencies {
-        if dep != "ipykernel" && dep != "ipywidgets" {
+        if dep != "ipykernel" && dep != "ipywidgets" && dep != "anywidget" {
             specs.push(MatchSpec::from_str(dep, match_spec_options)?);
         }
     }
