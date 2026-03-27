@@ -25,6 +25,7 @@
 //! - Multiple windows share the same kernel
 
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -53,6 +54,33 @@ use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
 /// of output messages (e.g. fast-printing cells) so slower peers trigger a
 /// full doc sync ("peer lagged") rather than losing messages.
 const KERNEL_BROADCAST_CAPACITY: usize = 256;
+
+/// Catch panics from automerge internal operations.
+///
+/// Automerge 0.7.4 (and 0.8.0) has a known bug where the change collector
+/// panics with `MissingOps` when internal op-set indices become inconsistent
+/// (see `op_set2/change/collector.rs:761`). This affects `generate_sync_message`,
+/// `fork_at`, `merge`, and `get_changes`.
+///
+/// After catching a panic, callers should call `rebuild_from_save()` on the
+/// affected doc to round-trip save→load and rebuild clean internal indices.
+fn catch_automerge_panic<T>(label: &str, f: impl FnOnce() -> T) -> Result<T, String> {
+    match std::panic::catch_unwind(AssertUnwindSafe(f)) {
+        Ok(val) => Ok(val),
+        Err(payload) => {
+            let msg = if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = payload.downcast_ref::<&str>() {
+                s.to_string()
+            } else {
+                "unknown panic".to_string()
+            };
+            Err(format!(
+                "[{label}] automerge panicked (upstream bug, see automerge collector.rs MissingOps): {msg}"
+            ))
+        }
+    }
+}
 
 /// Trust state for a notebook room.
 /// Tracks whether the notebook's dependencies are trusted for auto-launch.
@@ -344,7 +372,10 @@ async fn process_markdown_assets(room: &NotebookRoom) {
 
     let persist_bytes = {
         let mut doc = room.doc.write().await;
-        let _ = doc.merge(&mut fork);
+        if let Err(e) = catch_automerge_panic("metadata-merge", || doc.merge(&mut fork)) {
+            warn!("{}", e);
+            doc.rebuild_from_save();
+        }
         doc.save()
     };
 
@@ -512,8 +543,15 @@ async fn apply_cell_error_to_state_doc(
     // Merge fork back — concurrent state_doc writes compose via CRDT
     {
         let mut sd = room_state_doc.write().await;
-        if sd.merge(&mut fork).is_ok() {
-            let _ = room_state_changed_tx.send(());
+        match catch_automerge_panic("cell-error-state-merge", || sd.merge(&mut fork)) {
+            Ok(Ok(_)) => {
+                let _ = room_state_changed_tx.send(());
+            }
+            Ok(Err(_)) => {}
+            Err(e) => {
+                warn!("{}", e);
+                sd.rebuild_from_save();
+            }
         }
     }
 }
@@ -570,8 +608,15 @@ async fn apply_kernel_died_to_state_doc(
     // Merge fork back
     {
         let mut sd = room_state_doc.write().await;
-        if sd.merge(&mut fork).is_ok() {
-            let _ = room_state_changed_tx.send(());
+        match catch_automerge_panic("kernel-died-state-merge", || sd.merge(&mut fork)) {
+            Ok(Ok(_)) => {
+                let _ = room_state_changed_tx.send(());
+            }
+            Ok(Err(_)) => {}
+            Err(e) => {
+                warn!("{}", e);
+                sd.rebuild_from_save();
+            }
         }
     }
 
@@ -1533,8 +1578,19 @@ where
     // to avoid holding the write lock across async I/O.
     let initial_encoded = {
         let mut doc = room.doc.write().await;
-        doc.generate_sync_message(&mut peer_state)
-            .map(|msg| msg.encode())
+        match catch_automerge_panic("initial-doc-sync", || {
+            doc.generate_sync_message(&mut peer_state)
+                .map(|msg| msg.encode())
+        }) {
+            Ok(encoded) => encoded,
+            Err(e) => {
+                warn!("{}", e);
+                doc.rebuild_from_save();
+                peer_state = sync::State::new();
+                doc.generate_sync_message(&mut peer_state)
+                    .map(|msg| msg.encode())
+            }
+        }
     };
     if let Some(encoded) = initial_encoded {
         connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &encoded).await?;
@@ -1543,9 +1599,21 @@ where
     // Phase 1.1: Initial RuntimeStateDoc sync — encode inside lock, send outside
     let initial_state_encoded = {
         let mut state_doc = room.state_doc.write().await;
-        state_doc
-            .generate_sync_message(&mut state_peer_state)
-            .map(|msg| msg.encode())
+        match catch_automerge_panic("initial-state-sync", || {
+            state_doc
+                .generate_sync_message(&mut state_peer_state)
+                .map(|msg| msg.encode())
+        }) {
+            Ok(encoded) => encoded,
+            Err(e) => {
+                warn!("{}", e);
+                state_doc.rebuild_from_save();
+                state_peer_state = sync::State::new();
+                state_doc
+                    .generate_sync_message(&mut state_peer_state)
+                    .map(|msg| msg.encode())
+            }
+        }
     };
     if let Some(encoded) = initial_state_encoded {
         connection::send_typed_frame(writer, NotebookFrameType::RuntimeStateSync, &encoded).await?;
@@ -1628,16 +1696,43 @@ where
                                 // reply, then release the lock before performing async I/O.
                                 let (persist_bytes, reply_encoded) = {
                                     let mut doc = room.doc.write().await;
-                                    doc.receive_sync_message(&mut peer_state, message)?;
+
+                                    // Guard receive_sync_message against automerge panics
+                                    let recv_result = catch_automerge_panic("doc-receive-sync", || {
+                                        doc.receive_sync_message(&mut peer_state, message)
+                                    });
+                                    match recv_result {
+                                        Ok(Ok(())) => {}
+                                        Ok(Err(e)) => {
+                                            warn!("[notebook-sync] receive_sync_message error: {}", e);
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            warn!("{}", e);
+                                            doc.rebuild_from_save();
+                                            peer_state = sync::State::new();
+                                            continue;
+                                        }
+                                    }
 
                                     let bytes = doc.save();
 
                                     // Notify other peers in this room
                                     let _ = room.changed_tx.send(());
 
-                                    let encoded = doc
-                                        .generate_sync_message(&mut peer_state)
-                                        .map(|reply| reply.encode());
+                                    let encoded = match catch_automerge_panic("doc-sync-reply", || {
+                                        doc.generate_sync_message(&mut peer_state)
+                                            .map(|reply| reply.encode())
+                                    }) {
+                                        Ok(encoded) => encoded,
+                                        Err(e) => {
+                                            warn!("{}", e);
+                                            doc.rebuild_from_save();
+                                            peer_state = sync::State::new();
+                                            doc.generate_sync_message(&mut peer_state)
+                                                .map(|reply| reply.encode())
+                                        }
+                                    };
 
                                     (bytes, encoded)
                                 };
@@ -1806,13 +1901,42 @@ where
                                     .map_err(|e| anyhow::anyhow!("decode state sync: {}", e))?;
                                 let reply_encoded = {
                                     let mut state_doc = room.state_doc.write().await;
-                                    state_doc.receive_sync_message(
-                                        &mut state_peer_state,
-                                        message,
-                                    )?;
-                                    state_doc
-                                        .generate_sync_message(&mut state_peer_state)
-                                        .map(|msg| msg.encode())
+
+                                    let recv_result = catch_automerge_panic("state-receive-sync", || {
+                                        state_doc.receive_sync_message(
+                                            &mut state_peer_state,
+                                            message,
+                                        )
+                                    });
+                                    match recv_result {
+                                        Ok(Ok(())) => {}
+                                        Ok(Err(e)) => {
+                                            warn!("[notebook-sync] state receive_sync_message error: {}", e);
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            warn!("{}", e);
+                                            state_doc.rebuild_from_save();
+                                            state_peer_state = sync::State::new();
+                                            continue;
+                                        }
+                                    }
+
+                                    match catch_automerge_panic("state-sync-reply", || {
+                                        state_doc
+                                            .generate_sync_message(&mut state_peer_state)
+                                            .map(|msg| msg.encode())
+                                    }) {
+                                        Ok(encoded) => encoded,
+                                        Err(e) => {
+                                            warn!("{}", e);
+                                            state_doc.rebuild_from_save();
+                                            state_peer_state = sync::State::new();
+                                            state_doc
+                                                .generate_sync_message(&mut state_peer_state)
+                                                .map(|msg| msg.encode())
+                                        }
+                                    }
                                 };
                                 if let Some(encoded) = reply_encoded {
                                     connection::send_typed_frame(
@@ -1846,8 +1970,19 @@ where
                 // write lock across async I/O.
                 let encoded = {
                     let mut doc = room.doc.write().await;
-                    doc.generate_sync_message(&mut peer_state)
-                        .map(|msg| msg.encode())
+                    match catch_automerge_panic("doc-broadcast", || {
+                        doc.generate_sync_message(&mut peer_state)
+                            .map(|msg| msg.encode())
+                    }) {
+                        Ok(encoded) => encoded,
+                        Err(e) => {
+                            warn!("{}", e);
+                            doc.rebuild_from_save();
+                            peer_state = sync::State::new();
+                            doc.generate_sync_message(&mut peer_state)
+                                .map(|msg| msg.encode())
+                        }
+                    }
                 };
                 if let Some(encoded) = encoded {
                     connection::send_typed_frame(
@@ -1865,9 +2000,21 @@ where
                     Ok(()) => {
                         let encoded = {
                             let mut state_doc = room.state_doc.write().await;
-                            state_doc
-                                .generate_sync_message(&mut state_peer_state)
-                                .map(|msg| msg.encode())
+                            match catch_automerge_panic("state-broadcast", || {
+                                state_doc
+                                    .generate_sync_message(&mut state_peer_state)
+                                    .map(|msg| msg.encode())
+                            }) {
+                                Ok(encoded) => encoded,
+                                Err(e) => {
+                                    warn!("{}", e);
+                                    state_doc.rebuild_from_save();
+                                    state_peer_state = sync::State::new();
+                                    state_doc
+                                        .generate_sync_message(&mut state_peer_state)
+                                        .map(|msg| msg.encode())
+                                }
+                            }
                         };
                         if let Some(encoded) = encoded {
                             connection::send_typed_frame(
@@ -1886,9 +2033,21 @@ where
                         // Send a full sync to catch up
                         let encoded = {
                             let mut state_doc = room.state_doc.write().await;
-                            state_doc
-                                .generate_sync_message(&mut state_peer_state)
-                                .map(|msg| msg.encode())
+                            match catch_automerge_panic("state-broadcast-lagged", || {
+                                state_doc
+                                    .generate_sync_message(&mut state_peer_state)
+                                    .map(|msg| msg.encode())
+                            }) {
+                                Ok(encoded) => encoded,
+                                Err(e) => {
+                                    warn!("{}", e);
+                                    state_doc.rebuild_from_save();
+                                    state_peer_state = sync::State::new();
+                                    state_doc
+                                        .generate_sync_message(&mut state_peer_state)
+                                        .map(|msg| msg.encode())
+                                }
+                            }
                         };
                         if let Some(encoded) = encoded {
                             connection::send_typed_frame(
@@ -2023,8 +2182,19 @@ async fn send_doc_sync<W: tokio::io::AsyncWrite + Unpin>(
 ) -> anyhow::Result<()> {
     let encoded = {
         let mut doc = room.doc.write().await;
-        doc.generate_sync_message(peer_state)
-            .map(|msg| msg.encode())
+        match catch_automerge_panic("broadcast-doc-changes", || {
+            doc.generate_sync_message(peer_state)
+                .map(|msg| msg.encode())
+        }) {
+            Ok(encoded) => encoded,
+            Err(e) => {
+                warn!("{}", e);
+                doc.rebuild_from_save();
+                *peer_state = sync::State::new();
+                doc.generate_sync_message(peer_state)
+                    .map(|msg| msg.encode())
+            }
+        }
     };
     if let Some(encoded) = encoded {
         connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &encoded).await?;
@@ -3541,7 +3711,14 @@ async fn handle_notebook_request(
                                     fork.set_actor(&actor);
                                     if fork.update_source(&cell_id_clone, &formatted).is_ok() {
                                         let mut doc = room_clone.doc.write().await;
-                                        let _ = doc.merge(&mut fork);
+                                        if let Err(e) =
+                                            catch_automerge_panic("format-merge", || {
+                                                doc.merge(&mut fork)
+                                            })
+                                        {
+                                            warn!("{}", e);
+                                            doc.rebuild_from_save();
+                                        }
                                         let _ = room_clone.changed_tx.send(());
                                         debug!(
                                             "[format] Formatted cell {} after queuing",
@@ -3762,7 +3939,12 @@ async fn handle_notebook_request(
                         }
                         if any_formatted {
                             let mut doc = room_clone.doc.write().await;
-                            let _ = doc.merge(&mut fork);
+                            if let Err(e) = catch_automerge_panic("run-all-format-merge", || {
+                                doc.merge(&mut fork)
+                            }) {
+                                warn!("{}", e);
+                                doc.rebuild_from_save();
+                            }
                             let _ = room_clone.changed_tx.send(());
                             debug!("[format] Formatted cells after run-all queuing");
                         }
@@ -4296,7 +4478,10 @@ async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
 
     if formatted_count > 0 {
         let mut doc = room.doc.write().await;
-        let _ = doc.merge(&mut fork);
+        if let Err(e) = catch_automerge_panic("save-format-merge", || doc.merge(&mut fork)) {
+            warn!("{}", e);
+            doc.rebuild_from_save();
+        }
         let _ = room.changed_tx.send(());
         info!(
             "[format] Formatted {} code cells (runtime: {})",
@@ -5494,7 +5679,17 @@ where
                 doc.set_cell_resolved_assets(&cell.id, resolved_assets)
                     .map_err(|e| format!("Failed to set resolved assets for {}: {}", cell.id, e))?;
             }
-            doc.generate_sync_message(peer_state).map(|m| m.encode())
+            match catch_automerge_panic("streaming-load-cells", || {
+                doc.generate_sync_message(peer_state).map(|m| m.encode())
+            }) {
+                Ok(encoded) => encoded,
+                Err(e) => {
+                    warn!("{}", e);
+                    doc.rebuild_from_save();
+                    *peer_state = sync::State::new();
+                    doc.generate_sync_message(peer_state).map(|m| m.encode())
+                }
+            }
         };
 
         // Send sync message outside the lock
@@ -5526,7 +5721,17 @@ where
             if let Err(e) = doc.set_metadata_snapshot(&meta) {
                 warn!("[streaming-load] Failed to set metadata: {}", e);
             }
-            doc.generate_sync_message(peer_state).map(|m| m.encode())
+            match catch_automerge_panic("streaming-load-meta", || {
+                doc.generate_sync_message(peer_state).map(|m| m.encode())
+            }) {
+                Ok(encoded) => encoded,
+                Err(e) => {
+                    warn!("{}", e);
+                    doc.rebuild_from_save();
+                    *peer_state = sync::State::new();
+                    doc.generate_sync_message(peer_state).map(|m| m.encode())
+                }
+            }
         };
         if let Some(encoded) = encoded {
             connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &encoded)
@@ -5825,9 +6030,14 @@ async fn apply_ipynb_changes(
 
         let save_heads = room.last_save_heads.read().await.clone();
         let mut fork = if !save_heads.is_empty() {
-            match doc.fork_at(&save_heads) {
-                Ok(f) => f,
-                Err(_) => doc.fork(),
+            match catch_automerge_panic("file-watcher-fork-at", || doc.fork_at(&save_heads)) {
+                Ok(Ok(f)) => f,
+                Ok(Err(_)) => doc.fork(),
+                Err(e) => {
+                    warn!("{}", e);
+                    doc.rebuild_from_save();
+                    doc.fork()
+                }
             }
         } else {
             doc.fork()
@@ -5877,7 +6087,10 @@ async fn apply_ipynb_changes(
             }
         }
 
-        let _ = doc.merge(&mut fork);
+        if let Err(e) = catch_automerge_panic("file-watcher-order-merge", || doc.merge(&mut fork)) {
+            warn!("{}", e);
+            doc.rebuild_from_save();
+        }
         return true;
     }
 
@@ -5900,10 +6113,18 @@ async fn apply_ipynb_changes(
     // (e.g., background formatting) rather than overwriting them.
     let save_heads = room.last_save_heads.read().await.clone();
     let mut source_fork = if !save_heads.is_empty() {
-        doc.fork_at(&save_heads).ok().map(|mut f| {
-            f.set_actor("runtimed:filesystem");
-            f
-        })
+        match catch_automerge_panic("source-fork-at", || doc.fork_at(&save_heads)) {
+            Ok(Ok(mut f)) => {
+                f.set_actor("runtimed:filesystem");
+                Some(f)
+            }
+            Ok(Err(_)) => None,
+            Err(e) => {
+                warn!("{}", e);
+                doc.rebuild_from_save();
+                None
+            }
+        }
     } else {
         None
     };
@@ -6001,7 +6222,10 @@ async fn apply_ipynb_changes(
     // Merge source fork back — source changes from disk compose with
     // post-save CRDT changes via Automerge's text CRDT merge.
     if let Some(ref mut fork) = source_fork {
-        let _ = doc.merge(fork);
+        if let Err(e) = catch_automerge_panic("file-watcher-source-merge", || doc.merge(fork)) {
+            warn!("{}", e);
+            doc.rebuild_from_save();
+        }
     }
 
     changed

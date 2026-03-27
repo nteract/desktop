@@ -928,6 +928,24 @@ impl NotebookDoc {
         self.doc.save()
     }
 
+    /// Round-trip save→load to rebuild internal automerge indices.
+    ///
+    /// Used after catching an automerge panic (upstream MissingOps bug in
+    /// `collector.rs`). `save()` serializes via `op_set.export()` (safe),
+    /// and `load()` reconstructs all internal data structures from scratch.
+    /// This is the document-level equivalent of automerge-repo's
+    /// `decodeSyncState(encodeSyncState(state))` round-trip hack.
+    pub fn rebuild_from_save(&mut self) -> bool {
+        let bytes = self.doc.save();
+        match AutoCommit::load(&bytes) {
+            Ok(doc) => {
+                self.doc = doc;
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Save the document to a file.
     #[cfg(feature = "persistence")]
     pub fn save_to_file(&mut self, path: &Path) -> std::io::Result<()> {

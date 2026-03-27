@@ -301,6 +301,21 @@ impl RuntimeStateDoc {
         let _ = self.merge(&mut fork);
     }
 
+    /// Round-trip save→load to rebuild internal automerge indices.
+    ///
+    /// Used after catching an automerge panic (upstream MissingOps bug in
+    /// `collector.rs`). See `NotebookDoc::rebuild_from_save` for details.
+    pub fn rebuild_from_save(&mut self) -> bool {
+        let bytes = self.doc.save();
+        match AutoCommit::load(&bytes) {
+            Ok(doc) => {
+                self.doc = doc;
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Set the actor identity for this document.
     ///
     /// Forks should call this with a distinct label so their changes are
