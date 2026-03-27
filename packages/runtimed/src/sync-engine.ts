@@ -369,40 +369,82 @@ export class SyncEngine {
 
     // ── Sub-pipeline: sync error recovery ──────────────────────────
 
+    // Notebook doc sync error: send recovery reply + trigger materialization
     sub.add(
       frameEvents$
-        .pipe(
-          filter(
-            (e) =>
-              e.type === "sync_error" ||
-              e.type === "runtime_state_sync_error",
-          ),
-        )
+        .pipe(filter((e) => e.type === "sync_error"))
         .subscribe((e) => {
-          const frameType =
-            e.type === "sync_error"
-              ? FrameType.AUTOMERGE_SYNC
-              : FrameType.RUNTIME_STATE_SYNC;
           log.warn(
-            `[sync-engine] ${e.type}: doc rebuilt, sync state normalized`,
+            "[sync-engine] sync_error: doc rebuilt, sync state normalized",
           );
           if (e.reply) {
             this.opts.transport
-              .sendFrame(frameType, new Uint8Array(e.reply))
+              .sendFrame(
+                FrameType.AUTOMERGE_SYNC,
+                new Uint8Array(e.reply),
+              )
               .catch((err: unknown) => {
                 const handle = this.opts.getHandle();
-                if (handle) {
-                  if (e.type === "sync_error") {
-                    handle.cancel_last_flush();
-                  } else {
-                    handle.cancel_last_runtime_state_flush();
-                  }
-                }
+                if (handle) handle.cancel_last_flush();
                 log.warn(
                   "[sync-engine] recovery reply send failed:",
                   err,
                 );
               });
+          }
+          // If the doc advanced before the error (partial apply),
+          // trigger a full materialization so the UI reflects the
+          // recovered state. Also complete initial sync if pending.
+          if (e.changed) {
+            if (this.awaitingInitialSync) {
+              this.awaitingInitialSync = false;
+              log.info(
+                "[sync-engine] Initial sync completed via error recovery",
+              );
+              this._initialSyncComplete$.next();
+            }
+            // null changeset = full materialization needed
+            materialize$.next(null);
+          }
+        }),
+    );
+
+    // Runtime state sync error: send recovery reply + publish state
+    sub.add(
+      frameEvents$
+        .pipe(filter((e) => e.type === "runtime_state_sync_error"))
+        .subscribe((e) => {
+          log.warn(
+            "[sync-engine] runtime_state_sync_error: state doc rebuilt, sync state normalized",
+          );
+          if (e.reply) {
+            this.opts.transport
+              .sendFrame(
+                FrameType.RUNTIME_STATE_SYNC,
+                new Uint8Array(e.reply),
+              )
+              .catch((err: unknown) => {
+                const handle = this.opts.getHandle();
+                if (handle) handle.cancel_last_runtime_state_flush();
+                log.warn(
+                  "[sync-engine] state recovery reply send failed:",
+                  err,
+                );
+              });
+          }
+          // If the state doc advanced, publish the recovered snapshot
+          // so kernel status / queue / execution UI stays current.
+          if (e.changed && e.state) {
+            const state = e.state as RuntimeState;
+            const transitions = diffExecutions(
+              this.prevExecutions,
+              state.executions,
+            );
+            this.prevExecutions = state.executions;
+            this._runtimeState$.next(state);
+            if (transitions.length > 0) {
+              this._executionTransitions$.next(transitions);
+            }
           }
         }),
     );

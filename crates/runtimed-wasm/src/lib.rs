@@ -105,12 +105,23 @@ pub enum FrameEvent {
     /// `shared_heads`, clearing transient state). The optional `reply`
     /// contains a fresh sync message to restart negotiation.
     SyncError {
+        /// True if the document advanced before the error (partial apply).
+        /// When true, the SyncEngine should trigger a full materialization
+        /// so the UI reflects the recovered doc state.
+        changed: bool,
         /// Fresh sync message generated after recovery.
         #[serde(skip_serializing_if = "Option::is_none")]
         reply: Option<Vec<u8>>,
     },
     /// Runtime state sync error recovered — state doc rebuilt.
     RuntimeStateSyncError {
+        /// True if the state doc advanced before the error.
+        changed: bool,
+        /// The current runtime state snapshot (only when changed).
+        /// Included so the SyncEngine can update the UI even if no
+        /// further runtime-state frames arrive after recovery.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        state: Option<Box<RuntimeState>>,
         /// Fresh sync message generated after recovery.
         #[serde(skip_serializing_if = "Option::is_none")]
         reply: Option<Vec<u8>>,
@@ -1011,11 +1022,19 @@ impl NotebookHandle {
                     // negotiation with the daemon.
                     self.rebuild_doc();
                     self.normalize_sync_state();
+                    // Check if the doc advanced before the error (partial apply).
+                    // If so, the UI needs a full materialization to reflect the
+                    // recovered state — otherwise it can stay stuck or stale.
+                    let heads_after = self.doc.doc_mut().get_heads();
+                    let changed = heads_before != heads_after;
+                    if changed {
+                        self.metadata_fingerprint_cache = None;
+                    }
                     let reply = self
                         .doc
                         .generate_sync_message(&mut self.sync_state)
                         .map(|msg| msg.encode());
-                    events.push(FrameEvent::SyncError { reply });
+                    events.push(FrameEvent::SyncError { changed, reply });
                     return serialize_to_js(&events).unwrap_or(JsValue::UNDEFINED);
                 }
                 let heads_after = self.doc.doc_mut().get_heads();
@@ -1093,16 +1112,28 @@ impl NotebookHandle {
                     .is_err()
                 {
                     // Recovery: rebuild state doc + normalize sync state,
-                    // then generate a fresh sync message.
+                    // then generate a fresh sync message. Include the
+                    // recovered state snapshot so the UI stays current.
                     self.rebuild_state_doc();
                     self.normalize_state_sync_state();
+                    let heads_after = self.state_doc.doc_mut().get_heads();
+                    let changed = heads_before != heads_after;
+                    let state = if changed {
+                        Some(Box::new(self.state_doc.read_state()))
+                    } else {
+                        None
+                    };
                     let reply = self
                         .state_doc
                         .doc_mut()
                         .sync()
                         .generate_sync_message(&mut self.state_sync_state)
                         .map(|msg| msg.encode());
-                    events.push(FrameEvent::RuntimeStateSyncError { reply });
+                    events.push(FrameEvent::RuntimeStateSyncError {
+                        changed,
+                        state,
+                        reply,
+                    });
                     return serialize_to_js(&events).unwrap_or(JsValue::UNDEFINED);
                 }
                 let heads_after = self.state_doc.doc_mut().get_heads();

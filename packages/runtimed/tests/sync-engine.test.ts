@@ -1251,7 +1251,7 @@ describe("SyncEngine", () => {
       const replyBytes = [0x01, 0x02, 0x03];
       handle = createMockHandle({
         receive_frame: vi.fn(() => [
-          { type: "sync_error", reply: replyBytes } as FrameEvent,
+          { type: "sync_error", changed: false, reply: replyBytes } as FrameEvent,
         ]),
       });
       const sendSpy = vi.spyOn(transport, "sendFrame");
@@ -1268,11 +1268,54 @@ describe("SyncEngine", () => {
       engine.stop();
     });
 
+    it("triggers full materialization when sync_error has changed=true", () => {
+      handle = createMockHandle({
+        receive_frame: vi.fn(() => [
+          { type: "sync_error", changed: true, reply: [0x01] } as FrameEvent,
+        ]),
+      });
+      const engine = createEngine();
+      engine.start();
+
+      const cellEmissions: (CellChangeset | null)[] = [];
+      engine.cellChanges$.subscribe((cs) => cellEmissions.push(cs));
+
+      transport.deliver([0x00, 0x99]);
+      // Advance past the coalescing window (32ms)
+      advanceBy(scheduler, 33); // past 32ms coalescing window
+
+      // null = full materialization needed
+      expect(cellEmissions).toHaveLength(1);
+      expect(cellEmissions[0]).toBeNull();
+      engine.stop();
+    });
+
+    it("completes initial sync on sync_error with changed=true", () => {
+      handle = createMockHandle({
+        receive_frame: vi.fn(() => [
+          { type: "sync_error", changed: true } as FrameEvent,
+        ]),
+      });
+      const engine = createEngine();
+      engine.start();
+
+      let initialSyncCompleted = false;
+      engine.initialSyncComplete$.subscribe(() => {
+        initialSyncCompleted = true;
+      });
+
+      transport.deliver([0x00, 0x99]);
+      advanceBy(scheduler, 1);
+
+      expect(initialSyncCompleted).toBe(true);
+      engine.stop();
+    });
+
     it("sends recovery reply on runtime_state_sync_error event", () => {
       const replyBytes = [0x04, 0x05];
       handle = createMockHandle({
         receive_frame: vi.fn(() => [
-          { type: "runtime_state_sync_error", reply: replyBytes } as FrameEvent,
+          { type: "runtime_state_sync_error", changed: false, reply: replyBytes } as FrameEvent,
         ]),
       });
       const sendSpy = vi.spyOn(transport, "sendFrame");
@@ -1289,11 +1332,34 @@ describe("SyncEngine", () => {
       engine.stop();
     });
 
+    it("publishes runtime state on runtime_state_sync_error with changed=true", () => {
+      const state = makeRuntimeState({
+        "e1": { cell_id: "c1", status: "running", execution_count: 1, success: null },
+      });
+      handle = createMockHandle({
+        receive_frame: vi.fn(() => [
+          { type: "runtime_state_sync_error", changed: true, state, reply: [0x01] } as FrameEvent,
+        ]),
+      });
+      const engine = createEngine();
+      engine.start();
+
+      const states: RuntimeState[] = [];
+      engine.runtimeState$.subscribe((s) => states.push(s));
+
+      transport.deliver([0x05, 0x99]);
+      advanceBy(scheduler, 1);
+
+      expect(states).toHaveLength(1);
+      expect(states[0].executions["e1"].status).toBe("running");
+      engine.stop();
+    });
+
     it("calls cancel_last_flush if recovery reply send fails", async () => {
       const replyBytes = [0x01, 0x02];
       handle = createMockHandle({
         receive_frame: vi.fn(() => [
-          { type: "sync_error", reply: replyBytes } as FrameEvent,
+          { type: "sync_error", changed: false, reply: replyBytes } as FrameEvent,
         ]),
       });
       vi.spyOn(transport, "sendFrame").mockRejectedValueOnce(new Error("send failed"));
@@ -1303,7 +1369,6 @@ describe("SyncEngine", () => {
       transport.deliver([0x00, 0x99]);
       advanceBy(scheduler, 1);
 
-      // Let the promise rejection propagate
       await vi.waitFor(() => {
         expect(handle.cancel_last_flush).toHaveBeenCalled();
       });
@@ -1314,7 +1379,7 @@ describe("SyncEngine", () => {
       const replyBytes = [0x01, 0x02];
       handle = createMockHandle({
         receive_frame: vi.fn(() => [
-          { type: "runtime_state_sync_error", reply: replyBytes } as FrameEvent,
+          { type: "runtime_state_sync_error", changed: false, reply: replyBytes } as FrameEvent,
         ]),
       });
       vi.spyOn(transport, "sendFrame").mockRejectedValueOnce(new Error("send failed"));
@@ -1330,10 +1395,10 @@ describe("SyncEngine", () => {
       engine.stop();
     });
 
-    it("handles sync_error with no reply gracefully", () => {
+    it("handles sync_error with no reply and changed=false gracefully", () => {
       handle = createMockHandle({
         receive_frame: vi.fn(() => [
-          { type: "sync_error" } as FrameEvent,
+          { type: "sync_error", changed: false } as FrameEvent,
         ]),
       });
       const sendSpy = vi.spyOn(transport, "sendFrame");
@@ -1343,7 +1408,6 @@ describe("SyncEngine", () => {
       transport.deliver([0x00, 0x99]);
       advanceBy(scheduler, 1);
 
-      // Should not attempt to send when no reply
       expect(sendSpy).not.toHaveBeenCalled();
       engine.stop();
     });
