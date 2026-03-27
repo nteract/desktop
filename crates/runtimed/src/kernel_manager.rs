@@ -2030,6 +2030,7 @@ impl RoomKernel {
                 let mut sd = self.state_doc.write().await;
                 let mut changed = sd.set_execution_done(execution_id, success);
                 changed |= sd.set_queue(None, &doc_queued);
+                changed |= sd.trim_executions(128) > 0;
                 if changed {
                     let _ = self.state_changed_tx.send(());
                 }

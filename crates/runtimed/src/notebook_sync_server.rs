@@ -47,7 +47,7 @@ use crate::protocol::{
     EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse, QueueEntry,
 };
 use notebook_doc::presence::{self, PresenceState};
-use notebook_doc::runtime_state::RuntimeStateDoc;
+use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
 
 /// Capacity for the per-room kernel broadcast channel. Sized to absorb bursts
 /// of output messages (e.g. fast-printing cells) so slower peers trigger a
@@ -2487,23 +2487,38 @@ async fn auto_launch_kernel(
                                 );
                                 // Mark the execution as errored so execution_done() knows
                                 // to write success=false to the RuntimeStateDoc.
-                                let mut guard = room_kernel.lock().await;
-                                if let Some(ref mut k) = *guard {
-                                    k.mark_execution_error();
-                                    // Clear the queue to stop execution on error, which matches
-                                    // the behavior of manually-launched kernel handler.
-                                    let cleared = k.clear_queue();
-                                    if !cleared.is_empty() {
-                                        info!(
-                                            "[notebook-sync] Cleared {} queued cells due to error",
-                                            cleared.len()
-                                        );
+                                let (executing_entry, cleared) = {
+                                    let mut guard = room_kernel.lock().await;
+                                    if let Some(ref mut k) = *guard {
+                                        k.mark_execution_error();
+                                        // Clear the queue to stop execution on error, which matches
+                                        // the behavior of manually-launched kernel handler.
+                                        let cleared = k.clear_queue();
+                                        if !cleared.is_empty() {
+                                            info!(
+                                                "[notebook-sync] Cleared {} queued cells due to error",
+                                                cleared.len()
+                                            );
+                                        }
+                                        let exec = k.executing_entry().map(|e| DocQueueEntry {
+                                            cell_id: e.cell_id,
+                                            execution_id: e.execution_id,
+                                        });
+                                        (exec, cleared)
+                                    } else {
+                                        (None, vec![])
                                     }
-                                }
-                                // Write cleared queue to state doc
+                                };
+                                // Write cleared queue to state doc and mark
+                                // cleared executions as errored.
                                 {
                                     let mut sd = room_state_doc.write().await;
-                                    if sd.set_queue(None, &[]) {
+                                    let mut changed = sd.set_queue(executing_entry.as_ref(), &[]);
+                                    for entry in &cleared {
+                                        changed |=
+                                            sd.set_execution_done(&entry.execution_id, false);
+                                    }
+                                    if changed {
                                         let _ = room_state_changed_tx.send(());
                                     }
                                 }
@@ -3307,22 +3322,39 @@ async fn handle_notebook_request(
                                         );
                                         // Mark the execution as errored so execution_done() knows
                                         // to write success=false to the RuntimeStateDoc.
-                                        let mut guard = room_kernel.lock().await;
-                                        if let Some(ref mut k) = *guard {
-                                            k.mark_execution_error();
-                                            // Clear the queue to stop execution on error
-                                            let cleared = k.clear_queue();
-                                            if !cleared.is_empty() {
-                                                info!(
-                                                    "[notebook-sync] Cleared {} queued cells due to error",
-                                                    cleared.len()
-                                                );
+                                        let (executing_entry, cleared) = {
+                                            let mut guard = room_kernel.lock().await;
+                                            if let Some(ref mut k) = *guard {
+                                                k.mark_execution_error();
+                                                // Clear the queue to stop execution on error
+                                                let cleared = k.clear_queue();
+                                                if !cleared.is_empty() {
+                                                    info!(
+                                                        "[notebook-sync] Cleared {} queued cells due to error",
+                                                        cleared.len()
+                                                    );
+                                                }
+                                                let exec =
+                                                    k.executing_entry().map(|e| DocQueueEntry {
+                                                        cell_id: e.cell_id,
+                                                        execution_id: e.execution_id,
+                                                    });
+                                                (exec, cleared)
+                                            } else {
+                                                (None, vec![])
                                             }
-                                        }
-                                        // Write cleared queue to state doc
+                                        };
+                                        // Write cleared queue to state doc and mark
+                                        // cleared executions as errored.
                                         {
                                             let mut sd = room_state_doc.write().await;
-                                            if sd.set_queue(None, &[]) {
+                                            let mut changed =
+                                                sd.set_queue(executing_entry.as_ref(), &[]);
+                                            for entry in &cleared {
+                                                changed |= sd
+                                                    .set_execution_done(&entry.execution_id, false);
+                                            }
+                                            if changed {
                                                 let _ = room_state_changed_tx.send(());
                                             }
                                         }
