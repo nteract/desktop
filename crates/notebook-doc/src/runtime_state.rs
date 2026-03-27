@@ -258,6 +258,59 @@ impl RuntimeStateDoc {
         &mut self.doc
     }
 
+    // ── Fork + Merge ────────────────────────────────────────────────
+
+    /// Fork the document at its current state.
+    ///
+    /// Returns a new `RuntimeStateDoc` whose underlying `AutoCommit` is an
+    /// Automerge fork. Changes made on the fork are independent of the
+    /// original — call [`merge`](Self::merge) to reconcile them.
+    ///
+    /// **Important:** Forks inherit the parent's actor ID. Call
+    /// [`set_actor`](Self::set_actor) on the fork to assign a distinct
+    /// identity (e.g., `"runtimed:state:cell-error"`) before making any
+    /// mutations to avoid `DuplicateSeqNumber` errors on merge.
+    pub fn fork(&mut self) -> Self {
+        Self {
+            doc: self.doc.fork(),
+        }
+    }
+
+    /// Merge another `RuntimeStateDoc`'s changes into this one.
+    ///
+    /// Returns the change hashes that were applied. CRDT merge semantics
+    /// apply — concurrent writes to different keys compose cleanly.
+    pub fn merge(
+        &mut self,
+        other: &mut RuntimeStateDoc,
+    ) -> Result<Vec<automerge::ChangeHash>, AutomergeError> {
+        self.doc.merge(&mut other.doc)
+    }
+
+    /// Fork, apply mutations on the fork, and merge back.
+    ///
+    /// Convenience wrapper for synchronous fork+merge blocks. For async
+    /// gaps (where an `.await` separates the read from the write), use
+    /// [`fork`](Self::fork) and [`merge`](Self::merge) directly.
+    pub fn fork_and_merge<F>(&mut self, f: F)
+    where
+        F: FnOnce(&mut RuntimeStateDoc),
+    {
+        let mut fork = self.fork();
+        f(&mut fork);
+        let _ = self.merge(&mut fork);
+    }
+
+    /// Set the actor identity for this document.
+    ///
+    /// Forks should call this with a distinct label so their changes are
+    /// attributable and don't conflict with the parent's deterministic
+    /// `"runtimed:state"` actor ID.
+    pub fn set_actor(&mut self, label: &str) {
+        self.doc
+            .set_actor(ActorId::from(label.as_bytes()));
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────
 
     /// Get the ObjId for a top-level map key.
@@ -1423,5 +1476,83 @@ mod tests {
         assert_eq!(es.status, "done");
         assert_eq!(es.success, Some(true));
         assert_eq!(es.execution_count, Some(3));
+    }
+
+    // ── Fork+Merge Tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_fork_and_merge_basic() {
+        let mut doc = RuntimeStateDoc::new();
+
+        let mut fork = doc.fork();
+        fork.set_actor("runtimed:state:test");
+
+        let entry = QueueEntry {
+            cell_id: "cell-1".to_string(),
+            execution_id: "exec-1".to_string(),
+        };
+        fork.set_queue(Some(&entry), &[]);
+
+        doc.merge(&mut fork).unwrap();
+
+        let state = doc.read_state();
+        assert_eq!(state.queue.executing.as_ref().map(|e| e.cell_id.as_str()), Some("cell-1"));
+    }
+
+    #[test]
+    fn test_fork_and_merge_concurrent_writes() {
+        // Fork, write queue on fork AND kernel status on original,
+        // merge — both changes should be present.
+        let mut doc = RuntimeStateDoc::new();
+
+        let mut fork = doc.fork();
+        fork.set_actor("runtimed:state:test");
+
+        // Write queue on fork
+        let entry = QueueEntry {
+            cell_id: "cell-1".to_string(),
+            execution_id: "exec-1".to_string(),
+        };
+        fork.set_queue(Some(&entry), &[]);
+
+        // Write kernel status on original (concurrent)
+        doc.set_kernel_status("busy");
+
+        // Merge — both changes should compose
+        doc.merge(&mut fork).unwrap();
+
+        let state = doc.read_state();
+        assert_eq!(state.kernel.status, "busy");
+        assert_eq!(state.queue.executing.as_ref().map(|e| e.cell_id.as_str()), Some("cell-1"));
+    }
+
+    #[test]
+    fn test_fork_actor_distinct() {
+        let mut doc = RuntimeStateDoc::new();
+        let mut fork = doc.fork();
+
+        // Fork inherits parent actor — must set a distinct one
+        fork.set_actor("runtimed:state:cell-error");
+
+        // Verify the fork's actor is different from the parent
+        let parent_actor = format!("{}", doc.doc().get_actor());
+        let fork_actor = format!("{}", fork.doc().get_actor());
+        assert_ne!(parent_actor, fork_actor);
+    }
+
+    #[test]
+    fn test_fork_and_merge_closure() {
+        let mut doc = RuntimeStateDoc::new();
+
+        doc.fork_and_merge(|fork| {
+            fork.set_actor("runtimed:state:test");
+            fork.set_kernel_status("error");
+            fork.set_queue(None, &[]);
+            fork.set_execution_done("exec-1", false);
+        });
+
+        let state = doc.read_state();
+        assert_eq!(state.kernel.status, "error");
+        assert!(state.queue.executing.is_none());
     }
 }
