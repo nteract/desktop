@@ -1,6 +1,6 @@
 import { useMemo, useSyncExternalStore } from "react";
 import type { FindMatch } from "../hooks/useGlobalFind";
-import { getCellIdsSnapshot } from "./notebook-cells";
+import { getCellIdsSnapshot, subscribeIds } from "./notebook-cells";
 
 // ---------------------------------------------------------------------------
 // Transient UI state store for per-cell rendering state.
@@ -107,14 +107,14 @@ export function useSearchCurrentMatch(): FindMatch | null {
 
 /** Returns true when this cell is immediately before the focused cell. */
 export function useIsPreviousCellFromFocused(cellId: string): boolean {
-  const subscribe = useMemo(() => subscribeFocusFor(cellId), [cellId]);
+  const subscribe = useMemo(() => subscribeNeighborFor(cellId), [cellId]);
   const getSnapshot = useMemo(() => getIsPreviousSnapshot(cellId), [cellId]);
   return useSyncExternalStore(subscribe, getSnapshot);
 }
 
 /** Returns true when this cell is immediately after the focused cell. */
 export function useIsNextCellFromFocused(cellId: string): boolean {
-  const subscribe = useMemo(() => subscribeFocusFor(cellId), [cellId]);
+  const subscribe = useMemo(() => subscribeNeighborFor(cellId), [cellId]);
   const getSnapshot = useMemo(() => getIsNextSnapshot(cellId), [cellId]);
   return useSyncExternalStore(subscribe, getSnapshot);
 }
@@ -165,6 +165,22 @@ function subscribeFocusFor(_cellId: string): (cb: () => void) => () => void {
   return (cb: () => void) => {
     _focusSubscribers.add(cb);
     return () => _focusSubscribers.delete(cb);
+  };
+}
+
+// Per-cell neighbor: subscribes to both focus changes AND structural changes
+// (cell add/delete/reorder). Without the structural subscription, inserting
+// or deleting a cell next to the focused cell wouldn't update the dimming.
+function subscribeNeighborFor(
+  _cellId: string,
+): (cb: () => void) => () => void {
+  return (cb: () => void) => {
+    _focusSubscribers.add(cb);
+    const unsubIds = subscribeIds(cb);
+    return () => {
+      _focusSubscribers.delete(cb);
+      unsubIds();
+    };
   };
 }
 

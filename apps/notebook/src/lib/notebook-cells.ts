@@ -100,7 +100,8 @@ export function useSourceVersion(): number {
 
 // ── Subscription helpers ────────────────────────────────────────────────
 
-function subscribeIds(callback: () => void): () => void {
+/** Subscribe to structural changes (add/delete/move). Exported for cell-ui-state neighbor hooks. */
+export function subscribeIds(callback: () => void): () => void {
   _idsSubscribers.add(callback);
   return () => _idsSubscribers.delete(callback);
 }
