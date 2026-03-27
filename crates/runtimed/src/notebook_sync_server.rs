@@ -849,6 +849,19 @@ pub struct NotebookRoom {
     /// disk changes merge cleanly with post-save CRDT changes (e.g.,
     /// background formatting that completed after the save).
     pub last_save_heads: Arc<RwLock<Vec<automerge::ChangeHash>>>,
+    /// Cell sources as they were written to disk at last save.
+    ///
+    /// The file watcher compares disk content against this snapshot (not the
+    /// live CRDT) to distinguish our own autosave writes from genuine external
+    /// changes (git pull, external editor). Without this, the file watcher
+    /// would see the autosave'd content as "different" from the live CRDT
+    /// (which has progressed with new user typing since the save) and
+    /// overwrite the user's recent edits.
+    ///
+    /// This is a workaround for the fact that we can't use
+    /// `fork_at(save_heads)` to read the doc at the save point due to
+    /// automerge/automerge#1327.
+    pub last_save_sources: Arc<RwLock<HashMap<String, String>>>,
     /// Shutdown signal for the file watcher task.
     /// Wrapped in Mutex to allow setting after Arc creation.
     /// Sent when the room is evicted to stop the watcher.
@@ -1015,6 +1028,7 @@ impl NotebookRoom {
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
             last_save_heads: Arc::new(RwLock::new(Vec::new())),
+            last_save_sources: Arc::new(RwLock::new(HashMap::new())),
             watcher_shutdown_tx: Mutex::new(None),
             state_doc,
             state_changed_tx,
@@ -1077,6 +1091,7 @@ impl NotebookRoom {
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
             last_save_heads: Arc::new(RwLock::new(Vec::new())),
+            last_save_sources: Arc::new(RwLock::new(HashMap::new())),
             watcher_shutdown_tx: Mutex::new(None),
             state_doc,
             state_changed_tx,
@@ -4702,6 +4717,13 @@ async fn save_notebook_to_disk(
         target_path.is_none() || notebook_path == *room.notebook_path.read().await;
     if is_primary_path {
         *room.last_save_heads.write().await = snapshot_heads;
+        // Snapshot cell sources at save time so the file watcher can
+        // distinguish our own writes from genuine external changes.
+        let mut saved = HashMap::with_capacity(cells.len());
+        for cell in &cells {
+            saved.insert(cell.id.clone(), cell.source.clone());
+        }
+        *room.last_save_sources.write().await = saved;
     }
 
     info!(
@@ -6079,12 +6101,25 @@ async fn apply_ipynb_changes(
         return true;
     }
 
-    // Find cells to delete (in current but not in external)
+    // Find cells to delete — only cells that existed in our last save
+    // but are no longer on disk (genuine external deletion). Cells that
+    // are in the CRDT but NOT in last_save_sources were created after
+    // the save and should be preserved (the user or agent just added them).
+    //
+    // If we've never saved (last_save_sources is empty), fall back to the
+    // old behavior: delete any cell not on disk. This handles the initial
+    // load case where there's no save snapshot yet.
+    let saved_sources = room.last_save_sources.read().await;
+    let have_save_snapshot = !saved_sources.is_empty();
     let cells_to_delete: Vec<String> = current_cells
         .iter()
-        .filter(|c| !external_map.contains_key(c.id.as_str()))
+        .filter(|c| {
+            !external_map.contains_key(c.id.as_str())
+                && (!have_save_snapshot || saved_sources.contains_key(c.id.as_str()))
+        })
         .map(|c| c.id.clone())
         .collect();
+    drop(saved_sources);
 
     for cell_id in cells_to_delete {
         debug!("[notebook-watch] Deleting cell: {}", cell_id);
@@ -6097,6 +6132,15 @@ async fn apply_ipynb_changes(
     // external edits compose with concurrent CRDT changes rather than
     // overwriting them. We use fork() instead of fork_at(save_heads)
     // to avoid the automerge MissingOps bug (automerge/automerge#1327).
+    //
+    // Source comparison uses last_save_sources (what we wrote to disk)
+    // instead of the live CRDT (which may have progressed with new user
+    // typing since the save). This prevents the file watcher from
+    // treating our own autosave as an "external change" and overwriting
+    // the user's recent edits. Only genuine external changes (git pull,
+    // external editor) — where the disk content differs from what we
+    // last saved — trigger a source update.
+    let saved_sources = room.last_save_sources.read().await;
     let mut source_fork = {
         let mut f = doc.fork();
         f.set_actor("runtimed:filesystem");
@@ -6106,11 +6150,20 @@ async fn apply_ipynb_changes(
     // Process external cells in order (add new or update existing)
     for (index, ext_cell) in external_cells.iter().enumerate() {
         if let Some(current_cell) = current_map.get(ext_cell.id.as_str()) {
-            // Cell exists - check if source changed
-            if current_cell.source != ext_cell.source {
+            // Cell exists — check if source genuinely changed externally.
+            // Compare disk content against what we last saved, NOT the live
+            // CRDT. If disk matches our last save, the change is from our
+            // own autosave and should be ignored (the CRDT may have
+            // progressed with new typing since then).
+            let saved_source = saved_sources.get(ext_cell.id.as_str());
+            let is_external_change = match saved_source {
+                Some(saved) => ext_cell.source != *saved,
+                None => current_cell.source != ext_cell.source,
+            };
+
+            if is_external_change {
                 debug!("[notebook-watch] Updating source for cell: {}", ext_cell.id);
                 if let Some(ref mut fork) = source_fork {
-                    // Apply on fork at save point, merge later
                     let _ = fork.update_source(&ext_cell.id, &ext_cell.source);
                     changed = true;
                 } else if let Ok(true) = doc.update_source(&ext_cell.id, &ext_cell.source) {
@@ -6192,6 +6245,9 @@ async fn apply_ipynb_changes(
             }
         }
     }
+
+    // Drop the saved_sources read guard before merging
+    drop(saved_sources);
 
     // Merge source fork back — source changes from disk compose with
     // post-save CRDT changes via Automerge's text CRDT merge.
@@ -6843,6 +6899,7 @@ mod tests {
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
             last_save_heads: Arc::new(RwLock::new(Vec::new())),
+            last_save_sources: Arc::new(RwLock::new(HashMap::new())),
             watcher_shutdown_tx: Mutex::new(None),
             state_doc,
             state_changed_tx,
