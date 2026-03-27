@@ -168,7 +168,10 @@ function cellsEqual(a: NotebookCell, b: NotebookCell): boolean {
   if (a === b) return true;
   if (a.cell_type !== b.cell_type) return false;
   if (a.source !== b.source) return false;
-  if (!shallowRecordEqual(a.metadata, b.metadata)) return false;
+  // Metadata can contain nested objects (e.g. metadata.jupyter = { source_hidden: true })
+  // that get new references on every WASM deserialization. JSON.stringify handles
+  // arbitrary nesting; WASM serialization produces consistent key ordering.
+  if (JSON.stringify(a.metadata) !== JSON.stringify(b.metadata)) return false;
 
   // cell_type-specific fields
   if (a.cell_type === "code") {
@@ -237,7 +240,20 @@ export function replaceNotebookCells(cells: NotebookCell[]): void {
       // Structurally identical — preserve old reference, skip notification
       newMap.set(cell.id, prev);
     } else {
-      newMap.set(cell.id, cell);
+      // Even when the cell changed (e.g. metadata), preserve the output
+      // array reference if every element is identical. This prevents
+      // OutputArea's handleFrameReady from firing and re-rendering iframes.
+      let stored = cell;
+      if (prev && prev.cell_type === "code" && cell.cell_type === "code") {
+        const prevOutputs = prev.outputs;
+        if (
+          prevOutputs.length === cell.outputs.length &&
+          prevOutputs.every((o, i) => o === cell.outputs[i])
+        ) {
+          stored = { ...cell, outputs: prevOutputs };
+        }
+      }
+      newMap.set(stored.id, stored);
       changedIds.push(cell.id);
       if (!prev || prev.source !== cell.source) {
         anySourceChanged = true;
