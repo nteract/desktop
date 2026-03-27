@@ -1090,8 +1090,7 @@ impl RoomKernel {
                                             .get_cell_outputs(cid)
                                             .map(|o| o.len())
                                             .unwrap_or(0);
-                                        let output_index =
-                                            merged_output_count.saturating_sub(1);
+                                        let output_index = merged_output_count.saturating_sub(1);
 
                                         let mut terminals = stream_terminals.lock().await;
                                         terminals.set_output_state(
@@ -1690,8 +1689,7 @@ impl RoomKernel {
                                                 f
                                             };
 
-                                            if let Err(e) = fork.append_output(cid, &output_ref)
-                                            {
+                                            if let Err(e) = fork.append_output(cid, &output_ref) {
                                                 warn!(
                                                     "[kernel-manager] Failed to append page output to doc: {}",
                                                     e

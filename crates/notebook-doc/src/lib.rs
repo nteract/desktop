@@ -4584,7 +4584,11 @@ mod tests {
 
         // Both outputs should be present
         let outputs = doc.get_cell_outputs("cell-1").unwrap();
-        assert_eq!(outputs.len(), 2, "both concurrent appends should survive merge");
+        assert_eq!(
+            outputs.len(),
+            2,
+            "both concurrent appends should survive merge"
+        );
 
         // The merged output count gives a valid terminal cache index
         let merged_index = outputs.len().saturating_sub(1);
