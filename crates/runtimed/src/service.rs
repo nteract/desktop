@@ -34,31 +34,28 @@ impl Default for ServiceConfig {
     }
 }
 
-/// Get the default path where the daemon binary should be found.
+/// Get the default destination path for the daemon binary.
 ///
-/// On macOS, prefers the binary inside the installed app bundle. This avoids
-/// copying the binary to a standalone location, which triggers the macOS
-/// "App Management" permission dialog and code-signature issues during upgrades.
+/// On macOS, when the current process is running inside an app bundle (i.e.
+/// as a Tauri sidecar), returns the sidecar's own path — the plist will point
+/// directly at it and no copy is needed.
 ///
-/// Resolution order (macOS):
-/// 1. `current_exe()` if it's inside an `.app` bundle (correct when running as sidecar)
-/// 2. The binary inside the installed app bundle (`/Applications/nteract.app/Contents/MacOS/...`)
-/// 3. Legacy standalone path (`~/.local/share/runt/bin/runtimed`) as fallback
+/// For all other callers (CLI, standalone `runtimed install`, etc.), returns
+/// the standalone install location (`~/.local/share/runt/bin/runtimed`).
+/// The `install()` and `upgrade()` methods handle the in-bundle → skip-copy
+/// logic based on the *source* binary, not this default.
 pub fn default_binary_path() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
-        // Prefer current_exe if we're running from inside an app bundle
-        // (this is the case when runtimed is invoked as a Tauri sidecar)
+        // When running as a Tauri sidecar, current_exe IS the in-bundle binary.
+        // Use it directly so the plist points at the app bundle.
         if let Ok(exe) = std::env::current_exe() {
             if exe.to_string_lossy().contains(".app/Contents/MacOS/") {
                 return exe;
             }
         }
-        // Find the binary inside the installed app bundle
-        if let Some(bundled) = runt_workspace::bundled_daemon_binary_path() {
-            return bundled;
-        }
-        // Legacy fallback — standalone binary from pre-migration installs
+        // For CLI / standalone callers, use the traditional install location.
+        // install() and upgrade() will override this if source_binary is in-bundle.
         runt_workspace::legacy_standalone_binary_path()
     }
 
