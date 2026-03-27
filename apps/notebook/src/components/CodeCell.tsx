@@ -314,7 +314,7 @@ export const CodeCell = memo(function CodeCell({
                     }
                   }}
                   className={cn(
-                    "inline-flex items-center gap-1 px-2 py-0.5 text-sm font-mono text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors",
+                    "inline-flex items-center gap-1 px-2 py-0.5 text-sm text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors",
                     (isExecuting || isGroupExecuting) && "animate-pulse",
                   )}
                   title={
@@ -368,11 +368,11 @@ export const CodeCell = memo(function CodeCell({
         }
         outputContent={
           isOutputsHidden && cell.outputs.length > 0 ? (
-            <div className="flex items-center justify-start">
+            <div className="flex items-center justify-start mt-0.5 pl-6">
               <button
                 type="button"
                 onClick={() => onToggleOutputsHidden?.(false)}
-                className="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
+                className="inline-flex items-center gap-1 px-2 py-0.5 text-sm text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
                 title="Show outputs"
               >
                 <span>
