@@ -844,7 +844,8 @@ pub struct NotebookRoom {
     /// Used to skip file watcher events triggered by our own saves.
     pub last_self_write: Arc<AtomicU64>,
     /// Automerge heads at the time of the last save to disk.
-    /// The file watcher uses `fork_at(last_save_heads)` so that external
+    /// Previously used by the file watcher for `fork_at(last_save_heads)` —
+    /// currently unused due to automerge/automerge#1327 but retained so that external
     /// disk changes merge cleanly with post-save CRDT changes (e.g.,
     /// background formatting that completed after the save).
     pub last_save_heads: Arc<RwLock<Vec<automerge::ChangeHash>>>,
@@ -6015,33 +6016,17 @@ async fn apply_ipynb_changes(
     let mut changed = false;
 
     // If order changed, we need to rebuild the cell list.
-    // Use fork_at(last_save_heads) + merge so the structural rebuild
-    // from disk composes with any post-save CRDT changes (e.g.,
-    // background formatting) rather than overwriting them.
+    // Use fork + merge so the structural rebuild from disk composes
+    // with concurrent CRDT changes rather than overwriting them.
     //
-    // Known limitation: cells inserted or moved locally after the last
-    // save may end up at slightly wrong positions after merge, because
-    // the fork's fractional indices don't account for post-save
-    // insertions. This is cosmetic — source text is preserved, and the
-    // user or agent can reorder manually. Still better than the old
-    // direct-mutation path which would clobber post-save source edits.
+    // We use fork() (at current heads) instead of fork_at(save_heads)
+    // because fork_at triggers an automerge bug (MissingOps panic in
+    // the change collector) when the document has a complex history of
+    // interleaved text splices and merges. See automerge/automerge#1327.
     if order_changed {
         debug!("[notebook-watch] Cell order changed, rebuilding cell list");
 
-        let save_heads = room.last_save_heads.read().await.clone();
-        let mut fork = if !save_heads.is_empty() {
-            match catch_automerge_panic("file-watcher-fork-at", || doc.fork_at(&save_heads)) {
-                Ok(Ok(f)) => f,
-                Ok(Err(_)) => doc.fork(),
-                Err(e) => {
-                    warn!("{}", e);
-                    doc.rebuild_from_save();
-                    doc.fork()
-                }
-            }
-        } else {
-            doc.fork()
-        };
+        let mut fork = doc.fork();
         fork.set_actor("runtimed:filesystem");
 
         // Delete all current cells and re-add in external order on the fork
@@ -6108,25 +6093,14 @@ async fn apply_ipynb_changes(
         }
     }
 
-    // For source updates on existing cells, use fork_at(last_save_heads)
-    // + merge so that external edits compose with post-save CRDT changes
-    // (e.g., background formatting) rather than overwriting them.
-    let save_heads = room.last_save_heads.read().await.clone();
-    let mut source_fork = if !save_heads.is_empty() {
-        match catch_automerge_panic("source-fork-at", || doc.fork_at(&save_heads)) {
-            Ok(Ok(mut f)) => {
-                f.set_actor("runtimed:filesystem");
-                Some(f)
-            }
-            Ok(Err(_)) => None,
-            Err(e) => {
-                warn!("{}", e);
-                doc.rebuild_from_save();
-                None
-            }
-        }
-    } else {
-        None
+    // For source updates on existing cells, use fork + merge so that
+    // external edits compose with concurrent CRDT changes rather than
+    // overwriting them. We use fork() instead of fork_at(save_heads)
+    // to avoid the automerge MissingOps bug (automerge/automerge#1327).
+    let mut source_fork = {
+        let mut f = doc.fork();
+        f.set_actor("runtimed:filesystem");
+        Some(f)
     };
 
     // Process external cells in order (add new or update existing)

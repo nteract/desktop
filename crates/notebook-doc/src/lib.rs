@@ -189,22 +189,7 @@ impl NotebookDoc {
         }
     }
 
-    /// Fork the document at a specific set of heads (historic point).
-    ///
-    /// The returned doc contains only the history up to `heads`. Changes
-    /// made on the fork are treated as concurrent with any changes after
-    /// `heads` in the original, enabling clean CRDT merges.
-    pub fn fork_at(&mut self, heads: &[automerge::ChangeHash]) -> Result<Self, AutomergeError> {
-        Ok(Self {
-            doc: self.doc.fork_at(heads)?,
-        })
-    }
-
     /// Get the current document heads (change hashes at the tip).
-    ///
-    /// Store these after a save to enable `fork_at` for the file watcher —
-    /// it can fork at the save point so external edits merge cleanly with
-    /// post-save CRDT changes.
     pub fn get_heads(&mut self) -> Vec<automerge::ChangeHash> {
         self.doc.get_heads()
     }
@@ -245,29 +230,6 @@ impl NotebookDoc {
         let mut fork = self.fork();
         f(&mut fork);
         let _ = self.merge(&mut fork);
-    }
-
-    /// Fork at a historic point, apply mutations, and merge back.
-    ///
-    /// Same as [`fork_and_merge`](Self::fork_and_merge) but forks at the
-    /// given heads instead of the current state. Use this when applying
-    /// external content (e.g., from disk) that corresponds to a known
-    /// save point — the mutations are treated as concurrent with any
-    /// changes after `heads`.
-    ///
-    /// Returns `Err` if the heads are unknown to this document.
-    pub fn fork_at_and_merge<F>(
-        &mut self,
-        heads: &[automerge::ChangeHash],
-        f: F,
-    ) -> Result<(), AutomergeError>
-    where
-        F: FnOnce(&mut NotebookDoc),
-    {
-        let mut fork = self.fork_at(heads)?;
-        f(&mut fork);
-        let _ = self.merge(&mut fork);
-        Ok(())
     }
 
     /// Set the actor identity for this document.
