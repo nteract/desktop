@@ -232,7 +232,10 @@ function isCellFullyHidden(cell: NotebookCell): boolean {
   const jupyter = cell.metadata?.jupyter as
     | { source_hidden?: boolean; outputs_hidden?: boolean }
     | undefined;
-  return jupyter?.source_hidden === true && jupyter?.outputs_hidden === true;
+  if (!jupyter?.source_hidden) return false;
+  // Fully hidden when source is hidden AND either outputs are explicitly
+  // hidden or there are no outputs to show.
+  return jupyter.outputs_hidden === true || cell.outputs.length === 0;
 }
 
 /**
@@ -638,7 +641,7 @@ function NotebookViewContent({
                 <Code2 className="h-3.5 w-3.5" />
               </button>
             )}
-            {deleteButton}
+            {!isSourceHidden && deleteButton}
           </div>
         );
       } else {
