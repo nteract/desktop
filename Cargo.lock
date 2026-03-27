@@ -3678,7 +3678,7 @@ dependencies = [
 
 [[package]]
 name = "notebook"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5889,7 +5889,7 @@ dependencies = [
 
 [[package]]
 name = "runt-cli"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5945,7 +5945,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -6004,7 +6004,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed-py"
-version = "0.1.0"
+version = "2.0.4"
 dependencies = [
  "base64 0.22.1",
  "kernel-env",
