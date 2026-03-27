@@ -89,7 +89,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
       >
         {/* Gutter area - action content only (ribbon moves to content rows for segmented) */}
         <div
-          className="flex w-10 flex-shrink-0 flex-col items-end justify-start gap-0.5 pr-1 pt-4 select-none"
+          className="flex w-10 flex-shrink-0 flex-col items-end justify-start gap-0.5 pr-1 pt-3.5 select-none"
           onMouseDown={onFocus}
         >
           {gutterContent}

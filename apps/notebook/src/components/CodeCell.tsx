@@ -132,10 +132,10 @@ export const CodeCell = memo(function CodeCell({
     (cell.metadata?.jupyter as { outputs_hidden?: boolean })?.outputs_hidden ===
     true;
 
-  // When both are hidden, show a single "Cell hidden" chip.
-  // We check metadata only (not outputs.length) so the cell stays collapsed
-  // when outputs are transiently cleared during re-execution.
-  const bothHidden = isSourceHidden && isOutputsHidden;
+  // Fully collapsed when source is hidden AND there's nothing else to show
+  // (outputs explicitly hidden, or no outputs at all).
+  const bothHidden =
+    isSourceHidden && (isOutputsHidden || cell.outputs.length === 0);
 
   // Register EditorView with the cursor registry for remote cursor rendering.
   // We use a ref + polling approach because the EditorView is created async
@@ -302,7 +302,7 @@ export const CodeCell = memo(function CodeCell({
           <>
             {/* Source visibility toggle + Editor */}
             {bothHidden ? (
-              <div className="flex items-center justify-start min-h-[1.75rem]">
+              <div className="flex items-center justify-start mt-0.5">
                 <button
                   type="button"
                   onClick={() => {
@@ -314,7 +314,7 @@ export const CodeCell = memo(function CodeCell({
                     }
                   }}
                   className={cn(
-                    "inline-flex items-center gap-1 px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors",
+                    "inline-flex items-center gap-1 px-2 py-0.5 text-sm font-mono text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors",
                     (isExecuting || isGroupExecuting) && "animate-pulse",
                   )}
                   title={
@@ -339,11 +339,11 @@ export const CodeCell = memo(function CodeCell({
                 </button>
               </div>
             ) : isSourceHidden ? (
-              <div className="flex items-center justify-start min-h-[1.75rem]">
+              <div className="flex items-center justify-start mt-0.5">
                 <button
                   type="button"
                   onClick={() => onToggleSourceHidden?.(false)}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 text-sm font-mono text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded transition-colors"
                   title="Show source"
                 >
                   <Code2 className="h-3 w-3" />
@@ -368,7 +368,7 @@ export const CodeCell = memo(function CodeCell({
         }
         outputContent={
           isOutputsHidden && cell.outputs.length > 0 ? (
-            <div className="flex items-center justify-start min-h-[1.75rem]">
+            <div className="flex items-center justify-start">
               <button
                 type="button"
                 onClick={() => onToggleOutputsHidden?.(false)}
