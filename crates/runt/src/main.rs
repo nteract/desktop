@@ -1825,6 +1825,8 @@ async fn doctor_command(
         installed_binary: CheckResult,
         #[serde(skip_serializing_if = "Option::is_none")]
         quarantine: Option<CheckResult>, // macOS only: com.apple.quarantine xattr check
+        #[serde(skip_serializing_if = "Option::is_none")]
+        standalone_binary: Option<CheckResult>, // macOS only: legacy standalone vs in-bundle check
         service_config: CheckResult,
         #[serde(skip_serializing_if = "Option::is_none")]
         plist_home_env: Option<CheckResult>,
@@ -1870,8 +1872,13 @@ async fn doctor_command(
         };
 
         // Check 1b: On macOS, check for quarantine xattr (Gatekeeper blocks execution)
+        // Skip for in-bundle binaries — the app is already signed/notarized.
         #[cfg(target_os = "macos")]
-        let quarantine = if binary_exists {
+        let is_in_bundle = binary_path
+            .to_string_lossy()
+            .contains(".app/Contents/MacOS/");
+        #[cfg(target_os = "macos")]
+        let quarantine = if binary_exists && !is_in_bundle {
             let output = std::process::Command::new("xattr")
                 .args(["-p", "com.apple.quarantine"])
                 .arg(&binary_path)
@@ -1908,8 +1915,42 @@ async fn doctor_command(
         #[cfg(not(target_os = "macos"))]
         let quarantine: Option<CheckResult> = None;
 
-        // Check 2: Service config (plist/systemd/startup script)
+        // Check 1c: On macOS, check if plist points to legacy standalone binary
         let config_exists = service_config_path.exists();
+        #[cfg(target_os = "macos")]
+        let standalone_binary = if config_exists {
+            match runt_workspace::plist_binary_path() {
+                Some(plist_bin) => {
+                    let in_bundle = plist_bin.to_string_lossy().contains(".app/Contents/MacOS/");
+                    if in_bundle && plist_bin.exists() {
+                        Some(CheckResult {
+                            path: shorten_path(&plist_bin),
+                            status: "ok".to_string(),
+                            detail: Some("in-bundle".to_string()),
+                        })
+                    } else if in_bundle && !plist_bin.exists() {
+                        Some(CheckResult {
+                            path: shorten_path(&plist_bin),
+                            status: "error".to_string(),
+                            detail: Some("app bundle not found at expected path".to_string()),
+                        })
+                    } else {
+                        Some(CheckResult {
+                            path: shorten_path(&plist_bin),
+                            status: "legacy".to_string(),
+                            detail: Some("standalone binary (needs migration)".to_string()),
+                        })
+                    }
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+        #[cfg(not(target_os = "macos"))]
+        let standalone_binary: Option<CheckResult> = None;
+
+        // Check 2: Service config (plist/systemd/startup script)
         let service_config = CheckResult {
             path: shorten_path(&service_config_path),
             status: if config_exists { "ok" } else { "missing" }.to_string(),
@@ -2270,10 +2311,16 @@ async fn doctor_command(
             .as_ref()
             .map(|c| c.status != "ok")
             .unwrap_or(false);
+        let is_legacy_install = standalone_binary
+            .as_ref()
+            .map(|c| c.status == "legacy")
+            .unwrap_or(false);
 
         // Determine diagnosis
         let diagnosis = if daemon_running_result && version_mismatch {
             "Daemon is running but version mismatch detected. Run 'runt daemon doctor --fix' or restart the app.".to_string()
+        } else if daemon_running_result && is_legacy_install {
+            "Daemon is running but uses a legacy standalone binary. Run 'runt daemon doctor --fix' to migrate to the app bundle.".to_string()
         } else if daemon_running_result && file_assoc_issue {
             "Daemon is healthy but .ipynb file association needs attention. Run 'runt daemon doctor --fix'.".to_string()
         } else if daemon_running_result {
@@ -2305,6 +2352,7 @@ async fn doctor_command(
         DoctorReport {
             installed_binary,
             quarantine,
+            standalone_binary,
             service_config,
             plist_home_env,
             launchd_service,
@@ -2444,6 +2492,38 @@ async fn doctor_command(
                 Err(e) => {
                     eprintln!("xattr command failed: {}", e);
                 }
+            }
+        }
+
+        // Fix legacy standalone binary — migrate plist to in-bundle binary (macOS only)
+        #[cfg(target_os = "macos")]
+        if runt_workspace::is_legacy_standalone_install() {
+            if let Some(bundled_path) = find_bundled_runtimed() {
+                // Create a ServiceManager with the in-bundle binary path
+                let migrated_config = runtimed::service::ServiceConfig {
+                    binary_path: bundled_path.clone(),
+                    ..runtimed::service::ServiceConfig::default()
+                };
+                let migrated_manager = runtimed::service::ServiceManager::new(migrated_config);
+                match migrated_manager.upgrade(&bundled_path) {
+                    Ok(()) => {
+                        actions_taken.push(format!(
+                            "Migrated plist to in-bundle binary at {}",
+                            bundled_path.display()
+                        ));
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to migrate to in-bundle binary: {}", e);
+                    }
+                }
+            } else if !json {
+                eprintln!(
+                    "Legacy standalone binary detected but no app bundle found to migrate to."
+                );
+                eprintln!(
+                    "Launch the {} application to complete migration.",
+                    runt_workspace::desktop_display_name()
+                );
             }
         }
 
@@ -2625,6 +2705,21 @@ async fn doctor_command(
                 );
             }
         }
+        if let Some(ref standalone_check) = report.standalone_binary {
+            if standalone_check.status != "ok" {
+                println!(
+                    "{:<20} {} {}{}",
+                    "Binary location:".bold(),
+                    standalone_check.path.dimmed(),
+                    colored_status_icon(&standalone_check.status),
+                    standalone_check
+                        .detail
+                        .as_ref()
+                        .map(|d| format!(" ({})", d).dimmed().to_string())
+                        .unwrap_or_default()
+                );
+            }
+        }
         println!(
             "{:<20} {} {}",
             "Service config:".bold(),
@@ -2734,18 +2829,27 @@ async fn doctor_command(
             .as_ref()
             .map(|c| c.status != "ok")
             .unwrap_or(false);
-        let diagnosis_colored =
-            if report.daemon_running.status == "ok" && !version_mismatch && !file_assoc_issue {
-                report.diagnosis.green()
-            } else if version_mismatch
-                || report.daemon_state.status == "stale"
-                || launchd_has_issue
-                || file_assoc_issue
-            {
-                report.diagnosis.yellow()
-            } else {
-                report.diagnosis.red()
-            };
+        let legacy_install = report
+            .standalone_binary
+            .as_ref()
+            .map(|c| c.status == "legacy")
+            .unwrap_or(false);
+        let diagnosis_colored = if report.daemon_running.status == "ok"
+            && !version_mismatch
+            && !file_assoc_issue
+            && !legacy_install
+        {
+            report.diagnosis.green()
+        } else if version_mismatch
+            || report.daemon_state.status == "stale"
+            || launchd_has_issue
+            || file_assoc_issue
+            || legacy_install
+        {
+            report.diagnosis.yellow()
+        } else {
+            report.diagnosis.red()
+        };
         println!("{} {}", "Diagnosis:".bold(), diagnosis_colored);
 
         if !report.actions_taken.is_empty() {
@@ -2754,7 +2858,9 @@ async fn doctor_command(
             for action in &report.actions_taken {
                 println!("  {} {}", "✓".green(), action);
             }
-        } else if (report.daemon_running.status != "ok" || file_assoc_issue) && !fix {
+        } else if (report.daemon_running.status != "ok" || file_assoc_issue || legacy_install)
+            && !fix
+        {
             println!();
             println!(
                 "{}",
@@ -3110,6 +3216,7 @@ fn colored_status_icon(status: &str) -> colored::ColoredString {
         "error" => "[error]".red(),
         "mismatch" => "[mismatch]".red(),
         "unknown" => "[unknown]".yellow(),
+        "legacy" => "[legacy]".yellow(),
         "not_running" => "".normal(),
         _ => "[?]".yellow(),
     }

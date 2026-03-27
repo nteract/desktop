@@ -5,14 +5,16 @@
 //! - Linux: systemd user service (channel-specific `runtimed*.service`)
 //! - Windows: Startup shortcut
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use log::info;
+use runt_workspace::cache_namespace;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use runt_workspace::daemon_binary_basename;
 #[cfg(target_os = "macos")]
 use runt_workspace::daemon_launchd_label;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use runt_workspace::daemon_service_basename;
-use runt_workspace::{cache_namespace, daemon_binary_basename};
 
 /// Service configuration.
 #[derive(Debug, Clone)]
@@ -32,15 +34,32 @@ impl Default for ServiceConfig {
     }
 }
 
-/// Get the default path where the daemon binary should be installed.
+/// Get the default path where the daemon binary should be found.
+///
+/// On macOS, prefers the binary inside the installed app bundle. This avoids
+/// copying the binary to a standalone location, which triggers the macOS
+/// "App Management" permission dialog and code-signature issues during upgrades.
+///
+/// Resolution order (macOS):
+/// 1. `current_exe()` if it's inside an `.app` bundle (correct when running as sidecar)
+/// 2. The binary inside the installed app bundle (`/Applications/nteract.app/Contents/MacOS/...`)
+/// 3. Legacy standalone path (`~/.local/share/runt/bin/runtimed`) as fallback
 pub fn default_binary_path() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
-        dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(cache_namespace())
-            .join("bin")
-            .join(daemon_binary_basename())
+        // Prefer current_exe if we're running from inside an app bundle
+        // (this is the case when runtimed is invoked as a Tauri sidecar)
+        if let Ok(exe) = std::env::current_exe() {
+            if exe.to_string_lossy().contains(".app/Contents/MacOS/") {
+                return exe;
+            }
+        }
+        // Find the binary inside the installed app bundle
+        if let Some(bundled) = runt_workspace::bundled_daemon_binary_path() {
+            return bundled;
+        }
+        // Legacy fallback — standalone binary from pre-migration installs
+        runt_workspace::legacy_standalone_binary_path()
     }
 
     #[cfg(target_os = "linux")]
@@ -123,22 +142,28 @@ impl ServiceManager {
 
     /// Install the daemon as a system service.
     ///
-    /// This copies the binary to a persistent location and creates the
-    /// appropriate service configuration for the current platform.
+    /// On macOS, if the binary path is inside an app bundle, the plist is
+    /// pointed directly at the in-bundle binary — no copy is needed. This
+    /// avoids the macOS "App Management" permission prompt and code-signature
+    /// issues during upgrades.
     pub fn install(&self, source_binary: &PathBuf) -> ServiceResult<()> {
         if !source_binary.exists() {
             return Err(ServiceError::BinaryNotFound(source_binary.clone()));
         }
 
-        // Create binary directory
-        if let Some(parent) = self.config.binary_path.parent() {
-            std::fs::create_dir_all(parent)?;
+        if Self::is_in_app_bundle(&self.config.binary_path) {
+            info!(
+                "[service] Using in-bundle binary at {:?}",
+                self.config.binary_path
+            );
+            Self::cleanup_legacy_binary();
+        } else {
+            // Non-bundle path (Linux, Windows, or edge cases) — copy the binary
+            if let Some(parent) = self.config.binary_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            self.atomic_copy_binary(source_binary)?;
         }
-
-        // Atomically replace the binary (write to temp + rename) to avoid
-        // corrupting a running daemon's mapped pages on macOS. See the
-        // doc comment on `atomic_copy_binary` for details.
-        self.atomic_copy_binary(source_binary)?;
 
         // Create service configuration
         self.create_service_config()?;
@@ -206,15 +231,19 @@ impl ServiceManager {
         // Remove service configuration
         self.remove_service_config()?;
 
-        // Remove binary
-        if self.config.binary_path.exists() {
-            std::fs::remove_file(&self.config.binary_path)?;
-            info!("[service] Removed binary {:?}", self.config.binary_path);
-        }
-
-        // Try to remove parent directory if empty
-        if let Some(parent) = self.config.binary_path.parent() {
-            std::fs::remove_dir(parent).ok();
+        if Self::is_in_app_bundle(&self.config.binary_path) {
+            // Don't delete the in-bundle binary — it belongs to the app.
+            // Only clean up the legacy standalone binary if it still exists.
+            Self::cleanup_legacy_binary();
+        } else {
+            // Remove standalone binary
+            if self.config.binary_path.exists() {
+                std::fs::remove_file(&self.config.binary_path)?;
+                info!("[service] Removed binary {:?}", self.config.binary_path);
+            }
+            if let Some(parent) = self.config.binary_path.parent() {
+                std::fs::remove_dir(parent).ok();
+            }
         }
 
         info!("[service] Service uninstalled successfully");
@@ -224,7 +253,9 @@ impl ServiceManager {
     /// Upgrade the daemon binary by stopping, replacing, and restarting.
     ///
     /// This is used when the notebook app detects a version mismatch between
-    /// the running daemon and the bundled version.
+    /// the running daemon and the bundled version. On macOS with in-bundle
+    /// binaries, the binary is already updated (the app was replaced), so this
+    /// just regenerates the plist and restarts launchd.
     pub fn upgrade(&self, source_binary: &PathBuf) -> ServiceResult<()> {
         if !source_binary.exists() {
             return Err(ServiceError::BinaryNotFound(source_binary.clone()));
@@ -235,11 +266,18 @@ impl ServiceManager {
         // Stop the running daemon (ignore errors - may not be running)
         self.stop().ok();
 
-        // Atomically replace the binary (write to temp + rename) so that
-        // any daemon still mapped to the old inode keeps valid pages.
-        self.atomic_copy_binary(source_binary)?;
+        if Self::is_in_app_bundle(&self.config.binary_path) {
+            // In-bundle: no copy needed — the app update already replaced the binary.
+            // Just clean up any legacy standalone binary from a pre-migration install.
+            info!("[service] In-bundle binary, skipping copy");
+            Self::cleanup_legacy_binary();
+        } else {
+            // Standalone binary (Linux, Windows, edge cases) — atomically replace.
+            self.atomic_copy_binary(source_binary)?;
+        }
 
-        // Recreate service config to apply any template changes (e.g., new env vars)
+        // Recreate service config to apply any template changes (e.g., new env vars,
+        // or to migrate the plist from a standalone path to an in-bundle path)
         self.create_service_config()?;
         info!("[service] Updated service config");
 
@@ -254,6 +292,38 @@ impl ServiceManager {
 
         info!("[service] Upgrade completed successfully");
         Ok(())
+    }
+
+    /// Check whether a path is inside a macOS `.app` bundle.
+    fn is_in_app_bundle(path: &Path) -> bool {
+        path.to_string_lossy().contains(".app/Contents/MacOS/")
+    }
+
+    /// Remove the legacy standalone binary from `~/.local/share/runt/bin/`.
+    ///
+    /// Best-effort: logs on failure but never errors. This cleans up the
+    /// pre-migration install where the binary was copied out of the app bundle.
+    fn cleanup_legacy_binary() {
+        #[cfg(target_os = "macos")]
+        {
+            let legacy = runt_workspace::legacy_standalone_binary_path();
+            if legacy.exists() {
+                match std::fs::remove_file(&legacy) {
+                    Ok(()) => info!("[service] Removed legacy standalone binary at {:?}", legacy),
+                    Err(e) => info!(
+                        "[service] Could not remove legacy binary {:?}: {}",
+                        legacy, e
+                    ),
+                }
+                // Try to remove parent dirs if empty
+                if let Some(parent) = legacy.parent() {
+                    std::fs::remove_dir(parent).ok();
+                    if let Some(grandparent) = parent.parent() {
+                        std::fs::remove_dir(grandparent).ok();
+                    }
+                }
+            }
+        }
     }
 
     /// Start the daemon service.
@@ -697,8 +767,12 @@ mod tests {
         let binary = default_binary_path();
         let log = default_log_path();
 
-        assert!(binary.to_string_lossy().contains(cache_namespace()));
-        assert!(binary.to_string_lossy().contains("runtimed"));
+        let binary_str = binary.to_string_lossy();
+        // On macOS the path may be inside an app bundle or the legacy standalone location
+        assert!(
+            binary_str.contains("runtimed"),
+            "binary path should contain 'runtimed': {binary_str}"
+        );
         assert!(log.to_string_lossy().contains("runtimed.log"));
     }
 
