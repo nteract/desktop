@@ -149,7 +149,8 @@ async fn main() -> anyhow::Result<()> {
 
         let log_path = early_log_path();
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-        let msg = format!("{} [PANIC] runtimed: {}", timestamp, panic_info);
+        let bt = std::backtrace::Backtrace::force_capture();
+        let msg = format!("{} [PANIC] runtimed: {}\n{}", timestamp, panic_info, bt);
 
         // Write to stderr (visible in terminal)
         eprintln!("{}", msg);
