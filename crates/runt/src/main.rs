@@ -2199,8 +2199,9 @@ async fn doctor_command(
         };
 
         // Check 5: Version comparison
+        // Reuse binary_path from the top of run_checks (plist path on macOS)
+        // rather than default_binary_path(), which may resolve to the wrong binary.
         let version_match = {
-            let binary_path = runtimed::service::default_binary_path();
             let installed_ver = if binary_exists {
                 get_binary_version(&binary_path)
             } else {
