@@ -23,13 +23,25 @@ export interface TextAttribution {
   actors: string[];
 }
 
-/** Typed event returned by WASM `receive_frame()`. */
+/**
+ * Typed event returned by WASM `receive_frame()`.
+ *
+ * Event types:
+ * - `sync_applied` — Automerge sync message applied successfully
+ * - `broadcast` — Daemon broadcast (kernel status, output, etc.)
+ * - `presence` — Remote peer presence update
+ * - `runtime_state_sync_applied` — RuntimeStateDoc sync applied
+ * - `sync_error` — Sync failed, doc rebuilt + sync state normalized, reply restarts negotiation
+ * - `runtime_state_sync_error` — RuntimeState sync failed, same recovery pattern
+ * - `unknown` — Unrecognized frame type
+ */
 export interface FrameEvent {
   type: string;
   changed?: boolean;
   changeset?: CellChangeset;
   attributions?: TextAttribution[];
-  /** Inline sync reply bytes from receive_frame (#1067 fix). */
+  /** Inline sync reply bytes from receive_frame (#1067 fix).
+   *  Also used for recovery replies in sync_error / runtime_state_sync_error events. */
   reply?: number[];
   payload?: unknown;
   /** RuntimeState from RuntimeStateSyncApplied. */

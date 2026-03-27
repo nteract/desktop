@@ -97,6 +97,24 @@ pub enum FrameEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         state: Option<Box<RuntimeState>>,
     },
+    /// Sync error recovered — doc rebuilt and sync state normalized.
+    ///
+    /// Emitted when `receive_sync_message` fails (e.g. automerge MissingOps
+    /// bug). The WASM layer automatically rebuilds the doc via save→load and
+    /// normalizes sync state via encode→decode round-trip (preserving
+    /// `shared_heads`, clearing transient state). The optional `reply`
+    /// contains a fresh sync message to restart negotiation.
+    SyncError {
+        /// Fresh sync message generated after recovery.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reply: Option<Vec<u8>>,
+    },
+    /// Runtime state sync error recovered — state doc rebuilt.
+    RuntimeStateSyncError {
+        /// Fresh sync message generated after recovery.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reply: Option<Vec<u8>>,
+    },
     /// Unknown frame type — frontend can log and ignore.
     Unknown { frame_type: u8 },
 }
@@ -903,6 +921,49 @@ impl NotebookHandle {
         self.state_sync_state = sync::State::new();
     }
 
+    /// Normalize sync state by round-tripping through encode→decode.
+    ///
+    /// Preserves `shared_heads` (what we've agreed on with the daemon) while
+    /// clearing all transient state (`sent_hashes`, `in_flight`, `their_heads`,
+    /// `their_need`, etc.). This is the frontend equivalent of automerge-repo's
+    /// `decodeSyncState(encodeSyncState(state))` defensive pattern, which
+    /// prevents infinite sync loops caused by corrupted ephemeral state.
+    ///
+    /// Falls back to `State::new()` if encoding itself is corrupted.
+    fn normalize_sync_state(&mut self) {
+        let encoded = self.sync_state.encode();
+        self.sync_state = sync::State::decode(&encoded).unwrap_or_else(|_| sync::State::new());
+    }
+
+    /// Normalize the RuntimeStateDoc sync state (same pattern as notebook sync).
+    fn normalize_state_sync_state(&mut self) {
+        let encoded = self.state_sync_state.encode();
+        self.state_sync_state =
+            sync::State::decode(&encoded).unwrap_or_else(|_| sync::State::new());
+    }
+
+    /// Rebuild the notebook doc via save→load to clear corrupted internal indices.
+    ///
+    /// Mirrors `NotebookDoc::rebuild_from_save()` on the daemon side. The
+    /// `save()` path uses `op_set.export()` (safe even with corrupted indices),
+    /// and `load()` reconstructs all internal data structures from scratch.
+    fn rebuild_doc(&mut self) {
+        let bytes = self.doc.save();
+        if let Ok(doc) =
+            NotebookDoc::load_with_encoding(&bytes, notebook_doc::TextEncoding::Utf16CodeUnit)
+        {
+            self.doc = doc;
+        }
+    }
+
+    /// Rebuild the RuntimeStateDoc via save→load.
+    fn rebuild_state_doc(&mut self) {
+        let bytes = self.state_doc.doc_mut().save();
+        if let Ok(doc) = automerge::AutoCommit::load(&bytes) {
+            *self.state_doc.doc_mut() = doc;
+        }
+    }
+
     /// Receive a typed frame from the daemon, demux by type byte, return events for the frontend.
     ///
     /// The input is the raw frame bytes from the `notebook:frame` Tauri event:
@@ -943,7 +1004,19 @@ impl NotebookHandle {
                     .receive_sync_message(&mut self.sync_state, msg)
                     .is_err()
                 {
-                    return JsValue::UNDEFINED;
+                    // Recovery: rebuild doc indices via save→load, then
+                    // normalize sync state via encode→decode round-trip
+                    // (preserves shared_heads, clears transient state).
+                    // Finally generate a fresh sync message to restart
+                    // negotiation with the daemon.
+                    self.rebuild_doc();
+                    self.normalize_sync_state();
+                    let reply = self
+                        .doc
+                        .generate_sync_message(&mut self.sync_state)
+                        .map(|msg| msg.encode());
+                    events.push(FrameEvent::SyncError { reply });
+                    return serialize_to_js(&events).unwrap_or(JsValue::UNDEFINED);
                 }
                 let heads_after = self.doc.doc_mut().get_heads();
                 let changed = heads_before != heads_after;
@@ -1019,7 +1092,18 @@ impl NotebookHandle {
                     .receive_sync_message(&mut self.state_sync_state, msg)
                     .is_err()
                 {
-                    return JsValue::UNDEFINED;
+                    // Recovery: rebuild state doc + normalize sync state,
+                    // then generate a fresh sync message.
+                    self.rebuild_state_doc();
+                    self.normalize_state_sync_state();
+                    let reply = self
+                        .state_doc
+                        .doc_mut()
+                        .sync()
+                        .generate_sync_message(&mut self.state_sync_state)
+                        .map(|msg| msg.encode());
+                    events.push(FrameEvent::RuntimeStateSyncError { reply });
+                    return serialize_to_js(&events).unwrap_or(JsValue::UNDEFINED);
                 }
                 let heads_after = self.state_doc.doc_mut().get_heads();
                 let changed = heads_before != heads_after;

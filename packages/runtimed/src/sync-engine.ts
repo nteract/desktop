@@ -367,6 +367,46 @@ export class SyncEngine {
         .subscribe((e) => this._presence$.next(e.payload)),
     );
 
+    // ── Sub-pipeline: sync error recovery ──────────────────────────
+
+    sub.add(
+      frameEvents$
+        .pipe(
+          filter(
+            (e) =>
+              e.type === "sync_error" ||
+              e.type === "runtime_state_sync_error",
+          ),
+        )
+        .subscribe((e) => {
+          const frameType =
+            e.type === "sync_error"
+              ? FrameType.AUTOMERGE_SYNC
+              : FrameType.RUNTIME_STATE_SYNC;
+          log.warn(
+            `[sync-engine] ${e.type}: doc rebuilt, sync state normalized`,
+          );
+          if (e.reply) {
+            this.opts.transport
+              .sendFrame(frameType, new Uint8Array(e.reply))
+              .catch((err: unknown) => {
+                const handle = this.opts.getHandle();
+                if (handle) {
+                  if (e.type === "sync_error") {
+                    handle.cancel_last_flush();
+                  } else {
+                    handle.cancel_last_runtime_state_flush();
+                  }
+                }
+                log.warn(
+                  "[sync-engine] recovery reply send failed:",
+                  err,
+                );
+              });
+          }
+        }),
+    );
+
     // ── Sub-pipeline: runtime state sync ──────────────────────────
 
     sub.add(

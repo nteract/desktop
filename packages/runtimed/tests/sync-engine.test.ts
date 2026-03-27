@@ -1243,6 +1243,111 @@ describe("SyncEngine", () => {
       engine.stop();
     });
   });
+
+  // ── Sync error recovery ──────────────────────────────────────────
+
+  describe("sync error recovery", () => {
+    it("sends recovery reply on sync_error event", () => {
+      const replyBytes = [0x01, 0x02, 0x03];
+      handle = createMockHandle({
+        receive_frame: vi.fn(() => [
+          { type: "sync_error", reply: replyBytes } as FrameEvent,
+        ]),
+      });
+      const sendSpy = vi.spyOn(transport, "sendFrame");
+      const engine = createEngine();
+      engine.start();
+
+      transport.deliver([0x00, 0x99]);
+      advanceBy(scheduler, 1);
+
+      expect(sendSpy).toHaveBeenCalledWith(
+        FrameType.AUTOMERGE_SYNC,
+        new Uint8Array(replyBytes),
+      );
+      engine.stop();
+    });
+
+    it("sends recovery reply on runtime_state_sync_error event", () => {
+      const replyBytes = [0x04, 0x05];
+      handle = createMockHandle({
+        receive_frame: vi.fn(() => [
+          { type: "runtime_state_sync_error", reply: replyBytes } as FrameEvent,
+        ]),
+      });
+      const sendSpy = vi.spyOn(transport, "sendFrame");
+      const engine = createEngine();
+      engine.start();
+
+      transport.deliver([0x05, 0x99]);
+      advanceBy(scheduler, 1);
+
+      expect(sendSpy).toHaveBeenCalledWith(
+        FrameType.RUNTIME_STATE_SYNC,
+        new Uint8Array(replyBytes),
+      );
+      engine.stop();
+    });
+
+    it("calls cancel_last_flush if recovery reply send fails", async () => {
+      const replyBytes = [0x01, 0x02];
+      handle = createMockHandle({
+        receive_frame: vi.fn(() => [
+          { type: "sync_error", reply: replyBytes } as FrameEvent,
+        ]),
+      });
+      vi.spyOn(transport, "sendFrame").mockRejectedValueOnce(new Error("send failed"));
+      const engine = createEngine();
+      engine.start();
+
+      transport.deliver([0x00, 0x99]);
+      advanceBy(scheduler, 1);
+
+      // Let the promise rejection propagate
+      await vi.waitFor(() => {
+        expect(handle.cancel_last_flush).toHaveBeenCalled();
+      });
+      engine.stop();
+    });
+
+    it("calls cancel_last_runtime_state_flush if state recovery reply fails", async () => {
+      const replyBytes = [0x01, 0x02];
+      handle = createMockHandle({
+        receive_frame: vi.fn(() => [
+          { type: "runtime_state_sync_error", reply: replyBytes } as FrameEvent,
+        ]),
+      });
+      vi.spyOn(transport, "sendFrame").mockRejectedValueOnce(new Error("send failed"));
+      const engine = createEngine();
+      engine.start();
+
+      transport.deliver([0x05, 0x99]);
+      advanceBy(scheduler, 1);
+
+      await vi.waitFor(() => {
+        expect(handle.cancel_last_runtime_state_flush).toHaveBeenCalled();
+      });
+      engine.stop();
+    });
+
+    it("handles sync_error with no reply gracefully", () => {
+      handle = createMockHandle({
+        receive_frame: vi.fn(() => [
+          { type: "sync_error" } as FrameEvent,
+        ]),
+      });
+      const sendSpy = vi.spyOn(transport, "sendFrame");
+      const engine = createEngine();
+      engine.start();
+
+      transport.deliver([0x00, 0x99]);
+      advanceBy(scheduler, 1);
+
+      // Should not attempt to send when no reply
+      expect(sendSpy).not.toHaveBeenCalled();
+      engine.stop();
+    });
+  });
 });
 
 // ── DirectTransport tests ──────────────────────────────────────────
