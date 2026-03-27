@@ -29,9 +29,30 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use notebook_protocol::connection::{self, NotebookFrameType};
 use notebook_protocol::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 
+use automerge::AutoCommit;
+
 use crate::error::SyncError;
 use crate::shared::SharedDocState;
 use crate::snapshot::NotebookSnapshot;
+
+/// Rebuild a `SharedDocState` after an automerge panic by round-tripping
+/// save→load to clear corrupted internal indices, then resetting the
+/// peer sync state to force a fresh handshake with the daemon.
+fn rebuild_shared_doc_state(state: &mut SharedDocState) {
+    let actor = state.doc.get_actor().clone();
+    let bytes = state.doc.save();
+    match AutoCommit::load(&bytes) {
+        Ok(mut doc) => {
+            doc.set_actor(actor);
+            state.doc = doc;
+            state.peer_state = sync::State::new();
+            info!("[notebook-sync] Rebuilt doc and reset sync state after automerge panic");
+        }
+        Err(e) => {
+            warn!("[notebook-sync] Failed to rebuild doc after panic: {}", e);
+        }
+    }
+}
 
 /// Commands that require socket I/O (not document mutations).
 ///
@@ -355,6 +376,9 @@ async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
                              (upstream bug automerge/automerge#1187): {}",
                             notebook_id, msg
                         );
+                        // Rebuild doc via save→load to clear corrupted indices,
+                        // then reset peer state to force a fresh sync handshake.
+                        rebuild_shared_doc_state(&mut state);
                         return;
                     }
                 }
@@ -370,6 +394,7 @@ async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
                              (upstream MissingOps bug)",
                             notebook_id
                         );
+                        rebuild_shared_doc_state(&mut state);
                         None
                     }
                 }
@@ -622,6 +647,7 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                                  (upstream bug): {}",
                                 notebook_id, msg
                             );
+                            rebuild_shared_doc_state(&mut state);
                             continue;
                         }
                     }
@@ -635,6 +661,7 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                                 "[notebook-sync] generate_sync_message panicked in wait_for_response for {}",
                                 notebook_id
                             );
+                            rebuild_shared_doc_state(&mut state);
                             None
                         }
                     }

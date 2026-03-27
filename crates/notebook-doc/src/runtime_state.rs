@@ -306,9 +306,11 @@ impl RuntimeStateDoc {
     /// Used after catching an automerge panic (upstream MissingOps bug in
     /// `collector.rs`). See `NotebookDoc::rebuild_from_save` for details.
     pub fn rebuild_from_save(&mut self) -> bool {
+        let actor = self.doc.get_actor().clone();
         let bytes = self.doc.save();
         match AutoCommit::load(&bytes) {
-            Ok(doc) => {
+            Ok(mut doc) => {
+                doc.set_actor(actor);
                 self.doc = doc;
                 true
             }
