@@ -6098,6 +6098,15 @@ async fn apply_ipynb_changes(
             warn!("{}", e);
             doc.rebuild_from_save();
         }
+
+        // Update saved_sources baseline so subsequent external edits are
+        // detected correctly (same as the non-order-change path).
+        let mut saved = room.last_save_sources.write().await;
+        saved.clear();
+        for ext_cell in external_cells {
+            saved.insert(ext_cell.id.clone(), ext_cell.source.clone());
+        }
+
         return true;
     }
 
