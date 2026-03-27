@@ -6258,6 +6258,18 @@ async fn apply_ipynb_changes(
         }
     }
 
+    // Update saved_sources baseline after applying external changes so
+    // that subsequent external edits are detected correctly (P2-a) and
+    // externally-added cells become deletable if later removed (P2-b).
+    if changed {
+        let mut saved = room.last_save_sources.write().await;
+        for ext_cell in external_cells {
+            saved.insert(ext_cell.id.clone(), ext_cell.source.clone());
+        }
+        // Remove entries for cells we just deleted
+        saved.retain(|id, _| external_map.contains_key(id.as_str()));
+    }
+
     changed
 }
 
