@@ -40,6 +40,11 @@ use crate::terminal_size::{TERMINAL_COLUMNS_STR, TERMINAL_LINES_STR};
 use crate::{EnvType, PooledEnv};
 use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
 
+/// Maximum execution entries retained in the RuntimeStateDoc.
+/// `trim_executions` preserves the latest execution per cell, so the actual
+/// count can exceed this if the notebook has more unique cells than this limit.
+const MAX_EXECUTION_ENTRIES: usize = 1024;
+
 /// Convert a protocol QueueEntry to a RuntimeStateDoc QueueEntry.
 fn to_doc_entry(e: &QueueEntry) -> DocQueueEntry {
     DocQueueEntry {
@@ -1055,42 +1060,55 @@ impl RoomKernel {
                                         }
                                     };
 
-                                    // Upsert stream output (update if validated, append if not)
+                                    // Fork before upsert so concurrent edits compose
+                                    // via CRDT merge.
+                                    let mut fork = {
+                                        let mut doc_guard = doc.write().await;
+                                        let mut f = doc_guard.fork();
+                                        f.set_actor("runtimed:kernel");
+                                        f
+                                    };
+
+                                    let upsert_result = fork.upsert_stream_output(
+                                        cid,
+                                        stream_name,
+                                        &output_ref,
+                                        known_state.as_ref(),
+                                    );
+                                    let fork_updated = matches!(&upsert_result, Ok((true, _)));
+
+                                    // Merge first, then cache terminal state from the merged
+                                    // doc so the cached index reflects the canonical output
+                                    // list (not the fork's view which could diverge if a
+                                    // concurrent clear_outputs landed between fork and merge).
                                     let (persist_bytes, broadcast_output_index) = {
                                         let mut doc_guard = doc.write().await;
-                                        let upsert_result = doc_guard.upsert_stream_output(
+                                        doc_guard.merge(&mut fork).ok();
+
+                                        // Derive the output index from the merged doc
+                                        let merged_output_count = doc_guard
+                                            .get_cell_outputs(cid)
+                                            .map(|o| o.len())
+                                            .unwrap_or(0);
+                                        let output_index =
+                                            merged_output_count.saturating_sub(1);
+
+                                        let mut terminals = stream_terminals.lock().await;
+                                        terminals.set_output_state(
                                             cid,
                                             stream_name,
-                                            &output_ref,
-                                            known_state.as_ref(),
+                                            StreamOutputState {
+                                                index: output_index,
+                                                manifest_hash: output_ref.clone(),
+                                            },
                                         );
-                                        let broadcast_idx = match &upsert_result {
-                                            Ok((updated, output_index)) => {
-                                                // Store new state (index + hash) for future validation
-                                                let mut terminals = stream_terminals.lock().await;
-                                                terminals.set_output_state(
-                                                    cid,
-                                                    stream_name,
-                                                    StreamOutputState {
-                                                        index: *output_index,
-                                                        manifest_hash: output_ref.clone(),
-                                                    },
-                                                );
-                                                // Include output_index in broadcast if this was an update
-                                                if *updated {
-                                                    Some(*output_index)
-                                                } else {
-                                                    None
-                                                }
-                                            }
-                                            Err(e) => {
-                                                warn!(
-                                                    "[kernel-manager] Failed to upsert stream output: {}",
-                                                    e
-                                                );
-                                                None
-                                            }
+
+                                        let broadcast_idx = if fork_updated {
+                                            Some(output_index)
+                                        } else {
+                                            None
                                         };
+
                                         let bytes = doc_guard.save();
                                         let _ = changed_tx.send(());
                                         (bytes, broadcast_idx)
@@ -1196,17 +1214,25 @@ impl RoomKernel {
                                             }
                                         };
 
-                                        // Append hash (or fallback JSON) to Automerge doc
+                                        // Fork before appending so concurrent edits
+                                        // (e.g. from other iopub messages) compose via CRDT merge.
+                                        let mut fork = {
+                                            let mut doc_guard = doc.write().await;
+                                            let mut f = doc_guard.fork();
+                                            f.set_actor("runtimed:kernel");
+                                            f
+                                        };
+
+                                        if let Err(e) = fork.append_output(cid, &output_ref) {
+                                            warn!(
+                                                "[kernel-manager] Failed to append output to doc: {}",
+                                                e
+                                            );
+                                        }
+
                                         let persist_bytes = {
                                             let mut doc_guard = doc.write().await;
-                                            if let Err(e) =
-                                                doc_guard.append_output(cid, &output_ref)
-                                            {
-                                                warn!(
-                                                    "[kernel-manager] Failed to append output to doc: {}",
-                                                    e
-                                                );
-                                            }
+                                            doc_guard.merge(&mut fork).ok();
                                             let bytes = doc_guard.save();
                                             let _ = changed_tx.send(());
                                             bytes
@@ -1365,17 +1391,25 @@ impl RoomKernel {
                                             }
                                         };
 
-                                        // Write error output to Automerge doc before broadcasting
+                                        // Fork before appending so concurrent edits
+                                        // compose via CRDT merge.
+                                        let mut fork = {
+                                            let mut doc_guard = doc.write().await;
+                                            let mut f = doc_guard.fork();
+                                            f.set_actor("runtimed:kernel");
+                                            f
+                                        };
+
+                                        if let Err(e) = fork.append_output(cid, &output_ref) {
+                                            warn!(
+                                                "[kernel-manager] Failed to append error output to doc: {}",
+                                                e
+                                            );
+                                        }
+
                                         let persist_bytes = {
                                             let mut doc_guard = doc.write().await;
-                                            if let Err(e) =
-                                                doc_guard.append_output(cid, &output_ref)
-                                            {
-                                                warn!(
-                                                    "[kernel-manager] Failed to append error output to doc: {}",
-                                                    e
-                                                );
-                                            }
+                                            doc_guard.merge(&mut fork).ok();
                                             let bytes = doc_guard.save();
                                             let _ = changed_tx.send(());
                                             bytes
@@ -1647,17 +1681,26 @@ impl RoomKernel {
                                                 }
                                             };
 
-                                            // Append to Automerge doc
+                                            // Fork before appending so concurrent edits
+                                            // compose via CRDT merge.
+                                            let mut fork = {
+                                                let mut doc_guard = shell_doc.write().await;
+                                                let mut f = doc_guard.fork();
+                                                f.set_actor("runtimed:kernel");
+                                                f
+                                            };
+
+                                            if let Err(e) = fork.append_output(cid, &output_ref)
+                                            {
+                                                warn!(
+                                                    "[kernel-manager] Failed to append page output to doc: {}",
+                                                    e
+                                                );
+                                            }
+
                                             let persist_bytes = {
                                                 let mut doc_guard = shell_doc.write().await;
-                                                if let Err(e) =
-                                                    doc_guard.append_output(cid, &output_ref)
-                                                {
-                                                    warn!(
-                                                        "[kernel-manager] Failed to append page output to doc: {}",
-                                                        e
-                                                    );
-                                                }
+                                                doc_guard.merge(&mut fork).ok();
                                                 let bytes = doc_guard.save();
                                                 let _ = shell_changed_tx.send(());
                                                 bytes
@@ -2030,7 +2073,7 @@ impl RoomKernel {
                 let mut sd = self.state_doc.write().await;
                 let mut changed = sd.set_execution_done(execution_id, success);
                 changed |= sd.set_queue(None, &doc_queued);
-                changed |= sd.trim_executions(128) > 0;
+                changed |= sd.trim_executions(MAX_EXECUTION_ENTRIES) > 0;
                 if changed {
                     let _ = self.state_changed_tx.send(());
                 }
