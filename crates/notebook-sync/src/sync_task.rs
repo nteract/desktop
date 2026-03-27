@@ -358,7 +358,21 @@ async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
                         return;
                     }
                 }
-                state.generate_sync_message().map(|msg| msg.encode())
+                // Guard generate_sync_message — the collector can also panic
+                // with MissingOps even after a successful receive.
+                match std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    state.generate_sync_message().map(|msg| msg.encode())
+                })) {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        warn!(
+                            "[notebook-sync] Automerge panicked in generate_sync_message for {} \
+                             (upstream MissingOps bug)",
+                            notebook_id
+                        );
+                        None
+                    }
+                }
             };
 
             // Publish snapshot immediately (before sending ack — readers see changes fast)
@@ -581,10 +595,49 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 
                 let ack_bytes = {
                     let mut state = doc.lock().unwrap_or_else(|e| e.into_inner());
-                    state
-                        .receive_sync_message(msg)
-                        .map_err(|e| SyncError::Protocol(format!("Apply sync: {}", e)))?;
-                    state.generate_sync_message().map(|m| m.encode())
+
+                    // Guard both receive and generate against automerge panics
+                    let recv_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        state.receive_sync_message(msg)
+                    }));
+                    match recv_result {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            warn!(
+                                "[notebook-sync] receive_sync_message error in wait_for_response for {}: {}",
+                                notebook_id, e
+                            );
+                            continue;
+                        }
+                        Err(panic_payload) => {
+                            let msg = if let Some(s) = panic_payload.downcast_ref::<String>() {
+                                s.as_str()
+                            } else if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                                s
+                            } else {
+                                "unknown panic"
+                            };
+                            warn!(
+                                "[notebook-sync] Automerge panicked in wait_for_response for {} \
+                                 (upstream bug): {}",
+                                notebook_id, msg
+                            );
+                            continue;
+                        }
+                    }
+
+                    match std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        state.generate_sync_message().map(|m| m.encode())
+                    })) {
+                        Ok(bytes) => bytes,
+                        Err(_) => {
+                            warn!(
+                                "[notebook-sync] generate_sync_message panicked in wait_for_response for {}",
+                                notebook_id
+                            );
+                            None
+                        }
+                    }
                 };
 
                 publish_snapshot(doc, snapshot_tx);
