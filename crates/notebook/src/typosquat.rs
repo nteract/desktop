@@ -162,6 +162,7 @@ const POPULAR_PACKAGES: &[&str] = &[
     "jupyterlab",
     "ipykernel",
     "ipywidgets",
+    "anywidget",
     "nbformat",
     "nbconvert",
     "traitlets",
@@ -307,6 +308,12 @@ mod tests {
         // PyPI normalizes these characters
         assert!(check_typosquat("Numpy").is_none()); // Case insensitive
         assert!(check_typosquat("typing_extensions").is_none()); // _ == -
+    }
+
+    #[test]
+    fn test_anywidget_not_flagged() {
+        // anywidget is a real package, not a typosquat of ipywidgets
+        assert!(check_typosquat("anywidget").is_none());
     }
 
     #[test]

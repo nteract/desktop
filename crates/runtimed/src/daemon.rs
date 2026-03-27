@@ -139,7 +139,10 @@ fn parse_uv_error(stderr: &str) -> Option<PackageInstallError> {
                 if let Some(pkg) = caps.get(1) {
                     let package_name = pkg.as_str().to_string();
                     // Skip if it's a core package name we're definitely installing
-                    if package_name != "ipykernel" && package_name != "ipywidgets" {
+                    if package_name != "ipykernel"
+                        && package_name != "ipywidgets"
+                        && package_name != "anywidget"
+                    {
                         return Some(PackageInstallError {
                             failed_package: Some(package_name),
                             error_message: stderr.to_string(),
@@ -2309,6 +2312,7 @@ impl Daemon {
                 MatchSpec::from_str("python>=3.13", match_spec_options)?,
                 MatchSpec::from_str("ipykernel", match_spec_options)?,
                 MatchSpec::from_str("ipywidgets", match_spec_options)?,
+                MatchSpec::from_str("anywidget", match_spec_options)?,
             ];
             for pkg in &extra_conda_packages {
                 specs.push(MatchSpec::from_str(pkg, match_spec_options)?);
@@ -2558,6 +2562,7 @@ impl Daemon {
 import ipykernel
 import IPython
 import ipywidgets
+import anywidget
 import traitlets
 import zmq
 from ipykernel.kernelbase import Kernel
@@ -2725,10 +2730,11 @@ print("warmup complete")
             }
         }
 
-        // Build install args: ipykernel + ipywidgets + uv + default packages from settings
+        // Build install args: ipykernel + ipywidgets + anywidget + uv + default packages from settings
         let mut install_packages = vec![
             "ipykernel".to_string(),
             "ipywidgets".to_string(),
+            "anywidget".to_string(),
             "uv".to_string(), // For %uv magic in notebooks
         ];
 
@@ -2775,10 +2781,10 @@ print("warmup complete")
 
                 if let Some(ref err) = parsed_error {
                     if let Some(pkg) = &err.failed_package {
-                        // Check if this is a user-specified package (not ipykernel/ipywidgets)
+                        // Check if this is a user-specified package (not ipykernel/ipywidgets/anywidget)
                         let is_user_package = install_packages
                             .iter()
-                            .skip(2) // Skip ipykernel and ipywidgets
+                            .skip(3) // Skip ipykernel, ipywidgets, and anywidget
                             .any(|p| p == pkg);
 
                         if is_user_package {
@@ -2848,6 +2854,7 @@ print("warmup complete")
 import ipykernel
 import IPython
 import ipywidgets
+import anywidget
 from ipykernel.kernelbase import Kernel
 from ipykernel.ipkernel import IPythonKernel
 print("warmup complete")
