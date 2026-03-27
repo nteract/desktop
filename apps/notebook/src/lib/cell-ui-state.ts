@@ -171,9 +171,7 @@ function subscribeFocusFor(_cellId: string): (cb: () => void) => () => void {
 // Per-cell neighbor: subscribes to both focus changes AND structural changes
 // (cell add/delete/reorder). Without the structural subscription, inserting
 // or deleting a cell next to the focused cell wouldn't update the dimming.
-function subscribeNeighborFor(
-  _cellId: string,
-): (cb: () => void) => () => void {
+function subscribeNeighborFor(_cellId: string): (cb: () => void) => () => void {
   return (cb: () => void) => {
     _focusSubscribers.add(cb);
     const unsubIds = subscribeIds(cb);
