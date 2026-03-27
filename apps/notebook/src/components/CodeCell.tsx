@@ -1,5 +1,5 @@
 import type { EditorView, KeyBinding } from "@codemirror/view";
-import { ChevronRight, Code2, EyeOff, X } from "lucide-react";
+import { ChevronRight, Code2, EyeOff } from "lucide-react";
 import {
   lazy,
   memo,
@@ -22,10 +22,7 @@ import type { SupportedLanguage } from "@/components/editor/languages";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
 import { searchHighlight } from "@/components/editor/search-highlight";
 import { textAttributionExtension } from "@/components/editor/text-attribution";
-import { AnsiOutput } from "@/components/outputs/ansi-output";
-import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
-import type { CellPagePayload, MimeBundle } from "../App";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { useCrdtBridge } from "../hooks/useCrdtBridge";
@@ -33,6 +30,16 @@ import {
   registerAttributionEditor,
   unregisterAttributionEditor,
 } from "../lib/attribution-registry";
+import {
+  useIsCellExecuting,
+  useIsCellFocused,
+  useIsCellQueued,
+  useIsGroupExecuting,
+  useIsNextCellFromFocused,
+  useIsPreviousCellFromFocused,
+  useSearchActiveOffset,
+  useSearchQuery,
+} from "../lib/cell-ui-state";
 import { registerEditor, unregisterEditor } from "../lib/cursor-registry";
 import { kernelCompletionExtension } from "../lib/kernel-completion";
 import { openUrl } from "../lib/open-url";
@@ -49,55 +56,9 @@ const HistorySearchDialog = lazy(() =>
   })),
 );
 
-/** Page payload display component - Zed REPL style */
-function PagePayloadDisplay({
-  data,
-  onDismiss,
-}: {
-  data: MimeBundle;
-  onDismiss: () => void;
-}) {
-  const htmlContent = data["text/html"];
-  const textContent = data["text/plain"];
-
-  return (
-    <div className="cm-page-payload">
-      <div className="cm-page-payload-content">
-        {typeof htmlContent === "string" ? (
-          <div dangerouslySetInnerHTML={{ __html: htmlContent }} />
-        ) : typeof textContent === "string" ? (
-          <AnsiOutput className="cm-page-payload-text">
-            {textContent}
-          </AnsiOutput>
-        ) : (
-          <pre className="cm-page-payload-text">
-            {JSON.stringify(data, null, 2)}
-          </pre>
-        )}
-      </div>
-      <div className="cm-page-payload-gutter">
-        <button
-          type="button"
-          className="cm-page-payload-dismiss"
-          onClick={onDismiss}
-          title="Dismiss (Escape)"
-        >
-          <X className="h-3 w-3" />
-        </button>
-      </div>
-    </div>
-  );
-}
-
 interface CodeCellProps {
   cell: CodeCellType;
   language?: SupportedLanguage;
-  isFocused: boolean;
-  isExecuting: boolean;
-  isQueued: boolean;
-  pagePayload: CellPagePayload | null;
-  searchQuery?: string;
-  searchActiveOffset?: number;
   onSearchMatchCount?: (count: number) => void;
   onFocus: () => void;
   onExecute: () => void;
@@ -106,12 +67,7 @@ interface CodeCellProps {
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
   onInsertCellAfter?: () => void;
-  onClearPagePayload?: () => void;
   isLastCell?: boolean;
-  /** Whether this cell is immediately before the focused cell */
-  isPreviousCellFromFocused?: boolean;
-  /** Whether this cell is immediately after the focused cell */
-  isNextCellFromFocused?: boolean;
   /** Props for dnd-kit drag handle (applied to ribbon) */
   dragHandleProps?: Record<string, unknown>;
   /** Whether this cell is currently being dragged */
@@ -124,8 +80,8 @@ interface CodeCellProps {
   hiddenGroupCount?: number;
   /** Callback to expand all cells in a hidden group */
   onExpandHiddenGroup?: () => void;
-  /** Whether any cell in a hidden group is currently executing */
-  isGroupExecuting?: boolean;
+  /** Cell IDs in this hidden group (for executing indicator) */
+  hiddenGroupCellIds?: string[];
   /** Number of error outputs across all cells in a hidden group */
   hiddenGroupErrorCount?: number;
   /** Content for the right gutter (e.g., delete button, source toggle) */
@@ -135,12 +91,6 @@ interface CodeCellProps {
 export const CodeCell = memo(function CodeCell({
   cell,
   language = "python",
-  isFocused,
-  isExecuting,
-  isQueued,
-  pagePayload,
-  searchQuery,
-  searchActiveOffset = -1,
   onSearchMatchCount,
   onFocus,
   onExecute,
@@ -149,20 +99,26 @@ export const CodeCell = memo(function CodeCell({
   onFocusPrevious,
   onFocusNext,
   onInsertCellAfter,
-  onClearPagePayload,
   isLastCell = false,
-  isPreviousCellFromFocused,
-  isNextCellFromFocused,
   dragHandleProps,
   isDragging,
   onToggleSourceHidden,
   onToggleOutputsHidden,
   hiddenGroupCount,
   onExpandHiddenGroup,
-  isGroupExecuting,
+  hiddenGroupCellIds,
   hiddenGroupErrorCount,
   rightGutterContent,
 }: CodeCellProps) {
+  // Read transient UI state from the store
+  const isFocused = useIsCellFocused(cell.id);
+  const isExecuting = useIsCellExecuting(cell.id);
+  const isQueued = useIsCellQueued(cell.id);
+  const isPreviousCellFromFocused = useIsPreviousCellFromFocused(cell.id);
+  const isNextCellFromFocused = useIsNextCellFromFocused(cell.id);
+  const searchQuery = useSearchQuery();
+  const searchActiveOffset = useSearchActiveOffset(cell.id);
+  const isGroupExecuting = useIsGroupExecuting(hiddenGroupCellIds);
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
   const presence = usePresenceContext();
@@ -225,27 +181,6 @@ export const CodeCell = memo(function CodeCell({
     };
   }, [cell.id]);
 
-  // Handle Escape key to dismiss page payload
-  useEffect(() => {
-    if (!pagePayload || !isFocused) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClearPagePayload?.();
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [pagePayload, isFocused, onClearPagePayload]);
-
-  // Clear page payload when cell is executed (before new results come in)
-  const handleExecuteWithClear = useCallback(() => {
-    onClearPagePayload?.();
-    onExecute();
-  }, [onExecute, onClearPagePayload]);
-
   // Handle focus next, creating a new cell if at the end
   const handleFocusNextOrCreate = useCallback(
     (cursorPosition: "start" | "end") => {
@@ -262,10 +197,10 @@ export const CodeCell = memo(function CodeCell({
   const navigationKeyMap = useCellKeyboardNavigation({
     onFocusPrevious: onFocusPrevious ?? (() => {}),
     onFocusNext: handleFocusNextOrCreate,
-    onExecute: handleExecuteWithClear,
+    onExecute: onExecute,
     onExecuteAndInsert: onInsertCellAfter
       ? () => {
-          handleExecuteWithClear();
+          onExecute();
           onInsertCellAfter();
         }
       : undefined,
@@ -337,10 +272,6 @@ export const CodeCell = memo(function CodeCell({
     ],
   );
 
-  const handleExecute = useCallback(() => {
-    handleExecuteWithClear();
-  }, [handleExecuteWithClear]);
-
   const handleLinkClick = useCallback((url: string) => openUrl(url), []);
 
   const gutterContent = bothHidden ? null : (
@@ -348,7 +279,7 @@ export const CodeCell = memo(function CodeCell({
       count={cell.execution_count}
       isExecuting={isExecuting}
       isQueued={isQueued}
-      onExecute={handleExecute}
+      onExecute={onExecute}
       onInterrupt={onInterrupt}
     />
   );
@@ -432,25 +363,6 @@ export const CodeCell = memo(function CodeCell({
                 placeholder="Enter code..."
                 autoFocus={isFocused}
               />
-            )}
-
-            {/* Page Payload (documentation from ? or ??) */}
-            {pagePayload && (
-              <div className="px-2 py-1">
-                <ErrorBoundary
-                  resetKeys={[pagePayload.data]}
-                  fallback={() => (
-                    <div className="text-xs text-muted-foreground italic px-1 py-2">
-                      Failed to render documentation
-                    </div>
-                  )}
-                >
-                  <PagePayloadDisplay
-                    data={pagePayload.data}
-                    onDismiss={() => onClearPagePayload?.()}
-                  />
-                </ErrorBoundary>
-              </div>
             )}
           </>
         }

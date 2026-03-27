@@ -316,6 +316,11 @@ export function getNotebookCellsSnapshot(): NotebookCell[] {
   return _cellIds.map((id) => _cellMap.get(id)!);
 }
 
+/** Read the current cell ID list (no subscription). */
+export function getCellIdsSnapshot(): string[] {
+  return _cellIds;
+}
+
 /** Get a single cell by ID (no subscription). */
 export function getCellById(id: string): NotebookCell | undefined {
   return _cellMap.get(id);

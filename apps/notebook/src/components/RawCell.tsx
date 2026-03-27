@@ -22,6 +22,12 @@ import {
   registerAttributionEditor,
   unregisterAttributionEditor,
 } from "../lib/attribution-registry";
+import {
+  useIsCellFocused,
+  useIsNextCellFromFocused,
+  useIsPreviousCellFromFocused,
+  useSearchQuery,
+} from "../lib/cell-ui-state";
 import { registerEditor, unregisterEditor } from "../lib/cursor-registry";
 import { detectRawFormat } from "../lib/detect-raw-format";
 import { presenceSenderExtension } from "../lib/presence-sender";
@@ -30,17 +36,15 @@ import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 
 interface RawCellProps {
   cell: RawCellType;
-  isFocused: boolean;
-  searchQuery?: string;
   onFocus: () => void;
   onDelete: () => void;
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
   onInsertCellAfter?: () => void;
   isLastCell?: boolean;
-  isPreviousCellFromFocused?: boolean;
-  isNextCellFromFocused?: boolean;
+  /** Props for dnd-kit drag handle (applied to ribbon) */
   dragHandleProps?: Record<string, unknown>;
+  /** Whether this cell is currently being dragged */
   isDragging?: boolean;
   /** Content for the right gutter (e.g., delete button) */
   rightGutterContent?: ReactNode;
@@ -48,20 +52,20 @@ interface RawCellProps {
 
 export const RawCell = memo(function RawCell({
   cell,
-  isFocused,
-  searchQuery,
   onFocus,
   onDelete,
   onFocusPrevious,
   onFocusNext,
   onInsertCellAfter,
   isLastCell = false,
-  isPreviousCellFromFocused,
-  isNextCellFromFocused,
   dragHandleProps,
   isDragging,
   rightGutterContent,
 }: RawCellProps) {
+  const isFocused = useIsCellFocused(cell.id);
+  const isPreviousCellFromFocused = useIsPreviousCellFromFocused(cell.id);
+  const isNextCellFromFocused = useIsNextCellFromFocused(cell.id);
+  const searchQuery = useSearchQuery();
   const editorRef = useRef<CodeMirrorEditorRef>(null);
   const presence = usePresenceContext();
   const { extension: crdtBridgeExt } = useCrdtBridge(cell.id);

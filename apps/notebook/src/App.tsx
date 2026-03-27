@@ -40,6 +40,13 @@ import { usePoolState } from "./hooks/usePoolState";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
 import { startAttributionDispatch } from "./lib/attribution-registry";
+import {
+  setExecutingCellIds as storeSetExecutingCellIds,
+  setFocusedCellId as storeSetFocusedCellId,
+  setQueuedCellIds as storeSetQueuedCellIds,
+  setSearchCurrentMatch as storeSetSearchCurrentMatch,
+  setSearchQuery as storeSetSearchQuery,
+} from "./lib/cell-ui-state";
 import { startCursorDispatch } from "./lib/cursor-registry";
 import { KERNEL_STATUS } from "./lib/kernel-status";
 import { logger } from "./lib/logger";
@@ -48,14 +55,8 @@ import { useDetectRuntime } from "./lib/notebook-metadata";
 import { startWindowFocusHandler } from "./lib/window-focus";
 import type { JupyterMessage } from "./types";
 
-/** MIME bundle type for page payloads */
+/** MIME bundle type for output data */
 export type MimeBundle = Record<string, unknown>;
-
-/** Page payload data for a cell */
-export interface CellPagePayload {
-  data: MimeBundle;
-  start: number;
-}
 
 /**
  * Module-level reference for daemon comm sending.
@@ -198,11 +199,6 @@ function AppContent() {
     return () => clearTimeout(timer);
   }, [justSynced]);
 
-  // Page payload state: maps cell_id -> payload (transient, not saved)
-  const [pagePayloads, setPagePayloads] = useState<
-    Map<string, CellPagePayload>
-  >(new Map());
-
   // UV Dependency management
   const {
     dependencies,
@@ -271,14 +267,6 @@ function AppContent() {
   );
 
   // Clear page payload for a cell (e.g., when dismissed or re-executed)
-  const clearPagePayload = useCallback((cellId: string) => {
-    setPagePayloads((prev) => {
-      const next = new Map(prev);
-      next.delete(cellId);
-      return next;
-    });
-  }, []);
-
   // Daemon-owned kernel execution
   const {
     kernelStatus,
@@ -327,6 +315,16 @@ function AppContent() {
     queueState.executing ? [queueState.executing.cell_id] : [],
   );
   const queuedCellIds = new Set(queueState.queued.map((e) => e.cell_id));
+
+  // ── Sync transient UI state into the cell-ui-state store ────────────
+  // These are module-level setters, not React state — they feed
+  // useSyncExternalStore hooks in cell components so renderCell
+  // doesn't need these as dependencies.
+  storeSetFocusedCellId(focusedCellId);
+  storeSetExecutingCellIds(executingCellIds);
+  storeSetQueuedCellIds(queuedCellIds);
+  storeSetSearchQuery(globalFind.query);
+  storeSetSearchCurrentMatch(globalFind.currentMatch);
 
   // When kernel is running and we know the env source, use it to determine panel type.
   // This handles: both-deps (backend picks based on preference), pixi (auto-detected, no metadata).
@@ -1184,20 +1182,13 @@ function AppContent() {
           <NotebookView
             cellIds={cellIds}
             isLoading={isLoading}
-            focusedCellId={focusedCellId}
-            executingCellIds={executingCellIds}
-            queuedCellIds={queuedCellIds}
-            pagePayloads={pagePayloads}
             runtime={runtime}
-            searchQuery={globalFind.query}
-            searchCurrentMatch={globalFind.currentMatch}
             onFocusCell={setFocusedCellId}
             onExecuteCell={handleExecuteCell}
             onInterruptKernel={interruptKernel}
             onDeleteCell={deleteCell}
             onAddCell={handleAddCell}
             onMoveCell={moveCell}
-            onClearPagePayload={clearPagePayload}
             onReportOutputMatchCount={globalFind.reportOutputMatchCount}
             onSetCellSourceHidden={setCellSourceHidden}
             onSetCellOutputsHidden={setCellOutputsHidden}
