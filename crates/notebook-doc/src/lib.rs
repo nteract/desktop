@@ -4499,4 +4499,101 @@ mod tests {
         let fp_after = doc.get_metadata_fingerprint().unwrap();
         assert_eq!(fp_before, fp_after);
     }
+
+    #[test]
+    fn test_stream_upsert_fork_merge_with_concurrent_clear() {
+        // Verifies that when a fork performs upsert_stream_output and the main
+        // doc concurrently clears outputs, merge composes correctly. The fork's
+        // index is the correct one to cache — if a concurrent clear invalidates
+        // it, the next stream chunk safely falls back to append.
+        let mut doc = NotebookDoc::new("test");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+
+        // Append an initial stream output so there's something to upsert
+        let initial_hash = "sha256:aaa";
+        doc.append_output("cell-1", initial_hash).unwrap();
+        assert_eq!(doc.get_cell_outputs("cell-1").unwrap().len(), 1);
+
+        let known_state = StreamOutputState {
+            index: 0,
+            manifest_hash: initial_hash.to_string(),
+        };
+
+        // Fork before the "async work"
+        let mut fork = doc.fork();
+        fork.set_actor("runtimed:kernel");
+
+        // Upsert on the fork (updates in place since known_state matches)
+        let new_hash = "sha256:bbb";
+        let (updated, fork_index) = fork
+            .upsert_stream_output("cell-1", "stdout", new_hash, Some(&known_state))
+            .unwrap();
+        assert!(updated, "should update in place on fork");
+        assert_eq!(fork_index, 0, "fork index is where the upsert wrote");
+
+        // Concurrent mutation on main doc: clear all outputs
+        doc.clear_outputs("cell-1").unwrap();
+        assert_eq!(doc.get_cell_outputs("cell-1").unwrap().len(), 0);
+
+        // Merge fork back — CRDT composes the clear with the upsert
+        doc.merge(&mut fork).unwrap();
+
+        // After merge: the fork did a `put` (in-place update) on an element
+        // that the main doc deleted. Automerge's semantics: a put on a
+        // deleted element is lost — the concurrent clear wins.
+        let outputs = doc.get_cell_outputs("cell-1").unwrap();
+        assert_eq!(
+            outputs.len(),
+            0,
+            "concurrent clear wins over fork's in-place put"
+        );
+
+        // The cached fork_index (0) is now stale, but that's safe:
+        // the next upsert_stream_output call will see output_count=0,
+        // validation will fail (index 0 >= output_count 0), and it
+        // will fall back to appending a fresh entry.
+        assert_eq!(fork_index, 0, "fork index is stale but harmless");
+    }
+
+    #[test]
+    fn test_stream_upsert_fork_merge_append_case() {
+        // Verifies that fork+merge works for the append case (no known state)
+        // and that the fork's index is correct for terminal state caching.
+        let mut doc = NotebookDoc::new("test");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+
+        // Fork before the "async work"
+        let mut fork = doc.fork();
+        fork.set_actor("runtimed:kernel");
+
+        // Upsert with no known state — this appends
+        let hash = "sha256:ccc";
+        let (updated, fork_index) = fork
+            .upsert_stream_output("cell-1", "stdout", hash, None)
+            .unwrap();
+        assert!(!updated, "should append, not update");
+        assert_eq!(fork_index, 0, "fork appended at position 0");
+
+        // Concurrently append a different output on main doc
+        doc.append_output("cell-1", "sha256:other").unwrap();
+
+        // Merge
+        doc.merge(&mut fork).unwrap();
+
+        // Both outputs should be present
+        let outputs = doc.get_cell_outputs("cell-1").unwrap();
+        assert_eq!(
+            outputs.len(),
+            2,
+            "both concurrent appends should survive merge"
+        );
+
+        // The fork's index (0) is correct for caching — it points to the
+        // fork's output entry. Using len()-1 would be wrong here since
+        // the fork's output may not be the last entry after merge.
+        assert!(
+            outputs.contains(&hash.to_string()),
+            "fork's appended output should be in merged doc"
+        );
+    }
 }
