@@ -307,8 +307,7 @@ impl RuntimeStateDoc {
     /// attributable and don't conflict with the parent's deterministic
     /// `"runtimed:state"` actor ID.
     pub fn set_actor(&mut self, label: &str) {
-        self.doc
-            .set_actor(ActorId::from(label.as_bytes()));
+        self.doc.set_actor(ActorId::from(label.as_bytes()));
     }
 
     // ── Helpers ─────────────────────────────────────────────────────
@@ -1496,7 +1495,10 @@ mod tests {
         doc.merge(&mut fork).unwrap();
 
         let state = doc.read_state();
-        assert_eq!(state.queue.executing.as_ref().map(|e| e.cell_id.as_str()), Some("cell-1"));
+        assert_eq!(
+            state.queue.executing.as_ref().map(|e| e.cell_id.as_str()),
+            Some("cell-1")
+        );
     }
 
     #[test]
@@ -1523,7 +1525,10 @@ mod tests {
 
         let state = doc.read_state();
         assert_eq!(state.kernel.status, "busy");
-        assert_eq!(state.queue.executing.as_ref().map(|e| e.cell_id.as_str()), Some("cell-1"));
+        assert_eq!(
+            state.queue.executing.as_ref().map(|e| e.cell_id.as_str()),
+            Some("cell-1")
+        );
     }
 
     #[test]

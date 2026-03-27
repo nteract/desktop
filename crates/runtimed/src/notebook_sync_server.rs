@@ -463,6 +463,121 @@ async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
     }
 }
 
+/// Handle CellError: clear queue on the kernel, mark executions as errored
+/// in state_doc using fork+merge to avoid async gaps between the kernel lock
+/// and the state_doc write.
+async fn apply_cell_error_to_state_doc(
+    room_kernel: &Arc<Mutex<Option<RoomKernel>>>,
+    room_state_doc: &Arc<RwLock<RuntimeStateDoc>>,
+    room_state_changed_tx: &broadcast::Sender<()>,
+) {
+    // Fork state_doc before the kernel lock so mutations compose
+    // with any concurrent state_doc writes.
+    let mut fork = {
+        let mut sd = room_state_doc.write().await;
+        let mut f = sd.fork();
+        f.set_actor("runtimed:state:cell-error");
+        f
+    };
+
+    // Read+mutate kernel state under its own lock
+    let cleared = {
+        let mut guard = room_kernel.lock().await;
+        if let Some(ref mut k) = *guard {
+            k.mark_execution_error();
+            let cleared = k.clear_queue();
+            if !cleared.is_empty() {
+                info!(
+                    "[notebook-sync] Cleared {} queued cells due to error",
+                    cleared.len()
+                );
+            }
+            let exec = k.executing_entry().map(|e| DocQueueEntry {
+                cell_id: e.cell_id,
+                execution_id: e.execution_id,
+            });
+            // Apply queue + execution state to fork (no state_doc lock needed)
+            fork.set_queue(exec.as_ref(), &[]);
+            cleared
+        } else {
+            vec![]
+        }
+    };
+
+    // Mark cleared executions as errored on the fork
+    for entry in &cleared {
+        fork.set_execution_done(&entry.execution_id, false);
+    }
+
+    // Merge fork back — concurrent state_doc writes compose via CRDT
+    {
+        let mut sd = room_state_doc.write().await;
+        if sd.merge(&mut fork).is_ok() {
+            let _ = room_state_changed_tx.send(());
+        }
+    }
+}
+
+/// Handle KernelDied: set error status, clear queue, mark all executions
+/// as errored using fork+merge. Returns env_source for presence update.
+async fn apply_kernel_died_to_state_doc(
+    room_kernel: &Arc<Mutex<Option<RoomKernel>>>,
+    room_state_doc: &Arc<RwLock<RuntimeStateDoc>>,
+    room_state_changed_tx: &broadcast::Sender<()>,
+    room_broadcast_tx: &broadcast::Sender<NotebookBroadcast>,
+) -> Option<String> {
+    // Fork state_doc before the kernel lock
+    let mut fork = {
+        let mut sd = room_state_doc.write().await;
+        let mut f = sd.fork();
+        f.set_actor("runtimed:state:kernel-died");
+        f
+    };
+
+    let (env_source, interrupted, cleared) = {
+        let mut guard = room_kernel.lock().await;
+        if let Some(ref mut k) = *guard {
+            let es = k.env_source().to_string();
+            let (interrupted, cleared) = k.kernel_died();
+            (Some(es), interrupted, cleared)
+        } else {
+            (None, None, vec![])
+        }
+    };
+
+    // Broadcast ExecutionDone for the interrupted execution (no lock needed)
+    if let Some((ref cell_id, ref execution_id)) = interrupted {
+        info!(
+            "[notebook-sync] Emitting ExecutionDone for interrupted cell {} ({})",
+            cell_id, execution_id
+        );
+        let _ = room_broadcast_tx.send(NotebookBroadcast::ExecutionDone {
+            cell_id: cell_id.clone(),
+            execution_id: execution_id.clone(),
+        });
+    }
+
+    // Apply all mutations on the fork
+    fork.set_kernel_status("error");
+    fork.set_queue(None, &[]);
+    if let Some((_, ref execution_id)) = interrupted {
+        fork.set_execution_done(execution_id, false);
+    }
+    for entry in &cleared {
+        fork.set_execution_done(&entry.execution_id, false);
+    }
+
+    // Merge fork back
+    {
+        let mut sd = room_state_doc.write().await;
+        if sd.merge(&mut fork).is_ok() {
+            let _ = room_state_changed_tx.send(());
+        }
+    }
+
+    env_source
+}
+
 /// Re-verify trust from the Automerge doc and update room.trust_state + RuntimeStateDoc.
 ///
 /// Called after every Automerge sync message to detect when the frontend writes
@@ -2485,90 +2600,22 @@ async fn auto_launch_kernel(
                                     "[notebook-sync] Cell error (stop-on-error): {} ({})",
                                     cell_id, execution_id
                                 );
-                                // Mark the execution as errored so execution_done() knows
-                                // to write success=false to the RuntimeStateDoc.
-                                let (executing_entry, cleared) = {
-                                    let mut guard = room_kernel.lock().await;
-                                    if let Some(ref mut k) = *guard {
-                                        k.mark_execution_error();
-                                        // Clear the queue to stop execution on error, which matches
-                                        // the behavior of manually-launched kernel handler.
-                                        let cleared = k.clear_queue();
-                                        if !cleared.is_empty() {
-                                            info!(
-                                                "[notebook-sync] Cleared {} queued cells due to error",
-                                                cleared.len()
-                                            );
-                                        }
-                                        let exec = k.executing_entry().map(|e| DocQueueEntry {
-                                            cell_id: e.cell_id,
-                                            execution_id: e.execution_id,
-                                        });
-                                        (exec, cleared)
-                                    } else {
-                                        (None, vec![])
-                                    }
-                                };
-                                // Write cleared queue to state doc and mark
-                                // cleared executions as errored.
-                                {
-                                    let mut sd = room_state_doc.write().await;
-                                    let mut changed = sd.set_queue(executing_entry.as_ref(), &[]);
-                                    for entry in &cleared {
-                                        changed |=
-                                            sd.set_execution_done(&entry.execution_id, false);
-                                    }
-                                    if changed {
-                                        let _ = room_state_changed_tx.send(());
-                                    }
-                                }
+                                apply_cell_error_to_state_doc(
+                                    &room_kernel,
+                                    &room_state_doc,
+                                    &room_state_changed_tx,
+                                )
+                                .await;
                             }
                             QueueCommand::KernelDied => {
                                 warn!("[notebook-sync] Kernel died, unblocking execution queue");
-                                let (env_source, interrupted, cleared) = {
-                                    let mut guard = room_kernel.lock().await;
-                                    if let Some(ref mut k) = *guard {
-                                        let es = k.env_source().to_string();
-                                        let (interrupted, cleared) = k.kernel_died();
-                                        (Some(es), interrupted, cleared)
-                                    } else {
-                                        (None, None, vec![])
-                                    }
-                                };
-                                // Emit ExecutionDone for the interrupted execution so
-                                // clients tracking by execution_id get a terminal signal.
-                                if let Some((ref cell_id, ref execution_id)) = interrupted {
-                                    info!(
-                                        "[notebook-sync] Emitting ExecutionDone for interrupted cell {} ({})",
-                                        cell_id, execution_id
-                                    );
-                                    let _ =
-                                        room_broadcast_tx.send(NotebookBroadcast::ExecutionDone {
-                                            cell_id: cell_id.clone(),
-                                            execution_id: execution_id.clone(),
-                                        });
-                                }
-                                // Write error status + cleared queue to state doc,
-                                // and mark all interrupted/cleared executions as errored.
-                                {
-                                    let mut sd = room_state_doc.write().await;
-                                    let mut changed = false;
-                                    changed |= sd.set_kernel_status("error");
-                                    changed |= sd.set_queue(None, &[]);
-                                    // Mark the interrupted execution as errored
-                                    if let Some((_, ref execution_id)) = interrupted {
-                                        changed |= sd.set_execution_done(execution_id, false);
-                                    }
-                                    // Mark all cleared queued executions as errored
-                                    for entry in &cleared {
-                                        changed |=
-                                            sd.set_execution_done(&entry.execution_id, false);
-                                    }
-                                    if changed {
-                                        let _ = room_state_changed_tx.send(());
-                                    }
-                                }
-                                // Update presence outside the kernel lock
+                                let env_source = apply_kernel_died_to_state_doc(
+                                    &room_kernel,
+                                    &room_state_doc,
+                                    &room_state_changed_tx,
+                                    &room_broadcast_tx,
+                                )
+                                .await;
                                 if let Some(es) = env_source {
                                     update_kernel_presence(
                                         &room_presence,
@@ -3320,93 +3367,22 @@ async fn handle_notebook_request(
                                             "[notebook-sync] Cell error (stop-on-error): {} ({})",
                                             cell_id, execution_id
                                         );
-                                        // Mark the execution as errored so execution_done() knows
-                                        // to write success=false to the RuntimeStateDoc.
-                                        let (executing_entry, cleared) = {
-                                            let mut guard = room_kernel.lock().await;
-                                            if let Some(ref mut k) = *guard {
-                                                k.mark_execution_error();
-                                                // Clear the queue to stop execution on error
-                                                let cleared = k.clear_queue();
-                                                if !cleared.is_empty() {
-                                                    info!(
-                                                        "[notebook-sync] Cleared {} queued cells due to error",
-                                                        cleared.len()
-                                                    );
-                                                }
-                                                let exec =
-                                                    k.executing_entry().map(|e| DocQueueEntry {
-                                                        cell_id: e.cell_id,
-                                                        execution_id: e.execution_id,
-                                                    });
-                                                (exec, cleared)
-                                            } else {
-                                                (None, vec![])
-                                            }
-                                        };
-                                        // Write cleared queue to state doc and mark
-                                        // cleared executions as errored.
-                                        {
-                                            let mut sd = room_state_doc.write().await;
-                                            let mut changed =
-                                                sd.set_queue(executing_entry.as_ref(), &[]);
-                                            for entry in &cleared {
-                                                changed |= sd
-                                                    .set_execution_done(&entry.execution_id, false);
-                                            }
-                                            if changed {
-                                                let _ = room_state_changed_tx.send(());
-                                            }
-                                        }
+                                        apply_cell_error_to_state_doc(
+                                            &room_kernel,
+                                            &room_state_doc,
+                                            &room_state_changed_tx,
+                                        )
+                                        .await;
                                     }
                                     QueueCommand::KernelDied => {
                                         warn!("[notebook-sync] Kernel died, unblocking execution queue");
-                                        let (env_source, interrupted, cleared) = {
-                                            let mut guard = room_kernel.lock().await;
-                                            if let Some(ref mut k) = *guard {
-                                                let es = k.env_source().to_string();
-                                                let (interrupted, cleared) = k.kernel_died();
-                                                (Some(es), interrupted, cleared)
-                                            } else {
-                                                (None, None, vec![])
-                                            }
-                                        };
-                                        // Emit ExecutionDone for the interrupted execution so
-                                        // clients tracking by execution_id get a terminal signal.
-                                        if let Some((ref cell_id, ref execution_id)) = interrupted {
-                                            info!(
-                                                "[notebook-sync] Emitting ExecutionDone for interrupted cell {} ({})",
-                                                cell_id, execution_id
-                                            );
-                                            let _ = room_broadcast_tx.send(
-                                                NotebookBroadcast::ExecutionDone {
-                                                    cell_id: cell_id.clone(),
-                                                    execution_id: execution_id.clone(),
-                                                },
-                                            );
-                                        }
-                                        // Write error status + cleared queue to state doc,
-                                        // and mark all interrupted/cleared executions as errored.
-                                        {
-                                            let mut sd = room_state_doc.write().await;
-                                            let mut changed = false;
-                                            changed |= sd.set_kernel_status("error");
-                                            changed |= sd.set_queue(None, &[]);
-                                            // Mark the interrupted execution as errored
-                                            if let Some((_, ref execution_id)) = interrupted {
-                                                changed |=
-                                                    sd.set_execution_done(execution_id, false);
-                                            }
-                                            // Mark all cleared queued executions as errored
-                                            for entry in &cleared {
-                                                changed |= sd
-                                                    .set_execution_done(&entry.execution_id, false);
-                                            }
-                                            if changed {
-                                                let _ = room_state_changed_tx.send(());
-                                            }
-                                        }
-                                        // Update presence outside the kernel lock
+                                        let env_source = apply_kernel_died_to_state_doc(
+                                            &room_kernel,
+                                            &room_state_doc,
+                                            &room_state_changed_tx,
+                                            &room_broadcast_tx,
+                                        )
+                                        .await;
                                         if let Some(es) = env_source {
                                             update_kernel_presence(
                                                 &room_presence,
