@@ -374,30 +374,20 @@ let mut doc = room.doc.write().await;
 doc.merge(&mut fork).ok();
 ```
 
-For mutations relative to a known historic point (e.g., the file watcher applying disk content relative to the last save):
-
-```rust
-let save_heads = room.last_save_heads.read().await.clone();
-let mut fork = doc.fork_at(&save_heads)?;
-fork.update_source(&cell_id, &disk_source).ok();
-doc.merge(&mut fork).ok();
-```
-
-For synchronous mutation blocks (no `.await` between fork and merge), use the helpers:
+For synchronous mutation blocks (no `.await` between fork and merge), use the helper:
 
 ```rust
 // Fork at current heads, apply mutations, merge back
 doc.fork_and_merge(|fork| {
     fork.update_source("cell-1", "x = 1\n");
 });
-
-// Fork at a historic point (e.g., last save), apply mutations, merge back
-doc.fork_at_and_merge(&save_heads, |fork| {
-    fork.update_source("cell-1", &disk_source);
-})?;
 ```
 
-**Key methods on `NotebookDoc`:** `fork()`, `fork_at(heads)`, `get_heads()`, `merge()`, `fork_and_merge(f)`, `fork_at_and_merge(heads, f)`.
+**Do NOT use `fork_at(historical_heads)`** — it triggers an automerge bug
+(`MissingOps` panic in the change collector) on documents with interleaved
+text splices and merges. See automerge/automerge#1327. Use `fork()` instead.
+
+**Key methods on `NotebookDoc`:** `fork()`, `get_heads()`, `merge()`, `fork_and_merge(f)`.
 
 ### The `is_binary_mime` Contract
 
