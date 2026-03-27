@@ -1075,37 +1075,41 @@ impl RoomKernel {
                                         &output_ref,
                                         known_state.as_ref(),
                                     );
-                                    let fork_updated = matches!(&upsert_result, Ok((true, _)));
 
-                                    // Merge first, then cache terminal state from the merged
-                                    // doc so the cached index reflects the canonical output
-                                    // list (not the fork's view which could diverge if a
-                                    // concurrent clear_outputs landed between fork and merge).
+                                    // Use the fork's upsert result for terminal state caching
+                                    // and broadcast. The fork's index is where the upsert
+                                    // actually wrote — using merged len()-1 would be wrong if
+                                    // the updated entry isn't the last output. If a rare
+                                    // concurrent clear invalidates the cached index, the next
+                                    // stream chunk safely falls back to append.
                                     let (persist_bytes, broadcast_output_index) = {
                                         let mut doc_guard = doc.write().await;
                                         doc_guard.merge(&mut fork).ok();
 
-                                        // Derive the output index from the merged doc
-                                        let merged_output_count = doc_guard
-                                            .get_cell_outputs(cid)
-                                            .map(|o| o.len())
-                                            .unwrap_or(0);
-                                        let output_index = merged_output_count.saturating_sub(1);
-
-                                        let mut terminals = stream_terminals.lock().await;
-                                        terminals.set_output_state(
-                                            cid,
-                                            stream_name,
-                                            StreamOutputState {
-                                                index: output_index,
-                                                manifest_hash: output_ref.clone(),
-                                            },
-                                        );
-
-                                        let broadcast_idx = if fork_updated {
-                                            Some(output_index)
-                                        } else {
-                                            None
+                                        let broadcast_idx = match &upsert_result {
+                                            Ok((updated, output_index)) => {
+                                                let mut terminals = stream_terminals.lock().await;
+                                                terminals.set_output_state(
+                                                    cid,
+                                                    stream_name,
+                                                    StreamOutputState {
+                                                        index: *output_index,
+                                                        manifest_hash: output_ref.clone(),
+                                                    },
+                                                );
+                                                if *updated {
+                                                    Some(*output_index)
+                                                } else {
+                                                    None
+                                                }
+                                            }
+                                            Err(e) => {
+                                                warn!(
+                                                    "[kernel-manager] Failed to upsert stream output: {}",
+                                                    e
+                                                );
+                                                None
+                                            }
                                         };
 
                                         let bytes = doc_guard.save();

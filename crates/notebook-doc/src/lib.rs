@@ -4503,8 +4503,9 @@ mod tests {
     #[test]
     fn test_stream_upsert_fork_merge_with_concurrent_clear() {
         // Verifies that when a fork performs upsert_stream_output and the main
-        // doc concurrently clears outputs, merge composes correctly and the
-        // merged output count reflects both mutations.
+        // doc concurrently clears outputs, merge composes correctly. The fork's
+        // index is the correct one to cache — if a concurrent clear invalidates
+        // it, the next stream chunk safely falls back to append.
         let mut doc = NotebookDoc::new("test");
         doc.add_cell(0, "cell-1", "code").unwrap();
 
@@ -4528,7 +4529,7 @@ mod tests {
             .upsert_stream_output("cell-1", "stdout", new_hash, Some(&known_state))
             .unwrap();
         assert!(updated, "should update in place on fork");
-        assert_eq!(fork_index, 0);
+        assert_eq!(fork_index, 0, "fork index is where the upsert wrote");
 
         // Concurrent mutation on main doc: clear all outputs
         doc.clear_outputs("cell-1").unwrap();
@@ -4537,30 +4538,27 @@ mod tests {
         // Merge fork back — CRDT composes the clear with the upsert
         doc.merge(&mut fork).unwrap();
 
-        // After merge, the output list should contain the fork's write.
-        // The clear and the upsert are concurrent — Automerge's list CRDT
-        // keeps the fork's insert/update since it's a concurrent write.
+        // After merge: the fork did a `put` (in-place update) on an element
+        // that the main doc deleted. Automerge's semantics: a put on a
+        // deleted element is lost — the concurrent clear wins.
         let outputs = doc.get_cell_outputs("cell-1").unwrap();
-
-        // The key invariant: reading len from the merged doc gives us a
-        // safe index for terminal state caching. Whether the output
-        // survived the concurrent clear or not, the count is accurate.
-        let merged_index = outputs.len().saturating_sub(1);
-
-        // The merged doc should have at least the fork's output (Automerge
-        // concurrent semantics keep both the delete and the write).
-        // The exact behavior depends on whether the upsert was a put
-        // (update) vs insert (append) — but the invariant is that
-        // merged_index is safe to cache.
-        assert!(
-            merged_index < outputs.len() || outputs.is_empty(),
-            "cached index must be valid for the merged output list"
+        assert_eq!(
+            outputs.len(),
+            0,
+            "concurrent clear wins over fork's in-place put"
         );
+
+        // The cached fork_index (0) is now stale, but that's safe:
+        // the next upsert_stream_output call will see output_count=0,
+        // validation will fail (index 0 >= output_count 0), and it
+        // will fall back to appending a fresh entry.
+        assert_eq!(fork_index, 0, "fork index is stale but harmless");
     }
 
     #[test]
     fn test_stream_upsert_fork_merge_append_case() {
-        // Verifies that fork+merge works for the append case (no known state).
+        // Verifies that fork+merge works for the append case (no known state)
+        // and that the fork's index is correct for terminal state caching.
         let mut doc = NotebookDoc::new("test");
         doc.add_cell(0, "cell-1", "code").unwrap();
 
@@ -4574,7 +4572,7 @@ mod tests {
             .upsert_stream_output("cell-1", "stdout", hash, None)
             .unwrap();
         assert!(!updated, "should append, not update");
-        assert_eq!(fork_index, 0);
+        assert_eq!(fork_index, 0, "fork appended at position 0");
 
         // Concurrently append a different output on main doc
         doc.append_output("cell-1", "sha256:other").unwrap();
@@ -4590,8 +4588,12 @@ mod tests {
             "both concurrent appends should survive merge"
         );
 
-        // The merged output count gives a valid terminal cache index
-        let merged_index = outputs.len().saturating_sub(1);
-        assert_eq!(merged_index, 1);
+        // The fork's index (0) is correct for caching — it points to the
+        // fork's output entry. Using len()-1 would be wrong here since
+        // the fork's output may not be the last entry after merge.
+        assert!(
+            outputs.contains(&hash.to_string()),
+            "fork's appended output should be in merged doc"
+        );
     }
 }
