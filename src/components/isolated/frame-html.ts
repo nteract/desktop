@@ -35,15 +35,15 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
   // Start with transparent backgrounds to prevent flash while theme loads
   // Parent will send theme message immediately after iframe is ready
   return `<!DOCTYPE html>
-<html>
+<html style="background:${darkMode ? "#0a0a0a" : "#ffffff"};color-scheme:${darkMode ? "dark" : "light"}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data:; script-src 'unsafe-inline' 'unsafe-eval' blob: https:; style-src 'unsafe-inline'; img-src * data: blob:; font-src * data:; connect-src *;">
   <style>
     :root {
-      --bg-primary: transparent;
-      --bg-secondary: transparent;
+      --bg-primary: ${darkMode ? "#0a0a0a" : "#ffffff"};
+      --bg-secondary: ${darkMode ? "#1a1a1a" : "#f5f5f5"};
       --text-primary: ${darkMode ? "#e0e0e0" : "#1a1a1a"};
       --text-secondary: ${darkMode ? "#a0a0a0" : "#666666"};
       --border-color: ${darkMode ? "#333333" : "#e0e0e0"};
@@ -61,7 +61,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
       padding: 0;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       line-height: 1.5;
-      background: transparent;
+      background: var(--bg-primary);
       color: var(--text-primary);
       overflow: hidden;
     }

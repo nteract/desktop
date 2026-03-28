@@ -64,11 +64,15 @@ describe("generateFrameHtml", () => {
   });
 
   describe("dark mode", () => {
-    it("uses transparent background to prevent flash", () => {
-      // Background is transparent initially; theme is applied via postMessage
+    it("bakes theme-correct background to prevent flash", () => {
+      // Background matches theme from the start so iframe never flashes white
       const darkHtml = generateFrameHtml({ darkMode: true });
-      expect(darkHtml).toContain("--bg-primary: transparent");
-      expect(darkHtml).toContain("--bg-secondary: transparent");
+      expect(darkHtml).toContain("--bg-primary: #0a0a0a");
+      expect(darkHtml).toContain("--bg-secondary: #1a1a1a");
+
+      const lightHtml = generateFrameHtml({ darkMode: false });
+      expect(lightHtml).toContain("--bg-primary: #ffffff");
+      expect(lightHtml).toContain("--bg-secondary: #f5f5f5");
     });
 
     it("uses dark text colors when darkMode is true", () => {

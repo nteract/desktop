@@ -212,6 +212,8 @@ export const MarkdownCell = memo(function MarkdownCell({
   }, [cell.id, editing]);
 
   const darkMode = useDarkMode();
+  const darkModeRef = useRef(darkMode);
+  darkModeRef.current = darkMode;
 
   const blobPort = useBlobPort();
 
@@ -228,6 +230,8 @@ export const MarkdownCell = memo(function MarkdownCell({
   // Render markdown content when iframe is ready
   const handleFrameReady = useCallback(() => {
     if (!frameRef.current || !cell.source) return;
+    // Ensure theme is in sync before re-rendering (fixes theme drift after cell moves)
+    frameRef.current.setTheme(darkModeRef.current);
     const processedSource = rewriteMarkdownAssetRefs(
       cell.source,
       cell.resolvedAssets,

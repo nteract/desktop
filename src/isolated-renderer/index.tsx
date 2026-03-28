@@ -112,7 +112,7 @@ function setupMessageListener() {
 function IsolatedRendererApp() {
   const [state, setState] = useState<RendererState>({
     outputs: [],
-    isDark: true,
+    isDark: document.documentElement.classList.contains("dark"),
   });
 
   // Handle messages from parent
