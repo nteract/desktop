@@ -6,9 +6,9 @@
  *
  * Fixture: 3-conda-inline.ipynb (has markupsafe dependency via conda, untrusted)
  *
- * Flow: untrusted notebooks don't auto-launch the kernel. Execution
- * triggers the trust dialog, which must be approved before the kernel
- * starts with the conda inline environment.
+ * Flow: untrusted notebooks show a banner prompting dependency review.
+ * Clicking "Review Dependencies" opens the trust dialog, which must be
+ * approved before the kernel starts with the conda inline environment.
  */
 
 import { browser } from "@wdio/globals";
@@ -21,23 +21,25 @@ import {
 } from "../helpers.js";
 
 describe("Conda Inline Dependencies", () => {
-  it("should launch kernel after trust approval", async () => {
-    // Untrusted notebooks don't auto-launch — we must trigger execution
-    // to surface the trust dialog, then approve it.
+  it("should launch kernel after reviewing dependencies from banner", async () => {
     await waitForNotebookSynced();
 
-    const codeCell = await $('[data-cell-type="code"]');
-    await codeCell.waitForExist({ timeout: 10000 });
+    // Untrusted notebooks show a banner — click "Review Dependencies" to open trust dialog
+    const reviewButton = await $(
+      '[data-testid="review-dependencies-button"]',
+    );
+    await reviewButton.waitForExist({
+      timeout: 30000,
+      timeoutMsg:
+        "Review Dependencies button not found — untrusted banner should appear for this fixture",
+    });
+    await reviewButton.waitForClickable({ timeout: 5000 });
+    await reviewButton.click();
+    console.log(
+      "[conda-inline] Clicked Review Dependencies, waiting for trust dialog...",
+    );
 
-    await setCellSource(codeCell, "import sys; print(sys.executable)");
-
-    // Click execute — this triggers the trust dialog
-    const executeButton = await codeCell.$('[data-testid="execute-button"]');
-    await executeButton.waitForClickable({ timeout: 5000 });
-    await executeButton.click();
-    console.log("[conda-inline] Clicked execute, waiting for trust dialog...");
-
-    // Approve the trust dialog
+    // Approve the trust dialog that opens
     const approved = await approveTrustDialog(30000);
     console.log(`[conda-inline] Trust dialog approved: ${approved}`);
 
@@ -69,7 +71,6 @@ describe("Conda Inline Dependencies", () => {
   });
 
   it("should use conda inline environment path", async () => {
-    // Kernel restarted after trust approval — need to re-execute
     const codeCell = await $('[data-cell-type="code"]');
     await codeCell.waitForExist({ timeout: 10000 });
 
@@ -83,7 +84,6 @@ describe("Conda Inline Dependencies", () => {
     const output = await waitForCellOutput(codeCell, 120000);
     console.log(`[conda-inline] Cell output: ${output}`);
 
-    // Should be a cached conda inline env (conda-inline-* path)
     expect(output).toContain("conda-inline-");
   });
 
@@ -107,7 +107,6 @@ describe("Conda Inline Dependencies", () => {
     const output = await waitForCellOutput(cell, 30000);
     console.log(`[conda-inline] Import test output: ${output}`);
 
-    // Should show a version number (e.g., "1.26.4")
     expect(output).toMatch(/^\d+\.\d+/);
   });
 });

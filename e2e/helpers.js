@@ -93,7 +93,6 @@ export async function waitForKernelReady(timeout = 60000) {
   );
 }
 
-
 /**
  * Find the first code cell and execute it.
  * Assumes the cell already has code (pre-populated in fixture notebooks).
@@ -266,6 +265,8 @@ export async function approveTrustDialog(timeout = 15000) {
   }
 
   const approveButton = await $('[data-testid="trust-approve-button"]');
+  // daemon:ready can briefly set loading=true, disabling the button — wait generously
+  await approveButton.waitForEnabled({ timeout: 30000 });
   await approveButton.waitForClickable({ timeout: 5000 });
   await approveButton.click();
 

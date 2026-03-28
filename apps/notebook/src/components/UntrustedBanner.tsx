@@ -17,6 +17,7 @@ export function UntrustedBanner({ onReviewClick }: UntrustedBannerProps) {
         size="sm"
         variant="secondary"
         className="h-6 px-2 text-xs bg-amber-100 hover:bg-amber-200 text-amber-900"
+        data-testid="review-dependencies-button"
         onClick={onReviewClick}
       >
         Review Dependencies
