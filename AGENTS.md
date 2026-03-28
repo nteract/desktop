@@ -425,3 +425,15 @@ The rule: `image/*` → binary (EXCEPT `image/svg+xml` — that's text). `audio/
 ### Iframe Security
 
 **NEVER add `allow-same-origin` to the iframe sandbox.** This is the single most important security invariant — tested in CI. It would give untrusted notebook outputs full access to Tauri APIs.
+
+### Cell List Stable DOM Order (Iframe Reload Prevention)
+
+**The cell list in `NotebookView.tsx` MUST render in a stable DOM order (sorted by cell ID) and use CSS `order` for visual positioning.** Do NOT iterate `cellIds` directly in the JSX — iterate `stableDomOrder` instead.
+
+Moving an `<iframe>` element in the DOM causes the browser to destroy and reload it. React's keyed-list reconciliation uses `insertBefore` to reorder DOM nodes when children change position. This causes iframe reloads — visible as white flashes, lost widget state, and re-rendered outputs.
+
+The fix: render cells in a deterministic DOM order (`[...cellIds].sort()`) so React never moves existing nodes. Visual ordering is achieved via CSS `order` on each cell's wrapper, with the parent using `display: flex; flex-direction: column`.
+
+Key files:
+- `apps/notebook/src/components/NotebookView.tsx` — `stableDomOrder`, `cellIdToIndex`, flex container
+- `src/components/isolated/isolated-frame.tsx` — iframe reload detection (the fallback path if DOM does move)

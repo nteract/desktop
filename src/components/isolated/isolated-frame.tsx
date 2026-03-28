@@ -240,6 +240,9 @@ export const IsolatedFrame = forwardRef<
   const [height, setHeight] = useState(minHeight);
   // Track if content has been rendered (for revealOnRender mode)
   const [isContentRendered, setIsContentRendered] = useState(false);
+  // Track if the iframe is reloading (DOM move caused browser to tear down)
+  // Used to hide the iframe during reload to prevent white flash
+  const [isReloading, setIsReloading] = useState(false);
 
   // Queue messages until iframe is ready
   const pendingMessagesRef = useRef<ParentToIframeMessage[]>([]);
@@ -375,6 +378,9 @@ export const IsolatedFrame = forwardRef<
             setIsReady(false);
             // Reset content rendered state for revealOnRender mode
             setIsContentRendered(false);
+            // Hide iframe during reload to prevent white flash from blank
+            // iframe document before blob HTML loads
+            setIsReloading(true);
           }
 
           if (isReload) {
@@ -396,6 +402,7 @@ export const IsolatedFrame = forwardRef<
         case "renderer_ready":
           // React renderer bundle is initialized
           setIsReady(true);
+          setIsReloading(false);
           onReadyRef.current?.();
           // Render initial content if provided
           if (initialContent) {
@@ -573,8 +580,11 @@ export const IsolatedFrame = forwardRef<
         opacity: displayOpacity,
         border: "none",
         display: "block",
-        background: "transparent",
+        background: darkMode ? "#0a0a0a" : "#ffffff",
         colorScheme: darkMode ? "dark" : "light",
+        // Hide iframe during reload to prevent white flash from blank document.
+        // visibility:hidden preserves layout (keeps height) while hiding content.
+        visibility: isReloading ? "hidden" : "visible",
         transition: revealOnRender
           ? "height 150ms ease-out, opacity 150ms ease-out"
           : undefined,

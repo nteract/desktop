@@ -299,9 +299,10 @@ function SortableCell({
     isDragging,
   } = useSortable({ id: cellId });
 
-  const style = {
+  const style: React.CSSProperties = {
     transform: DndCSS.Transform.toString(transform),
     transition,
+    order: index,
   };
 
   // Combine listeners and attributes for the drag handle
@@ -426,6 +427,22 @@ function NotebookViewContent({
     },
     [cellIds, onMoveCell],
   );
+
+  // IMPORTANT: Stable DOM order — do NOT replace with cellIds.map() directly.
+  // Cells are rendered in sorted-ID order so React never calls insertBefore on
+  // existing DOM nodes. Visual ordering uses CSS `order` on each cell wrapper.
+  // Without this, moving a cell causes browsers to reload iframes (destroying
+  // content, widgets, and theme state). See CLAUDE.md § "Cell List Stable DOM Order".
+  const stableDomOrder = useMemo(() => [...cellIds].sort(), [cellIds]);
+
+  // Map cell ID → visual index for O(1) lookup
+  const cellIdToIndex = useMemo(() => {
+    const map = new Map<string, number>();
+    for (let i = 0; i < cellIds.length; i++) {
+      map.set(cellIds[i], i);
+    }
+    return map;
+  }, [cellIds]);
 
   // Compute consecutive groups of fully-hidden cells
   // Maps cell ID → { count, isFirst, groupCellIds }
@@ -817,21 +834,24 @@ function NotebookViewContent({
             items={cellIds}
             strategy={verticalListSortingStrategy}
           >
-            {cellIds.map((cellId, index) => {
-              const group = hiddenGroups.get(cellId);
-              return (
-                <SortableCell
-                  key={cellId}
-                  cellId={cellId}
-                  nextCellId={cellIds[index + 1]}
-                  index={index}
-                  renderCell={renderCell}
-                  onAddCell={onAddCell}
-                  onDeleteCell={onDeleteCell}
-                  isHiddenInGroup={group != null && !group.isFirst}
-                />
-              );
-            })}
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              {stableDomOrder.map((cellId) => {
+                const index = cellIdToIndex.get(cellId) ?? 0;
+                const group = hiddenGroups.get(cellId);
+                return (
+                  <SortableCell
+                    key={cellId}
+                    cellId={cellId}
+                    nextCellId={cellIds[index + 1]}
+                    index={index}
+                    renderCell={renderCell}
+                    onAddCell={onAddCell}
+                    onDeleteCell={onDeleteCell}
+                    isHiddenInGroup={group != null && !group.isFirst}
+                  />
+                );
+              })}
+            </div>
           </SortableContext>
           <DragOverlay>
             {activeId && <CellDragPreview cellId={activeId} />}
