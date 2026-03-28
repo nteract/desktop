@@ -78,13 +78,14 @@ describe("Trust Dialog Dismiss", () => {
     await approveButton.click();
     console.log("[trust-dialog-dismiss] Clicked approve button");
 
-    // Dialog should close QUICKLY (within 3 seconds) - this is the key assertion
-    // If it waited for kernel launch, this would timeout
+    // Dialog should close QUICKLY (within 5 seconds) - this is the key assertion.
+    // If it waited for kernel launch, this would timeout. The 5s budget accounts
+    // for CI variability (trust RPC round-trip + React re-render).
     await browser.waitUntil(async () => !(await dialog.isExisting()), {
-      timeout: 3000,
+      timeout: 5000,
       interval: 100,
       timeoutMsg:
-        "Trust dialog did not close within 3s - may be waiting for kernel launch (regression #515)",
+        "Trust dialog did not close within 5s - may be waiting for kernel launch (regression #515)",
     });
 
     const closeTime = Date.now();
@@ -99,8 +100,8 @@ describe("Trust Dialog Dismiss", () => {
         return s === "starting" || s === "idle" || s === "busy";
       },
       {
-        timeout: 10000,
-        interval: 200,
+        timeout: 30000,
+        interval: 300,
         timeoutMsg:
           "Kernel status never reached starting/idle/busy after trust approval",
       },

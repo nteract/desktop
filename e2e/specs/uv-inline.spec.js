@@ -10,21 +10,20 @@
  * with tauri-plugin-webdriver (synthetic keyboard events don't work).
  */
 
-import { browser } from "@wdio/globals";
 import {
-  approveTrustDialog,
   setCellSource,
   waitForCellOutput,
-  waitForKernelReady,
+  waitForKernelReadyWithTrust,
   waitForNotebookSynced,
 } from "../helpers.js";
 
 describe("UV Inline Dependencies", () => {
-  it("should auto-launch kernel (may need trust approval)", async () => {
+  it("should auto-launch kernel (approving trust if needed)", async () => {
     console.log("[uv-inline] Waiting for kernel ready (up to 300s)...");
-    // Wait for kernel or trust dialog (300s for first startup + env creation)
-    await waitForKernelReady(300000);
-    console.log("[uv-inline] Kernel is ready");
+    const trustApproved = await waitForKernelReadyWithTrust(300000);
+    console.log(
+      `[uv-inline] Kernel is ready (trust approved: ${trustApproved})`,
+    );
   });
 
   it("should show UV badge in toolbar", async () => {
@@ -66,25 +65,6 @@ describe("UV Inline Dependencies", () => {
     await executeButton.waitForClickable({ timeout: 5000 });
     await executeButton.click();
     console.log("[uv-inline] Clicked execute button");
-
-    // May need to approve trust dialog for inline deps
-    const approved = await approveTrustDialog(15000);
-    if (approved) {
-      console.log(
-        "[uv-inline] Trust dialog approved, waiting for kernel restart...",
-      );
-      // If trust dialog appeared, wait for kernel to restart with deps
-      await waitForKernelReady(300000);
-      console.log("[uv-inline] Kernel restarted after trust approval");
-
-      // Re-execute after kernel restart by clicking execute button again
-      const reExecuteButton = await codeCell.$(
-        '[data-testid="execute-button"]',
-      );
-      await reExecuteButton.waitForClickable({ timeout: 5000 });
-      await reExecuteButton.click();
-      console.log("[uv-inline] Re-executed cell after kernel restart");
-    }
 
     // Wait for output
     const output = await waitForCellOutput(codeCell, 60000);
