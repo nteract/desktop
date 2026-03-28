@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "inkwell": {
+    "nteract-dev": {
       "command": "cargo",
       "args": ["run", "-p", "mcp-supervisor"],
       "env": {

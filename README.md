@@ -126,7 +126,7 @@ nteract/desktop
 │   ├── runt-trust/        # HMAC trust verification
 │   ├── runt-workspace/    # Workspace detection utilities
 │   ├── xtask/             # Build automation tasks
-│   └── mcp-supervisor/    # Inkwell MCP supervisor for dev workflows
+│   └── mcp-supervisor/    # nteract-dev MCP supervisor for dev workflows
 ├── python/                 # Python packages
 │   ├── runtimed/          # PyPI: runtimed (Python bindings for daemon)
 │   └── nteract/           # PyPI: nteract (MCP server)

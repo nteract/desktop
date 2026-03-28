@@ -14,7 +14,7 @@
 | Run with notebook | `cargo xtask run path/to/notebook.ipynb` |
 | Build release .app | `cargo xtask build-app` |
 | Build release DMG | `cargo xtask build-dmg` |
-| MCP supervisor (Inkwell) | `cargo xtask run-mcp` |
+| MCP supervisor (nteract-dev) | `cargo xtask run-mcp` |
 | MCP config JSON | `cargo xtask run-mcp --print-config` |
 | MCP server (no supervisor) | `cargo xtask dev-mcp` |
 | Lint (check mode) | `cargo xtask lint` |
@@ -166,16 +166,16 @@ In production, the Tauri app auto-installs and manages the system daemon. In dev
 - Your code changes take effect immediately on daemon restart
 - No interference with the system daemon
 
-**With Inkwell (preferred for agents):**
+**With nteract-dev (preferred for agents):**
 
-If you have the repo-local `inkwell` MCP entry configured, the daemon is managed for you through the `supervisor_*` tools:
+If you have the repo-local `nteract-dev` MCP entry configured, the daemon is managed for you through the `supervisor_*` tools:
 
 - `supervisor_restart(target="daemon")` — start or restart the dev daemon
 - `supervisor_status` — check daemon status (includes `daemon_managed: true/false`)
 - `supervisor_rebuild` — rebuild Python bindings + restart
 - `supervisor_logs` — tail daemon logs
 
-No env vars or extra terminals needed. Inkwell handles per-worktree isolation automatically.
+No env vars or extra terminals needed. nteract-dev handles per-worktree isolation automatically.
 
 **Two-terminal workflow (without supervisor):**
 
@@ -216,7 +216,7 @@ RUNTIMED_DEV=1 cargo xtask notebook
 
 Per-worktree state is stored in `<cache>/{cache_namespace}/worktrees/{hash}/` (macOS: `~/Library/Caches/`, Linux: `~/.cache/`). Source builds default to `runt-nightly`; set `RUNT_BUILD_CHANNEL=stable` only when you intentionally need the stable flow.
 
-**For AI agents:** If the repo-local `inkwell` MCP entry is available, prefer its `supervisor_*` tools — they handle env vars and daemon lifecycle automatically. Keep `nteract` as the name for the global/system-installed MCP server. When using a raw terminal (not Zed tasks), set the env vars manually:
+**For AI agents:** If the repo-local `nteract-dev` MCP entry is available, prefer its `supervisor_*` tools — they handle env vars and daemon lifecycle automatically. Keep `nteract` as the name for the global/system-installed MCP server. When using a raw terminal (not Zed tasks), set the env vars manually:
 
 ```bash
 export RUNTIMED_DEV=1
@@ -308,9 +308,9 @@ uv run --directory . nteract       # equivalent, explicit
 
 For direct launches, `--stable` and `--nightly` are mutually exclusive channel overrides. They only set `RUNTIMED_SOCKET_PATH` when it is unset, and they also control which app the `show_notebook` tool opens.
 
-### Inkwell supervisor (recommended)
+### nteract-dev supervisor (recommended)
 
-The **Inkwell** MCP supervisor (`crates/mcp-supervisor/`) is a stable Rust
+The **nteract-dev** MCP supervisor (`crates/mcp-supervisor/`) is a stable Rust
 process that proxies to the nteract Python MCP server. It handles daemon
 lifecycle, auto-restart on crash, and hot-reload on file changes — one command,
 everything works:
@@ -333,16 +333,16 @@ For your MCP client config (Zed, Claude Desktop, Codex, etc.):
 cargo xtask run-mcp --print-config
 ```
 
-Use `inkwell` as the server name for this source tree so it stays distinct from any global/system `nteract` MCP entry.
+Use `nteract-dev` as the server name for this source tree so it stays distinct from any global/system `nteract` MCP entry.
 
 Codex app/CLI can read a project-scoped `.codex/config.toml`. This repo includes one that mirrors the same supervisor setup:
 
 ```toml
-[mcp_servers.inkwell]
+[mcp_servers.nteract-dev]
 command = "cargo"
 args = ["run", "-p", "mcp-supervisor"]
 
-[mcp_servers.inkwell.env]
+[mcp_servers.nteract-dev.env]
 RUNTIMED_DEV = "1"
 ```
 
@@ -351,7 +351,7 @@ Or configure `.zed/settings.json` directly (gitignored):
 ```json
 {
   "context_servers": {
-    "inkwell": {
+    "nteract-dev": {
       "command": "./target/debug/mcp-supervisor",
       "args": [],
       "env": { "RUNTIMED_DEV": "1" }
@@ -405,7 +405,7 @@ The MCP server is a pure Python package (`python/nteract/`) that depends on
 `crates/runtimed-py/`). Both are workspace members of the repo-root
 `pyproject.toml`, so `uv sync` installs them into `.venv` at the repo root.
 
-The Inkwell supervisor (`crates/mcp-supervisor/`) uses the `rmcp` Rust SDK to
+The nteract-dev supervisor (`crates/mcp-supervisor/`) uses the `rmcp` Rust SDK to
 act as both an MCP server (facing the client) and an MCP client (facing the
 Python child process). It spawns the child via `uv run --directory . nteract`
 from the repo root.

@@ -106,7 +106,7 @@ Daemon:
   dev-daemon [--release]     Build and run runtimed in per-worktree dev mode
 
 MCP:
-  run-mcp [--release]        Build and run the Inkwell MCP supervisor (proxy + daemon + auto-restart)
+  run-mcp [--release]        Build and run the nteract-dev MCP supervisor (proxy + daemon + auto-restart)
   run-mcp --print-config     Print MCP client config JSON (for Zed, Claude, etc.)
   dev-mcp                    Build Python bindings and launch nteract MCP server directly (no supervisor)
   dev-mcp --print-config     Print MCP client config JSON (for Zed, Claude, etc.)

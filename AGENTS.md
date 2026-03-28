@@ -16,7 +16,7 @@ Codex-specific repo skills live in `.codex/skills/`. Prefer them when the task m
 
 If your MCP client provides `supervisor_status`, `supervisor_restart`, `supervisor_rebuild`, etc., **prefer those over manual terminal commands**. The supervisor manages the dev daemon lifecycle for you — no env vars, no extra terminals.
 
-**Claude Code has Inkwell locally** — the local dev environment connects Claude Code to the repo-local `inkwell` MCP entry via `cargo xtask run-mcp`. Codex app/CLI can use the same server when this repo's project-scoped `.codex/config.toml` is enabled in a trusted workspace. If your current environment does not expose the supervisor tools, use the manual `cargo xtask` commands below.
+**Claude Code has nteract-dev locally** — the local dev environment connects Claude Code to the repo-local `nteract-dev` MCP entry via `cargo xtask run-mcp`. Codex app/CLI can use the same server when this repo's project-scoped `.codex/config.toml` is enabled in a trusted workspace. If your current environment does not expose the supervisor tools, use the manual `cargo xtask` commands below.
 
 | Instead of… | Use… |
 |-------------|------|
@@ -203,7 +203,7 @@ uv run nteract  # Run MCP server from repo root
 
 ## MCP Server (Local Development)
 
-### Inkwell — MCP Supervisor
+### nteract-dev — MCP Supervisor
 
 ```bash
 # Build and run the supervisor (starts daemon if needed)
@@ -213,13 +213,13 @@ cargo xtask run-mcp
 cargo xtask run-mcp --print-config
 ```
 
-Use `inkwell` as the MCP server name for this source tree. Keep `nteract` for the global/system-installed MCP server. In clients that namespace tools by server name, that keeps repo-local tools distinct from the global install.
+Use `nteract-dev` as the MCP server name for this source tree. Keep `nteract` for the global/system-installed MCP server. In clients that namespace tools by server name, that keeps repo-local tools distinct from the global install.
 
-For Codex app/CLI, this repository also includes a project-scoped MCP config in `.codex/config.toml` that points at the same `mcp-supervisor` server using the `inkwell` entry name.
+For Codex app/CLI, this repository also includes a project-scoped MCP config in `.codex/config.toml` that points at the same `mcp-supervisor` server using the `nteract-dev` entry name.
 
 `uv run nteract --stable` and `uv run nteract --nightly` are channel overrides for direct MCP launches. They only seed `RUNTIMED_SOCKET_PATH` when it is unset, and they also control which app `show_notebook` opens. `--no-show` removes the `show_notebook` tool entirely.
 
-### Supervisor Tools (from Inkwell / `mcp-supervisor`)
+### Supervisor Tools (from nteract-dev / `mcp-supervisor`)
 
 | Tool | Purpose |
 |------|---------|
@@ -232,7 +232,7 @@ For Codex app/CLI, this repository also includes a project-scoped MCP config in 
 
 ### nteract MCP Tools (27 tools for notebook interaction)
 
-When Inkwell is active, agents also get the full nteract tool suite. **Use these to audit your own work** — open a notebook, execute cells, and inspect outputs to verify changes actually work before committing.
+When nteract-dev is active, agents also get the full nteract tool suite. **Use these to audit your own work** — open a notebook, execute cells, and inspect outputs to verify changes actually work before committing.
 
 | Category | Tools |
 |----------|-------|
@@ -254,11 +254,11 @@ The supervisor watches `python/nteract/src/`, `python/runtimed/src/`, `crates/ru
 
 ### Tool availability
 
-- **Local Claude Code / Zed / Codex app/CLI with MCP configured** → Configure the repo-local MCP entry as `inkwell`. Inkwell exposes all `supervisor_*` tools plus the proxied nteract notebook tools. **Prefer supervisor tools for daemon lifecycle** — they handle env vars and isolation automatically.
+- **Local Claude Code / Zed / Codex app/CLI with MCP configured** → Configure the repo-local MCP entry as `nteract-dev`. nteract-dev exposes all `supervisor_*` tools plus the proxied nteract notebook tools. **Prefer supervisor tools for daemon lifecycle** — they handle env vars and isolation automatically.
 - **Environments without supervisor tools** → use `cargo xtask` commands directly for build, daemon, and testing.
 - **nteract MCP only** → The global/system `nteract` server exposes notebook tools only, with no `supervisor_*`. Use manual terminal commands for daemon management.
 - **No MCP server** → use `cargo xtask run-mcp` to set one up
-- **Dev daemon not running** → Inkwell starts it automatically via `supervisor_restart(target="daemon")`
+- **Dev daemon not running** → nteract-dev starts it automatically via `supervisor_restart(target="daemon")`
 
 ## Workspace Crates (15)
 
@@ -277,7 +277,7 @@ The supervisor watches `python/nteract/src/`, `python/runtimed/src/`, `crates/ru
 | `kernel-launch` | Kernel launching, tool bootstrapping (deno, uv, ruff via rattler) |
 | `kernel-env` | Python environment management (UV + Conda) with progress reporting |
 | `tauri-jupyter` | Shared Jupyter message types for Tauri/WebView |
-| `mcp-supervisor` | Inkwell — MCP supervisor proxy, daemon/vite lifecycle management |
+| `mcp-supervisor` | nteract-dev — MCP supervisor proxy, daemon/vite lifecycle management |
 | `xtask` | Build system orchestration |
 
 ## Build System (`cargo xtask`)
@@ -297,7 +297,7 @@ All build, lint, and dev commands go through `cargo xtask`. **Run `cargo xtask h
 | | `cargo xtask run` | Run bundled debug binary |
 | Daemon | `cargo xtask dev-daemon` | Per-worktree dev daemon |
 | | `cargo xtask install-daemon` | Install runtimed as system daemon |
-| MCP | `cargo xtask run-mcp` | Inkwell supervisor (daemon + MCP + auto-restart) |
+| MCP | `cargo xtask run-mcp` | nteract-dev supervisor (daemon + MCP + auto-restart) |
 | | `cargo xtask run-mcp --print-config` | Print MCP client config JSON |
 | | `cargo xtask dev-mcp` | Direct nteract MCP (no supervisor) |
 | Lint | `cargo xtask lint` | Check formatting (Rust, JS/TS, Python) |

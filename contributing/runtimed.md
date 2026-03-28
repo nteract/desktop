@@ -87,7 +87,7 @@ cargo run -p runt-cli -- daemon status --json | jq -r '.daemon_info.version'
 
 When iterating on daemon code, you often want to test changes in the notebook app without rebuilding the frontend.
 
-**With Inkwell supervisor** (if you have `supervisor_*` MCP tools — e.g. in Zed):
+**With nteract-dev supervisor** (if you have `supervisor_*` MCP tools — e.g. in Zed):
 
 The supervisor manages the dev daemon for you. No env vars or extra terminals needed.
 

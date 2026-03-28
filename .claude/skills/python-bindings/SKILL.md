@@ -182,7 +182,7 @@ The nteract MCP server (`python/nteract/`) provides programmatic notebook intera
 # Run directly (after uv sync + maturin develop)
 uv run nteract
 
-# Via Inkwell supervisor (recommended, handles lifecycle)
+# Via nteract-dev supervisor (recommended, handles lifecycle)
 cargo xtask run-mcp
 ```
 
@@ -227,4 +227,4 @@ cd crates/runtimed-py
 VIRTUAL_ENV=../../.venv uv run --directory ../../python/runtimed maturin develop
 ```
 
-Or if using Inkwell supervisor, call `supervisor_rebuild`.
+Or if using nteract-dev supervisor, call `supervisor_rebuild`.

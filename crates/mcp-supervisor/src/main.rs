@@ -1,4 +1,4 @@
-//! Inkwell — a stable MCP server that proxies to the nteract MCP server
+//! nteract-dev — a stable MCP server that proxies to the nteract MCP server
 //! and manages the full dev environment (daemon, vite, notebook app).
 //!
 //! Architecture:
@@ -410,7 +410,7 @@ impl ClientHandler for NteractClientHandler {
     fn get_info(&self) -> rmcp::model::ClientInfo {
         rmcp::model::ClientInfo {
             client_info: Implementation {
-                name: "inkwell".into(),
+                name: "nteract-dev".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
                 ..Default::default()
             },
@@ -1022,12 +1022,12 @@ impl ServerHandler for Supervisor {
             protocol_version: Default::default(),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation {
-                name: "inkwell".into(),
+                name: "nteract-dev".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
                 ..Default::default()
             },
             instructions: Some(
-                "Inkwell — MCP supervisor proxying to the nteract notebook server. \
+                "nteract-dev — MCP supervisor proxying to the nteract notebook server. \
                  Includes supervisor_status, supervisor_restart, supervisor_rebuild, \
                  supervisor_logs, supervisor_start_vite, and supervisor_stop tools \
                  for managing the server lifecycle and dev environment. \
@@ -1730,7 +1730,7 @@ fn resolve_project_root() -> PathBuf {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Log to both stderr and a file (.context/inkwell.log)
+    // Log to both stderr and a file (.context/nteract-dev.log)
     // stderr goes to whatever the MCP client captures; the file is
     // readable via supervisor tools for debugging.
     let project_root_for_log = resolve_project_root();
@@ -1739,15 +1739,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Rotate previous session's log so the current file only contains this session.
     // Keeps one old copy (.log.1) for debugging daemon-restart-on-failure scenarios.
-    let inkwell_log_path = log_dir.join("inkwell.log");
-    if inkwell_log_path.exists() {
-        let _ = std::fs::rename(&inkwell_log_path, log_dir.join("inkwell.log.1"));
+    let dev_log_path = log_dir.join("nteract-dev.log");
+    if dev_log_path.exists() {
+        let _ = std::fs::rename(&dev_log_path, log_dir.join("nteract-dev.log.1"));
     }
 
     let log_file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&inkwell_log_path)
+        .open(&dev_log_path)
         .ok();
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()

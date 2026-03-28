@@ -118,7 +118,7 @@ RUNTIMED_DEV=1 cargo xtask notebook      # Terminal 2
 
 ## MCP Server Development
 
-### Inkwell Supervisor (recommended)
+### nteract-dev Supervisor (recommended)
 
 ```bash
 cargo xtask run-mcp
@@ -132,7 +132,7 @@ For editor config:
 cargo xtask run-mcp --print-config
 ```
 
-Use `inkwell` as the repo-local MCP server name so it stays distinct from any global/system `nteract` entry.
+Use `nteract-dev` as the repo-local MCP server name so it stays distinct from any global/system `nteract` entry.
 
 ### Zed Integration
 
@@ -141,7 +141,7 @@ Use `inkwell` as the repo-local MCP server name so it stays distinct from any gl
 ```json
 {
   "context_servers": {
-    "inkwell": {
+    "nteract-dev": {
       "command": "./target/debug/mcp-supervisor",
       "args": [],
       "env": { "RUNTIMED_DEV": "1" }
