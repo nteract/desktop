@@ -582,7 +582,6 @@ class NteractServer:
         # Channel notification state
         self._server_session: ServerSession | None = None
         self._execution_watcher_task: asyncio.Task[None] | None = None
-        self._own_execution_ids: set[str] = set()
         self._seen_executions: dict[str, str] = {}  # execution_id -> last seen status
 
         self._patch_run_stdio()
@@ -643,7 +642,6 @@ class NteractServer:
         if self._execution_watcher_task is not None:
             self._execution_watcher_task.cancel()
         self._seen_executions.clear()
-        self._own_execution_ids.clear()
         self._execution_watcher_task = asyncio.get_event_loop().create_task(
             self._execution_watcher_loop()
         )
@@ -675,11 +673,6 @@ class NteractServer:
                         continue
                     if prev_status in ("done", "error"):
                         continue  # already notified
-
-                    # Skip self-initiated executions
-                    if eid in self._own_execution_ids:
-                        self._own_execution_ids.discard(eid)
-                        continue
 
                     await self._emit_execution_event(entry.cell_id, eid, entry)
 
@@ -798,7 +791,6 @@ class NteractServer:
         cell = notebook.cells.get_by_id(cell_id)
 
         execution = await cell.execute()
-        self._own_execution_ids.add(execution.execution_id)
 
         try:
             await execution.result(timeout_secs=timeout_secs)
