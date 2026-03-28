@@ -30,10 +30,20 @@ fn make_broadcast_frame(broadcast: &serde_json::Value) -> Vec<u8> {
     frame
 }
 
+/// Clear and recreate a scenario directory so stale files from previous runs
+/// (e.g. renamed or removed broadcast frames) don't linger.
+fn clean_scenario_dir(name: &str) -> PathBuf {
+    let dir = fixtures_dir().join(name);
+    if dir.exists() {
+        fs::remove_dir_all(&dir).unwrap();
+    }
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
 /// Write a scenario: manifest.json + doc.bin (saved Automerge document).
 fn write_scenario(name: &str, daemon: &mut NotebookDoc, manifest: &serde_json::Value) {
-    let dir = fixtures_dir().join(name);
-    fs::create_dir_all(&dir).unwrap();
+    let dir = clean_scenario_dir(name);
     fs::write(
         dir.join("manifest.json"),
         serde_json::to_string_pretty(manifest).unwrap(),
@@ -49,8 +59,7 @@ fn write_scenario_with_broadcasts(
     manifest: &serde_json::Value,
     broadcast_frames: &[Vec<u8>],
 ) {
-    let dir = fixtures_dir().join(name);
-    fs::create_dir_all(&dir).unwrap();
+    let dir = clean_scenario_dir(name);
     fs::write(
         dir.join("manifest.json"),
         serde_json::to_string_pretty(manifest).unwrap(),
@@ -68,7 +77,7 @@ fn write_scenario_with_broadcasts(
 fn scenario_output_streaming() {
     //! Daemon creates a cell, executes it, and streams stdout output.
 
-    let mut daemon = NotebookDoc::new("output-streaming");
+    let mut daemon = NotebookDoc::new_with_actor("output-streaming", "fixture-output-streaming");
     daemon.add_cell(0, "cell-1", "code").unwrap();
     daemon
         .update_source("cell-1", "for i in range(3):\n    print(i)")
@@ -128,7 +137,7 @@ fn scenario_output_streaming() {
 fn scenario_execution_with_error() {
     //! Daemon executes a cell that raises an error.
 
-    let mut daemon = NotebookDoc::new("error-execution");
+    let mut daemon = NotebookDoc::new_with_actor("error-execution", "fixture-error-execution");
     daemon.add_cell(0, "cell-1", "code").unwrap();
     daemon.update_source("cell-1", "1 / 0").unwrap();
 
@@ -163,7 +172,7 @@ fn scenario_execution_with_error() {
 fn scenario_re_execution() {
     //! Cell executed twice. First outputs cleared, then new output written.
 
-    let mut daemon = NotebookDoc::new("re-execution");
+    let mut daemon = NotebookDoc::new_with_actor("re-execution", "fixture-re-execution");
     daemon.add_cell(0, "cell-1", "code").unwrap();
     daemon.update_source("cell-1", "print('hello')").unwrap();
 
@@ -205,7 +214,7 @@ fn scenario_re_execution() {
 fn scenario_multi_cell_execution() {
     //! Multiple cells executed in sequence.
 
-    let mut daemon = NotebookDoc::new("multi-cell");
+    let mut daemon = NotebookDoc::new_with_actor("multi-cell", "fixture-multi-cell");
     daemon.add_cell(0, "cell-1", "code").unwrap();
     daemon.update_source("cell-1", "x = 42").unwrap();
     daemon.add_cell(1, "cell-2", "code").unwrap();
@@ -245,7 +254,7 @@ fn scenario_multi_cell_execution() {
 fn scenario_display_data_output() {
     //! Cell produces display_data with a manifest hash (simulated blob store).
 
-    let mut daemon = NotebookDoc::new("display-data");
+    let mut daemon = NotebookDoc::new_with_actor("display-data", "fixture-display-data");
     daemon.add_cell(0, "cell-1", "code").unwrap();
     daemon
         .update_source(
