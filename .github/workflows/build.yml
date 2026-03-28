@@ -258,7 +258,7 @@ jobs:
       - name: Build external binaries
         shell: bash
         run: |
-          cargo build --release -p runtimed -p runt-cli -p notebook
+          cargo build --release -p runtimed -p runt-cli
           TARGET=$(rustc --print host-tuple)
           mkdir -p crates/notebook/binaries
           if [[ "$RUNNER_OS" == "Windows" ]]; then
@@ -268,6 +268,9 @@ jobs:
             cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
             cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
           fi
+
+      - name: Build notebook crate (pre-warm cache for tauri build)
+        run: cargo build --release -p notebook
 
       - name: Clippy (notebook crate)
         run: cargo clippy -p notebook --all-targets -- -D warnings
@@ -401,7 +404,7 @@ jobs:
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
         shell: bash
         run: |
-          cargo build --release -p runtimed -p runt-cli -p notebook
+          cargo build --release -p runtimed -p runt-cli
           TARGET=$(rustc --print host-tuple)
           mkdir -p crates/notebook/binaries
           if [[ "$RUNNER_OS" == "Windows" ]]; then
@@ -411,6 +414,10 @@ jobs:
             cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
             cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
           fi
+
+      - name: Build notebook crate (pre-warm cache for full build)
+        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+        run: cargo build --release -p notebook
 
       - name: Clippy
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
