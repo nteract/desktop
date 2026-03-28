@@ -655,7 +655,7 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Build runtimed binary
-        run: cargo build --release -p runtimed -p runt-cli
+        run: cargo build --release -p runtimed
 
       - name: Build runtimed-py
         working-directory: python/runtimed
