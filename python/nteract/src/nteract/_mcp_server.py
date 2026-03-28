@@ -27,7 +27,8 @@ import sys
 from typing import Annotated, Any, Literal, NoReturn
 
 from mcp.server.fastmcp import Context, FastMCP
-from mcp.types import TextContent, ToolAnnotations
+from mcp.server.session import ServerSession
+from mcp.types import JSONRPCNotification, TextContent, ToolAnnotations
 from pydantic import Field
 
 import runtimed
@@ -578,6 +579,13 @@ class NteractServer:
         self._client_name: str | None = None
         self._channel: str | None = channel  # "stable", "nightly", or None
 
+        # Channel notification state
+        self._server_session: ServerSession | None = None
+        self._execution_watcher_task: asyncio.Task[None] | None = None
+        self._own_execution_ids: set[str] = set()
+        self._seen_executions: dict[str, str] = {}  # execution_id -> last seen status
+
+        self._patch_run_stdio()
         self._register_tools(no_show=no_show)
         self._register_resources()
 
@@ -606,6 +614,149 @@ class NteractServer:
 
     def _peer_label(self) -> str:
         return self._client_name or "Agent"
+
+    # ── Channel notifications ────────────────────────────────────────
+
+    def _patch_run_stdio(self) -> None:
+        """Patch FastMCP's run_stdio_async to declare claude/channel capability."""
+        mcp = self.mcp
+
+        async def _run_stdio_with_channel() -> None:
+            from mcp.server.stdio import stdio_server
+
+            async with stdio_server() as (read_stream, write_stream):
+                init_options = mcp._mcp_server.create_initialization_options(
+                    experimental_capabilities={"claude/channel": {}},
+                )
+                await mcp._mcp_server.run(read_stream, write_stream, init_options)
+
+        mcp.run_stdio_async = _run_stdio_with_channel  # type: ignore[assignment]
+
+    def _capture_session(self, ctx: Context) -> None:
+        """Capture the ServerSession reference for sending channel notifications."""
+        if self._server_session is None:
+            with contextlib.suppress(Exception):
+                self._server_session = ctx.request_context.session
+
+    def _start_execution_watcher(self) -> None:
+        """Start (or restart) the background execution watcher task."""
+        if self._execution_watcher_task is not None:
+            self._execution_watcher_task.cancel()
+        self._seen_executions.clear()
+        self._own_execution_ids.clear()
+        self._execution_watcher_task = asyncio.get_event_loop().create_task(
+            self._execution_watcher_loop()
+        )
+
+    async def _execution_watcher_loop(self) -> None:
+        """Poll RuntimeStateDoc executions and emit channel notifications for completions."""
+        while True:
+            try:
+                await asyncio.sleep(0.5)
+
+                notebook = self._notebook
+                if notebook is None:
+                    continue
+
+                try:
+                    rs = notebook.runtime
+                except Exception:
+                    continue
+
+                for eid, entry in rs.executions.items():
+                    prev_status = self._seen_executions.get(eid)
+                    current_status = entry.status
+
+                    # Track all executions we see
+                    self._seen_executions[eid] = current_status
+
+                    # Only notify on transitions to terminal states
+                    if current_status not in ("done", "error"):
+                        continue
+                    if prev_status in ("done", "error"):
+                        continue  # already notified
+
+                    # Skip self-initiated executions
+                    if eid in self._own_execution_ids:
+                        self._own_execution_ids.discard(eid)
+                        continue
+
+                    await self._emit_execution_event(entry.cell_id, eid, entry)
+
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.debug("Execution watcher error", exc_info=True)
+                await asyncio.sleep(2)
+
+    async def _emit_execution_event(
+        self,
+        cell_id: str,
+        execution_id: str,
+        entry: object,
+    ) -> None:
+        """Emit a channel notification for a completed cell execution."""
+        session = self._server_session
+        if session is None:
+            return
+
+        notebook = self._notebook
+        if notebook is None:
+            return
+
+        # Read cell outputs
+        source_preview = ""
+        output_text = ""
+        status = getattr(entry, "status", "unknown")
+        try:
+            cell = notebook.cells.get_by_id(cell_id)
+            source_preview = (cell.source or "")[:200]
+            parts = []
+            for out in cell.outputs:
+                text = _format_output_text(out)
+                if text:
+                    parts.append(text)
+            output_text = "\n".join(parts)[:2000]
+        except Exception:
+            pass
+
+        content_lines = [f"Cell {cell_id} finished ({status})."]
+        if source_preview:
+            content_lines.append(f"Source: {source_preview}")
+        if output_text:
+            content_lines.append(f"Output:\n{output_text}")
+
+        await self._send_channel_notification(
+            content="\n".join(content_lines),
+            meta={"type": "execution_done", "cell_id": cell_id, "status": status},
+        )
+
+    async def _send_channel_notification(
+        self,
+        content: str,
+        meta: dict[str, str] | None = None,
+    ) -> None:
+        """Send a notifications/claude/channel event to the MCP client."""
+        session = self._server_session
+        if session is None:
+            return
+
+        params: dict[str, Any] = {"content": content}
+        if meta:
+            params["meta"] = meta
+
+        notification = JSONRPCNotification(
+            jsonrpc="2.0",
+            method="notifications/claude/channel",
+            params=params,
+        )
+        try:
+            from mcp.shared.message import SessionMessage
+
+            message = SessionMessage(message=notification)
+            await session._write_stream.send(message)
+        except Exception:
+            logger.debug("Failed to send channel notification", exc_info=True)
 
     async def _send_edit_cursor(self, cell_id: str, source: str, offset: int) -> None:
         if self._notebook is None:
@@ -647,6 +798,7 @@ class NteractServer:
         cell = notebook.cells.get_by_id(cell_id)
 
         execution = await cell.execute()
+        self._own_execution_ids.add(execution.execution_id)
 
         try:
             await execution.result(timeout_secs=timeout_secs)
@@ -666,6 +818,9 @@ class NteractServer:
 
     def cleanup(self) -> None:
         """Best-effort cleanup of the active notebook session."""
+        if self._execution_watcher_task is not None:
+            self._execution_watcher_task.cancel()
+            self._execution_watcher_task = None
         nb = self._notebook
         self._notebook = None
         self._client = None
@@ -769,6 +924,7 @@ class NteractServer:
             """
             if ctx:
                 srv._sniff_client_name(ctx)
+                srv._capture_session(ctx)
 
             if srv._notebook is not None:
                 with contextlib.suppress(Exception):
@@ -776,6 +932,7 @@ class NteractServer:
 
             client = srv._get_client()
             srv._notebook = await client.join_notebook(notebook_id, peer_label=srv._peer_label())
+            srv._start_execution_watcher()
 
             cell_status = await _get_cell_status_map(srv._notebook)
             lines = [
@@ -810,6 +967,7 @@ class NteractServer:
             """
             if ctx:
                 srv._sniff_client_name(ctx)
+                srv._capture_session(ctx)
 
             if srv._notebook is not None:
                 with contextlib.suppress(Exception):
@@ -817,6 +975,7 @@ class NteractServer:
 
             client = srv._get_client()
             srv._notebook = await client.open_notebook(path, peer_label=srv._peer_label())
+            srv._start_execution_watcher()
 
             cell_status = await _get_cell_status_map(srv._notebook)
             lines = [
@@ -874,6 +1033,7 @@ class NteractServer:
             """
             if ctx:
                 srv._sniff_client_name(ctx)
+                srv._capture_session(ctx)
 
             if srv._notebook is not None:
                 with contextlib.suppress(Exception):
@@ -886,6 +1046,7 @@ class NteractServer:
                 peer_label=srv._peer_label(),
                 dependencies=dependencies if runtime == "python" else None,
             )
+            srv._start_execution_watcher()
 
             if dependencies and runtime == "python":
                 with contextlib.suppress(Exception):
