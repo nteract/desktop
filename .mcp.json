@@ -6,6 +6,10 @@
       "env": {
         "RUNTIMED_DEV": "1"
       }
+    },
+    "ci": {
+      "command": "bun",
+      "args": [".claude/channels/ci-webhook.ts"]
     }
   }
 }
