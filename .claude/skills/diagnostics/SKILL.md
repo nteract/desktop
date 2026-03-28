@@ -5,20 +5,47 @@ description: Collect and analyze nteract diagnostic logs. Use when debugging iss
 
 # Diagnostics
 
+## Why `env -i`?
+
+In the dev environment, `RUNTIMED_DEV` and `RUNTIMED_WORKSPACE_PATH` are set (by direnv, xtask, or the supervisor). These cause `runt` to target the per-worktree dev daemon. System diagnostics need to target the **system-installed** daemon, so we use `env -i` to strip all env vars except `PATH` and `HOME`.
+
+The repo-local `bin/runt` wrapper is first in `$PATH` — it runs `./target/debug/runt`, which is the dev build. That's fine for quick checks, but for true system diagnostics, call the system binary by its channel-specific name (`runt` for stable, `runt-nightly` for nightly) via `env -i` so dev env vars don't leak through.
+
 ## Collecting Diagnostics
 
-The system nightly daemon runs outside the dev environment, so use `env -i` to avoid picking up dev-mode env vars:
-
+**Nightly channel** (system-installed nteract Nightly.app):
 ```bash
-env -i PATH="/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin" HOME="$HOME" runt-nightly diagnostics
+env -i PATH="$PATH" HOME="$HOME" runt-nightly diagnostics
 ```
 
-For the stable channel:
+**Stable channel** (system-installed nteract.app):
 ```bash
-env -i PATH="/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin" HOME="$HOME" runt diagnostics
+env -i PATH="$PATH" HOME="$HOME" runt diagnostics
+```
+
+**Dev daemon** (per-worktree, no `env -i` needed):
+```bash
+./target/debug/runt diagnostics
 ```
 
 The archive is written to the current directory (falls back to temp if not writable).
+
+## Other Useful Commands
+
+Same `env -i` pattern applies to any system daemon command:
+
+```bash
+# Check system daemon status
+env -i PATH="$PATH" HOME="$HOME" runt-nightly daemon status
+env -i PATH="$PATH" HOME="$HOME" runt daemon status
+
+# List notebooks on system daemon
+env -i PATH="$PATH" HOME="$HOME" runt-nightly notebooks
+env -i PATH="$PATH" HOME="$HOME" runt ps
+
+# Tail system daemon logs
+env -i PATH="$PATH" HOME="$HOME" runt-nightly daemon logs -f
+```
 
 ## Archive Contents
 
