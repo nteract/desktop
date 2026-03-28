@@ -28,5 +28,6 @@
       "~/*": ["./src/*"]
     }
   },
-  "include": ["src", "../../src/vite-env.d.ts"]
+  "include": ["src", "../../src/vite-env.d.ts"],
+  "exclude": ["src/**/__tests__"]
 }

@@ -11,13 +11,31 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { KERNEL_STATUS } from "../../lib/kernel-status";
+import type { EnvProgressState } from "../../hooks/useEnvProgress";
+import { KERNEL_STATUS, type KernelStatus } from "../../lib/kernel-status";
 import { NotebookToolbar } from "../NotebookToolbar";
 
+function makeEnvProgress(
+  overrides: Partial<EnvProgressState>,
+): EnvProgressState {
+  return {
+    isActive: false,
+    phase: null,
+    envType: null,
+    error: null,
+    statusText: "",
+    elapsedMs: null,
+    progress: null,
+    bytesPerSecond: null,
+    currentPackage: null,
+    ...overrides,
+  };
+}
+
 const baseProps = {
-  kernelStatus: KERNEL_STATUS.IDLE as string,
+  kernelStatus: KERNEL_STATUS.IDLE as KernelStatus,
   envSource: null as string | null,
-  envProgress: null,
+  envProgress: null as EnvProgressState | null,
   onStartKernel: vi.fn(),
   onInterruptKernel: vi.fn(),
   onRestartKernel: vi.fn(),
@@ -253,11 +271,10 @@ describe("NotebookToolbar", () => {
         <NotebookToolbar
           {...baseProps}
           kernelStatus={KERNEL_STATUS.STARTING}
-          envProgress={{
+          envProgress={makeEnvProgress({
             isActive: true,
             statusText: "Installing packages...",
-            error: null,
-          }}
+          })}
         />,
       );
       expect(screen.getByText("Installing packages...")).toBeInTheDocument();
@@ -268,11 +285,11 @@ describe("NotebookToolbar", () => {
         <NotebookToolbar
           {...baseProps}
           kernelStatus={KERNEL_STATUS.STARTING}
-          envProgress={{
+          envProgress={makeEnvProgress({
             isActive: false,
             statusText: "Environment error",
             error: "pip install failed",
-          }}
+          })}
         />,
       );
       expect(screen.getByText("Environment error")).toBeInTheDocument();
