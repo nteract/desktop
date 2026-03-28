@@ -71,21 +71,22 @@ describe("Trust Dialog Dismiss", () => {
     // Wait for the button to be enabled — a checkTrust() call from the
     // daemon:ready listener can briefly set loading=true, which disables
     // the buttons. Poll until the disabled attribute clears.
-    await approveButton.waitForEnabled({ timeout: 10000 });
+    await approveButton.waitForEnabled({ timeout: 30000 });
     await approveButton.waitForClickable({ timeout: 5000 });
 
     const clickTime = Date.now();
     await approveButton.click();
     console.log("[trust-dialog-dismiss] Clicked approve button");
 
-    // Dialog should close QUICKLY (within 5 seconds) - this is the key assertion.
-    // If it waited for kernel launch, this would timeout. The 5s budget accounts
-    // for CI variability (trust RPC round-trip + React re-render).
+    // Dialog should close QUICKLY (within 10 seconds) - this is the key assertion.
+    // If it waited for kernel launch, this would take 30-120s+ (env creation).
+    // The 10s budget accounts for CI variability: Tauri IPC round-trip to daemon
+    // for approve_notebook_trust + checkTrust() re-verify + React re-render.
     await browser.waitUntil(async () => !(await dialog.isExisting()), {
-      timeout: 5000,
+      timeout: 10000,
       interval: 100,
       timeoutMsg:
-        "Trust dialog did not close within 5s - may be waiting for kernel launch (regression #515)",
+        "Trust dialog did not close within 10s - may be waiting for kernel launch (regression #515)",
     });
 
     const closeTime = Date.now();

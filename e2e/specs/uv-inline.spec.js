@@ -4,27 +4,47 @@
  * Verifies that notebooks with inline UV dependencies get a cached
  * environment with those deps installed (not the prewarmed pool).
  *
- * Fixture: 2-uv-inline.ipynb (has requests dependency)
+ * Fixture: 2-uv-inline.ipynb (has requests dependency, untrusted)
  *
- * Updated to use setCellSource + explicit button clicks for compatibility
- * with tauri-plugin-webdriver (synthetic keyboard events don't work).
+ * Flow: untrusted notebooks don't auto-launch the kernel. Execution
+ * triggers the trust dialog, which must be approved before the kernel
+ * starts with the inline environment.
  */
 
 import { browser } from "@wdio/globals";
 import {
+  approveTrustDialog,
   setCellSource,
   waitForCellOutput,
-  waitForKernelReadyWithTrust,
+  waitForKernelReady,
   waitForNotebookSynced,
 } from "../helpers.js";
 
 describe("UV Inline Dependencies", () => {
-  it("should auto-launch kernel (approving trust if needed)", async () => {
-    console.log("[uv-inline] Waiting for kernel ready (up to 300s)...");
-    const trustApproved = await waitForKernelReadyWithTrust(300000);
-    console.log(
-      `[uv-inline] Kernel is ready (trust approved: ${trustApproved})`,
-    );
+  it("should launch kernel after trust approval", async () => {
+    // Untrusted notebooks don't auto-launch — we must trigger execution
+    // to surface the trust dialog, then approve it.
+    await waitForNotebookSynced();
+
+    const codeCell = await $('[data-cell-type="code"]');
+    await codeCell.waitForExist({ timeout: 10000 });
+
+    // Set a simple probe as the cell source
+    await setCellSource(codeCell, "import sys; print(sys.executable)");
+
+    // Click execute — this triggers the trust dialog (kernel won't start untrusted)
+    const executeButton = await codeCell.$('[data-testid="execute-button"]');
+    await executeButton.waitForClickable({ timeout: 5000 });
+    await executeButton.click();
+    console.log("[uv-inline] Clicked execute, waiting for trust dialog...");
+
+    // Approve the trust dialog (must appear for untrusted fixture)
+    const approved = await approveTrustDialog(30000);
+    console.log(`[uv-inline] Trust dialog approved: ${approved}`);
+
+    // Now wait for kernel to reach idle (300s for UV env creation on cold CI)
+    await waitForKernelReady(300000);
+    console.log("[uv-inline] Kernel is ready");
   });
 
   it("should show UV badge in toolbar", async () => {
@@ -48,26 +68,20 @@ describe("UV Inline Dependencies", () => {
     expect(await depsToggle.getAttribute("data-runtime")).toBe("python");
   });
 
-  it("should have inline deps available after trust", async () => {
-    console.log("[uv-inline] Waiting for notebook to sync...");
-    await waitForNotebookSynced();
-
-    // Find the first code cell
+  it("should use inline environment path", async () => {
+    // The cell was set to `import sys; print(sys.executable)` in test 1
+    // and executed there. But the kernel restarted after trust approval,
+    // so we need to re-execute.
     const codeCell = await $('[data-cell-type="code"]');
     await codeCell.waitForExist({ timeout: 10000 });
-    console.log("[uv-inline] Found first code cell");
 
-    // Set cell source via CodeMirror dispatch (bypasses keyboard events)
     await setCellSource(codeCell, "import sys; print(sys.executable)");
-    console.log("[uv-inline] Set cell source to print sys.executable");
 
-    // Click the execute button explicitly
     const executeButton = await codeCell.$('[data-testid="execute-button"]');
     await executeButton.waitForClickable({ timeout: 5000 });
     await executeButton.click();
-    console.log("[uv-inline] Clicked execute button");
+    console.log("[uv-inline] Executed cell for path check");
 
-    // Wait for output
     const output = await waitForCellOutput(codeCell, 60000);
     console.log(`[uv-inline] Cell output: ${output}`);
 
@@ -76,24 +90,19 @@ describe("UV Inline Dependencies", () => {
   });
 
   it("should be able to import inline dependency", async () => {
-    // Find a cell to use for the import test
     const cells = await $$('[data-cell-type="code"]');
     const cell = cells.length > 1 ? cells[1] : cells[0];
     console.log(
       `[uv-inline] Using cell index ${cells.length > 1 ? 1 : 0} for import test`,
     );
 
-    // Set cell source via CodeMirror dispatch (replaces typeSlowly)
     await setCellSource(cell, "import requests; print(requests.__version__)");
-    console.log("[uv-inline] Set cell source to import requests");
 
-    // Click the execute button explicitly (replaces Shift+Enter)
     const executeButton = await cell.$('[data-testid="execute-button"]');
     await executeButton.waitForClickable({ timeout: 5000 });
     await executeButton.click();
-    console.log("[uv-inline] Clicked execute button for import test");
+    console.log("[uv-inline] Clicked execute for import test");
 
-    // Wait for version output
     const output = await waitForCellOutput(cell, 30000);
     console.log(`[uv-inline] Import test output: ${output}`);
 

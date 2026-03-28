@@ -93,68 +93,6 @@ export async function waitForKernelReady(timeout = 60000) {
   );
 }
 
-/**
- * Wait for the kernel to reach idle or busy state, automatically approving
- * the trust dialog if it appears. Use this for untrusted notebooks with
- * inline dependencies where the trust dialog blocks kernel launch.
- *
- * Polls both kernel status and trust dialog presence on each tick.
- * Once trust is approved, continues waiting for kernel ready.
- *
- * @param timeout Max total time to wait (default 300s for env creation)
- * @returns true if trust dialog was approved, false if kernel started without it
- */
-export async function waitForKernelReadyWithTrust(timeout = 300000) {
-  await waitForAppReady();
-  let trustApproved = false;
-
-  await browser.waitUntil(
-    async () => {
-      // Check if kernel is already ready
-      const status = await getKernelStatus();
-      if (status === "idle" || status === "busy") {
-        return true;
-      }
-
-      // If trust dialog hasn't been handled yet, check for it
-      if (!trustApproved) {
-        const dialogExists = await browser.execute(() => {
-          return !!document.querySelector('[data-testid="trust-dialog"]');
-        });
-
-        if (dialogExists) {
-          // Check if approve button is enabled (not in loading state)
-          const buttonReady = await browser.execute(() => {
-            const btn = document.querySelector(
-              '[data-testid="trust-approve-button"]',
-            );
-            return btn && !btn.disabled;
-          });
-
-          if (buttonReady) {
-            const approveButton = await $(
-              '[data-testid="trust-approve-button"]',
-            );
-            await approveButton.click();
-            trustApproved = true;
-            console.log(
-              "[waitForKernelReadyWithTrust] Trust dialog approved, waiting for kernel...",
-            );
-          }
-        }
-      }
-
-      return false;
-    },
-    {
-      timeout,
-      interval: 500,
-      timeoutMsg: `Kernel not ready within ${timeout / 1000}s (trust approved: ${trustApproved})`,
-    },
-  );
-
-  return trustApproved;
-}
 
 /**
  * Find the first code cell and execute it.

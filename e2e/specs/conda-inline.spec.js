@@ -4,27 +4,46 @@
  * Verifies that notebooks with inline conda dependencies get a cached
  * environment with those deps installed (via rattler, not the prewarmed pool).
  *
- * Fixture: 3-conda-inline.ipynb (has markupsafe dependency via conda)
+ * Fixture: 3-conda-inline.ipynb (has markupsafe dependency via conda, untrusted)
  *
- * Updated to use setCellSource + explicit button clicks for compatibility
- * with tauri-plugin-webdriver (synthetic keyboard events don't work).
+ * Flow: untrusted notebooks don't auto-launch the kernel. Execution
+ * triggers the trust dialog, which must be approved before the kernel
+ * starts with the conda inline environment.
  */
 
 import { browser } from "@wdio/globals";
 import {
+  approveTrustDialog,
   setCellSource,
   waitForCellOutput,
-  waitForKernelReadyWithTrust,
+  waitForKernelReady,
   waitForNotebookSynced,
 } from "../helpers.js";
 
 describe("Conda Inline Dependencies", () => {
-  it("should auto-launch kernel (approving trust if needed)", async () => {
-    console.log("[conda-inline] Waiting for kernel ready (up to 300s)...");
-    const trustApproved = await waitForKernelReadyWithTrust(300000);
-    console.log(
-      `[conda-inline] Kernel is ready (trust approved: ${trustApproved})`,
-    );
+  it("should launch kernel after trust approval", async () => {
+    // Untrusted notebooks don't auto-launch — we must trigger execution
+    // to surface the trust dialog, then approve it.
+    await waitForNotebookSynced();
+
+    const codeCell = await $('[data-cell-type="code"]');
+    await codeCell.waitForExist({ timeout: 10000 });
+
+    await setCellSource(codeCell, "import sys; print(sys.executable)");
+
+    // Click execute — this triggers the trust dialog
+    const executeButton = await codeCell.$('[data-testid="execute-button"]');
+    await executeButton.waitForClickable({ timeout: 5000 });
+    await executeButton.click();
+    console.log("[conda-inline] Clicked execute, waiting for trust dialog...");
+
+    // Approve the trust dialog
+    const approved = await approveTrustDialog(30000);
+    console.log(`[conda-inline] Trust dialog approved: ${approved}`);
+
+    // Wait for kernel (300s for conda env creation on cold CI)
+    await waitForKernelReady(300000);
+    console.log("[conda-inline] Kernel is ready");
   });
 
   it("should show conda badge in toolbar", async () => {
@@ -49,26 +68,18 @@ describe("Conda Inline Dependencies", () => {
     console.log("[conda-inline] Conda badge verified in toolbar");
   });
 
-  it("should have inline deps available after trust", async () => {
-    console.log("[conda-inline] Waiting for notebook to sync...");
-    await waitForNotebookSynced();
-
-    // Find the first code cell
+  it("should use conda inline environment path", async () => {
+    // Kernel restarted after trust approval — need to re-execute
     const codeCell = await $('[data-cell-type="code"]');
     await codeCell.waitForExist({ timeout: 10000 });
-    console.log("[conda-inline] Found first code cell");
 
-    // Set the cell source via CodeMirror dispatch (bypasses keyboard events)
     await setCellSource(codeCell, "import sys; print(sys.executable)");
-    console.log("[conda-inline] Set cell source via setCellSource");
 
-    // Click the execute button
     const executeButton = await codeCell.$('[data-testid="execute-button"]');
     await executeButton.waitForClickable({ timeout: 5000 });
     await executeButton.click();
-    console.log("[conda-inline] Clicked execute button");
+    console.log("[conda-inline] Executed cell for path check");
 
-    // Wait for output
     const output = await waitForCellOutput(codeCell, 120000);
     console.log(`[conda-inline] Cell output: ${output}`);
 
@@ -77,27 +88,22 @@ describe("Conda Inline Dependencies", () => {
   });
 
   it("should be able to import inline dependency", async () => {
-    // Find the cells — use a second cell if available, otherwise the first
     const cells = await $$('[data-cell-type="code"]');
     const cell = cells.length > 1 ? cells[1] : cells[0];
     console.log(
       `[conda-inline] Using cell index ${cells.length > 1 ? 1 : 0} for import test`,
     );
 
-    // Set the cell source directly via CodeMirror dispatch
     await setCellSource(
       cell,
       "import markupsafe; print(markupsafe.__version__)",
     );
-    console.log("[conda-inline] Set import test source via setCellSource");
 
-    // Click the execute button
     const executeButton = await cell.$('[data-testid="execute-button"]');
     await executeButton.waitForClickable({ timeout: 5000 });
     await executeButton.click();
-    console.log("[conda-inline] Clicked execute button for import test");
+    console.log("[conda-inline] Clicked execute for import test");
 
-    // Wait for version output
     const output = await waitForCellOutput(cell, 30000);
     console.log(`[conda-inline] Import test output: ${output}`);
 
