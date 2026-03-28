@@ -10,6 +10,7 @@
  * with tauri-plugin-webdriver (synthetic keyboard events don't work).
  */
 
+import { browser } from "@wdio/globals";
 import {
   setCellSource,
   waitForCellOutput,
