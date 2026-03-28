@@ -575,19 +575,41 @@ fn cmd_build(rust_only: bool) {
         require_pnpm();
     }
 
-    // Build runtimed daemon binary for bundling (debug mode for faster builds)
-    build_runtimed_daemon(false);
+    // Phase 1: Single cargo invocation for all binaries.
+    // Building all packages together ensures workspace feature unification
+    // happens in one pass, so the later `cargo tauri build` finds everything
+    // cached instead of recompiling the entire dependency tree.
+    println!("Building all Rust targets (runtimed, runt, mcp-supervisor, notebook)...");
+    run_cmd(
+        "cargo",
+        &[
+            "build",
+            "-p",
+            "runtimed",
+            "-p",
+            "runt-cli",
+            "-p",
+            "mcp-supervisor",
+            "-p",
+            "notebook",
+        ],
+    );
 
-    // Build MCP supervisor binary
-    println!("Building MCP supervisor...");
-    run_cmd("cargo", &["build", "-p", "mcp-supervisor"]);
+    // Copy sidecar binaries for Tauri bundling
+    copy_sidecar_binary("runtimed", false);
+    copy_sidecar_binary("runt", false);
 
-    // Sync Python workspace and build native bindings (runtimed-py)
-    ensure_python_env();
-    ensure_maturin_develop();
+    // Phase 2: Run independent tasks in parallel.
+    // - Python env sync + maturin develop (builds .so for MCP server)
+    // - Frontend build (pnpm/vite, completely independent of Rust)
+    let mut handles: Vec<thread::JoinHandle<()>> = Vec::new();
+
+    handles.push(thread::spawn(|| {
+        ensure_python_env();
+        ensure_maturin_develop();
+    }));
 
     if rust_only {
-        // Check that frontend dist exists
         let dist_dir = Path::new("apps/notebook/dist");
         if !dist_dir.exists() {
             eprintln!("Error: No frontend build found at apps/notebook/dist");
@@ -596,11 +618,21 @@ fn cmd_build(rust_only: bool) {
         }
         println!("Skipping frontend build (--rust-only), reusing existing assets");
     } else {
-        // pnpm build runs: notebook UI
-        println!("Building frontend (notebook)...");
-        run_frontend_build(true);
+        handles.push(thread::spawn(|| {
+            println!("Building frontend (notebook)...");
+            run_frontend_build(true);
+        }));
     }
 
+    for handle in handles {
+        handle.join().unwrap_or_else(|_| {
+            eprintln!("A parallel build task panicked");
+            exit(1);
+        });
+    }
+
+    // Phase 3: Tauri build. With all Rust already compiled and frontend
+    // assets in place, this is mostly a link step.
     println!("Building debug binary (no bundle)...");
     run_cmd(
         "cargo",
@@ -1759,9 +1791,6 @@ fn build_external_binary(package: &str, binary_name: &str, release: bool) {
     let mode = if release { "release" } else { "debug" };
     println!("Building {binary_name} ({mode})...");
 
-    // Get the host target triple
-    let target = get_host_target();
-
     // Build with appropriate profile
     if release {
         run_cmd("cargo", &["build", "--release", "-p", package]);
@@ -1769,7 +1798,14 @@ fn build_external_binary(package: &str, binary_name: &str, release: bool) {
         run_cmd("cargo", &["build", "-p", package]);
     }
 
-    // Determine source and destination paths
+    copy_sidecar_binary(binary_name, release);
+}
+
+/// Copy an already-built binary to the sidecar locations for Tauri bundling.
+/// Copies to both `crates/notebook/binaries/` (for bundle builds) and
+/// `target/{debug,release}/binaries/` (for no-bundle dev builds).
+fn copy_sidecar_binary(binary_name: &str, release: bool) {
+    let target = get_host_target();
     let target_dir = if release {
         "target/release"
     } else {
