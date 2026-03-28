@@ -25,9 +25,7 @@ describe("Conda Inline Dependencies", () => {
     await waitForNotebookSynced();
 
     // Untrusted notebooks show a banner — click "Review Dependencies" to open trust dialog
-    const reviewButton = await $(
-      '[data-testid="review-dependencies-button"]',
-    );
+    const reviewButton = await $('[data-testid="review-dependencies-button"]');
     await reviewButton.waitForExist({
       timeout: 30000,
       timeoutMsg:
