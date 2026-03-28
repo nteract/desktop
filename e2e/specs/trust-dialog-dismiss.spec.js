@@ -12,7 +12,6 @@
 import { browser, expect } from "@wdio/globals";
 import {
   getKernelStatus,
-  setCellSource,
   waitForAppReady,
   waitForNotebookSynced,
 } from "../helpers.js";
@@ -28,31 +27,25 @@ describe("Trust Dialog Dismiss", () => {
     await waitForNotebookSynced();
     console.log("[trust-dialog-dismiss] Notebook synced");
 
-    // Find the first code cell
-    const codeCell = await $('[data-cell-type="code"]');
-    await codeCell.waitForExist({ timeout: 10000 });
-    console.log("[trust-dialog-dismiss] Found code cell");
-
-    // Set cell source via CodeMirror dispatch (bypasses synthetic keyboard events)
-    await setCellSource(codeCell, "import sys; print(sys.executable)");
-    console.log("[trust-dialog-dismiss] Set cell source");
-
-    // Click the execute button to trigger kernel start (which requires trust approval)
-    const executeButton = await codeCell.$('[data-testid="execute-button"]');
-    await executeButton.waitForClickable({ timeout: 5000 });
-    await executeButton.click();
-    console.log("[trust-dialog-dismiss] Clicked execute button");
-
-    // Wait for the trust dialog to appear (notebook has untrusted deps)
-    const dialog = await $('[data-testid="trust-dialog"]');
-
-    // Dialog MUST appear for this fixture - fail if it doesn't
-    await dialog.waitForExist({
+    // Untrusted notebooks show a banner — click "Review Dependencies" to open
+    // the trust dialog directly (avoids async checkTrust IPC from execute path)
+    const reviewButton = await $('[data-testid="review-dependencies-button"]');
+    await reviewButton.waitForExist({
       timeout: 30000,
       timeoutMsg:
-        "Trust dialog did not appear - fixture notebook should have untrusted deps",
+        "Review Dependencies button not found — untrusted banner should appear for this fixture",
     });
-    // The trust dialog should be visible before approval
+    await reviewButton.waitForClickable({ timeout: 5000 });
+    await reviewButton.click();
+    console.log("[trust-dialog-dismiss] Clicked Review Dependencies");
+
+    // Wait for the trust dialog to appear
+    const dialog = await $('[data-testid="trust-dialog"]');
+    await dialog.waitForExist({
+      timeout: 15000,
+      timeoutMsg:
+        "Trust dialog did not appear after clicking Review Dependencies",
+    });
     expect(await dialog.isExisting()).toBe(true);
     console.log("[trust-dialog-dismiss] Trust dialog appeared");
 
