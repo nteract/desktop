@@ -132,6 +132,8 @@ For editor config:
 cargo xtask run-mcp --print-config
 ```
 
+Use `inkwell` as the repo-local MCP server name so it stays distinct from any global/system `nteract` entry.
+
 ### Zed Integration
 
 `.zed/settings.json` (gitignored):
@@ -139,7 +141,7 @@ cargo xtask run-mcp --print-config
 ```json
 {
   "context_servers": {
-    "nteract": {
+    "inkwell": {
       "command": "./target/debug/mcp-supervisor",
       "args": [],
       "env": { "RUNTIMED_DEV": "1" }

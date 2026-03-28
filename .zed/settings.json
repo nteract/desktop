@@ -1,6 +1,6 @@
 {
   "context_servers": {
-    "supervisor": {
+    "inkwell": {
       "command": "cargo",
       "args": ["run", "-p", "mcp-supervisor"],
       "env": {
