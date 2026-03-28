@@ -327,10 +327,21 @@ This:
 5. Proxies all tool calls + injects `supervisor_*` management tools
 6. Watches source files and hot-reloads on changes
 
-For your MCP client config (Zed, Claude Desktop, etc.):
+For your MCP client config (Zed, Claude Desktop, Codex, etc.):
 
 ```bash
 cargo xtask run-mcp --print-config
+```
+
+Codex app/CLI can read a project-scoped `.codex/config.toml`. This repo includes one that mirrors the same supervisor setup:
+
+```toml
+[mcp_servers.nteract]
+command = "cargo"
+args = ["run", "-p", "mcp-supervisor"]
+
+[mcp_servers.nteract.env]
+RUNTIMED_DEV = "1"
 ```
 
 Or configure `.zed/settings.json` directly (gitignored):

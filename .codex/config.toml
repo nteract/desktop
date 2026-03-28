@@ -1,0 +1,6 @@
+[mcp_servers.nteract]
+command = "cargo"
+args = ["run", "-p", "mcp-supervisor"]
+
+[mcp_servers.nteract.env]
+RUNTIMED_DEV = "1"
