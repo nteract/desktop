@@ -39,10 +39,12 @@ describe("UV Inline Dependencies", () => {
 
     // Approve the trust dialog that opens
     const approved = await approveTrustDialog(30000);
-    console.log(`[uv-inline] Trust dialog approved: ${approved}`);
+    expect(approved).toBe(true);
+    console.log("[uv-inline] Trust dialog approved");
 
-    // Now wait for kernel to reach idle (300s for UV env creation on cold CI)
-    await waitForKernelReady(300000);
+    // Wait for kernel to reach idle — UV env creation on cold CI can take 5+ minutes.
+    // CI matrix gives this test 12 minutes total; use 600s here.
+    await waitForKernelReady(600000);
     console.log("[uv-inline] Kernel is ready");
   });
 

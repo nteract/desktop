@@ -39,10 +39,12 @@ describe("Conda Inline Dependencies", () => {
 
     // Approve the trust dialog that opens
     const approved = await approveTrustDialog(30000);
-    console.log(`[conda-inline] Trust dialog approved: ${approved}`);
+    expect(approved).toBe(true);
+    console.log("[conda-inline] Trust dialog approved");
 
-    // Wait for kernel (300s for conda env creation on cold CI)
-    await waitForKernelReady(300000);
+    // Wait for kernel — conda env creation via rattler on cold CI can take 8+ minutes.
+    // CI matrix gives this test 15 minutes total; use 720s here.
+    await waitForKernelReady(720000);
     console.log("[conda-inline] Kernel is ready");
   });
 
