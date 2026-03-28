@@ -166,16 +166,16 @@ In production, the Tauri app auto-installs and manages the system daemon. In dev
 - Your code changes take effect immediately on daemon restart
 - No interference with the system daemon
 
-**With Inkwell supervisor (preferred for agents):**
+**With Inkwell (preferred for agents):**
 
-If you have `supervisor_*` MCP tools available (e.g. in Zed with `mcp-supervisor`), the daemon is managed for you:
+If you have the repo-local `inkwell` MCP entry configured, the daemon is managed for you through the `supervisor_*` tools:
 
 - `supervisor_restart(target="daemon")` — start or restart the dev daemon
 - `supervisor_status` — check daemon status (includes `daemon_managed: true/false`)
 - `supervisor_rebuild` — rebuild Python bindings + restart
 - `supervisor_logs` — tail daemon logs
 
-No env vars or extra terminals needed. The supervisor handles per-worktree isolation automatically.
+No env vars or extra terminals needed. Inkwell handles per-worktree isolation automatically.
 
 **Two-terminal workflow (without supervisor):**
 
@@ -216,7 +216,7 @@ RUNTIMED_DEV=1 cargo xtask notebook
 
 Per-worktree state is stored in `<cache>/{cache_namespace}/worktrees/{hash}/` (macOS: `~/Library/Caches/`, Linux: `~/.cache/`). Source builds default to `runt-nightly`; set `RUNT_BUILD_CHANNEL=stable` only when you intentionally need the stable flow.
 
-**For AI agents:** If `supervisor_*` tools are available, prefer those — they handle env vars and daemon lifecycle automatically. Otherwise, use `./target/debug/runt` directly (see "Agent Access to Dev Daemon" in CLAUDE.md). When using a raw terminal (not Zed tasks), set the env vars manually:
+**For AI agents:** If the repo-local `inkwell` MCP entry is available, prefer its `supervisor_*` tools — they handle env vars and daemon lifecycle automatically. Keep `nteract` as the name for the global/system-installed MCP server. When using a raw terminal (not Zed tasks), set the env vars manually:
 
 ```bash
 export RUNTIMED_DEV=1
@@ -333,14 +333,16 @@ For your MCP client config (Zed, Claude Desktop, Codex, etc.):
 cargo xtask run-mcp --print-config
 ```
 
+Use `inkwell` as the server name for this source tree so it stays distinct from any global/system `nteract` MCP entry.
+
 Codex app/CLI can read a project-scoped `.codex/config.toml`. This repo includes one that mirrors the same supervisor setup:
 
 ```toml
-[mcp_servers.nteract]
+[mcp_servers.inkwell]
 command = "cargo"
 args = ["run", "-p", "mcp-supervisor"]
 
-[mcp_servers.nteract.env]
+[mcp_servers.inkwell.env]
 RUNTIMED_DEV = "1"
 ```
 
@@ -349,7 +351,7 @@ Or configure `.zed/settings.json` directly (gitignored):
 ```json
 {
   "context_servers": {
-    "nteract": {
+    "inkwell": {
       "command": "./target/debug/mcp-supervisor",
       "args": [],
       "env": { "RUNTIMED_DEV": "1" }
@@ -357,6 +359,8 @@ Or configure `.zed/settings.json` directly (gitignored):
   }
 }
 ```
+
+In clients that namespace tools by server name, this keeps repo-local notebook tools separate from the global install while still exposing the same notebook APIs plus the extra `supervisor_*` tools.
 
 #### Supervisor tools
 

@@ -1,6 +1,6 @@
-[mcp_servers.nteract]
+[mcp_servers.inkwell]
 command = "cargo"
 args = ["run", "-p", "mcp-supervisor"]
 
-[mcp_servers.nteract.env]
+[mcp_servers.inkwell.env]
 RUNTIMED_DEV = "1"
