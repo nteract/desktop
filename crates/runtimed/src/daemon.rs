@@ -3108,10 +3108,16 @@ mod tests {
         let config = DaemonConfig::default();
         assert_eq!(config.uv_pool_size, 3);
         assert_eq!(config.conda_pool_size, 3);
+        #[cfg(unix)]
         assert!(config
             .socket_path
             .to_string_lossy()
             .contains("runtimed.sock"));
+        #[cfg(windows)]
+        assert!(config
+            .socket_path
+            .to_string_lossy()
+            .contains(r"\\.\pipe\runtimed"));
         assert!(config.blob_store_dir.to_string_lossy().contains("blobs"));
     }
 
