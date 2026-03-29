@@ -641,8 +641,11 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
       ${additionalScript}
 
       // --- Ready Signal ---
+      // Send in LEGACY format — the host's legacy handler processes this
+      // to trigger transport creation and renderer injection. JSON-RPC
+      // transport isn't listening yet at this point.
       isReady = true;
-      sendRpc('nteract/ready', {});
+      window.parent.postMessage({ type: 'ready' }, '*');
     })();
   </script>
 </body>
