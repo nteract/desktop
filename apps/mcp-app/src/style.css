@@ -1,0 +1,143 @@
+:root {
+  --bg: #fff;
+  --fg: #1a1a1a;
+  --fg-muted: #6b7280;
+  --border: #e5e7eb;
+  --code-bg: #f9fafb;
+  --error-bg: #fef2f2;
+  --error-fg: #991b1b;
+  --stream-bg: #f9fafb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1e1e;
+    --fg: #e5e5e5;
+    --fg-muted: #9ca3af;
+    --border: #374151;
+    --code-bg: #262626;
+    --error-bg: #2d1b1b;
+    --error-fg: #fca5a5;
+    --stream-bg: #262626;
+  }
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  padding: 12px;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+#root {
+  font-size: 14px;
+}
+
+.cell {
+  margin-bottom: 16px;
+}
+
+.cell:last-child {
+  margin-bottom: 0;
+}
+
+.source-details {
+  margin-bottom: 4px;
+}
+
+.source-summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-muted);
+  padding: 2px 0;
+  user-select: none;
+}
+
+.source-summary:hover {
+  color: var(--fg);
+}
+
+.source {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+
+.outputs {
+  margin-top: 8px;
+}
+
+.output {
+  margin-bottom: 6px;
+}
+
+.output:last-child {
+  margin-bottom: 0;
+}
+
+.stream {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+  background: var(--stream-bg);
+  border-radius: 4px;
+  padding: 6px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+.stream-stderr {
+  color: var(--error-fg);
+}
+
+.error-output {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+  background: var(--error-bg);
+  color: var(--error-fg);
+  border-radius: 6px;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+.image-output {
+  max-width: 100%;
+  border-radius: 4px;
+}
+
+.html-output {
+  width: 100%;
+  border: none;
+  overflow: hidden;
+}
+
+
+.display-text {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+  padding: 6px 10px;
+  white-space: pre-wrap;
+  color: var(--fg-muted);
+}
+
+.empty-state {
+  text-align: center;
+  padding: 24px;
+  color: var(--fg-muted);
+}

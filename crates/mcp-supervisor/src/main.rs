@@ -379,16 +379,12 @@ async fn spawn_nteract_child(
     let path = augmented_path();
 
     let transport = TokioChildProcess::new(Command::new("uv").configure(|cmd| {
-        cmd.args([
-            "run",
-            "--no-sync",
-            "--directory",
-            &project_root.to_string_lossy(),
-            "nteract",
-        ])
-        .env("RUNTIMED_DEV", "1")
-        .env("RUNTIMED_SOCKET_PATH", socket_path)
-        .env("PATH", &path);
+        cmd.args(["run", "--no-sync", "--directory"])
+            .arg(project_root)
+            .arg("nteract")
+            .env("RUNTIMED_DEV", "1")
+            .env("RUNTIMED_SOCKET_PATH", socket_path)
+            .env("PATH", &path);
     }))
     .map_err(|e| format!("Failed to spawn nteract child: {e}"))?;
 
@@ -1802,6 +1798,14 @@ fn start_file_watcher(
 }
 
 fn resolve_project_root() -> PathBuf {
+    // Allow explicit override via env var — required when launched from a
+    // context where cwd is not the repo (e.g. Claude Desktop sets cwd to /).
+    if let Ok(path) = std::env::var("RUNTIMED_WORKSPACE_PATH") {
+        let p = PathBuf::from(path);
+        if p.join("Cargo.toml").exists() {
+            return p;
+        }
+    }
     // Walk up from current dir looking for Cargo.toml with [workspace]
     let mut dir = std::env::current_dir().expect("Failed to get current directory");
     loop {

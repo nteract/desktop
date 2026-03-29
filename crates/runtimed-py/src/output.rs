@@ -102,6 +102,14 @@ pub struct Output {
     /// For execute_result: execution count
     #[pyo3(get)]
     pub execution_count: Option<i64>,
+
+    /// For display_data/execute_result: MIME type → blob HTTP URL.
+    /// Only present for outputs that have blob-stored data.
+    pub blob_urls: Option<HashMap<String, String>>,
+
+    /// For display_data/execute_result: MIME type → on-disk file path.
+    /// Only present for outputs that have blob-stored data.
+    pub blob_paths: Option<HashMap<String, String>>,
 }
 
 #[pymethods]
@@ -122,6 +130,32 @@ impl Output {
                 DataValue::Binary(b) => dict.set_item(key, PyBytes::new(py, b))?,
                 DataValue::Json(v) => dict.set_item(key, json_to_py(py, v)?)?,
             }
+        }
+        Ok(Some(dict))
+    }
+
+    /// Access `blob_urls` as a Python dict: MIME type → blob HTTP URL.
+    #[getter]
+    fn blob_urls<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(urls) = &self.blob_urls else {
+            return Ok(None);
+        };
+        let dict = PyDict::new(py);
+        for (key, value) in urls {
+            dict.set_item(key, value)?;
+        }
+        Ok(Some(dict))
+    }
+
+    /// Access `blob_paths` as a Python dict: MIME type → on-disk file path.
+    #[getter]
+    fn blob_paths<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(paths) = &self.blob_paths else {
+            return Ok(None);
+        };
+        let dict = PyDict::new(py);
+        for (key, value) in paths {
+            dict.set_item(key, value)?;
         }
         Ok(Some(dict))
     }
@@ -163,6 +197,8 @@ impl Output {
             evalue: None,
             traceback: None,
             execution_count: None,
+            blob_urls: None,
+            blob_paths: None,
         }
     }
 
@@ -177,6 +213,8 @@ impl Output {
             evalue: None,
             traceback: None,
             execution_count: None,
+            blob_urls: None,
+            blob_paths: None,
         }
     }
 
@@ -191,6 +229,8 @@ impl Output {
             evalue: None,
             traceback: None,
             execution_count: Some(execution_count),
+            blob_urls: None,
+            blob_paths: None,
         }
     }
 
@@ -205,6 +245,8 @@ impl Output {
             evalue: Some(evalue.to_string()),
             traceback: Some(traceback),
             execution_count: None,
+            blob_urls: None,
+            blob_paths: None,
         }
     }
 }

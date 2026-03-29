@@ -1,0 +1,15 @@
+{
+  "name": "nteract-mcp-app",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/mcp-app.ts --bundle --format=esm --outfile=dist/mcp-app.js && node build-html.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.3.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.0.0"
+  }
+}

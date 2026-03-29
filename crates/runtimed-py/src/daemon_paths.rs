@@ -45,7 +45,7 @@ pub fn get_blob_paths_sync(socket_path: &Path) -> (Option<String>, Option<PathBu
             .ok()
             .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
             .and_then(|info| info.get("blob_port").and_then(|p| p.as_u64()))
-            .map(|port| format!("http://127.0.0.1:{}", port))
+            .map(|port| format!("http://localhost:{}", port))
     } else {
         None
     };
@@ -76,7 +76,7 @@ pub async fn get_blob_paths_async(socket_path: &Path) -> (Option<String>, Option
             .ok()
             .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
             .and_then(|info| info.get("blob_port").and_then(|p| p.as_u64()))
-            .map(|port| format!("http://127.0.0.1:{}", port))
+            .map(|port| format!("http://localhost:{}", port))
     } else {
         None
     };

@@ -18,6 +18,7 @@ def test_mcp_server_import():
     assert server.mcp.name == "nteract"
 
 
+
 def test_keyboard_interrupt_exits_130():
     """Ctrl+C should exit with code 130 (Unix SIGINT convention), not dump a traceback."""
     from nteract._mcp_server import main

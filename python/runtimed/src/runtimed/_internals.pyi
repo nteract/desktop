@@ -74,6 +74,22 @@ class Output:
         """For execute_result: execution count."""
         ...
 
+    @property
+    def blob_urls(self) -> dict[str, str] | None:
+        """For display_data/execute_result: MIME type → blob HTTP URL.
+
+        Only present for outputs that have blob-stored data.
+        """
+        ...
+
+    @property
+    def blob_paths(self) -> dict[str, str] | None:
+        """For display_data/execute_result: MIME type → on-disk file path.
+
+        Only present for outputs that have blob-stored data.
+        """
+        ...
+
 class Cell:
     """A cell from the automerge document."""
 
@@ -411,6 +427,8 @@ class AsyncSession:
 
     @property
     def notebook_id(self) -> str: ...
+    def blob_base_url(self) -> Coroutine[Any, Any, str | None]: ...
+    def blob_store_path(self) -> Coroutine[Any, Any, str | None]: ...
     def is_connected(self) -> Coroutine[Any, Any, bool]: ...
     def kernel_started(self) -> Coroutine[Any, Any, bool]: ...
     def kernel_type(self) -> Coroutine[Any, Any, str | None]: ...

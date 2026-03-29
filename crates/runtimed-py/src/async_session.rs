@@ -138,6 +138,29 @@ impl AsyncSession {
         self.notebook_id.clone()
     }
 
+    /// Base URL for the daemon's blob HTTP server (e.g. "http://127.0.0.1:8080").
+    /// Returns None if the blob server is not available.
+    fn blob_base_url<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future_into_py(py, async move {
+            let st = state.lock().await;
+            Ok(st.blob_base_url.clone())
+        })
+    }
+
+    /// On-disk path to the blob store directory.
+    /// Returns None if the blob store path is not available.
+    fn blob_store_path<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future_into_py(py, async move {
+            let st = state.lock().await;
+            Ok(st
+                .blob_store_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()))
+        })
+    }
+
     /// Whether the session is connected to the daemon.
     fn is_connected<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);

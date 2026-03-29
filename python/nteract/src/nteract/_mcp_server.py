@@ -26,7 +26,9 @@ import re
 import sys
 from typing import Annotated, Any, Literal, NoReturn
 
-from mcp.server.fastmcp import Context, FastMCP
+from fastmcp import Context, FastMCP
+from fastmcp.server.apps import AppConfig, ResourceCSP
+from fastmcp.tools.tool import ToolResult
 from mcp.types import TextContent, ToolAnnotations
 from pydantic import Field
 
@@ -141,9 +143,8 @@ def _output_to_content(output: runtimed.Output) -> list[ContentItem]:
     """Convert a single output to a list of MCP content items.
 
     All outputs are returned as TextContent. Image outputs use the
-    text/llm+plain representation (a text description synthesized by the
-    daemon) rather than base64 image data — MCP clients like Claude Code
-    don't render ImageContent inline, so it just wastes context window.
+    text/llm+plain representation (a text description + blob URL synthesized
+    by the daemon) rather than base64 image data.
 
     Mime priority for display_data/execute_result:
     - text/llm+plain, text/markdown, text/plain, application/json → TextContent
@@ -220,6 +221,56 @@ def _outputs_to_content(outputs: list[runtimed.Output]) -> list[ContentItem]:
     for output in outputs:
         items.extend(_output_to_content(output))
     return items
+
+
+# ── MCP Apps widget ──────────────────────────────────────────────────
+
+_WIDGET_RESOURCE_URI = "ui://nteract/output.html"
+_WIDGET_MIME_TYPE = "text/html;profile=mcp-app"
+_WIDGET_HTML_PATH = os.path.join(os.path.dirname(__file__), "_widget.html")
+
+
+def _output_to_structured(output: runtimed.Output) -> dict[str, Any]:
+    """Convert a runtimed Output to a JSON-serializable dict for the widget.
+
+    Binary images are referenced by blob URL, keeping the payload small.
+    The widget iframe's CSP must include the blob server origin via
+    resourceDomains on the resource response for images to load.
+    """
+    if output.output_type == "stream":
+        return {
+            "output_type": "stream",
+            "name": getattr(output, "name", "stdout"),
+            "text": output.text or "",
+        }
+
+    if output.output_type == "error":
+        return {
+            "output_type": "error",
+            "ename": output.ename or "",
+            "evalue": output.evalue or "",
+            "traceback": output.traceback or [],
+        }
+
+    # display_data or execute_result — use blob URLs for binary images.
+    blob_urls = output.blob_urls or {}
+
+    data: dict[str, Any] = {}
+    if output.data:
+        for mime, value in output.data.items():
+            if mime == "text/llm+plain":
+                continue  # LLM-specific, not for the widget
+            if isinstance(value, bytes):
+                # Use blob URL if available
+                if mime in blob_urls:
+                    data[mime] = blob_urls[mime]
+                # else skip binary data with no blob URL
+            elif isinstance(value, dict):
+                data[mime] = value
+            else:
+                data[mime] = str(value)
+
+    return {"output_type": output.output_type, "data": data}
 
 
 def _build_cell_status_map(queue_state: QueueState) -> dict[str, str]:
@@ -571,17 +622,42 @@ class NteractServer:
     over ``self``, so FastMCP sees clean function signatures.
     """
 
-    def __init__(self, *, channel: str | None = None, no_show: bool = False):
+    def __init__(
+        self, *, channel: str | None = None, no_show: bool = False
+    ):
         self.mcp = FastMCP("nteract")
         self._notebook: runtimed.Notebook | None = None
         self._client: runtimed.Client | None = None
         self._client_name: str | None = None
         self._channel: str | None = channel  # "stable", "nightly", or None
 
+        # Resolve blob server URL for widget CSP (best-effort at init)
+        self._widget_app_config = self._build_widget_app_config()
+
         self._register_tools(no_show=no_show)
         self._register_resources()
 
     # ── State helpers ─────────────────────────────────────────────────
+
+    def _build_widget_app_config(self) -> AppConfig:
+        """Build AppConfig with CSP for the widget resource."""
+        port = self._resolve_blob_port()
+        csp = None
+        if port:
+            csp = ResourceCSP(resource_domains=[f"http://localhost:{port}"])
+        return AppConfig(csp=csp)
+
+    @staticmethod
+    def _resolve_blob_port() -> int | None:
+        """Read blob port from daemon.json next to the socket."""
+        try:
+            sock = runtimed.default_socket_path()
+            daemon_json = os.path.join(os.path.dirname(sock), "daemon.json")
+            with open(daemon_json) as f:
+                info = json.load(f)
+            return info.get("blob_port")
+        except Exception:
+            return None
 
     def _get_client(self) -> runtimed.Client:
         if self._client is None:
@@ -597,7 +673,10 @@ class NteractServer:
         if self._client_name is not None:
             return
         try:
-            params = ctx.request_context.session.client_params
+            req_ctx = ctx.request_context
+            if req_ctx is None:
+                return
+            params = req_ctx.session.client_params
             if params and params.clientInfo:
                 info = params.clientInfo
                 self._client_name = getattr(info, "title", None) or info.name
@@ -637,9 +716,7 @@ class NteractServer:
         else:
             runtimed.show_notebook_app(notebook_path)
 
-    async def _execute_cell_internal(
-        self, cell_id: str, timeout_secs: float = 30.0
-    ) -> list[ContentItem]:
+    async def _execute_cell_internal(self, cell_id: str, timeout_secs: float = 30.0) -> ToolResult:
         notebook = await self._get_notebook()
         # Don't emit focus here — it would overwrite any cursor presence
         # set by a prior edit (e.g. replace_match, set_cell). The cursor
@@ -662,7 +739,23 @@ class NteractServer:
         header = _format_header(cell.id, status=status, execution_count=cell.execution_count)
         items: list[ContentItem] = [TextContent(type="text", text=header)]
         items.extend(_outputs_to_content(cell.outputs))
-        return items
+
+        # Build structured content for MCP Apps widget rendering
+        structured_outputs = [_output_to_structured(o) for o in cell.outputs]
+        structured_content: dict[str, Any] = {
+            "cell": {
+                "cell_id": cell.id,
+                "source": cell.source or "",
+                "outputs": structured_outputs,
+                "execution_count": cell.execution_count,
+                "status": status or "idle",
+            }
+        }
+
+        return ToolResult(
+            content=items,
+            structured_content=structured_content,
+        )
 
     def cleanup(self) -> None:
         """Best-effort cleanup of the active notebook session."""
@@ -687,6 +780,7 @@ class NteractServer:
 
     def _register_tools(self, *, no_show: bool = False) -> None:  # noqa: C901
         srv = self
+        _tool_app = AppConfig(resource_uri=_WIDGET_RESOURCE_URI)
 
         # -- Session management --
 
@@ -1008,7 +1102,10 @@ class NteractServer:
 
         # -- Cell operations --
 
-        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=False))
+        @srv.mcp.tool(
+            annotations=ToolAnnotations(destructiveHint=False),
+            app=_tool_app,
+        )
         async def create_cell(
             source: str = "",
             cell_type: Literal["code", "markdown", "raw"] = "code",
@@ -1021,7 +1118,7 @@ class NteractServer:
             timeout_secs: Annotated[
                 float, Field(description="Max seconds to wait for execution")
             ] = 30.0,
-        ) -> list[ContentItem]:
+        ) -> ToolResult:
             """Create a cell, optionally executing it."""
             notebook = await srv._get_notebook()
             if index is not None:
@@ -1032,9 +1129,12 @@ class NteractServer:
             if and_run and cell_type == "code":
                 return await srv._execute_cell_internal(cell.id, timeout_secs=timeout_secs)
 
-            return [TextContent(type="text", text=f"Created cell: {cell.id}")]
+            return ToolResult(content=[TextContent(type="text", text=f"Created cell: {cell.id}")])
 
-        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        @srv.mcp.tool(
+            annotations=ToolAnnotations(destructiveHint=True),
+            app=_tool_app,
+        )
         async def set_cell(
             cell_id: str,
             source: Annotated[
@@ -1050,13 +1150,15 @@ class NteractServer:
             timeout_secs: Annotated[
                 float, Field(description="Max seconds to wait for execution")
             ] = 30.0,
-        ) -> ContentItem | list[ContentItem]:
+        ) -> ToolResult:
             """Update a cell's source and/or type. Use replace_match for targeted edits."""
             notebook = await srv._get_notebook()
             try:
                 cell = notebook.cells.get_by_id(cell_id)
             except KeyError:
-                return TextContent(type="text", text=f'Cell "{cell_id}" not found')
+                return ToolResult(
+                    content=[TextContent(type="text", text=f'Cell "{cell_id}" not found')]
+                )
 
             if source is not None:
                 await cell.set_source(source)
@@ -1066,14 +1168,18 @@ class NteractServer:
                 await srv._send_edit_cursor(cell_id, source, len(source))
 
             if source is None and cell_type is None:
-                return TextContent(
-                    type="text", text=f'Cell "{cell_id}" unchanged (no updates specified)'
+                return ToolResult(
+                    content=[
+                        TextContent(
+                            type="text", text=f'Cell "{cell_id}" unchanged (no updates specified)'
+                        )
+                    ]
                 )
 
             if and_run and cell.cell_type == "code":
                 return await srv._execute_cell_internal(cell_id, timeout_secs=timeout_secs)
 
-            return TextContent(type="text", text=f'Cell "{cell_id}" updated')
+            return ToolResult(content=[TextContent(type="text", text=f'Cell "{cell_id}" updated')])
 
         @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
         async def set_cells_source_hidden(
@@ -1147,7 +1253,10 @@ class NteractServer:
             await cell.set_tags(filtered)
             return TextContent(type="text", text=f"Tags for {cell_id}: {filtered}")
 
-        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        @srv.mcp.tool(
+            annotations=ToolAnnotations(destructiveHint=True),
+            app=_tool_app,
+        )
         async def replace_match(
             cell_id: str,
             match: Annotated[
@@ -1168,7 +1277,7 @@ class NteractServer:
             timeout_secs: Annotated[
                 float, Field(description="Max seconds to wait for execution")
             ] = 30.0,
-        ) -> ContentItem | list[ContentItem]:
+        ) -> ToolResult:
             """Replace matched text in a cell. Prefer this for simple, targeted edits.
 
             Use context_before/context_after to disambiguate when match appears
@@ -1182,7 +1291,9 @@ class NteractServer:
             try:
                 cell = notebook.cells.get_by_id(cell_id)
             except KeyError:
-                return TextContent(type="text", text=f'Cell "{cell_id}" not found')
+                return ToolResult(
+                    content=[TextContent(type="text", text=f'Cell "{cell_id}" not found')]
+                )
 
             source = cell.source
             try:
@@ -1201,9 +1312,12 @@ class NteractServer:
                 return await srv._execute_cell_internal(cell_id, timeout_secs=timeout_secs)
 
             diff = _format_edit_diff(cell_id, result.old_text, content)
-            return TextContent(type="text", text=diff)
+            return ToolResult(content=[TextContent(type="text", text=diff)])
 
-        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        @srv.mcp.tool(
+            annotations=ToolAnnotations(destructiveHint=True),
+            app=_tool_app,
+        )
         async def replace_regex(
             cell_id: str,
             pattern: Annotated[
@@ -1225,7 +1339,7 @@ class NteractServer:
             timeout_secs: Annotated[
                 float, Field(description="Max seconds to wait for execution")
             ] = 30.0,
-        ) -> ContentItem | list[ContentItem]:
+        ) -> ToolResult:
             """Replace a regex-matched span. Use for anchors, lookarounds, or
             zero-width insertions.
 
@@ -1238,7 +1352,9 @@ class NteractServer:
             try:
                 cell = notebook.cells.get_by_id(cell_id)
             except KeyError:
-                return TextContent(type="text", text=f'Cell "{cell_id}" not found')
+                return ToolResult(
+                    content=[TextContent(type="text", text=f'Cell "{cell_id}" not found')]
+                )
 
             source = cell.source
             try:
@@ -1257,7 +1373,7 @@ class NteractServer:
                 return await srv._execute_cell_internal(cell_id, timeout_secs=timeout_secs)
 
             diff = _format_edit_diff(cell_id, result.old_text, content)
-            return TextContent(type="text", text=diff)
+            return ToolResult(content=[TextContent(type="text", text=diff)])
 
         # -- Cell retrieval --
 
@@ -1378,14 +1494,17 @@ class NteractServer:
 
         # -- Execution --
 
-        @srv.mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+        @srv.mcp.tool(
+            annotations=ToolAnnotations(destructiveHint=True),
+            app=_tool_app,
+        )
         async def execute_cell(
             cell_id: str,
             timeout_secs: Annotated[
                 float,
                 Field(description="Max seconds to wait; returns partial results if exceeded"),
             ] = 30.0,
-        ) -> list[ContentItem]:
+        ) -> ToolResult:
             """Execute a cell. Returns partial results if timeout exceeded."""
             return await srv._execute_cell_internal(cell_id, timeout_secs=timeout_secs)
 
@@ -1400,6 +1519,26 @@ class NteractServer:
 
     def _register_resources(self) -> None:
         srv = self
+
+        # MCP Apps widget resource — serves the output renderer UI.
+        # AppConfig with ResourceCSP allows the iframe to load images
+        # from the daemon's blob HTTP server.
+        @srv.mcp.resource(
+            _WIDGET_RESOURCE_URI,
+            name="nteract output widget",
+            mime_type=_WIDGET_MIME_TYPE,
+            app=srv._widget_app_config,
+        )
+        async def widget_resource() -> str:
+            """Interactive output renderer for notebook cells."""
+            try:
+                with open(_WIDGET_HTML_PATH, encoding="utf-8") as f:
+                    return f.read()
+            except FileNotFoundError:
+                return (
+                    "<html><body>Widget not built."
+                    " Run: cd apps/mcp-app && npm run build</body></html>"
+                )
 
         @srv.mcp.resource("notebook://cells")
         async def resource_cells() -> str:

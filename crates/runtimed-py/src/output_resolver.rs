@@ -311,6 +311,10 @@ pub async fn output_from_manifest(
             // Track binary image blobs for text/llm+plain synthesis
             let mut image_descriptions: Vec<String> = Vec::new();
 
+            // Track blob metadata for each MIME type
+            let mut blob_urls_map: HashMap<String, String> = HashMap::new();
+            let mut blob_paths_map: HashMap<String, String> = HashMap::new();
+
             for (mime_type, content_ref) in data_map {
                 if let Some(content) = resolve_content_ref(
                     content_ref,
@@ -320,22 +324,33 @@ pub async fn output_from_manifest(
                 )
                 .await
                 {
+                    // Extract blob metadata for any MIME type with a blob reference
+                    if let Some(blob_hash) = content_ref.get("blob").and_then(|v| v.as_str()) {
+                        if blob_hash.len() >= 2 {
+                            if let Some(base_url) = blob_base_url {
+                                blob_urls_map.insert(
+                                    mime_type.clone(),
+                                    format!("{}/blob/{}", base_url, blob_hash),
+                                );
+                            }
+                            if let Some(store_path) = blob_store_path {
+                                let path = store_path.join(&blob_hash[..2]).join(&blob_hash[2..]);
+                                blob_paths_map
+                                    .insert(mime_type.clone(), path.to_string_lossy().to_string());
+                            }
+                        }
+                    }
+
                     // Record binary image metadata for LLM description
                     if let DataValue::Binary(ref bytes) = content {
                         if mime_type.starts_with("image/") {
                             let size_kb = bytes.len() / 1024;
-                            let blob_hash = content_ref.get("blob").and_then(|v| v.as_str());
                             let mut desc =
                                 format!("📊 Image output ({}, {} KB)", mime_type, size_kb);
-                            if let (Some(hash), Some(base_url)) = (blob_hash, blob_base_url) {
-                                desc.push_str(&format!("\n{}/blob/{}", base_url, hash));
-                            } else if let (Some(hash), Some(store_path)) =
-                                (blob_hash, blob_store_path)
-                            {
-                                let prefix = &hash[..2];
-                                let rest = &hash[2..];
-                                let path = store_path.join(prefix).join(rest);
-                                desc.push_str(&format!("\n{}", path.display()));
+                            if let Some(url) = blob_urls_map.get(mime_type) {
+                                desc.push_str(&format!("\n{}", url));
+                            } else if let Some(path) = blob_paths_map.get(mime_type) {
+                                desc.push_str(&format!("\n{}", path));
                             }
                             image_descriptions.push(desc);
                         }
@@ -360,12 +375,19 @@ pub async fn output_from_manifest(
                 );
             }
 
-            if output_type == "execute_result" {
+            let mut output = if output_type == "execute_result" {
                 let execution_count = manifest.get("execution_count")?.as_i64()?;
-                Some(Output::execute_result(output_data, execution_count))
+                Output::execute_result(output_data, execution_count)
             } else {
-                Some(Output::display_data(output_data))
+                Output::display_data(output_data)
+            };
+            if !blob_urls_map.is_empty() {
+                output.blob_urls = Some(blob_urls_map);
             }
+            if !blob_paths_map.is_empty() {
+                output.blob_paths = Some(blob_paths_map);
+            }
+            Some(output)
         }
         "error" => {
             let ename = manifest.get("ename")?.as_str()?.to_string();
