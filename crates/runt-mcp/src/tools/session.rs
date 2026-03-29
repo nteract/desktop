@@ -13,12 +13,14 @@ use crate::NteractMcp;
 
 use super::{arg_str, tool_error, tool_success};
 
+#[allow(dead_code)] // Fields used by schemars for tool input schema generation
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct JoinNotebookParams {
     /// The notebook ID from list_active_notebooks.
     pub notebook_id: String,
 }
 
+#[allow(dead_code)] // Fields used by schemars for tool input schema generation
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct OpenNotebookParams {
     /// Path to the notebook file on disk.

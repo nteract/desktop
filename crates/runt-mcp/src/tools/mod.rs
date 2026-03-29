@@ -25,37 +25,27 @@ struct EmptyParams {}
 
 /// Return all registered tools.
 pub fn all_tools() -> Vec<Tool> {
-    let mut tools = Vec::new();
-
-    // -- Session management --
-    tools.push(
+    vec![
+        // -- Session management --
         Tool::new(
             "list_active_notebooks",
             "List all open notebook sessions. Returns notebooks currently open by users or other agents. Use join_notebook(notebook_id) to connect to one.",
             schema_for::<EmptyParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true)),
-    );
-
-    tools.push(
         Tool::new(
             "join_notebook",
             "Connect to an existing notebook session by ID. The notebook_id comes from list_active_notebooks.",
             schema_for::<session::JoinNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false)),
-    );
-
-    tools.push(
         Tool::new(
             "open_notebook",
             "Open a notebook file from disk. Creates a session and connects to it.",
             schema_for::<session::OpenNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false)),
-    );
-
-    tools
+    ]
 }
 
 /// Dispatch a tool call to its handler.
