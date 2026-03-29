@@ -29,11 +29,12 @@ use crate::connection::{self, Handshake};
 use crate::notebook_sync_server::NotebookRooms;
 use crate::protocol::{BlobRequest, BlobResponse, DaemonBroadcast, Request, Response};
 use crate::settings_doc::SettingsDoc;
-use crate::singleton::{DaemonInfo, DaemonLock};
+use crate::singleton::DaemonLock;
 use crate::{
     default_blob_store_dir, default_cache_dir, default_socket_path, EnvType, PoolError, PoolStats,
     PooledEnv,
 };
+use runtimed_client::singleton::DaemonInfo;
 
 /// Configuration for the pool daemon.
 #[derive(Debug, Clone)]

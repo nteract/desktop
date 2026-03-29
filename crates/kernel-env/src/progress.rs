@@ -9,12 +9,18 @@
 //! and a [`ProgressHandler`] trait that consumers implement to route events
 //! to their UI layer.
 
+#[cfg(feature = "runtime")]
 use rattler::install::{Reporter, Transaction};
+#[cfg(feature = "runtime")]
 use rattler_conda_types::{PrefixRecord, RepoDataRecord};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "runtime")]
 use std::collections::HashMap;
+#[cfg(feature = "runtime")]
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+#[cfg(feature = "runtime")]
 use std::sync::{Arc, RwLock};
+#[cfg(feature = "runtime")]
 use std::time::Instant;
 
 /// Progress phases during environment preparation.
@@ -168,6 +174,7 @@ impl ProgressHandler for LogHandler {
 ///
 /// Uses `Arc<dyn ProgressHandler>` for ownership since rattler's `Installer`
 /// requires `'static` reporters.
+#[cfg(feature = "runtime")]
 pub struct RattlerReporter {
     handler: Arc<dyn ProgressHandler>,
     /// Total packages to download.
@@ -195,6 +202,7 @@ pub struct RattlerReporter {
     download_progress_by_idx: RwLock<HashMap<usize, u64>>,
 }
 
+#[cfg(feature = "runtime")]
 impl RattlerReporter {
     /// Create a new reporter that delegates to the given handler.
     pub fn new(handler: Arc<dyn ProgressHandler>) -> Self {
@@ -286,6 +294,7 @@ impl RattlerReporter {
     }
 }
 
+#[cfg(feature = "runtime")]
 impl Reporter for RattlerReporter {
     fn on_transaction_start(&self, transaction: &Transaction<PrefixRecord, RepoDataRecord>) {
         let total = transaction.operations.len();

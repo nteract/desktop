@@ -22,4 +22,4 @@ uuid = { workspace = true }
 log = "0.4"
 
 [dev-dependencies]
-runtimed = { path = "../runtimed" }
+runtimed-client = { path = "../runtimed-client" }

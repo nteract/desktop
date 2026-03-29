@@ -14,7 +14,7 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.28", features = ["extension-module", "abi3-py39"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
-runtimed = { path = "../runtimed" }
+runtimed-client = { path = "../runtimed-client" }
 notebook-doc = { path = "../notebook-doc" }
 notebook-protocol = { path = "../notebook-protocol" }
 kernel-env = { path = "../kernel-env" }

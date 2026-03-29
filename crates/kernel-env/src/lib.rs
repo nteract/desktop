@@ -24,12 +24,17 @@
 //! kernel_env::conda::prepare_environment(&deps, &handler).await?;
 //! ```
 
+#[cfg(feature = "runtime")]
 pub mod conda;
+#[cfg(feature = "runtime")]
 pub mod gc;
 pub mod progress;
+#[cfg(feature = "runtime")]
 pub mod uv;
 
 // Re-export key types
+#[cfg(feature = "runtime")]
 pub use conda::{CondaDependencies, CondaEnvironment};
 pub use progress::{EnvProgressPhase, LogHandler, ProgressHandler};
+#[cfg(feature = "runtime")]
 pub use uv::{UvDependencies, UvEnvironment};

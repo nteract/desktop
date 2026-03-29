@@ -1,3 +1,4 @@
+extern crate runtimed_client as runtimed;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use futures::future::join_all;

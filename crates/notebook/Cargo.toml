@@ -31,7 +31,7 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
-runtimed = { path = "../runtimed" }
+runtimed-client = { path = "../runtimed-client" }
 notebook-doc = { path = "../notebook-doc" }
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-sync = { path = "../notebook-sync" }
