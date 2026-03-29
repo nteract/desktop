@@ -2014,8 +2014,7 @@ fn cmd_mcpb(output: Option<&str>) {
     let version = read_package_version("runtimed");
 
     // ── 1. Create a staging directory ───────────────────────────────────────
-    let staging_dir =
-        std::env::temp_dir().join(format!("nteract-mcpb-{}", std::process::id()));
+    let staging_dir = std::env::temp_dir().join(format!("nteract-mcpb-{}", std::process::id()));
     fs::create_dir_all(&staging_dir).unwrap_or_else(|e| {
         eprintln!("Failed to create staging directory: {e}");
         exit(1);
