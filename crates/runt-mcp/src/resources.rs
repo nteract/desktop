@@ -11,11 +11,9 @@ use crate::NteractMcp;
 const OUTPUT_RESOURCE_URI: &str = "ui://nteract/output.html";
 const OUTPUT_MIME_TYPE: &str = "text/html;profile=mcp-app";
 
-/// Placeholder for the output renderer HTML.
-/// In the full build this will be replaced with `include_str!` from
-/// `apps/mcp-app/dist/widget.html` once the build pipeline is wired up.
-const OUTPUT_HTML: &str = r#"<!DOCTYPE html>
-<html><body><div id="root">Output renderer not yet built. Run the mcp-app build.</div></body></html>"#;
+/// The compiled MCP Apps widget HTML, built by `apps/mcp-app/build-html.js`
+/// and checked into the repo (like WASM artifacts).
+const OUTPUT_HTML: &str = include_str!("../../../python/nteract/src/nteract/_widget.html");
 
 /// List available MCP resources.
 pub async fn list_resources(_server: &NteractMcp) -> Result<ListResourcesResult, McpError> {

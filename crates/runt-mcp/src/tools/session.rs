@@ -1,12 +1,13 @@
 //! Session management tools: list, join, open notebooks.
 
+use std::path::PathBuf;
+
 use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
 use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use runtimed_client::client::PoolClient;
-use runtimed_client::daemon_paths;
 
 use crate::session::NotebookSession;
 use crate::NteractMcp;
@@ -43,6 +44,10 @@ pub async fn list_active_notebooks(server: &NteractMcp) -> Result<CallToolResult
 }
 
 /// Join an existing notebook session.
+///
+/// Accepts the notebook_id exactly as returned by list_active_notebooks.
+/// Does NOT rewrite the ID — UUIDs, file paths, and opaque room names
+/// are all passed through unchanged.
 pub async fn join_notebook(
     server: &NteractMcp,
     request: &CallToolRequestParams,
@@ -50,7 +55,9 @@ pub async fn join_notebook(
     let notebook_id = arg_str(request, "notebook_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: notebook_id", None))?;
 
-    let notebook_id = daemon_paths::resolve_notebook_path(notebook_id);
+    // Pass the notebook_id through unchanged — it may be a UUID, file path,
+    // or opaque room name. resolve_notebook_path would corrupt non-path IDs.
+    let notebook_id = notebook_id.to_string();
 
     match notebook_sync::connect::connect(
         server.socket_path.clone(),
@@ -79,6 +86,9 @@ pub async fn join_notebook(
 }
 
 /// Open a notebook file from disk.
+///
+/// Uses the OpenNotebook handshake so the daemon loads the .ipynb from disk,
+/// creates a file-backed room, and returns the notebook_id.
 pub async fn open_notebook(
     server: &NteractMcp,
     request: &CallToolRequestParams,
@@ -86,19 +96,29 @@ pub async fn open_notebook(
     let path = arg_str(request, "path")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: path", None))?;
 
-    let notebook_id = daemon_paths::resolve_notebook_path(path);
+    // Resolve to absolute path for the daemon
+    let abs_path = if std::path::Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join(path)
+    };
 
-    match notebook_sync::connect::connect(
+    // Use connect_open which sends the OpenNotebook handshake —
+    // the daemon loads the .ipynb from disk and creates a file-backed room.
+    match notebook_sync::connect::connect_open(
         server.socket_path.clone(),
-        notebook_id.clone(),
+        abs_path.clone(),
         "runt-mcp",
     )
     .await
     {
         Ok(result) => {
             let cell_count = result.handle.get_cell_ids().len();
+            let notebook_id = result.handle.notebook_id().to_string();
             let info = serde_json::json!({
-                "notebook_id": result.handle.notebook_id(),
+                "notebook_id": notebook_id,
                 "cell_count": cell_count,
                 "status": "connected"
             });
