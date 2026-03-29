@@ -616,12 +616,17 @@ fn cmd_build(rust_only: bool) {
 
     // Phase 2: Run independent tasks in parallel.
     // - Python env sync + maturin develop (builds .so for MCP server)
+    // - MCP Apps widget (self-contained HTML bundled into the nteract package)
     // - Frontend build (pnpm/vite, completely independent of Rust)
     let mut handles: Vec<thread::JoinHandle<()>> = Vec::new();
 
     handles.push(thread::spawn(|| {
         ensure_python_env();
         ensure_maturin_develop();
+    }));
+
+    handles.push(thread::spawn(|| {
+        build_mcp_widget();
     }));
 
     if rust_only {
@@ -1924,6 +1929,20 @@ fn ensure_wasm_resolved() {
     eprintln!("    macOS:  brew install git-lfs");
     eprintln!("    Linux:  sudo apt install git-lfs  (or see https://git-lfs.com)");
     exit(1);
+}
+
+/// Build the MCP Apps widget (apps/mcp-app) and copy it into the Python
+/// nteract package so it ships with the PyPI wheel.
+fn build_mcp_widget() {
+    println!("Building MCP Apps widget...");
+    run_cmd("pnpm", &["--filter", "nteract-mcp-app", "install"]);
+    run_cmd("pnpm", &["--filter", "nteract-mcp-app", "run", "build"]);
+    let dest = Path::new("python/nteract/src/nteract/_widget.html");
+    if !dest.exists() {
+        eprintln!("Error: MCP widget build did not produce _widget.html");
+        exit(1);
+    }
+    println!("MCP Apps widget built successfully");
 }
 
 fn run_frontend_build(debug_bundle: bool) {
