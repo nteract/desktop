@@ -14,6 +14,35 @@ import type {
 import { isIframeMessage } from "./frame-bridge";
 import { createFrameBlobUrl } from "./frame-html";
 import { useIsolatedRenderer } from "./isolated-renderer-context";
+import { JsonRpcTransport } from "./jsonrpc-transport";
+import {
+  NTERACT_BRIDGE_READY,
+  NTERACT_CLEAR_OUTPUTS,
+  NTERACT_COMM_CLOSE,
+  NTERACT_COMM_MSG,
+  NTERACT_COMM_OPEN,
+  NTERACT_COMM_SYNC,
+  NTERACT_DOUBLE_CLICK,
+  NTERACT_ERROR,
+  NTERACT_EVAL,
+  NTERACT_EVAL_RESULT,
+  NTERACT_LINK_CLICK,
+  NTERACT_PING,
+  NTERACT_PONG,
+  NTERACT_RENDER_COMPLETE,
+  NTERACT_RENDER_OUTPUT,
+  NTERACT_RENDERER_READY,
+  NTERACT_RESIZE,
+  NTERACT_SEARCH,
+  NTERACT_SEARCH_NAVIGATE,
+  NTERACT_SEARCH_RESULTS,
+  NTERACT_THEME,
+  NTERACT_WIDGET_COMM_CLOSE,
+  NTERACT_WIDGET_COMM_MSG,
+  NTERACT_WIDGET_READY,
+  NTERACT_WIDGET_STATE,
+  NTERACT_WIDGET_UPDATE,
+} from "./rpc-methods";
 
 export interface IsolatedFrameProps {
   /**
@@ -151,6 +180,22 @@ export interface IsolatedFrameHandle {
   isIframeReady: boolean;
 }
 
+const TYPE_TO_METHOD: Record<string, string> = {
+  render: NTERACT_RENDER_OUTPUT,
+  theme: NTERACT_THEME,
+  clear: NTERACT_CLEAR_OUTPUTS,
+  eval: NTERACT_EVAL,
+  ping: NTERACT_PING,
+  search: NTERACT_SEARCH,
+  search_navigate: NTERACT_SEARCH_NAVIGATE,
+  comm_open: NTERACT_COMM_OPEN,
+  comm_msg: NTERACT_COMM_MSG,
+  comm_close: NTERACT_COMM_CLOSE,
+  comm_sync: NTERACT_COMM_SYNC,
+  bridge_ready: NTERACT_BRIDGE_READY,
+  widget_state: NTERACT_WIDGET_STATE,
+};
+
 /**
  * Sandbox attributes for the isolated iframe.
  *
@@ -230,6 +275,7 @@ export const IsolatedFrame = forwardRef<
     error: providerError,
   } = useIsolatedRenderer();
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const rpcRef = useRef<JsonRpcTransport | null>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   // Track iframe ready (bootstrap HTML loaded)
   const [isIframeReady, setIsIframeReady] = useState(false);
@@ -320,7 +366,13 @@ export const IsolatedFrame = forwardRef<
         return;
       }
 
-      if (iframeRef.current?.contentWindow) {
+      // Translate to JSON-RPC if transport is available
+      const method = TYPE_TO_METHOD[message.type];
+      if (method && rpcRef.current) {
+        const params = "payload" in message ? message.payload : undefined;
+        rpcRef.current.notify(method, params);
+      } else if (iframeRef.current?.contentWindow) {
+        // Fallback to legacy format
         iframeRef.current.contentWindow.postMessage(message, "*");
       }
     },
@@ -333,7 +385,11 @@ export const IsolatedFrame = forwardRef<
       const pending = pendingMessagesRef.current;
       pendingMessagesRef.current = [];
       pending.forEach((msg) => {
-        if (iframeRef.current?.contentWindow) {
+        const method = TYPE_TO_METHOD[msg.type];
+        if (method && rpcRef.current) {
+          const params = "payload" in msg ? msg.payload : undefined;
+          rpcRef.current.notify(method, params);
+        } else if (iframeRef.current?.contentWindow) {
           iframeRef.current.contentWindow.postMessage(msg, "*");
         }
       });
@@ -349,6 +405,12 @@ export const IsolatedFrame = forwardRef<
       }
 
       const data = event.data;
+
+      // Skip JSON-RPC messages — the transport handles them
+      if (typeof data === "object" && data !== null && (data as { jsonrpc?: unknown }).jsonrpc === "2.0") {
+        return;
+      }
+
       if (!isIframeMessage(data)) {
         return;
       }
@@ -395,6 +457,92 @@ export const IsolatedFrame = forwardRef<
             // Initial load: a single transition from false→true is
             // sufficient.
             setIsIframeReady(true);
+          }
+
+          // Create JSON-RPC transport for this iframe instance
+          if (iframeRef.current?.contentWindow) {
+            // Clean up previous transport on reload
+            if (rpcRef.current) {
+              rpcRef.current.stop();
+            }
+            const transport = new JsonRpcTransport(
+              iframeRef.current.contentWindow,
+              iframeRef.current.contentWindow,
+            );
+            // Register handlers for JSON-RPC messages from iframe
+            transport.onNotification(NTERACT_RENDERER_READY, () => {
+              setIsReady(true);
+              setIsReloading(false);
+              onReadyRef.current?.();
+              if (initialContent) {
+                transport.notify(NTERACT_RENDER_OUTPUT, initialContent);
+              }
+            });
+            transport.onNotification(NTERACT_RESIZE, (params) => {
+              const p = params as { height?: number };
+              if (p.height != null) {
+                const newHeight = autoHeight
+                  ? Math.max(minHeight, p.height)
+                  : Math.max(minHeight, Math.min(maxHeight, p.height));
+                setHeight(newHeight);
+                onResizeRef.current?.(newHeight);
+              }
+            });
+            transport.onNotification(NTERACT_RENDER_COMPLETE, (params) => {
+              const p = params as { height?: number };
+              if (p.height != null) {
+                setIsContentRendered(true);
+                const newHeight = autoHeight
+                  ? Math.max(minHeight, p.height)
+                  : Math.max(minHeight, Math.min(maxHeight, p.height));
+                setHeight(newHeight);
+                onResizeRef.current?.(newHeight);
+              }
+            });
+            transport.onNotification(NTERACT_LINK_CLICK, (params) => {
+              const p = params as { url: string; newTab?: boolean };
+              if (p.url) {
+                onLinkClickRef.current?.(p.url, p.newTab ?? false);
+              }
+            });
+            transport.onNotification(NTERACT_DOUBLE_CLICK, () => {
+              onDoubleClickRef.current?.();
+            });
+            transport.onNotification(NTERACT_WIDGET_UPDATE, (params) => {
+              const p = params as { commId: string; state: Record<string, unknown> };
+              if (p.commId && p.state) {
+                onWidgetUpdateRef.current?.(p.commId, p.state);
+              }
+            });
+            transport.onNotification(NTERACT_ERROR, (params) => {
+              const p = params as { message: string; stack?: string };
+              if (p.message) {
+                onErrorRef.current?.(p);
+              }
+            });
+            transport.onNotification(NTERACT_EVAL_RESULT, (params) => {
+              const p = params as { success: boolean; error?: string };
+              if (p.success === false) {
+                console.error("[IsolatedFrame] Bundle eval failed:", p.error);
+                onErrorRef.current?.({ message: `Bundle eval failed: ${p.error}` });
+              }
+            });
+            transport.onNotification(NTERACT_SEARCH_RESULTS, (params) => {
+              const p = params as { count: number };
+              // Forward to onMessage for OutputArea's search count tracking
+              onMessageRef.current?.({ type: "search_results", payload: p } as IframeToParentMessage);
+            });
+            transport.onNotification(NTERACT_WIDGET_READY, (params) => {
+              onMessageRef.current?.({ type: "widget_ready" } as IframeToParentMessage);
+            });
+            transport.onNotification(NTERACT_WIDGET_COMM_MSG, (params) => {
+              onMessageRef.current?.({ type: "widget_comm_msg", payload: params } as IframeToParentMessage);
+            });
+            transport.onNotification(NTERACT_WIDGET_COMM_CLOSE, (params) => {
+              onMessageRef.current?.({ type: "widget_comm_close", payload: params } as IframeToParentMessage);
+            });
+            transport.start();
+            rpcRef.current = transport;
           }
           break;
         }
@@ -482,6 +630,13 @@ export const IsolatedFrame = forwardRef<
     return () => window.removeEventListener("message", handleMessage);
   }, [initialContent, minHeight, maxHeight, autoHeight]);
 
+  // Clean up JSON-RPC transport on unmount
+  useEffect(() => {
+    return () => {
+      rpcRef.current?.stop();
+    };
+  }, []);
+
   // Inject renderer when iframe is ready AND bundle props are available
   useEffect(() => {
     if (
@@ -537,7 +692,9 @@ export const IsolatedFrame = forwardRef<
       search: (query: string, caseSensitive?: boolean) => {
         // Search handler is in bootstrap HTML, so send directly when iframe is loaded
         // (bypasses the isReady queue which waits for the React renderer)
-        if (iframeRef.current?.contentWindow) {
+        if (rpcRef.current) {
+          rpcRef.current.notify(NTERACT_SEARCH, { query, caseSensitive });
+        } else if (iframeRef.current?.contentWindow) {
           iframeRef.current.contentWindow.postMessage(
             { type: "search", payload: { query, caseSensitive } },
             "*",
@@ -545,7 +702,9 @@ export const IsolatedFrame = forwardRef<
         }
       },
       searchNavigate: (matchIndex: number) => {
-        if (iframeRef.current?.contentWindow) {
+        if (rpcRef.current) {
+          rpcRef.current.notify(NTERACT_SEARCH_NAVIGATE, { matchIndex });
+        } else if (iframeRef.current?.contentWindow) {
           iframeRef.current.contentWindow.postMessage(
             { type: "search_navigate", payload: { matchIndex } },
             "*",

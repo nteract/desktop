@@ -103,6 +103,11 @@ function updateDocumentTheme(isDark: boolean) {
 // Global transport for JSON-RPC communication with host
 let rpcTransport: JsonRpcTransport | null = null;
 
+/** Get the shared transport instance (available after init()) */
+export function getTransport(): JsonRpcTransport | null {
+  return rpcTransport;
+}
+
 type MessageHandler = (type: string, payload: unknown) => void;
 
 let messageHandler: MessageHandler | null = null;
@@ -212,10 +217,8 @@ function IsolatedRendererApp() {
   useEffect(() => {
     messageHandler = handleMessage;
 
-    // Notify parent that renderer is ready — send both formats.
-    // JSON-RPC for the transport, legacy for the fallback handler.
+    // Notify parent that renderer is ready via JSON-RPC
     rpcTransport?.notify(NTERACT_RENDERER_READY, {});
-    window.parent.postMessage({ type: "renderer_ready" }, "*");
 
     return () => {
       messageHandler = null;

@@ -58,8 +58,8 @@ describe("generateFrameHtml", () => {
   });
 
   it("sends ready message on load", () => {
-    // The frame uses send('ready', null) which calls postMessage
-    expect(html).toContain("send('ready'");
+    // Ready uses legacy format (bootstrap signal before JSON-RPC transport exists)
+    expect(html).toContain("sendLegacy('ready'");
     expect(html).toContain("postMessage");
   });
 

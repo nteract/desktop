@@ -2,31 +2,34 @@
  * Widget Bridge Client - Iframe Side
  *
  * This module runs inside the isolated iframe and manages widget communication
- * with the parent window. It:
+ * with the parent window via JSON-RPC 2.0 notifications through a shared
+ * JsonRpcTransport instance.
+ *
+ * It:
  * - Creates a local WidgetStore for widget state management
- * - Listens for comm_open/comm_msg/comm_close from parent via postMessage
+ * - Registers notification handlers on the transport for comm messages from parent
  * - Provides methods to send state updates and custom messages back to parent
- * - Sends `widget_ready` when initialized
+ * - Sends `nteract/widgetReady` when initialized
  *
  * Security: This code runs in a sandboxed iframe with an opaque origin.
  * It cannot access Tauri APIs, the parent DOM, or localStorage.
  */
 
-import type {
-  CommCloseMessage,
-  CommMsgMessage,
-  CommOpenMessage,
-  CommSyncMessage,
-  WidgetCommCloseMessage,
-  WidgetCommMsgMessage,
-} from "@/components/isolated/frame-bridge";
+import type { JsonRpcTransport } from "@/components/isolated/jsonrpc-transport";
+import {
+  NTERACT_BRIDGE_READY,
+  NTERACT_COMM_CLOSE,
+  NTERACT_COMM_MSG,
+  NTERACT_COMM_OPEN,
+  NTERACT_COMM_SYNC,
+  NTERACT_WIDGET_COMM_CLOSE,
+  NTERACT_WIDGET_COMM_MSG,
+  NTERACT_WIDGET_READY,
+} from "@/components/isolated/rpc-methods";
 import {
   createWidgetStore,
   type WidgetStore,
 } from "@/components/widgets/widget-store";
-
-// Type for method parameter in comm messages
-type CommMethod = "update" | "custom";
 
 /**
  * Interface for the widget bridge client.
@@ -62,7 +65,7 @@ export interface WidgetBridgeClient {
   closeComm: (commId: string) => void;
 
   /**
-   * Clean up the bridge (remove event listeners).
+   * Clean up the bridge.
    */
   dispose: () => void;
 }
@@ -71,80 +74,69 @@ export interface WidgetBridgeClient {
  * Create a widget bridge client for the iframe.
  * This sets up:
  * - A local WidgetStore instance
- * - Message listener for parent → iframe comm messages
- * - Methods to send iframe → parent messages
+ * - Notification handlers on the transport for parent → iframe comm messages
+ * - Methods to send iframe → parent messages via the transport
+ *
+ * @param transport - The shared JsonRpcTransport (created in index.tsx init())
  */
-export function createWidgetBridgeClient(): WidgetBridgeClient {
-  // Create local widget store
+export function createWidgetBridgeClient(
+  transport: JsonRpcTransport,
+): WidgetBridgeClient {
   const store = createWidgetStore();
 
-  // Message handler for parent → iframe messages
-  function handleMessage(event: MessageEvent) {
-    // Only accept messages from parent
-    if (event.source !== window.parent) return;
-
-    const message = event.data;
-    if (!message || typeof message.type !== "string") return;
-
-    switch (message.type) {
-      case "bridge_ready":
-        // Parent's comm bridge is ready, re-send widget_ready to trigger sync
-        sendWidgetReady();
-        break;
-      case "comm_open":
-        handleCommOpen(message as CommOpenMessage);
-        break;
-      case "comm_msg":
-        handleCommMsg(message as CommMsgMessage);
-        break;
-      case "comm_close":
-        handleCommClose(message as CommCloseMessage);
-        break;
-      case "comm_sync":
-        handleCommSync(message as CommSyncMessage);
-        break;
-    }
-  }
-
   function sendWidgetReady() {
-    window.parent.postMessage({ type: "widget_ready" }, "*");
+    transport.notify(NTERACT_WIDGET_READY);
   }
 
-  function handleCommOpen(msg: CommOpenMessage) {
-    const { commId, state, buffers } = msg.payload;
+  // Register handlers for parent → iframe comm messages
+  transport.onNotification(NTERACT_BRIDGE_READY, () => {
+    sendWidgetReady();
+  });
+
+  transport.onNotification(NTERACT_COMM_OPEN, (params) => {
+    const { commId, state, buffers } = params as {
+      commId: string;
+      state: Record<string, unknown>;
+      buffers?: ArrayBuffer[];
+    };
     store.createModel(commId, state, buffers);
-  }
+  });
 
-  function handleCommMsg(msg: CommMsgMessage) {
-    const { commId, method, data, buffers } = msg.payload;
-
+  transport.onNotification(NTERACT_COMM_MSG, (params) => {
+    const { commId, method, data, buffers } = params as {
+      commId: string;
+      method: "update" | "custom";
+      data: Record<string, unknown>;
+      buffers?: ArrayBuffer[];
+    };
     if (method === "update") {
-      // State update from kernel
       store.updateModel(commId, data, buffers);
     } else if (method === "custom") {
-      // Custom message from kernel (e.g., ipycanvas commands)
       store.emitCustomMessage(commId, data, buffers);
     }
-  }
+  });
 
-  function handleCommClose(msg: CommCloseMessage) {
-    const { commId } = msg.payload;
+  transport.onNotification(NTERACT_COMM_CLOSE, (params) => {
+    const { commId } = params as { commId: string };
     store.deleteModel(commId);
-  }
+  });
 
-  function handleCommSync(msg: CommSyncMessage) {
-    const { models } = msg.payload;
-
+  transport.onNotification(NTERACT_COMM_SYNC, (params) => {
+    const { models } = params as {
+      models: Array<{
+        commId: string;
+        state: Record<string, unknown>;
+        buffers?: ArrayBuffer[];
+      }>;
+    };
     for (const model of models) {
       store.createModel(model.commId, model.state, model.buffers);
     }
-  }
+  });
 
-  // Set up message listener
-  window.addEventListener("message", handleMessage);
-
-  // Send initial widget_ready to parent
-  // (Parent may not be listening yet; it will send bridge_ready when ready, and we'll re-send)
+  // Send initial widget_ready
+  // (Parent may not be listening yet; it will send bridgeReady when ready,
+  // and we'll re-send via the handler above)
   sendWidgetReady();
 
   return {
@@ -157,18 +149,12 @@ export function createWidgetBridgeClient(): WidgetBridgeClient {
     ) {
       // Update local store immediately for responsive UI (optimistic update)
       store.updateModel(commId, state, buffers);
-
-      const msg: WidgetCommMsgMessage = {
-        type: "widget_comm_msg",
-        payload: {
-          commId,
-          method: "update" as CommMethod,
-          data: state,
-          buffers,
-        },
-      };
-      // Transfer buffers for efficiency (note: buffers are consumed by transfer)
-      window.parent.postMessage(msg, "*", buffers ?? []);
+      transport.notify(NTERACT_WIDGET_COMM_MSG, {
+        commId,
+        method: "update",
+        data: state,
+        buffers,
+      });
     },
 
     sendCustom(
@@ -176,29 +162,20 @@ export function createWidgetBridgeClient(): WidgetBridgeClient {
       content: Record<string, unknown>,
       buffers?: ArrayBuffer[],
     ) {
-      const msg: WidgetCommMsgMessage = {
-        type: "widget_comm_msg",
-        payload: {
-          commId,
-          method: "custom" as CommMethod,
-          data: content,
-          buffers,
-        },
-      };
-      // Transfer buffers for efficiency
-      window.parent.postMessage(msg, "*", buffers ?? []);
+      transport.notify(NTERACT_WIDGET_COMM_MSG, {
+        commId,
+        method: "custom",
+        data: content,
+        buffers,
+      });
     },
 
     closeComm(commId: string) {
-      const msg: WidgetCommCloseMessage = {
-        type: "widget_comm_close",
-        payload: { commId },
-      };
-      window.parent.postMessage(msg, "*");
+      transport.notify(NTERACT_WIDGET_COMM_CLOSE, { commId });
     },
 
     dispose() {
-      window.removeEventListener("message", handleMessage);
+      // Transport lifecycle is managed by index.tsx
     },
   };
 }

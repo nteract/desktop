@@ -215,7 +215,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
       // --- Message Handlers ---
 
       function handlePing(payload) {
-        send('pong', {
+        sendRpc('nteract/pong', {
           receivedAt: Date.now(),
           echo: payload
         });
@@ -224,7 +224,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
       function handleEval(payload) {
         const { code } = payload || {};
         if (!code) {
-          send('eval_result', { success: false, error: 'No code provided' });
+          sendRpc('nteract/evalResult', { success: false, error: 'No code provided' });
           return;
         }
 
@@ -232,9 +232,9 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
         window.currentMessage = event;
         try {
           const result = eval.call(null, code);
-          send('eval_result', { success: true, result: String(result ?? 'undefined') });
+          sendRpc('nteract/evalResult', { success: true, result: String(result ?? 'undefined') });
         } catch (err) {
-          send('eval_result', { success: false, error: err.message });
+          sendRpc('nteract/evalResult', { success: false, error: err.message });
         } finally {
           delete window.currentMessage;
         }
@@ -309,7 +309,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
 
         // Notify completion
         requestAnimationFrame(function() {
-          send('render_complete', { height: document.body.scrollHeight });
+          sendRpc('nteract/renderComplete', { height: document.body.scrollHeight });
         });
       }
 
@@ -392,7 +392,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
 
       function handleClear() {
         root.innerHTML = '';
-        send('render_complete', { height: document.body.scrollHeight });
+        sendRpc('nteract/renderComplete', { height: document.body.scrollHeight });
       }
 
       function handleWidgetState(payload) {
@@ -410,7 +410,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
         var caseSensitive = payload && payload.caseSensitive;
         clearSearchMarks();
         if (!query) {
-          send('search_results', { count: 0 });
+          sendRpc('nteract/searchResults', { count: 0 });
           return;
         }
         var marks = [];
@@ -446,7 +446,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
         }
         searchMarks = marks;
         currentSearchIndex = -1;
-        send('search_results', { count: marks.length });
+        sendRpc('nteract/searchResults', { count: marks.length });
       }
 
       function handleSearchNavigate(payload) {
@@ -482,12 +482,19 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
 
       // --- Utilities ---
 
-      function send(type, payload) {
+      // Legacy format — only used for the bootstrap 'ready' signal
+      // (host creates the transport in response, so JSON-RPC isn't available yet)
+      function sendLegacy(type, payload) {
         window.parent.postMessage({ type: type, payload: payload }, '*');
       }
 
+      // JSON-RPC 2.0 format — used for all other outgoing messages
+      function sendRpc(method, params) {
+        window.parent.postMessage({ jsonrpc: '2.0', method: method, params: params || {} }, '*');
+      }
+
       function sendError(err) {
-        send('error', {
+        sendRpc('nteract/error', {
           message: err.message || String(err),
           stack: err.stack
         });
@@ -508,7 +515,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
           resizeRafPending = false;
           if (window.__REACT_RENDERER_ACTIVE__) return;
           var height = document.body.scrollHeight;
-          send('resize', { height: height });
+          sendRpc('nteract/resize', { height: height });
         });
       });
       resizeObserver.observe(document.body);
@@ -518,7 +525,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
         const link = e.target.closest('a');
         if (link && link.href) {
           e.preventDefault();
-          send('link_click', {
+          sendRpc('nteract/linkClick', {
             url: link.href,
             newTab: e.metaKey || e.ctrlKey
           });
@@ -530,7 +537,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
         // Don't forward double-clicks on links (user is selecting text)
         const link = e.target.closest('a');
         if (!link) {
-          send('dblclick', null);
+          sendRpc('nteract/doubleClick', {});
         }
       });
 
@@ -548,7 +555,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
 
       // --- Ready Signal ---
       isReady = true;
-      send('ready', null);
+      sendLegacy('ready', null);
     })();
   </script>
 </body>

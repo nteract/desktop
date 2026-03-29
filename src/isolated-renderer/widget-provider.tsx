@@ -28,6 +28,7 @@ import {
   type WidgetStore,
 } from "@/components/widgets/widget-store";
 import { WidgetStoreContext } from "@/components/widgets/widget-store-context";
+import { getTransport } from "./index";
 import {
   createWidgetBridgeClient,
   type WidgetBridgeClient,
@@ -80,7 +81,14 @@ export function IframeWidgetStoreProvider({
   // Create bridge client once
   const clientRef = useRef<WidgetBridgeClient | null>(null);
   if (!clientRef.current) {
-    clientRef.current = createWidgetBridgeClient();
+    const transport = getTransport();
+    if (!transport) {
+      throw new Error(
+        "IframeWidgetStoreProvider: JsonRpcTransport not available. " +
+          "Ensure init() has been called before rendering.",
+      );
+    }
+    clientRef.current = createWidgetBridgeClient(transport);
   }
   const client = clientRef.current;
 
