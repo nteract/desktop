@@ -622,9 +622,7 @@ class NteractServer:
     over ``self``, so FastMCP sees clean function signatures.
     """
 
-    def __init__(
-        self, *, channel: str | None = None, no_show: bool = False
-    ):
+    def __init__(self, *, channel: str | None = None, no_show: bool = False):
         self.mcp = FastMCP("nteract")
         self._notebook: runtimed.Notebook | None = None
         self._client: runtimed.Client | None = None
