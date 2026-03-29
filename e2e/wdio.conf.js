@@ -119,7 +119,7 @@ export const config = {
 
   mochaOpts: {
     ui: "bdd",
-    timeout: 660000, // 11 minutes — inline env creation (UV/Conda) can take 8+ min on cold CI
+    timeout: 780000, // 13 minutes — conda inline env creation can take 12 min on cold CI
   },
 
   /**
