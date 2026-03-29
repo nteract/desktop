@@ -19,7 +19,7 @@ use notebook_doc::{frame_types, NotebookDoc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -55,16 +55,16 @@ enum OutputManifest {
     },
     #[serde(rename = "execute_result")]
     ExecuteResult {
-        data: HashMap<String, ContentRef>,
-        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-        metadata: HashMap<String, Value>,
+        data: BTreeMap<String, ContentRef>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        metadata: BTreeMap<String, Value>,
         execution_count: Option<i32>,
     },
     #[serde(rename = "display_data")]
     DisplayData {
-        data: HashMap<String, ContentRef>,
-        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-        metadata: HashMap<String, Value>,
+        data: BTreeMap<String, ContentRef>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        metadata: BTreeMap<String, Value>,
     },
 }
 
@@ -191,13 +191,13 @@ fn scenario_output_streaming() {
     let broadcast_frames: Vec<Vec<u8>> = output_manifests
         .iter()
         .enumerate()
-        .map(|(i, (_hash, manifest_json))| {
+        .map(|(i, (hash, _manifest_json))| {
             make_broadcast_frame(&json!({
-                "type": "Output",
+                "event": "output",
                 "cell_id": "cell-1",
                 "execution_id": "exec-001",
                 "output_type": "stream",
-                "output_json": manifest_json,
+                "output_json": hash,
                 "output_index": i,
             }))
         })
@@ -290,11 +290,11 @@ fn scenario_re_execution() {
     daemon.clear_outputs("cell-1").unwrap();
     daemon.set_execution_count("cell-1", "2").unwrap();
 
-    let mut data = HashMap::new();
+    let mut data = BTreeMap::new();
     data.insert("text/plain".to_string(), inline("42"));
     let second_manifest = OutputManifest::ExecuteResult {
         data,
-        metadata: HashMap::new(),
+        metadata: BTreeMap::new(),
         execution_count: Some(2),
     };
     let (second_hash, second_json) = hash_manifest(&second_manifest);
@@ -382,7 +382,7 @@ fn scenario_display_data_output() {
     // display_data with text/plain (inlined) and image/png (would be a blob
     // ref in production, but we use inline here since we don't have a real
     // blob store — the test verifies the hash protocol, not blob resolution)
-    let mut data = HashMap::new();
+    let mut data = BTreeMap::new();
     data.insert("text/plain".to_string(), inline("<Figure size 640x480>"));
     data.insert(
         "image/png".to_string(),
@@ -393,7 +393,7 @@ fn scenario_display_data_output() {
     );
     let manifest = OutputManifest::DisplayData {
         data,
-        metadata: HashMap::new(),
+        metadata: BTreeMap::new(),
     };
     let (hash, manifest_json) = hash_manifest(&manifest);
     daemon.append_output("cell-1", &hash).unwrap();

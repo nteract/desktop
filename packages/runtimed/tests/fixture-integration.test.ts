@@ -214,8 +214,11 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
       expect(broadcasts.length).toBe(3);
       for (const b of broadcasts) {
         const payload = b as Record<string, unknown>;
-        expect(payload.type).toBe("Output");
+        expect(payload.event).toBe("output");
         expect(payload.cell_id).toBe("cell-1");
+        expect(payload.output_type).toBe("stream");
+        // output_json is the manifest hash, not raw JSON
+        expect(payload.output_json).toMatch(MANIFEST_HASH_RE);
       }
 
       sub.unsubscribe();
