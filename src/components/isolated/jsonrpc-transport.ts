@@ -43,8 +43,13 @@ type RequestHandler = (
 
 /**
  * Recursively collect all ArrayBuffer instances from a value.
+ * Uses a visited set to handle cyclic references safely.
  */
-function collectArrayBuffers(value: unknown, buffers: ArrayBuffer[]): void {
+function collectArrayBuffers(
+  value: unknown,
+  buffers: ArrayBuffer[],
+  visited: Set<object> = new Set(),
+): void {
   if (value instanceof ArrayBuffer) {
     buffers.push(value);
     return;
@@ -53,16 +58,17 @@ function collectArrayBuffers(value: unknown, buffers: ArrayBuffer[]): void {
     buffers.push(value.buffer);
     return;
   }
+  if (typeof value !== "object" || value === null) return;
+  if (visited.has(value)) return;
+  visited.add(value);
   if (Array.isArray(value)) {
     for (const item of value) {
-      collectArrayBuffers(item, buffers);
+      collectArrayBuffers(item, buffers, visited);
     }
     return;
   }
-  if (value !== null && typeof value === "object") {
-    for (const v of Object.values(value)) {
-      collectArrayBuffers(v, buffers);
-    }
+  for (const v of Object.values(value)) {
+    collectArrayBuffers(v, buffers, visited);
   }
 }
 
@@ -172,7 +178,23 @@ export class JsonRpcTransport {
         // Incoming request — dispatch to handler and send response
         const handler = this.requestHandlers.get(data.method);
         if (handler) {
-          Promise.resolve(handler(data.params)).then(
+          let result: unknown;
+          try {
+            result = handler(data.params);
+          } catch (err) {
+            const response: JsonRpcResponse = {
+              jsonrpc: "2.0",
+              id: data.id,
+              error: {
+                code: -32000,
+                message:
+                  err instanceof Error ? err.message : String(err),
+              },
+            };
+            this.target.postMessage(response, "*");
+            return;
+          }
+          Promise.resolve(result).then(
             (result) => {
               const response: JsonRpcResponse = {
                 jsonrpc: "2.0",

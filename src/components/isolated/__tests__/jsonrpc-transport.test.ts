@@ -289,6 +289,54 @@ describe("JsonRpcTransport", () => {
         },
       });
     });
+
+    it("sends error response when request handler throws synchronously", async () => {
+      const transport = new JsonRpcTransport(
+        mockTarget.window,
+        mockTarget.window,
+      );
+
+      transport.onRequest("test/throws", () => {
+        throw new Error("sync kaboom");
+      });
+      transport.start();
+
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            jsonrpc: "2.0",
+            id: 99,
+            method: "test/throws",
+            params: {},
+          },
+          source: mockTarget.window,
+        }),
+      );
+
+      // Response is sent synchronously for sync throws
+      expect(mockTarget.postMessageCalls).toHaveLength(1);
+      expect(mockTarget.postMessageCalls[0].message).toEqual({
+        jsonrpc: "2.0",
+        id: 99,
+        error: { code: -32000, message: "sync kaboom" },
+      });
+    });
+
+    it("handles cyclic objects in collectArrayBuffers without stack overflow", () => {
+      const transport = new JsonRpcTransport(
+        mockTarget.window,
+        mockTarget.window,
+      );
+
+      // Create a cyclic object
+      const obj: Record<string, unknown> = { a: 1 };
+      obj.self = obj;
+
+      // Should not throw
+      transport.notify("test", obj);
+
+      expect(mockTarget.postMessageCalls).toHaveLength(1);
+    });
   });
 
   describe("stop", () => {
