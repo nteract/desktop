@@ -26,7 +26,8 @@ use std::time::{Duration, Instant};
 
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, Implementation, ListToolsResult,
+    CallToolRequestParams, CallToolResult, Content, Implementation, ListResourceTemplatesResult,
+    ListResourcesResult, ListToolsResult, ReadResourceRequestParams, ReadResourceResult,
     ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::schemars;
@@ -617,6 +618,47 @@ impl Supervisor {
             .map_err(|e| McpError::internal_error(format!("Child tool call failed: {e}"), None))
     }
 
+    /// Forward a resource read to the child, auto-restarting on disconnect.
+    async fn forward_read_resource(
+        &self,
+        params: ReadResourceRequestParams,
+    ) -> Result<ReadResourceResult, McpError> {
+        // First attempt
+        match self.try_forward_read_resource(&params).await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                warn!("Resource read failed, attempting restart: {e}");
+            }
+        }
+
+        // Restart and retry once
+        if let Err(e) = self.restart_child().await {
+            return Err(McpError::internal_error(
+                format!("Child restart failed: {e}"),
+                None,
+            ));
+        }
+
+        // Second attempt after restart
+        self.try_forward_read_resource(&params).await
+    }
+
+    async fn try_forward_read_resource(
+        &self,
+        params: &ReadResourceRequestParams,
+    ) -> Result<ReadResourceResult, McpError> {
+        let state = self.state.read().await;
+        let client = state
+            .child_client
+            .as_ref()
+            .ok_or_else(|| McpError::internal_error("nteract MCP server not running", None))?;
+
+        client
+            .read_resource(params.clone())
+            .await
+            .map_err(|e| McpError::internal_error(format!("Child resource read failed: {e}"), None))
+    }
+
     /// Build the supervisor_status result.
     async fn status(&self) -> SupervisorStatus {
         let mut state = self.state.write().await;
@@ -1020,7 +1062,10 @@ impl ServerHandler for Supervisor {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: Default::default(),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            capabilities: ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
             server_info: Implementation {
                 name: "nteract-dev".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
@@ -1136,6 +1181,52 @@ impl ServerHandler for Supervisor {
             next_cursor: None,
             meta: None,
         })
+    }
+
+    async fn list_resources(
+        &self,
+        request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        let state = self.state.read().await;
+        if let Some(ref client) = state.child_client {
+            match client.list_resources(request).await {
+                Ok(result) => Ok(result),
+                Err(e) => {
+                    warn!("Failed to list child resources: {e}");
+                    Ok(ListResourcesResult::default())
+                }
+            }
+        } else {
+            Ok(ListResourcesResult::default())
+        }
+    }
+
+    async fn list_resource_templates(
+        &self,
+        request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, McpError> {
+        let state = self.state.read().await;
+        if let Some(ref client) = state.child_client {
+            match client.list_resource_templates(request).await {
+                Ok(result) => Ok(result),
+                Err(e) => {
+                    warn!("Failed to list child resource templates: {e}");
+                    Ok(ListResourceTemplatesResult::default())
+                }
+            }
+        } else {
+            Ok(ListResourceTemplatesResult::default())
+        }
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        self.forward_read_resource(request).await
     }
 
     async fn call_tool(
@@ -1923,6 +2014,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         warn!("Failed to send tools/list_changed: {e}");
                     } else {
                         info!("Sent tools/list_changed notification to client");
+                    }
+                    if let Err(e) = peer.notify_resource_list_changed().await {
+                        warn!("Failed to send resources/list_changed: {e}");
+                    } else {
+                        info!("Sent resources/list_changed notification to client");
                     }
                 }
                 else => break,
