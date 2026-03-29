@@ -21,10 +21,10 @@ import {
  * The banner may not appear if trust state hasn't synced yet from the daemon.
  */
 async function openTrustDialog() {
-  // Try banner first (fast path — no async IPC)
+  // Try banner first — give daemon time to sync trust state on CI
   const reviewButton = await $('[data-testid="review-dependencies-button"]');
   try {
-    await reviewButton.waitForExist({ timeout: 10000 });
+    await reviewButton.waitForExist({ timeout: 30000 });
     await reviewButton.waitForClickable({ timeout: 5000 });
     await reviewButton.click();
     console.log("[uv-inline] Opened trust dialog via banner");

@@ -113,10 +113,6 @@ export const config = {
   framework: "mocha",
   reporters: ["spec"],
 
-  // Retry failed spec files once — E2E tests against a real daemon are
-  // inherently timing-sensitive (IPC latency, pool warming, env creation).
-  specFileRetries: 1,
-
   mochaOpts: {
     ui: "bdd",
     timeout: 780000, // 13 minutes — conda inline env creation can take 12 min on cold CI
