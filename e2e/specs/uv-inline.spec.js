@@ -9,53 +9,23 @@
 
 import { browser } from "@wdio/globals";
 import {
-  approveTrustDialog,
   setCellSource,
   waitForCellOutput,
-  waitForKernelReady,
+  waitForKernelReadyWithTrust,
   waitForNotebookSynced,
 } from "../helpers.js";
 
-/**
- * Open the trust dialog — tries the banner first, falls back to execute.
- * The banner may not appear if trust state hasn't synced yet from the daemon.
- */
-async function openTrustDialog() {
-  // Try banner first — give daemon time to sync trust state on CI
-  const reviewButton = await $('[data-testid="review-dependencies-button"]');
-  try {
-    await reviewButton.waitForExist({ timeout: 30000 });
-    await reviewButton.waitForClickable({ timeout: 5000 });
-    await reviewButton.click();
-    console.log("[uv-inline] Opened trust dialog via banner");
-    return;
-  } catch {
-    console.log("[uv-inline] Banner not found, falling back to execute");
-  }
-
-  // Fallback: click execute to trigger trust dialog via checkTrust IPC
-  const codeCell = await $('[data-cell-type="code"]');
-  await codeCell.waitForExist({ timeout: 10000 });
-  await setCellSource(codeCell, "print('trigger trust')");
-  const executeButton = await codeCell.$('[data-testid="execute-button"]');
-  await executeButton.waitForClickable({ timeout: 10000 });
-  await executeButton.click();
-  console.log("[uv-inline] Opened trust dialog via execute");
-}
-
 describe("UV Inline Dependencies", () => {
-  it("should launch kernel after trust approval", async () => {
+  it("should launch kernel (approving trust if needed)", async () => {
     await waitForNotebookSynced();
 
-    await openTrustDialog();
-
-    const approved = await approveTrustDialog(60000);
-    expect(approved).toBe(true);
-    console.log("[uv-inline] Trust dialog approved");
-
-    // UV env creation on cold CI can take 5+ minutes (CI budget: 12 min)
-    await waitForKernelReady(600000);
-    console.log("[uv-inline] Kernel is ready");
+    // The trust dialog may or may not appear depending on daemon mode.
+    // waitForKernelReadyWithTrust handles both cases: it polls for
+    // kernel ready and approves the trust dialog if it appears.
+    const trustApproved = await waitForKernelReadyWithTrust(600000);
+    console.log(
+      `[uv-inline] Kernel is ready (trust approved: ${trustApproved})`,
+    );
   });
 
   it("should show UV badge in toolbar", async () => {

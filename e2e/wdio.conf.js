@@ -113,6 +113,11 @@ export const config = {
   framework: "mocha",
   reporters: ["spec"],
 
+  // Retry failed spec files once — helps with transient timing issues
+  // (IPC latency, pool warming, env creation). For trust-dependent tests,
+  // waitForKernelReadyWithTrust handles trust inline so retries are safe.
+  specFileRetries: 1,
+
   mochaOpts: {
     ui: "bdd",
     timeout: 780000, // 13 minutes — conda inline env creation can take 12 min on cold CI

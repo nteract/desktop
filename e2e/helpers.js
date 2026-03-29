@@ -284,6 +284,71 @@ export async function approveTrustDialog(timeout = 15000) {
 }
 
 /**
+ * Wait for kernel ready while handling trust approval if needed.
+ *
+ * Polls for kernel status (idle/busy) and simultaneously watches for the
+ * trust dialog. If the trust dialog appears during the wait, it approves
+ * it and continues waiting for the kernel. This handles both trusted
+ * notebooks (kernel starts immediately) and untrusted notebooks (trust
+ * dialog blocks kernel startup).
+ *
+ * @param timeout Max time to wait for kernel ready
+ * @returns true if trust dialog was approved, false if it didn't appear
+ */
+export async function waitForKernelReadyWithTrust(timeout = 300000) {
+  let trustApproved = false;
+  let trustAttempted = false;
+
+  await browser.waitUntil(
+    async () => {
+      // Check if kernel is ready
+      const status = await getKernelStatus();
+      if (status === "idle" || status === "busy") {
+        return true;
+      }
+
+      // While waiting for kernel, check for trust dialog (only once)
+      if (!trustAttempted) {
+        const dialog = await $('[data-testid="trust-dialog"]');
+        if (await dialog.isExisting()) {
+          trustAttempted = true;
+          try {
+            const approveButton = await $(
+              '[data-testid="trust-approve-button"]',
+            );
+            await approveButton.waitForEnabled({ timeout: 30000 });
+            await approveButton.waitForClickable({ timeout: 5000 });
+            await approveButton.click();
+            // Wait for dialog to close
+            await browser.waitUntil(
+              async () => !(await dialog.isExisting()),
+              { timeout: 30000, interval: 300 },
+            );
+            trustApproved = true;
+            console.log(
+              "[waitForKernelReadyWithTrust] Trust dialog approved inline",
+            );
+          } catch (e) {
+            console.log(
+              `[waitForKernelReadyWithTrust] Trust approval failed: ${e.message}`,
+            );
+          }
+        }
+      }
+
+      return false;
+    },
+    {
+      timeout,
+      interval: 500,
+      timeoutMsg: `Kernel not ready within ${timeout / 1000}s`,
+    },
+  );
+
+  return trustApproved;
+}
+
+/**
  * Get the current kernel status text from the toolbar.
  */
 export async function getKernelStatus() {
