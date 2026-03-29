@@ -449,6 +449,7 @@ pub enum NotebookResponse {
 /// to specific requests. All connected windows receive these.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum NotebookBroadcast {
     /// Kernel status changed.
     KernelStatus {
