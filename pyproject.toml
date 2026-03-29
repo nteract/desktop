@@ -6,6 +6,8 @@ requires-python = ">=3.10"
 dependencies = [
     "nteract",
     "gremlin ; sys_platform == 'darwin'",
+    "pandas",
+    "polars",
 ]
 
 [build-system]

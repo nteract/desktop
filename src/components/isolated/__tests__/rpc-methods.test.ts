@@ -1,0 +1,85 @@
+/**
+ * Tests for rpc-methods.ts — JSON-RPC method constants and types.
+ *
+ * Verifies:
+ * 1. Method constants have correct "nteract/" namespace prefix
+ * 2. All method constants are unique
+ * 3. Request vs notification method categorization
+ */
+
+import { describe, expect, it } from "vitest";
+import {
+  NTERACT_BRIDGE_READY,
+  NTERACT_CLEAR_OUTPUTS,
+  NTERACT_COMM_CLOSE,
+  NTERACT_COMM_MSG,
+  NTERACT_COMM_OPEN,
+  NTERACT_COMM_SYNC,
+  NTERACT_DOUBLE_CLICK,
+  NTERACT_EVAL,
+  NTERACT_RENDER_COMPLETE,
+  NTERACT_RENDER_OUTPUT,
+  NTERACT_SEARCH,
+  NTERACT_SEARCH_NAVIGATE,
+  NTERACT_WIDGET_COMM_CLOSE,
+  NTERACT_WIDGET_COMM_MSG,
+  NTERACT_WIDGET_READY,
+  NTERACT_WIDGET_STATE,
+  NTERACT_WIDGET_UPDATE,
+} from "../rpc-methods";
+
+describe("nteract JSON-RPC method constants", () => {
+  const ALL_METHODS = [
+    NTERACT_EVAL,
+    NTERACT_SEARCH,
+    NTERACT_RENDER_OUTPUT,
+    NTERACT_CLEAR_OUTPUTS,
+    NTERACT_SEARCH_NAVIGATE,
+    NTERACT_COMM_OPEN,
+    NTERACT_COMM_MSG,
+    NTERACT_COMM_CLOSE,
+    NTERACT_COMM_SYNC,
+    NTERACT_BRIDGE_READY,
+    NTERACT_WIDGET_STATE,
+    NTERACT_RENDER_COMPLETE,
+    NTERACT_DOUBLE_CLICK,
+    NTERACT_WIDGET_READY,
+    NTERACT_WIDGET_COMM_MSG,
+    NTERACT_WIDGET_COMM_CLOSE,
+    NTERACT_WIDGET_UPDATE,
+  ];
+
+  it("all methods have nteract/ namespace prefix", () => {
+    for (const method of ALL_METHODS) {
+      expect(method).toMatch(/^nteract\//);
+    }
+  });
+
+  it("all method constants are unique", () => {
+    const unique = new Set(ALL_METHODS);
+    expect(unique.size).toBe(ALL_METHODS.length);
+  });
+
+  it("request methods return expected names", () => {
+    expect(NTERACT_EVAL).toBe("nteract/eval");
+    expect(NTERACT_SEARCH).toBe("nteract/search");
+  });
+
+  it("notification methods return expected names", () => {
+    expect(NTERACT_RENDER_OUTPUT).toBe("nteract/renderOutput");
+    expect(NTERACT_CLEAR_OUTPUTS).toBe("nteract/clearOutputs");
+    expect(NTERACT_COMM_OPEN).toBe("nteract/commOpen");
+    expect(NTERACT_COMM_MSG).toBe("nteract/commMsg");
+    expect(NTERACT_COMM_CLOSE).toBe("nteract/commClose");
+    expect(NTERACT_COMM_SYNC).toBe("nteract/commSync");
+    expect(NTERACT_BRIDGE_READY).toBe("nteract/bridgeReady");
+    expect(NTERACT_WIDGET_READY).toBe("nteract/widgetReady");
+    expect(NTERACT_WIDGET_COMM_MSG).toBe("nteract/widgetCommMsg");
+    expect(NTERACT_WIDGET_COMM_CLOSE).toBe("nteract/widgetCommClose");
+    expect(NTERACT_RENDER_COMPLETE).toBe("nteract/renderComplete");
+    expect(NTERACT_DOUBLE_CLICK).toBe("nteract/doubleClick");
+    expect(NTERACT_WIDGET_UPDATE).toBe("nteract/widgetUpdate");
+    expect(NTERACT_WIDGET_STATE).toBe("nteract/widgetState");
+    expect(NTERACT_SEARCH_NAVIGATE).toBe("nteract/searchNavigate");
+  });
+});
