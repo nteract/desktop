@@ -58,8 +58,8 @@ describe("generateFrameHtml", () => {
   });
 
   it("sends ready message on load", () => {
-    // The frame uses send('ready', null) which calls postMessage
-    expect(html).toContain("send('ready'");
+    // The frame uses sendRpc('nteract/ready', {}) which calls postMessage
+    expect(html).toContain("sendRpc('nteract/ready'");
     expect(html).toContain("postMessage");
   });
 

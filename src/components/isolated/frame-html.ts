@@ -144,6 +144,82 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
       let isReady = false;
       const root = document.getElementById('root');
 
+      // --- JSON-RPC Handler ---
+      // Handles messages in { jsonrpc: "2.0", method, params, id? } format.
+      // The inline script cannot import JsonRpcTransport (it's vanilla JS),
+      // so we detect and route JSON-RPC messages directly.
+      function handleJsonRpc(msg) {
+        var method = msg.method;
+        var params = msg.params || {};
+        var id = msg.id; // defined for requests, undefined for notifications
+
+        try {
+          switch (method) {
+            case 'nteract/eval':
+              handleEval(params);
+              break;
+
+            case 'nteract/renderOutput':
+              if (window.__REACT_RENDERER_ACTIVE__) return;
+              handleRender(params);
+              break;
+
+            case 'nteract/theme':
+              if (window.__REACT_RENDERER_ACTIVE__) return;
+              handleTheme(params);
+              break;
+
+            case 'nteract/clearOutputs':
+              if (window.__REACT_RENDERER_ACTIVE__) return;
+              handleClear();
+              break;
+
+            case 'nteract/ping':
+              // Ping is a request — send JSON-RPC response
+              if (id !== undefined) {
+                window.parent.postMessage({
+                  jsonrpc: '2.0', id: id,
+                  result: { receivedAt: Date.now(), echo: params }
+                }, '*');
+              }
+              break;
+
+            case 'nteract/search':
+              handleSearch(params);
+              // If this was a request, send result as JSON-RPC response
+              if (id !== undefined) {
+                window.parent.postMessage({
+                  jsonrpc: '2.0', id: id,
+                  result: { count: searchMarks.length }
+                }, '*');
+              }
+              break;
+
+            case 'nteract/searchNavigate':
+              handleSearchNavigate(params);
+              break;
+
+            case 'nteract/widgetState':
+              handleWidgetState(params);
+              break;
+
+            // Comm bridge messages - handled by React widget system, ignore here
+            case 'nteract/bridgeReady':
+            case 'nteract/commOpen':
+            case 'nteract/commMsg':
+            case 'nteract/commClose':
+            case 'nteract/commSync':
+              break;
+
+            default:
+              // Unknown methods are silently ignored (per JSON-RPC spec)
+              break;
+          }
+        } catch (err) {
+          sendError(err);
+        }
+      }
+
       // --- Message Handler ---
       // Note: When the React renderer bundle is loaded, it sets window.__REACT_RENDERER_ACTIVE__
       // and the inline handlers should defer to React for render/theme/clear messages.
@@ -153,7 +229,17 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
           return;
         }
 
-        const { type, payload } = event.data || {};
+        var data = event.data || {};
+
+        // Handle JSON-RPC 2.0 messages
+        if (data.jsonrpc === '2.0') {
+          handleJsonRpc(data);
+          return;
+        }
+
+        // Legacy { type, payload } format
+        var type = data.type;
+        var payload = data.payload;
 
         try {
           switch (type) {
@@ -205,7 +291,8 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
               break;
 
             default:
-              console.warn('[frame] Unknown message type:', type);
+              // Ignore unknown legacy messages silently
+              break;
           }
         } catch (err) {
           sendError(err);
@@ -215,7 +302,8 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
       // --- Message Handlers ---
 
       function handlePing(payload) {
-        send('pong', {
+        // Legacy ping — send pong via JSON-RPC
+        sendRpc('nteract/pong', {
           receivedAt: Date.now(),
           echo: payload
         });
@@ -224,7 +312,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
       function handleEval(payload) {
         const { code } = payload || {};
         if (!code) {
-          send('eval_result', { success: false, error: 'No code provided' });
+          sendRpc('nteract/evalResult', { success: false, error: 'No code provided' });
           return;
         }
 
@@ -232,9 +320,9 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
         window.currentMessage = event;
         try {
           const result = eval.call(null, code);
-          send('eval_result', { success: true, result: String(result ?? 'undefined') });
+          sendRpc('nteract/evalResult', { success: true, result: String(result ?? 'undefined') });
         } catch (err) {
-          send('eval_result', { success: false, error: err.message });
+          sendRpc('nteract/evalResult', { success: false, error: err.message });
         } finally {
           delete window.currentMessage;
         }
@@ -309,7 +397,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
 
         // Notify completion
         requestAnimationFrame(function() {
-          send('render_complete', { height: document.body.scrollHeight });
+          sendRpc('nteract/renderComplete', { height: document.body.scrollHeight });
         });
       }
 
@@ -410,7 +498,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
         var caseSensitive = payload && payload.caseSensitive;
         clearSearchMarks();
         if (!query) {
-          send('search_results', { count: 0 });
+          sendRpc('nteract/searchResults', { count: 0 });
           return;
         }
         var marks = [];
@@ -446,7 +534,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
         }
         searchMarks = marks;
         currentSearchIndex = -1;
-        send('search_results', { count: marks.length });
+        sendRpc('nteract/searchResults', { count: marks.length });
       }
 
       function handleSearchNavigate(payload) {
@@ -482,12 +570,18 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
 
       // --- Utilities ---
 
+      // Send JSON-RPC 2.0 notification to parent
+      function sendRpc(method, params) {
+        window.parent.postMessage({ jsonrpc: '2.0', method: method, params: params }, '*');
+      }
+
+      // Legacy send for backward compat (unused after migration, kept for safety)
       function send(type, payload) {
         window.parent.postMessage({ type: type, payload: payload }, '*');
       }
 
       function sendError(err) {
-        send('error', {
+        sendRpc('nteract/error', {
           message: err.message || String(err),
           stack: err.stack
         });
@@ -508,7 +602,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
           resizeRafPending = false;
           if (window.__REACT_RENDERER_ACTIVE__) return;
           var height = document.body.scrollHeight;
-          send('resize', { height: height });
+          sendRpc('nteract/resize', { height: height });
         });
       });
       resizeObserver.observe(document.body);
@@ -518,7 +612,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
         const link = e.target.closest('a');
         if (link && link.href) {
           e.preventDefault();
-          send('link_click', {
+          sendRpc('nteract/linkClick', {
             url: link.href,
             newTab: e.metaKey || e.ctrlKey
           });
@@ -530,7 +624,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
         // Don't forward double-clicks on links (user is selecting text)
         const link = e.target.closest('a');
         if (!link) {
-          send('dblclick', null);
+          sendRpc('nteract/doubleClick', {});
         }
       });
 
@@ -548,7 +642,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
 
       // --- Ready Signal ---
       isReady = true;
-      send('ready', null);
+      sendRpc('nteract/ready', {});
     })();
   </script>
 </body>

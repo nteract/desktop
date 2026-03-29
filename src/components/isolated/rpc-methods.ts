@@ -30,13 +30,25 @@ export const NTERACT_COMM_SYNC = "nteract/commSync" as const;
 export const NTERACT_BRIDGE_READY = "nteract/bridgeReady" as const;
 export const NTERACT_WIDGET_STATE = "nteract/widgetState" as const;
 
+// Host → Iframe (Notifications) — additional
+export const NTERACT_THEME = "nteract/theme" as const;
+export const NTERACT_PING = "nteract/ping" as const;
+
 // Iframe → Host (Notifications)
+export const NTERACT_READY = "nteract/ready" as const;
+export const NTERACT_RENDERER_READY = "nteract/rendererReady" as const;
 export const NTERACT_RENDER_COMPLETE = "nteract/renderComplete" as const;
+export const NTERACT_RESIZE = "nteract/resize" as const;
+export const NTERACT_LINK_CLICK = "nteract/linkClick" as const;
 export const NTERACT_DOUBLE_CLICK = "nteract/doubleClick" as const;
+export const NTERACT_ERROR = "nteract/error" as const;
 export const NTERACT_WIDGET_READY = "nteract/widgetReady" as const;
 export const NTERACT_WIDGET_COMM_MSG = "nteract/widgetCommMsg" as const;
 export const NTERACT_WIDGET_COMM_CLOSE = "nteract/widgetCommClose" as const;
 export const NTERACT_WIDGET_UPDATE = "nteract/widgetUpdate" as const;
+export const NTERACT_EVAL_RESULT = "nteract/evalResult" as const;
+export const NTERACT_PONG = "nteract/pong" as const;
+export const NTERACT_SEARCH_RESULTS = "nteract/searchResults" as const;
 
 // ── Host → Iframe: Request Params & Results ─────────────────────────
 
