@@ -299,12 +299,23 @@ export async function approveTrustDialog(timeout = 15000) {
 export async function waitForKernelReadyWithTrust(timeout = 300000) {
   await waitForAppReady();
 
-  // Check if kernel is already ready (trusted notebook, or daemon auto-trust)
+  // Capture full app state for diagnostics
   const initialStatus = await getKernelStatus();
-  if (initialStatus === "idle" || initialStatus === "busy") {
-    console.log(
-      "[waitForKernelReadyWithTrust] Kernel already ready, no trust needed",
+  const bannerExists = await browser.execute(() => {
+    return !!document.querySelector(
+      '[data-testid="review-dependencies-button"]',
     );
+  });
+  const trustDialogExists = await browser.execute(() => {
+    return !!document.querySelector('[data-testid="trust-dialog"]');
+  });
+  console.log(
+    `[trust] Initial state: kernel=${initialStatus}, banner=${bannerExists}, dialog=${trustDialogExists}`,
+  );
+
+  // Check if kernel is already ready (trusted notebook, or daemon auto-trust)
+  if (initialStatus === "idle" || initialStatus === "busy") {
+    console.log("[trust] Kernel already ready, no trust needed");
     return false;
   }
 
@@ -316,13 +327,9 @@ export async function waitForKernelReadyWithTrust(timeout = 300000) {
     await reviewButton.waitForClickable({ timeout: 5000 });
     await reviewButton.click();
     trustTriggered = true;
-    console.log(
-      "[waitForKernelReadyWithTrust] Triggered trust dialog via banner",
-    );
-  } catch {
-    console.log(
-      "[waitForKernelReadyWithTrust] Banner not found, trying execute button",
-    );
+    console.log("[trust] Triggered trust dialog via banner");
+  } catch (e) {
+    console.log(`[trust] Banner not found after 30s: ${e.message}`);
   }
 
   // Fallback: try clicking execute to trigger trust check
@@ -334,19 +341,27 @@ export async function waitForKernelReadyWithTrust(timeout = 300000) {
       await executeButton.waitForClickable({ timeout: 10000 });
       await executeButton.click();
       trustTriggered = true;
-      console.log(
-        "[waitForKernelReadyWithTrust] Triggered trust dialog via execute",
-      );
-    } catch {
-      console.log("[waitForKernelReadyWithTrust] Execute fallback also failed");
+      console.log("[trust] Triggered trust dialog via execute");
+    } catch (e) {
+      console.log(`[trust] Execute fallback also failed: ${e.message}`);
     }
   }
+
+  // Log state after trigger attempt
+  const postTriggerStatus = await getKernelStatus();
+  const postTriggerDialog = await browser.execute(() => {
+    return !!document.querySelector('[data-testid="trust-dialog"]');
+  });
+  console.log(
+    `[trust] After trigger: kernel=${postTriggerStatus}, dialog=${postTriggerDialog}`,
+  );
 
   // Try to approve the trust dialog if it appears
   let trustApproved = false;
   try {
     const dialog = await $('[data-testid="trust-dialog"]');
     await dialog.waitForExist({ timeout: 30000 });
+    console.log("[trust] Trust dialog found, approving...");
     const approveButton = await $('[data-testid="trust-approve-button"]');
     await approveButton.waitForEnabled({ timeout: 30000 });
     await approveButton.waitForClickable({ timeout: 5000 });
@@ -356,26 +371,37 @@ export async function waitForKernelReadyWithTrust(timeout = 300000) {
       interval: 300,
     });
     trustApproved = true;
-    console.log("[waitForKernelReadyWithTrust] Trust dialog approved");
-  } catch {
-    console.log(
-      "[waitForKernelReadyWithTrust] Trust dialog did not appear or approval failed",
-    );
+    console.log("[trust] Trust dialog approved successfully");
+  } catch (e) {
+    console.log(`[trust] Trust dialog not approved: ${e.message}`);
   }
 
-  // Now wait for kernel to become ready (env creation can take minutes)
+  // Log kernel status periodically during the wait
+  const startTime = Date.now();
+  let lastLog = 0;
   await browser.waitUntil(
     async () => {
       const status = await getKernelStatus();
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      if (elapsed - lastLog >= 30) {
+        console.log(
+          `[trust] Waiting for kernel: status=${status} (${elapsed}s)`,
+        );
+        lastLog = elapsed;
+      }
       return status === "idle" || status === "busy";
     },
     {
       timeout,
       interval: 500,
-      timeoutMsg: `Kernel not ready within ${timeout / 1000}s`,
+      timeoutMsg: `Kernel not ready within ${timeout / 1000}s (trustApproved=${trustApproved})`,
     },
   );
 
+  const finalStatus = await getKernelStatus();
+  console.log(
+    `[trust] Kernel ready: status=${finalStatus}, trustApproved=${trustApproved}`,
+  );
   return trustApproved;
 }
 
