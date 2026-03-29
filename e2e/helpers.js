@@ -270,12 +270,14 @@ export async function approveTrustDialog(timeout = 15000) {
   await approveButton.waitForClickable({ timeout: 5000 });
   await approveButton.click();
 
-  // Wait for dialog to close
+  // Wait for dialog to close — approveTrust() does two daemon IPCs
+  // (approve_notebook_trust + checkTrust re-verify) which can take 10-20s
+  // when the daemon is busy with pool warming or env creation.
   await browser.waitUntil(
     async () => {
       return !(await dialog.isExisting());
     },
-    { timeout: 10000, interval: 300, timeoutMsg: "Trust dialog did not close" },
+    { timeout: 30000, interval: 300, timeoutMsg: "Trust dialog did not close" },
   );
 
   return true;

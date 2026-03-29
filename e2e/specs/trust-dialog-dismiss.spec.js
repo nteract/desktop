@@ -71,15 +71,16 @@ describe("Trust Dialog Dismiss", () => {
     await approveButton.click();
     console.log("[trust-dialog-dismiss] Clicked approve button");
 
-    // Dialog should close QUICKLY (within 10 seconds) - this is the key assertion.
-    // If it waited for kernel launch, this would take 30-120s+ (env creation).
-    // The 10s budget accounts for CI variability: Tauri IPC round-trip to daemon
-    // for approve_notebook_trust + checkTrust() re-verify + React re-render.
+    // Dialog should close QUICKLY — this is the key assertion.
+    // If it waited for kernel launch, this would take 60-300s+ (env creation).
+    // The 20s budget accounts for CI variability: approveTrust() makes two
+    // daemon IPCs (approve_notebook_trust + checkTrust re-verify) which can
+    // take 10-15s when the daemon is busy with pool warming.
     await browser.waitUntil(async () => !(await dialog.isExisting()), {
-      timeout: 10000,
+      timeout: 20000,
       interval: 100,
       timeoutMsg:
-        "Trust dialog did not close within 10s - may be waiting for kernel launch (regression #515)",
+        "Trust dialog did not close within 20s - may be waiting for kernel launch (regression #515)",
     });
 
     const closeTime = Date.now();
