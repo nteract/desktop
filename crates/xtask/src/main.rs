@@ -77,8 +77,7 @@ fn main() {
                 .windows(2)
                 .find(|w| w[0] == "--output")
                 .map(|w| w[1].as_str());
-            let universal = args.iter().any(|a| a == "--universal");
-            cmd_mcpb(output, universal);
+            cmd_mcpb(output);
         }
         "--help" | "-h" | "help" => print_help(),
         cmd => {
@@ -134,7 +133,6 @@ Other:
   icons [source.png]         Generate icon variants
   mcpb                       Package nteract as a Claude Desktop extension (.mcpb)
   mcpb --output <path>       Write the .mcpb archive to a custom path (default: nteract.mcpb)
-  mcpb --universal           Build a universal macOS binary (arm64 + x86_64)
   help                       Show this help
 "
     );
@@ -2007,76 +2005,23 @@ fn exit_on_failed_status(label: &str, status: ExitStatus) {
 ///   manifest.json   — metadata and server entry point
 ///   icon.png        — 512×512 light-theme icon
 ///   icon-dark.png   — 512×512 dark-theme icon
-///   server/nteract  — the nteract MCP server binary (mcp-supervisor)
 ///
-/// NOTE: The entry point will switch to `server/runt` with `["mcp"]` arguments
-/// once the `runt mcp` subcommand (issue #1261) is implemented.
-fn cmd_mcpb(output: Option<&str>, universal: bool) {
+/// The server is NOT bundled as a binary. Instead the manifest instructs
+/// Claude Desktop to invoke `uvx nteract` — the nteract MCP server is
+/// distributed as a Python package on PyPI and fetched on first use.
+fn cmd_mcpb(output: Option<&str>) {
     let output_path = output.unwrap_or("nteract.mcpb");
     let version = read_package_version("runtimed");
 
-    // ── 1. Build the nteract MCP server binary ───────────────────────────────
-    // TODO(#1261): switch to `runt-cli` once `runt mcp` is implemented.
-    if universal {
-        #[cfg(target_os = "macos")]
-        build_universal_macos_binary("mcp-supervisor");
-        #[cfg(not(target_os = "macos"))]
-        {
-            eprintln!("--universal is only supported on macOS");
-            exit(1);
-        }
-    } else {
-        println!("Building nteract MCP server (release)...");
-        run_cmd("cargo", &["build", "--release", "-p", "mcp-supervisor"]);
-    }
-
-    // ── 2. Create a staging directory ───────────────────────────────────────
-    let staging_dir = std::env::temp_dir().join(format!("nteract-mcpb-{}", std::process::id()));
-    let server_dir = staging_dir.join("server");
-    fs::create_dir_all(&server_dir).unwrap_or_else(|e| {
+    // ── 1. Create a staging directory ───────────────────────────────────────
+    let staging_dir =
+        std::env::temp_dir().join(format!("nteract-mcpb-{}", std::process::id()));
+    fs::create_dir_all(&staging_dir).unwrap_or_else(|e| {
         eprintln!("Failed to create staging directory: {e}");
         exit(1);
     });
 
-    // ── 3. Copy binary into server/ ─────────────────────────────────────────
-    let (binary_src, binary_dst_name) = if cfg!(windows) {
-        ("target/release/mcp-supervisor.exe", "nteract.exe")
-    } else {
-        ("target/release/mcp-supervisor", "nteract")
-    };
-
-    if universal {
-        #[cfg(target_os = "macos")]
-        {
-            // The universal lipo output is written to a fixed path by
-            // build_universal_macos_binary(); copy it into the bundle.
-            let lipo_out = "target/universal-apple-darwin/mcp-supervisor";
-            fs::copy(lipo_out, server_dir.join(binary_dst_name)).unwrap_or_else(|e| {
-                eprintln!("Failed to copy universal binary: {e}");
-                exit(1);
-            });
-        }
-    } else {
-        fs::copy(binary_src, server_dir.join(binary_dst_name)).unwrap_or_else(|e| {
-            eprintln!("Failed to copy binary: {e}");
-            exit(1);
-        });
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(
-            server_dir.join(binary_dst_name),
-            fs::Permissions::from_mode(0o755),
-        )
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to set binary permissions: {e}");
-            exit(1);
-        });
-    }
-
-    // ── 4. Copy icons ────────────────────────────────────────────────────────
+    // ── 2. Copy icons ────────────────────────────────────────────────────────
     // Prefer source.png (full-resolution source); fall back to icon.png.
     let light_src = if Path::new("crates/notebook/icons/source.png").exists() {
         "crates/notebook/icons/source.png"
@@ -2104,13 +2049,9 @@ fn cmd_mcpb(output: Option<&str>, universal: bool) {
         exit(1);
     });
 
-    // ── 5. Write manifest.json ───────────────────────────────────────────────
-    let entry_point = if cfg!(windows) {
-        "server/nteract.exe"
-    } else {
-        "server/nteract"
-    };
-
+    // ── 3. Write manifest.json ───────────────────────────────────────────────
+    // The server is invoked via `uvx nteract` — no binary is bundled.
+    // uvx fetches and runs the `nteract` PyPI package on first use.
     let manifest = serde_json::json!({
         "manifest_version": "0.3",
         "name": "nteract",
@@ -2124,11 +2065,10 @@ fn cmd_mcpb(output: Option<&str>, universal: bool) {
         "repository": "https://github.com/nteract/desktop",
         "license": "BSD-3-Clause",
         "server": {
-            "type": "binary",
-            "entry_point": entry_point,
+            "type": "stdio",
             "mcp_config": {
-                "command": entry_point,
-                "arguments": []
+                "command": "uvx",
+                "arguments": ["nteract"]
             }
         },
         "icons": [
@@ -2148,7 +2088,7 @@ fn cmd_mcpb(output: Option<&str>, universal: bool) {
         exit(1);
     });
 
-    // ── 6. Create ZIP archive ────────────────────────────────────────────────
+    // ── 4. Create ZIP archive ────────────────────────────────────────────────
     // Resolve the output path to an absolute path before changing directories.
     let abs_output = if Path::new(output_path).is_absolute() {
         Path::new(output_path).to_path_buf()
@@ -2182,67 +2122,10 @@ fn cmd_mcpb(output: Option<&str>, universal: bool) {
         exit(1);
     }
 
-    // ── 7. Cleanup staging dir ───────────────────────────────────────────────
+    // ── 5. Cleanup staging dir ───────────────────────────────────────────────
     let _ = fs::remove_dir_all(&staging_dir);
 
     println!("Done: {}", abs_output.display());
-}
-
-/// Build a universal macOS binary (arm64 + x86_64) via lipo.
-///
-/// Requires both cross-compilation targets to be installed:
-///   rustup target add aarch64-apple-darwin x86_64-apple-darwin
-///
-/// The merged binary is written to `target/universal-apple-darwin/<package>`.
-#[cfg(target_os = "macos")]
-fn build_universal_macos_binary(package: &str) {
-    println!("Building {package} for aarch64-apple-darwin...");
-    run_cmd(
-        "cargo",
-        &[
-            "build",
-            "--release",
-            "-p",
-            package,
-            "--target",
-            "aarch64-apple-darwin",
-        ],
-    );
-
-    println!("Building {package} for x86_64-apple-darwin...");
-    run_cmd(
-        "cargo",
-        &[
-            "build",
-            "--release",
-            "-p",
-            package,
-            "--target",
-            "x86_64-apple-darwin",
-        ],
-    );
-
-    let out_dir = Path::new("target/universal-apple-darwin");
-    fs::create_dir_all(out_dir).unwrap_or_else(|e| {
-        eprintln!("Failed to create universal output directory: {e}");
-        exit(1);
-    });
-
-    let arm_bin = format!("target/aarch64-apple-darwin/release/{package}");
-    let x86_bin = format!("target/x86_64-apple-darwin/release/{package}");
-    let out_bin = out_dir.join(package);
-
-    println!("Creating universal binary with lipo...");
-    run_cmd(
-        "lipo",
-        &[
-            "-create",
-            "-output",
-            &out_bin.to_string_lossy(),
-            &arm_bin,
-            &x86_bin,
-        ],
-    );
 }
 
 /// Read the version of a workspace package from `cargo metadata`.
