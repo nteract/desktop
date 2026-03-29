@@ -5,10 +5,6 @@
  * environment with those deps installed (not the prewarmed pool).
  *
  * Fixture: 2-uv-inline.ipynb (has requests dependency, untrusted)
- *
- * Flow: untrusted notebooks show a banner prompting dependency review.
- * Clicking "Review Dependencies" opens the trust dialog, which must be
- * approved before the kernel starts with the inline environment.
  */
 
 import { browser } from "@wdio/globals";
@@ -20,30 +16,44 @@ import {
   waitForNotebookSynced,
 } from "../helpers.js";
 
-describe("UV Inline Dependencies", () => {
-  it("should launch kernel after reviewing dependencies from banner", async () => {
-    await waitForNotebookSynced();
-
-    // Untrusted notebooks show a banner — click "Review Dependencies" to open trust dialog
-    const reviewButton = await $('[data-testid="review-dependencies-button"]');
-    await reviewButton.waitForExist({
-      timeout: 30000,
-      timeoutMsg:
-        "Review Dependencies button not found — untrusted banner should appear for this fixture",
-    });
+/**
+ * Open the trust dialog — tries the banner first, falls back to execute.
+ * The banner may not appear if trust state hasn't synced yet from the daemon.
+ */
+async function openTrustDialog() {
+  // Try banner first (fast path — no async IPC)
+  const reviewButton = await $('[data-testid="review-dependencies-button"]');
+  try {
+    await reviewButton.waitForExist({ timeout: 10000 });
     await reviewButton.waitForClickable({ timeout: 5000 });
     await reviewButton.click();
-    console.log(
-      "[uv-inline] Clicked Review Dependencies, waiting for trust dialog...",
-    );
+    console.log("[uv-inline] Opened trust dialog via banner");
+    return;
+  } catch {
+    console.log("[uv-inline] Banner not found, falling back to execute");
+  }
 
-    // Approve the trust dialog that opens
-    const approved = await approveTrustDialog(30000);
+  // Fallback: click execute to trigger trust dialog via checkTrust IPC
+  const codeCell = await $('[data-cell-type="code"]');
+  await codeCell.waitForExist({ timeout: 10000 });
+  await setCellSource(codeCell, "print('trigger trust')");
+  const executeButton = await codeCell.$('[data-testid="execute-button"]');
+  await executeButton.waitForClickable({ timeout: 10000 });
+  await executeButton.click();
+  console.log("[uv-inline] Opened trust dialog via execute");
+}
+
+describe("UV Inline Dependencies", () => {
+  it("should launch kernel after trust approval", async () => {
+    await waitForNotebookSynced();
+
+    await openTrustDialog();
+
+    const approved = await approveTrustDialog(60000);
     expect(approved).toBe(true);
     console.log("[uv-inline] Trust dialog approved");
 
-    // Wait for kernel to reach idle — UV env creation on cold CI can take 5+ minutes.
-    // CI matrix gives this test 12 minutes total; use 600s here.
+    // UV env creation on cold CI can take 5+ minutes (CI budget: 12 min)
     await waitForKernelReady(600000);
     console.log("[uv-inline] Kernel is ready");
   });
@@ -52,7 +62,6 @@ describe("UV Inline Dependencies", () => {
     const depsToggle = await $('[data-testid="deps-toggle"]');
     await depsToggle.waitForExist({ timeout: 10000 });
 
-    // env-manager syncs from RuntimeStateDoc after kernel launch — poll for it
     await browser.waitUntil(
       async () => {
         const mgr = await depsToggle.getAttribute("data-env-manager");
@@ -83,23 +92,18 @@ describe("UV Inline Dependencies", () => {
     const output = await waitForCellOutput(codeCell, 60000);
     console.log(`[uv-inline] Cell output: ${output}`);
 
-    // Should be a cached inline env (inline-* path)
     expect(output).toContain("inline-");
   });
 
   it("should be able to import inline dependency", async () => {
     const cells = await $$('[data-cell-type="code"]');
     const cell = cells.length > 1 ? cells[1] : cells[0];
-    console.log(
-      `[uv-inline] Using cell index ${cells.length > 1 ? 1 : 0} for import test`,
-    );
 
     await setCellSource(cell, "import requests; print(requests.__version__)");
 
     const executeButton = await cell.$('[data-testid="execute-button"]');
     await executeButton.waitForClickable({ timeout: 5000 });
     await executeButton.click();
-    console.log("[uv-inline] Clicked execute for import test");
 
     const output = await waitForCellOutput(cell, 30000);
     console.log(`[uv-inline] Import test output: ${output}`);

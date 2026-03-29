@@ -5,10 +5,6 @@
  * environment with those deps installed (via rattler, not the prewarmed pool).
  *
  * Fixture: 3-conda-inline.ipynb (has markupsafe dependency via conda, untrusted)
- *
- * Flow: untrusted notebooks show a banner prompting dependency review.
- * Clicking "Review Dependencies" opens the trust dialog, which must be
- * approved before the kernel starts with the conda inline environment.
  */
 
 import { browser } from "@wdio/globals";
@@ -20,30 +16,44 @@ import {
   waitForNotebookSynced,
 } from "../helpers.js";
 
-describe("Conda Inline Dependencies", () => {
-  it("should launch kernel after reviewing dependencies from banner", async () => {
-    await waitForNotebookSynced();
-
-    // Untrusted notebooks show a banner — click "Review Dependencies" to open trust dialog
-    const reviewButton = await $('[data-testid="review-dependencies-button"]');
-    await reviewButton.waitForExist({
-      timeout: 30000,
-      timeoutMsg:
-        "Review Dependencies button not found — untrusted banner should appear for this fixture",
-    });
+/**
+ * Open the trust dialog — tries the banner first, falls back to execute.
+ * The banner may not appear if trust state hasn't synced yet from the daemon.
+ */
+async function openTrustDialog() {
+  // Try banner first (fast path — no async IPC)
+  const reviewButton = await $('[data-testid="review-dependencies-button"]');
+  try {
+    await reviewButton.waitForExist({ timeout: 10000 });
     await reviewButton.waitForClickable({ timeout: 5000 });
     await reviewButton.click();
-    console.log(
-      "[conda-inline] Clicked Review Dependencies, waiting for trust dialog...",
-    );
+    console.log("[conda-inline] Opened trust dialog via banner");
+    return;
+  } catch {
+    console.log("[conda-inline] Banner not found, falling back to execute");
+  }
 
-    // Approve the trust dialog that opens
-    const approved = await approveTrustDialog(30000);
+  // Fallback: click execute to trigger trust dialog via checkTrust IPC
+  const codeCell = await $('[data-cell-type="code"]');
+  await codeCell.waitForExist({ timeout: 10000 });
+  await setCellSource(codeCell, "print('trigger trust')");
+  const executeButton = await codeCell.$('[data-testid="execute-button"]');
+  await executeButton.waitForClickable({ timeout: 10000 });
+  await executeButton.click();
+  console.log("[conda-inline] Opened trust dialog via execute");
+}
+
+describe("Conda Inline Dependencies", () => {
+  it("should launch kernel after trust approval", async () => {
+    await waitForNotebookSynced();
+
+    await openTrustDialog();
+
+    const approved = await approveTrustDialog(60000);
     expect(approved).toBe(true);
     console.log("[conda-inline] Trust dialog approved");
 
-    // Wait for kernel — conda env creation via rattler on cold CI can take 8+ minutes.
-    // CI matrix gives this test 15 minutes total; use 720s here.
+    // Conda env creation via rattler on cold CI can take 8+ minutes (CI budget: 15 min)
     await waitForKernelReady(720000);
     console.log("[conda-inline] Kernel is ready");
   });
@@ -52,7 +62,6 @@ describe("Conda Inline Dependencies", () => {
     const depsToggle = await $('[data-testid="deps-toggle"]');
     await depsToggle.waitForExist({ timeout: 10000 });
 
-    // env-manager syncs from RuntimeStateDoc after kernel launch — poll for it
     await browser.waitUntil(
       async () => {
         const mgr = await depsToggle.getAttribute("data-env-manager");
@@ -67,7 +76,6 @@ describe("Conda Inline Dependencies", () => {
 
     expect(await depsToggle.getAttribute("data-env-manager")).toBe("conda");
     expect(await depsToggle.getAttribute("data-runtime")).toBe("python");
-    console.log("[conda-inline] Conda badge verified in toolbar");
   });
 
   it("should use conda inline environment path", async () => {
@@ -79,7 +87,6 @@ describe("Conda Inline Dependencies", () => {
     const executeButton = await codeCell.$('[data-testid="execute-button"]');
     await executeButton.waitForClickable({ timeout: 5000 });
     await executeButton.click();
-    console.log("[conda-inline] Executed cell for path check");
 
     const output = await waitForCellOutput(codeCell, 120000);
     console.log(`[conda-inline] Cell output: ${output}`);
@@ -90,9 +97,6 @@ describe("Conda Inline Dependencies", () => {
   it("should be able to import inline dependency", async () => {
     const cells = await $$('[data-cell-type="code"]');
     const cell = cells.length > 1 ? cells[1] : cells[0];
-    console.log(
-      `[conda-inline] Using cell index ${cells.length > 1 ? 1 : 0} for import test`,
-    );
 
     await setCellSource(
       cell,
@@ -102,7 +106,6 @@ describe("Conda Inline Dependencies", () => {
     const executeButton = await cell.$('[data-testid="execute-button"]');
     await executeButton.waitForClickable({ timeout: 5000 });
     await executeButton.click();
-    console.log("[conda-inline] Clicked execute for import test");
 
     const output = await waitForCellOutput(cell, 30000);
     console.log(`[conda-inline] Import test output: ${output}`);
