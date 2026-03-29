@@ -1065,6 +1065,7 @@ impl ServerHandler for Supervisor {
             capabilities: ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
+                .enable_resources_list_changed()
                 .build(),
             server_info: Implementation {
                 name: "nteract-dev".into(),
