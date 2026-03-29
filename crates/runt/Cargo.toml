@@ -24,7 +24,9 @@ runtimelib = { workspace = true, features = ["tokio-runtime", "aws-lc-rs"] }
 runtimed-client = { path = "../runtimed-client" }
 notebook-doc = { path = "../notebook-doc", features = ["persistence"] }
 runt-workspace = { path = "../runt-workspace" }
+runt-mcp = { path = "../runt-mcp" }
 kernel-env = { path = "../kernel-env" }
+rmcp = { version = "0.16", features = ["server", "transport-io"] }
 clap = { version = "4.5.1", features = ["derive", "color"] }
 colored = "2"
 tokio = { version = "1", features = ["full"] }

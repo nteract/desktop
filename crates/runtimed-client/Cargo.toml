@@ -20,6 +20,9 @@ thiserror = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 log = "0.4"
 dirs = "5"
+base64 = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+uuid = { workspace = true }
 automerge = "0.7"
 schemars = { workspace = true }
 ts-rs = { workspace = true }
