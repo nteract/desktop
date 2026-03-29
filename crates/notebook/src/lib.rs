@@ -13,6 +13,7 @@ pub mod trust;
 pub mod typosquat;
 pub mod uv_env;
 
+extern crate runtimed_client as runtimed;
 pub use runtimed::runtime::Runtime;
 
 use notebook_protocol::protocol::{

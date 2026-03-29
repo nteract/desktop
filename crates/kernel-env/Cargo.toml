@@ -9,6 +9,20 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["runtime"]
+runtime = [
+    "dep:kernel-launch",
+    "dep:rattler",
+    "dep:rattler_cache",
+    "dep:rattler_conda_types",
+    "dep:rattler_repodata_gateway",
+    "dep:rattler_solve",
+    "dep:rattler_virtual_packages",
+    "dep:reqwest",
+    "dep:reqwest-middleware",
+]
+
 [dependencies]
 anyhow = { workspace = true }
 tokio = { workspace = true }
@@ -21,17 +35,17 @@ sha2 = "0.10"
 hex = "0.4"
 
 # Tool bootstrapping (get_uv_path)
-kernel-launch = { path = "../kernel-launch" }
+kernel-launch = { path = "../kernel-launch", optional = true }
 
 # Conda environment support via rattler
-rattler = { version = "0.39", default-features = false, features = ["native-tls"] }
-rattler_cache = { version = "0.6", default-features = false, features = ["native-tls"] }
-rattler_conda_types = "0.43"
-rattler_repodata_gateway = { version = "0.25", default-features = false, features = ["gateway", "native-tls"] }
-rattler_solve = { version = "4.2", features = ["resolvo"] }
-rattler_virtual_packages = "2.3"
-reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
-reqwest-middleware = "0.4"
+rattler = { version = "0.39", default-features = false, features = ["native-tls"], optional = true }
+rattler_cache = { version = "0.6", default-features = false, features = ["native-tls"], optional = true }
+rattler_conda_types = { version = "0.43", optional = true }
+rattler_repodata_gateway = { version = "0.25", default-features = false, features = ["gateway", "native-tls"], optional = true }
+rattler_solve = { version = "4.2", features = ["resolvo"], optional = true }
+rattler_virtual_packages = { version = "2.3", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["native-tls"], optional = true }
+reqwest-middleware = { version = "0.4", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

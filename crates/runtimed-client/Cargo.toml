@@ -1,0 +1,34 @@
+[package]
+name = "runtimed-client"
+version = "2.0.4"
+edition.workspace = true
+description = "Client library for communicating with the runtimed daemon"
+repository.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+notebook-protocol = { path = "../notebook-protocol" }
+notebook-doc = { path = "../notebook-doc" }
+runt-workspace = { path = "../runt-workspace" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+log = "0.4"
+dirs = "5"
+automerge = "0.7"
+schemars = { workspace = true }
+ts-rs = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+
+[dev-dependencies]
+tempfile = "3"

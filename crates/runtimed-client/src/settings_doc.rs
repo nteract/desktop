@@ -735,7 +735,7 @@ impl SettingsDoc {
     ///
     /// Only updates fields that are **present** in the JSON and **differ** from
     /// the current document state. Returns `true` if any field was modified.
-    pub(crate) fn apply_json_changes(&mut self, json: &serde_json::Value) -> bool {
+    pub fn apply_json_changes(&mut self, json: &serde_json::Value) -> bool {
         let mut changed = false;
 
         // Scalar fields — only update if present in JSON and different

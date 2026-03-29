@@ -11,6 +11,7 @@ members = [
     "crates/notebook-sync",
     "crates/xtask",
     "crates/runtimed",
+    "crates/runtimed-client",
     "crates/runtimed-py",
     "crates/runtimed-wasm",
     "crates/mcp-supervisor",

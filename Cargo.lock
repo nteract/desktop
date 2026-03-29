@@ -3696,7 +3696,7 @@ dependencies = [
  "rfd 0.17.2",
  "runt-trust",
  "runt-workspace",
- "runtimed",
+ "runtimed-client",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -3753,7 +3753,7 @@ dependencies = [
  "log",
  "notebook-doc",
  "notebook-protocol",
- "runtimed",
+ "runtimed-client",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -5906,7 +5906,7 @@ dependencies = [
  "petname",
  "rpassword",
  "runt-workspace",
- "runtimed",
+ "runtimed-client",
  "runtimelib",
  "serde",
  "serde_json",
@@ -5988,6 +5988,7 @@ dependencies = [
  "reqwest-middleware",
  "runt-trust",
  "runt-workspace",
+ "runtimed-client",
  "runtimelib",
  "schemars 1.2.1",
  "serde",
@@ -5999,6 +6000,28 @@ dependencies = [
  "tokio",
  "ts-rs",
  "uuid",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "runtimed-client"
+version = "2.0.4"
+dependencies = [
+ "automerge",
+ "chrono",
+ "dirs 5.0.1",
+ "libc",
+ "log",
+ "notebook-doc",
+ "notebook-protocol",
+ "runt-workspace",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "ts-rs",
  "windows-sys 0.52.0",
 ]
 
@@ -6016,7 +6039,7 @@ dependencies = [
  "pyo3-async-runtimes",
  "reqwest 0.12.28",
  "runt-workspace",
- "runtimed",
+ "runtimed-client",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",

@@ -4,6 +4,7 @@
 //! - `NativeAsyncClient`: Async daemon operations (status, ping, list active notebooks)
 //! - `AsyncSession`: Async notebook interaction with kernel management
 
+extern crate runtimed_client as runtimed;
 use pyo3::prelude::*;
 use std::path::PathBuf;
 
