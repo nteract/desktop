@@ -105,7 +105,7 @@ fn clean_scenario_dir(name: &str) -> PathBuf {
 }
 
 /// Store a manifest JSON file in the fixture's blobs/ directory, named by hash.
-fn store_manifest_file(dir: &PathBuf, hash: &str, manifest_json: &str) {
+fn store_manifest_file(dir: &std::path::Path, hash: &str, manifest_json: &str) {
     let blobs_dir = dir.join("blobs");
     fs::create_dir_all(&blobs_dir).unwrap();
     fs::write(blobs_dir.join(hash), manifest_json).unwrap();
@@ -186,7 +186,7 @@ fn scenario_output_streaming() {
     let broadcast_frames: Vec<Vec<u8>> = output_manifests
         .iter()
         .enumerate()
-        .map(|(i, (hash, manifest_json))| {
+        .map(|(i, (_hash, manifest_json))| {
             make_broadcast_frame(&json!({
                 "type": "Output",
                 "cell_id": "cell-1",

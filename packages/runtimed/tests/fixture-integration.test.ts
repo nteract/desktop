@@ -72,10 +72,12 @@ function resolveOutputManifest(
 }
 
 /** Resolve an inline ContentRef to its string value. */
-function resolveInline(ref: unknown): string {
-  const r = ref as Record<string, unknown>;
+function resolveInline(contentRef: unknown): string {
+  const r = contentRef as Record<string, unknown>;
   if ("inline" in r) return r.inline as string;
-  throw new Error(`Expected inline ContentRef, got: ${JSON.stringify(ref)}`);
+  throw new Error(
+    `Expected inline ContentRef, got: ${JSON.stringify(contentRef)}`,
+  );
 }
 
 // ── WASM server handle adapter ──────────────────────────────────────
