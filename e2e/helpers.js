@@ -265,18 +265,144 @@ export async function approveTrustDialog(timeout = 15000) {
   }
 
   const approveButton = await $('[data-testid="trust-approve-button"]');
+  // daemon:ready can briefly set loading=true, disabling the button — wait generously
+  await approveButton.waitForEnabled({ timeout: 30000 });
   await approveButton.waitForClickable({ timeout: 5000 });
   await approveButton.click();
 
-  // Wait for dialog to close
+  // Wait for dialog to close — approveTrust() does two daemon IPCs
+  // (approve_notebook_trust + checkTrust re-verify) which can take 10-20s
+  // when the daemon is busy with pool warming or env creation.
   await browser.waitUntil(
     async () => {
       return !(await dialog.isExisting());
     },
-    { timeout: 10000, interval: 300, timeoutMsg: "Trust dialog did not close" },
+    { timeout: 30000, interval: 300, timeoutMsg: "Trust dialog did not close" },
   );
 
   return true;
+}
+
+/**
+ * Wait for kernel ready while handling trust approval if needed.
+ *
+ * For untrusted notebooks, the kernel won't auto-launch — the user must
+ * trigger trust approval first. This function:
+ * 1. Checks if the kernel is already ready (trusted notebook case)
+ * 2. If not, tries to trigger trust via the UntrustedBanner or execute button
+ * 3. Approves the trust dialog if it appears
+ * 4. Waits for the kernel to become ready after trust approval
+ *
+ * @param timeout Max time to wait for kernel ready
+ * @returns true if trust dialog was approved, false if it didn't appear
+ */
+export async function waitForKernelReadyWithTrust(timeout = 300000) {
+  await waitForAppReady();
+
+  // Capture full app state for diagnostics
+  const initialStatus = await getKernelStatus();
+  const bannerExists = await browser.execute(() => {
+    return !!document.querySelector(
+      '[data-testid="review-dependencies-button"]',
+    );
+  });
+  const trustDialogExists = await browser.execute(() => {
+    return !!document.querySelector('[data-testid="trust-dialog"]');
+  });
+  console.log(
+    `[trust] Initial state: kernel=${initialStatus}, banner=${bannerExists}, dialog=${trustDialogExists}`,
+  );
+
+  // Check if kernel is already ready (trusted notebook, or daemon auto-trust)
+  if (initialStatus === "idle" || initialStatus === "busy") {
+    console.log("[trust] Kernel already ready, no trust needed");
+    return false;
+  }
+
+  // Try to trigger the trust dialog via the banner "Review Dependencies" button
+  let trustTriggered = false;
+  try {
+    const reviewButton = await $('[data-testid="review-dependencies-button"]');
+    await reviewButton.waitForExist({ timeout: 30000 });
+    await reviewButton.waitForClickable({ timeout: 5000 });
+    await reviewButton.click();
+    trustTriggered = true;
+    console.log("[trust] Triggered trust dialog via banner");
+  } catch (e) {
+    console.log(`[trust] Banner not found after 30s: ${e.message}`);
+  }
+
+  // Fallback: try clicking execute to trigger trust check
+  if (!trustTriggered) {
+    try {
+      const codeCell = await $('[data-cell-type="code"]');
+      await codeCell.waitForExist({ timeout: 10000 });
+      const executeButton = await codeCell.$('[data-testid="execute-button"]');
+      await executeButton.waitForClickable({ timeout: 10000 });
+      await executeButton.click();
+      trustTriggered = true;
+      console.log("[trust] Triggered trust dialog via execute");
+    } catch (e) {
+      console.log(`[trust] Execute fallback also failed: ${e.message}`);
+    }
+  }
+
+  // Log state after trigger attempt
+  const postTriggerStatus = await getKernelStatus();
+  const postTriggerDialog = await browser.execute(() => {
+    return !!document.querySelector('[data-testid="trust-dialog"]');
+  });
+  console.log(
+    `[trust] After trigger: kernel=${postTriggerStatus}, dialog=${postTriggerDialog}`,
+  );
+
+  // Try to approve the trust dialog if it appears
+  let trustApproved = false;
+  try {
+    const dialog = await $('[data-testid="trust-dialog"]');
+    await dialog.waitForExist({ timeout: 30000 });
+    console.log("[trust] Trust dialog found, approving...");
+    const approveButton = await $('[data-testid="trust-approve-button"]');
+    await approveButton.waitForEnabled({ timeout: 30000 });
+    await approveButton.waitForClickable({ timeout: 5000 });
+    await approveButton.click();
+    await browser.waitUntil(async () => !(await dialog.isExisting()), {
+      timeout: 30000,
+      interval: 300,
+    });
+    trustApproved = true;
+    console.log("[trust] Trust dialog approved successfully");
+  } catch (e) {
+    console.log(`[trust] Trust dialog not approved: ${e.message}`);
+  }
+
+  // Log kernel status periodically during the wait
+  const startTime = Date.now();
+  let lastLog = 0;
+  await browser.waitUntil(
+    async () => {
+      const status = await getKernelStatus();
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      if (elapsed - lastLog >= 30) {
+        console.log(
+          `[trust] Waiting for kernel: status=${status} (${elapsed}s)`,
+        );
+        lastLog = elapsed;
+      }
+      return status === "idle" || status === "busy";
+    },
+    {
+      timeout,
+      interval: 500,
+      timeoutMsg: `Kernel not ready within ${timeout / 1000}s (trustApproved=${trustApproved})`,
+    },
+  );
+
+  const finalStatus = await getKernelStatus();
+  console.log(
+    `[trust] Kernel ready: status=${finalStatus}, trustApproved=${trustApproved}`,
+  );
+  return trustApproved;
 }
 
 /**

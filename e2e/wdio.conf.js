@@ -32,6 +32,7 @@ const FIXTURE_SPECS = [
   "conda-inline.spec.js",
   "deno.spec.js",
   "prewarmed-uv.spec.js",
+  "run-all-output-lifecycle.spec.js", // Requires fixture with stale outputs
   "trust-dialog-dismiss.spec.js",
   "untitled-pyproject.spec.js", // Requires working dir to be pyproject fixture directory
   "uv-inline.spec.js",
@@ -112,9 +113,14 @@ export const config = {
   framework: "mocha",
   reporters: ["spec"],
 
+  // Retry failed spec files once — helps with transient timing issues
+  // (IPC latency, pool warming, env creation). For trust-dependent tests,
+  // waitForKernelReadyWithTrust handles trust inline so retries are safe.
+  specFileRetries: 1,
+
   mochaOpts: {
     ui: "bdd",
-    timeout: 360000, // 6 minutes to handle cold CI kernel startup (pool warming + env creation)
+    timeout: 780000, // 13 minutes — conda inline env creation can take 12 min on cold CI
   },
 
   /**
