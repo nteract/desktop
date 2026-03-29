@@ -28,7 +28,6 @@ import {
   NTERACT_EVAL_RESULT,
   NTERACT_LINK_CLICK,
   NTERACT_PING,
-  NTERACT_PONG,
   NTERACT_RENDER_COMPLETE,
   NTERACT_RENDER_OUTPUT,
   NTERACT_RENDERER_READY,
@@ -532,7 +531,7 @@ export const IsolatedFrame = forwardRef<
               // Forward to onMessage for OutputArea's search count tracking
               onMessageRef.current?.({ type: "search_results", payload: p } as IframeToParentMessage);
             });
-            transport.onNotification(NTERACT_WIDGET_READY, (params) => {
+            transport.onNotification(NTERACT_WIDGET_READY, () => {
               onMessageRef.current?.({ type: "widget_ready" } as IframeToParentMessage);
             });
             transport.onNotification(NTERACT_WIDGET_COMM_MSG, (params) => {
