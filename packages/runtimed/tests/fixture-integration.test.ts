@@ -6,14 +6,19 @@
  * and contain daemon-only mutations (outputs, execution counts) that can't be
  * done with WASM handles alone.
  *
+ * Outputs follow the real protocol: the CRDT stores SHA-256 manifest hashes,
+ * not raw JSON. Manifest files live in each fixture's blobs/ directory so
+ * tests can resolve hashes to verify output content.
+ *
  * The flow:
  * 1. Rust generates a NotebookDoc with daemon mutations → saves as doc.bin
- * 2. This test loads doc.bin into a WASM server handle via Handle.load()
- * 3. A fresh WASM client syncs via DirectTransport (real 2-party Automerge sync)
- * 4. Assertions verify daemon-authored state arrived correctly
+ * 2. Manifest JSON for each output → hashed → hash stored in CRDT, JSON in blobs/
+ * 3. This test loads doc.bin into a WASM server handle via Handle.load()
+ * 4. A fresh WASM client syncs via DirectTransport (real 2-party Automerge sync)
+ * 5. Assertions verify manifest hashes arrived, then resolve content from blobs/
  */
 
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { VirtualAction, VirtualTimeScheduler } from "rxjs";
 import { describe, expect, it } from "vitest";
@@ -26,6 +31,8 @@ import { initWasm } from "./wasm-harness";
 // ── Fixture loading ──────────────────────────────────────────────────
 
 const FIXTURES_DIR = resolve(__dirname, "fixtures");
+
+const MANIFEST_HASH_RE = /^[a-f0-9]{64}$/;
 
 interface ScenarioManifest {
   scenario: string;
@@ -50,6 +57,25 @@ function loadBroadcastFrames(scenario: string): Uint8Array[] {
     .filter((f) => f.startsWith("broadcast_") && f.endsWith(".bin"))
     .sort();
   return files.map((f) => new Uint8Array(readFileSync(resolve(dir, f))));
+}
+
+/** Resolve a manifest hash to its parsed JSON from the fixture's blobs/ dir. */
+function resolveOutputManifest(
+  scenario: string,
+  hash: string,
+): Record<string, unknown> {
+  const blobPath = resolve(FIXTURES_DIR, scenario, "blobs", hash);
+  if (!existsSync(blobPath)) {
+    throw new Error(`Manifest blob not found: ${blobPath}`);
+  }
+  return JSON.parse(readFileSync(blobPath, "utf-8"));
+}
+
+/** Resolve an inline ContentRef to its string value. */
+function resolveInline(ref: unknown): string {
+  const r = ref as Record<string, unknown>;
+  if ("inline" in r) return r.inline as string;
+  throw new Error(`Expected inline ContentRef, got: ${JSON.stringify(ref)}`);
 }
 
 // ── WASM server handle adapter ──────────────────────────────────────
@@ -95,13 +121,6 @@ async function setupFixtureSync(scenario: string) {
     scheduler,
   });
 
-  function advanceBy(ms: number): void {
-    const target = scheduler.frame + ms;
-    scheduler.maxFrames = target;
-    scheduler.schedule(() => {}, ms);
-    scheduler.flush();
-  }
-
   async function startAndCompleteSync(): Promise<void> {
     engine.start();
 
@@ -131,7 +150,6 @@ async function setupFixtureSync(scenario: string) {
     engine,
     transport,
     scheduler,
-    advanceBy,
     startAndCompleteSync,
     dispose() {
       engine.stop();
@@ -145,13 +163,12 @@ async function setupFixtureSync(scenario: string) {
 
 describe("fixture-based integration: daemon-authored docs through WASM sync", () => {
   describe("output_streaming", () => {
-    it("client receives cell with streamed outputs after sync", async () => {
+    it("client receives manifest hashes for streamed outputs", async () => {
       const manifest = loadManifest("output_streaming");
       const h = await setupFixtureSync("output_streaming");
 
       await h.startAndCompleteSync();
 
-      // Client should have the cell with all outputs
       expect(h.client.cell_count()).toBe(1);
       expect(h.client.get_cell_source("cell-1")).toBe(
         manifest.expected!.source as string,
@@ -163,11 +180,17 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
       const outputs = h.client.get_cell_outputs("cell-1") as string[];
       expect(outputs.length).toBe(manifest.expected!.output_count as number);
 
-      // Verify each output is valid JSON with correct structure
-      for (const output of outputs) {
-        const parsed = JSON.parse(output);
-        expect(parsed.output_type).toBe("stream");
-        expect(parsed.name).toBe("stdout");
+      // Each output in the CRDT is a manifest hash, not raw JSON
+      const expectedHashes = manifest.expected!.output_hashes as string[];
+      for (let i = 0; i < outputs.length; i++) {
+        expect(outputs[i]).toMatch(MANIFEST_HASH_RE);
+        expect(outputs[i]).toBe(expectedHashes[i]);
+
+        // Resolve hash → manifest → verify content
+        const resolved = resolveOutputManifest("output_streaming", outputs[i]);
+        expect(resolved.output_type).toBe("stream");
+        expect(resolved.name).toBe("stdout");
+        expect(resolveInline(resolved.text)).toBe(`${i}\n`);
       }
 
       h.dispose();
@@ -182,7 +205,6 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
       const broadcasts: unknown[] = [];
       const sub = h.engine.broadcasts$.subscribe((p) => broadcasts.push(p));
 
-      // Deliver broadcast frames (these are separate from sync)
       for (const frame of broadcastFrames) {
         h.transport.deliver(Array.from(frame));
       }
@@ -195,13 +217,12 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
       }
 
       sub.unsubscribe();
-
       h.dispose();
     });
   });
 
   describe("execution_with_error", () => {
-    it("client receives error output after sync", async () => {
+    it("client receives error manifest hash after sync", async () => {
       const h = await setupFixtureSync("execution_with_error");
 
       await h.startAndCompleteSync();
@@ -212,32 +233,49 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
 
       const outputs = h.client.get_cell_outputs("cell-1") as string[];
       expect(outputs.length).toBe(1);
+      expect(outputs[0]).toMatch(MANIFEST_HASH_RE);
 
-      const errorOutput = JSON.parse(outputs[0]);
-      expect(errorOutput.output_type).toBe("error");
-      expect(errorOutput.ename).toBe("ZeroDivisionError");
-      expect(errorOutput.traceback.length).toBeGreaterThan(0);
+      // Resolve and verify error content
+      const resolved = resolveOutputManifest(
+        "execution_with_error",
+        outputs[0],
+      );
+      expect(resolved.output_type).toBe("error");
+      expect(resolved.ename).toBe("ZeroDivisionError");
+      expect(resolved.evalue).toBe("division by zero");
+
+      // Traceback is inlined as a JSON array string
+      const traceback = JSON.parse(resolveInline(resolved.traceback));
+      expect(traceback.length).toBe(2);
+      expect(traceback[1]).toContain("ZeroDivisionError");
 
       h.dispose();
     });
   });
 
   describe("re_execution", () => {
-    it("client sees only second execution outputs after sync", async () => {
+    it("client sees only second execution output hash after sync", async () => {
+      const manifest = loadManifest("re_execution");
       const h = await setupFixtureSync("re_execution");
 
       await h.startAndCompleteSync();
 
-      // After syncing the full document (which had execute → clear → re-execute),
-      // client should see only the second execution's state
       expect(h.client.get_cell_execution_count("cell-1")).toBe("2");
 
       const outputs = h.client.get_cell_outputs("cell-1") as string[];
       expect(outputs.length).toBe(1);
+      expect(outputs[0]).toMatch(MANIFEST_HASH_RE);
 
-      const output = JSON.parse(outputs[0]);
-      expect(output.output_type).toBe("execute_result");
-      expect(output.data["text/plain"]).toBe("42");
+      const expectedHashes = manifest.expected!.output_hashes as string[];
+      expect(outputs[0]).toBe(expectedHashes[0]);
+
+      // Resolve and verify it's the second execution's result
+      const resolved = resolveOutputManifest("re_execution", outputs[0]);
+      expect(resolved.output_type).toBe("execute_result");
+      expect(resolved.execution_count).toBe(2);
+
+      const data = resolved.data as Record<string, unknown>;
+      expect(resolveInline(data["text/plain"])).toBe("42");
 
       h.dispose();
     });
@@ -258,12 +296,20 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
         (h.client.get_cell_outputs("cell-1") as string[]).length,
       ).toBe(0);
 
-      // cell-2: code, executed, one output
+      // cell-2: code, executed, one output (manifest hash)
       expect(h.client.get_cell_type("cell-2")).toBe("code");
       expect(h.client.get_cell_execution_count("cell-2")).toBe("2");
       const cell2Outputs = h.client.get_cell_outputs("cell-2") as string[];
       expect(cell2Outputs.length).toBe(1);
-      expect(JSON.parse(cell2Outputs[0]).text).toBe("42\n");
+      expect(cell2Outputs[0]).toMatch(MANIFEST_HASH_RE);
+
+      // Resolve and verify stream content
+      const resolved = resolveOutputManifest(
+        "multi_cell_execution",
+        cell2Outputs[0],
+      );
+      expect(resolved.output_type).toBe("stream");
+      expect(resolveInline(resolved.text)).toBe("42\n");
 
       // cell-3: markdown, no execution
       expect(h.client.get_cell_type("cell-3")).toBe("markdown");
@@ -274,7 +320,7 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
   });
 
   describe("display_data_output", () => {
-    it("client receives manifest hash as output string", async () => {
+    it("client receives manifest hash with mixed content refs", async () => {
       const h = await setupFixtureSync("display_data_output");
 
       await h.startAndCompleteSync();
@@ -283,8 +329,24 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
 
       const outputs = h.client.get_cell_outputs("cell-1") as string[];
       expect(outputs.length).toBe(1);
-      // Output should be the raw manifest hash (64 hex chars)
-      expect(outputs[0]).toMatch(/^[a-f0-9]{64}$/);
+      expect(outputs[0]).toMatch(MANIFEST_HASH_RE);
+
+      // Resolve manifest — has inlined text/plain and blob-ref image/png
+      const resolved = resolveOutputManifest(
+        "display_data_output",
+        outputs[0],
+      );
+      expect(resolved.output_type).toBe("display_data");
+
+      const data = resolved.data as Record<string, unknown>;
+      expect(resolveInline(data["text/plain"])).toBe(
+        "<Figure size 640x480>",
+      );
+
+      // image/png is a blob ref (not inline)
+      const imageRef = data["image/png"] as Record<string, unknown>;
+      expect(imageRef.blob).toBeDefined();
+      expect(imageRef.size).toBe(12345);
 
       h.dispose();
     });
@@ -295,7 +357,6 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
       const Handle = await initWasm();
       const docBytes = loadDocBytes("output_streaming");
 
-      // Load the daemon doc, but we'll fork it to simulate incremental changes
       const server = Handle.load(docBytes);
       const serverAdapter = new WasmServerHandle(server);
 
@@ -325,11 +386,10 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
       }
       await syncComplete;
 
-      // Now subscribe to changesets and make an incremental server change
+      // Subscribe to changesets and make an incremental server change
       const changesets: unknown[] = [];
       const sub = engine.cellChanges$.subscribe((cs) => changesets.push(cs));
 
-      // Server-side mutation: update source (simulating daemon edit)
       server.update_source("cell-1", "print('changed')");
       transport.pushServerChanges();
 
@@ -339,7 +399,6 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
       scheduler.schedule(() => {}, 50);
       scheduler.flush();
 
-      // Should have received at least one changeset
       expect(changesets.length).toBeGreaterThan(0);
 
       sub.unsubscribe();

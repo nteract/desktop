@@ -3,7 +3,10 @@
   "expected": {
     "cell_id": "cell-1",
     "execution_count": "2",
-    "output_count": 1
+    "output_count": 1,
+    "output_hashes": [
+      "36393fa56b2e0fa857e37c9324ca875190b280a0cda80f85e2c4fa32eb610282"
+    ]
   },
   "scenario": "re_execution"
 }

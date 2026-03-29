@@ -1,1 +1,1 @@
-{"cell_id":"cell-1","execution_id":"exec-001","output_index":2,"output_json":"{\"name\":\"stdout\",\"output_type\":\"stream\",\"text\":\"2\\n\"}","output_type":"stream","type":"Output"}
+{"cell_id":"cell-1","execution_id":"exec-001","output_index":2,"output_json":"{\"output_type\":\"stream\",\"name\":\"stdout\",\"text\":{\"inline\":\"2\\n\"}}","output_type":"stream","type":"Output"}
