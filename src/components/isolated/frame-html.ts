@@ -153,7 +153,59 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
           return;
         }
 
-        const { type, payload } = event.data || {};
+        var data = event.data;
+        if (!data || typeof data !== 'object') return;
+
+        // Handle JSON-RPC 2.0 messages
+        if (data.jsonrpc === '2.0') {
+          var method = data.method;
+          var params = data.params || {};
+          try {
+            switch (method) {
+              case 'nteract/eval':
+                handleEval(params);
+                break;
+              case 'nteract/renderOutput':
+                if (window.__REACT_RENDERER_ACTIVE__) return;
+                handleRender(params);
+                break;
+              case 'nteract/theme':
+                if (window.__REACT_RENDERER_ACTIVE__) return;
+                handleTheme(params);
+                break;
+              case 'nteract/clearOutputs':
+                if (window.__REACT_RENDERER_ACTIVE__) return;
+                handleClear();
+                break;
+              case 'nteract/ping':
+                handlePing(params);
+                break;
+              case 'nteract/search':
+                handleSearch(params);
+                break;
+              case 'nteract/searchNavigate':
+                handleSearchNavigate(params);
+                break;
+              case 'nteract/widgetState':
+                handleWidgetState(params);
+                break;
+              // Comm bridge messages — handled by widget-bridge-client.ts via transport
+              case 'nteract/bridgeReady':
+              case 'nteract/commOpen':
+              case 'nteract/commMsg':
+              case 'nteract/commClose':
+              case 'nteract/commSync':
+                break;
+            }
+          } catch (err) {
+            sendError(err);
+          }
+          return;
+        }
+
+        // Legacy { type, payload } format (fallback)
+        var type = data.type;
+        var payload = data.payload;
 
         try {
           switch (type) {
@@ -166,19 +218,16 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
               break;
 
             case 'render':
-              // Skip inline rendering if React renderer is active
               if (window.__REACT_RENDERER_ACTIVE__) return;
               handleRender(payload);
               break;
 
             case 'theme':
-              // Skip inline theme handling if React renderer is active
               if (window.__REACT_RENDERER_ACTIVE__) return;
               handleTheme(payload);
               break;
 
             case 'clear':
-              // Skip inline clear if React renderer is active
               if (window.__REACT_RENDERER_ACTIVE__) return;
               handleClear();
               break;
@@ -195,17 +244,12 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
               handleSearchNavigate(payload);
               break;
 
-            // Comm bridge messages - handled by React widget system, ignore here
             case 'bridge_ready':
             case 'comm_open':
             case 'comm_msg':
             case 'comm_close':
             case 'comm_sync':
-              // These are handled by widget-bridge-client.ts
               break;
-
-            default:
-              console.warn('[frame] Unknown message type:', type);
           }
         } catch (err) {
           sendError(err);
