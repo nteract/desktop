@@ -69,7 +69,10 @@ describe("Conda Inline Dependencies", () => {
     const cells = await $$('[data-cell-type="code"]');
     const cell = cells.length > 1 ? cells[1] : cells[0];
 
-    await setCellSource(cell, "import markupsafe; print(markupsafe.__version__)");
+    await setCellSource(
+      cell,
+      "import markupsafe; print(markupsafe.__version__)",
+    );
 
     const executeButton = await cell.$('[data-testid="execute-button"]');
     await executeButton.waitForClickable({ timeout: 5000 });

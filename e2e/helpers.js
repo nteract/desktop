@@ -320,10 +320,10 @@ export async function waitForKernelReadyWithTrust(timeout = 300000) {
             await approveButton.waitForClickable({ timeout: 5000 });
             await approveButton.click();
             // Wait for dialog to close
-            await browser.waitUntil(
-              async () => !(await dialog.isExisting()),
-              { timeout: 30000, interval: 300 },
-            );
+            await browser.waitUntil(async () => !(await dialog.isExisting()), {
+              timeout: 30000,
+              interval: 300,
+            });
             trustApproved = true;
             console.log(
               "[waitForKernelReadyWithTrust] Trust dialog approved inline",
