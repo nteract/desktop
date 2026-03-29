@@ -113,6 +113,10 @@ export const config = {
   framework: "mocha",
   reporters: ["spec"],
 
+  // Retry failed spec files once — E2E tests against a real daemon are
+  // inherently timing-sensitive (IPC latency, pool warming, env creation).
+  specFileRetries: 1,
+
   mochaOpts: {
     ui: "bdd",
     timeout: 360000, // 6 minutes to handle cold CI kernel startup (pool warming + env creation)
