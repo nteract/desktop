@@ -14,34 +14,6 @@ import type {
 import { isIframeMessage } from "./frame-bridge";
 import { createFrameBlobUrl } from "./frame-html";
 import { useIsolatedRenderer } from "./isolated-renderer-context";
-import { JsonRpcTransport } from "./jsonrpc-transport";
-import {
-  NTERACT_BRIDGE_READY,
-  NTERACT_CLEAR_OUTPUTS,
-  NTERACT_COMM_CLOSE,
-  NTERACT_COMM_MSG,
-  NTERACT_COMM_OPEN,
-  NTERACT_COMM_SYNC,
-  NTERACT_DOUBLE_CLICK,
-  NTERACT_ERROR,
-  NTERACT_EVAL,
-  NTERACT_EVAL_RESULT,
-  NTERACT_LINK_CLICK,
-  NTERACT_PING,
-  NTERACT_READY,
-  NTERACT_RENDER_COMPLETE,
-  NTERACT_RENDER_OUTPUT,
-  NTERACT_RENDERER_READY,
-  NTERACT_RESIZE,
-  NTERACT_SEARCH,
-  NTERACT_SEARCH_NAVIGATE,
-  NTERACT_THEME,
-  NTERACT_WIDGET_COMM_CLOSE,
-  NTERACT_WIDGET_COMM_MSG,
-  NTERACT_WIDGET_READY,
-  NTERACT_WIDGET_STATE,
-  NTERACT_WIDGET_UPDATE,
-} from "./rpc-methods";
 
 export interface IsolatedFrameProps {
   /**
@@ -180,26 +152,6 @@ export interface IsolatedFrameHandle {
 }
 
 /**
- * Map legacy `{ type }` message types to JSON-RPC method names.
- * Used by the `send` callback to translate ParentToIframeMessage to JSON-RPC.
- */
-const TYPE_TO_METHOD: Record<string, string> = {
-  render: NTERACT_RENDER_OUTPUT,
-  theme: NTERACT_THEME,
-  clear: NTERACT_CLEAR_OUTPUTS,
-  eval: NTERACT_EVAL,
-  ping: NTERACT_PING,
-  search: NTERACT_SEARCH,
-  search_navigate: NTERACT_SEARCH_NAVIGATE,
-  comm_open: NTERACT_COMM_OPEN,
-  comm_msg: NTERACT_COMM_MSG,
-  comm_close: NTERACT_COMM_CLOSE,
-  comm_sync: NTERACT_COMM_SYNC,
-  bridge_ready: NTERACT_BRIDGE_READY,
-  widget_state: NTERACT_WIDGET_STATE,
-};
-
-/**
  * Sandbox attributes for the isolated iframe.
  *
  * CRITICAL: Do NOT include 'allow-same-origin' - this would give the iframe
@@ -278,7 +230,6 @@ export const IsolatedFrame = forwardRef<
     error: providerError,
   } = useIsolatedRenderer();
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const rpcRef = useRef<JsonRpcTransport | null>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   // Track iframe ready (bootstrap HTML loaded)
   const [isIframeReady, setIsIframeReady] = useState(false);
@@ -337,14 +288,10 @@ export const IsolatedFrame = forwardRef<
   // This prevents flash of wrong theme while React initializes
   useEffect(() => {
     if (isIframeReady && iframeRef.current?.contentWindow) {
-      if (rpcRef.current) {
-        rpcRef.current.notify(NTERACT_THEME, { isDark: darkMode });
-      } else {
-        iframeRef.current.contentWindow.postMessage(
-          { type: "theme", payload: { isDark: darkMode } },
-          "*",
-        );
-      }
+      iframeRef.current.contentWindow.postMessage(
+        { type: "theme", payload: { isDark: darkMode } },
+        "*",
+      );
     }
   }, [darkMode, isIframeReady]);
 
@@ -363,7 +310,7 @@ export const IsolatedFrame = forwardRef<
     }
   }, [providerError, providerLoading]);
 
-  // Send a message to the iframe via JSON-RPC transport
+  // Send a message to the iframe
   // Uses ref to check ready state to avoid stale closure issues
   const send = useCallback(
     (message: ParentToIframeMessage) => {
@@ -373,12 +320,7 @@ export const IsolatedFrame = forwardRef<
         return;
       }
 
-      const method = TYPE_TO_METHOD[message.type];
-      if (method && rpcRef.current) {
-        const params = "payload" in message ? message.payload : undefined;
-        rpcRef.current.notify(method, params);
-      } else if (iframeRef.current?.contentWindow) {
-        // Fallback to legacy format if transport not available
+      if (iframeRef.current?.contentWindow) {
         iframeRef.current.contentWindow.postMessage(message, "*");
       }
     },
@@ -391,22 +333,14 @@ export const IsolatedFrame = forwardRef<
       const pending = pendingMessagesRef.current;
       pendingMessagesRef.current = [];
       pending.forEach((msg) => {
-        const method = TYPE_TO_METHOD[msg.type];
-        if (method && rpcRef.current) {
-          const params = "payload" in msg ? msg.payload : undefined;
-          rpcRef.current.notify(method, params);
-        } else if (iframeRef.current?.contentWindow) {
+        if (iframeRef.current?.contentWindow) {
           iframeRef.current.contentWindow.postMessage(msg, "*");
         }
       });
     }
   }, [isReady]);
 
-  // Handle messages from iframe.
-  // JSON-RPC messages are handled by the transport; this legacy handler
-  // covers the bootstrap HTML's `{ type, payload }` format during the
-  // brief period before the React renderer takes over, plus any
-  // iframe→host messages that still use legacy format.
+  // Handle messages from iframe
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       // Verify the message is from our iframe
@@ -415,16 +349,6 @@ export const IsolatedFrame = forwardRef<
       }
 
       const data = event.data;
-
-      // Skip JSON-RPC messages — the transport handles them
-      if (
-        typeof data === "object" &&
-        data !== null &&
-        (data as { jsonrpc?: unknown }).jsonrpc === "2.0"
-      ) {
-        return;
-      }
-
       if (!isIframeMessage(data)) {
         return;
       }
@@ -434,23 +358,80 @@ export const IsolatedFrame = forwardRef<
 
       // Handle specific message types
       switch (data.type) {
-        case "ready":
-          handleIframeReady();
+        case "ready": {
+          // Iframe bootstrap HTML is loaded.
+          // Any "ready" after the first is a reload (e.g., DOM move caused
+          // the browser to tear down and reload the iframe).
+          const isReload = hasReceivedReadyRef.current;
+          hasReceivedReadyRef.current = true;
+
+          if (isReload) {
+            // Reset bootstrap state so the renderer gets re-injected.
+            bootstrappingRef.current = false;
+            // Keep the imperative readiness ref in sync with state so that
+            // synchronous send() calls don't treat the frame as ready during
+            // a reload window.
+            isReadyRef.current = false;
+            // Pending messages were targeted at the old iframe instance; drop
+            // them so they don't get delivered to the reloaded frame.
+            pendingMessagesRef.current.length = 0;
+            setIsReady(false);
+            // Reset content rendered state for revealOnRender mode
+            setIsContentRendered(false);
+            // Hide iframe during reload to prevent white flash from blank
+            // iframe document before blob HTML loads
+            setIsReloading(true);
+          }
+
+          if (isReload) {
+            // Reload: isIframeReady may already be true, so toggle to
+            // force effects that depend on it (theme sync, renderer
+            // injection) to re-run.
+            setIsIframeReady(false);
+            setTimeout(() => {
+              setIsIframeReady(true);
+            }, 0);
+          } else {
+            // Initial load: a single transition from false→true is
+            // sufficient.
+            setIsIframeReady(true);
+          }
           break;
+        }
 
         case "renderer_ready":
-          handleRendererReady();
+          // React renderer bundle is initialized
+          setIsReady(true);
+          setIsReloading(false);
+          onReadyRef.current?.();
+          // Render initial content if provided
+          if (initialContent) {
+            iframeRef.current?.contentWindow?.postMessage(
+              { type: "render", payload: initialContent },
+              "*",
+            );
+          }
           break;
 
         case "resize":
           if (data.payload?.height != null) {
-            handleResize(data.payload as { height: number });
+            const newHeight = autoHeight
+              ? Math.max(minHeight, data.payload.height)
+              : Math.max(minHeight, Math.min(maxHeight, data.payload.height));
+            setHeight(newHeight);
+            onResizeRef.current?.(newHeight);
           }
           break;
 
         case "render_complete":
+          // Content has been rendered - reveal iframe if in revealOnRender mode
           if (data.payload?.height != null) {
-            handleRenderComplete(data.payload as { height: number });
+            setIsContentRendered(true);
+            const newHeight = autoHeight
+              ? Math.max(minHeight, data.payload.height)
+              : Math.max(minHeight, Math.min(maxHeight, data.payload.height));
+            setHeight(newHeight);
+            onResizeRef.current?.(newHeight);
           }
           break;
 
@@ -497,190 +478,8 @@ export const IsolatedFrame = forwardRef<
       }
     };
 
-    // --- Shared handler functions used by both legacy and JSON-RPC paths ---
-
-    function handleIframeReady() {
-      // Iframe bootstrap HTML is loaded.
-      // Any "ready" after the first is a reload (e.g., DOM move caused
-      // the browser to tear down and reload the iframe).
-      const isReload = hasReceivedReadyRef.current;
-      hasReceivedReadyRef.current = true;
-
-      if (isReload) {
-        // Tear down old transport
-        if (rpcRef.current) {
-          rpcRef.current.stop();
-          rpcRef.current = null;
-        }
-        // Reset bootstrap state so the renderer gets re-injected.
-        bootstrappingRef.current = false;
-        isReadyRef.current = false;
-        pendingMessagesRef.current.length = 0;
-        setIsReady(false);
-        setIsContentRendered(false);
-        setIsReloading(true);
-      }
-
-      // Create JSON-RPC transport for this iframe instance
-      if (iframeRef.current?.contentWindow) {
-        const transport = new JsonRpcTransport(
-          iframeRef.current.contentWindow,
-          iframeRef.current.contentWindow,
-        );
-        registerRpcHandlers(transport);
-        transport.start();
-        rpcRef.current = transport;
-      }
-
-      if (isReload) {
-        setIsIframeReady(false);
-        setTimeout(() => {
-          setIsIframeReady(true);
-        }, 0);
-      } else {
-        setIsIframeReady(true);
-      }
-    }
-
-    function handleRendererReady() {
-      setIsReady(true);
-      setIsReloading(false);
-      onReadyRef.current?.();
-      if (initialContent && rpcRef.current) {
-        rpcRef.current.notify(NTERACT_RENDER_OUTPUT, initialContent);
-      } else if (initialContent && iframeRef.current?.contentWindow) {
-        iframeRef.current.contentWindow.postMessage(
-          { type: "render", payload: initialContent },
-          "*",
-        );
-      }
-    }
-
-    function handleResize(params: { height: number }) {
-      const newHeight = autoHeight
-        ? Math.max(minHeight, params.height)
-        : Math.max(minHeight, Math.min(maxHeight, params.height));
-      setHeight(newHeight);
-      onResizeRef.current?.(newHeight);
-    }
-
-    function handleRenderComplete(params: { height?: number }) {
-      if (params.height != null) {
-        setIsContentRendered(true);
-        const newHeight = autoHeight
-          ? Math.max(minHeight, params.height)
-          : Math.max(minHeight, Math.min(maxHeight, params.height));
-        setHeight(newHeight);
-        onResizeRef.current?.(newHeight);
-      }
-    }
-
-    /**
-     * Register JSON-RPC notification handlers on the transport for
-     * iframe→host messages.
-     */
-    function registerRpcHandlers(transport: JsonRpcTransport) {
-      transport.onNotification(NTERACT_READY, () => {
-        handleIframeReady();
-      });
-
-      transport.onNotification(NTERACT_RENDERER_READY, () => {
-        handleRendererReady();
-      });
-
-      transport.onNotification(NTERACT_RESIZE, (params) => {
-        const p = params as { height?: number };
-        if (p?.height != null) {
-          handleResize(p as { height: number });
-        }
-      });
-
-      transport.onNotification(NTERACT_RENDER_COMPLETE, (params) => {
-        const p = params as { height?: number };
-        if (p) {
-          handleRenderComplete(p);
-        }
-      });
-
-      transport.onNotification(NTERACT_LINK_CLICK, (params) => {
-        const p = params as { url?: string; newTab?: boolean };
-        if (p?.url) {
-          onLinkClickRef.current?.(p.url, p.newTab ?? false);
-        }
-      });
-
-      transport.onNotification(NTERACT_DOUBLE_CLICK, () => {
-        onDoubleClickRef.current?.();
-      });
-
-      transport.onNotification(NTERACT_WIDGET_UPDATE, (params) => {
-        const p = params as {
-          commId?: string;
-          state?: Record<string, unknown>;
-        };
-        if (p?.commId && p?.state) {
-          onWidgetUpdateRef.current?.(p.commId, p.state);
-        }
-      });
-
-      transport.onNotification(NTERACT_ERROR, (params) => {
-        const p = params as { message: string; stack?: string };
-        if (p) {
-          onErrorRef.current?.(p);
-        }
-      });
-
-      transport.onNotification(NTERACT_WIDGET_READY, () => {
-        // Forwarded via onMessage for CommBridgeManager
-        onMessageRef.current?.({ type: "widget_ready" });
-      });
-
-      transport.onNotification(NTERACT_WIDGET_COMM_MSG, (params) => {
-        const p = params as {
-          commId: string;
-          method: "update" | "custom";
-          data: Record<string, unknown>;
-          bufferPaths?: string[][];
-          buffers?: ArrayBuffer[];
-        };
-        if (p) {
-          onMessageRef.current?.({
-            type: "widget_comm_msg",
-            payload: p,
-          });
-        }
-      });
-
-      transport.onNotification(NTERACT_WIDGET_COMM_CLOSE, (params) => {
-        const p = params as { commId: string };
-        if (p) {
-          onMessageRef.current?.({
-            type: "widget_comm_close",
-            payload: p,
-          });
-        }
-      });
-
-      transport.onNotification(NTERACT_EVAL_RESULT, (params) => {
-        const p = params as { success: boolean; error?: string };
-        if (p?.success === false) {
-          console.error("[IsolatedFrame] Bundle eval failed:", p.error);
-          onErrorRef.current?.({
-            message: `Bundle eval failed: ${p.error}`,
-          });
-        }
-      });
-    }
-
     window.addEventListener("message", handleMessage);
-    return () => {
-      window.removeEventListener("message", handleMessage);
-      // Clean up transport on unmount
-      if (rpcRef.current) {
-        rpcRef.current.stop();
-        rpcRef.current = null;
-      }
-    };
+    return () => window.removeEventListener("message", handleMessage);
   }, [initialContent, minHeight, maxHeight, autoHeight]);
 
   // Inject renderer when iframe is ready AND bundle props are available
@@ -705,6 +504,10 @@ export const IsolatedFrame = forwardRef<
           document.head.appendChild(style);
         })();
       `;
+      iframeRef.current.contentWindow.postMessage(
+        { type: "eval", payload: { code: cssCode } },
+        "*",
+      );
       // Then inject JS bundle (idempotent - checks if already loaded)
       // Use string concatenation instead of template literal to avoid issues
       // with backticks or ${} in the bundled code
@@ -714,20 +517,10 @@ export const IsolatedFrame = forwardRef<
         "window.__ISOLATED_RENDERER_LOADED__ = true;" +
         rendererCode +
         "})();";
-
-      if (rpcRef.current) {
-        rpcRef.current.notify(NTERACT_EVAL, { code: cssCode });
-        rpcRef.current.notify(NTERACT_EVAL, { code: jsWrapper });
-      } else {
-        iframeRef.current.contentWindow.postMessage(
-          { type: "eval", payload: { code: cssCode } },
-          "*",
-        );
-        iframeRef.current.contentWindow.postMessage(
-          { type: "eval", payload: { code: jsWrapper } },
-          "*",
-        );
-      }
+      iframeRef.current.contentWindow.postMessage(
+        { type: "eval", payload: { code: jsWrapper } },
+        "*",
+      );
     }
   }, [isIframeReady, isReady, rendererCode, rendererCss]);
 
@@ -742,12 +535,9 @@ export const IsolatedFrame = forwardRef<
         send({ type: "theme", payload: { isDark } }),
       clear: () => send({ type: "clear" }),
       search: (query: string, caseSensitive?: boolean) => {
-        // Search is a request (expects a response) in JSON-RPC, but
-        // for backward compat the handler is in bootstrap HTML.
-        // Send directly when iframe is loaded (bypasses isReady queue).
-        if (rpcRef.current) {
-          rpcRef.current.notify(NTERACT_SEARCH, { query, caseSensitive });
-        } else if (iframeRef.current?.contentWindow) {
+        // Search handler is in bootstrap HTML, so send directly when iframe is loaded
+        // (bypasses the isReady queue which waits for the React renderer)
+        if (iframeRef.current?.contentWindow) {
           iframeRef.current.contentWindow.postMessage(
             { type: "search", payload: { query, caseSensitive } },
             "*",
@@ -755,9 +545,7 @@ export const IsolatedFrame = forwardRef<
         }
       },
       searchNavigate: (matchIndex: number) => {
-        if (rpcRef.current) {
-          rpcRef.current.notify(NTERACT_SEARCH_NAVIGATE, { matchIndex });
-        } else if (iframeRef.current?.contentWindow) {
+        if (iframeRef.current?.contentWindow) {
           iframeRef.current.contentWindow.postMessage(
             { type: "search_navigate", payload: { matchIndex } },
             "*",

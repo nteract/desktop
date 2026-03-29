@@ -20,7 +20,6 @@ import {
   useRef,
   useSyncExternalStore,
 } from "react";
-import type { JsonRpcTransport } from "@/components/isolated/jsonrpc-transport";
 import { createCanvasManagerRouter } from "@/components/widgets/canvas-manager-subscriptions";
 import { createLinkManager } from "@/components/widgets/link-subscriptions";
 import {
@@ -63,8 +62,6 @@ const IframeWidgetStoreContext =
 
 interface IframeWidgetStoreProviderProps {
   children: ReactNode;
-  /** Optional JSON-RPC transport for comm bridge communication */
-  transport?: JsonRpcTransport | null;
 }
 
 /**
@@ -79,12 +76,11 @@ interface IframeWidgetStoreProviderProps {
  */
 export function IframeWidgetStoreProvider({
   children,
-  transport,
 }: IframeWidgetStoreProviderProps) {
-  // Create bridge client once, passing the transport for JSON-RPC communication
+  // Create bridge client once
   const clientRef = useRef<WidgetBridgeClient | null>(null);
   if (!clientRef.current) {
-    clientRef.current = createWidgetBridgeClient(transport);
+    clientRef.current = createWidgetBridgeClient();
   }
   const client = clientRef.current;
 

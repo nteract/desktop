@@ -98,34 +98,39 @@ function updateDocumentTheme(isDark: boolean) {
   }
 }
 
-// --- JSON-RPC Transport ---
+// --- Message Handling ---
 
-// Global transport instance shared by the React app and init code.
+// Global transport for JSON-RPC communication with host
 let rpcTransport: JsonRpcTransport | null = null;
 
-// Legacy message handler for backward compat during migration.
-// The transport handles JSON-RPC messages; this covers legacy `{ type, payload }`.
 type MessageHandler = (type: string, payload: unknown) => void;
+
 let messageHandler: MessageHandler | null = null;
 
 function setupMessageListener() {
-  // Create JSON-RPC transport (parent window is both target and source)
+  // Create JSON-RPC transport — handles nteract/* methods from the host
   rpcTransport = new JsonRpcTransport(window.parent, window.parent);
 
-  // Also set up legacy listener for any `{ type, payload }` messages
-  // that might still arrive during the transition
+  // Route JSON-RPC notifications to the React message handler
+  rpcTransport.onNotification(NTERACT_RENDER_OUTPUT, (params) => {
+    messageHandler?.("render", params);
+  });
+  rpcTransport.onNotification(NTERACT_CLEAR_OUTPUTS, () => {
+    messageHandler?.("clear", undefined);
+  });
+  rpcTransport.onNotification(NTERACT_THEME, (params) => {
+    messageHandler?.("theme", params);
+  });
+  rpcTransport.start();
+
+  // Legacy listener for any { type, payload } messages that arrive
+  // (e.g., during bootstrap before transport is set up on host side)
   window.addEventListener("message", (event) => {
     if (event.source !== window.parent) return;
 
     const data = event.data;
     // Skip JSON-RPC messages — the transport handles them
-    if (
-      typeof data === "object" &&
-      data !== null &&
-      (data as { jsonrpc?: unknown }).jsonrpc === "2.0"
-    ) {
-      return;
-    }
+    if (data?.jsonrpc === "2.0") return;
 
     const { type, payload } = data || {};
     if (messageHandler) {
@@ -142,116 +147,80 @@ function IsolatedRendererApp() {
     isDark: document.documentElement.classList.contains("dark"),
   });
 
-  // Shared render handler for both JSON-RPC and legacy paths
-  const handleRender = useCallback((renderPayload: RenderPayload) => {
-    const id = renderPayload.cellId
-      ? `${renderPayload.cellId}-${renderPayload.outputIndex ?? 0}`
-      : `output-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  // Handle messages from parent
+  const handleMessage = useCallback((type: string, payload: unknown) => {
+    switch (type) {
+      case "render": {
+        const renderPayload = payload as RenderPayload;
 
-    setState((prev) => {
-      if (renderPayload.replace) {
-        return { ...prev, outputs: [{ id, payload: renderPayload }] };
-      }
-      return {
-        ...prev,
-        outputs: [...prev.outputs, { id, payload: renderPayload }],
-      };
-    });
+        // Generate stable ID when cellId is provided for better React reconciliation
+        const id = renderPayload.cellId
+          ? `${renderPayload.cellId}-${renderPayload.outputIndex ?? 0}`
+          : `output-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-    requestAnimationFrame(() => {
-      if (rpcTransport) {
-        rpcTransport.notify(NTERACT_RENDER_COMPLETE, {
-          height: document.body.scrollHeight,
+        setState((prev) => {
+          if (renderPayload.replace) {
+            // Replace all outputs with this single new output
+            return { ...prev, outputs: [{ id, payload: renderPayload }] };
+          }
+          // Default: append to existing outputs
+          return {
+            ...prev,
+            outputs: [...prev.outputs, { id, payload: renderPayload }],
+          };
         });
-      } else {
-        window.parent.postMessage(
-          {
-            type: "render_complete",
-            payload: { height: document.body.scrollHeight },
-          },
-          "*",
-        );
-      }
-    });
-  }, []);
 
-  const handleClear = useCallback(() => {
-    setState((prev) => ({ ...prev, outputs: [] }));
-    requestAnimationFrame(() => {
-      if (rpcTransport) {
-        rpcTransport.notify(NTERACT_RENDER_COMPLETE, {
-          height: document.body.scrollHeight,
+        // Notify parent of render completion after next paint
+        requestAnimationFrame(() => {
+          window.parent.postMessage(
+            {
+              type: "render_complete",
+              payload: { height: document.body.scrollHeight },
+            },
+            "*",
+          );
         });
-      } else {
-        window.parent.postMessage(
-          {
-            type: "render_complete",
-            payload: { height: document.body.scrollHeight },
-          },
-          "*",
-        );
+        break;
       }
-    });
-  }, []);
 
-  const handleTheme = useCallback((params: { isDark?: boolean }) => {
-    if (params?.isDark !== undefined) {
-      setState((prev) => ({ ...prev, isDark: params.isDark! }));
-      updateDocumentTheme(params.isDark);
+      case "clear":
+        setState((prev) => ({ ...prev, outputs: [] }));
+        requestAnimationFrame(() => {
+          window.parent.postMessage(
+            {
+              type: "render_complete",
+              payload: { height: document.body.scrollHeight },
+            },
+            "*",
+          );
+        });
+        break;
+
+      case "theme": {
+        const themePayload = payload as { isDark?: boolean };
+        if (themePayload?.isDark !== undefined) {
+          setState((prev) => ({ ...prev, isDark: themePayload.isDark! }));
+          // Update theme on document.documentElement so theme detection works
+          updateDocumentTheme(themePayload.isDark);
+        }
+        break;
+      }
     }
   }, []);
 
-  // Handle legacy messages from parent (backward compat)
-  const handleMessage = useCallback(
-    (type: string, payload: unknown) => {
-      switch (type) {
-        case "render":
-          handleRender(payload as RenderPayload);
-          break;
-        case "clear":
-          handleClear();
-          break;
-        case "theme":
-          handleTheme(payload as { isDark?: boolean });
-          break;
-      }
-    },
-    [handleRender, handleClear, handleTheme],
-  );
-
-  // Register JSON-RPC handlers and legacy handler, notify parent when ready
+  // Register message handler and notify parent when ready
   useEffect(() => {
     messageHandler = handleMessage;
 
-    // Register JSON-RPC notification handlers on the transport
-    if (rpcTransport) {
-      rpcTransport.onNotification(NTERACT_RENDER_OUTPUT, (params) => {
-        handleRender(params as RenderPayload);
-      });
-
-      rpcTransport.onNotification(NTERACT_CLEAR_OUTPUTS, () => {
-        handleClear();
-      });
-
-      rpcTransport.onNotification(NTERACT_THEME, (params) => {
-        handleTheme(params as { isDark?: boolean });
-      });
-
-      // Start listening for JSON-RPC messages
-      rpcTransport.start();
-    }
-
-    // Notify parent that renderer is ready via JSON-RPC
-    if (rpcTransport) {
-      rpcTransport.notify(NTERACT_RENDERER_READY, {});
-    } else {
-      window.parent.postMessage({ type: "renderer_ready" }, "*");
-    }
+    // Notify parent that renderer is ready — send both formats.
+    // JSON-RPC for the transport, legacy for the fallback handler.
+    rpcTransport?.notify(NTERACT_RENDERER_READY, {});
+    window.parent.postMessage({ type: "renderer_ready" }, "*");
 
     return () => {
       messageHandler = null;
     };
-  }, [handleMessage, handleRender, handleClear, handleTheme]);
+  }, [handleMessage]);
 
   return (
     <div
@@ -416,7 +385,7 @@ export function init() {
   root = createRoot(rootEl);
   root.render(
     <StrictMode>
-      <IframeWidgetStoreProvider transport={rpcTransport}>
+      <IframeWidgetStoreProvider>
         <IsolatedRendererApp />
       </IframeWidgetStoreProvider>
     </StrictMode>,
@@ -432,16 +401,10 @@ export function init() {
     resizeRafPending = true;
     requestAnimationFrame(() => {
       resizeRafPending = false;
-      if (rpcTransport) {
-        rpcTransport.notify(NTERACT_RESIZE, {
-          height: document.body.scrollHeight,
-        });
-      } else {
-        window.parent.postMessage(
-          { type: "resize", payload: { height: document.body.scrollHeight } },
-          "*",
-        );
-      }
+      window.parent.postMessage(
+        { type: "resize", payload: { height: document.body.scrollHeight } },
+        "*",
+      );
     });
   });
   resizeObserver.observe(document.body);
@@ -458,8 +421,7 @@ if (typeof window !== "undefined") {
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
     console.error("[IsolatedRenderer] init() failed:", error);
-    // Report error back to parent — always use legacy format here since
-    // rpcTransport may not have been initialized yet when init() fails
+    // Report error back to parent
     window.parent.postMessage(
       {
         type: "error",

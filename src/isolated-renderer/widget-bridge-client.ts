@@ -20,17 +20,6 @@ import type {
   WidgetCommCloseMessage,
   WidgetCommMsgMessage,
 } from "@/components/isolated/frame-bridge";
-import type { JsonRpcTransport } from "@/components/isolated/jsonrpc-transport";
-import {
-  NTERACT_BRIDGE_READY,
-  NTERACT_COMM_CLOSE,
-  NTERACT_COMM_MSG,
-  NTERACT_COMM_OPEN,
-  NTERACT_COMM_SYNC,
-  NTERACT_WIDGET_COMM_CLOSE,
-  NTERACT_WIDGET_COMM_MSG,
-  NTERACT_WIDGET_READY,
-} from "@/components/isolated/rpc-methods";
 import {
   createWidgetStore,
   type WidgetStore,
@@ -82,116 +71,80 @@ export interface WidgetBridgeClient {
  * Create a widget bridge client for the iframe.
  * This sets up:
  * - A local WidgetStore instance
- * - Message listener for parent → iframe comm messages (JSON-RPC + legacy)
+ * - Message listener for parent → iframe comm messages
  * - Methods to send iframe → parent messages
- *
- * @param transport - Optional JsonRpcTransport for JSON-RPC communication.
- *   When provided, the bridge registers handlers on the transport and sends
- *   outbound messages via JSON-RPC. Legacy postMessage listener is kept as
- *   fallback for messages from the bootstrap HTML.
  */
-export function createWidgetBridgeClient(
-  transport?: JsonRpcTransport | null,
-): WidgetBridgeClient {
+export function createWidgetBridgeClient(): WidgetBridgeClient {
   // Create local widget store
   const store = createWidgetStore();
 
-  // --- Shared handler logic ---
+  // Message handler for parent → iframe messages
+  function handleMessage(event: MessageEvent) {
+    // Only accept messages from parent
+    if (event.source !== window.parent) return;
 
-  function sendWidgetReady() {
-    if (transport) {
-      transport.notify(NTERACT_WIDGET_READY, {});
-    } else {
-      window.parent.postMessage({ type: "widget_ready" }, "*");
+    const message = event.data;
+    if (!message || typeof message.type !== "string") return;
+
+    switch (message.type) {
+      case "bridge_ready":
+        // Parent's comm bridge is ready, re-send widget_ready to trigger sync
+        sendWidgetReady();
+        break;
+      case "comm_open":
+        handleCommOpen(message as CommOpenMessage);
+        break;
+      case "comm_msg":
+        handleCommMsg(message as CommMsgMessage);
+        break;
+      case "comm_close":
+        handleCommClose(message as CommCloseMessage);
+        break;
+      case "comm_sync":
+        handleCommSync(message as CommSyncMessage);
+        break;
     }
   }
 
-  function handleCommOpenPayload(payload: CommOpenMessage["payload"]) {
-    const { commId, state, buffers } = payload;
+  function sendWidgetReady() {
+    window.parent.postMessage({ type: "widget_ready" }, "*");
+  }
+
+  function handleCommOpen(msg: CommOpenMessage) {
+    const { commId, state, buffers } = msg.payload;
     store.createModel(commId, state, buffers);
   }
 
-  function handleCommMsgPayload(payload: CommMsgMessage["payload"]) {
-    const { commId, method, data, buffers } = payload;
+  function handleCommMsg(msg: CommMsgMessage) {
+    const { commId, method, data, buffers } = msg.payload;
+
     if (method === "update") {
+      // State update from kernel
       store.updateModel(commId, data, buffers);
     } else if (method === "custom") {
+      // Custom message from kernel (e.g., ipycanvas commands)
       store.emitCustomMessage(commId, data, buffers);
     }
   }
 
-  function handleCommClosePayload(payload: CommCloseMessage["payload"]) {
-    const { commId } = payload;
+  function handleCommClose(msg: CommCloseMessage) {
+    const { commId } = msg.payload;
     store.deleteModel(commId);
   }
 
-  function handleCommSyncPayload(payload: CommSyncMessage["payload"]) {
-    const { models } = payload;
+  function handleCommSync(msg: CommSyncMessage) {
+    const { models } = msg.payload;
+
     for (const model of models) {
       store.createModel(model.commId, model.state, model.buffers);
     }
   }
 
-  // --- JSON-RPC transport handlers ---
-  if (transport) {
-    transport.onNotification(NTERACT_BRIDGE_READY, () => {
-      sendWidgetReady();
-    });
-
-    transport.onNotification(NTERACT_COMM_OPEN, (params) => {
-      handleCommOpenPayload(params as CommOpenMessage["payload"]);
-    });
-
-    transport.onNotification(NTERACT_COMM_MSG, (params) => {
-      handleCommMsgPayload(params as CommMsgMessage["payload"]);
-    });
-
-    transport.onNotification(NTERACT_COMM_CLOSE, (params) => {
-      handleCommClosePayload(params as CommCloseMessage["payload"]);
-    });
-
-    transport.onNotification(NTERACT_COMM_SYNC, (params) => {
-      handleCommSyncPayload(params as CommSyncMessage["payload"]);
-    });
-  }
-
-  // --- Legacy postMessage handler (fallback) ---
-  function handleMessage(event: MessageEvent) {
-    if (event.source !== window.parent) return;
-
-    const message = event.data;
-    // Skip JSON-RPC messages — the transport handles them
-    if (
-      typeof message === "object" &&
-      message !== null &&
-      message.jsonrpc === "2.0"
-    ) {
-      return;
-    }
-    if (!message || typeof message.type !== "string") return;
-
-    switch (message.type) {
-      case "bridge_ready":
-        sendWidgetReady();
-        break;
-      case "comm_open":
-        handleCommOpenPayload((message as CommOpenMessage).payload);
-        break;
-      case "comm_msg":
-        handleCommMsgPayload((message as CommMsgMessage).payload);
-        break;
-      case "comm_close":
-        handleCommClosePayload((message as CommCloseMessage).payload);
-        break;
-      case "comm_sync":
-        handleCommSyncPayload((message as CommSyncMessage).payload);
-        break;
-    }
-  }
-
+  // Set up message listener
   window.addEventListener("message", handleMessage);
 
   // Send initial widget_ready to parent
+  // (Parent may not be listening yet; it will send bridge_ready when ready, and we'll re-send)
   sendWidgetReady();
 
   return {
@@ -205,25 +158,17 @@ export function createWidgetBridgeClient(
       // Update local store immediately for responsive UI (optimistic update)
       store.updateModel(commId, state, buffers);
 
-      if (transport) {
-        transport.notify(NTERACT_WIDGET_COMM_MSG, {
+      const msg: WidgetCommMsgMessage = {
+        type: "widget_comm_msg",
+        payload: {
           commId,
           method: "update" as CommMethod,
           data: state,
           buffers,
-        });
-      } else {
-        const msg: WidgetCommMsgMessage = {
-          type: "widget_comm_msg",
-          payload: {
-            commId,
-            method: "update" as CommMethod,
-            data: state,
-            buffers,
-          },
-        };
-        window.parent.postMessage(msg, "*", buffers ?? []);
-      }
+        },
+      };
+      // Transfer buffers for efficiency (note: buffers are consumed by transfer)
+      window.parent.postMessage(msg, "*", buffers ?? []);
     },
 
     sendCustom(
@@ -231,37 +176,25 @@ export function createWidgetBridgeClient(
       content: Record<string, unknown>,
       buffers?: ArrayBuffer[],
     ) {
-      if (transport) {
-        transport.notify(NTERACT_WIDGET_COMM_MSG, {
+      const msg: WidgetCommMsgMessage = {
+        type: "widget_comm_msg",
+        payload: {
           commId,
           method: "custom" as CommMethod,
           data: content,
           buffers,
-        });
-      } else {
-        const msg: WidgetCommMsgMessage = {
-          type: "widget_comm_msg",
-          payload: {
-            commId,
-            method: "custom" as CommMethod,
-            data: content,
-            buffers,
-          },
-        };
-        window.parent.postMessage(msg, "*", buffers ?? []);
-      }
+        },
+      };
+      // Transfer buffers for efficiency
+      window.parent.postMessage(msg, "*", buffers ?? []);
     },
 
     closeComm(commId: string) {
-      if (transport) {
-        transport.notify(NTERACT_WIDGET_COMM_CLOSE, { commId });
-      } else {
-        const msg: WidgetCommCloseMessage = {
-          type: "widget_comm_close",
-          payload: { commId },
-        };
-        window.parent.postMessage(msg, "*");
-      }
+      const msg: WidgetCommCloseMessage = {
+        type: "widget_comm_close",
+        payload: { commId },
+      };
+      window.parent.postMessage(msg, "*");
     },
 
     dispose() {
