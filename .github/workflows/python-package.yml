@@ -47,6 +47,7 @@ jobs:
               - 'python/gremlin/**'
               - 'crates/runtimed-py/**'
               - 'crates/runtimed/**'
+              - 'apps/mcp-app/**'
               - '.github/workflows/python-package.yml'
 
   python-lint-and-test:
@@ -221,6 +222,17 @@ jobs:
 
       - name: Set up Python
         run: uv python install 3.12
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build MCP Apps widget
+        run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
 
       - name: Set dev version
         run: |
