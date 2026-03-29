@@ -27,29 +27,48 @@ describe("Trust Dialog Dismiss", () => {
     await waitForNotebookSynced();
     console.log("[trust-dialog-dismiss] Notebook synced");
 
-    // Find the first code cell and set source
     const codeCell = await $('[data-cell-type="code"]');
     await codeCell.waitForExist({ timeout: 10000 });
-
     await setCellSource(codeCell, "print('trust test')");
-    console.log("[trust-dialog-dismiss] Set cell source");
 
-    // Click execute — this triggers tryStartKernel → checkTrust → trust dialog
-    const executeButton = await codeCell.$('[data-testid="execute-button"]');
-    await executeButton.waitForClickable({ timeout: 10000 });
-    await executeButton.click();
-    console.log("[trust-dialog-dismiss] Clicked execute");
+    // The trust dialog only appears when checkTrust returns "untrusted".
+    // The daemon may not have synced the notebook metadata yet, so
+    // retry clicking execute until the dialog appears.
+    let dialogFound = false;
+    for (let attempt = 1; attempt <= 6; attempt++) {
+      console.log(
+        `[trust-dialog-dismiss] Execute attempt ${attempt} — triggering trust check`,
+      );
 
-    // Wait for the trust dialog to appear
+      const executeButton = await codeCell.$('[data-testid="execute-button"]');
+      await executeButton.waitForClickable({ timeout: 10000 });
+      await executeButton.click();
+
+      // Wait for trust dialog — short timeout per attempt, retry if not found
+      try {
+        const dialog = await $('[data-testid="trust-dialog"]');
+        await dialog.waitForExist({ timeout: 15000 });
+        dialogFound = true;
+        console.log(
+          `[trust-dialog-dismiss] Trust dialog appeared on attempt ${attempt}`,
+        );
+        break;
+      } catch {
+        console.log(
+          `[trust-dialog-dismiss] Dialog not found on attempt ${attempt}, retrying...`,
+        );
+        await browser.pause(5000);
+      }
+    }
+
+    if (!dialogFound) {
+      throw new Error(
+        "Trust dialog never appeared after 6 attempts — daemon may not have synced notebook metadata",
+      );
+    }
+
+    // Now test the dismiss behavior
     const dialog = await $('[data-testid="trust-dialog"]');
-    await dialog.waitForExist({
-      timeout: 60000,
-      timeoutMsg:
-        "Trust dialog did not appear — fixture notebook should have untrusted deps",
-    });
-    console.log("[trust-dialog-dismiss] Trust dialog appeared");
-
-    // Wait for approve button to be ready
     const approveButton = await $('[data-testid="trust-approve-button"]');
     await approveButton.waitForEnabled({ timeout: 30000 });
     await approveButton.waitForClickable({ timeout: 5000 });
