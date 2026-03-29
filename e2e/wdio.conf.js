@@ -119,7 +119,7 @@ export const config = {
 
   mochaOpts: {
     ui: "bdd",
-    timeout: 360000, // 6 minutes to handle cold CI kernel startup (pool warming + env creation)
+    timeout: 660000, // 11 minutes — inline env creation (UV/Conda) can take 8+ min on cold CI
   },
 
   /**
