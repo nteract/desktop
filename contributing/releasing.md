@@ -30,7 +30,7 @@ These are just incrementing integers. They evolve independently from each other 
 
 ## Bumping Versions
 
-All four version sources must stay in sync. When preparing a release:
+All six version sources must stay in sync. When preparing a release:
 
 ```bash
 # Update all of these to the same version:
@@ -39,6 +39,7 @@ All four version sources must stay in sync. When preparing a release:
 #   crates/notebook/Cargo.toml
 #   crates/notebook/tauri.conf.json
 #   python/runtimed/pyproject.toml
+#   python/nteract/pyproject.toml
 
 # Then let Cargo.lock catch up:
 cargo check
