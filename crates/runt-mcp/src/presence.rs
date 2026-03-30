@@ -7,16 +7,20 @@
 use notebook_doc::presence::{self, CursorPosition};
 use notebook_sync::handle::DocHandle;
 
-/// Peer label shown in the frontend presence UI.
-const PEER_LABEL: &str = "Agent";
-
 /// Emit a cursor position (line, column in a cell).
 ///
 /// Shows a blinking cursor in the notebook app at the specified position.
-pub async fn emit_cursor(handle: &DocHandle, cell_id: &str, line: u32, column: u32) {
+/// `peer_label` is the MCP client's display name (e.g. "Claude Code").
+pub async fn emit_cursor(
+    handle: &DocHandle,
+    cell_id: &str,
+    line: u32,
+    column: u32,
+    peer_label: &str,
+) {
     let data = presence::encode_cursor_update_labeled(
         "local",
-        Some(PEER_LABEL),
+        Some(peer_label),
         &CursorPosition {
             cell_id: cell_id.to_string(),
             line,
@@ -29,8 +33,22 @@ pub async fn emit_cursor(handle: &DocHandle, cell_id: &str, line: u32, column: u
 /// Emit a cell focus (agent is working on this cell, no specific cursor).
 ///
 /// Shows a presence dot on the cell without a blinking cursor.
-pub async fn emit_focus(handle: &DocHandle, cell_id: &str) {
-    let data = presence::encode_focus_update_labeled("local", Some(PEER_LABEL), cell_id);
+/// `peer_label` is the MCP client's display name (e.g. "Claude Code").
+pub async fn emit_focus(handle: &DocHandle, cell_id: &str, peer_label: &str) {
+    let data = presence::encode_focus_update_labeled("local", Some(peer_label), cell_id);
+    let _ = handle.send_presence(data).await;
+}
+
+/// Announce presence immediately after connecting to a notebook.
+///
+/// Without this, the peer is invisible in the presence UI until it performs
+/// an action that emits presence (e.g. editing a cell).
+pub async fn announce(handle: &DocHandle, peer_label: &str) {
+    let data = if let Some(cell_id) = handle.first_cell_id() {
+        presence::encode_focus_update_labeled("local", Some(peer_label), &cell_id)
+    } else {
+        presence::encode_custom_update_labeled("local", Some(peer_label), &[])
+    };
     let _ = handle.send_presence(data).await;
 }
 

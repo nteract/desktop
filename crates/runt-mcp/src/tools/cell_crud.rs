@@ -140,8 +140,9 @@ pub async fn create_cell(
     let _ = handle.confirm_sync().await;
 
     // Cursor at end of source (shows "finished typing")
+    let peer_label = server.get_peer_label().await;
     let (end_line, end_col) = crate::presence::offset_to_line_col(source, source.len());
-    crate::presence::emit_cursor(handle, &cell_id, end_line, end_col).await;
+    crate::presence::emit_cursor(handle, &cell_id, end_line, end_col, &peer_label).await;
 
     if and_run && cell_type == "code" {
         let result = execution::execute_and_wait(
@@ -214,8 +215,9 @@ pub async fn set_cell(
         let _ = handle.confirm_sync().await;
 
         // Cursor at end of new source
+        let peer_label = server.get_peer_label().await;
         let (end_line, end_col) = crate::presence::offset_to_line_col(src, src.len());
-        crate::presence::emit_cursor(handle, cell_id, end_line, end_col).await;
+        crate::presence::emit_cursor(handle, cell_id, end_line, end_col, &peer_label).await;
     }
     if let Some(ct) = cell_type {
         handle
@@ -258,7 +260,8 @@ pub async fn delete_cell(
         }
     };
 
-    crate::presence::emit_focus(&session.handle, cell_id).await;
+    let peer_label = server.get_peer_label().await;
+    crate::presence::emit_focus(&session.handle, cell_id, &peer_label).await;
 
     let deleted = session
         .handle
@@ -298,7 +301,8 @@ pub async fn move_cell(
         .move_cell(cell_id, after_cell_id)
         .map_err(|e| McpError::internal_error(format!("Failed to move cell: {e}"), None))?;
 
-    crate::presence::emit_focus(&session.handle, cell_id).await;
+    let peer_label = server.get_peer_label().await;
+    crate::presence::emit_focus(&session.handle, cell_id, &peer_label).await;
 
     let result = serde_json::json!({
         "cell_id": cell_id,
@@ -326,7 +330,8 @@ pub async fn clear_outputs(
         }
     };
 
-    crate::presence::emit_focus(&session.handle, cell_id).await;
+    let peer_label = server.get_peer_label().await;
+    crate::presence::emit_focus(&session.handle, cell_id, &peer_label).await;
 
     let cleared = session
         .handle

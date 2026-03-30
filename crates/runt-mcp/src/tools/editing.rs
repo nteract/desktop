@@ -125,7 +125,8 @@ pub async fn replace_match(
     let new_source = crate::editing::apply_replacement(&source, &span, content);
     let end_offset = span.start + content.len();
     let (line, col) = crate::presence::offset_to_line_col(&new_source, end_offset);
-    crate::presence::emit_cursor(handle, cell_id, line, col).await;
+    let peer_label = server.get_peer_label().await;
+    crate::presence::emit_cursor(handle, cell_id, line, col, &peer_label).await;
 
     if and_run {
         let result = execution::execute_and_wait(
@@ -211,7 +212,8 @@ pub async fn replace_regex(
     let new_source = crate::editing::apply_replacement(&source, &span, content);
     let end_offset = span.start + content.len();
     let (line, col) = crate::presence::offset_to_line_col(&new_source, end_offset);
-    crate::presence::emit_cursor(handle, cell_id, line, col).await;
+    let peer_label = server.get_peer_label().await;
+    crate::presence::emit_cursor(handle, cell_id, line, col, &peer_label).await;
 
     if and_run {
         let result = execution::execute_and_wait(

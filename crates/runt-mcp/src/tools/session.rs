@@ -203,6 +203,10 @@ pub async fn join_notebook(
                 "cells": cells_summary,
             });
 
+            // Announce presence so the peer is visible immediately
+            let peer_label = server.get_peer_label().await;
+            crate::presence::announce(handle, &peer_label).await;
+
             let session = NotebookSession {
                 handle: result.handle,
                 notebook_id,
@@ -259,6 +263,10 @@ pub async fn open_notebook(
                 "cells": cells_summary,
             });
 
+            // Announce presence so the peer is visible immediately
+            let peer_label = server.get_peer_label().await;
+            crate::presence::announce(handle, &peer_label).await;
+
             let session = NotebookSession {
                 handle: result.handle,
                 notebook_id,
@@ -291,6 +299,11 @@ pub async fn create_notebook(
     {
         Ok(result) => {
             let notebook_id = result.handle.notebook_id().to_string();
+
+            // Announce presence so the peer is visible immediately
+            let peer_label = server.get_peer_label().await;
+            crate::presence::announce(&result.handle, &peer_label).await;
+
             // Add dependencies if specified
             let deps: Vec<String> = request
                 .arguments
