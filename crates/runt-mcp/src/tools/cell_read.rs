@@ -88,22 +88,19 @@ pub async fn get_cell(
         status.as_deref(),
     );
 
-    let output_text = formatting::format_outputs_text(&outputs);
+    // Return multiple Content items: header+source, then one per output
+    let mut items = Vec::new();
 
-    let text = if !cell.source.is_empty() && !output_text.is_empty() {
-        format!(
-            "{header}\n\n{}\n\n───────────────────\n\n{output_text}",
-            cell.source
-        )
-    } else if !cell.source.is_empty() {
-        format!("{header}\n\n{}", cell.source)
-    } else if !output_text.is_empty() {
-        format!("{header}\n\n{output_text}")
+    if !cell.source.is_empty() {
+        items.push(Content::text(format!("{header}\n\n{}", cell.source)));
     } else {
-        header
-    };
+        items.push(Content::text(header));
+    }
 
-    Ok(CallToolResult::success(vec![Content::text(text)]))
+    // Each output as a separate Content item (matches Python _cell_to_content)
+    items.extend(formatting::outputs_to_content_items(&outputs));
+
+    Ok(CallToolResult::success(items))
 }
 
 /// Get all cells with configurable format.
@@ -172,6 +169,13 @@ pub async fn get_all_cells(
                     .filter_map(|raw| serde_json::from_str(raw).ok())
                     .collect();
 
+                // Extract tags from cell metadata
+                let tags: Vec<String> = cell
+                    .metadata
+                    .get("tags")
+                    .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                    .unwrap_or_default();
+
                 json_cells.push(serde_json::json!({
                     "cell_id": cell.id,
                     "cell_type": cell.cell_type,
@@ -179,6 +183,7 @@ pub async fn get_all_cells(
                     "source": cell.source,
                     "outputs": output_values,
                     "status": status,
+                    "tags": tags,
                 }));
             }
             let text = serde_json::to_string_pretty(&json_cells).unwrap_or_default();
@@ -236,9 +241,15 @@ pub async fn get_all_cells(
                     .await;
                     let output_text = formatting::format_outputs_text(&outputs);
                     if !output_text.is_empty() {
-                        let output_line = output_text.replace('\n', " ");
-                        let output_preview = if output_line.len() > preview_chars {
-                            format!("{}...", &output_line[..preview_chars])
+                        // Collapse to single line (matches Python format)
+                        let output_line: String =
+                            output_text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        let char_count = output_line.chars().count();
+                        let output_preview = if char_count > preview_chars {
+                            let truncated: String =
+                                output_line.chars().take(preview_chars).collect();
+                            let remaining = char_count - preview_chars;
+                            format!("{truncated}…[+{remaining} chars]")
                         } else {
                             output_line
                         };
@@ -274,7 +285,7 @@ fn get_cell_status(handle: &notebook_sync::handle::DocHandle, cell_id: &str) -> 
 }
 
 /// Build a map of cell_id -> status from RuntimeState.
-fn build_cell_status_map(
+pub fn build_cell_status_map(
     handle: &notebook_sync::handle::DocHandle,
 ) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();

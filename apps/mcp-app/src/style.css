@@ -136,8 +136,17 @@ body {
   color: var(--fg-muted);
 }
 
-.empty-state {
+.status-indicator {
   text-align: center;
-  padding: 24px;
+  padding: 8px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.status-error {
+  color: var(--error-fg);
+}
+
+.status-running {
   color: var(--fg-muted);
 }

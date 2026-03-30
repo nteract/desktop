@@ -14,9 +14,9 @@
  * nightly only looks for `runt-nightly`.
  */
 
-import { execFileSync, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+const { execFileSync, spawn } = require("node:child_process");
+const { existsSync } = require("node:fs");
+const { join } = require("node:path");
 
 const channel = process.env.NTERACT_CHANNEL || "stable";
 const binaryName = channel === "nightly" ? "runt-nightly" : "runt";

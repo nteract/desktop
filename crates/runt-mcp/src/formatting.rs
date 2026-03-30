@@ -82,16 +82,30 @@ pub fn format_output_text(output: &Output) -> Option<String> {
     }
 }
 
-/// Format all outputs as a single text string.
+/// Format all outputs as a single text string (double-newline separated).
 pub fn format_outputs_text(outputs: &[Output]) -> String {
     outputs
         .iter()
         .filter_map(format_output_text)
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n\n")
 }
 
-/// Format a compact one-line cell summary.
+/// Convert outputs to separate Content items (one per output).
+/// This gives MCP clients richer structure than a single concatenated string.
+pub fn outputs_to_content_items(outputs: &[Output]) -> Vec<rmcp::model::Content> {
+    outputs
+        .iter()
+        .filter_map(format_output_text)
+        .map(rmcp::model::Content::text)
+        .collect()
+}
+
+/// Format a compact one-line cell summary (matches Python _format_cell_summary).
+///
+/// Example output:
+///   0 | markdown | id=cell-1be2a179 | # Crate Download Analysis
+///   1 | code | running | id=cell-e18fcc2a | exec=4 | import requests…[+45 chars]
 pub fn format_cell_summary(
     index: usize,
     cell_id: &str,
@@ -101,32 +115,73 @@ pub fn format_cell_summary(
     status: Option<&str>,
     preview_chars: usize,
 ) -> String {
-    let ec = execution_count.unwrap_or("");
-    let st = status.unwrap_or("");
-    let preview = if source.len() > preview_chars {
-        format!("{}…", &source[..preview_chars])
-    } else {
-        source.to_string()
-    };
-    // Replace newlines with ↵ for single-line display
-    let preview = preview.replace('\n', "↵");
-    format!("{index} | {cell_type} | {st} | id={cell_id} | [{ec}] | {preview}")
+    let mut parts = vec![index.to_string(), cell_type.to_string()];
+
+    // Status (running/queued) comes before id, like in Python
+    if let Some(st) = status {
+        if !st.is_empty() {
+            parts.push(st.to_string());
+        }
+    }
+
+    parts.push(format!("id={cell_id}"));
+
+    // execution_count as exec=N (only for code cells with a value)
+    if let Some(ec) = execution_count {
+        if !ec.is_empty() && cell_type == "code" {
+            parts.push(format!("exec={ec}"));
+        }
+    }
+
+    // Source preview — collapse to single line, strip whitespace
+    if !source.is_empty() {
+        let source_line: String = source.split_whitespace().collect::<Vec<_>>().join(" ");
+        let char_count = source_line.chars().count();
+        let preview = if char_count > preview_chars {
+            let truncated: String = source_line.chars().take(preview_chars).collect();
+            let remaining = char_count - preview_chars;
+            format!("{truncated}…[+{remaining} chars]")
+        } else {
+            source_line
+        };
+        parts.push(preview);
+    }
+
+    parts.join(" | ")
 }
 
-/// Format a cell header line.
+/// Format a cell header line (matches Python _format_header).
+///
+/// Example: ━━━ cell-abc12345 (code) ✓ idle [3] ━━━
 pub fn format_cell_header(
     cell_id: &str,
     cell_type: &str,
     execution_count: Option<&str>,
     status: Option<&str>,
 ) -> String {
-    let ec_display = execution_count
-        .filter(|s| !s.is_empty())
-        .map(|s| format!("[{s}]"))
-        .unwrap_or_default();
-    let status_display = status
-        .filter(|s| !s.is_empty())
-        .map(|s| format!(" ({s})"))
-        .unwrap_or_default();
-    format!("── {cell_type} {ec_display}{status_display} ── {cell_id}")
+    let mut parts = vec![format!("━━━ {cell_id}")];
+
+    parts.push(format!("({cell_type})"));
+
+    if let Some(st) = status {
+        if !st.is_empty() {
+            let icon = match st {
+                "idle" => "✓",
+                "error" => "✗",
+                "running" => "◐",
+                "queued" => "⧗",
+                _ => "?",
+            };
+            parts.push(format!("{icon} {st}"));
+        }
+    }
+
+    if let Some(ec) = execution_count {
+        if !ec.is_empty() {
+            parts.push(format!("[{ec}]"));
+        }
+    }
+
+    parts.push("━━━".to_string());
+    parts.join(" ")
 }

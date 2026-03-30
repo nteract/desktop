@@ -73,45 +73,45 @@ pub async fn execute_cell(
     )
     .await;
 
-    // Format text content
+    // Format as multiple Content items: header, then one per output
     let header = formatting::format_cell_header(
         &result.cell_id,
         "code",
         result.execution_count.as_deref(),
         Some(&result.status),
     );
-    let output_text = formatting::format_outputs_text(&result.outputs);
-    let text = if !output_text.is_empty() {
-        format!("{header}\n\n{output_text}")
-    } else {
-        header
-    };
 
-    let items = vec![Content::text(text)];
+    let mut items = vec![Content::text(header)];
+    items.extend(formatting::outputs_to_content_items(&result.outputs));
 
     // Build structured content for MCP Apps widget using the protocol's
     // structured_content field instead of a text-based fallback.
+    // Only send structured content when there are outputs to render.
     let cell_snapshot = handle.get_cell(&result.cell_id);
     let structured_content = if let Some(snap) = cell_snapshot {
-        let outputs = runtimed_client::output_resolver::resolve_cell_outputs(
-            &snap.outputs,
-            &server.blob_base_url,
-            &server.blob_store_path,
-        )
-        .await;
-        let resolved = runtimed_client::resolved_output::ResolvedCell {
-            id: snap.id,
-            cell_type: snap.cell_type,
-            position: snap.position,
-            source: snap.source,
-            execution_count: snap.execution_count.parse().ok(),
-            outputs,
-            metadata_json: serde_json::to_string(&snap.metadata).unwrap_or_default(),
-        };
-        Some(structured::cell_structured_content(
-            &resolved,
-            &result.status,
-        ))
+        if snap.outputs.is_empty() {
+            None
+        } else {
+            let outputs = runtimed_client::output_resolver::resolve_cell_outputs(
+                &snap.outputs,
+                &server.blob_base_url,
+                &server.blob_store_path,
+            )
+            .await;
+            let resolved = runtimed_client::resolved_output::ResolvedCell {
+                id: snap.id,
+                cell_type: snap.cell_type,
+                position: snap.position,
+                source: snap.source,
+                execution_count: snap.execution_count.parse().ok(),
+                outputs,
+                metadata_json: serde_json::to_string(&snap.metadata).unwrap_or_default(),
+            };
+            Some(structured::cell_structured_content(
+                &resolved,
+                &result.status,
+            ))
+        }
     } else {
         None
     };

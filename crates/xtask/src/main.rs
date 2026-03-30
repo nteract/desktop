@@ -590,6 +590,20 @@ fn cmd_build(rust_only: bool) {
         require_pnpm();
     }
 
+    // Phase 0: Build the MCP widget HTML before any Rust compilation.
+    // runt-mcp uses include_str!("../assets/_output.html") which fails
+    // if the asset doesn't exist yet. This must run before cargo build.
+    if !rust_only {
+        build_mcp_widget();
+    } else {
+        // Even in --rust-only mode, ensure the asset exists
+        let widget_asset = Path::new("crates/runt-mcp/assets/_output.html");
+        if !widget_asset.exists() {
+            eprintln!("MCP widget asset missing — building it first...");
+            build_mcp_widget();
+        }
+    }
+
     // Phase 1: Single cargo invocation for all binaries.
     // Building all packages together ensures workspace feature unification
     // happens in one pass, so the later `cargo tauri build` finds everything
@@ -625,9 +639,7 @@ fn cmd_build(rust_only: bool) {
         ensure_maturin_develop();
     }));
 
-    handles.push(thread::spawn(|| {
-        build_mcp_widget();
-    }));
+    // Note: build_mcp_widget() already ran in Phase 0 above.
 
     if rust_only {
         let dist_dir = Path::new("apps/notebook/dist");
@@ -2124,8 +2136,8 @@ fn cmd_mcpb(output: Option<&str>, variant: &str) {
         eprintln!("Failed to create server directory: {e}");
         exit(1);
     });
-    fs::copy("mcpb/server/launch.mjs", server_dir.join("launch.mjs")).unwrap_or_else(|e| {
-        eprintln!("Failed to copy server/launch.mjs: {e}");
+    fs::copy("mcpb/server/launch.js", server_dir.join("launch.js")).unwrap_or_else(|e| {
+        eprintln!("Failed to copy server/launch.js: {e}");
         exit(1);
     });
 

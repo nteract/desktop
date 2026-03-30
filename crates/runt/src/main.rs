@@ -644,7 +644,7 @@ async fn run_mcp_server() -> Result<()> {
     let (blob_base_url, blob_store_path) =
         runtimed_client::daemon_paths::get_blob_paths_async(&socket_path).await;
 
-    use rmcp::ServiceExt;
+    use rmcp::service::ServiceExt;
     let server = runt_mcp::NteractMcp::new(socket_path, blob_base_url, blob_store_path);
     let transport = rmcp::transport::io::stdio();
     let handle = server.serve(transport).await?;
