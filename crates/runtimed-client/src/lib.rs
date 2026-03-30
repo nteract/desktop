@@ -17,6 +17,9 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub mod client;
+pub mod daemon_paths;
+pub mod output_resolver;
+pub mod resolved_output;
 pub use notebook_doc;
 pub use notebook_doc::metadata as notebook_metadata;
 /// Re-export connection types from notebook-protocol.

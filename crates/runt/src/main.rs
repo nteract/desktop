@@ -228,6 +228,11 @@ enum Commands {
     // =========================================================================
     // Development utilities (only shown when RUNTIMED_DEV=1)
     // =========================================================================
+    /// Run as an MCP server (stdin/stdout JSON-RPC).
+    /// Hidden until the Rust MCP server has full tool parity with Python.
+    #[command(hide = true)]
+    Mcp,
+
     /// Manage cached Python environments
     Env {
         #[command(subcommand)]
@@ -568,6 +573,7 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
             daemon_command(DaemonCommands::Logs { follow, lines }).await?
         }
         Some(Commands::Diagnostics { output }) => diagnostics_command(output).await?,
+        Some(Commands::Mcp) => run_mcp_server().await?,
         Some(Commands::Env { command }) => env_command(command).await?,
 
         // Development commands (requires RUNTIMED_DEV=1)
@@ -630,6 +636,19 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn run_mcp_server() -> Result<()> {
+    let socket_path = runtimed_client::daemon_paths::get_socket_path();
+    let (blob_base_url, blob_store_path) =
+        runtimed_client::daemon_paths::get_blob_paths_async(&socket_path).await;
+
+    use rmcp::ServiceExt;
+    let server = runt_mcp::NteractMcp::new(socket_path, blob_base_url, blob_store_path);
+    let transport = rmcp::transport::io::stdio();
+    let handle = server.serve(transport).await?;
+    handle.waiting().await?;
     Ok(())
 }
 

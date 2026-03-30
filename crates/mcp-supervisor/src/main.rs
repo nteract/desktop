@@ -325,6 +325,36 @@ fn run_cargo_build_daemon(project_root: &Path) -> bool {
     }
 }
 
+/// Build the runt CLI binary (which includes runt-mcp).
+/// Respects release mode so the built binary matches what cargo_binary() resolves.
+fn build_runt_cli(project_root: &Path) -> bool {
+    let mut args = vec!["build", "-p", "runt-cli"];
+    if use_release_binaries() {
+        args.push("--release");
+    }
+    let status = std::process::Command::new("cargo")
+        .args(&args)
+        .current_dir(project_root)
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            info!("cargo build -p runt-cli succeeded");
+            true
+        }
+        Ok(s) => {
+            error!("cargo build -p runt-cli failed with {s}");
+            false
+        }
+        Err(e) => {
+            error!("Failed to run cargo build: {e}");
+            false
+        }
+    }
+}
+
 fn run_maturin_develop(project_root: &Path) -> bool {
     // Route stdout to null — the supervisor uses stdout for MCP transport,
     // so maturin output would corrupt the JSON-RPC stream. Stderr goes to
@@ -372,21 +402,43 @@ fn run_maturin_develop(project_root: &Path) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Spawn the nteract MCP server as a child process and return an rmcp client.
+///
+/// By default, spawns the Python `uv run nteract` server (full 27-tool suite).
+/// When `use_rust_mcp` is true, spawns the Rust `runt mcp` server instead
+/// (fewer tools, but no Python overhead).
 async fn spawn_nteract_child(
     project_root: &Path,
     socket_path: &str,
+    use_rust_mcp: bool,
 ) -> Result<rmcp::service::RunningService<RoleNteractClient, NteractClientHandler>, String> {
-    let path = augmented_path();
-
-    let transport = TokioChildProcess::new(Command::new("uv").configure(|cmd| {
-        cmd.args(["run", "--no-sync", "--directory"])
-            .arg(project_root)
-            .arg("nteract")
-            .env("RUNTIMED_DEV", "1")
-            .env("RUNTIMED_SOCKET_PATH", socket_path)
-            .env("PATH", &path);
-    }))
-    .map_err(|e| format!("Failed to spawn nteract child: {e}"))?;
+    let transport = if use_rust_mcp {
+        let runt = cargo_binary(project_root, "runt");
+        if !runt.exists() {
+            return Err(format!(
+                "runt binary not found at {}. Run `cargo build -p runt-cli` first.",
+                runt.display()
+            ));
+        }
+        info!("Using Rust MCP server (runt mcp)");
+        TokioChildProcess::new(Command::new(&runt).configure(|cmd| {
+            cmd.arg("mcp")
+                .env("RUNTIMED_DEV", "1")
+                .env("RUNTIMED_SOCKET_PATH", socket_path);
+        }))
+        .map_err(|e| format!("Failed to spawn runt mcp child: {e}"))?
+    } else {
+        let path = augmented_path();
+        info!("Using Python MCP server (uv run nteract)");
+        TokioChildProcess::new(Command::new("uv").configure(|cmd| {
+            cmd.args(["run", "--no-sync", "--directory"])
+                .arg(project_root)
+                .arg("nteract")
+                .env("RUNTIMED_DEV", "1")
+                .env("RUNTIMED_SOCKET_PATH", socket_path)
+                .env("PATH", &path);
+        }))
+        .map_err(|e| format!("Failed to spawn nteract child: {e}"))?
+    };
 
     let client = NteractClientHandler
         .serve(transport)
@@ -425,8 +477,10 @@ impl ClientHandler for NteractClientHandler {
 enum ChangeKind {
     /// Only Python files changed — restart child only.
     PythonOnly,
-    /// Rust files changed — needs maturin develop + restart.
+    /// Rust bindings files changed (runtimed-py, runtimed) — needs maturin develop + restart.
     RustChanged,
+    /// Rust MCP server files changed (runt-mcp, runtimed-client) — needs cargo build + restart.
+    RustMcpChanged,
 }
 
 /// A managed long-running child process (vite, notebook app, etc.).
@@ -464,6 +518,8 @@ struct SupervisorState {
     recent_crashes: Vec<Instant>,
     /// Last error message from child.
     last_error: Option<String>,
+    /// Whether to use the Rust MCP server (runt mcp) instead of Python.
+    use_rust_mcp: bool,
     /// Whether we started the daemon (so we know to clean it up).
     daemon_child: Option<std::process::Child>,
     /// Channel to request a tool list changed notification from the server context.
@@ -501,6 +557,7 @@ impl Supervisor {
         project_root: PathBuf,
         socket_path: String,
         child_client: rmcp::service::RunningService<RoleNteractClient, NteractClientHandler>,
+        use_rust_mcp: bool,
         daemon_child: Option<std::process::Child>,
         tool_list_changed_tx: mpsc::Sender<()>,
     ) -> Self {
@@ -515,6 +572,7 @@ impl Supervisor {
                 restart_count: 0,
                 recent_crashes: Vec::new(),
                 last_error: None,
+                use_rust_mcp,
                 daemon_child,
                 tool_list_changed_tx: Some(tool_list_changed_tx),
                 managed: HashMap::new(),
@@ -554,7 +612,8 @@ impl Supervisor {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Phase 3: Spawn child without holding the lock
-        match spawn_nteract_child(&project_root, &socket_path).await {
+        let use_rust_mcp = self.state.read().await.use_rust_mcp;
+        match spawn_nteract_child(&project_root, &socket_path, use_rust_mcp).await {
             Ok(client) => {
                 // Phase 4: Re-acquire lock to store the new client
                 let mut state = self.state.write().await;
@@ -944,15 +1003,43 @@ impl Supervisor {
 
     /// Handle a file change event: restart child (and rebuild if Rust changed).
     async fn handle_file_change(&self, kind: ChangeKind) {
-        if kind == ChangeKind::RustChanged {
-            info!("Rust files changed, running maturin develop...");
-            let project_root = {
-                let state = self.state.read().await;
-                state.project_root.clone()
-            };
-            if !run_maturin_develop(&project_root) {
-                error!("maturin develop failed, keeping current child");
-                return;
+        let project_root = {
+            let state = self.state.read().await;
+            state.project_root.clone()
+        };
+
+        match kind {
+            ChangeKind::RustMcpChanged => {
+                info!("Rust MCP files changed, building runt-cli...");
+                if !build_runt_cli(&project_root) {
+                    error!("cargo build -p runt-cli failed, keeping current child");
+                    return;
+                }
+                // Also run maturin develop in background for the dev workflow
+                // (keeps runtimed-py up to date for tests/notebooks)
+                let pr = project_root.clone();
+                tokio::task::spawn_blocking(move || {
+                    let _ = run_maturin_develop(&pr);
+                });
+            }
+            ChangeKind::RustChanged => {
+                info!("Rust binding files changed, building runt-cli + maturin develop...");
+                // runtimed changes affect both runt-mcp (via runtimed-client) and Python bindings
+                if !build_runt_cli(&project_root) {
+                    error!("cargo build -p runt-cli failed, keeping current child");
+                    return;
+                }
+                if !run_maturin_develop(&project_root) {
+                    warn!("maturin develop failed (runt mcp will still restart)");
+                }
+            }
+            ChangeKind::PythonOnly => {
+                // Python changes don't affect the Rust MCP server, but run maturin
+                // develop in background for the dev workflow
+                let pr = project_root.clone();
+                tokio::task::spawn_blocking(move || {
+                    let _ = run_maturin_develop(&pr);
+                });
             }
         }
 
@@ -1703,12 +1790,20 @@ fn classify_change(path: &Path, project_root: &Path) -> Option<ChangeKind> {
     let rel = path.strip_prefix(project_root).ok()?;
     let rel_str = rel.to_string_lossy();
 
-    // Rust source files in runtimed-py or runtimed crates
+    // Rust source files that affect Python bindings (needs maturin develop + cargo build)
+    // runtimed-client is shared between runtimed-py and runt-mcp, so changes there
+    // affect both the Python and Rust MCP servers.
     if (rel_str.starts_with("crates/runtimed-py/src/")
-        || rel_str.starts_with("crates/runtimed/src/"))
+        || rel_str.starts_with("crates/runtimed/src/")
+        || rel_str.starts_with("crates/runtimed-client/src/"))
         && rel_str.ends_with(".rs")
     {
         return Some(ChangeKind::RustChanged);
+    }
+
+    // Rust MCP server files only (needs cargo build -p runt-cli, no maturin)
+    if rel_str.starts_with("crates/runt-mcp/src/") && rel_str.ends_with(".rs") {
+        return Some(ChangeKind::RustMcpChanged);
     }
 
     // Python source files
@@ -1735,6 +1830,8 @@ fn start_file_watcher(
         "python/runtimed/src",
         "crates/runtimed-py/src",
         "crates/runtimed/src",
+        "crates/runt-mcp/src",
+        "crates/runtimed-client/src",
     ]
     .iter()
     .map(|p| project_root.join(p))
@@ -1960,14 +2057,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // Step 2: Ensure maturin develop has been run
-    if !ensure_maturin_develop(&project_root) {
-        error!("Failed to build Python bindings — nteract MCP server may not work");
+    // Step 2: Check NTERACT_RUST_MCP env var to decide which server to use
+    let use_rust_mcp = std::env::var("NTERACT_RUST_MCP").is_ok();
+
+    if use_rust_mcp {
+        // Always rebuild runt-cli at startup to ensure the binary matches source.
+        // cargo xtask run-mcp only recompiles mcp-supervisor, not runt-cli.
+        info!("Building runt-cli for Rust MCP server...");
+        if !build_runt_cli(&project_root) {
+            error!("Failed to build runt-cli — Rust MCP server will not work");
+        }
+        // Also ensure maturin develop in background (dev workflow)
+        let pr = project_root.clone();
+        tokio::task::spawn_blocking(move || {
+            if !ensure_maturin_develop(&pr) {
+                warn!("maturin develop failed — Python bindings may be stale");
+            }
+        });
+    } else {
+        // Python server — ensure maturin develop (blocking, needed for startup)
+        if !ensure_maturin_develop(&project_root) {
+            error!("Failed to build Python bindings — nteract MCP server may not work");
+        }
     }
 
-    // Step 3: Spawn nteract child
-    info!("Spawning nteract MCP server...");
-    let child_client = spawn_nteract_child(&project_root, &socket_path)
+    // Step 3: Spawn MCP child server
+    info!(
+        "Spawning {} MCP server...",
+        if use_rust_mcp {
+            "runt mcp (Rust)"
+        } else {
+            "nteract (Python)"
+        }
+    );
+    let child_client = spawn_nteract_child(&project_root, &socket_path, use_rust_mcp)
         .await
         .map_err(|e| {
             error!("{e}");
@@ -1990,6 +2113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         project_root,
         socket_path,
         child_client,
+        use_rust_mcp,
         daemon_child,
         tool_list_changed_tx,
     );
