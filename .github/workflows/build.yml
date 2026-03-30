@@ -421,6 +421,17 @@ jobs:
         with:
           shared-key: ${{ matrix.platform.runner }}
 
+      # Build MCP output widget HTML (needed by runt-mcp's include_str!)
+      - uses: pnpm/action-setup@v4
+        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+      - uses: actions/setup-node@v4
+        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
+        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+
       - name: Build external binaries
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
         shell: bash

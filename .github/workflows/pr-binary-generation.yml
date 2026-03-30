@@ -182,6 +182,10 @@ jobs:
       - name: Generate icons
         run: cargo xtask icons
 
+      # Build MCP output widget HTML (needed by runt-mcp's include_str!)
+      - name: Build MCP output widget
+        run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
+
       - name: Build external binaries (Unix)
         if: runner.os != 'Windows'
         shell: bash
