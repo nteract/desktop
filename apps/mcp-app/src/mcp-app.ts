@@ -145,9 +145,25 @@ function render(data: NteractContent) {
   root.innerHTML = "";
   const cells = data.cells || (data.cell ? [data.cell] : []);
   if (cells.length === 0) {
-    root.innerHTML = '<div class="empty-state">No output</div>';
+    // No cell data — hide the widget entirely (no "No output" placeholder)
     return;
   }
+
+  // Check if any cell has actual outputs to display
+  const hasOutputs = cells.some(c => c.outputs?.length > 0);
+  if (!hasOutputs) {
+    // Cells exist but no outputs (e.g., import statements, assignments).
+    // Show a minimal status indicator instead of the noisy "No output" box.
+    const status = cells[0]?.status;
+    if (status === "error") {
+      root.innerHTML = '<div class="status-indicator status-error">✗ Error</div>';
+    } else if (status === "running") {
+      root.innerHTML = '<div class="status-indicator status-running">◐ Running…</div>';
+    }
+    // For "idle" with no outputs, show nothing — clean and quiet.
+    return;
+  }
+
   for (const cell of cells) {
     root.appendChild(renderCell(cell));
   }
@@ -159,7 +175,8 @@ const app = new App({ name: "nteract", version: "0.1.0" });
 
 app.ontoolresult = (result: CallToolResult) => {
   const content = result.structuredContent as NteractContent | undefined;
-  render(content ?? {});
+  if (!content) return; // No structured content — don't render anything
+  render(content);
 };
 
 app.onhostcontextchanged = (ctx: McpUiHostContext) => {
