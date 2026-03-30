@@ -14,11 +14,12 @@
   },
   "license": "BSD-3-Clause",
   "server": {
-    "type": "python",
-    "entry_point": "server/main.py",
+    "type": "node",
+    "entry_point": "server/launch.mjs",
     "mcp_config": {
-      "command": "uvx",
-      "args": ["nteract", "--stable"]
+      "command": "node",
+      "args": ["server/launch.mjs"],
+      "env": { "NTERACT_CHANNEL": "stable" }
     }
   },
   "icon": "icon.png",

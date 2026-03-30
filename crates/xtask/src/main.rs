@@ -2031,9 +2031,10 @@ fn exit_on_failed_status(label: &str, status: ExitStatus) {
 ///   icon.png        — 512×512 light-theme icon
 ///   icon-dark.png   — 512×512 dark-theme icon
 ///
-/// The server is NOT bundled as a binary. Instead the manifest instructs
-/// Claude Desktop to invoke `uvx nteract` — the nteract MCP server is
-/// distributed as a Python package on PyPI and fetched on first use.
+/// The server is NOT bundled as a binary. Instead the manifest includes a
+/// Node launcher script that finds the `runt` (or `runt-nightly`) binary
+/// on the user's PATH or in well-known install locations, then execs
+/// `runt mcp` for stdio transport.
 ///
 /// Manifest templates live in `mcpb/manifest.{variant}.json`. The only
 /// substitution is `{{VERSION}}` → the `runtimed` crate version.
@@ -2117,14 +2118,14 @@ fn cmd_mcpb(output: Option<&str>, variant: &str) {
     let dark_dest = staging_dir.join("icon-dark.png");
     resize_icon(dark_actual, &dark_dest.to_string_lossy());
 
-    // ── 4. Copy server shim ───────────────────────────────────────────────
+    // ── 4. Copy server launcher ────────────────────────────────────────────
     let server_dir = staging_dir.join("server");
     fs::create_dir_all(&server_dir).unwrap_or_else(|e| {
         eprintln!("Failed to create server directory: {e}");
         exit(1);
     });
-    fs::copy("mcpb/server/main.py", server_dir.join("main.py")).unwrap_or_else(|e| {
-        eprintln!("Failed to copy server/main.py: {e}");
+    fs::copy("mcpb/server/launch.mjs", server_dir.join("launch.mjs")).unwrap_or_else(|e| {
+        eprintln!("Failed to copy server/launch.mjs: {e}");
         exit(1);
     });
 
