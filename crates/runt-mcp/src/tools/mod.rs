@@ -81,7 +81,7 @@ pub fn all_tools() -> Vec<Tool> {
             ToolAnnotations::new()
                 .destructive(false)
                 .idempotent(true)
-                .open_world(false),
+                .open_world(true),
         ),
         Tool::new(
             "create_notebook",
@@ -98,7 +98,7 @@ pub fn all_tools() -> Vec<Tool> {
             ToolAnnotations::new()
                 .destructive(false)
                 .idempotent(true)
-                .open_world(false),
+                .open_world(true),
         ),
         // -- Cell read --
         Tool::new(
@@ -207,14 +207,14 @@ pub fn all_tools() -> Vec<Tool> {
             "Execute a cell. Returns partial results if timeout exceeded.",
             schema_for::<execution::ExecuteCellParams>(),
         )
-        .annotate(ToolAnnotations::new().destructive(false).open_world(true))
+        .annotate(ToolAnnotations::new().destructive(true).open_world(true))
         .with_meta(app_tool_meta()),
         Tool::new(
             "run_all_cells",
             "Queue all code cells for execution. Use get_all_cells() to see results.",
             schema_for::<EmptyParams>(),
         )
-        .annotate(ToolAnnotations::new().destructive(false).open_world(true)),
+        .annotate(ToolAnnotations::new().destructive(true).open_world(true)),
         // -- Kernel --
         Tool::new(
             "interrupt_kernel",
