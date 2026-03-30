@@ -185,7 +185,7 @@ pub async fn join_notebook(
     match notebook_sync::connect::connect(
         server.socket_path.clone(),
         notebook_id.clone(),
-        "runt-mcp",
+        &server.get_peer_label().await,
     )
     .await
     {
@@ -240,7 +240,7 @@ pub async fn open_notebook(
     match notebook_sync::connect::connect_open(
         server.socket_path.clone(),
         abs_path.clone(),
-        "runt-mcp",
+        &server.get_peer_label().await,
     )
     .await
     {
@@ -285,7 +285,7 @@ pub async fn create_notebook(
         server.socket_path.clone(),
         runtime,
         working_dir,
-        "runt-mcp",
+        &server.get_peer_label().await,
     )
     .await
     {

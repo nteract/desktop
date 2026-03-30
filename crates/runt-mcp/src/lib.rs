@@ -32,6 +32,10 @@ pub struct NteractMcp {
     blob_base_url: Option<String>,
     blob_store_path: Option<PathBuf>,
     session: Arc<RwLock<Option<NotebookSession>>>,
+    /// The MCP client's display name, sniffed from the initialize handshake.
+    /// Used as the peer label in notebook sessions so the notebook app shows
+    /// "Claude Desktop" or "Claude Code" instead of "Agent".
+    peer_label: RwLock<String>,
 }
 
 impl NteractMcp {
@@ -46,7 +50,13 @@ impl NteractMcp {
             blob_base_url,
             blob_store_path,
             session: Arc::new(RwLock::new(None)),
+            peer_label: RwLock::new("Agent".to_string()),
         }
+    }
+
+    /// Get the peer label for notebook connections.
+    pub async fn get_peer_label(&self) -> String {
+        self.peer_label.read().await.clone()
     }
 }
 
@@ -90,8 +100,26 @@ impl ServerHandler for NteractMcp {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
+        // Sniff client name on first call for use as the notebook peer label.
+        // The title (e.g., "Claude Desktop") is preferred over the name ("claude-desktop").
+        {
+            let current = self.peer_label.read().await;
+            if *current == "Agent" {
+                drop(current);
+                if let Some(info) = context.peer.peer_info() {
+                    let label = info
+                        .client_info
+                        .title
+                        .as_deref()
+                        .unwrap_or(&info.client_info.name);
+                    if !label.is_empty() {
+                        *self.peer_label.write().await = label.to_string();
+                    }
+                }
+            }
+        }
         tools::dispatch(self, &request).await
     }
 
