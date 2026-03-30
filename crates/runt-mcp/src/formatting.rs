@@ -136,9 +136,11 @@ pub fn format_cell_summary(
     // Source preview — collapse to single line, strip whitespace
     if !source.is_empty() {
         let source_line: String = source.split_whitespace().collect::<Vec<_>>().join(" ");
-        let preview = if source_line.len() > preview_chars {
-            let remaining = source_line.len() - preview_chars;
-            format!("{}…[+{remaining} chars]", &source_line[..preview_chars])
+        let char_count = source_line.chars().count();
+        let preview = if char_count > preview_chars {
+            let truncated: String = source_line.chars().take(preview_chars).collect();
+            let remaining = char_count - preview_chars;
+            format!("{truncated}…[+{remaining} chars]")
         } else {
             source_line
         };

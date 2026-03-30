@@ -244,9 +244,12 @@ pub async fn get_all_cells(
                         // Collapse to single line (matches Python format)
                         let output_line: String =
                             output_text.split_whitespace().collect::<Vec<_>>().join(" ");
-                        let output_preview = if output_line.len() > preview_chars {
-                            let remaining = output_line.len() - preview_chars;
-                            format!("{}…[+{remaining} chars]", &output_line[..preview_chars])
+                        let char_count = output_line.chars().count();
+                        let output_preview = if char_count > preview_chars {
+                            let truncated: String =
+                                output_line.chars().take(preview_chars).collect();
+                            let remaining = char_count - preview_chars;
+                            format!("{truncated}…[+{remaining} chars]")
                         } else {
                             output_line
                         };
