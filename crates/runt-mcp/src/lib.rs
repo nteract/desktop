@@ -18,6 +18,7 @@ use tokio::sync::RwLock;
 pub mod editing;
 pub mod execution;
 pub mod formatting;
+pub mod presence;
 mod resources;
 mod session;
 mod structured;

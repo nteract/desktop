@@ -136,6 +136,13 @@ pub async fn create_cell(
         .add_cell_with_source(&cell_id, cell_type, after_cell_id.as_deref(), source)
         .map_err(|e| McpError::internal_error(format!("Failed to create cell: {e}"), None))?;
 
+    // Sync so the daemon (and peers) know about the new cell before we send presence
+    let _ = handle.confirm_sync().await;
+
+    // Cursor at end of source (shows "finished typing")
+    let (end_line, end_col) = crate::presence::offset_to_line_col(source, source.len());
+    crate::presence::emit_cursor(handle, &cell_id, end_line, end_col).await;
+
     if and_run && cell_type == "code" {
         let result = execution::execute_and_wait(
             handle,
@@ -202,6 +209,13 @@ pub async fn set_cell(
         handle
             .update_source(cell_id, src)
             .map_err(|e| McpError::internal_error(format!("Failed to update source: {e}"), None))?;
+
+        // Sync so peers see the edit before the cursor
+        let _ = handle.confirm_sync().await;
+
+        // Cursor at end of new source
+        let (end_line, end_col) = crate::presence::offset_to_line_col(src, src.len());
+        crate::presence::emit_cursor(handle, cell_id, end_line, end_col).await;
     }
     if let Some(ct) = cell_type {
         handle
@@ -244,6 +258,8 @@ pub async fn delete_cell(
         }
     };
 
+    crate::presence::emit_focus(&session.handle, cell_id).await;
+
     let deleted = session
         .handle
         .delete_cell(cell_id)
@@ -282,6 +298,8 @@ pub async fn move_cell(
         .move_cell(cell_id, after_cell_id)
         .map_err(|e| McpError::internal_error(format!("Failed to move cell: {e}"), None))?;
 
+    crate::presence::emit_focus(&session.handle, cell_id).await;
+
     let result = serde_json::json!({
         "cell_id": cell_id,
         "after_cell_id": after_cell_id,
@@ -307,6 +325,8 @@ pub async fn clear_outputs(
             )
         }
     };
+
+    crate::presence::emit_focus(&session.handle, cell_id).await;
 
     let cleared = session
         .handle

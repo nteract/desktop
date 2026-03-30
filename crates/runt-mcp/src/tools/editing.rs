@@ -121,6 +121,12 @@ pub async fn replace_match(
         .splice_source(cell_id, cp_start, cp_delete, content)
         .map_err(|e| McpError::internal_error(format!("Failed to splice source: {e}"), None))?;
 
+    // Cursor at end of replacement text
+    let new_source = crate::editing::apply_replacement(&source, &span, content);
+    let end_offset = span.start + content.len();
+    let (line, col) = crate::presence::offset_to_line_col(&new_source, end_offset);
+    crate::presence::emit_cursor(handle, cell_id, line, col).await;
+
     if and_run {
         let result = execution::execute_and_wait(
             handle,
@@ -200,6 +206,12 @@ pub async fn replace_regex(
     handle
         .splice_source(cell_id, cp_start, cp_delete, content)
         .map_err(|e| McpError::internal_error(format!("Failed to splice source: {e}"), None))?;
+
+    // Cursor at end of replacement text
+    let new_source = crate::editing::apply_replacement(&source, &span, content);
+    let end_offset = span.start + content.len();
+    let (line, col) = crate::presence::offset_to_line_col(&new_source, end_offset);
+    crate::presence::emit_cursor(handle, cell_id, line, col).await;
 
     if and_run {
         let result = execution::execute_and_wait(

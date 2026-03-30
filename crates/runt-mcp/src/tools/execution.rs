@@ -62,6 +62,8 @@ pub async fn execute_cell(
         return tool_error(&format!("Cell not found: {cell_id}"));
     }
 
+    crate::presence::emit_focus(handle, cell_id).await;
+
     let result = execution::execute_and_wait(
         handle,
         cell_id,

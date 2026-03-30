@@ -62,6 +62,9 @@ pub async fn get_cell(
     };
 
     let handle = &session.handle;
+
+    // No presence on read — get_cell is read-only, shouldn't move the cursor.
+
     let cell = match handle.get_cell(cell_id) {
         Some(c) => c,
         None => return tool_error(&format!("Cell not found: {cell_id}")),
