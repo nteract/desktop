@@ -28,7 +28,7 @@ from typing import Annotated, Any, Literal, NoReturn
 
 from fastmcp import Context, FastMCP
 from fastmcp.server.apps import AppConfig, ResourceCSP
-from fastmcp.tools.tool import ToolResult
+from fastmcp.tools import ToolResult
 from mcp.types import TextContent, ToolAnnotations
 from pydantic import Field
 
