@@ -56,7 +56,7 @@ impl ServerHandler for NteractMcp {
         let mut extensions = rmcp::model::ExtensionCapabilities::new();
         #[allow(clippy::unwrap_used)] // static JSON, always valid
         extensions.insert(
-            "io.modelcontextprotocol/apps".to_string(),
+            "io.modelcontextprotocol/ui".to_string(),
             serde_json::from_value(serde_json::json!({})).unwrap(),
         );
 

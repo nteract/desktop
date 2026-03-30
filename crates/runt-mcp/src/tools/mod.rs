@@ -2,12 +2,26 @@
 
 use std::sync::Arc;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult, Content, Tool, ToolAnnotations};
+use rmcp::model::{CallToolRequestParams, CallToolResult, Content, Meta, Tool, ToolAnnotations};
 use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::NteractMcp;
+
+/// The MCP Apps resource URI for the output widget.
+const OUTPUT_RESOURCE_URI: &str = "ui://nteract/output.html";
+
+/// Build `_meta` for tools that produce structured content for the MCP Apps widget.
+/// Wire format: `{ "ui": { "resourceUri": "ui://nteract/output.html" } }`
+fn app_tool_meta() -> Meta {
+    let mut meta = serde_json::Map::new();
+    meta.insert(
+        "ui".to_string(),
+        serde_json::json!({ "resourceUri": OUTPUT_RESOURCE_URI }),
+    );
+    Meta(meta)
+}
 
 mod cell_crud;
 mod cell_meta;
@@ -83,13 +97,15 @@ pub fn all_tools() -> Vec<Tool> {
             "Create a cell, optionally executing it.",
             schema_for::<cell_crud::CreateCellParams>(),
         )
-        .annotate(ToolAnnotations::new().destructive(false)),
+        .annotate(ToolAnnotations::new().destructive(false))
+        .with_meta(app_tool_meta()),
         Tool::new(
             "set_cell",
             "Update a cell's source and/or type. Use replace_match for targeted edits.",
             schema_for::<cell_crud::SetCellParams>(),
         )
-        .annotate(ToolAnnotations::new().destructive(true)),
+        .annotate(ToolAnnotations::new().destructive(true))
+        .with_meta(app_tool_meta()),
         Tool::new(
             "delete_cell",
             "Delete a cell by ID.",
@@ -139,7 +155,8 @@ pub fn all_tools() -> Vec<Tool> {
             "Execute a cell. Returns partial results if timeout exceeded.",
             schema_for::<execution::ExecuteCellParams>(),
         )
-        .annotate(ToolAnnotations::new().destructive(true)),
+        .annotate(ToolAnnotations::new().destructive(true))
+        .with_meta(app_tool_meta()),
         Tool::new(
             "run_all_cells",
             "Queue all code cells for execution. Use get_all_cells() to see results.",
@@ -190,13 +207,15 @@ pub fn all_tools() -> Vec<Tool> {
             "Replace matched text in a cell. Prefer this for simple, targeted edits. Use context_before/context_after to disambiguate when match appears multiple times.",
             schema_for::<editing::ReplaceMatchParams>(),
         )
-        .annotate(ToolAnnotations::new().destructive(true)),
+        .annotate(ToolAnnotations::new().destructive(true))
+        .with_meta(app_tool_meta()),
         Tool::new(
             "replace_regex",
             "Replace a regex-matched span. Use for anchors, lookarounds, or zero-width insertions. Fails if 0 or >1 matches.",
             schema_for::<editing::ReplaceRegexParams>(),
         )
-        .annotate(ToolAnnotations::new().destructive(true)),
+        .annotate(ToolAnnotations::new().destructive(true))
+        .with_meta(app_tool_meta()),
     ]
 }
 
