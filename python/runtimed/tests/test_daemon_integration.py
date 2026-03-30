@@ -34,6 +34,7 @@ import pytest
 pytest.importorskip("runtimed")
 
 import runtimed
+import runtimed._internals
 
 # ============================================================================
 # Test utilities
