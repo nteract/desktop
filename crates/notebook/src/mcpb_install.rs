@@ -38,12 +38,15 @@ pub fn install_mcpb(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         ("nteract", "nteract", "runt")
     };
 
+    let channel = if is_nightly { "nightly" } else { "stable" };
+
     let manifest = serde_json::json!({
         "manifest_version": "0.3",
         "name": name,
         "display_name": display_name,
         "version": version,
         "description": "Create, edit, and run Jupyter notebooks with Claude",
+        "long_description": "nteract brings Jupyter notebooks to Claude. Create notebooks, execute Python and Deno code, visualize data with matplotlib/plotly/seaborn, manage dependencies, and see rich outputs — all from your Claude conversation.\n\nFeatures:\n- Create and open .ipynb notebooks\n- Execute code cells with inline output rendering\n- Manage Python dependencies (add, remove, sync)\n- Real-time presence — see Claude's cursor in the notebook app\n- Works with the nteract desktop app for side-by-side editing",
         "author": {
             "name": "nteract contributors",
             "url": "https://nteract.io"
@@ -52,21 +55,56 @@ pub fn install_mcpb(app: &tauri::AppHandle) -> Result<PathBuf, String> {
             "type": "git",
             "url": "https://github.com/nteract/desktop"
         },
+        "homepage": "https://nteract.io",
+        "support": "https://github.com/nteract/desktop/issues",
         "license": "BSD-3-Clause",
         "server": {
             "type": "node",
             "entry_point": "server/launch.js",
             "mcp_config": {
                 "command": command,
-                "args": ["mcp"]
+                "args": ["mcp"],
+                "env": { "NTERACT_CHANNEL": channel }
             }
         },
+        "tools": [
+            { "name": "list_active_notebooks", "description": "List all open notebook sessions" },
+            { "name": "join_notebook", "description": "Connect to an existing notebook session" },
+            { "name": "open_notebook", "description": "Open a notebook file from disk" },
+            { "name": "create_notebook", "description": "Create a new notebook with optional dependencies" },
+            { "name": "save_notebook", "description": "Save notebook to disk" },
+            { "name": "get_cell", "description": "Get a cell's source and outputs" },
+            { "name": "get_all_cells", "description": "Get all cells (summary, json, or rich format)" },
+            { "name": "create_cell", "description": "Create a cell, optionally executing it" },
+            { "name": "set_cell", "description": "Update a cell's source and/or type" },
+            { "name": "delete_cell", "description": "Delete a cell" },
+            { "name": "move_cell", "description": "Move a cell to a new position" },
+            { "name": "clear_outputs", "description": "Clear a cell's outputs" },
+            { "name": "execute_cell", "description": "Execute a cell and return results" },
+            { "name": "run_all_cells", "description": "Queue all code cells for execution" },
+            { "name": "interrupt_kernel", "description": "Interrupt the currently executing cell" },
+            { "name": "restart_kernel", "description": "Restart kernel, clearing all state" },
+            { "name": "add_dependency", "description": "Add a package dependency" },
+            { "name": "remove_dependency", "description": "Remove a package dependency" },
+            { "name": "get_dependencies", "description": "Get current package dependencies" },
+            { "name": "sync_environment", "description": "Hot-install dependencies without restarting" },
+            { "name": "replace_match", "description": "Replace matched text in a cell" },
+            { "name": "replace_regex", "description": "Replace a regex-matched span in a cell" },
+            { "name": "add_cell_tags", "description": "Add tags to a cell" },
+            { "name": "remove_cell_tags", "description": "Remove tags from a cell" },
+            { "name": "set_cells_source_hidden", "description": "Hide or show cell source" },
+            { "name": "set_cells_outputs_hidden", "description": "Hide or show cell outputs" }
+        ],
+        "tools_generated": false,
         "icon": "icon.png",
         "icons": [
             { "src": "icon.png", "size": "512x512", "theme": "light" },
             { "src": "icon-dark.png", "size": "512x512", "theme": "dark" }
         ],
-        "keywords": ["jupyter", "notebook", "python", "data-science"]
+        "compatibility": {
+            "platforms": ["darwin", "win32", "linux"]
+        },
+        "keywords": ["jupyter", "notebook", "python", "deno", "data-science", "visualization"]
     });
 
     let manifest_str = serde_json::to_string_pretty(&manifest)
