@@ -8,7 +8,6 @@ use runtimed_client::resolved_output::{DataValue, Output, ResolvedCell};
 use serde_json::{json, Value};
 
 /// Build the structuredContent JSON for a resolved cell.
-#[allow(dead_code)] // Used when execute_cell and other output tools are ported
 pub fn cell_structured_content(cell: &ResolvedCell, status: &str) -> Value {
     json!({
         "cell": {

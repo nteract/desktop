@@ -28,10 +28,7 @@ use session::NotebookSession;
 /// The nteract MCP server.
 pub struct NteractMcp {
     socket_path: PathBuf,
-    // Used by output resolver when more tools are ported (execute_cell, etc.)
-    #[allow(dead_code)]
     blob_base_url: Option<String>,
-    #[allow(dead_code)]
     blob_store_path: Option<PathBuf>,
     session: Arc<RwLock<Option<NotebookSession>>>,
 }

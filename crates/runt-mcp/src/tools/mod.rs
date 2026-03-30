@@ -9,6 +9,13 @@ use serde::Deserialize;
 
 use crate::NteractMcp;
 
+mod cell_crud;
+mod cell_meta;
+mod cell_read;
+mod deps;
+mod editing;
+mod execution;
+mod kernel;
 mod session;
 
 /// Helper to generate a tool's input schema from a type.
@@ -45,6 +52,151 @@ pub fn all_tools() -> Vec<Tool> {
             schema_for::<session::OpenNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false)),
+        Tool::new(
+            "create_notebook",
+            "Create a new notebook with optional pre-installed dependencies. The kernel starts automatically. Call save_notebook(path) to persist to disk.",
+            schema_for::<session::CreateNotebookParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(false)),
+        Tool::new(
+            "save_notebook",
+            "Save notebook to disk. The daemon automatically re-keys ephemeral rooms to the saved file path.",
+            schema_for::<session::SaveNotebookParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(false)),
+        // -- Cell read --
+        Tool::new(
+            "get_cell",
+            "Get a cell's source and outputs by ID.",
+            schema_for::<cell_read::GetCellParams>(),
+        )
+        .annotate(ToolAnnotations::new().read_only(true)),
+        Tool::new(
+            "get_all_cells",
+            "Get all cells. Use summary (default) for discovery, get_cell() for details. Formats: 'summary', 'json', 'rich'.",
+            schema_for::<cell_read::GetAllCellsParams>(),
+        )
+        .annotate(ToolAnnotations::new().read_only(true)),
+        // -- Cell CRUD --
+        Tool::new(
+            "create_cell",
+            "Create a cell, optionally executing it.",
+            schema_for::<cell_crud::CreateCellParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(false)),
+        Tool::new(
+            "set_cell",
+            "Update a cell's source and/or type. Use replace_match for targeted edits.",
+            schema_for::<cell_crud::SetCellParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true)),
+        Tool::new(
+            "delete_cell",
+            "Delete a cell by ID.",
+            schema_for::<cell_crud::DeleteCellParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true)),
+        Tool::new(
+            "move_cell",
+            "Move a cell to a new position.",
+            schema_for::<cell_crud::MoveCellParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true)),
+        Tool::new(
+            "clear_outputs",
+            "Clear a cell's outputs.",
+            schema_for::<cell_crud::ClearOutputsParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true)),
+        // -- Cell metadata --
+        Tool::new(
+            "add_cell_tags",
+            "Add tags to a cell's metadata. Existing tags are preserved.",
+            schema_for::<cell_meta::AddCellTagsParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true)),
+        Tool::new(
+            "remove_cell_tags",
+            "Remove tags from a cell's metadata.",
+            schema_for::<cell_meta::RemoveCellTagsParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true)),
+        Tool::new(
+            "set_cells_source_hidden",
+            "Hide or show the source (code input) of one or more cells.",
+            schema_for::<cell_meta::SetCellsSourceHiddenParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true)),
+        Tool::new(
+            "set_cells_outputs_hidden",
+            "Hide or show the outputs of one or more cells.",
+            schema_for::<cell_meta::SetCellsOutputsHiddenParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true)),
+        // -- Execution --
+        Tool::new(
+            "execute_cell",
+            "Execute a cell. Returns partial results if timeout exceeded.",
+            schema_for::<execution::ExecuteCellParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true)),
+        Tool::new(
+            "run_all_cells",
+            "Queue all code cells for execution. Use get_all_cells() to see results.",
+            schema_for::<EmptyParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true)),
+        // -- Kernel --
+        Tool::new(
+            "interrupt_kernel",
+            "Interrupt the currently executing cell.",
+            schema_for::<EmptyParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true)),
+        Tool::new(
+            "restart_kernel",
+            "Restart kernel, clearing all state. Use after dependency changes.",
+            schema_for::<EmptyParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true)),
+        // -- Dependencies --
+        Tool::new(
+            "add_dependency",
+            "Add a package dependency (e.g. 'pandas>=2.0'). Call sync_environment() to install.",
+            schema_for::<deps::AddDependencyParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true)),
+        Tool::new(
+            "remove_dependency",
+            "Remove a package dependency. Requires restart_kernel() to take effect.",
+            schema_for::<deps::RemoveDependencyParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true)),
+        Tool::new(
+            "get_dependencies",
+            "Get the notebook's current package dependencies.",
+            schema_for::<deps::GetDependenciesParams>(),
+        )
+        .annotate(ToolAnnotations::new().read_only(true)),
+        Tool::new(
+            "sync_environment",
+            "Hot-install new dependencies without restarting. Use restart_kernel() if this fails.",
+            schema_for::<EmptyParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true)),
+        // -- Editing --
+        Tool::new(
+            "replace_match",
+            "Replace matched text in a cell. Prefer this for simple, targeted edits. Use context_before/context_after to disambiguate when match appears multiple times.",
+            schema_for::<editing::ReplaceMatchParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true)),
+        Tool::new(
+            "replace_regex",
+            "Replace a regex-matched span. Use for anchors, lookarounds, or zero-width insertions. Fails if 0 or >1 matches.",
+            schema_for::<editing::ReplaceRegexParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true)),
     ]
 }
 
@@ -54,9 +206,40 @@ pub async fn dispatch(
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
     match request.name.as_ref() {
+        // Session
         "list_active_notebooks" => session::list_active_notebooks(server).await,
         "join_notebook" => session::join_notebook(server, request).await,
         "open_notebook" => session::open_notebook(server, request).await,
+        "create_notebook" => session::create_notebook(server, request).await,
+        "save_notebook" => session::save_notebook(server, request).await,
+        // Cell read
+        "get_cell" => cell_read::get_cell(server, request).await,
+        "get_all_cells" => cell_read::get_all_cells(server, request).await,
+        // Cell CRUD
+        "create_cell" => cell_crud::create_cell(server, request).await,
+        "set_cell" => cell_crud::set_cell(server, request).await,
+        "delete_cell" => cell_crud::delete_cell(server, request).await,
+        "move_cell" => cell_crud::move_cell(server, request).await,
+        "clear_outputs" => cell_crud::clear_outputs(server, request).await,
+        // Cell metadata
+        "add_cell_tags" => cell_meta::add_cell_tags(server, request).await,
+        "remove_cell_tags" => cell_meta::remove_cell_tags(server, request).await,
+        "set_cells_source_hidden" => cell_meta::set_cells_source_hidden(server, request).await,
+        "set_cells_outputs_hidden" => cell_meta::set_cells_outputs_hidden(server, request).await,
+        // Execution
+        "execute_cell" => execution::execute_cell(server, request).await,
+        "run_all_cells" => execution::run_all_cells(server, request).await,
+        // Kernel
+        "interrupt_kernel" => kernel::interrupt_kernel(server, request).await,
+        "restart_kernel" => kernel::restart_kernel(server, request).await,
+        // Dependencies
+        "add_dependency" => deps::add_dependency(server, request).await,
+        "remove_dependency" => deps::remove_dependency(server, request).await,
+        "get_dependencies" => deps::get_dependencies(server, request).await,
+        "sync_environment" => deps::sync_environment(server, request).await,
+        // Editing
+        "replace_match" => editing::replace_match(server, request).await,
+        "replace_regex" => editing::replace_regex(server, request).await,
         _ => Err(McpError::invalid_params(
             format!("Unknown tool: {}", request.name),
             None,

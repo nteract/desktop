@@ -12,6 +12,8 @@ use runtimed_client::client::PoolClient;
 use crate::session::NotebookSession;
 use crate::NteractMcp;
 
+use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
+
 use super::{arg_str, tool_error, tool_success};
 
 #[allow(dead_code)] // Fields used by schemars for tool input schema generation
@@ -26,6 +28,28 @@ pub struct JoinNotebookParams {
 pub struct OpenNotebookParams {
     /// Path to the notebook file on disk.
     pub path: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateNotebookParams {
+    /// Runtime type: "python" or "deno".
+    #[serde(default)]
+    pub runtime: Option<String>,
+    /// Working directory for the kernel.
+    #[serde(default)]
+    pub working_dir: Option<String>,
+    /// Python packages to pre-install.
+    #[serde(default)]
+    pub dependencies: Option<Vec<String>>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SaveNotebookParams {
+    /// Path to save the notebook to. If None, saves to original location.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 /// List all active notebook sessions.
@@ -132,5 +156,150 @@ pub async fn open_notebook(
             )]))
         }
         Err(e) => tool_error(&format!("Failed to open notebook '{}': {}", path, e)),
+    }
+}
+
+/// Create a new notebook with optional dependencies.
+pub async fn create_notebook(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    let runtime = arg_str(request, "runtime").unwrap_or("python");
+    let working_dir = arg_str(request, "working_dir").map(std::path::PathBuf::from);
+
+    match notebook_sync::connect::connect_create(
+        server.socket_path.clone(),
+        runtime,
+        working_dir,
+        "runt-mcp",
+    )
+    .await
+    {
+        Ok(result) => {
+            let notebook_id = result.handle.notebook_id().to_string();
+            // Add dependencies if specified
+            let deps: Vec<String> = request
+                .arguments
+                .as_ref()
+                .and_then(|a| a.get("dependencies"))
+                .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                .unwrap_or_default();
+
+            if runtime == "python" {
+                for dep in &deps {
+                    let _ = result.handle.add_uv_dependency(dep);
+                }
+            }
+
+            let session = NotebookSession {
+                handle: result.handle,
+                notebook_id: notebook_id.clone(),
+            };
+            *server.session.write().await = Some(session);
+
+            // If dependencies were added, restart kernel to pick them up
+            if !deps.is_empty() && runtime == "python" {
+                let session = server.session.read().await;
+                if let Some(s) = session.as_ref() {
+                    // Shutdown and relaunch
+                    let _ = s
+                        .handle
+                        .send_request(NotebookRequest::ShutdownKernel {})
+                        .await;
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    let _ = s
+                        .handle
+                        .send_request(NotebookRequest::LaunchKernel {
+                            kernel_type: runtime.to_string(),
+                            env_source: "uv:inline".to_string(),
+                            notebook_path: None,
+                        })
+                        .await;
+                }
+            }
+
+            let info = serde_json::json!({
+                "notebook_id": notebook_id,
+                "runtime": { "language": runtime },
+                "dependencies": deps,
+            });
+
+            Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&info).unwrap_or_default(),
+            )]))
+        }
+        Err(e) => tool_error(&format!("Failed to create notebook: {}", e)),
+    }
+}
+
+/// Save notebook to disk.
+pub async fn save_notebook(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    let path = arg_str(request, "path").map(|s| s.to_string());
+
+    // Clone the handle and notebook_id so we can drop the read guard
+    let (handle, notebook_id) = {
+        let session = server.session.read().await;
+        match session.as_ref() {
+            Some(s) => (s.handle.clone(), s.notebook_id.clone()),
+            None => {
+                return tool_error(
+                    "No active notebook session. Call join_notebook or open_notebook first.",
+                )
+            }
+        }
+    };
+
+    // Ensure daemon has latest
+    if let Err(e) = handle.confirm_sync().await {
+        tracing::warn!("confirm_sync failed before save: {e}");
+    }
+
+    match handle
+        .send_request(NotebookRequest::SaveNotebook {
+            format_cells: false,
+            path: path.clone(),
+        })
+        .await
+    {
+        Ok(NotebookResponse::NotebookSaved {
+            path: saved_path,
+            new_notebook_id,
+        }) => {
+            let mut result = serde_json::json!({
+                "path": saved_path,
+                "notebook_id": new_notebook_id.as_deref().unwrap_or(&notebook_id),
+            });
+
+            // If room was re-keyed, update our session
+            if let Some(new_id) = &new_notebook_id {
+                let mut write = server.session.write().await;
+                if let Some(ref mut s) = *write {
+                    let old_id = s.notebook_id.clone();
+                    s.notebook_id = new_id.clone();
+                    result["previous_notebook_id"] = serde_json::json!(old_id);
+                }
+            }
+
+            Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&result).unwrap_or_default(),
+            )]))
+        }
+        Ok(NotebookResponse::Error { error }) => {
+            if path.is_none()
+                && (error.contains("Read-only") || error.contains("Failed to write"))
+            {
+                tool_error(
+                    "No path specified. For notebooks created with create_notebook(), \
+                     you must provide a path (e.g., save_notebook(path='/path/to/file.ipynb'))",
+                )
+            } else {
+                tool_error(&format!("Failed to save notebook: {error}"))
+            }
+        }
+        Ok(resp) => tool_error(&format!("Unexpected response: {resp:?}")),
+        Err(e) => tool_error(&format!("Failed to save notebook: {e}")),
     }
 }
