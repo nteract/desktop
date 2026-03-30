@@ -42,14 +42,14 @@ pub async fn read_resource(
     let uri = request.uri.as_str();
 
     if uri == OUTPUT_RESOURCE_URI {
-        return Ok(ReadResourceResult {
-            contents: vec![ResourceContents::TextResourceContents {
+        return Ok(ReadResourceResult::new(vec![
+            ResourceContents::TextResourceContents {
                 uri: OUTPUT_RESOURCE_URI.into(),
                 mime_type: Some(OUTPUT_MIME_TYPE.into()),
                 text: OUTPUT_HTML.to_string(),
                 meta: None,
-            }],
-        });
+            },
+        ]));
     }
 
     Err(McpError::resource_not_found(

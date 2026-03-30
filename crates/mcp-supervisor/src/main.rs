@@ -457,14 +457,10 @@ struct NteractClientHandler;
 
 impl ClientHandler for NteractClientHandler {
     fn get_info(&self) -> rmcp::model::ClientInfo {
-        rmcp::model::ClientInfo {
-            client_info: Implementation {
-                name: "nteract-dev".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        }
+        rmcp::model::ClientInfo::new(
+            Default::default(),
+            Implementation::new("nteract-dev", env!("CARGO_PKG_VERSION")),
+        )
     }
 }
 
@@ -1143,30 +1139,27 @@ struct SetModeParams {
 /// MCP ServerHandler that proxies to the nteract child + injects supervisor tools.
 impl ServerHandler for Supervisor {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: Default::default(),
-            capabilities: ServerCapabilities::builder()
+        ServerInfo::new(
+            ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
                 .enable_resources_list_changed()
                 .build(),
-            server_info: Implementation {
-                name: "nteract-dev".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                ..Default::default()
-            },
-            instructions: Some(
-                "nteract-dev — MCP supervisor proxying to the nteract notebook server. \
-                 Includes supervisor_status, supervisor_restart, supervisor_rebuild, \
-                 supervisor_logs, supervisor_start_vite, and supervisor_stop tools \
-                 for managing the server lifecycle and dev environment. \
-                 File watching is active: Python changes hot-reload instantly, \
-                 Rust changes trigger maturin develop + reload. Changed tool \
-                 behavior takes effect immediately; new/removed tools may take \
-                 a moment for the client to discover."
-                    .into(),
-            ),
-        }
+        )
+        .with_server_info(Implementation::new(
+            "nteract-dev",
+            env!("CARGO_PKG_VERSION"),
+        ))
+        .with_instructions(
+            "nteract-dev — MCP supervisor proxying to the nteract notebook server. \
+             Includes supervisor_status, supervisor_restart, supervisor_rebuild, \
+             supervisor_logs, supervisor_start_vite, and supervisor_stop tools \
+             for managing the server lifecycle and dev environment. \
+             File watching is active: Python changes hot-reload instantly, \
+             Rust changes trigger maturin develop + reload. Changed tool \
+             behavior takes effect immediately; new/removed tools may take \
+             a moment for the client to discover.",
+        )
     }
 
     async fn list_tools(

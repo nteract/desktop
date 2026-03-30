@@ -11,7 +11,7 @@ publish = false
 workspace = true
 
 [dependencies]
-rmcp = { version = "0.16", features = ["server", "transport-io"] }
+rmcp = { version = "1.3", features = ["server", "transport-io"] }
 runtimed-client = { path = "../runtimed-client" }
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-sync = { path = "../notebook-sync" }

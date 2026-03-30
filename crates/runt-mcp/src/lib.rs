@@ -60,25 +60,19 @@ impl ServerHandler for NteractMcp {
             serde_json::from_value(serde_json::json!({})).unwrap(),
         );
 
-        ServerInfo {
-            protocol_version: Default::default(),
-            capabilities: ServerCapabilities::builder()
+        ServerInfo::new(
+            ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
                 .enable_extensions_with(extensions)
                 .build(),
-            server_info: Implementation {
-                name: "nteract".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                ..Default::default()
-            },
-            instructions: Some(
-                "nteract MCP server for AI-powered Jupyter notebooks. \
-                 Use list_active_notebooks to discover open notebooks, \
-                 then join_notebook or open_notebook to start working."
-                    .into(),
-            ),
-        }
+        )
+        .with_server_info(Implementation::new("nteract", env!("CARGO_PKG_VERSION")))
+        .with_instructions(
+            "nteract MCP server for AI-powered Jupyter notebooks. \
+             Use list_active_notebooks to discover open notebooks, \
+             then join_notebook or open_notebook to start working.",
+        )
     }
 
     async fn list_tools(
