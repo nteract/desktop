@@ -2084,7 +2084,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 3: Spawn MCP child server
     info!(
         "Spawning {} MCP server...",
-        if use_rust_mcp { "runt mcp (Rust)" } else { "nteract (Python)" }
+        if use_rust_mcp {
+            "runt mcp (Rust)"
+        } else {
+            "nteract (Python)"
+        }
     );
     let child_client = spawn_nteract_child(&project_root, &socket_path, use_rust_mcp)
         .await

@@ -100,9 +100,7 @@ pub async fn open_notebook(
     let abs_path = if std::path::Path::new(path).is_absolute() {
         PathBuf::from(path)
     } else {
-        std::env::current_dir()
-            .unwrap_or_default()
-            .join(path)
+        std::env::current_dir().unwrap_or_default().join(path)
     };
 
     // Use connect_open which sends the OpenNotebook handshake —
