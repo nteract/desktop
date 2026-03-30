@@ -5,7 +5,6 @@
       "args": ["run", "-p", "mcp-supervisor"],
       "env": {
         "RUNTIMED_DEV": "1",
-        "NTERACT_RUST_MCP": "1",
       },
     },
   },

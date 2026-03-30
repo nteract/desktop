@@ -4,4 +4,3 @@ args = ["run", "-p", "mcp-supervisor"]
 
 [mcp_servers.nteract-dev.env]
 RUNTIMED_DEV = "1"
-NTERACT_RUST_MCP = "1"

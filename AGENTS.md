@@ -217,16 +217,9 @@ Use `nteract-dev` as the MCP server name for this source tree. Keep `nteract` fo
 
 For Codex app/CLI, this repository also includes a project-scoped MCP config in `.codex/config.toml` that points at the same `mcp-supervisor` server using the `nteract-dev` entry name.
 
-### Rust vs Python MCP Server
+### MCP Server
 
-The supervisor can spawn either the **Rust-native** (`runt mcp`) or **Python** (`uv run nteract`) MCP server:
-
-| Server | How to select | Tools | Notes |
-|--------|---------------|-------|-------|
-| Rust (`runt mcp`) | **Default** — `NTERACT_RUST_MCP=1` in `.mcp.json` | 26 tools | No Python overhead, direct Automerge access, ships with the app |
-| Python (`uv run nteract`) | Remove `NTERACT_RUST_MCP` from env | 27 tools (includes `show_notebook`) | Requires Python + uv + maturin develop |
-
-The repo's `.mcp.json`, `.codex/config.toml`, and `.zed/settings.json` all default to the Rust server. The supervisor auto-builds `runt-cli` on startup and watches `crates/runt-mcp/src/` for hot reload.
+The supervisor always uses the Rust-native `runt mcp` server (direct Automerge access, no Python overhead). It auto-builds `runt-cli` on startup and watches `crates/runt-mcp/src/` for hot reload.
 
 `runt mcp` can also be run standalone (no supervisor): `./target/debug/runt mcp`. It reads `RUNTIMED_SOCKET_PATH` for the daemon connection.
 

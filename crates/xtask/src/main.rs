@@ -439,7 +439,7 @@ fn cmd_vite() {
     }
 
     // Run pnpm dev for the notebook app
-    run_cmd("pnpm", &["--filter", "notebook", "dev"]);
+    run_cmd("pnpm", &["--filter", "notebook-ui", "dev"]);
 }
 
 fn ensure_pnpm_install() {

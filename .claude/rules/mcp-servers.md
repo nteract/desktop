@@ -21,13 +21,9 @@ Three nteract MCP servers may be available. Always use the right one:
 3. If `nteract-dev` tools are not available, fall back to `cargo xtask` commands — not to the system MCP servers.
 4. The supervisor tools (`supervisor_status`, `supervisor_restart`, `supervisor_rebuild`, `supervisor_logs`, `supervisor_start_vite`, `supervisor_stop`) are part of the `nteract-dev` server. They manage the dev daemon and build pipeline — prefer them over manual terminal commands.
 
-## Rust vs Python MCP Server
+## MCP Server
 
-The supervisor can spawn either server behind `nteract-dev`:
-- **Default (Python):** `uv run nteract` — 27 tools including `show_notebook`
-- **Rust mode:** Set `NTERACT_RUST_MCP=1` in `.mcp.json` env — uses `runt mcp` (26 tools, no Python overhead)
-
-The Rust server (`runt-mcp`) uses direct Automerge access via `DocHandle` for microsecond-scale cell mutations and includes presence (cursor/focus tracking). For the installed app, `runt mcp` ships as a sidecar binary — no Python or uv required.
+The supervisor always uses `runt mcp` (Rust-native, direct Automerge access, no Python overhead). It auto-builds `runt-cli` on startup and watches `crates/runt-mcp/src/` for hot reload. For the installed app, `runt mcp` ships as a sidecar binary — no Python or uv required.
 
 ## System daemon CLI (`runt` / `runt-nightly`)
 

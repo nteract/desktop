@@ -37,7 +37,7 @@ use rmcp::{ClientHandler, ErrorData as McpError, ServerHandler, ServiceExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::process::Command;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Notify, RwLock};
 use tracing::{error, info, warn};
 
 // ---------------------------------------------------------------------------
@@ -401,44 +401,25 @@ fn run_maturin_develop(project_root: &Path) -> bool {
 // Child process (nteract MCP server)
 // ---------------------------------------------------------------------------
 
-/// Spawn the nteract MCP server as a child process and return an rmcp client.
-///
-/// By default, spawns the Python `uv run nteract` server (full 27-tool suite).
-/// When `use_rust_mcp` is true, spawns the Rust `runt mcp` server instead
-/// (fewer tools, but no Python overhead).
+/// Spawn `runt mcp` as a child process and return an rmcp client.
 async fn spawn_nteract_child(
     project_root: &Path,
     socket_path: &str,
-    use_rust_mcp: bool,
 ) -> Result<rmcp::service::RunningService<RoleNteractClient, NteractClientHandler>, String> {
-    let transport = if use_rust_mcp {
-        let runt = cargo_binary(project_root, "runt");
-        if !runt.exists() {
-            return Err(format!(
-                "runt binary not found at {}. Run `cargo build -p runt-cli` first.",
-                runt.display()
-            ));
-        }
-        info!("Using Rust MCP server (runt mcp)");
-        TokioChildProcess::new(Command::new(&runt).configure(|cmd| {
-            cmd.arg("mcp")
-                .env("RUNTIMED_DEV", "1")
-                .env("RUNTIMED_SOCKET_PATH", socket_path);
-        }))
-        .map_err(|e| format!("Failed to spawn runt mcp child: {e}"))?
-    } else {
-        let path = augmented_path();
-        info!("Using Python MCP server (uv run nteract)");
-        TokioChildProcess::new(Command::new("uv").configure(|cmd| {
-            cmd.args(["run", "--no-sync", "--directory"])
-                .arg(project_root)
-                .arg("nteract")
-                .env("RUNTIMED_DEV", "1")
-                .env("RUNTIMED_SOCKET_PATH", socket_path)
-                .env("PATH", &path);
-        }))
-        .map_err(|e| format!("Failed to spawn nteract child: {e}"))?
-    };
+    let runt = cargo_binary(project_root, "runt");
+    if !runt.exists() {
+        return Err(format!(
+            "runt binary not found at {}. Run `cargo build -p runt-cli` first.",
+            runt.display()
+        ));
+    }
+    info!("Spawning runt mcp server...");
+    let transport = TokioChildProcess::new(Command::new(&runt).configure(|cmd| {
+        cmd.arg("mcp")
+            .env("RUNTIMED_DEV", "1")
+            .env("RUNTIMED_SOCKET_PATH", socket_path);
+    }))
+    .map_err(|e| format!("Failed to spawn runt mcp child: {e}"))?;
 
     let client = NteractClientHandler
         .serve(transport)
@@ -514,8 +495,6 @@ struct SupervisorState {
     recent_crashes: Vec<Instant>,
     /// Last error message from child.
     last_error: Option<String>,
-    /// Whether to use the Rust MCP server (runt mcp) instead of Python.
-    use_rust_mcp: bool,
     /// Whether we started the daemon (so we know to clean it up).
     daemon_child: Option<std::process::Child>,
     /// Channel to request a tool list changed notification from the server context.
@@ -546,33 +525,33 @@ impl SupervisorState {
 #[derive(Clone)]
 struct Supervisor {
     state: Arc<RwLock<SupervisorState>>,
+    /// Signaled when the child client is first connected by the background
+    /// init task. `list_tools` waits on this so the initial tool list
+    /// includes the proxied nteract tools (not just supervisor tools).
+    child_ready: Arc<Notify>,
 }
 
 impl Supervisor {
-    fn new(
-        project_root: PathBuf,
-        socket_path: String,
-        child_client: rmcp::service::RunningService<RoleNteractClient, NteractClientHandler>,
-        use_rust_mcp: bool,
-        daemon_child: Option<std::process::Child>,
-        tool_list_changed_tx: mpsc::Sender<()>,
-    ) -> Self {
+    /// Create a supervisor with no child client yet. The stdio MCP server
+    /// starts immediately so the client doesn't time out; the child is
+    /// connected later via a background task.
+    fn new_empty(project_root: PathBuf, tool_list_changed_tx: mpsc::Sender<()>) -> Self {
         let log_dir = project_root.join(".context");
         let _ = std::fs::create_dir_all(&log_dir);
         Self {
             state: Arc::new(RwLock::new(SupervisorState {
-                child_client: Some(child_client),
+                child_client: None,
                 log_dir,
                 project_root,
-                socket_path,
+                socket_path: String::new(),
                 restart_count: 0,
                 recent_crashes: Vec::new(),
                 last_error: None,
-                use_rust_mcp,
-                daemon_child,
+                daemon_child: None,
                 tool_list_changed_tx: Some(tool_list_changed_tx),
                 managed: HashMap::new(),
             })),
+            child_ready: Arc::new(Notify::new()),
         }
     }
 
@@ -608,8 +587,7 @@ impl Supervisor {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Phase 3: Spawn child without holding the lock
-        let use_rust_mcp = self.state.read().await.use_rust_mcp;
-        match spawn_nteract_child(&project_root, &socket_path, use_rust_mcp).await {
+        match spawn_nteract_child(&project_root, &socket_path).await {
             Ok(client) => {
                 // Phase 4: Re-acquire lock to store the new client
                 let mut state = self.state.write().await;
@@ -1238,6 +1216,20 @@ impl ServerHandler for Supervisor {
                 .cloned()
                 .unwrap_or_default(),
         ));
+
+        // Wait for the child to be ready if it hasn't connected yet.
+        // This blocks the first tools/list call (typically right after
+        // initialize) until the background init finishes, so the client
+        // sees the full tool set from the start.
+        {
+            let state = self.state.read().await;
+            if state.child_client.is_none() {
+                drop(state);
+                info!("Waiting for child MCP server to connect...");
+                let _ = tokio::time::timeout(Duration::from_secs(30), self.child_ready.notified())
+                    .await;
+            }
+        }
 
         // Forward to child for its tools
         let state = self.state.read().await;
@@ -1970,95 +1962,129 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project_root = resolve_project_root();
     info!("Project root: {}", project_root.display());
 
-    // Step 1: Ensure daemon is running
-    let mut daemon_child = None;
-    let socket_path = match daemon_status(&project_root) {
-        Some(info) if info.running => {
-            info!("Dev daemon already running at {}", info.socket_path);
-            // Check version — warn if stale
-            if let Some(expected) = expected_daemon_version(&project_root) {
-                let running = info
-                    .daemon_info
-                    .as_ref()
-                    .and_then(|di| di.version.as_deref());
-                match running {
-                    Some(v) if v != expected => {
-                        warn!(
-                            "Running daemon version ({v}) doesn't match built binary ({expected}). \
-                             Use supervisor_rebuild or supervisor_restart target=daemon to update."
-                        );
-                    }
-                    Some(v) => info!("Daemon version: {v} (matches built binary)"),
-                    None => {}
-                }
-            }
-            info.socket_path
-        }
-        Some(_info) => {
-            info!("Daemon not running, starting it...");
-            daemon_child = start_daemon(&project_root);
-            if !wait_for_daemon(&project_root, Duration::from_secs(30)) {
-                error!("Daemon failed to start within 30s");
-                std::process::exit(1);
-            }
-            // Re-query to get the socket path from the now-running daemon
-            match daemon_status(&project_root) {
-                Some(info) if info.running => info.socket_path,
-                _ => {
-                    error!("Daemon started but status query failed");
-                    std::process::exit(1);
-                }
-            }
-        }
-        None => {
-            // Can't even get status — try to build runt CLI first
-            warn!("runt CLI not found, building...");
-            let status = std::process::Command::new("cargo")
-                .args(["build", "-p", "runt-cli"])
-                .current_dir(&project_root)
-                .status()?;
-            if !status.success() {
-                error!("Failed to build runt CLI");
-                std::process::exit(1);
-            }
+    // Step 1: Start the stdio MCP server IMMEDIATELY so the client doesn't
+    // time out waiting for the initialize response. The child process and
+    // daemon are connected in a background task — until then, the supervisor
+    // returns only its own tools and empty resource lists.
+    let (tool_list_changed_tx, mut tool_list_changed_rx) = mpsc::channel::<()>(4);
+    let supervisor = Supervisor::new_empty(project_root.clone(), tool_list_changed_tx);
 
-            match daemon_status(&project_root) {
-                Some(info) => {
-                    if !info.running {
-                        daemon_child = start_daemon(&project_root);
-                        if !wait_for_daemon(&project_root, Duration::from_secs(30)) {
-                            error!("Daemon failed to start within 30s");
-                            std::process::exit(1);
+    let transport = rmcp::transport::io::stdio();
+    let server = supervisor.serve(transport).await?;
+    info!("MCP server initialized on stdio (supervisor tools available)");
+
+    // Clone what we need before waiting() consumes the server
+    let state_for_init = server.service().state.clone();
+    let state_for_watcher = state_for_init.clone();
+    let state_for_cleanup = state_for_init.clone();
+    let child_ready = server.service().child_ready.clone();
+    let peer = server.peer().clone();
+    let peer_for_init = peer.clone();
+
+    // Step 2: Spawn background task to do the heavy setup (daemon, build,
+    // child spawn, file watcher). When done, populates state and notifies
+    // the client that new tools are available.
+    let init_project_root = project_root.clone();
+    tokio::spawn(async move {
+        let project_root = init_project_root;
+
+        // 2a: Ensure daemon is running
+        let mut daemon_child = None;
+        let socket_path = match daemon_status(&project_root) {
+            Some(info) if info.running => {
+                info!("Dev daemon already running at {}", info.socket_path);
+                if let Some(expected) = expected_daemon_version(&project_root) {
+                    let running = info
+                        .daemon_info
+                        .as_ref()
+                        .and_then(|di| di.version.as_deref());
+                    match running {
+                        Some(v) if v != expected => {
+                            warn!(
+                                "Running daemon version ({v}) doesn't match built binary ({expected}). \
+                                 Use supervisor_rebuild or supervisor_restart target=daemon to update."
+                            );
                         }
-                        // Re-query for fresh socket path
-                        match daemon_status(&project_root) {
-                            Some(fresh) if fresh.running => fresh.socket_path,
-                            _ => {
-                                error!("Daemon started but status query failed");
-                                std::process::exit(1);
+                        Some(v) => info!("Daemon version: {v} (matches built binary)"),
+                        None => {}
+                    }
+                }
+                info.socket_path
+            }
+            Some(_info) => {
+                info!("Daemon not running, starting it...");
+                daemon_child = start_daemon(&project_root);
+                if !wait_for_daemon(&project_root, Duration::from_secs(30)) {
+                    error!("Daemon failed to start within 30s");
+                    child_ready.notify_waiters();
+                    return;
+                }
+                match daemon_status(&project_root) {
+                    Some(info) if info.running => info.socket_path,
+                    _ => {
+                        error!("Daemon started but status query failed");
+                        child_ready.notify_waiters();
+                        return;
+                    }
+                }
+            }
+            None => {
+                warn!("runt CLI not found, building...");
+                let pr = project_root.clone();
+                let build_ok = tokio::task::spawn_blocking(move || {
+                    std::process::Command::new("cargo")
+                        .args(["build", "-p", "runt-cli"])
+                        .current_dir(&pr)
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false)
+                })
+                .await
+                .unwrap_or(false);
+                if !build_ok {
+                    error!("Failed to build runt CLI");
+                    child_ready.notify_waiters();
+                    return;
+                }
+
+                match daemon_status(&project_root) {
+                    Some(info) => {
+                        if !info.running {
+                            daemon_child = start_daemon(&project_root);
+                            if !wait_for_daemon(&project_root, Duration::from_secs(30)) {
+                                error!("Daemon failed to start within 30s");
+                                child_ready.notify_waiters();
+                                return;
                             }
+                            match daemon_status(&project_root) {
+                                Some(fresh) if fresh.running => fresh.socket_path,
+                                _ => {
+                                    error!("Daemon started but status query failed");
+                                    child_ready.notify_waiters();
+                                    return;
+                                }
+                            }
+                        } else {
+                            info.socket_path
                         }
-                    } else {
-                        info.socket_path
+                    }
+                    None => {
+                        error!("Cannot determine daemon socket path");
+                        child_ready.notify_waiters();
+                        return;
                     }
                 }
-                None => {
-                    error!("Cannot determine daemon socket path");
-                    std::process::exit(1);
-                }
             }
-        }
-    };
+        };
 
-    // Step 2: Check NTERACT_RUST_MCP env var to decide which server to use
-    let use_rust_mcp = std::env::var("NTERACT_RUST_MCP").is_ok();
-
-    if use_rust_mcp {
-        // Always rebuild runt-cli at startup to ensure the binary matches source.
-        // cargo xtask run-mcp only recompiles mcp-supervisor, not runt-cli.
-        info!("Building runt-cli for Rust MCP server...");
-        if !build_runt_cli(&project_root) {
-            error!("Failed to build runt-cli — Rust MCP server will not work");
+        // 2b: Build runt-cli
+        info!("Building runt-cli...");
+        let pr = project_root.clone();
+        let build_ok = tokio::task::spawn_blocking(move || build_runt_cli(&pr))
+            .await
+            .unwrap_or(false);
+        if !build_ok {
+            error!("Failed to build runt-cli — MCP server will not work");
         }
         // Also ensure maturin develop in background (dev workflow)
         let pr = project_root.clone();
@@ -2067,88 +2093,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 warn!("maturin develop failed — Python bindings may be stale");
             }
         });
-    } else {
-        // Python server — ensure maturin develop (blocking, needed for startup)
-        if !ensure_maturin_develop(&project_root) {
-            error!("Failed to build Python bindings — nteract MCP server may not work");
-        }
-    }
 
-    // Step 3: Spawn MCP child server
-    info!(
-        "Spawning {} MCP server...",
-        if use_rust_mcp {
-            "runt mcp (Rust)"
+        // 2c: Spawn runt mcp child
+        let child_client = match spawn_nteract_child(&project_root, &socket_path).await {
+            Ok(client) => {
+                info!("nteract MCP server connected");
+                client
+            }
+            Err(e) => {
+                error!("Failed to spawn nteract MCP child: {e}");
+                let mut state = state_for_init.write().await;
+                state.socket_path = socket_path;
+                state.daemon_child = daemon_child;
+                state.last_error = Some(e);
+                child_ready.notify_waiters();
+                return;
+            }
+        };
+
+        // 2d: Populate state with child client, socket, and daemon handle
+        {
+            let mut state = state_for_init.write().await;
+            state.child_client = Some(child_client);
+            state.socket_path = socket_path;
+            state.daemon_child = daemon_child;
+        }
+        // Unblock any list_tools call waiting for the child
+        child_ready.notify_waiters();
+
+        // 2e: Notify the client that tools/resources are now available
+        if let Err(e) = peer_for_init.notify_tool_list_changed().await {
+            warn!("Failed to send tools/list_changed after init: {e}");
         } else {
-            "nteract (Python)"
+            info!("Background init complete — sent tools/list_changed to client");
         }
-    );
-    let child_client = spawn_nteract_child(&project_root, &socket_path, use_rust_mcp)
-        .await
-        .map_err(|e| {
-            error!("{e}");
-            e
-        })?;
-    info!("nteract MCP server connected");
+        if let Err(e) = peer_for_init.notify_resource_list_changed().await {
+            warn!("Failed to send resources/list_changed after init: {e}");
+        }
 
-    // Step 4: Start file watcher
-    let mut file_change_rx = start_file_watcher(&project_root).unwrap_or_else(|e| {
-        warn!("File watcher failed to start: {e}");
-        // Return a dummy receiver that never fires
-        mpsc::channel(1).1
+        // 2f: Start file watcher
+        let mut file_change_rx = start_file_watcher(&project_root).unwrap_or_else(|e| {
+            warn!("File watcher failed to start: {e}");
+            mpsc::channel(1).1
+        });
+
+        // Run the file watcher loop in this task
+        let watcher_supervisor = Supervisor {
+            state: state_for_watcher,
+            child_ready: Arc::new(Notify::new()),
+        };
+        while let Some(change_kind) = file_change_rx.recv().await {
+            info!("File change detected: {change_kind:?}");
+            watcher_supervisor.handle_file_change(change_kind).await;
+        }
     });
 
-    // Channel for the file watcher to signal tool list changes
-    let (tool_list_changed_tx, mut tool_list_changed_rx) = mpsc::channel::<()>(4);
-
-    // Step 5: Start supervisor server on stdin/stdout
-    let supervisor = Supervisor::new(
-        project_root,
-        socket_path,
-        child_client,
-        use_rust_mcp,
-        daemon_child,
-        tool_list_changed_tx,
-    );
-
-    let transport = rmcp::transport::io::stdio();
-    let server = supervisor.serve(transport).await?;
-
-    // Clone what we need before waiting() consumes the server
-    let state_for_watcher = server.service().state.clone();
-    let state_for_cleanup = state_for_watcher.clone();
-    let peer = server.peer().clone();
-
-    // Spawn the file watcher handler task
-    let watcher_supervisor = Supervisor {
-        state: state_for_watcher,
-    };
+    // Step 3: Handle tool_list_changed notifications from restarts
+    let peer_for_notify = peer.clone();
     tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                Some(change_kind) = file_change_rx.recv() => {
-                    info!("File change detected: {change_kind:?}");
-                    watcher_supervisor.handle_file_change(change_kind).await;
-                }
-                Some(()) = tool_list_changed_rx.recv() => {
-                    // The child was restarted — notify the MCP client
-                    if let Err(e) = peer.notify_tool_list_changed().await {
-                        warn!("Failed to send tools/list_changed: {e}");
-                    } else {
-                        info!("Sent tools/list_changed notification to client");
-                    }
-                    if let Err(e) = peer.notify_resource_list_changed().await {
-                        warn!("Failed to send resources/list_changed: {e}");
-                    } else {
-                        info!("Sent resources/list_changed notification to client");
-                    }
-                }
-                else => break,
+        while let Some(()) = tool_list_changed_rx.recv().await {
+            if let Err(e) = peer_for_notify.notify_tool_list_changed().await {
+                warn!("Failed to send tools/list_changed: {e}");
+            } else {
+                info!("Sent tools/list_changed notification to client");
+            }
+            if let Err(e) = peer_for_notify.notify_resource_list_changed().await {
+                warn!("Failed to send resources/list_changed: {e}");
+            } else {
+                info!("Sent resources/list_changed notification to client");
             }
         }
     });
 
-    info!("MCP supervisor running (file watching active), waiting for client disconnect...");
+    info!("MCP supervisor running, waiting for client disconnect...");
     let reason = server.waiting().await?;
     info!("Supervisor shutting down: {reason:?}");
 
