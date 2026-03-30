@@ -86,27 +86,32 @@ pub async fn execute_cell(
 
     // Build structured content for MCP Apps widget using the protocol's
     // structured_content field instead of a text-based fallback.
+    // Only send structured content when there are outputs to render.
     let cell_snapshot = handle.get_cell(&result.cell_id);
     let structured_content = if let Some(snap) = cell_snapshot {
-        let outputs = runtimed_client::output_resolver::resolve_cell_outputs(
-            &snap.outputs,
-            &server.blob_base_url,
-            &server.blob_store_path,
-        )
-        .await;
-        let resolved = runtimed_client::resolved_output::ResolvedCell {
-            id: snap.id,
-            cell_type: snap.cell_type,
-            position: snap.position,
-            source: snap.source,
-            execution_count: snap.execution_count.parse().ok(),
-            outputs,
-            metadata_json: serde_json::to_string(&snap.metadata).unwrap_or_default(),
-        };
-        Some(structured::cell_structured_content(
-            &resolved,
-            &result.status,
-        ))
+        if snap.outputs.is_empty() {
+            None
+        } else {
+            let outputs = runtimed_client::output_resolver::resolve_cell_outputs(
+                &snap.outputs,
+                &server.blob_base_url,
+                &server.blob_store_path,
+            )
+            .await;
+            let resolved = runtimed_client::resolved_output::ResolvedCell {
+                id: snap.id,
+                cell_type: snap.cell_type,
+                position: snap.position,
+                source: snap.source,
+                execution_count: snap.execution_count.parse().ok(),
+                outputs,
+                metadata_json: serde_json::to_string(&snap.metadata).unwrap_or_default(),
+            };
+            Some(structured::cell_structured_content(
+                &resolved,
+                &result.status,
+            ))
+        }
     } else {
         None
     };
