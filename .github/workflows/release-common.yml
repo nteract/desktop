@@ -124,6 +124,10 @@ jobs:
           echo "Setting version to: ${VERSION}"
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
 
+      # Build MCP output widget HTML (needed by runt-mcp's include_str!)
+      - name: Build MCP output widget
+        run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
+
       - name: Build for Linux x64
         run: cargo build --release --target x86_64-unknown-linux-gnu -p runt-cli
 
@@ -190,6 +194,10 @@ jobs:
           VERSION="${{ needs.compute-version.outputs.version }}"
           echo "Setting version to: ${VERSION}"
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
+
+      # Build MCP output widget HTML (needed by runt-mcp's include_str!)
+      - name: Build MCP output widget
+        run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
 
       - name: Build for macOS ARM64
         run: cargo build --release --target aarch64-apple-darwin -p runt-cli
@@ -309,6 +317,10 @@ jobs:
             ICON_SOURCE="crates/notebook/icons/source-nightly.png"
           fi
           cargo xtask icons "$ICON_SOURCE"
+
+      # Build MCP output widget HTML (needed by runt-mcp's include_str!)
+      - name: Build MCP output widget
+        run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
 
       - name: Build external binaries
         run: |
@@ -460,6 +472,10 @@ jobs:
           }
           cargo xtask icons $iconSource
 
+      # Build MCP output widget HTML (needed by runt-mcp's include_str!)
+      - name: Build MCP output widget
+        run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
+
       - name: Build external binaries
         shell: bash
         run: |
@@ -590,6 +606,10 @@ jobs:
             ICON_SOURCE="crates/notebook/icons/source-nightly.png"
           fi
           cargo xtask icons "$ICON_SOURCE"
+
+      # Build MCP output widget HTML (needed by runt-mcp's include_str!)
+      - name: Build MCP output widget
+        run: pnpm --filter nteract-mcp-app install && pnpm --filter nteract-mcp-app run build
 
       - name: Build external binaries
         run: |
