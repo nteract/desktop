@@ -2,6 +2,7 @@ pub mod cli_install;
 pub mod conda_env;
 pub mod deno_env;
 pub mod environment_yml;
+pub mod mcpb_install;
 pub mod menu;
 
 pub mod pixi;
@@ -4538,6 +4539,31 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
                                 let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
                                     .message(format!("Failed to install CLI: {}", e))
                                     .title("Installation Failed")
+                                    .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                                    .blocking_show();
+                            });
+                        }
+                    }
+                }
+                crate::menu::MENU_INSTALL_CLAUDE_EXT => {
+                    let app_handle = app.clone();
+                    match crate::mcpb_install::install_mcpb(&app_handle) {
+                        Ok(path) => {
+                            log::info!(
+                                "[mcpb] Extension opened for installation: {}",
+                                path.display()
+                            );
+                        }
+                        Err(e) => {
+                            log::error!("[mcpb] Failed to install extension: {}", e);
+                            tauri::async_runtime::spawn(async move {
+                                let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
+                                    .message(format!(
+                                        "Failed to create Claude extension: {}\n\n\
+                                         Make sure Claude Desktop is installed.",
+                                        e
+                                    ))
+                                    .title("Extension Install Failed")
                                     .kind(tauri_plugin_dialog::MessageDialogKind::Error)
                                     .blocking_show();
                             });

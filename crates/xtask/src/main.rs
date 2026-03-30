@@ -2136,8 +2136,8 @@ fn cmd_mcpb(output: Option<&str>, variant: &str) {
         eprintln!("Failed to create server directory: {e}");
         exit(1);
     });
-    fs::copy("mcpb/server/launch.mjs", server_dir.join("launch.mjs")).unwrap_or_else(|e| {
-        eprintln!("Failed to copy server/launch.mjs: {e}");
+    fs::copy("mcpb/server/launch.js", server_dir.join("launch.js")).unwrap_or_else(|e| {
+        eprintln!("Failed to copy server/launch.js: {e}");
         exit(1);
     });
 

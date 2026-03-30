@@ -38,6 +38,7 @@ pub const MENU_CLEAR_ALL_OUTPUTS: &str = "clear_all_outputs";
 
 // Menu item IDs for CLI installation and settings
 pub const MENU_INSTALL_CLI: &str = "install_cli";
+pub const MENU_INSTALL_CLAUDE_EXT: &str = "install_claude_ext";
 pub const MENU_CHECK_FOR_UPDATES: &str = "check_for_updates";
 pub const MENU_SETTINGS: &str = "settings";
 pub const MENU_SEND_FEEDBACK: &str = "send_feedback";
@@ -106,6 +107,13 @@ pub fn create_menu(
         app,
         MENU_INSTALL_CLI,
         install_cli_label.as_str(),
+        true,
+        None::<&str>,
+    )?)?;
+    app_menu.append(&MenuItem::with_id(
+        app,
+        MENU_INSTALL_CLAUDE_EXT,
+        "Install Extension for Claude…",
         true,
         None::<&str>,
     )?)?;
