@@ -11,9 +11,10 @@ use crate::NteractMcp;
 const OUTPUT_RESOURCE_URI: &str = "ui://nteract/output.html";
 const OUTPUT_MIME_TYPE: &str = "text/html;profile=mcp-app";
 
-/// The compiled MCP Apps widget HTML, built by `apps/mcp-app/build-html.js`
-/// and checked into the repo (like WASM artifacts).
-const OUTPUT_HTML: &str = include_str!("../../../python/nteract/src/nteract/_widget.html");
+/// The compiled output renderer HTML, built by `apps/mcp-app/build-html.js`.
+/// Build with: `cd apps/mcp-app && pnpm build`
+/// The build script copies the file to `crates/runt-mcp/assets/_output.html`.
+const OUTPUT_HTML: &str = include_str!("../assets/_output.html");
 
 /// List available MCP resources.
 pub async fn list_resources(_server: &NteractMcp) -> Result<ListResourcesResult, McpError> {

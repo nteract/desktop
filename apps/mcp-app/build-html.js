@@ -25,13 +25,19 @@ ${js}
 </body>
 </html>`;
 
-writeFileSync("dist/widget.html", html);
+writeFileSync("dist/output.html", html);
 
-// Also copy to the nteract package for bundling
+// Copy to the nteract Python package for bundling
 const pkgDir = "../../python/nteract/src/nteract";
 try {
   writeFileSync(pkgDir + "/_widget.html", html);
-  console.log("Built dist/widget.html + copied to nteract package");
+} catch { /* nteract package dir may not exist */ }
+
+// Copy to the runt-mcp crate for Rust include_str! embedding
+const mcpDir = "../../crates/runt-mcp/assets";
+try {
+  writeFileSync(mcpDir + "/_output.html", html);
+  console.log("Built dist/output.html + copied to nteract package + runt-mcp assets");
 } catch {
-  console.log("Built dist/widget.html (nteract package copy skipped)");
+  console.log("Built dist/output.html (runt-mcp copy skipped)");
 }
