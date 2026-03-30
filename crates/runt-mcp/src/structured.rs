@@ -43,6 +43,10 @@ fn output_to_structured(output: &Output) -> Value {
 
             if let Some(ref output_data) = output.data {
                 for (mime, value) in output_data {
+                    // Skip text/llm+plain — it's for LLM consumption, not the widget
+                    if mime == "text/llm+plain" {
+                        continue;
+                    }
                     let json_value = match value {
                         DataValue::Text(s) => Value::String(s.clone()),
                         DataValue::Binary(_) => {

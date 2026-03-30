@@ -1,8 +1,8 @@
 //! MCP resource serving (output.html, notebook cells, status).
 
 use rmcp::model::{
-    Annotated, ListResourcesResult, RawResource, ReadResourceRequestParams, ReadResourceResult,
-    ResourceContents,
+    Annotated, ListResourcesResult, Meta, RawResource, ReadResourceRequestParams,
+    ReadResourceResult, ResourceContents,
 };
 use rmcp::ErrorData as McpError;
 
@@ -15,6 +15,25 @@ const OUTPUT_MIME_TYPE: &str = "text/html;profile=mcp-app";
 /// Build with: `cd apps/mcp-app && pnpm build`
 /// The build script copies the file to `crates/runt-mcp/assets/_output.html`.
 const OUTPUT_HTML: &str = include_str!("../assets/_output.html");
+
+/// Build `_meta` for the output widget resource with CSP allowing blob image loading.
+///
+/// Wire format: `{ "ui": { "csp": { "resourceDomains": ["http://localhost:{port}"] } } }`
+///
+/// Claude Desktop requires `localhost` (not `127.0.0.1`) for domain allowlists.
+fn resource_ui_meta(blob_base_url: &Option<String>) -> Option<Meta> {
+    let url = blob_base_url.as_ref()?;
+    let mut meta = serde_json::Map::new();
+    meta.insert(
+        "ui".to_string(),
+        serde_json::json!({
+            "csp": {
+                "resourceDomains": [url]
+            }
+        }),
+    );
+    Some(Meta(meta))
+}
 
 /// List available MCP resources.
 pub async fn list_resources(_server: &NteractMcp) -> Result<ListResourcesResult, McpError> {
@@ -36,7 +55,7 @@ pub async fn list_resources(_server: &NteractMcp) -> Result<ListResourcesResult,
 
 /// Read an MCP resource by URI.
 pub async fn read_resource(
-    _server: &NteractMcp,
+    server: &NteractMcp,
     request: &ReadResourceRequestParams,
 ) -> Result<ReadResourceResult, McpError> {
     let uri = request.uri.as_str();
@@ -47,7 +66,7 @@ pub async fn read_resource(
                 uri: OUTPUT_RESOURCE_URI.into(),
                 mime_type: Some(OUTPUT_MIME_TYPE.into()),
                 text: OUTPUT_HTML.to_string(),
-                meta: None,
+                meta: resource_ui_meta(&server.blob_base_url),
             },
         ]));
     }
