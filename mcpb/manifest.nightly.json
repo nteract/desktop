@@ -18,7 +18,8 @@
     "entry_point": "server/launch.js",
     "mcp_config": {
       "command": "runt-nightly",
-      "args": ["mcp"]
+      "args": ["mcp"],
+      "env": { "NTERACT_CHANNEL": "nightly" }
     }
   },
   "icon": "icon.png",

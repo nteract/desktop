@@ -110,6 +110,8 @@ pub fn create_menu(
         true,
         None::<&str>,
     )?)?;
+    // Claude Desktop extension install — macOS only (uses `open` command)
+    #[cfg(target_os = "macos")]
     app_menu.append(&MenuItem::with_id(
         app,
         MENU_INSTALL_CLAUDE_EXT,

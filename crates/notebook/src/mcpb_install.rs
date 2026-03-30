@@ -20,10 +20,31 @@ const LAUNCH_JS: &str = include_str!("../../../mcpb/server/launch.js");
 /// Build a .mcpb archive and open it with the system handler.
 ///
 /// Returns the path to the created .mcpb file on success.
+/// On non-macOS platforms, returns an error (no `open` command).
 pub fn install_mcpb(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        return Err("Extension installation is currently only supported on macOS.".into());
+    }
+
+    #[cfg(target_os = "macos")]
+    install_mcpb_macos(app)
+}
+
+#[cfg(target_os = "macos")]
+fn install_mcpb_macos(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let is_nightly = build_channel() == BuildChannel::Nightly;
 
     let version = env!("CARGO_PKG_VERSION");
+
+    // Ensure the CLI is installed so runt/runt-nightly is on PATH.
+    // This is needed because the mcpb's mcp_config.command references the binary directly.
+    let cli_name = if is_nightly { "runt-nightly" } else { "runt" };
+    if Command::new("which").arg(cli_name).output().map(|o| !o.status.success()).unwrap_or(true) {
+        log::info!("[mcpb] CLI not found on PATH, installing first...");
+        crate::cli_install::install_cli(app)?;
+    }
 
     // ── 1. Build manifest ──────────────────────────────────────────────
     let (name, display_name, command) = if is_nightly {
@@ -162,58 +183,43 @@ pub fn install_mcpb(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 
 /// Try to copy icons from the app bundle into the staging directory.
 /// Returns true if at least the light icon was copied.
-fn copy_app_icon(app: &tauri::AppHandle, staging: &Path, is_nightly: bool) -> bool {
-    // On macOS, icons are in Contents/Resources/ of the app bundle
-    #[cfg(target_os = "macos")]
-    {
-        use tauri::Manager;
-        if let Ok(resource_dir) = app.path().resource_dir() {
-            // The app bundles source.png and source-nightly.png as icons
-            let (light_src, dark_src) = if is_nightly {
-                ("source-nightly.png", "source.png")
-            } else {
-                ("source.png", "source-nightly.png")
-            };
+///
+/// On macOS, the app icon is at Contents/Resources/icon.icns. We extract
+/// a 512x512 PNG from it using `sips`. If that fails, we look for any
+/// bundled PNG icons (128x128, 32x32, etc.) and resize them.
+#[cfg(target_os = "macos")]
+fn copy_app_icon(app: &tauri::AppHandle, staging: &Path, _is_nightly: bool) -> bool {
+    use tauri::Manager;
 
-            let light_path = resource_dir.join(light_src);
-            let dark_path = resource_dir.join(dark_src);
+    let Ok(resource_dir) = app.path().resource_dir() else {
+        return false;
+    };
 
-            // Try the resource dir first, then check icons/ subdir
-            let light = find_icon(&light_path, &resource_dir, light_src);
-            let dark = find_icon(&dark_path, &resource_dir, dark_src);
+    // Strategy 1: Extract from .icns (always present in macOS app bundles)
+    let icns_path = resource_dir.join("icon.icns");
+    if icns_path.exists() {
+        let dest = staging.join("icon.png");
+        // sips can convert .icns to .png and resize in one step
+        if resize_icon_sips(&icns_path, &dest) {
+            // Use same icon for dark mode
+            let _ = fs::copy(&dest, staging.join("icon-dark.png"));
+            return true;
+        }
+    }
 
-            if let Some(ref src) = light {
-                // Resize to 512x512 using sips (always available on macOS)
-                let dest = staging.join("icon.png");
-                if resize_icon_sips(src, &dest) {
-                    let dark_dest = staging.join("icon-dark.png");
-                    if let Some(ref dark_src) = dark {
-                        if !resize_icon_sips(dark_src, &dark_dest) {
-                            let _ = fs::copy(&dest, &dark_dest);
-                        }
-                    } else {
-                        let _ = fs::copy(&dest, &dark_dest);
-                    }
-                    return true;
-                }
+    // Strategy 2: Use any bundled PNG icon and resize
+    for candidate in ["128x128@2x.png", "128x128.png", "32x32@2x.png"] {
+        let path = resource_dir.join(candidate);
+        if path.exists() {
+            let dest = staging.join("icon.png");
+            if resize_icon_sips(&path, &dest) {
+                let _ = fs::copy(&dest, staging.join("icon-dark.png"));
+                return true;
             }
         }
     }
 
-    let _ = (app, staging, is_nightly); // suppress unused warnings on non-macOS
     false
-}
-
-/// Find an icon file, checking the direct path and a few fallback locations.
-fn find_icon(primary: &Path, resource_dir: &Path, filename: &str) -> Option<PathBuf> {
-    if primary.exists() {
-        return Some(primary.to_path_buf());
-    }
-    let in_icons = resource_dir.join("icons").join(filename);
-    if in_icons.exists() {
-        return Some(in_icons);
-    }
-    None
 }
 
 /// Resize an icon to 512x512 using macOS `sips`.
