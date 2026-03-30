@@ -2782,8 +2782,8 @@ async fn auto_launch_kernel(
                                 cell_id,
                                 execution_id,
                             } => {
-                                warn!(
-                                    "[notebook-sync] Cell error (stop-on-error): {} ({})",
+                                debug!(
+                                    "[notebook-sync] User code error, halting queue (stop-on-error): cell={} execution={}",
                                     cell_id, execution_id
                                 );
                                 apply_cell_error_to_state_doc(
@@ -3549,8 +3549,8 @@ async fn handle_notebook_request(
                                         cell_id,
                                         execution_id,
                                     } => {
-                                        warn!(
-                                            "[notebook-sync] Cell error (stop-on-error): {} ({})",
+                                        debug!(
+                                            "[notebook-sync] User code error, halting queue (stop-on-error): cell={} execution={}",
                                             cell_id, execution_id
                                         );
                                         apply_cell_error_to_state_doc(

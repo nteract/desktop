@@ -33,14 +33,16 @@ The Rust server (`runt-mcp`) uses direct Automerge access via `DocHandle` for mi
 
 When running CLI commands against system-installed daemons from a dev environment, **always use `env -i`** to strip dev env vars (`RUNTIMED_DEV`, `RUNTIMED_WORKSPACE_PATH`) that would otherwise redirect commands to the per-worktree dev daemon:
 
+**Important:** The repo's `bin/runt` (added to PATH by direnv) shadows `/usr/local/bin/runt` and always resolves to the dev build (nightly channel). When targeting system-installed daemons, use absolute paths:
+
 ```bash
 # Nightly system daemon
-env -i PATH="$PATH" HOME="$HOME" runt-nightly diagnostics
-env -i PATH="$PATH" HOME="$HOME" runt-nightly daemon status
+env -i PATH="$PATH" HOME="$HOME" /usr/local/bin/runt-nightly diagnostics
+env -i PATH="$PATH" HOME="$HOME" /usr/local/bin/runt-nightly daemon status
 
 # Stable system daemon
-env -i PATH="$PATH" HOME="$HOME" runt diagnostics
-env -i PATH="$PATH" HOME="$HOME" runt daemon status
+env -i PATH="$PATH" HOME="$HOME" /usr/local/bin/runt diagnostics
+env -i PATH="$PATH" HOME="$HOME" /usr/local/bin/runt daemon status
 ```
 
 For the dev daemon, use `./target/debug/runt` directly (no `env -i` needed — dev env vars are correct).
