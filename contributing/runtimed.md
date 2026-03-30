@@ -92,7 +92,7 @@ When iterating on daemon code, you often want to test changes in the notebook ap
 The supervisor manages the dev daemon for you. No env vars or extra terminals needed.
 
 - `supervisor_restart(target="daemon")` — start or restart the dev daemon after code changes
-- `supervisor_rebuild` — rebuild Python bindings (`maturin develop`) + restart
+- `supervisor_rebuild` — rebuild Rust bindings + Python bindings (`maturin develop`) + restart
 - `supervisor_status` — check daemon status (`daemon_managed: true` confirms it's running)
 - `supervisor_logs` — tail daemon logs
 - `supervisor_start_vite` — start the Vite dev server for hot-reload

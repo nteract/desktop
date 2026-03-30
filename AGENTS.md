@@ -217,7 +217,20 @@ Use `nteract-dev` as the MCP server name for this source tree. Keep `nteract` fo
 
 For Codex app/CLI, this repository also includes a project-scoped MCP config in `.codex/config.toml` that points at the same `mcp-supervisor` server using the `nteract-dev` entry name.
 
-`uv run nteract --stable` and `uv run nteract --nightly` are channel overrides for direct MCP launches. They only seed `RUNTIMED_SOCKET_PATH` when it is unset, and they also control which app `show_notebook` opens. `--no-show` removes the `show_notebook` tool entirely.
+### Rust vs Python MCP Server
+
+The supervisor can spawn either the **Rust-native** (`runt mcp`) or **Python** (`uv run nteract`) MCP server:
+
+| Server | How to select | Tools | Notes |
+|--------|---------------|-------|-------|
+| Rust (`runt mcp`) | **Default** — `NTERACT_RUST_MCP=1` in `.mcp.json` | 26 tools | No Python overhead, direct Automerge access, ships with the app |
+| Python (`uv run nteract`) | Remove `NTERACT_RUST_MCP` from env | 27 tools (includes `show_notebook`) | Requires Python + uv + maturin develop |
+
+The repo's `.mcp.json`, `.codex/config.toml`, and `.zed/settings.json` all default to the Rust server. The supervisor auto-builds `runt-cli` on startup and watches `crates/runt-mcp/src/` for hot reload.
+
+`runt mcp` can also be run standalone (no supervisor): `./target/debug/runt mcp`. It reads `RUNTIMED_SOCKET_PATH` for the daemon connection.
+
+For the installed app, `runt mcp` ships as a sidecar binary alongside `runtimed`, so MCP clients can use it directly without Python or uv.
 
 ### Supervisor Tools (from nteract-dev / `mcp-supervisor`)
 
@@ -248,9 +261,11 @@ When nteract-dev is active, agents also get the full nteract tool suite. **Use t
 
 ### Hot reload
 
-The supervisor watches `python/nteract/src/`, `python/runtimed/src/`, `crates/runtimed-py/src/`, and `crates/runtimed/src/`:
-- **Python changes** → child process restarts automatically
-- **Rust changes** → `maturin develop` runs first, then child restarts
+The supervisor watches source directories and auto-restarts the child on changes:
+- **`crates/runt-mcp/src/`** → `cargo build -p runt-cli` + restart (Rust MCP mode)
+- **`crates/runtimed-client/src/`** → `cargo build -p runt-cli` + `maturin develop` + restart (shared code)
+- **`crates/runtimed-py/src/`, `crates/runtimed/src/`** → `maturin develop` + `cargo build` + restart
+- **`python/nteract/src/`, `python/runtimed/src/`** → child restart (Python mode) or background `maturin develop` (Rust mode)
 
 ### Tool availability
 
@@ -260,18 +275,20 @@ The supervisor watches `python/nteract/src/`, `python/runtimed/src/`, `crates/ru
 - **No MCP server** → use `cargo xtask run-mcp` to set one up
 - **Dev daemon not running** → nteract-dev starts it automatically via `supervisor_restart(target="daemon")`
 
-## Workspace Crates (15)
+## Workspace Crates (17)
 
 | Crate | Purpose |
 |-------|---------|
 | `runtimed` | Central daemon — env pools, notebook sync, kernel execution |
+| `runtimed-client` | Shared client library — output resolution, daemon paths, pool client |
 | `runtimed-py` | Python bindings for daemon (PyO3/maturin) |
 | `runtimed-wasm` | WASM bindings for notebook doc (Automerge, used by frontend) |
 | `notebook` | Tauri desktop app — main GUI, bundles daemon+CLI as sidecars |
 | `notebook-doc` | Shared Automerge schema — cells, outputs, RuntimeStateDoc, PEP 723 |
 | `notebook-protocol` | Wire types — requests, responses, broadcasts |
 | `notebook-sync` | Automerge sync client — `DocHandle`, per-cell Python accessors |
-| `runt` | CLI — daemon management, kernel control, notebook launching |
+| `runt` | CLI — daemon management, kernel control, notebook launching, MCP server |
+| `runt-mcp` | Rust-native MCP server — 26 tools for notebook interaction via `runt mcp` |
 | `runt-trust` | Notebook trust (HMAC-SHA256 over dependency metadata) |
 | `runt-workspace` | Per-worktree daemon isolation, socket path management |
 | `kernel-launch` | Kernel launching, tool bootstrapping (deno, uv, ruff via rattler) |
