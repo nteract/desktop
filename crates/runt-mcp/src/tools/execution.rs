@@ -73,21 +73,16 @@ pub async fn execute_cell(
     )
     .await;
 
-    // Format text content
+    // Format as multiple Content items: header, then one per output
     let header = formatting::format_cell_header(
         &result.cell_id,
         "code",
         result.execution_count.as_deref(),
         Some(&result.status),
     );
-    let output_text = formatting::format_outputs_text(&result.outputs);
-    let text = if !output_text.is_empty() {
-        format!("{header}\n\n{output_text}")
-    } else {
-        header
-    };
 
-    let items = vec![Content::text(text)];
+    let mut items = vec![Content::text(header)];
+    items.extend(formatting::outputs_to_content_items(&result.outputs));
 
     // Build structured content for MCP Apps widget using the protocol's
     // structured_content field instead of a text-based fallback.

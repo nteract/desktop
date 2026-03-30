@@ -9,12 +9,111 @@ use serde::Deserialize;
 
 use runtimed_client::client::PoolClient;
 
+use crate::formatting;
 use crate::session::NotebookSession;
 use crate::NteractMcp;
 
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 
 use super::{arg_str, tool_error, tool_success};
+
+/// Collect runtime info from RuntimeStateDoc, polling briefly for it to sync.
+/// Matches Python's `_collect_runtime_info()`.
+async fn collect_runtime_info(handle: &notebook_sync::handle::DocHandle) -> serde_json::Value {
+    // Poll up to ~500ms for RuntimeStateDoc to sync after join
+    let mut info = read_runtime_info(handle);
+    if info
+        .get("kernel_status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("not_started")
+        == "not_started"
+    {
+        for _ in 0..5 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            info = read_runtime_info(handle);
+            let status = info
+                .get("kernel_status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if status != "not_started" && status != "unknown" && !status.is_empty() {
+                break;
+            }
+        }
+    }
+    info
+}
+
+/// Read runtime info snapshot from the handle's RuntimeStateDoc.
+fn read_runtime_info(handle: &notebook_sync::handle::DocHandle) -> serde_json::Value {
+    let mut info = serde_json::Map::new();
+    match handle.get_runtime_state() {
+        Ok(state) => {
+            info.insert(
+                "kernel_status".into(),
+                serde_json::json!(state.kernel.status),
+            );
+            if !state.kernel.language.is_empty() {
+                info.insert("language".into(), serde_json::json!(state.kernel.language));
+            }
+            if !state.kernel.name.is_empty() {
+                info.insert("kernel_name".into(), serde_json::json!(state.kernel.name));
+            }
+            if !state.kernel.env_source.is_empty() {
+                info.insert(
+                    "env_source".into(),
+                    serde_json::json!(state.kernel.env_source),
+                );
+                let env_source = &state.kernel.env_source;
+                if env_source.starts_with("conda:") {
+                    info.insert("package_manager".into(), serde_json::json!("conda"));
+                } else if env_source.starts_with("uv:") {
+                    info.insert("package_manager".into(), serde_json::json!("uv"));
+                } else if env_source == "deno" {
+                    info.insert("package_manager".into(), serde_json::json!("deno"));
+                }
+            }
+            if !state.env.in_sync {
+                info.insert("env_in_sync".into(), serde_json::json!(false));
+            }
+        }
+        Err(_) => {
+            info.insert("kernel_status".into(), serde_json::json!("unknown"));
+        }
+    }
+    serde_json::Value::Object(info)
+}
+
+/// Get dependencies from notebook metadata.
+fn get_dependencies(handle: &notebook_sync::handle::DocHandle) -> Vec<String> {
+    handle
+        .get_notebook_metadata()
+        .and_then(|m| m.runt.uv)
+        .map(|uv| uv.dependencies)
+        .unwrap_or_default()
+}
+
+/// Format cell summaries for join/open response.
+fn format_cell_summaries(handle: &notebook_sync::handle::DocHandle) -> String {
+    let cells = handle.get_cells();
+    let cell_status_map = crate::tools::cell_read::build_cell_status_map(handle);
+    cells
+        .iter()
+        .enumerate()
+        .map(|(i, cell)| {
+            let status = cell_status_map.get(&cell.id).map(String::as_str);
+            formatting::format_cell_summary(
+                i,
+                &cell.id,
+                &cell.cell_type,
+                &cell.source,
+                Some(&cell.execution_count),
+                status,
+                60,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 #[allow(dead_code)] // Fields used by schemars for tool input schema generation
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -91,11 +190,18 @@ pub async fn join_notebook(
     .await
     {
         Ok(result) => {
-            let info = format!(
-                "Joined notebook: {} ({} cells)",
-                result.handle.notebook_id(),
-                result.handle.get_cell_ids().len()
-            );
+            let handle = &result.handle;
+            let runtime_info = collect_runtime_info(handle).await;
+            let deps = get_dependencies(handle);
+            let cells_summary = format_cell_summaries(handle);
+
+            let response = serde_json::json!({
+                "notebook_id": handle.notebook_id(),
+                "connected": true,
+                "runtime": runtime_info,
+                "dependencies": deps,
+                "cells": cells_summary,
+            });
 
             let session = NotebookSession {
                 handle: result.handle,
@@ -103,7 +209,9 @@ pub async fn join_notebook(
             };
             *server.session.write().await = Some(session);
 
-            tool_success(&info)
+            Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&response).unwrap_or_default(),
+            )]))
         }
         Err(e) => tool_error(&format!("Failed to join notebook: {}", e)),
     }
@@ -137,12 +245,18 @@ pub async fn open_notebook(
     .await
     {
         Ok(result) => {
-            let cell_count = result.handle.get_cell_ids().len();
-            let notebook_id = result.handle.notebook_id().to_string();
-            let info = serde_json::json!({
+            let handle = &result.handle;
+            let notebook_id = handle.notebook_id().to_string();
+            let runtime_info = collect_runtime_info(handle).await;
+            let deps = get_dependencies(handle);
+            let cells_summary = format_cell_summaries(handle);
+
+            let response = serde_json::json!({
                 "notebook_id": notebook_id,
-                "cell_count": cell_count,
-                "status": "connected"
+                "path": abs_path.to_string_lossy(),
+                "runtime": runtime_info,
+                "dependencies": deps,
+                "cells": cells_summary,
             });
 
             let session = NotebookSession {
@@ -152,7 +266,7 @@ pub async fn open_notebook(
             *server.session.write().await = Some(session);
 
             Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&info).unwrap_or_default(),
+                serde_json::to_string_pretty(&response).unwrap_or_default(),
             )]))
         }
         Err(e) => tool_error(&format!("Failed to open notebook '{}': {}", path, e)),

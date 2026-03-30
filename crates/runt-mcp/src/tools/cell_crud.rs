@@ -354,14 +354,9 @@ async fn build_execution_result(
         Some(&result.status),
     );
 
-    let output_text = crate::formatting::format_outputs_text(&result.outputs);
-    let text = if !output_text.is_empty() {
-        format!("{header}\n\n{output_text}")
-    } else {
-        header
-    };
-
-    let items = vec![Content::text(text)];
+    // Multiple Content items: header, then one per output (matches Python)
+    let mut items = vec![Content::text(header)];
+    items.extend(crate::formatting::outputs_to_content_items(&result.outputs));
 
     // Build structured content for MCP Apps widget using the protocol's
     // structured_content field instead of a text-based fallback.
