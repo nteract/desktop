@@ -17,6 +17,11 @@ use runt_workspace::{build_channel, BuildChannel};
 /// The launcher script embedded at compile time.
 const LAUNCH_JS: &str = include_str!("../../../mcpb/server/launch.js");
 
+/// App icons embedded at compile time (512x512 PNG).
+/// Stable = green/teal icon, Nightly = orange/red icon.
+const ICON_STABLE: &[u8] = include_bytes!("../icons/icon.png");
+const ICON_NIGHTLY_SRC: &[u8] = include_bytes!("../icons/source-nightly.png");
+
 /// Build a .mcpb archive and open it with the system handler.
 ///
 /// Returns the path to the created .mcpb file on success.
@@ -113,14 +118,45 @@ fn install_mcpb_macos(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         format!("Failed to write launch.js: {e}")
     })?;
 
-    // ── 5. Copy icons from app bundle ──────────────────────────────────
-    let icon_copied = copy_app_icon(app, &staging, is_nightly);
-    if !icon_copied {
-        // Fallback: create a minimal 1x1 PNG placeholder
-        log::warn!("[mcpb] Could not find app icons, using placeholder");
-        let placeholder = create_placeholder_png();
-        let _ = fs::write(staging.join("icon.png"), &placeholder);
-        let _ = fs::write(staging.join("icon-dark.png"), &placeholder);
+    // ── 5. Write embedded icons ──────────────────────────────────────────
+    // Icons are embedded at compile time so they work in both dev and release builds.
+    if is_nightly {
+        // Nightly: light = nightly icon, dark = stable icon (swapped, matches xtask)
+        // The nightly source is 1024x1024, resize to 512x512 via sips
+        let light_tmp = staging.join("_nightly_src.png");
+        fs::write(&light_tmp, ICON_NIGHTLY_SRC).map_err(|e| {
+            cleanup();
+            format!("Failed to write nightly icon: {e}")
+        })?;
+        let light_dest = staging.join("icon.png");
+        if !resize_icon_sips(&light_tmp, &light_dest) {
+            // If sips fails, use it as-is (Claude Desktop may accept any size)
+            let _ = fs::rename(&light_tmp, &light_dest);
+        } else {
+            let _ = fs::remove_file(&light_tmp);
+        }
+        // Dark icon = stable icon (already 512x512)
+        fs::write(staging.join("icon-dark.png"), ICON_STABLE).map_err(|e| {
+            cleanup();
+            format!("Failed to write dark icon: {e}")
+        })?;
+    } else {
+        // Stable: light = stable icon, dark = nightly icon
+        fs::write(staging.join("icon.png"), ICON_STABLE).map_err(|e| {
+            cleanup();
+            format!("Failed to write icon: {e}")
+        })?;
+        let dark_tmp = staging.join("_nightly_src.png");
+        fs::write(&dark_tmp, ICON_NIGHTLY_SRC).map_err(|e| {
+            cleanup();
+            format!("Failed to write dark icon: {e}")
+        })?;
+        let dark_dest = staging.join("icon-dark.png");
+        if !resize_icon_sips(&dark_tmp, &dark_dest) {
+            let _ = fs::rename(&dark_tmp, &dark_dest);
+        } else {
+            let _ = fs::remove_file(&dark_tmp);
+        }
     }
 
     // ── 6. Create ZIP (.mcpb) ──────────────────────────────────────────
@@ -181,47 +217,6 @@ fn install_mcpb_macos(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(mcpb_path)
 }
 
-/// Try to copy icons from the app bundle into the staging directory.
-/// Returns true if at least the light icon was copied.
-///
-/// On macOS, the app icon is at Contents/Resources/icon.icns. We extract
-/// a 512x512 PNG from it using `sips`. If that fails, we look for any
-/// bundled PNG icons (128x128, 32x32, etc.) and resize them.
-#[cfg(target_os = "macos")]
-fn copy_app_icon(app: &tauri::AppHandle, staging: &Path, _is_nightly: bool) -> bool {
-    use tauri::Manager;
-
-    let Ok(resource_dir) = app.path().resource_dir() else {
-        return false;
-    };
-
-    // Strategy 1: Extract from .icns (always present in macOS app bundles)
-    let icns_path = resource_dir.join("icon.icns");
-    if icns_path.exists() {
-        let dest = staging.join("icon.png");
-        // sips can convert .icns to .png and resize in one step
-        if resize_icon_sips(&icns_path, &dest) {
-            // Use same icon for dark mode
-            let _ = fs::copy(&dest, staging.join("icon-dark.png"));
-            return true;
-        }
-    }
-
-    // Strategy 2: Use any bundled PNG icon and resize
-    for candidate in ["128x128@2x.png", "128x128.png", "32x32@2x.png"] {
-        let path = resource_dir.join(candidate);
-        if path.exists() {
-            let dest = staging.join("icon.png");
-            if resize_icon_sips(&path, &dest) {
-                let _ = fs::copy(&dest, staging.join("icon-dark.png"));
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
 /// Resize an icon to 512x512 using macOS `sips`.
 #[cfg(target_os = "macos")]
 fn resize_icon_sips(src: &Path, dest: &Path) -> bool {
@@ -239,20 +234,4 @@ fn resize_icon_sips(src: &Path, dest: &Path) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
-}
-
-/// Create a minimal valid 1x1 white PNG as a placeholder icon.
-fn create_placeholder_png() -> Vec<u8> {
-    // Minimal 1x1 white PNG
-    vec![
-        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
-        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk
-        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // 1x1
-        0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE, // 8-bit RGB
-        0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, // IDAT chunk
-        0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, // compressed data
-        0x00, 0x02, 0x00, 0x01, 0xE2, 0x21, 0xBC, 0x33, // checksum
-        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, // IEND chunk
-        0xAE, 0x42, 0x60, 0x82,
-    ]
 }
