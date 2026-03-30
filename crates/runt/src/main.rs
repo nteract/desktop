@@ -228,7 +228,9 @@ enum Commands {
     // =========================================================================
     // Development utilities (only shown when RUNTIMED_DEV=1)
     // =========================================================================
-    /// Run as an MCP server (stdin/stdout JSON-RPC)
+    /// Run as an MCP server (stdin/stdout JSON-RPC).
+    /// Hidden until the Rust MCP server has full tool parity with Python.
+    #[command(hide = true)]
     Mcp,
 
     /// Manage cached Python environments
