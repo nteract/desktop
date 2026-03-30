@@ -103,6 +103,9 @@ export class SyncEngine {
   private readonly frameIn$ = new Subject<number[]>();
   private readonly flushRequest$ = new Subject<void>();
 
+  /** Promise for the most recent fire-and-forget flush (debounced path). */
+  private inflightFlush: Promise<void> | null = null;
+
   // ── Public observables ───────────────────────────────────────────
 
   /**
@@ -581,7 +584,7 @@ export class SyncEngine {
       this.opts.logger.debug(
         `[sync-engine] flushing sync message (${msg.byteLength}B)`,
       );
-      this.opts.transport
+      const done = this.opts.transport
         .sendFrame(FrameType.AUTOMERGE_SYNC, msg)
         .catch((e: unknown) => {
           handle.cancel_last_flush();
@@ -590,6 +593,8 @@ export class SyncEngine {
             e,
           );
         });
+      // Track the in-flight flush so flushAndWait() can await it.
+      this.inflightFlush = done;
     }
 
     // Also flush RuntimeStateDoc sync so the daemon sends kernel status,
@@ -607,6 +612,52 @@ export class SyncEngine {
             e,
           );
         });
+    }
+  }
+
+  /**
+   * Flush local changes and wait for delivery.
+   *
+   * Unlike `flush()` (fire-and-forget), this method:
+   * 1. Awaits any in-flight debounced flush that may have already claimed
+   *    changes from `flush_local_changes()`.
+   * 2. Flushes any remaining local changes and awaits delivery.
+   *
+   * Use before execute/save to guarantee the daemon has the latest source.
+   */
+  async flushAndWait(): Promise<void> {
+    // Wait for any in-flight debounced flush to land first.
+    if (this.inflightFlush) {
+      await this.inflightFlush;
+      this.inflightFlush = null;
+    }
+
+    const handle = this.opts.getHandle();
+    if (!handle) return;
+
+    // Flush any remaining notebook doc changes (may be none if debounce got them).
+    const msg = handle.flush_local_changes();
+    if (msg) {
+      this.opts.logger.debug(
+        `[sync-engine] flushAndWait: sending ${msg.byteLength}B sync message`,
+      );
+      try {
+        await this.opts.transport.sendFrame(FrameType.AUTOMERGE_SYNC, msg);
+      } catch (e) {
+        handle.cancel_last_flush();
+        this.opts.logger.warn("[sync-engine] flushAndWait: sync to relay failed:", e);
+      }
+    }
+
+    // Also flush RuntimeStateDoc sync.
+    const stateMsg = handle.flush_runtime_state_sync();
+    if (stateMsg) {
+      try {
+        await this.opts.transport.sendFrame(FrameType.RUNTIME_STATE_SYNC, stateMsg);
+      } catch (e) {
+        handle.cancel_last_runtime_state_flush();
+        this.opts.logger.warn("[sync-engine] flushAndWait: runtime state sync failed:", e);
+      }
     }
   }
 

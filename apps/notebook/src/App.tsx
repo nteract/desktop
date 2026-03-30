@@ -184,6 +184,9 @@ function AppContent() {
   // Guard against concurrent Run All / Restart & Run All operations (#982)
   const runAllInFlightRef = useRef(false);
 
+  // Guard against duplicate per-cell execute requests (rapid Shift+Enter)
+  const executingCellsRef = useRef(new Set<string>());
+
   // Notebook runtime type — reactive read from WASM Automerge doc.
   // Re-renders automatically when metadata changes (bootstrap, sync, writes).
   const detectedRuntime = useDetectRuntime();
@@ -573,25 +576,53 @@ function AppContent() {
       const cell = getNotebookCellsSnapshot().find((c) => c.id === cellId);
       if (!cell || cell.cell_type !== "code") return;
 
-      // Flush pending source sync so daemon has latest code before executing
-      await flushSync();
-
-      // No explicit ClearOutputs IPC needed — the daemon clears outputs
-      // on execute_input and the SyncEngine injects a clear changeset
-      // when the RuntimeStateDoc reports execution started.
-
-      // Start kernel via daemon if not running, then queue cell.
-      if (kernelStatus === KERNEL_STATUS.NOT_STARTED) {
-        const started = await tryStartKernel();
-        // Only block execution when trust approval is pending.
-        // For startup races (e.g. daemon already auto-starting), still try execute.
-        if (!started && pendingKernelStartRef.current) return;
+      // Dedup guard: skip if this cell already has an execute in flight.
+      if (executingCellsRef.current.has(cellId)) {
+        logger.debug("[App] handleExecuteCell: already in flight for", cellId);
+        return;
       }
-      const response = await executeCell(cellId);
-      if (response.result === "error") {
-        logger.error("[App] handleExecuteCell: daemon error", response.error);
-      } else if (response.result === "no_kernel") {
-        logger.warn("[App] handleExecuteCell: no kernel available");
+      executingCellsRef.current.add(cellId);
+
+      try {
+        // Flush pending source sync so daemon has latest code before executing.
+        // flushAndWait() guarantees any in-flight debounced flush has landed,
+        // then sends remaining changes and awaits delivery.
+        await flushSync();
+
+        // No explicit ClearOutputs IPC needed — the daemon clears outputs
+        // on execute_input and the SyncEngine injects a clear changeset
+        // when the RuntimeStateDoc reports execution started.
+
+        // Start kernel via daemon if not running, then queue cell.
+        if (kernelStatus === KERNEL_STATUS.NOT_STARTED) {
+          const started = await tryStartKernel();
+          // Only block execution when trust approval is pending.
+          // For startup races (e.g. daemon already auto-starting), still try execute.
+          if (!started && pendingKernelStartRef.current) return;
+        }
+        const response = await executeCell(cellId);
+        if (response.result === "error") {
+          logger.error("[App] handleExecuteCell: daemon error", response.error);
+        } else if (response.result === "no_kernel") {
+          // Kernel died — try to restart and retry once.
+          logger.warn("[App] handleExecuteCell: no kernel, attempting restart");
+          const restarted = await tryStartKernel();
+          if (restarted) {
+            const retry = await executeCell(cellId);
+            if (retry.result === "error") {
+              logger.error(
+                "[App] handleExecuteCell: daemon error after restart",
+                retry.error,
+              );
+            } else if (retry.result === "no_kernel") {
+              logger.error(
+                "[App] handleExecuteCell: still no kernel after restart",
+              );
+            }
+          }
+        }
+      } finally {
+        executingCellsRef.current.delete(cellId);
       }
     },
     [flushSync, kernelStatus, tryStartKernel, executeCell],

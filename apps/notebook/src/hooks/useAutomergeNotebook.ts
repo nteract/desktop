@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SyncableHandle } from "runtimed";
-import { FrameType, SyncEngine } from "runtimed";
+import { SyncEngine } from "runtimed";
 import { concatMap, from, switchMap } from "rxjs";
 import { getBlobPort, refreshBlobPort } from "../lib/blob-port";
 import { materializeChangeset } from "../lib/frame-pipeline";
@@ -446,25 +446,21 @@ export function useAutomergeNotebook() {
 
   // ── Sync flush ────��────────────────────────────────────────────────
 
-  /** Flush pending debounced sync immediately (call before execute/save). */
+  /**
+   * Flush pending sync immediately (call before execute/save).
+   *
+   * Delegates to the SyncEngine's `flushAndWait()` which:
+   * 1. Awaits any in-flight debounced flush (prevents race where the debounce
+   *    timer claims changes but its IPC hasn't completed yet).
+   * 2. Flushes remaining local changes and awaits delivery.
+   */
   const flushSync = useCallback(async () => {
-    const handle = handleRef.current;
-    const transport = transportRef.current;
-    if (!handle || !transport) {
-      logger.debug("[flushSync] skipped: no handle/transport");
+    const engine = engineRef.current;
+    if (!engine) {
+      logger.debug("[flushSync] skipped: no engine");
       return;
     }
-
-    const msg = handle.flush_local_changes();
-    if (msg) {
-      logger.debug(`[flushSync] sending ${msg.byteLength}B sync message`);
-      try {
-        await transport.sendFrame(FrameType.AUTOMERGE_SYNC, msg);
-      } catch (e) {
-        handle.cancel_last_flush();
-        logger.warn("[flushSync] failed, rolled back sync state", e);
-      }
-    }
+    await engine.flushAndWait();
   }, []);
 
   // ── File operations ────────────────────────────────────────────────
