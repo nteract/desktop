@@ -3,7 +3,7 @@
 use notebook_sync::handle::DocHandle;
 
 /// An active notebook session connected via the daemon.
-#[allow(dead_code)] // Fields read by tool handlers as more tools are ported
+#[allow(dead_code)] // Fields used by tool handlers as more tools are ported
 pub struct NotebookSession {
     /// The Automerge document handle for this notebook.
     pub handle: DocHandle,

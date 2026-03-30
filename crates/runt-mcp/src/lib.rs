@@ -15,6 +15,9 @@ use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler};
 use tokio::sync::RwLock;
 
+pub mod editing;
+pub mod execution;
+pub mod formatting;
 mod resources;
 mod session;
 mod structured;
