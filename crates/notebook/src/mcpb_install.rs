@@ -74,8 +74,7 @@ pub fn install_mcpb(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 
     // ── 2. Create staging directory ────────────────────────────────────
     let staging = std::env::temp_dir().join(format!("nteract-mcpb-{}", std::process::id()));
-    fs::create_dir_all(&staging)
-        .map_err(|e| format!("Failed to create staging directory: {e}"))?;
+    fs::create_dir_all(&staging).map_err(|e| format!("Failed to create staging directory: {e}"))?;
 
     let cleanup = || {
         let _ = fs::remove_dir_all(&staging);
