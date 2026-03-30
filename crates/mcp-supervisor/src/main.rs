@@ -326,9 +326,14 @@ fn run_cargo_build_daemon(project_root: &Path) -> bool {
 }
 
 /// Build the runt CLI binary (which includes runt-mcp).
+/// Respects release mode so the built binary matches what cargo_binary() resolves.
 fn build_runt_cli(project_root: &Path) -> bool {
+    let mut args = vec!["build", "-p", "runt-cli"];
+    if use_release_binaries() {
+        args.push("--release");
+    }
     let status = std::process::Command::new("cargo")
-        .args(["build", "-p", "runt-cli"])
+        .args(&args)
         .current_dir(project_root)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
@@ -1785,19 +1790,19 @@ fn classify_change(path: &Path, project_root: &Path) -> Option<ChangeKind> {
     let rel = path.strip_prefix(project_root).ok()?;
     let rel_str = rel.to_string_lossy();
 
-    // Rust source files in runtimed-py or runtimed crates (needs maturin develop)
+    // Rust source files that affect Python bindings (needs maturin develop + cargo build)
+    // runtimed-client is shared between runtimed-py and runt-mcp, so changes there
+    // affect both the Python and Rust MCP servers.
     if (rel_str.starts_with("crates/runtimed-py/src/")
-        || rel_str.starts_with("crates/runtimed/src/"))
+        || rel_str.starts_with("crates/runtimed/src/")
+        || rel_str.starts_with("crates/runtimed-client/src/"))
         && rel_str.ends_with(".rs")
     {
         return Some(ChangeKind::RustChanged);
     }
 
-    // Rust MCP server or client crate files (needs cargo build -p runt-cli)
-    if (rel_str.starts_with("crates/runt-mcp/src/")
-        || rel_str.starts_with("crates/runtimed-client/src/"))
-        && rel_str.ends_with(".rs")
-    {
+    // Rust MCP server files only (needs cargo build -p runt-cli, no maturin)
+    if rel_str.starts_with("crates/runt-mcp/src/") && rel_str.ends_with(".rs") {
         return Some(ChangeKind::RustMcpChanged);
     }
 
@@ -2056,13 +2061,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let use_rust_mcp = std::env::var("NTERACT_RUST_MCP").is_ok();
 
     if use_rust_mcp {
-        // Build runt-cli if needed
-        let runt = cargo_binary(&project_root, "runt");
-        if !runt.exists() {
-            info!("runt binary not found, building...");
-            if !build_runt_cli(&project_root) {
-                error!("Failed to build runt-cli — MCP server will not work");
-            }
+        // Always rebuild runt-cli at startup to ensure the binary matches source.
+        // cargo xtask run-mcp only recompiles mcp-supervisor, not runt-cli.
+        info!("Building runt-cli for Rust MCP server...");
+        if !build_runt_cli(&project_root) {
+            error!("Failed to build runt-cli — Rust MCP server will not work");
         }
         // Also ensure maturin develop in background (dev workflow)
         let pr = project_root.clone();
