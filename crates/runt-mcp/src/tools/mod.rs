@@ -100,6 +100,12 @@ pub fn all_tools() -> Vec<Tool> {
                 .idempotent(true)
                 .open_world(true),
         ),
+        Tool::new(
+            "show_notebook",
+            "Open the notebook in the nteract desktop app. The notebook must be running in the daemon.",
+            schema_for::<session::ShowNotebookParams>(),
+        )
+        .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         // -- Cell read --
         Tool::new(
             "get_cell",
@@ -298,6 +304,7 @@ pub async fn dispatch(
         "open_notebook" => session::open_notebook(server, request).await,
         "create_notebook" => session::create_notebook(server, request).await,
         "save_notebook" => session::save_notebook(server, request).await,
+        "show_notebook" => session::show_notebook(server, request).await,
         // Cell read
         "get_cell" => cell_read::get_cell(server, request).await,
         "get_all_cells" => cell_read::get_all_cells(server, request).await,

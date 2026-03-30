@@ -145,6 +145,14 @@ pub struct CreateNotebookParams {
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct ShowNotebookParams {
+    /// Notebook ID to show. Defaults to current session's notebook.
+    #[serde(default)]
+    pub notebook_id: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct SaveNotebookParams {
     /// Path to save the notebook to. If None, saves to original location.
     #[serde(default)]
@@ -428,4 +436,60 @@ pub async fn save_notebook(
         Ok(resp) => tool_error(&format!("Unexpected response: {resp:?}")),
         Err(e) => tool_error(&format!("Failed to save notebook: {e}")),
     }
+}
+
+/// Open the notebook in the nteract desktop app.
+pub async fn show_notebook(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    // Resolve notebook_id from param or current session
+    let target = match arg_str(request, "notebook_id") {
+        Some(id) => id.to_string(),
+        None => {
+            let session = server.session.read().await;
+            match session.as_ref() {
+                Some(s) => s.notebook_id.clone(),
+                None => {
+                    return tool_error(
+                        "No notebook_id provided and no active session. \
+                         Use list_active_notebooks() to find a notebook_id, \
+                         or connect to one first.",
+                    )
+                }
+            }
+        }
+    };
+
+    // Validate notebook is active in daemon
+    let client = PoolClient::new(server.socket_path.clone());
+    let rooms = client
+        .list_rooms()
+        .await
+        .map_err(|e| McpError::internal_error(format!("Failed to list notebooks: {e}"), None))?;
+    if !rooms.iter().any(|r| r.notebook_id == target) {
+        return tool_error(&format!(
+            "Notebook '{}' is not currently running. \
+             Use list_active_notebooks() to see active notebooks.",
+            target
+        ));
+    }
+
+    // Validate it's a file-backed notebook (absolute path)
+    if !std::path::Path::new(&target).is_absolute() {
+        return tool_error(&format!(
+            "Notebook '{}' is an untitled notebook (not saved to disk). \
+             Use save_notebook(path) first, then call show_notebook().",
+            target
+        ));
+    }
+
+    // Launch the app using the binary's build channel.
+    // NOTE: If RUNTIMED_SOCKET_PATH points at a different channel's daemon,
+    // this may open the wrong app. That's a known dev-only edge case.
+    runt_workspace::open_notebook_app(Some(std::path::Path::new(&target)), &[])
+        .map_err(|e| McpError::internal_error(format!("Failed to open app: {e}"), None))?;
+
+    let result = serde_json::json!({ "notebook_id": target, "opened": true });
+    tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }
