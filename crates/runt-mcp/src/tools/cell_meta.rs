@@ -56,7 +56,11 @@ pub async fn add_cell_tags(
     let session = server.session.read().await;
     let session = match session.as_ref() {
         Some(s) => s,
-        None => return tool_error("No active notebook session. Call join_notebook or open_notebook first."),
+        None => {
+            return tool_error(
+                "No active notebook session. Call join_notebook or open_notebook first.",
+            )
+        }
     };
 
     let handle = &session.handle;
@@ -112,7 +116,11 @@ pub async fn remove_cell_tags(
     let session = server.session.read().await;
     let session = match session.as_ref() {
         Some(s) => s,
-        None => return tool_error("No active notebook session. Call join_notebook or open_notebook first."),
+        None => {
+            return tool_error(
+                "No active notebook session. Call join_notebook or open_notebook first.",
+            )
+        }
     };
 
     let handle = &session.handle;
@@ -160,7 +168,11 @@ pub async fn set_cells_source_hidden(
     let session = server.session.read().await;
     let session = match session.as_ref() {
         Some(s) => s,
-        None => return tool_error("No active notebook session. Call join_notebook or open_notebook first."),
+        None => {
+            return tool_error(
+                "No active notebook session. Call join_notebook or open_notebook first.",
+            )
+        }
     };
 
     let cell_ids: Vec<String> = request
@@ -204,7 +216,11 @@ pub async fn set_cells_outputs_hidden(
     let session = server.session.read().await;
     let session = match session.as_ref() {
         Some(s) => s,
-        None => return tool_error("No active notebook session. Call join_notebook or open_notebook first."),
+        None => {
+            return tool_error(
+                "No active notebook session. Call join_notebook or open_notebook first.",
+            )
+        }
     };
 
     let cell_ids: Vec<String> = request

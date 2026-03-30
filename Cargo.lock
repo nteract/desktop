@@ -1611,6 +1611,17 @@ dependencies = [
 
 [[package]]
 name = "fancy-regex"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e24cb5a94bcae1e5408b0effca5cd7172ea3c5755049c5f3af4cd283a165298"
+dependencies = [
+ "bit-set",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "fancy-regex"
 version = "0.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "998b056554fbe42e03ae0e152895cd1a7e1002aec800fdc6635d20270260c46f"
@@ -4997,7 +5008,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5226,7 +5237,7 @@ dependencies = [
  "chrono",
  "core-foundation",
  "dirs 6.0.0",
- "fancy-regex",
+ "fancy-regex 0.16.2",
  "file_url",
  "fs-err",
  "glob",
@@ -5990,9 +6001,11 @@ dependencies = [
 name = "runt-mcp"
 version = "0.1.0"
 dependencies = [
+ "fancy-regex 0.14.0",
  "notebook-doc",
  "notebook-protocol",
  "notebook-sync",
+ "regex",
  "rmcp",
  "runt-workspace",
  "runtimed-client",
@@ -6001,6 +6014,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

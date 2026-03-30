@@ -17,7 +17,11 @@ pub async fn interrupt_kernel(
     let session = server.session.read().await;
     let session = match session.as_ref() {
         Some(s) => s,
-        None => return tool_error("No active notebook session. Call join_notebook or open_notebook first."),
+        None => {
+            return tool_error(
+                "No active notebook session. Call join_notebook or open_notebook first.",
+            )
+        }
     };
 
     match session
@@ -41,7 +45,11 @@ pub async fn restart_kernel(
     let session = server.session.read().await;
     let session = match session.as_ref() {
         Some(s) => s,
-        None => return tool_error("No active notebook session. Call join_notebook or open_notebook first."),
+        None => {
+            return tool_error(
+                "No active notebook session. Call join_notebook or open_notebook first.",
+            )
+        }
     };
 
     let handle = &session.handle;
@@ -59,22 +67,41 @@ pub async fn restart_kernel(
     // Brief pause for shutdown to complete
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // Step 2: Read kernel type from RuntimeState or default to python
-    let kernel_type = handle
-        .get_runtime_state()
-        .ok()
-        .and_then(|s| {
-            let name = s.kernel.name;
-            if name.is_empty() { None } else { Some(name) }
-        })
-        .unwrap_or_else(|| "python".to_string());
+    // Step 2: Read kernel type and env_source from RuntimeState before launching
+    let (kernel_type, env_source) = {
+        let state = handle.get_runtime_state().ok();
+        let kernel_type = state
+            .as_ref()
+            .and_then(|s| {
+                let name = &s.kernel.name;
+                if name.is_empty() {
+                    None
+                } else {
+                    Some(name.clone())
+                }
+            })
+            .unwrap_or_else(|| "python".to_string());
+        let env_source = state
+            .as_ref()
+            .and_then(|s| {
+                let src = &s.kernel.env_source;
+                if src.is_empty() {
+                    None
+                } else {
+                    Some(src.clone())
+                }
+            })
+            .unwrap_or_else(|| {
+                if kernel_type == "deno" {
+                    "deno".to_string()
+                } else {
+                    "uv:inline".to_string()
+                }
+            });
+        (kernel_type, env_source)
+    };
 
     // Step 3: Launch kernel
-    let env_source = if kernel_type == "deno" {
-        "deno".to_string()
-    } else {
-        "uv:inline".to_string()
-    };
 
     let notebook_path = if session.notebook_id.contains('/') || session.notebook_id.contains('\\') {
         Some(session.notebook_id.clone())

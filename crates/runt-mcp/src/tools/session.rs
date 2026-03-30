@@ -288,8 +288,7 @@ pub async fn save_notebook(
             )]))
         }
         Ok(NotebookResponse::Error { error }) => {
-            if path.is_none()
-                && (error.contains("Read-only") || error.contains("Failed to write"))
+            if path.is_none() && (error.contains("Read-only") || error.contains("Failed to write"))
             {
                 tool_error(
                     "No path specified. For notebooks created with create_notebook(), \

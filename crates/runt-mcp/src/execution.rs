@@ -58,11 +58,17 @@ pub async fn execute_and_wait(
         };
     }
 
-    // Step 3: Poll RuntimeStateDoc for completion
+    // Step 3: Poll RuntimeStateDoc for completion.
+    //
+    // We track whether we've ever seen the cell in the queue. The
+    // RuntimeStateDoc can lag behind the ExecuteCell request, so the cell
+    // may not appear in the queue on the first poll. Without this guard
+    // we'd immediately declare "done" before execution even starts.
     let start = Instant::now();
     let poll_interval = Duration::from_millis(100);
     let mut final_status = "running".to_string();
     let mut success = false;
+    let mut seen_in_queue = false;
 
     loop {
         if start.elapsed() >= timeout {
@@ -74,7 +80,6 @@ pub async fn execute_and_wait(
 
         // Read execution state from RuntimeStateDoc
         if let Ok(state) = handle.get_runtime_state() {
-            // Check if our cell is done by looking at the queue
             let is_executing = state
                 .queue
                 .executing
@@ -82,13 +87,13 @@ pub async fn execute_and_wait(
                 .is_some_and(|e| e.cell_id == cell_id);
             let is_queued = state.queue.queued.iter().any(|e| e.cell_id == cell_id);
 
-            if !is_executing && !is_queued {
-                // Execution completed (or was never queued — already done)
-                // Check executions map for the result
-                let exec_entry = state
-                    .executions
-                    .values()
-                    .find(|e| e.cell_id == cell_id);
+            if is_executing || is_queued {
+                seen_in_queue = true;
+            }
+
+            if seen_in_queue && !is_executing && !is_queued {
+                // Was in queue, now done — check executions map for the result
+                let exec_entry = state.executions.values().find(|e| e.cell_id == cell_id);
 
                 if let Some(entry) = exec_entry {
                     final_status = entry.status.clone();

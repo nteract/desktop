@@ -44,7 +44,11 @@ pub async fn add_dependency(
     let session = server.session.read().await;
     let session = match session.as_ref() {
         Some(s) => s,
-        None => return tool_error("No active notebook session. Call join_notebook or open_notebook first."),
+        None => {
+            return tool_error(
+                "No active notebook session. Call join_notebook or open_notebook first.",
+            )
+        }
     };
 
     session
@@ -73,15 +77,17 @@ pub async fn remove_dependency(
     let session = server.session.read().await;
     let session = match session.as_ref() {
         Some(s) => s,
-        None => return tool_error("No active notebook session. Call join_notebook or open_notebook first."),
+        None => {
+            return tool_error(
+                "No active notebook session. Call join_notebook or open_notebook first.",
+            )
+        }
     };
 
     session
         .handle
         .remove_uv_dependency(package)
-        .map_err(|e| {
-            McpError::internal_error(format!("Failed to remove dependency: {e}"), None)
-        })?;
+        .map_err(|e| McpError::internal_error(format!("Failed to remove dependency: {e}"), None))?;
 
     let deps = get_deps_list(&session.handle);
 
@@ -100,7 +106,11 @@ pub async fn get_dependencies(
     let session = server.session.read().await;
     let session = match session.as_ref() {
         Some(s) => s,
-        None => return tool_error("No active notebook session. Call join_notebook or open_notebook first."),
+        None => {
+            return tool_error(
+                "No active notebook session. Call join_notebook or open_notebook first.",
+            )
+        }
     };
 
     let deps = get_deps_list(&session.handle);
@@ -117,7 +127,11 @@ pub async fn sync_environment(
     let session = server.session.read().await;
     let session = match session.as_ref() {
         Some(s) => s,
-        None => return tool_error("No active notebook session. Call join_notebook or open_notebook first."),
+        None => {
+            return tool_error(
+                "No active notebook session. Call join_notebook or open_notebook first.",
+            )
+        }
     };
 
     let handle = &session.handle;

@@ -6,9 +6,7 @@
 //!
 //! Both require exactly one match to succeed.
 
-use regex::Regex;
-
-/// An edit span in the source text.
+/// An edit span in the source text (byte offsets).
 pub struct EditSpan {
     pub start: usize,
     pub end: usize,
@@ -58,9 +56,7 @@ pub fn resolve_match(
     context_after: Option<&str>,
 ) -> Result<EditSpan, EditError> {
     if match_text.is_empty() {
-        return Err(EditError::NoMatch(
-            "Match text cannot be empty".to_string(),
-        ));
+        return Err(EditError::NoMatch("Match text cannot be empty".to_string()));
     }
 
     // Build a regex that includes optional context
@@ -79,7 +75,7 @@ pub fn resolve_match(
         (None, None) => escaped_match,
     };
 
-    let re = Regex::new(&pattern).map_err(|e| EditError::InvalidPattern(e.to_string()))?;
+    let re = regex::Regex::new(&pattern).map_err(|e| EditError::InvalidPattern(e.to_string()))?;
     let matches: Vec<regex::Match> = re.find_iter(source).collect();
 
     match matches.len() {
@@ -106,14 +102,18 @@ pub fn resolve_match(
 
 /// Resolve a regex pattern (Python re.MULTILINE equivalent).
 ///
+/// Uses `fancy_regex` to support lookarounds (`(?=...)`, `(?<=...)`, etc.)
+/// that the standard `regex` crate does not handle.
+///
 /// Returns the byte span of the unique match, or an error.
 pub fn resolve_regex(source: &str, pattern: &str) -> Result<EditSpan, EditError> {
-    let re = regex::RegexBuilder::new(pattern)
-        .multi_line(true)
-        .build()
+    // Wrap the user pattern with (?m) for multiline mode (^ and $ match line boundaries).
+    let ml_pattern = format!("(?m){pattern}");
+    let re = fancy_regex::Regex::new(&ml_pattern)
         .map_err(|e| EditError::InvalidPattern(e.to_string()))?;
 
-    let matches: Vec<regex::Match> = re.find_iter(source).collect();
+    // fancy_regex::Regex::find_iter returns Result<Match>, not Match
+    let matches: Vec<fancy_regex::Match> = re.find_iter(source).filter_map(|m| m.ok()).collect();
 
     match matches.len() {
         0 => Err(EditError::NoMatch(format!(
@@ -131,6 +131,14 @@ pub fn resolve_regex(source: &str, pattern: &str) -> Result<EditSpan, EditError>
             offsets: matches.iter().map(|m| m.start()).collect(),
         }),
     }
+}
+
+/// Convert a byte offset in a string to a Unicode code point offset.
+///
+/// The Automerge document uses `TextEncoding::UnicodeCodePoint`, so splice
+/// indices must be code-point counts, not byte offsets.
+pub fn byte_offset_to_codepoint(s: &str, byte_offset: usize) -> usize {
+    s[..byte_offset].chars().count()
 }
 
 /// Apply a replacement at the given span.

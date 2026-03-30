@@ -54,7 +54,11 @@ pub async fn get_cell(
     let session = server.session.read().await;
     let session = match session.as_ref() {
         Some(s) => s,
-        None => return tool_error("No active notebook session. Call join_notebook or open_notebook first."),
+        None => {
+            return tool_error(
+                "No active notebook session. Call join_notebook or open_notebook first.",
+            )
+        }
     };
 
     let handle = &session.handle;
@@ -84,7 +88,10 @@ pub async fn get_cell(
     let output_text = formatting::format_outputs_text(&outputs);
 
     let text = if !cell.source.is_empty() && !output_text.is_empty() {
-        format!("{header}\n\n{}\n\n───────────────────\n\n{output_text}", cell.source)
+        format!(
+            "{header}\n\n{}\n\n───────────────────\n\n{output_text}",
+            cell.source
+        )
     } else if !cell.source.is_empty() {
         format!("{header}\n\n{}", cell.source)
     } else if !output_text.is_empty() {
@@ -104,7 +111,11 @@ pub async fn get_all_cells(
     let session = server.session.read().await;
     let session = match session.as_ref() {
         Some(s) => s,
-        None => return tool_error("No active notebook session. Call join_notebook or open_notebook first."),
+        None => {
+            return tool_error(
+                "No active notebook session. Call join_notebook or open_notebook first.",
+            )
+        }
     };
 
     let format = arg_str(request, "format").unwrap_or("summary");
@@ -150,12 +161,20 @@ pub async fn get_all_cells(
             for cell in slice {
                 let status = cell_status_map.get(&cell.id).map(String::as_str);
                 let ec: Option<i64> = cell.execution_count.parse().ok();
+
+                // Parse raw output JSON strings from the CRDT into serde_json::Value
+                let output_values: Vec<serde_json::Value> = cell
+                    .outputs
+                    .iter()
+                    .filter_map(|raw| serde_json::from_str(raw).ok())
+                    .collect();
+
                 json_cells.push(serde_json::json!({
                     "cell_id": cell.id,
                     "cell_type": cell.cell_type,
                     "execution_count": ec,
                     "source": cell.source,
-                    "outputs": [],
+                    "outputs": output_values,
                     "status": status,
                 }));
             }
@@ -234,10 +253,7 @@ pub async fn get_all_cells(
 }
 
 /// Get cell execution status from RuntimeState.
-fn get_cell_status(
-    handle: &notebook_sync::handle::DocHandle,
-    cell_id: &str,
-) -> Option<String> {
+fn get_cell_status(handle: &notebook_sync::handle::DocHandle, cell_id: &str) -> Option<String> {
     if let Ok(state) = handle.get_runtime_state() {
         if state
             .queue

@@ -84,7 +84,11 @@ pub async fn create_cell(
     let session = server.session.read().await;
     let session = match session.as_ref() {
         Some(s) => s,
-        None => return tool_error("No active notebook session. Call join_notebook or open_notebook first."),
+        None => {
+            return tool_error(
+                "No active notebook session. Call join_notebook or open_notebook first.",
+            )
+        }
     };
 
     let source = arg_str(request, "source").unwrap_or("");
@@ -129,12 +133,7 @@ pub async fn create_cell(
     };
 
     handle
-        .add_cell_with_source(
-            &cell_id,
-            cell_type,
-            after_cell_id.as_deref(),
-            source,
-        )
+        .add_cell_with_source(&cell_id, cell_type, after_cell_id.as_deref(), source)
         .map_err(|e| McpError::internal_error(format!("Failed to create cell: {e}"), None))?;
 
     if and_run && cell_type == "code" {
@@ -164,7 +163,11 @@ pub async fn set_cell(
     let session = server.session.read().await;
     let session = match session.as_ref() {
         Some(s) => s,
-        None => return tool_error("No active notebook session. Call join_notebook or open_notebook first."),
+        None => {
+            return tool_error(
+                "No active notebook session. Call join_notebook or open_notebook first.",
+            )
+        }
     };
 
     let handle = &session.handle;
@@ -190,7 +193,9 @@ pub async fn set_cell(
         .unwrap_or(30.0);
 
     if source.is_none() && cell_type.is_none() {
-        return tool_success(&format!("Cell \"{cell_id}\" unchanged (no updates specified)"));
+        return tool_success(&format!(
+            "Cell \"{cell_id}\" unchanged (no updates specified)"
+        ));
     }
 
     if let Some(src) = source {
@@ -232,7 +237,11 @@ pub async fn delete_cell(
     let session = server.session.read().await;
     let session = match session.as_ref() {
         Some(s) => s,
-        None => return tool_error("No active notebook session. Call join_notebook or open_notebook first."),
+        None => {
+            return tool_error(
+                "No active notebook session. Call join_notebook or open_notebook first.",
+            )
+        }
     };
 
     let deleted = session
@@ -259,7 +268,11 @@ pub async fn move_cell(
     let session = server.session.read().await;
     let session = match session.as_ref() {
         Some(s) => s,
-        None => return tool_error("No active notebook session. Call join_notebook or open_notebook first."),
+        None => {
+            return tool_error(
+                "No active notebook session. Call join_notebook or open_notebook first.",
+            )
+        }
     };
 
     let after_cell_id = arg_str(request, "after_cell_id");
@@ -288,7 +301,11 @@ pub async fn clear_outputs(
     let session = server.session.read().await;
     let session = match session.as_ref() {
         Some(s) => s,
-        None => return tool_error("No active notebook session. Call join_notebook or open_notebook first."),
+        None => {
+            return tool_error(
+                "No active notebook session. Call join_notebook or open_notebook first.",
+            )
+        }
     };
 
     let cleared = session
@@ -324,11 +341,12 @@ async fn build_execution_result(
         header
     };
 
-    let mut items = vec![Content::text(text)];
+    let items = vec![Content::text(text)];
 
-    // Build structured content for MCP Apps widget
+    // Build structured content for MCP Apps widget using the protocol's
+    // structured_content field instead of a text-based fallback.
     let cell_snapshot = handle.get_cell(&result.cell_id);
-    if let Some(snap) = cell_snapshot {
+    let structured_content = if let Some(snap) = cell_snapshot {
         let outputs = runtimed_client::output_resolver::resolve_cell_outputs(
             &snap.outputs,
             &server.blob_base_url,
@@ -344,10 +362,15 @@ async fn build_execution_result(
             outputs,
             metadata_json: serde_json::to_string(&snap.metadata).unwrap_or_default(),
         };
-        let sc = structured::cell_structured_content(&resolved, &result.status);
-        let sc_json = serde_json::to_string(&sc).unwrap_or_default();
-        items.push(Content::text(format!("\n---structuredContent---\n{sc_json}")));
-    }
+        Some(structured::cell_structured_content(
+            &resolved,
+            &result.status,
+        ))
+    } else {
+        None
+    };
 
-    Ok(CallToolResult::success(items))
+    let mut call_result = CallToolResult::success(items);
+    call_result.structured_content = structured_content;
+    Ok(call_result)
 }
