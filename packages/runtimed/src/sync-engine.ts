@@ -626,10 +626,16 @@ export class SyncEngine {
    * Use before execute/save to guarantee the daemon has the latest source.
    */
   async flushAndWait(): Promise<void> {
-    // Wait for any in-flight debounced flush to land first.
-    if (this.inflightFlush) {
-      await this.inflightFlush;
-      this.inflightFlush = null;
+    // Drain all in-flight debounced flushes. A new debounced flush can
+    // start while we're awaiting the current one (the 20ms timer fires
+    // independently), so loop until stable.
+    while (this.inflightFlush) {
+      const current = this.inflightFlush;
+      await current;
+      // Only clear if no newer flush replaced it while we awaited.
+      if (this.inflightFlush === current) {
+        this.inflightFlush = null;
+      }
     }
 
     const handle = this.opts.getHandle();

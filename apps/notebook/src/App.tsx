@@ -622,7 +622,14 @@ function AppContent() {
           }
         }
       } finally {
-        executingCellsRef.current.delete(cellId);
+        // Hold the guard briefly to prevent rapid re-queueing.
+        // The daemon returns CellQueued immediately (~30ms), but
+        // the cell may still be executing. A 1s hold prevents
+        // accidental double-execution from rapid keypresses while
+        // still allowing intentional re-runs.
+        setTimeout(() => {
+          executingCellsRef.current.delete(cellId);
+        }, 1000);
       }
     },
     [flushSync, kernelStatus, tryStartKernel, executeCell],
