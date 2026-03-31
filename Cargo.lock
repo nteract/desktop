@@ -3696,7 +3696,7 @@ dependencies = [
 
 [[package]]
 name = "notebook"
-version = "2.0.6"
+version = "2.0.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5966,7 +5966,7 @@ dependencies = [
 
 [[package]]
 name = "runt-cli"
-version = "2.0.6"
+version = "2.0.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6044,7 +6044,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed"
-version = "2.0.6"
+version = "2.0.7"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
