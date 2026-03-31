@@ -57,7 +57,7 @@ pub async fn announce(handle: &DocHandle, peer_label: &str) {
     let data = if let Some(cell_id) = handle.first_cell_id() {
         presence::encode_focus_update_labeled("local", Some(peer_label), actor.as_deref(), &cell_id)
     } else {
-        presence::encode_custom_update_labeled("local", Some(peer_label), &[])
+        presence::encode_custom_update_labeled("local", Some(peer_label), actor.as_deref(), &[])
     };
     let _ = handle.send_presence(data).await;
 }

@@ -223,7 +223,7 @@ pub(crate) async fn announce_presence(state: &SessionState) {
             &cell_id,
         )
     } else {
-        notebook_doc::presence::encode_custom_update_labeled("local", peer_label, &[])
+        notebook_doc::presence::encode_custom_update_labeled("local", peer_label, actor_label, &[])
     };
     let _ = handle.send_presence(data).await;
 }
