@@ -17,7 +17,7 @@ Use this skill when Python behavior depends on both Rust extension state and dae
 
 ## Core Rules
 
-- Use `.venv` at the repo root for `uv run nteract`, MCP server work, and most day-to-day development.
+- Use `.venv` at the repo root for `uv run nteract` and most day-to-day development. The MCP server is `runt mcp` (Rust); the Python `nteract` package is a convenience wrapper.
 - Use `python/runtimed/.venv` for isolated pytest integration runs.
 - Set `VIRTUAL_ENV` explicitly when running `maturin develop`; otherwise it is easy to rebuild into the wrong venv.
 - If outputs, blobs, or notebook execution look wrong, verify `RUNTIMED_SOCKET_PATH` before assuming the bindings are broken.

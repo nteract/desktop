@@ -48,22 +48,17 @@ python/runtimed/.venv/bin/python -m pytest python/runtimed/tests/test_daemon_int
 
 ## Run the MCP server
 
-From the repo root:
+The MCP server is `runt mcp` (Rust, shipped with the desktop app). For development:
 
 ```bash
+# Using the built binary directly
+./target/debug/runt mcp
+
+# Or via the Python wrapper (finds and launches runt mcp)
 uv run nteract
 ```
 
 If the MCP supervisor is available, prefer `cargo xtask run-mcp` or the supervisor tools instead of a manual launch.
-
-Channel overrides for direct launches:
-
-```bash
-uv run nteract --nightly
-uv run nteract --stable
-```
-
-Those flags only set `RUNTIMED_SOCKET_PATH` when it is currently unset. If `cargo xtask dev-mcp`, `cargo xtask run-mcp`, or your shell already exported `RUNTIMED_SOCKET_PATH`, that explicit socket wins.
 
 Use `default_socket_path()` for current-process resolution. Use `socket_path_for_channel("stable"|"nightly")` only when you need an explicit channel path that ignores `RUNTIMED_SOCKET_PATH`.
 

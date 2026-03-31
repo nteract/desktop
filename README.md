@@ -10,11 +10,10 @@ Download the latest release from [GitHub Releases](https://github.com/nteract/de
 
 The desktop app bundles everything — `runt` CLI and `runtimed` daemon.
 
-The Python bindings and MCP server are available on PyPI:
+The Python bindings are available on PyPI:
 
 ```bash
 pip install runtimed
-pip install nteract
 ```
 
 ## What's in here
@@ -25,11 +24,11 @@ pip install nteract
 | `runtimed` | Background daemon — environment pools, notebook sync, kernel execution |
 | `runt` | CLI for managing kernels, notebooks, and the daemon |
 | `runtimed` (PyPI) | Python bindings for the daemon |
-| `nteract` (PyPI) | MCP server for AI agent integration with notebooks |
-
 ## MCP Server
 
 The nteract MCP server connects AI assistants to Jupyter notebooks through the daemon. Agents get 27 tools for working with notebooks — executing code, reading and writing cells, managing dependencies, and collaborating in real-time alongside humans in the desktop app.
+
+The MCP server ships with the desktop app as `runt mcp`.
 
 ### Quick Start
 
@@ -37,10 +36,10 @@ The nteract MCP server connects AI assistants to Jupyter notebooks through the d
 
 ```bash
 # Stable
-claude mcp add nteract -- uvx nteract
+claude mcp add nteract -- runt mcp
 
 # Nightly
-claude mcp add nteract-nightly -- uvx --prerelease allow nteract --nightly
+claude mcp add nteract-nightly -- runt-nightly mcp
 ```
 
 #### Manual JSON config
@@ -49,22 +48,20 @@ claude mcp add nteract-nightly -- uvx --prerelease allow nteract --nightly
 {
   "mcpServers": {
     "nteract": {
-      "command": "uvx",
-      "args": ["nteract"]
+      "command": "runt",
+      "args": ["mcp"]
     }
   }
 }
 ```
 
-### CLI Flags
+#### Via PyPI (convenience wrapper)
 
-| Flag | Description |
-|------|-------------|
-| `--nightly` | Connect to the nightly daemon and open nightly app |
-| `--stable` | Connect to the stable daemon and open stable app |
-| `--no-show` | Do not register the `show_notebook` tool (for headless environments) |
+If `runt` isn't on your PATH, the `nteract` PyPI package can find it in the app bundle:
 
-See [`python/nteract/`](python/nteract/) for the full tools reference, architecture, and development guide.
+```bash
+claude mcp add nteract -- uvx nteract
+```
 
 ## Usage
 

@@ -228,10 +228,12 @@ enum Commands {
     // =========================================================================
     // Development utilities (only shown when RUNTIMED_DEV=1)
     // =========================================================================
-    /// Run as an MCP server (stdin/stdout JSON-RPC).
-    /// Hidden until the Rust MCP server has full tool parity with Python.
-    #[command(hide = true)]
-    Mcp,
+    /// Run as an MCP server (stdin/stdout JSON-RPC)
+    Mcp {
+        /// Do not register the show_notebook tool (for headless environments)
+        #[arg(long)]
+        no_show: bool,
+    },
 
     /// Manage cached Python environments
     Env {
@@ -573,7 +575,7 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
             daemon_command(DaemonCommands::Logs { follow, lines }).await?
         }
         Some(Commands::Diagnostics { output }) => diagnostics_command(output).await?,
-        Some(Commands::Mcp) => run_mcp_server().await?,
+        Some(Commands::Mcp { no_show }) => run_mcp_server(no_show).await?,
         Some(Commands::Env { command }) => env_command(command).await?,
 
         // Development commands (requires RUNTIMED_DEV=1)
@@ -639,13 +641,17 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
     Ok(())
 }
 
-async fn run_mcp_server() -> Result<()> {
+async fn run_mcp_server(no_show: bool) -> Result<()> {
     let socket_path = runtimed_client::daemon_paths::get_socket_path();
     let (blob_base_url, blob_store_path) =
         runtimed_client::daemon_paths::get_blob_paths_async(&socket_path).await;
 
     use rmcp::service::ServiceExt;
-    let server = runt_mcp::NteractMcp::new(socket_path, blob_base_url, blob_store_path);
+    let server = if no_show {
+        runt_mcp::NteractMcp::new_no_show(socket_path, blob_base_url, blob_store_path)
+    } else {
+        runt_mcp::NteractMcp::new(socket_path, blob_base_url, blob_store_path)
+    };
     let transport = rmcp::transport::io::stdio();
     let handle = server.serve(transport).await?;
     handle.waiting().await?;

@@ -180,11 +180,12 @@ The UV workspace root is the **repository root** — `pyproject.toml` and `.venv
 | Package | Path | Purpose |
 |---------|------|---------|
 | `runtimed` | `python/runtimed` | Python bindings for the Rust daemon (PyO3/maturin) |
-| `nteract` | `python/nteract` | MCP server for programmatic notebook interaction |
+| `nteract` | `python/nteract` | MCP server convenience wrapper (finds and launches `runt mcp`) |
 | `gremlin` | `python/gremlin` | Autonomous notebook agent for stress testing |
 
 ```bash
-uv run nteract  # Run MCP server from repo root
+runt mcp         # Run MCP server (shipped with the desktop app)
+uv run nteract   # Alternative: finds and launches runt mcp
 ```
 
 ### Stable vs Nightly

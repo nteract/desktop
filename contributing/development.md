@@ -299,19 +299,20 @@ The `VIRTUAL_ENV` override ensures the `.so` is installed into the workspace
 venv (where the MCP server runs), not into `python/runtimed/.venv` (the
 test-only venv).
 
-**Run the MCP server manually** (after `uv sync` + `maturin develop`):
+**Run the MCP server manually:**
 
 ```bash
-uv run nteract                     # from repo root
-uv run --directory . nteract       # equivalent, explicit
-```
+# Using the built runt binary (preferred)
+./target/debug/runt mcp
 
-For direct launches, `--stable` and `--nightly` are mutually exclusive channel overrides. They only set `RUNTIMED_SOCKET_PATH` when it is unset, and they also control which app the `show_notebook` tool opens.
+# Or via the Python wrapper (finds and launches runt mcp)
+uv run nteract
+```
 
 ### nteract-dev supervisor (recommended)
 
 The **nteract-dev** MCP supervisor (`crates/mcp-supervisor/`) is a stable Rust
-process that proxies to the nteract Python MCP server. It handles daemon
+process that proxies to `runt mcp`. It handles daemon
 lifecycle, auto-restart on crash, and hot-reload on file changes — one command,
 everything works:
 
@@ -321,11 +322,9 @@ cargo xtask run-mcp
 
 This:
 1. Starts the dev daemon if not running
-2. Runs `uv sync` if the venv is stale
-3. Builds Python bindings via `maturin develop` into `.venv`
-4. Spawns the nteract MCP server as a child process
-5. Proxies all tool calls + injects `supervisor_*` management tools
-6. Watches source files and hot-reloads on changes
+2. Builds `runt-cli` and spawns `runt mcp` as a child process
+3. Proxies all tool calls + injects `supervisor_*` management tools
+4. Watches source files and hot-reloads on changes
 
 For your MCP client config (Zed, Claude Desktop, Codex, etc.):
 

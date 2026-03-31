@@ -1,25 +1,23 @@
 # nteract
 
-An MCP (Model Context Protocol) server that connects AI assistants to Jupyter notebooks via the [nteract desktop app](https://nteract.io).
+A convenience wrapper that finds and launches `runt mcp` — the MCP server shipped with the [nteract desktop app](https://nteract.io).
 
 **[Download the nteract desktop app](https://nteract.io)** — you'll need it to see notebooks, collaborate with agents, and manage environments.
 
-> Looking for the old Electron-based nteract desktop app? The source is archived at [nteract/archived-desktop-app](https://github.com/nteract/archived-desktop-app). The new native app is actively developed at [nteract/desktop](https://github.com/nteract/desktop).
-
-## Bringing Agents in the Loop
-
-We're in the preliminary stages of hooking up the realtime system from nteract/desktop to any agent of your choice. Collaborate with agents in notebooks, render interactive elements, and explore data together.
+> The recommended way to add the MCP server is `runt mcp` directly. This PyPI package is a convenience for users who prefer `uvx`.
 
 ### Quick Start
+
+The MCP server ships with the desktop app. After installing, use `runt mcp` directly:
 
 #### Claude Code
 
 ```bash
 # Stable
-claude mcp add nteract -- uvx nteract
+claude mcp add nteract -- runt mcp
 
 # Nightly
-claude mcp add nteract-nightly -- uvx --prerelease allow nteract --nightly
+claude mcp add nteract-nightly -- runt-nightly mcp
 ```
 
 #### Manual JSON config
@@ -28,11 +26,19 @@ claude mcp add nteract-nightly -- uvx --prerelease allow nteract --nightly
 {
   "mcpServers": {
     "nteract": {
-      "command": "uvx",
-      "args": ["nteract"]
+      "command": "runt",
+      "args": ["mcp"]
     }
   }
 }
+```
+
+#### Via this PyPI package
+
+If `runt` isn't on your PATH, this package finds it in the app bundle:
+
+```bash
+claude mcp add nteract -- uvx nteract
 ```
 
 That's it. Now Claude can execute Python code, create visualizations, and work with your data.
@@ -93,13 +99,11 @@ You can open the same notebook in the [nteract desktop app](https://nteract.io) 
 | Flag | Description |
 |------|-------------|
 | `--version` | Print version and exit |
-| `--nightly` | Connect to the nightly daemon and open nightly app |
-| `--stable` | Connect to the stable daemon and open stable app |
-| `--no-show` | Do not register the `show_notebook` tool (for headless environments) |
+| `--nightly` | Use `runt-nightly` (nightly daemon and app) |
+| `--stable` | Use `runt` (stable daemon and app, default) |
+| `--legacy` | Use the built-in Python MCP server instead of `runt mcp` |
 
-By default, `nteract` lets `runtimed.default_socket_path()` choose the socket. That means `RUNTIMED_SOCKET_PATH` wins when it is set; otherwise the package's build channel decides.
-
-`--stable` and `--nightly` are mutually exclusive convenience overrides. When `RUNTIMED_SOCKET_PATH` is unset, they set it to `runtimed.socket_path_for_channel(...)`. When `RUNTIMED_SOCKET_PATH` is already set, the explicit env var wins. In either case, the selected flag still controls which desktop app `show_notebook` tries to launch.
+By default, `nteract` finds and exec's the installed `runt` (or `runt-nightly`) binary. The `--legacy` flag falls back to the built-in Python MCP server.
 
 ## Architecture
 

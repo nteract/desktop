@@ -22,7 +22,9 @@ def test_keyboard_interrupt_exits_130():
     """Ctrl+C should exit with code 130 (Unix SIGINT convention), not dump a traceback."""
     from nteract._mcp_server import main
 
-    with patch("nteract._mcp_server.NteractServer") as MockServer, patch("sys.argv", ["nteract"]):
+    with patch("nteract._mcp_server.NteractServer") as MockServer, patch(
+        "sys.argv", ["nteract", "--legacy"]
+    ):
         instance = MockServer.return_value
         instance.mcp.run.side_effect = KeyboardInterrupt
         instance.cleanup = lambda: None

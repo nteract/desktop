@@ -36,6 +36,8 @@ pub struct NteractMcp {
     /// Used as the peer label in notebook sessions so the notebook app shows
     /// "Claude Desktop" or "Claude Code" instead of "Agent".
     peer_label: RwLock<String>,
+    /// When true, the `show_notebook` tool is not registered (headless environments).
+    no_show: bool,
 }
 
 impl NteractMcp {
@@ -51,7 +53,19 @@ impl NteractMcp {
             blob_store_path,
             session: Arc::new(RwLock::new(None)),
             peer_label: RwLock::new("Agent".to_string()),
+            no_show: false,
         }
+    }
+
+    /// Create a new MCP server with `show_notebook` disabled.
+    pub fn new_no_show(
+        socket_path: PathBuf,
+        blob_base_url: Option<String>,
+        blob_store_path: Option<PathBuf>,
+    ) -> Self {
+        let mut server = Self::new(socket_path, blob_base_url, blob_store_path);
+        server.no_show = true;
+        server
     }
 
     /// Get the peer label for notebook connections.
@@ -90,8 +104,12 @@ impl ServerHandler for NteractMcp {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
+        let mut tools = tools::all_tools();
+        if self.no_show {
+            tools.retain(|t| t.name.as_ref() != "show_notebook");
+        }
         Ok(ListToolsResult {
-            tools: tools::all_tools(),
+            tools,
             next_cursor: None,
             meta: None,
         })

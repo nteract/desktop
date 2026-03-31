@@ -9,7 +9,7 @@ description: Build, test, and develop Python bindings (runtimed-py, nteract MCP 
 
 | Venv | Path | Purpose | Used by |
 |------|------|---------|---------|
-| Workspace venv | `.venv` (repo root) | Day-to-day dev, MCP server | `uv run nteract`, gremlin agent |
+| Workspace venv | `.venv` (repo root) | Day-to-day dev | `uv run nteract`, gremlin agent |
 | Test venv | `python/runtimed/.venv` | Isolated pytest runs | `pytest` integration tests |
 
 ## Installation
@@ -176,13 +176,16 @@ SKIP_INTEGRATION_TESTS=1 python/runtimed/.venv/bin/python -m pytest python/runti
 
 ## MCP Server
 
-The nteract MCP server (`python/nteract/`) provides programmatic notebook interaction for AI agents.
+The MCP server ships as `runt mcp` (Rust). The Python `nteract` package is a convenience wrapper that finds and launches it.
 
 ```bash
-# Run directly (after uv sync + maturin develop)
+# Run directly (shipped with the desktop app)
+runt mcp
+
+# Or via the Python wrapper
 uv run nteract
 
-# Via nteract-dev supervisor (recommended, handles lifecycle)
+# Via nteract-dev supervisor (recommended for development, handles lifecycle)
 cargo xtask run-mcp
 ```
 
@@ -203,7 +206,7 @@ Three packages are workspace members:
 | Package | Path | Purpose |
 |---------|------|---------|
 | `runtimed` | `python/runtimed` | Python bindings (PyO3/maturin) |
-| `nteract` | `python/nteract` | MCP server |
+| `nteract` | `python/nteract` | MCP server convenience wrapper (launches `runt mcp`) |
 | `gremlin` | `python/gremlin` | Autonomous notebook stress tester |
 
 ## Troubleshooting

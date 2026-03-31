@@ -1642,8 +1642,65 @@ class NteractServer:
 # =============================================================================
 
 
+def _find_runt_binary(channel: str) -> str | None:
+    """Find the runt binary using the same resolution as mcpb/server/launch.js.
+
+    Search order:
+    1. PATH (covers /usr/local/bin/ where the app installer puts the binary)
+    2. Platform-specific app bundle / install locations
+    """
+    import platform
+    import shutil
+
+    binary_name = "runt-nightly" if channel == "nightly" else "runt"
+    app_bundle_names = (
+        ["nteract Nightly", "nteract-nightly", "nteract (Nightly)"]
+        if channel == "nightly"
+        else ["nteract"]
+    )
+
+    # 1. Check PATH
+    found = shutil.which(binary_name)
+    if found:
+        return found
+
+    # 2. Check platform-specific sidecar / install paths
+    home = os.path.expanduser("~")
+    system = platform.system()
+
+    candidates: list[str] = []
+    if system == "Darwin":
+        for name in app_bundle_names:
+            candidates.append(f"/Applications/{name}.app/Contents/MacOS/{binary_name}")
+            candidates.append(
+                os.path.join(home, f"Applications/{name}.app/Contents/MacOS/{binary_name}")
+            )
+    elif system == "Windows":
+        local_app_data = os.environ.get("LOCALAPPDATA", os.path.join(home, "AppData", "Local"))
+        for name in app_bundle_names:
+            candidates.append(os.path.join(local_app_data, name, f"{binary_name}.exe"))
+            candidates.append(os.path.join(local_app_data, "Programs", name, f"{binary_name}.exe"))
+    else:  # Linux
+        candidates.append(os.path.join(home, ".local", "bin", binary_name))
+        for name in app_bundle_names:
+            slug = name.lower().replace(" ", "-")
+            candidates.append(f"/usr/share/{slug}/{binary_name}")
+            candidates.append(f"/opt/{slug}/{binary_name}")
+
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+
+    return None
+
+
 def main():
-    """Run the MCP server."""
+    """Launch the nteract MCP server.
+
+    Finds and exec's the installed ``runt mcp`` binary (shipped with the
+    nteract desktop app). Falls back to the built-in Python MCP server if
+    ``runt`` is not installed (``--legacy`` flag forces this).
+    """
     parser = _StderrParser(
         prog="nteract",
         description="nteract MCP server — AI-powered Jupyter notebooks.",
@@ -1669,6 +1726,11 @@ def main():
         action="store_true",
         help="Disable the show_notebook tool (headless environments).",
     )
+    parser.add_argument(
+        "--legacy",
+        action="store_true",
+        help="Use the built-in Python MCP server instead of runt mcp.",
+    )
     args = parser.parse_args()
 
     if args.version:
@@ -1677,13 +1739,34 @@ def main():
         print(f"nteract {version('nteract')}", file=sys.stderr)
         raise SystemExit(0)
 
-    channel: str | None = None
-    if args.nightly:
-        channel = "nightly"
-    elif args.stable:
-        channel = "stable"
+    channel = "nightly" if args.nightly else "stable"
 
-    if channel is not None and not os.environ.get("RUNTIMED_SOCKET_PATH"):
+    # Default path: find and exec the Rust MCP server
+    if not args.legacy:
+        binary = _find_runt_binary(channel)
+        if binary:
+            runt_args = [binary, "mcp"]
+            if args.no_show:
+                runt_args.append("--no-show")
+            print(f"Launching {' '.join(runt_args)}", file=sys.stderr)
+            os.execvp(binary, runt_args)
+            # execvp never returns
+        else:
+            binary_name = "runt-nightly" if channel == "nightly" else "runt"
+            app_name = "nteract Nightly" if channel == "nightly" else "nteract"
+            print(
+                f"Error: {binary_name} not found.\n\n"
+                f"Install {app_name} from https://nteract.io to use this MCP server.\n"
+                f"The app puts {binary_name} on your PATH during installation.\n"
+                f"\n"
+                f"To use the built-in Python MCP server instead, run:\n"
+                f"  nteract --legacy\n",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+
+    # Legacy path: run the built-in Python MCP server directly
+    if (args.nightly or args.stable) and not os.environ.get("RUNTIMED_SOCKET_PATH"):
         os.environ["RUNTIMED_SOCKET_PATH"] = runtimed.socket_path_for_channel(channel)
 
     server = NteractServer(channel=channel, no_show=args.no_show)
