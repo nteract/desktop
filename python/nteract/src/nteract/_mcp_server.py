@@ -622,8 +622,31 @@ class NteractServer:
     over ``self``, so FastMCP sees clean function signatures.
     """
 
-    def __init__(self, *, channel: str | None = None, no_show: bool = False):
-        self.mcp = FastMCP("nteract")
+    def __init__(
+        self,
+        *,
+        channel: str | None = None,
+        no_show: bool = False,
+        deprecated: bool = False,
+    ):
+        self._deprecated = deprecated
+        self.mcp = FastMCP(
+            "nteract",
+            instructions=(
+                "nteract MCP server for AI-powered Jupyter notebooks. "
+                "Use list_active_notebooks to discover open notebooks, "
+                "then join_notebook or open_notebook to start working."
+                + (
+                    "\n\nNOTE: This Python MCP server is deprecated. "
+                    "For the best experience, install the nteract desktop app "
+                    "from https://nteract.io and update your MCP config to: "
+                    f"`{'runt-nightly' if channel == 'nightly' else 'runt'} mcp` "
+                    "(instead of `uvx nteract`)."
+                    if deprecated
+                    else ""
+                )
+            ),
+        )
         self._notebook: runtimed.Notebook | None = None
         self._client: runtimed.Client | None = None
         self._client_name: str | None = None
@@ -779,6 +802,27 @@ class NteractServer:
     def _register_tools(self, *, no_show: bool = False) -> None:  # noqa: C901
         srv = self
         _tool_app = AppConfig(resource_uri=_WIDGET_RESOURCE_URI)
+
+        if srv._deprecated:
+
+            @srv.mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+            async def migration_guide() -> str:
+                """The Python nteract MCP server is deprecated.
+
+                Call this tool for steps to switch to `runt mcp`.
+                """
+                binary_name = "runt-nightly" if srv._channel == "nightly" else "runt"
+                return (
+                    "The `nteract` Python package (`uvx nteract`) is deprecated.\n\n"
+                    "To migrate:\n"
+                    f"1. Install the nteract desktop app from https://nteract.io\n"
+                    f"2. Update your MCP config to: `{binary_name} mcp`\n"
+                    f"   Instead of: `uvx nteract`\n\n"
+                    f"For Claude Code:\n"
+                    f"  `claude mcp remove nteract`\n"
+                    f"  `claude mcp add nteract -- {binary_name} mcp`\n\n"
+                    "The Rust MCP server is faster and actively maintained."
+                )
 
         # -- Session management --
 
@@ -1729,7 +1773,7 @@ def main():
     parser.add_argument(
         "--legacy",
         action="store_true",
-        help="Use the built-in Python MCP server instead of runt mcp.",
+        help="Use the built-in Python MCP server (deprecated) instead of runt mcp.",
     )
     args = parser.parse_args()
 
@@ -1753,23 +1797,16 @@ def main():
             # execvp never returns
         else:
             binary_name = "runt-nightly" if channel == "nightly" else "runt"
-            app_name = "nteract Nightly" if channel == "nightly" else "nteract"
             print(
-                f"Error: {binary_name} not found.\n\n"
-                f"Install {app_name} from https://nteract.io to use this MCP server.\n"
-                f"The app puts {binary_name} on your PATH during installation.\n"
-                f"\n"
-                f"To use the built-in Python MCP server instead, run:\n"
-                f"  nteract --legacy\n",
+                f"[nteract] {binary_name} not found, falling back to built-in Python MCP server.",
                 file=sys.stderr,
             )
-            raise SystemExit(1)
 
-    # Legacy path: run the built-in Python MCP server directly
+    # Legacy / fallback path: run the built-in Python MCP server directly
     if (args.nightly or args.stable) and not os.environ.get("RUNTIMED_SOCKET_PATH"):
         os.environ["RUNTIMED_SOCKET_PATH"] = runtimed.socket_path_for_channel(channel)
 
-    server = NteractServer(channel=channel, no_show=args.no_show)
+    server = NteractServer(channel=channel, no_show=args.no_show, deprecated=True)
 
     logging.basicConfig(
         level=logging.INFO,
