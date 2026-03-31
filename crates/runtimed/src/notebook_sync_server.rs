@@ -4602,6 +4602,27 @@ async fn save_notebook_to_disk(
         let heads = doc.get_heads();
         (cells, metadata_snapshot, heads)
     };
+    // Safety: refuse to overwrite a non-empty file with an empty cell list.
+    // This catches CRDT corruption that would otherwise destroy the user's work
+    // (e.g. after a failed wholesale file replacement reconciliation).
+    if cells.is_empty() {
+        if let Some(ref existing_nb) = existing {
+            let existing_has_cells = existing_nb
+                .get("cells")
+                .and_then(|c| c.as_array())
+                .is_some_and(|a| !a.is_empty());
+            if existing_has_cells {
+                warn!(
+                    "[notebook-sync] Refusing to save empty notebook over non-empty file {:?}",
+                    notebook_path
+                );
+                return Err(SaveError::Retryable(
+                    "CRDT doc is empty but file has cells — possible corruption".into(),
+                ));
+            }
+        }
+    }
+
     let nbformat_attachments = room.nbformat_attachments.read().await.clone();
 
     // Reconstruct cells as JSON
@@ -6035,18 +6056,35 @@ async fn apply_ipynb_changes(
         common_current != common_external
     };
 
+    // Detect wholesale file replacement: the current doc has cells, the
+    // external file has cells, but they share zero cell IDs. This happens
+    // when an external process (e.g. an AI agent) writes a completely new
+    // notebook to the same path. Route through the rebuild path which is
+    // atomic (fork → delete all → re-add all → merge) rather than the
+    // incremental path which mixes direct mutations with fork+merge.
+    let no_common_cells = !current_ids.is_empty()
+        && !external_ids.is_empty()
+        && !current_ids.iter().any(|id| external_map.contains_key(id));
+
     let mut changed = false;
 
-    // If order changed, we need to rebuild the cell list.
-    // Use fork + merge so the structural rebuild from disk composes
-    // with concurrent CRDT changes rather than overwriting them.
+    // If order changed or the file was wholesale-replaced, rebuild the
+    // cell list. Use fork + merge so the structural rebuild from disk
+    // composes with concurrent CRDT changes rather than overwriting them.
     //
     // We use fork() (at current heads) instead of fork_at(save_heads)
     // because fork_at triggers an automerge bug (MissingOps panic in
     // the change collector) when the document has a complex history of
     // interleaved text splices and merges. See automerge/automerge#1327.
-    if order_changed {
-        debug!("[notebook-watch] Cell order changed, rebuilding cell list");
+    if order_changed || no_common_cells {
+        debug!(
+            "[notebook-watch] {} — rebuilding cell list",
+            if no_common_cells {
+                "Wholesale file replacement detected (zero common cells)"
+            } else {
+                "Cell order changed"
+            }
+        );
 
         let mut fork = doc.fork();
         fork.set_actor("runtimed:filesystem");
@@ -7414,6 +7452,130 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resolved["output_type"], "execute_result");
+    }
+
+    #[tokio::test]
+    async fn test_apply_ipynb_changes_wholesale_replacement() {
+        // When external file has entirely different cell IDs (zero overlap),
+        // the rebuild path should replace all cells correctly (issue #1310).
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _) = test_room_with_path(&tmp, "test.ipynb");
+
+        // Add original cells
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "old-a", "code").unwrap();
+            doc.update_source("old-a", "x = 1").unwrap();
+            doc.add_cell(1, "old-b", "code").unwrap();
+            doc.update_source("old-b", "y = 2").unwrap();
+            doc.add_cell(2, "old-c", "markdown").unwrap();
+            doc.update_source("old-c", "# Hello").unwrap();
+        }
+
+        // Completely replace with different cells (zero common IDs)
+        let external_cells = vec![
+            CellSnapshot {
+                id: "new-1".to_string(),
+                cell_type: "code".to_string(),
+                position: "80".to_string(),
+                source: "a = 10".to_string(),
+                execution_count: "1".to_string(),
+                outputs: vec![],
+                metadata: serde_json::json!({}),
+                resolved_assets: std::collections::HashMap::new(),
+            },
+            CellSnapshot {
+                id: "new-2".to_string(),
+                cell_type: "code".to_string(),
+                position: "81".to_string(),
+                source: "b = 20".to_string(),
+                execution_count: "2".to_string(),
+                outputs: vec![],
+                metadata: serde_json::json!({}),
+                resolved_assets: std::collections::HashMap::new(),
+            },
+        ];
+
+        let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), false).await;
+        assert!(changed, "Should detect wholesale replacement");
+
+        let cells = {
+            let doc = room.doc.read().await;
+            doc.get_cells()
+        };
+        assert_eq!(cells.len(), 2, "Should have exactly 2 new cells");
+        assert_eq!(cells[0].id, "new-1");
+        assert_eq!(cells[0].source, "a = 10");
+        assert_eq!(cells[1].id, "new-2");
+        assert_eq!(cells[1].source, "b = 20");
+        // Old cells should be gone
+        assert!(cells.iter().all(|c| !c.id.starts_with("old-")));
+    }
+
+    #[tokio::test]
+    async fn test_apply_ipynb_changes_partial_overlap_preserves_unsaved() {
+        // When there IS overlap between current and external cells, the
+        // incremental path should preserve user-added cells not in
+        // last_save_sources.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _) = test_room_with_path(&tmp, "test.ipynb");
+
+        // Add cells and populate last_save_sources to simulate a save
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "keep", "code").unwrap();
+            doc.update_source("keep", "x = 1").unwrap();
+            doc.add_cell(1, "remove", "code").unwrap();
+            doc.update_source("remove", "y = 2").unwrap();
+        }
+        {
+            let mut saved = room.last_save_sources.write().await;
+            saved.insert("keep".to_string(), "x = 1".to_string());
+            saved.insert("remove".to_string(), "y = 2".to_string());
+        }
+
+        // Add a cell NOT in last_save_sources (user just added it)
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(2, "user-added", "code").unwrap();
+            doc.update_source("user-added", "z = 3").unwrap();
+        }
+
+        // External file has "keep" (overlap) but not "remove" or "user-added"
+        let external_cells = vec![CellSnapshot {
+            id: "keep".to_string(),
+            cell_type: "code".to_string(),
+            position: "80".to_string(),
+            source: "x = 1".to_string(),
+            execution_count: "null".to_string(),
+            outputs: vec![],
+            metadata: serde_json::json!({}),
+            resolved_assets: std::collections::HashMap::new(),
+        }];
+
+        let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), false).await;
+        assert!(changed);
+
+        let cells = {
+            let doc = room.doc.read().await;
+            doc.get_cells()
+        };
+        let ids: Vec<&str> = cells.iter().map(|c| c.id.as_str()).collect();
+        assert!(
+            ids.contains(&"keep"),
+            "Overlapping cell should remain: {:?}",
+            ids
+        );
+        assert!(
+            !ids.contains(&"remove"),
+            "Saved cell removed externally should be deleted: {:?}",
+            ids
+        );
+        assert!(
+            ids.contains(&"user-added"),
+            "User-added cell not in save snapshot should be preserved: {:?}",
+            ids
+        );
     }
 
     #[tokio::test]
