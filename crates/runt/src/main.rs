@@ -7,6 +7,7 @@ use serde::Serialize;
 use std::time::Duration;
 use tabled::{settings::Style, Table, Tabled};
 mod kernel_client;
+mod tui;
 
 use crate::kernel_client::KernelClient;
 use runtimelib::{
@@ -188,6 +189,11 @@ enum Commands {
     #[command(alias = "shutdown")]
     Stop {
         /// Path to the notebook file, or notebook ID (UUID) for untitled notebooks
+        path: PathBuf,
+    },
+    /// Open a notebook in a terminal UI
+    Tui {
+        /// Path to notebook file
         path: PathBuf,
     },
 
@@ -555,6 +561,7 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
         Some(Commands::Daemon { command }) => daemon_command(command).await?,
         Some(Commands::Ps { json }) => list_notebooks(json).await?,
         Some(Commands::Stop { path }) => shutdown_notebook(&path).await?,
+        Some(Commands::Tui { path }) => tui::run(path).await?,
         Some(Commands::Recover { path, output, list }) => {
             recover_notebook(path.as_deref(), output.as_deref(), list)?
         }

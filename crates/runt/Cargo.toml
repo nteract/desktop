@@ -40,6 +40,11 @@ flate2 = "1"
 notify = "8"
 tar = "0.4"
 walkdir = "2"
+notebook-protocol = { path = "../notebook-protocol" }
+notebook-sync = { path = "../notebook-sync" }
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
+ansi-to-tui = "8"
 
 [dev-dependencies]
 tempfile = "3"
