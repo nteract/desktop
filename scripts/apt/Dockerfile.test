@@ -1,0 +1,24 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG R2_PUBLIC_URL
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates \
+        gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install the nteract GPG keyring
+RUN curl -fsSL "${R2_PUBLIC_URL}/nteract-keyring.gpg" \
+    | gpg --dearmor -o /usr/share/keyrings/nteract-keyring.gpg
+
+# Add both nightly and stable sources
+RUN echo "deb [arch=amd64 signed-by=/usr/share/keyrings/nteract-keyring.gpg] ${R2_PUBLIC_URL} nightly main" \
+      > /etc/apt/sources.list.d/nteract.list && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/nteract-keyring.gpg] ${R2_PUBLIC_URL} stable main" \
+      >> /etc/apt/sources.list.d/nteract.list
+
+ENTRYPOINT ["/bin/bash"]

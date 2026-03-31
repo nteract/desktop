@@ -1,0 +1,14 @@
+services:
+  publisher:
+    build: .
+    env_file: .env
+    volumes:
+      - ./debs:/workspace
+
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+      args:
+        R2_PUBLIC_URL: ${R2_PUBLIC_URL}
+    env_file: .env
