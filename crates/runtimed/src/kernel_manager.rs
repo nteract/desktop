@@ -38,6 +38,7 @@ use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast, QueueEntr
 use crate::stream_terminal::{StreamOutputState, StreamTerminals};
 use crate::terminal_size::{TERMINAL_COLUMNS_STR, TERMINAL_LINES_STR};
 use crate::{EnvType, PooledEnv};
+use notebook_doc::presence::{self, PresenceState};
 use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
 
 /// Maximum execution entries retained in the RuntimeStateDoc.
@@ -271,6 +272,9 @@ pub struct RoomKernel {
     connection_file: Option<PathBuf>,
     /// Session ID for Jupyter protocol
     session_id: String,
+    /// Automerge actor ID for kernel writes to NotebookDoc (e.g. "rt:kernel:a1b2c3d4").
+    /// Set on forks before mutating so output writes carry kernel provenance.
+    kernel_actor_id: String,
     /// Handle to the iopub listener task
     iopub_task: Option<tokio::task::JoinHandle<()>>,
     /// Handle to the shell reader task
@@ -324,6 +328,10 @@ pub struct RoomKernel {
     state_doc: Arc<RwLock<RuntimeStateDoc>>,
     /// Notification channel for RuntimeStateDoc changes.
     state_changed_tx: broadcast::Sender<()>,
+    /// Transient peer state (cursors, selections, kernel status).
+    presence: Arc<RwLock<PresenceState>>,
+    /// Broadcast channel for presence frames (cursor, selection, kernel state).
+    presence_tx: broadcast::Sender<(String, Vec<u8>)>,
 }
 
 /// Commands from iopub/shell handlers for queue state management.
@@ -398,7 +406,11 @@ impl RoomKernel {
         comm_state: Arc<CommState>,
         state_doc: Arc<RwLock<RuntimeStateDoc>>,
         state_changed_tx: broadcast::Sender<()>,
+        presence: Arc<RwLock<PresenceState>>,
+        presence_tx: broadcast::Sender<(String, Vec<u8>)>,
     ) -> Self {
+        let session_id = Uuid::new_v4().to_string();
+        let kernel_actor_id = format!("rt:kernel:{}", &session_id[..8]);
         Self {
             execution_had_error: false,
             kernel_type: String::new(),
@@ -406,7 +418,8 @@ impl RoomKernel {
             launched_config: LaunchedEnvConfig::default(),
             connection_info: None,
             connection_file: None,
-            session_id: Uuid::new_v4().to_string(),
+            session_id,
+            kernel_actor_id,
             iopub_task: None,
             shell_reader_task: None,
             process_watcher_task: None,
@@ -433,16 +446,99 @@ impl RoomKernel {
             env_path: None,
             state_doc,
             state_changed_tx,
+            presence,
+            presence_tx,
         }
     }
 
-    /// Take the command receiver for polling by the sync server.
+    /// Spawn a background task that processes `QueueCommand`s from the kernel's
+    /// iopub/shell/heartbeat tasks. Handles `ExecutionDone`, `CellError`, and
+    /// `KernelDied` for the lifetime of the kernel.
     ///
-    /// This should be called after `launch()` and polled in the sync server's
-    /// select loop. When commands arrive, call the appropriate methods on
-    /// `RoomKernel` (e.g., `execution_done` for `ExecutionDone`).
-    pub fn take_command_rx(&mut self) -> Option<mpsc::Receiver<QueueCommand>> {
-        self.cmd_rx.take()
+    /// Must be called after `launch()`. The `kernel_arc` is needed because the
+    /// spawned task locks it to call `execution_done()` and friends.
+    pub fn start_command_loop(&mut self, kernel_arc: Arc<tokio::sync::Mutex<Option<RoomKernel>>>) {
+        let Some(mut cmd_rx) = self.cmd_rx.take() else {
+            return;
+        };
+
+        let room_broadcast_tx = self.broadcast_tx.clone();
+        let room_presence = self.presence.clone();
+        let room_presence_tx = self.presence_tx.clone();
+        let room_state_doc = self.state_doc.clone();
+        let room_state_changed_tx = self.state_changed_tx.clone();
+
+        tokio::spawn(async move {
+            while let Some(cmd) = cmd_rx.recv().await {
+                match cmd {
+                    QueueCommand::ExecutionDone {
+                        cell_id,
+                        execution_id,
+                    } => {
+                        debug!(
+                            "[notebook-sync] ExecutionDone for {} ({})",
+                            cell_id, execution_id
+                        );
+                        let env_source = {
+                            let mut guard = kernel_arc.lock().await;
+                            if let Some(ref mut k) = *guard {
+                                if let Err(e) = k.execution_done(&cell_id, &execution_id).await {
+                                    warn!("[notebook-sync] execution_done error: {}", e);
+                                }
+                                Some(k.env_source().to_string())
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some(es) = env_source {
+                            crate::notebook_sync_server::update_kernel_presence(
+                                &room_presence,
+                                &room_presence_tx,
+                                presence::KernelStatus::Idle,
+                                &es,
+                            )
+                            .await;
+                        }
+                    }
+                    QueueCommand::CellError {
+                        cell_id,
+                        execution_id,
+                    } => {
+                        debug!(
+                            "[notebook-sync] User code error, halting queue (stop-on-error): cell={} execution={}",
+                            cell_id, execution_id
+                        );
+                        crate::notebook_sync_server::apply_cell_error_to_state_doc(
+                            &kernel_arc,
+                            &room_state_doc,
+                            &room_state_changed_tx,
+                        )
+                        .await;
+                    }
+                    QueueCommand::KernelDied => {
+                        warn!("[notebook-sync] Kernel died, unblocking execution queue");
+                        let env_source =
+                            crate::notebook_sync_server::apply_kernel_died_to_state_doc(
+                                &kernel_arc,
+                                &room_state_doc,
+                                &room_state_changed_tx,
+                                &room_broadcast_tx,
+                            )
+                            .await;
+                        if let Some(es) = env_source {
+                            crate::notebook_sync_server::update_kernel_presence(
+                                &room_presence,
+                                &room_presence_tx,
+                                presence::KernelStatus::Errored,
+                                &es,
+                            )
+                            .await;
+                        }
+                    }
+                }
+            }
+            info!("[notebook-sync] Command receiver closed, kernel likely shutdown");
+        });
     }
 
     /// Get the kernel type.
@@ -849,6 +945,7 @@ impl RoomKernel {
         let stream_terminals = self.stream_terminals.clone();
         let state_doc_for_iopub = self.state_doc.clone();
         let state_changed_for_iopub = self.state_changed_tx.clone();
+        let iopub_actor_id = self.kernel_actor_id.clone();
 
         let iopub_task = tokio::spawn(async move {
             loop {
@@ -1075,7 +1172,7 @@ impl RoomKernel {
                                     let mut fork = {
                                         let mut doc_guard = doc.write().await;
                                         let mut f = doc_guard.fork();
-                                        f.set_actor("runtimed:kernel");
+                                        f.set_actor(&iopub_actor_id);
                                         f
                                     };
 
@@ -1232,7 +1329,7 @@ impl RoomKernel {
                                         let mut fork = {
                                             let mut doc_guard = doc.write().await;
                                             let mut f = doc_guard.fork();
-                                            f.set_actor("runtimed:kernel");
+                                            f.set_actor(&iopub_actor_id);
                                             f
                                         };
 
@@ -1273,7 +1370,7 @@ impl RoomKernel {
                                     let mut fork = {
                                         let mut doc_guard = doc.write().await;
                                         let mut f = doc_guard.fork();
-                                        f.set_actor("runtimed:kernel");
+                                        f.set_actor(&iopub_actor_id);
                                         f
                                     };
 
@@ -1409,7 +1506,7 @@ impl RoomKernel {
                                         let mut fork = {
                                             let mut doc_guard = doc.write().await;
                                             let mut f = doc_guard.fork();
-                                            f.set_actor("runtimed:kernel");
+                                            f.set_actor(&iopub_actor_id);
                                             f
                                         };
 
@@ -1633,6 +1730,7 @@ impl RoomKernel {
         let shell_doc = self.doc.clone();
         let shell_blob_store = self.blob_store.clone();
         let shell_persist_tx = self.persist_tx.clone();
+        let iopub_actor_id = self.kernel_actor_id.clone();
         let shell_changed_tx = self.changed_tx.clone();
 
         let shell_reader_task = tokio::spawn(async move {
@@ -1699,7 +1797,7 @@ impl RoomKernel {
                                             let mut fork = {
                                                 let mut doc_guard = shell_doc.write().await;
                                                 let mut f = doc_guard.fork();
-                                                f.set_actor("runtimed:kernel");
+                                                f.set_actor(&iopub_actor_id);
                                                 f
                                             };
 
@@ -2559,6 +2657,8 @@ mod tests {
         let comm_state = Arc::new(CommState::new());
         let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
         let (state_changed_tx, _state_changed_rx) = broadcast::channel(16);
+        let presence = Arc::new(RwLock::new(PresenceState::new()));
+        let (presence_tx, _presence_rx) = broadcast::channel(16);
         let kernel = RoomKernel::new(
             tx,
             doc,
@@ -2568,6 +2668,8 @@ mod tests {
             comm_state,
             state_doc,
             state_changed_tx,
+            presence,
+            presence_tx,
         );
 
         assert!(!kernel.is_running());

@@ -64,7 +64,7 @@ const KERNEL_BROADCAST_CAPACITY: usize = 256;
 ///
 /// After catching a panic, callers should call `rebuild_from_save()` on the
 /// affected doc to round-trip save→load and rebuild clean internal indices.
-fn catch_automerge_panic<T>(label: &str, f: impl FnOnce() -> T) -> Result<T, String> {
+pub(crate) fn catch_automerge_panic<T>(label: &str, f: impl FnOnce() -> T) -> Result<T, String> {
     match std::panic::catch_unwind(AssertUnwindSafe(f)) {
         Ok(val) => Ok(val),
         Err(payload) => {
@@ -497,7 +497,7 @@ async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
 /// Handle CellError: clear queue on the kernel, mark executions as errored
 /// in state_doc using fork+merge to avoid async gaps between the kernel lock
 /// and the state_doc write.
-async fn apply_cell_error_to_state_doc(
+pub(crate) async fn apply_cell_error_to_state_doc(
     room_kernel: &Arc<Mutex<Option<RoomKernel>>>,
     room_state_doc: &Arc<RwLock<RuntimeStateDoc>>,
     room_state_changed_tx: &broadcast::Sender<()>,
@@ -558,7 +558,7 @@ async fn apply_cell_error_to_state_doc(
 
 /// Handle KernelDied: set error status, clear queue, mark all executions
 /// as errored using fork+merge. Returns env_source for presence update.
-async fn apply_kernel_died_to_state_doc(
+pub(crate) async fn apply_kernel_died_to_state_doc(
     room_kernel: &Arc<Mutex<Option<RoomKernel>>>,
     room_state_doc: &Arc<RwLock<RuntimeStateDoc>>,
     room_state_changed_tx: &broadcast::Sender<()>,
@@ -2358,6 +2358,8 @@ async fn auto_launch_kernel(
         room.comm_state.clone(),
         room.state_doc.clone(),
         room.state_changed_tx.clone(),
+        room.presence.clone(),
+        room.presence_tx.clone(),
     );
 
     // Detection priority:
@@ -2735,87 +2737,7 @@ async fn auto_launch_kernel(
             let es = kernel.env_source().to_string();
 
             // Take the command receiver and spawn a task to process execution events
-            if let Some(mut cmd_rx) = kernel.take_command_rx() {
-                let room_kernel = room.kernel.clone();
-                let room_broadcast_tx = room.kernel_broadcast_tx.clone();
-                let room_presence = room.presence.clone();
-                let room_presence_tx = room.presence_tx.clone();
-                let room_state_doc = room.state_doc.clone();
-                let room_state_changed_tx = room.state_changed_tx.clone();
-                tokio::spawn(async move {
-                    use crate::kernel_manager::QueueCommand;
-                    while let Some(cmd) = cmd_rx.recv().await {
-                        match cmd {
-                            QueueCommand::ExecutionDone {
-                                cell_id,
-                                execution_id,
-                            } => {
-                                debug!(
-                                    "[notebook-sync] ExecutionDone for {} ({})",
-                                    cell_id, execution_id
-                                );
-                                let env_source = {
-                                    let mut guard = room_kernel.lock().await;
-                                    if let Some(ref mut k) = *guard {
-                                        if let Err(e) =
-                                            k.execution_done(&cell_id, &execution_id).await
-                                        {
-                                            warn!("[notebook-sync] execution_done error: {}", e);
-                                        }
-                                        Some(k.env_source().to_string())
-                                    } else {
-                                        None
-                                    }
-                                };
-                                // Update presence outside the kernel lock
-                                if let Some(es) = env_source {
-                                    update_kernel_presence(
-                                        &room_presence,
-                                        &room_presence_tx,
-                                        presence::KernelStatus::Idle,
-                                        &es,
-                                    )
-                                    .await;
-                                }
-                            }
-                            QueueCommand::CellError {
-                                cell_id,
-                                execution_id,
-                            } => {
-                                debug!(
-                                    "[notebook-sync] User code error, halting queue (stop-on-error): cell={} execution={}",
-                                    cell_id, execution_id
-                                );
-                                apply_cell_error_to_state_doc(
-                                    &room_kernel,
-                                    &room_state_doc,
-                                    &room_state_changed_tx,
-                                )
-                                .await;
-                            }
-                            QueueCommand::KernelDied => {
-                                warn!("[notebook-sync] Kernel died, unblocking execution queue");
-                                let env_source = apply_kernel_died_to_state_doc(
-                                    &room_kernel,
-                                    &room_state_doc,
-                                    &room_state_changed_tx,
-                                    &room_broadcast_tx,
-                                )
-                                .await;
-                                if let Some(es) = env_source {
-                                    update_kernel_presence(
-                                        &room_presence,
-                                        &room_presence_tx,
-                                        presence::KernelStatus::Errored,
-                                        &es,
-                                    )
-                                    .await;
-                                }
-                            }
-                        }
-                    }
-                });
-            }
+            kernel.start_command_loop(room.kernel.clone());
 
             *kernel_guard = Some(kernel);
 
@@ -2883,7 +2805,7 @@ async fn publish_kernel_state_presence(
 ///
 /// Factored out so spawned tasks (which only hold cloned Arcs) can call it
 /// without needing a full `&NotebookRoom` reference.
-async fn update_kernel_presence(
+pub(crate) async fn update_kernel_presence(
     presence_state: &Arc<RwLock<PresenceState>>,
     presence_tx: &broadcast::Sender<(String, Vec<u8>)>,
     status: presence::KernelStatus,
@@ -3086,6 +3008,8 @@ async fn handle_notebook_request(
                 room.comm_state.clone(),
                 room.state_doc.clone(),
                 room.state_changed_tx.clone(),
+                room.presence.clone(),
+                room.presence_tx.clone(),
             );
             let notebook_path = notebook_path.map(std::path::PathBuf::from);
 
@@ -3499,93 +3423,7 @@ async fn handle_notebook_request(
                     let es = kernel.env_source().to_string();
 
                     // Take the command receiver and spawn a task to process execution events
-                    if let Some(mut cmd_rx) = kernel.take_command_rx() {
-                        let room_kernel = room.kernel.clone();
-                        let room_broadcast_tx = room.kernel_broadcast_tx.clone();
-                        let room_presence = room.presence.clone();
-                        let room_presence_tx = room.presence_tx.clone();
-                        let room_state_doc = room.state_doc.clone();
-                        let room_state_changed_tx = room.state_changed_tx.clone();
-                        tokio::spawn(async move {
-                            use crate::kernel_manager::QueueCommand;
-                            while let Some(cmd) = cmd_rx.recv().await {
-                                match cmd {
-                                    QueueCommand::ExecutionDone {
-                                        cell_id,
-                                        execution_id,
-                                    } => {
-                                        info!(
-                                            "[notebook-sync] Processing ExecutionDone for {} ({})",
-                                            cell_id, execution_id
-                                        );
-                                        let env_source = {
-                                            let mut guard = room_kernel.lock().await;
-                                            if let Some(ref mut k) = *guard {
-                                                if let Err(e) =
-                                                    k.execution_done(&cell_id, &execution_id).await
-                                                {
-                                                    warn!(
-                                                        "[notebook-sync] execution_done error: {}",
-                                                        e
-                                                    );
-                                                }
-                                                Some(k.env_source().to_string())
-                                            } else {
-                                                None
-                                            }
-                                        };
-                                        // Update presence outside the kernel lock
-                                        if let Some(es) = env_source {
-                                            update_kernel_presence(
-                                                &room_presence,
-                                                &room_presence_tx,
-                                                presence::KernelStatus::Idle,
-                                                &es,
-                                            )
-                                            .await;
-                                        }
-                                    }
-                                    QueueCommand::CellError {
-                                        cell_id,
-                                        execution_id,
-                                    } => {
-                                        debug!(
-                                            "[notebook-sync] User code error, halting queue (stop-on-error): cell={} execution={}",
-                                            cell_id, execution_id
-                                        );
-                                        apply_cell_error_to_state_doc(
-                                            &room_kernel,
-                                            &room_state_doc,
-                                            &room_state_changed_tx,
-                                        )
-                                        .await;
-                                    }
-                                    QueueCommand::KernelDied => {
-                                        warn!("[notebook-sync] Kernel died, unblocking execution queue");
-                                        let env_source = apply_kernel_died_to_state_doc(
-                                            &room_kernel,
-                                            &room_state_doc,
-                                            &room_state_changed_tx,
-                                            &room_broadcast_tx,
-                                        )
-                                        .await;
-                                        if let Some(es) = env_source {
-                                            update_kernel_presence(
-                                                &room_presence,
-                                                &room_presence_tx,
-                                                presence::KernelStatus::Errored,
-                                                &es,
-                                            )
-                                            .await;
-                                        }
-                                    }
-                                }
-                            }
-                            info!(
-                                "[notebook-sync] Command receiver closed, kernel likely shutdown"
-                            );
-                        });
-                    }
+                    kernel.start_command_loop(room.kernel.clone());
 
                     *kernel_guard = Some(kernel);
                     // Drop the kernel lock before awaiting the presence update
