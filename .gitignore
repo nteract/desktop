@@ -108,3 +108,7 @@ uv.lock
 .direnv
 result
 .cargo
+
+# APT publisher secrets
+scripts/apt/.env
+scripts/apt/debs/*.deb
