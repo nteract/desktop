@@ -1281,6 +1281,205 @@ mod tests {
         }
     }
 
+    // ── Actor label tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_actor_label_cursor_roundtrip() {
+        let encoded = encode_cursor_update_labeled(
+            "peer-1",
+            Some("Claude"),
+            Some("agent:claude:abc123"),
+            &CursorPosition {
+                cell_id: "c1".into(),
+                line: 5,
+                column: 10,
+            },
+        );
+        let msg = decode_message(&encoded).unwrap();
+        match msg {
+            PresenceMessage::Update {
+                peer_id,
+                peer_label,
+                actor_label,
+                data,
+                ..
+            } => {
+                assert_eq!(peer_id, "peer-1");
+                assert_eq!(peer_label, Some("Claude".to_string()));
+                assert_eq!(actor_label, Some("agent:claude:abc123".to_string()));
+                assert!(matches!(data, ChannelData::Cursor(_)));
+            }
+            _ => panic!("expected Update"),
+        }
+    }
+
+    #[test]
+    fn test_actor_label_none_roundtrip() {
+        // When actor_label is None, it should not appear in the CBOR
+        // and decode back as None (backwards compatibility).
+        let encoded = encode_cursor_update(
+            "peer-1",
+            &CursorPosition {
+                cell_id: "c1".into(),
+                line: 0,
+                column: 0,
+            },
+        );
+        let msg = decode_message(&encoded).unwrap();
+        match msg {
+            PresenceMessage::Update { actor_label, .. } => {
+                assert_eq!(actor_label, None);
+            }
+            _ => panic!("expected Update"),
+        }
+    }
+
+    #[test]
+    fn test_actor_label_survives_snapshot_cycle() {
+        // actor_label should survive: update_peer → encode_snapshot → decode → apply_snapshot
+        let mut state1 = PresenceState::new();
+        let cursor = ChannelData::Cursor(CursorPosition {
+            cell_id: "c1".into(),
+            line: 1,
+            column: 0,
+        });
+        state1.update_peer(
+            "agent-peer",
+            "Claude",
+            Some("agent:claude:abc123"),
+            cursor,
+            1000,
+        );
+
+        // Verify actor_label is stored in state
+        let peer = state1.get_peer("agent-peer").unwrap();
+        assert_eq!(peer.actor_label, Some("agent:claude:abc123".to_string()));
+
+        // Encode snapshot and decode into fresh state
+        let snapshot_bytes = state1.encode_snapshot("daemon");
+        let msg = decode_message(&snapshot_bytes).unwrap();
+        let mut state2 = PresenceState::new();
+        if let PresenceMessage::Snapshot { peers, .. } = msg {
+            // Verify actor_label is in the snapshot wire data
+            assert_eq!(
+                peers[0].actor_label,
+                Some("agent:claude:abc123".to_string())
+            );
+            state2.apply_snapshot(&peers, 2000);
+        } else {
+            panic!("expected Snapshot");
+        }
+
+        // Verify actor_label survived into the new state
+        let peer2 = state2.get_peer("agent-peer").unwrap();
+        assert_eq!(peer2.actor_label, Some("agent:claude:abc123".to_string()));
+    }
+
+    #[test]
+    fn test_actor_label_backwards_compat_missing_field() {
+        // Simulate an old client that sends a cursor update without the actor_label field.
+        // We do this by manually constructing CBOR without actor_label.
+        // The #[serde(default)] attribute should cause it to deserialize as None.
+        let old_style_msg = PresenceMessage::Update {
+            peer_id: "old-client".to_string(),
+            peer_label: Some("Human".to_string()),
+            actor_label: None, // old clients don't send this
+            data: ChannelData::Cursor(CursorPosition {
+                cell_id: "c1".into(),
+                line: 0,
+                column: 0,
+            }),
+        };
+        let encoded = encode_message(&old_style_msg).unwrap();
+        let decoded = decode_message(&encoded).unwrap();
+        match decoded {
+            PresenceMessage::Update {
+                actor_label,
+                peer_label,
+                ..
+            } => {
+                assert_eq!(actor_label, None);
+                assert_eq!(peer_label, Some("Human".to_string()));
+            }
+            _ => panic!("expected Update"),
+        }
+    }
+
+    #[test]
+    fn test_actor_label_update_preserves_on_none() {
+        // When update_peer is called with None for actor_label,
+        // an existing actor_label should NOT be erased.
+        let mut state = PresenceState::new();
+        let c1 = ChannelData::Cursor(CursorPosition {
+            cell_id: "c1".into(),
+            line: 0,
+            column: 0,
+        });
+        let c2 = ChannelData::Cursor(CursorPosition {
+            cell_id: "c1".into(),
+            line: 5,
+            column: 0,
+        });
+
+        // First update with actor_label
+        state.update_peer("peer-1", "Claude", Some("agent:claude:abc"), c1, 1000);
+        assert_eq!(
+            state.get_peer("peer-1").unwrap().actor_label,
+            Some("agent:claude:abc".to_string())
+        );
+
+        // Second update with None actor_label — should keep the old one
+        state.update_peer("peer-1", "Claude", None, c2, 2000);
+        assert_eq!(
+            state.get_peer("peer-1").unwrap().actor_label,
+            Some("agent:claude:abc".to_string())
+        );
+    }
+
+    #[test]
+    fn test_actor_label_update_replaces_with_new() {
+        // When update_peer is called with a new Some(actor_label),
+        // it should replace the old one (e.g. session reconnect).
+        let mut state = PresenceState::new();
+        let c1 = ChannelData::Cursor(CursorPosition {
+            cell_id: "c1".into(),
+            line: 0,
+            column: 0,
+        });
+        let c2 = ChannelData::Cursor(CursorPosition {
+            cell_id: "c1".into(),
+            line: 5,
+            column: 0,
+        });
+
+        state.update_peer("peer-1", "Claude", Some("agent:claude:old"), c1, 1000);
+        state.update_peer("peer-1", "Claude", Some("agent:claude:new"), c2, 2000);
+        assert_eq!(
+            state.get_peer("peer-1").unwrap().actor_label,
+            Some("agent:claude:new".to_string())
+        );
+    }
+
+    #[test]
+    fn test_custom_update_labeled_with_actor_label() {
+        let encoded = encode_custom_update_labeled(
+            "peer-1",
+            Some("Claude"),
+            Some("agent:claude:xyz"),
+            &[1, 2, 3],
+        );
+        let msg = decode_message(&encoded).unwrap();
+        match msg {
+            PresenceMessage::Update {
+                actor_label, data, ..
+            } => {
+                assert_eq!(actor_label, Some("agent:claude:xyz".to_string()));
+                assert!(matches!(data, ChannelData::Custom(_)));
+            }
+            _ => panic!("expected Update"),
+        }
+    }
+
     #[test]
     fn test_kernel_status_str_roundtrip() {
         for status in [

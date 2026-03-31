@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  findPeerColorByActorLabel,
   getPeersForCell,
   startCursorDispatch,
   subscribeToCell,
@@ -220,6 +221,207 @@ describe("cursor-registry cell-level functions", () => {
 
       expect(callback).toHaveBeenCalled();
       unsubscribe();
+    });
+  });
+
+  // ── Actor label identity alignment tests ────────────────────────
+
+  describe("findPeerColorByActorLabel", () => {
+    it("returns color for exact actor_label match", () => {
+      presenceHandler?.({
+        type: "update",
+        peer_id: "peer-1",
+        peer_label: "Claude",
+        actor_label: "agent:claude:abc123",
+        channel: "cursor",
+        data: { cell_id: "cell-1", line: 0, column: 0 },
+      });
+
+      const color = findPeerColorByActorLabel("agent:claude:abc123");
+      expect(color).toBeDefined();
+      // peerColor mock returns `#${peerId.slice(0, 6)}`
+      expect(color).toBe("#peer-1");
+    });
+
+    it("returns undefined when no peer matches actor_label", () => {
+      presenceHandler?.({
+        type: "update",
+        peer_id: "peer-1",
+        peer_label: "Claude",
+        actor_label: "agent:claude:abc123",
+        channel: "cursor",
+        data: { cell_id: "cell-1", line: 0, column: 0 },
+      });
+
+      const color = findPeerColorByActorLabel("agent:other:xyz789");
+      expect(color).toBeUndefined();
+    });
+
+    it("returns undefined when no peers are connected", () => {
+      const color = findPeerColorByActorLabel("agent:claude:abc123");
+      expect(color).toBeUndefined();
+    });
+
+    it("does not match against the local peer", () => {
+      // local-peer is the ID passed to startCursorDispatch
+      presenceHandler?.({
+        type: "update",
+        peer_id: "local-peer",
+        peer_label: "Me",
+        actor_label: "human:local-session",
+        channel: "cursor",
+        data: { cell_id: "cell-1", line: 0, column: 0 },
+      });
+
+      const color = findPeerColorByActorLabel("human:local-session");
+      expect(color).toBeUndefined();
+    });
+
+    it("matches actor_label from snapshot", () => {
+      presenceHandler?.({
+        type: "snapshot",
+        peer_id: "daemon",
+        peers: [
+          {
+            peer_id: "agent-peer",
+            peer_label: "Claude",
+            actor_label: "agent:claude:snap123",
+            channels: [
+              {
+                channel: "cursor",
+                data: { cell_id: "cell-1", line: 0, column: 0 },
+              },
+            ],
+          },
+        ],
+      });
+
+      const color = findPeerColorByActorLabel("agent:claude:snap123");
+      expect(color).toBeDefined();
+      expect(color).toBe("#agent-");
+    });
+
+    it("loses actor_label when peer leaves", () => {
+      presenceHandler?.({
+        type: "update",
+        peer_id: "peer-1",
+        peer_label: "Claude",
+        actor_label: "agent:claude:abc123",
+        channel: "cursor",
+        data: { cell_id: "cell-1", line: 0, column: 0 },
+      });
+
+      // Verify it's there
+      expect(findPeerColorByActorLabel("agent:claude:abc123")).toBeDefined();
+
+      // Peer disconnects
+      presenceHandler?.({
+        type: "left",
+        peer_id: "peer-1",
+      });
+
+      // Actor label lookup should no longer match
+      expect(findPeerColorByActorLabel("agent:claude:abc123")).toBeUndefined();
+    });
+
+    it("does not match by substring (exact only)", () => {
+      presenceHandler?.({
+        type: "update",
+        peer_id: "peer-1",
+        peer_label: "Claude",
+        actor_label: "agent:claude:abc123",
+        channel: "cursor",
+        data: { cell_id: "cell-1", line: 0, column: 0 },
+      });
+
+      // Partial match should NOT work — this is the key improvement over
+      // the old fuzzy findPeerColorByLabel
+      expect(findPeerColorByActorLabel("agent:claude")).toBeUndefined();
+      expect(findPeerColorByActorLabel("claude")).toBeUndefined();
+      expect(findPeerColorByActorLabel("abc123")).toBeUndefined();
+    });
+  });
+
+  describe("actor_label storage in PeerCursorInfo", () => {
+    it("stores actor_label from update messages", () => {
+      presenceHandler?.({
+        type: "update",
+        peer_id: "peer-1",
+        peer_label: "Claude",
+        actor_label: "agent:claude:abc123",
+        channel: "cursor",
+        data: { cell_id: "cell-1", line: 0, column: 0 },
+      });
+
+      const peers = getPeersForCell("cell-1");
+      expect(peers).toHaveLength(1);
+      expect(peers[0].actorLabel).toBe("agent:claude:abc123");
+    });
+
+    it("stores actor_label from snapshot", () => {
+      presenceHandler?.({
+        type: "snapshot",
+        peer_id: "daemon",
+        peers: [
+          {
+            peer_id: "peer-1",
+            peer_label: "Human",
+            actor_label: "human:session-abc",
+            channels: [
+              {
+                channel: "cursor",
+                data: { cell_id: "cell-1", line: 0, column: 0 },
+              },
+            ],
+          },
+        ],
+      });
+
+      const peers = getPeersForCell("cell-1");
+      expect(peers).toHaveLength(1);
+      expect(peers[0].actorLabel).toBe("human:session-abc");
+    });
+
+    it("preserves actor_label when absent from subsequent updates", () => {
+      // First update includes actor_label
+      presenceHandler?.({
+        type: "update",
+        peer_id: "peer-1",
+        peer_label: "Claude",
+        actor_label: "agent:claude:abc123",
+        channel: "cursor",
+        data: { cell_id: "cell-1", line: 0, column: 0 },
+      });
+
+      // Second update without actor_label (e.g. just a cursor move)
+      presenceHandler?.({
+        type: "update",
+        peer_id: "peer-1",
+        peer_label: "Claude",
+        channel: "cursor",
+        data: { cell_id: "cell-1", line: 5, column: 10 },
+      });
+
+      const peers = getPeersForCell("cell-1");
+      expect(peers).toHaveLength(1);
+      expect(peers[0].actorLabel).toBe("agent:claude:abc123");
+    });
+
+    it("handles peer with no actor_label gracefully", () => {
+      presenceHandler?.({
+        type: "update",
+        peer_id: "peer-1",
+        peer_label: "Old Client",
+        channel: "cursor",
+        data: { cell_id: "cell-1", line: 0, column: 0 },
+      });
+
+      const peers = getPeersForCell("cell-1");
+      expect(peers).toHaveLength(1);
+      expect(peers[0].actorLabel).toBeUndefined();
+
+      // And the lookup should return undefined
+      expect(findPeerColorByActorLabel("anything")).toBeUndefined();
     });
   });
 });
