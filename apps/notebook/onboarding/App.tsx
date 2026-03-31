@@ -245,12 +245,12 @@ export default function App() {
     const pollPool = async () => {
       while (!cancelled) {
         try {
-          const stats = await invoke<{
-            uv_available: number;
-            conda_available: number;
+          const state = await invoke<{
+            uv: { available: number };
+            conda: { available: number };
           }>("get_pool_status");
 
-          if (stats.uv_available > 0 || stats.conda_available > 0) {
+          if (state.uv.available > 0 || state.conda.available > 0) {
             setPoolReady(true);
             setSteps((prev) =>
               prev.map((s) =>

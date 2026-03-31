@@ -5,12 +5,12 @@
 //! and re-exported here for backward compatibility.
 //!
 //! Daemon-internal types (Request, Response, BlobRequest,
-//! BlobResponse, DaemonBroadcast) are defined here.
+//! BlobResponse) are defined here.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::{EnvType, PoolError, PoolStats, PooledEnv};
+use crate::{EnvType, PoolState, PooledEnv};
 
 // Re-export all notebook protocol types from the shared crate.
 pub use notebook_protocol::protocol::{
@@ -74,8 +74,8 @@ pub enum Response {
     /// Environment returned successfully.
     Returned,
 
-    /// Pool statistics.
-    Stats { stats: PoolStats },
+    /// Pool state (from PoolDoc).
+    Stats { state: PoolState },
 
     /// Pong response to ping.
     Pong,
@@ -160,28 +160,6 @@ pub enum BlobResponse {
     Port { port: u16 },
     /// Error.
     Error { error: String },
-}
-
-// =============================================================================
-// Daemon-internal broadcast
-// =============================================================================
-
-// =============================================================================
-
-/// Broadcast messages for global daemon state (not per-notebook).
-///
-/// These are sent to all connected clients when daemon-wide state changes,
-/// such as pool errors due to invalid default packages in settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
-pub enum DaemonBroadcast {
-    /// Pool state changed (error occurred, error cleared, etc.)
-    PoolState {
-        /// Error info for UV pool (None if healthy).
-        uv_error: Option<PoolError>,
-        /// Error info for Conda pool (None if healthy).
-        conda_error: Option<PoolError>,
-    },
 }
 
 #[cfg(test)]
@@ -306,25 +284,31 @@ mod tests {
 
     #[test]
     fn test_response_stats() {
-        let stats = PoolStats {
-            uv_available: 3,
-            uv_warming: 1,
-            uv_target: 4,
-            conda_available: 2,
-            conda_warming: 0,
-            conda_target: 2,
-            uv_error: None,
-            conda_error: None,
+        use crate::RuntimePoolState;
+
+        let state = PoolState {
+            uv: RuntimePoolState {
+                available: 3,
+                warming: 1,
+                pool_size: 4,
+                ..Default::default()
+            },
+            conda: RuntimePoolState {
+                available: 2,
+                warming: 0,
+                pool_size: 2,
+                ..Default::default()
+            },
         };
         let resp = Response::Stats {
-            stats: stats.clone(),
+            state: state.clone(),
         };
         match roundtrip_response(&resp) {
-            Response::Stats { stats: s } => {
-                assert_eq!(s.uv_available, 3);
-                assert_eq!(s.uv_warming, 1);
-                assert_eq!(s.conda_available, 2);
-                assert_eq!(s.conda_warming, 0);
+            Response::Stats { state: s } => {
+                assert_eq!(s.uv.available, 3);
+                assert_eq!(s.uv.warming, 1);
+                assert_eq!(s.conda.available, 2);
+                assert_eq!(s.conda.warming, 0);
             }
             _ => panic!("unexpected response type"),
         }

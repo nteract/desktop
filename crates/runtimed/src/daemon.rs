@@ -30,10 +30,7 @@ use crate::notebook_sync_server::NotebookRooms;
 use crate::protocol::{BlobRequest, BlobResponse, Request, Response};
 use crate::settings_doc::SettingsDoc;
 use crate::singleton::DaemonLock;
-use crate::{
-    default_blob_store_dir, default_cache_dir, default_socket_path, EnvType, PoolError, PoolStats,
-    PooledEnv,
-};
+use crate::{default_blob_store_dir, default_cache_dir, default_socket_path, EnvType, PooledEnv};
 use runtimed_client::singleton::DaemonInfo;
 
 /// Configuration for the pool daemon.
@@ -331,32 +328,16 @@ impl Pool {
         (self.available.len(), self.warming)
     }
 
-    /// Get error info for status reporting.
-    fn get_error(&self) -> Option<PoolError> {
-        if self.failure_state.consecutive_failures == 0 {
-            return None;
-        }
-
-        let retry_in_secs = self
-            .failure_state
+    /// Seconds until the next retry (0 if healthy or retry is imminent).
+    fn retry_in_secs(&self) -> u64 {
+        self.failure_state
             .last_failure
             .map(|last| {
                 self.backoff_delay()
                     .saturating_sub(last.elapsed())
                     .as_secs()
             })
-            .unwrap_or(0);
-
-        Some(PoolError {
-            message: self
-                .failure_state
-                .last_error
-                .clone()
-                .unwrap_or_else(|| "Unknown error".to_string()),
-            failed_package: self.failure_state.failed_package.clone(),
-            consecutive_failures: self.failure_state.consecutive_failures,
-            retry_in_secs,
-        })
+            .unwrap_or(0)
     }
 }
 
@@ -1128,12 +1109,6 @@ impl Daemon {
                 .await
             }
             Handshake::Blob => self.handle_blob_connection(stream).await,
-            Handshake::PoolStateSubscribe => {
-                // Legacy: pool state now syncs via PoolDoc on notebook connections.
-                // Close the connection gracefully.
-                info!("[runtimed] Legacy PoolStateSubscribe connection, closing");
-                Ok(())
-            }
             Handshake::OpenNotebook { path } => self.handle_open_notebook(stream, path).await,
             Handshake::CreateNotebook {
                 runtime,
@@ -1707,28 +1682,8 @@ impl Daemon {
             }
 
             Request::Status => {
-                let (uv_available, uv_warming, uv_error) = {
-                    let pool = self.uv_pool.lock().await;
-                    let (avail, warm) = pool.stats();
-                    (avail, warm, pool.get_error())
-                };
-                let (conda_available, conda_warming, conda_error) = {
-                    let pool = self.conda_pool.lock().await;
-                    let (avail, warm) = pool.stats();
-                    (avail, warm, pool.get_error())
-                };
-                Response::Stats {
-                    stats: PoolStats {
-                        uv_available,
-                        uv_warming,
-                        uv_target: self.config.uv_pool_size,
-                        conda_available,
-                        conda_warming,
-                        conda_target: self.config.conda_pool_size,
-                        uv_error,
-                        conda_error,
-                    },
-                }
+                let state = self.pool_doc.read().await.read_state();
+                Response::Stats { state }
             }
 
             Request::Ping => Response::Pong,
@@ -2570,39 +2525,36 @@ print("warmup complete")
     ///
     /// Called when pool state changes (new error, error cleared, warming, etc.).
     async fn update_pool_doc(&self) {
-        let (uv_available, uv_warming, uv_error) = {
+        use notebook_doc::pool_state::{PoolState, RuntimePoolState};
+
+        let uv = {
             let pool = self.uv_pool.lock().await;
             let (available, warming) = pool.stats();
-            (available, warming, pool.get_error())
+            RuntimePoolState {
+                available: available as u64,
+                warming: warming as u64,
+                pool_size: self.config.uv_pool_size as u64,
+                error: pool.failure_state.last_error.clone(),
+                failed_package: pool.failure_state.failed_package.clone(),
+                consecutive_failures: pool.failure_state.consecutive_failures,
+                retry_in_secs: pool.retry_in_secs(),
+            }
         };
-        let (conda_available, conda_warming, conda_error) = {
+        let conda = {
             let pool = self.conda_pool.lock().await;
             let (available, warming) = pool.stats();
-            (available, warming, pool.get_error())
-        };
-
-        let state = notebook_doc::pool_state::PoolState {
-            uv: notebook_doc::pool_state::RuntimePoolState {
-                available: uv_available as u64,
-                warming: uv_warming as u64,
-                pool_size: self.config.uv_pool_size as u64,
-                consecutive_failures: uv_error.as_ref().map_or(0, |e| e.consecutive_failures),
-                retry_in_secs: uv_error.as_ref().map_or(0, |e| e.retry_in_secs),
-                failed_package: uv_error.as_ref().and_then(|e| e.failed_package.clone()),
-                error: uv_error.map(|e| e.message),
-            },
-            conda: notebook_doc::pool_state::RuntimePoolState {
-                available: conda_available as u64,
-                warming: conda_warming as u64,
+            RuntimePoolState {
+                available: available as u64,
+                warming: warming as u64,
                 pool_size: self.config.conda_pool_size as u64,
-                consecutive_failures: conda_error.as_ref().map_or(0, |e| e.consecutive_failures),
-                retry_in_secs: conda_error.as_ref().map_or(0, |e| e.retry_in_secs),
-                failed_package: conda_error.as_ref().and_then(|e| e.failed_package.clone()),
-                error: conda_error.map(|e| e.message),
-            },
+                error: pool.failure_state.last_error.clone(),
+                failed_package: pool.failure_state.failed_package.clone(),
+                consecutive_failures: pool.failure_state.consecutive_failures,
+                retry_in_secs: pool.retry_in_secs(),
+            }
         };
 
-        let changed = self.pool_doc.write().await.update(&state);
+        let changed = self.pool_doc.write().await.update(&PoolState { uv, conda });
         if changed {
             let _ = self.pool_doc_changed.send(());
         }
@@ -3182,25 +3134,6 @@ mod tests {
         assert!(pool.failure_state.last_error.is_none());
         assert!(pool.failure_state.failed_package.is_none());
         assert!(pool.failure_state.last_failure.is_none());
-    }
-
-    #[test]
-    fn test_pool_get_error() {
-        let mut pool = Pool::new(3, 3600);
-
-        // No error initially
-        assert!(pool.get_error().is_none());
-
-        // After failure, should have error
-        pool.warming_failed_with_error(Some(PackageInstallError {
-            failed_package: Some("scitkit-learn".to_string()),
-            error_message: "Package scitkit-learn not found".to_string(),
-        }));
-
-        let err = pool.get_error().unwrap();
-        assert_eq!(err.failed_package, Some("scitkit-learn".to_string()));
-        assert_eq!(err.consecutive_failures, 1);
-        assert!(err.message.contains("scitkit-learn"));
     }
 
     #[test]

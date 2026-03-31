@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use crate::connection::{self, Handshake};
 use crate::protocol::{Request, Response};
-use crate::{default_socket_path, EnvType, PoolStats, PooledEnv};
+use crate::{default_socket_path, EnvType, PoolState, PooledEnv};
 
 /// Progress updates during daemon startup.
 ///
@@ -155,11 +155,11 @@ impl PoolClient {
         }
     }
 
-    /// Get pool statistics.
-    pub async fn status(&self) -> Result<PoolStats, ClientError> {
+    /// Get pool state (from PoolDoc).
+    pub async fn status(&self) -> Result<PoolState, ClientError> {
         let response = self.send_request(Request::Status).await?;
         match response {
-            Response::Stats { stats } => Ok(stats),
+            Response::Stats { state } => Ok(state),
             Response::Error { message } => Err(ClientError::DaemonError(message)),
             _ => Err(ClientError::ProtocolError(
                 "Unexpected response".to_string(),
@@ -615,112 +615,6 @@ pub enum EnsureDaemonError {
 
     #[error("Dev daemon not running at {0}. Start it with: cargo xtask dev-daemon")]
     DevDaemonNotRunning(std::path::PathBuf),
-}
-
-// =============================================================================
-// Pool State Subscription
-// =============================================================================
-
-/// Subscribe to pool state changes from the daemon.
-///
-/// Returns a receiver that yields `DaemonBroadcast::PoolState` messages whenever
-/// the pool error state changes (new error, error cleared, etc.).
-///
-/// The first message is always the current state. Subsequent messages are sent
-/// when the state changes.
-///
-/// # Example
-///
-/// ```ignore
-/// let mut rx = subscribe_pool_state().await?;
-/// while let Some(broadcast) = rx.recv().await {
-///     match broadcast {
-///         DaemonBroadcast::PoolState { uv_error, conda_error } => {
-///             if let Some(err) = uv_error {
-///                 eprintln!("UV pool error: {}", err.message);
-///             }
-///         }
-///     }
-/// }
-/// ```
-pub async fn subscribe_pool_state(
-) -> Result<tokio::sync::mpsc::Receiver<crate::protocol::DaemonBroadcast>, ClientError> {
-    let socket_path = default_socket_path();
-    let connect_timeout = Duration::from_secs(2);
-
-    #[cfg(unix)]
-    let stream = {
-        let connect_result = tokio::time::timeout(
-            connect_timeout,
-            tokio::net::UnixStream::connect(&socket_path),
-        )
-        .await;
-
-        match connect_result {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => return Err(ClientError::ConnectionFailed(e)),
-            Err(_) => return Err(ClientError::Timeout),
-        }
-    };
-
-    #[cfg(windows)]
-    let stream = {
-        let pipe_name = socket_path.to_string_lossy().to_string();
-        let connect_result = tokio::time::timeout(connect_timeout, async {
-            let mut attempts = 0;
-            loop {
-                match ClientOptions::new().open(&pipe_name) {
-                    Ok(client) => return Ok(client),
-                    Err(_) if attempts < 5 => {
-                        attempts += 1;
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-        })
-        .await;
-
-        match connect_result {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => return Err(ClientError::ConnectionFailed(e)),
-            Err(_) => return Err(ClientError::Timeout),
-        }
-    };
-
-    // Send preamble + handshake
-    let mut stream = stream;
-    connection::send_preamble(&mut stream)
-        .await
-        .map_err(|e| ClientError::ProtocolError(format!("preamble: {}", e)))?;
-    connection::send_json_frame(&mut stream, &Handshake::PoolStateSubscribe)
-        .await
-        .map_err(|e| ClientError::ProtocolError(format!("handshake: {}", e)))?;
-
-    // Create a channel to forward broadcasts to the caller
-    let (tx, rx) = tokio::sync::mpsc::channel(16);
-
-    // Spawn a task to read broadcasts and forward them
-    tokio::spawn(async move {
-        loop {
-            match connection::recv_json_frame::<_, crate::protocol::DaemonBroadcast>(&mut stream)
-                .await
-            {
-                Ok(Some(broadcast)) => {
-                    if tx.send(broadcast).await.is_err() {
-                        break; // Receiver dropped
-                    }
-                }
-                Ok(None) => break, // Connection closed
-                Err(e) => {
-                    warn!("[pool-client] Error receiving pool state: {}", e);
-                    break;
-                }
-            }
-        }
-    });
-
-    Ok(rx)
 }
 
 #[cfg(test)]

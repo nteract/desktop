@@ -396,7 +396,6 @@ pub enum Handshake {
         initial_metadata: Option<String>, // kernelspec JSON for auto-launch
     },
     Blob,
-    PoolStateSubscribe,                   // read-only pool error broadcasts
     OpenNotebook { path: String },        // daemon loads from disk, returns NotebookConnectionInfo
     CreateNotebook {                      // daemon creates empty room
         runtime: String,                  // "python" or "deno"
@@ -414,7 +413,6 @@ The daemon's `route_connection()` validates the preamble first via `recv_preambl
 | `SettingsSync` | Automerge sync messages | Long-lived, bidirectional |
 | `NotebookSync` | Automerge sync messages, room-routed by `notebook_id` | Long-lived, bidirectional |
 | `Blob` | Binary blob writes | Short-lived |
-| `PoolStateSubscribe` | Server pushes `DaemonBroadcast` messages | Long-lived, read-only |
 | `OpenNotebook` | Returns `NotebookConnectionInfo`, then notebook sync | Long-lived |
 | `CreateNotebook` | Returns `NotebookConnectionInfo`, then notebook sync | Long-lived |
 

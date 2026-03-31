@@ -507,18 +507,18 @@ async fn status(json: bool) -> anyhow::Result<()> {
             println!("  Started:  {}", info.started_at);
         }
 
-        if let Some(stats) = stats {
+        if let Some(state) = stats {
             println!();
             println!("Pool Statistics:");
             println!(
                 "  UV:    {}/{} available",
-                stats.uv_available,
-                stats.uv_available + stats.uv_warming
+                state.uv.available,
+                state.uv.available + state.uv.warming
             );
             println!(
                 "  Conda: {}/{} available",
-                stats.conda_available,
-                stats.conda_available + stats.conda_warming
+                state.conda.available,
+                state.conda.available + state.conda.warming
             );
         }
     }

@@ -2325,9 +2325,9 @@ fn get_daemon_status(
 }
 
 /// Get pool statistics from the daemon.
-/// Returns number of available/warming environments for UV and Conda.
+/// Returns pool state from the daemon's PoolDoc.
 #[tauri::command]
-async fn get_pool_status() -> Result<runtimed::PoolStats, String> {
+async fn get_pool_status() -> Result<runtimed::PoolState, String> {
     let client = runtimed::client::PoolClient::default();
     client
         .status()

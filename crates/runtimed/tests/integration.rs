@@ -163,9 +163,9 @@ async fn test_daemon_status() {
     assert!(wait_for_daemon(&client, Duration::from_secs(5)).await);
 
     // Get status
-    let stats = client.status().await.unwrap();
-    assert_eq!(stats.uv_available, 0);
-    assert_eq!(stats.conda_available, 0);
+    let state = client.status().await.unwrap();
+    assert_eq!(state.uv.available, 0);
+    assert_eq!(state.conda.available, 0);
 
     // Shutdown
     client.shutdown().await.ok();

@@ -77,17 +77,17 @@ impl AsyncClient {
         })
     }
 
-    /// Get pool statistics.
+    /// Get pool state (from PoolDoc).
     fn status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let socket_path = self.socket_path.clone();
         future_into_py(py, async move {
             let client = runtimed::client::PoolClient::new(socket_path);
-            let stats = client.status().await.map_err(to_py_err)?;
+            let state = client.status().await.map_err(to_py_err)?;
             let mut map = std::collections::HashMap::new();
-            map.insert("uv_available".to_string(), stats.uv_available as i64);
-            map.insert("conda_available".to_string(), stats.conda_available as i64);
-            map.insert("uv_warming".to_string(), stats.uv_warming as i64);
-            map.insert("conda_warming".to_string(), stats.conda_warming as i64);
+            map.insert("uv_available".to_string(), state.uv.available as i64);
+            map.insert("conda_available".to_string(), state.conda.available as i64);
+            map.insert("uv_warming".to_string(), state.uv.warming as i64);
+            map.insert("conda_warming".to_string(), state.conda.warming as i64);
             Ok(map)
         })
     }
