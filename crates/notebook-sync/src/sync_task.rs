@@ -543,6 +543,15 @@ async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
                 }
             }
         }
+
+        NotebookFrameType::PoolStateSync => {
+            // PoolDoc sync is handled by the frontend WASM layer, not the Python client.
+            // Ignore in the Python sync task.
+            debug!(
+                "[notebook-sync] Ignoring PoolStateSync frame for {} (handled by frontend)",
+                notebook_id
+            );
+        }
     }
 }
 

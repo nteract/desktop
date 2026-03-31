@@ -20,6 +20,8 @@ export const frame_types = {
   PRESENCE: 0x04,
   /** RuntimeStateSync message (binary Automerge sync for RuntimeStateDoc). */
   RUNTIME_STATE_SYNC: 0x05,
+  /** PoolStateSync message (binary Automerge sync for PoolDoc, global). */
+  POOL_STATE_SYNC: 0x06,
 } as const;
 
 /**

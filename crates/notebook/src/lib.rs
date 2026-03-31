@@ -2738,7 +2738,10 @@ async fn send_frame_bytes(
     let payload = &frame_data[1..];
 
     match frame_type {
-        frame_types::AUTOMERGE_SYNC | frame_types::PRESENCE | frame_types::RUNTIME_STATE_SYNC => {
+        frame_types::AUTOMERGE_SYNC
+        | frame_types::PRESENCE
+        | frame_types::RUNTIME_STATE_SYNC
+        | frame_types::POOL_STATE_SYNC => {
             handle
                 .forward_frame(frame_type, payload.to_vec())
                 .await
@@ -3471,38 +3474,9 @@ async fn run_settings_sync(app: tauri::AppHandle) {
     }
 }
 
-/// Background task that subscribes to pool state changes from the runtimed daemon
-/// and emits Tauri events to all windows when pool errors occur or clear.
-///
-/// Reconnects automatically after 5s if the connection drops.
-async fn run_pool_state_sync(app: tauri::AppHandle) {
-    use tauri::Emitter;
-
-    loop {
-        match runtimed::client::subscribe_pool_state().await {
-            Ok(mut rx) => {
-                log::info!("[pool-state-sync] Connected to pool state subscription");
-
-                while let Some(broadcast) = rx.recv().await {
-                    if let Err(e) = app.emit("pool:state", &broadcast) {
-                        log::warn!("[pool-state-sync] Failed to emit pool:state: {}", e);
-                    }
-                }
-
-                log::warn!("[pool-state-sync] Disconnected from pool state subscription");
-            }
-            Err(e) => {
-                log::info!(
-                    "[pool-state-sync] Cannot connect to daemon: {}. Retrying in 5s.",
-                    e
-                );
-            }
-        }
-
-        // Wait before reconnecting
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-    }
-}
+// Pool state sync removed: pool state now syncs via PoolDoc (frame type 0x06)
+// on each notebook connection. See handle_notebook_sync_connection in
+// notebook_sync_server.rs.
 
 /// Create initial notebook state for a new notebook, detecting project-level config for Python.
 /// Create a window context for daemon-owned notebook loading.
@@ -4210,9 +4184,8 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
                 // Spawn as separate task since it runs forever
                 tokio::spawn(run_settings_sync(app_for_sync.clone()));
 
-                // Start pool state subscription (reconnects automatically)
-                // Reports prewarm pool errors to UI so users know when default packages fail
-                tokio::spawn(run_pool_state_sync(app_for_sync));
+                // Pool state now syncs via PoolDoc on each notebook connection
+                // (frame type 0x06), no separate subscription needed.
 
                 // Initialize notebook sync for all startup windows.
                 // Skip during onboarding - the onboarding window doesn't need notebook sync,

@@ -89,6 +89,19 @@ export interface SyncableHandle {
   /** Generate a sync reply for the RuntimeStateDoc. */
   generate_runtime_state_sync_reply(): Uint8Array | null;
 
+  /**
+   * Flush PoolDoc sync message.
+   *
+   * Returns the message bytes, or null if there are no pending changes.
+   */
+  flush_pool_state_sync(): Uint8Array | null;
+
+  /** Roll back the last PoolDoc flush. */
+  cancel_last_pool_state_flush(): void;
+
+  /** Generate a sync reply for the PoolDoc. */
+  generate_pool_state_sync_reply(): Uint8Array | null;
+
   /** Reset sync state so the next flush requests the full document. */
   reset_sync_state(): void;
 

@@ -27,7 +27,7 @@ use crate::blob_server;
 use crate::blob_store::BlobStore;
 use crate::connection::{self, Handshake};
 use crate::notebook_sync_server::NotebookRooms;
-use crate::protocol::{BlobRequest, BlobResponse, DaemonBroadcast, Request, Response};
+use crate::protocol::{BlobRequest, BlobResponse, Request, Response};
 use crate::settings_doc::SettingsDoc;
 use crate::singleton::DaemonLock;
 use crate::{
@@ -374,8 +374,10 @@ pub struct Daemon {
     settings: Arc<RwLock<SettingsDoc>>,
     /// Broadcast channel to notify sync connections of settings changes.
     settings_changed: tokio::sync::broadcast::Sender<()>,
-    /// Broadcast channel to notify clients of pool state changes (errors, recovery).
-    pool_state_changed: tokio::sync::broadcast::Sender<DaemonBroadcast>,
+    /// Global Automerge pool state document (daemon-authoritative, ephemeral).
+    pub(crate) pool_doc: Arc<RwLock<notebook_doc::pool_state::PoolDoc>>,
+    /// Broadcast channel to notify sync connections of pool doc changes.
+    pub(crate) pool_doc_changed: tokio::sync::broadcast::Sender<()>,
     /// Content-addressed blob store.
     blob_store: Arc<BlobStore>,
     /// HTTP port for the blob server (set after startup).
@@ -411,7 +413,8 @@ impl Daemon {
         }
 
         let (settings_changed, _) = tokio::sync::broadcast::channel(16);
-        let (pool_state_changed, _) = tokio::sync::broadcast::channel(16);
+        let (pool_doc_changed, _) = tokio::sync::broadcast::channel(16);
+        let pool_doc = Arc::new(RwLock::new(notebook_doc::pool_state::PoolDoc::new()));
 
         let blob_store = Arc::new(BlobStore::new(config.blob_store_dir.clone()));
 
@@ -424,7 +427,8 @@ impl Daemon {
             _lock: lock,
             settings: Arc::new(RwLock::new(settings)),
             settings_changed,
-            pool_state_changed,
+            pool_doc,
+            pool_doc_changed,
             blob_store,
             blob_port: Mutex::new(None),
             notebook_rooms: Arc::new(Mutex::new(HashMap::new())),
@@ -858,7 +862,7 @@ impl Daemon {
 
                                 // Broadcast cleared state if we had errors
                                 if had_errors {
-                                    self.broadcast_pool_state().await;
+                                    self.update_pool_doc().await;
                                 }
                             }
                         }
@@ -1124,7 +1128,12 @@ impl Daemon {
                 .await
             }
             Handshake::Blob => self.handle_blob_connection(stream).await,
-            Handshake::PoolStateSubscribe => self.handle_pool_state_subscription(stream).await,
+            Handshake::PoolStateSubscribe => {
+                // Legacy: pool state now syncs via PoolDoc on notebook connections.
+                // Close the connection gracefully.
+                info!("[runtimed] Legacy PoolStateSubscribe connection, closing");
+                Ok(())
+            }
             Handshake::OpenNotebook { path } => self.handle_open_notebook(stream, path).await,
             Handshake::CreateNotebook {
                 runtime,
@@ -1519,64 +1528,6 @@ impl Daemon {
             false, // UUID-based new notebook, handled by is_new_notebook check
         )
         .await
-    }
-
-    /// Handle a pool state subscription connection.
-    ///
-    /// Sends the current pool state immediately, then forwards all broadcasts
-    /// until the client disconnects or the daemon shuts down.
-    async fn handle_pool_state_subscription<S>(self: Arc<Self>, mut stream: S) -> anyhow::Result<()>
-    where
-        S: AsyncRead + AsyncWrite + Unpin,
-    {
-        info!("[runtimed] Pool state subscriber connected");
-
-        // Subscribe to pool state changes
-        let mut rx = self.pool_state_changed.subscribe();
-
-        // Send current state immediately
-        let current_state = DaemonBroadcast::PoolState {
-            uv_error: self.uv_pool.lock().await.get_error(),
-            conda_error: self.conda_pool.lock().await.get_error(),
-        };
-        connection::send_json_frame(&mut stream, &current_state).await?;
-
-        // Forward broadcasts until disconnect or shutdown
-        loop {
-            tokio::select! {
-                result = rx.recv() => {
-                    match result {
-                        Ok(broadcast) => {
-                            if connection::send_json_frame(&mut stream, &broadcast).await.is_err() {
-                                break; // Client disconnected
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            warn!("[runtimed] Pool state subscriber lagged {} messages", n);
-                            // Send current state to catch up
-                            let state = DaemonBroadcast::PoolState {
-                                uv_error: self.uv_pool.lock().await.get_error(),
-                                conda_error: self.conda_pool.lock().await.get_error(),
-                            };
-                            if connection::send_json_frame(&mut stream, &state).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            break; // Sender dropped (daemon shutting down)
-                        }
-                    }
-                }
-                _ = self.shutdown_notify.notified() => {
-                    if *self.shutdown.lock().await {
-                        break;
-                    }
-                }
-            }
-        }
-
-        info!("[runtimed] Pool state subscriber disconnected");
-        Ok(())
     }
 
     /// Handle a pool channel connection (framed JSON request/response).
@@ -2268,7 +2219,7 @@ impl Daemon {
                     failed_package: None,
                     error_message: format!("Failed to create cache dir: {}", e),
                 }));
-            self.broadcast_pool_state().await;
+            self.update_pool_doc().await;
             return;
         }
 
@@ -2287,7 +2238,7 @@ impl Daemon {
                         failed_package: None,
                         error_message: format!("Failed to parse conda-forge channel: {}", e),
                     }));
-                self.broadcast_pool_state().await;
+                self.update_pool_doc().await;
                 return;
             }
         };
@@ -2330,7 +2281,7 @@ impl Daemon {
                         failed_package: None,
                         error_message: format!("Failed to parse match specs: {}", e),
                     }));
-                self.broadcast_pool_state().await;
+                self.update_pool_doc().await;
                 return;
             }
         };
@@ -2353,7 +2304,7 @@ impl Daemon {
                             e
                         ),
                     }));
-                self.broadcast_pool_state().await;
+                self.update_pool_doc().await;
                 return;
             }
         };
@@ -2367,7 +2318,7 @@ impl Daemon {
                     failed_package: None,
                     error_message: format!("Could not create rattler cache directory: {}", e),
                 }));
-            self.broadcast_pool_state().await;
+            self.update_pool_doc().await;
             return;
         }
 
@@ -2383,7 +2334,7 @@ impl Daemon {
                         failed_package: None,
                         error_message: format!("Failed to create HTTP client: {}", e),
                     }));
-                self.broadcast_pool_state().await;
+                self.update_pool_doc().await;
                 return;
             }
         };
@@ -2417,7 +2368,7 @@ impl Daemon {
                         failed_package: None,
                         error_message: format!("Failed to fetch repodata: {}", e),
                     }));
-                self.broadcast_pool_state().await;
+                self.update_pool_doc().await;
                 return;
             }
         };
@@ -2441,7 +2392,7 @@ impl Daemon {
                         failed_package: None,
                         error_message: format!("Failed to detect virtual packages: {}", e),
                     }));
-                self.broadcast_pool_state().await;
+                self.update_pool_doc().await;
                 return;
             }
         };
@@ -2464,7 +2415,7 @@ impl Daemon {
                         failed_package: None,
                         error_message: format!("Failed to solve dependencies: {}", e),
                     }));
-                self.broadcast_pool_state().await;
+                self.update_pool_doc().await;
                 return;
             }
         };
@@ -2491,7 +2442,7 @@ impl Daemon {
                     failed_package: None,
                     error_message: format!("Failed to install packages: {}", e),
                 }));
-            self.broadcast_pool_state().await;
+            self.update_pool_doc().await;
             return;
         }
 
@@ -2509,7 +2460,7 @@ impl Daemon {
                     failed_package: None,
                     error_message: format!("Python not found at {:?} after install", python_path),
                 }));
-            self.broadcast_pool_state().await;
+            self.update_pool_doc().await;
             return;
         }
 
@@ -2539,7 +2490,7 @@ impl Daemon {
             // Broadcast cleared state if we recovered from errors
             if had_errors {
                 info!("[runtimed] Conda pool recovered from error state");
-                self.broadcast_pool_state().await;
+                self.update_pool_doc().await;
             }
         } else {
             // Clean up failed env and record failure
@@ -2552,7 +2503,7 @@ impl Daemon {
                     error_message: "Conda warmup script failed (ipykernel may not be installed)"
                         .into(),
                 }));
-            self.broadcast_pool_state().await;
+            self.update_pool_doc().await;
         }
     }
 
@@ -2615,21 +2566,46 @@ print("warmup complete")
         self.create_conda_env().await;
     }
 
-    /// Broadcast current pool state to all subscribed clients.
+    /// Update the PoolDoc with current pool state and notify sync connections.
     ///
-    /// Called when pool error state changes (new error, error cleared, etc.).
-    async fn broadcast_pool_state(&self) {
-        let uv_error = self.uv_pool.lock().await.get_error();
-        let conda_error = self.conda_pool.lock().await.get_error();
-
-        // Only broadcast if there's something to report or if we're clearing errors
-        let broadcast = DaemonBroadcast::PoolState {
-            uv_error,
-            conda_error,
+    /// Called when pool state changes (new error, error cleared, warming, etc.).
+    async fn update_pool_doc(&self) {
+        let (uv_available, uv_warming, uv_error) = {
+            let pool = self.uv_pool.lock().await;
+            let (available, warming) = pool.stats();
+            (available, warming, pool.get_error())
+        };
+        let (conda_available, conda_warming, conda_error) = {
+            let pool = self.conda_pool.lock().await;
+            let (available, warming) = pool.stats();
+            (available, warming, pool.get_error())
         };
 
-        // Send to all subscribers (ignore errors if no subscribers)
-        let _ = self.pool_state_changed.send(broadcast);
+        let state = notebook_doc::pool_state::PoolState {
+            uv: notebook_doc::pool_state::RuntimePoolState {
+                available: uv_available as u64,
+                warming: uv_warming as u64,
+                pool_size: self.config.uv_pool_size as u64,
+                consecutive_failures: uv_error.as_ref().map_or(0, |e| e.consecutive_failures),
+                retry_in_secs: uv_error.as_ref().map_or(0, |e| e.retry_in_secs),
+                failed_package: uv_error.as_ref().and_then(|e| e.failed_package.clone()),
+                error: uv_error.map(|e| e.message),
+            },
+            conda: notebook_doc::pool_state::RuntimePoolState {
+                available: conda_available as u64,
+                warming: conda_warming as u64,
+                pool_size: self.config.conda_pool_size as u64,
+                consecutive_failures: conda_error.as_ref().map_or(0, |e| e.consecutive_failures),
+                retry_in_secs: conda_error.as_ref().map_or(0, |e| e.retry_in_secs),
+                failed_package: conda_error.as_ref().and_then(|e| e.failed_package.clone()),
+                error: conda_error.map(|e| e.message),
+            },
+        };
+
+        let changed = self.pool_doc.write().await.update(&state);
+        if changed {
+            let _ = self.pool_doc_changed.send(());
+        }
     }
 
     /// Create a single UV environment and add it to the pool.
@@ -2646,7 +2622,7 @@ print("warmup complete")
                         failed_package: None,
                         error_message: format!("Failed to get uv path: {}", e),
                     }));
-                self.broadcast_pool_state().await;
+                self.update_pool_doc().await;
                 return;
             }
         };
@@ -2671,7 +2647,7 @@ print("warmup complete")
                     failed_package: None,
                     error_message: format!("Failed to create cache dir: {}", e),
                 }));
-            self.broadcast_pool_state().await;
+            self.update_pool_doc().await;
             return;
         }
 
@@ -2701,7 +2677,7 @@ print("warmup complete")
                         failed_package: None,
                         error_message: format!("Failed to create venv: {}", stderr),
                     }));
-                self.broadcast_pool_state().await;
+                self.update_pool_doc().await;
                 return;
             }
             Ok(Err(e)) => {
@@ -2713,7 +2689,7 @@ print("warmup complete")
                         failed_package: None,
                         error_message: format!("Failed to create venv: {}", e),
                     }));
-                self.broadcast_pool_state().await;
+                self.update_pool_doc().await;
                 return;
             }
             Err(_) => {
@@ -2726,7 +2702,7 @@ print("warmup complete")
                         failed_package: None,
                         error_message: "Timeout creating venv after 60 seconds".to_string(),
                     }));
-                self.broadcast_pool_state().await;
+                self.update_pool_doc().await;
                 return;
             }
         }
@@ -2819,7 +2795,7 @@ print("warmup complete")
                     .lock()
                     .await
                     .warming_failed_with_error(parsed_error);
-                self.broadcast_pool_state().await;
+                self.update_pool_doc().await;
                 return;
             }
             Ok(Err(e)) => {
@@ -2832,7 +2808,7 @@ print("warmup complete")
                         failed_package: None,
                         error_message: e.to_string(),
                     }));
-                self.broadcast_pool_state().await;
+                self.update_pool_doc().await;
                 return;
             }
             Err(_) => {
@@ -2845,7 +2821,7 @@ print("warmup complete")
                         failed_package: None,
                         error_message: "Timeout after 120 seconds".to_string(),
                     }));
-                self.broadcast_pool_state().await;
+                self.update_pool_doc().await;
                 return;
             }
         }
@@ -2911,7 +2887,7 @@ print("warmup complete")
             // Broadcast cleared state if we recovered from errors
             if had_errors {
                 info!("[runtimed] UV pool recovered from error state");
-                self.broadcast_pool_state().await;
+                self.update_pool_doc().await;
             }
         } else {
             // Clean up failed env and record failure
@@ -2923,7 +2899,7 @@ print("warmup complete")
                     failed_package: None,
                     error_message: "Warmup script failed (ipykernel may not be installed)".into(),
                 }));
-            self.broadcast_pool_state().await;
+            self.update_pool_doc().await;
         }
     }
 }
