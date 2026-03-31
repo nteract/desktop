@@ -4602,27 +4602,6 @@ async fn save_notebook_to_disk(
         let heads = doc.get_heads();
         (cells, metadata_snapshot, heads)
     };
-    // Safety: refuse to overwrite a non-empty file with an empty cell list.
-    // This catches CRDT corruption that would otherwise destroy the user's work
-    // (e.g. after a failed wholesale file replacement reconciliation).
-    if cells.is_empty() {
-        if let Some(ref existing_nb) = existing {
-            let existing_has_cells = existing_nb
-                .get("cells")
-                .and_then(|c| c.as_array())
-                .is_some_and(|a| !a.is_empty());
-            if existing_has_cells {
-                warn!(
-                    "[notebook-sync] Refusing to save empty notebook over non-empty file {:?}",
-                    notebook_path
-                );
-                return Err(SaveError::Retryable(
-                    "CRDT doc is empty but file has cells — possible corruption".into(),
-                ));
-            }
-        }
-    }
-
     let nbformat_attachments = room.nbformat_attachments.read().await.clone();
 
     // Reconstruct cells as JSON
