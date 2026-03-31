@@ -402,9 +402,15 @@ fn run_maturin_develop(project_root: &Path) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Spawn `runt mcp` as a child process and return an rmcp client.
+///
+/// The upstream client's `name` and `title` are forwarded through the MCP
+/// initialize handshake so the child's peer label sniffing picks up the
+/// real client identity (e.g. "Claude Code") rather than the supervisor's.
 async fn spawn_nteract_child(
     project_root: &Path,
     socket_path: &str,
+    upstream_name: &str,
+    upstream_title: Option<&str>,
 ) -> Result<rmcp::service::RunningService<RoleNteractClient, NteractClientHandler>, String> {
     let runt = cargo_binary(project_root, "runt");
     if !runt.exists() {
@@ -413,7 +419,7 @@ async fn spawn_nteract_child(
             runt.display()
         ));
     }
-    info!("Spawning runt mcp server...");
+    info!("Spawning runt mcp server (client={upstream_name:?})...");
     let transport = TokioChildProcess::new(Command::new(&runt).configure(|cmd| {
         cmd.arg("mcp")
             .env("RUNTIMED_DEV", "1")
@@ -421,7 +427,11 @@ async fn spawn_nteract_child(
     }))
     .map_err(|e| format!("Failed to spawn runt mcp child: {e}"))?;
 
-    let client = NteractClientHandler
+    let handler = NteractClientHandler {
+        upstream_name: upstream_name.to_string(),
+        upstream_title: upstream_title.map(|s| s.to_string()),
+    };
+    let client = handler
         .serve(transport)
         .await
         .map_err(|e| format!("Failed to initialize nteract MCP client: {e}"))?;
@@ -431,17 +441,20 @@ async fn spawn_nteract_child(
 
 type RoleNteractClient = rmcp::service::RoleClient;
 
-/// Minimal client handler — we just need to forward requests, not handle
-/// any client-side callbacks from the nteract server.
+/// Client handler that presents the upstream MCP client's identity to the
+/// child process, so the child sees the real client name (e.g. "Claude Code")
+/// instead of the supervisor's name.
 #[derive(Clone)]
-struct NteractClientHandler;
+struct NteractClientHandler {
+    upstream_name: String,
+    upstream_title: Option<String>,
+}
 
 impl ClientHandler for NteractClientHandler {
     fn get_info(&self) -> rmcp::model::ClientInfo {
-        rmcp::model::ClientInfo::new(
-            Default::default(),
-            Implementation::new("nteract-dev", env!("CARGO_PKG_VERSION")),
-        )
+        let mut impl_info = Implementation::new(&self.upstream_name, env!("CARGO_PKG_VERSION"));
+        impl_info.title = self.upstream_title.clone();
+        rmcp::model::ClientInfo::new(Default::default(), impl_info)
     }
 }
 
@@ -495,6 +508,10 @@ struct SupervisorState {
     recent_crashes: Vec<Instant>,
     /// Last error message from child.
     last_error: Option<String>,
+    /// Upstream MCP client name (e.g. "claude-code"), forwarded to child.
+    upstream_name: String,
+    /// Upstream MCP client title (e.g. "Claude Code"), forwarded to child.
+    upstream_title: Option<String>,
     /// Whether we started the daemon (so we know to clean it up).
     daemon_child: Option<std::process::Child>,
     /// Channel to request a tool list changed notification from the server context.
@@ -547,6 +564,8 @@ impl Supervisor {
                 restart_count: 0,
                 recent_crashes: Vec::new(),
                 last_error: None,
+                upstream_name: "nteract-dev".to_string(),
+                upstream_title: None,
                 daemon_child: None,
                 tool_list_changed_tx: Some(tool_list_changed_tx),
                 managed: HashMap::new(),
@@ -587,7 +606,18 @@ impl Supervisor {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Phase 3: Spawn child without holding the lock
-        match spawn_nteract_child(&project_root, &socket_path).await {
+        let (upstream_name, upstream_title) = {
+            let state = self.state.read().await;
+            (state.upstream_name.clone(), state.upstream_title.clone())
+        };
+        match spawn_nteract_child(
+            &project_root,
+            &socket_path,
+            &upstream_name,
+            upstream_title.as_deref(),
+        )
+        .await
+        {
             Ok(client) => {
                 // Phase 4: Re-acquire lock to store the new client
                 let mut state = self.state.write().await;
@@ -1973,6 +2003,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server = supervisor.serve(transport).await?;
     info!("MCP server initialized on stdio (supervisor tools available)");
 
+    // Extract upstream client identity from the MCP initialize handshake.
+    // This is forwarded to the child so its peer label reflects the real
+    // client (e.g. "Claude Code") rather than the supervisor's name.
+    let (upstream_name, upstream_title) = server
+        .peer()
+        .peer_info()
+        .map(|info| {
+            let name = info.client_info.name.clone();
+            let title = info.client_info.title.clone();
+            info!("Upstream MCP client: name={name:?}, title={title:?}");
+            (name, title)
+        })
+        .unwrap_or_else(|| ("nteract-dev".to_string(), None));
+
     // Clone what we need before waiting() consumes the server
     let state_for_init = server.service().state.clone();
     let state_for_watcher = state_for_init.clone();
@@ -2095,7 +2139,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
 
         // 2c: Spawn runt mcp child
-        let child_client = match spawn_nteract_child(&project_root, &socket_path).await {
+        let child_client = match spawn_nteract_child(
+            &project_root,
+            &socket_path,
+            &upstream_name,
+            upstream_title.as_deref(),
+        )
+        .await
+        {
             Ok(client) => {
                 info!("nteract MCP server connected");
                 client
@@ -2111,12 +2162,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
 
-        // 2d: Populate state with child client, socket, and daemon handle
+        // 2d: Populate state with child client, socket, daemon, and upstream info
         {
             let mut state = state_for_init.write().await;
             state.child_client = Some(child_client);
             state.socket_path = socket_path;
             state.daemon_child = daemon_child;
+            state.upstream_name = upstream_name;
+            state.upstream_title = upstream_title;
         }
         // Unblock any list_tools call waiting for the child
         child_ready.notify_waiters();
