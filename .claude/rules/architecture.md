@@ -87,7 +87,7 @@ Three implementations **MUST stay in sync**. Update all three when changing MIME
 | Location | Language | Function |
 |----------|----------|----------|
 | `crates/runtimed/src/output_store.rs` | Rust | `is_binary_mime()` |
-| `crates/runtimed-py/src/output_resolver.rs` | Rust | `is_binary_mime()` |
+| `crates/runtimed-client/src/output_resolver.rs` | Rust | `mime_kind()` |
 | `apps/notebook/src/lib/manifest-resolution.ts` | TypeScript | `isBinaryMime()` |
 
 Classification rules:
@@ -169,7 +169,7 @@ Never pass code directly in execution requests. The correct flow: write to the C
 | `crates/runtimed/src/output_store.rs` | Manifest creation/resolution, `is_binary_mime()`, `ContentRef` |
 | `crates/runtimed/src/blob_store.rs` | Content-addressed storage |
 | `crates/runtimed/src/blob_server.rs` | HTTP server for blob retrieval |
-| `crates/runtimed-py/src/output_resolver.rs` | Python-side resolution, `is_binary_mime()` |
+| `crates/runtimed-client/src/output_resolver.rs` | Shared Rust resolution, `mime_kind()` |
 | `apps/notebook/src/lib/manifest-resolution.ts` | Frontend resolution, `isBinaryMime()` |
 | `apps/notebook/src/lib/materialize-cells.ts` | WASM -> React conversion |
 | `apps/notebook/src/lib/notebook-cells.ts` | Split cell store, per-cell subscriptions |

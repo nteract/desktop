@@ -19,7 +19,7 @@ Three nteract MCP servers may be available. Always use the right one:
 1. **Always prefer `nteract-dev`** (`mcp__nteract-dev__*` tools) for development work in this repo. It connects to the per-worktree dev daemon and includes supervisor tools for managing the build/daemon lifecycle.
 2. **Never use `nteract-nightly` or `nteract` for development.** They connect to system-installed daemons and will not reflect your source changes.
 3. If `nteract-dev` tools are not available, fall back to `cargo xtask` commands — not to the system MCP servers.
-4. The supervisor tools (`supervisor_status`, `supervisor_restart`, `supervisor_rebuild`, `supervisor_logs`, `supervisor_start_vite`, `supervisor_stop`) are part of the `nteract-dev` server. They manage the dev daemon and build pipeline — prefer them over manual terminal commands.
+4. The supervisor tools (`supervisor_status`, `supervisor_restart`, `supervisor_rebuild`, `supervisor_logs`, `supervisor_vite_logs`, `supervisor_start_vite`, `supervisor_stop`, `supervisor_set_mode`) are part of the `nteract-dev` server. They manage the dev daemon and build pipeline — prefer them over manual terminal commands.
 
 ## MCP Server
 

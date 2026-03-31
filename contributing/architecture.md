@@ -107,7 +107,7 @@ Three implementations **must stay in sync** — if you change the classification
 | Location | Language | Function |
 |----------|----------|----------|
 | `crates/runtimed/src/output_store.rs` | Rust | `is_binary_mime()` |
-| `crates/runtimed-py/src/output_resolver.rs` | Rust | `is_binary_mime()` |
+| `crates/runtimed-client/src/output_resolver.rs` | Rust | `mime_kind()` |
 | `apps/notebook/src/lib/manifest-resolution.ts` | TypeScript | `isBinaryMime()` |
 
 The rule:
@@ -143,7 +143,7 @@ Key files:
 - `crates/runtimed/src/output_store.rs` — Manifest creation/resolution, `is_binary_mime()`, `ContentRef`
 - `crates/runtimed/src/blob_store.rs` — Content-addressed storage with atomic writes
 - `crates/runtimed/src/blob_server.rs` — HTTP server (`GET /blob/{hash}`, serves raw bytes with correct `Content-Type`)
-- `crates/runtimed-py/src/output_resolver.rs` — Python-side manifest resolution, `is_binary_mime()`
+- `crates/runtimed-client/src/output_resolver.rs` — Shared Rust manifest resolution, `mime_kind()`, Python/MCP consumers
 - `apps/notebook/src/lib/manifest-resolution.ts` — Frontend resolution, `isBinaryMime()`, `resolveContentRef()`
 - `apps/notebook/src/lib/materialize-cells.ts` — Assembles cells with resolved outputs
 

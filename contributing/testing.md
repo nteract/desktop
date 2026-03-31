@@ -6,7 +6,7 @@ This guide covers all test types in the codebase. For E2E tests specifically, se
 
 | Type | Location | Command | Framework |
 |------|----------|---------|-----------|
-| E2E | `e2e/specs/` | `./e2e/dev.sh test` | WebdriverIO + Mocha |
+| E2E | `e2e/specs/` | `cargo xtask e2e test` | WebdriverIO + Mocha |
 | Frontend unit | `src/**/__tests__/`, `apps/notebook/src/**/__tests__/` | `pnpm test` | Vitest + jsdom |
 | Rust unit | inline `#[cfg(test)]` | `cargo test` | built-in |
 | CLI behavior | `crates/runt/tests/*.hone` | `cargo hone test` | Hone (not yet published) |
@@ -194,7 +194,7 @@ Configuration in `conftest.py` defines markers and daemon detection.
 |------|------|-----------------|
 | `test_session_unit.py` | Unit | No |
 | `test_daemon_integration.py` | Integration | Yes |
-| `test_ipython_bridge.py` | Integration | Yes |
+| `test_ipython_bridge.py` | Unit-style bridge test | No |
 | `test_binary.py` | Binary/CLI | No |
 
 **Running tests:**
@@ -253,9 +253,9 @@ See [e2e.md](e2e.md) for the full guide.
 Quick start:
 
 ```bash
-./e2e/dev.sh cycle          # Build + start + test
-./e2e/dev.sh test           # Smoke test only
-./e2e/dev.sh test all       # All non-fixture specs
+cargo xtask e2e build       # Build the webdriver-enabled app
+cargo xtask e2e test        # Smoke/default E2E run
+cargo xtask e2e test-all    # All regular + fixture specs
 ```
 
 ## Test Philosophy

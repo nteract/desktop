@@ -50,7 +50,7 @@ If narrow tests pass and you have `supervisor_*` and `open_notebook`/`execute_ce
 1. `create_notebook`
 2. `create_cell` with source `# round-trip test`
 3. `get_cell` — verify source matches exactly
-4. `set_cell_source` to change source
+4. `set_cell` to change source
 5. `get_cell` — verify source updated
 
 ### For MCP server changes (`python/nteract/`):

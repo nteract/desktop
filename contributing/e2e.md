@@ -11,21 +11,15 @@ Two modes:
 
 ### Native Mode (macOS)
 
-The `e2e/dev.sh` script handles everything:
+Use the xtask E2E entrypoints:
 
 ```bash
-# Full cycle: build + start + test
-./e2e/dev.sh cycle
-
-# Step by step:
-./e2e/dev.sh build       # Build with WebDriver support (embeds frontend)
-./e2e/dev.sh start       # Start app with WebDriver server (foreground)
-./e2e/dev.sh test        # Smoke test (smoke.spec.js only)
-./e2e/dev.sh test all    # All non-fixture specs
-./e2e/dev.sh stop        # Stop the running app
+cargo xtask e2e build       # Build the webdriver-enabled app
+cargo xtask e2e test        # Smoke/default E2E run
+cargo xtask e2e test-all    # Full suite, including fixture coverage
 ```
 
-**Important:** Use `./e2e/dev.sh build` (or `cargo xtask build-e2e`) instead of plain `cargo build`. The Tauri build embeds frontend assets into the binary — a plain `cargo build` would try to connect to a Vite dev server.
+`cargo xtask e2e ...` handles app launch, waits for the embedded WebDriver server on port `4445`, runs `pnpm test:e2e`, and then cleans up. The older `cargo xtask build-e2e` alias still exists, but it is deprecated.
 
 #### Fixture Tests
 
@@ -33,42 +27,32 @@ Fixture tests open a specific notebook and get a fresh app instance per test:
 
 ```bash
 # Run a single fixture test
-./e2e/dev.sh test-fixture \
+cargo xtask e2e test-fixture \
   crates/notebook/fixtures/audit-test/1-vanilla.ipynb \
   e2e/specs/prewarmed-uv.spec.js
 
-# Run all fixture tests (fresh app per test, exits 1 if any fail)
-./e2e/dev.sh test-fixtures
+# Run the full suite (includes fixture coverage)
+cargo xtask e2e test-all
 ```
 
-#### All dev.sh Commands
+#### xtask E2E Commands
 
 | Command | Description |
 |---------|-------------|
-| `build` | Rebuild Rust binary (incremental, embeds frontend) |
-| `build-full` | Full rebuild (frontend + sidecars + Rust) |
-| `start` | Start app with WebDriver server (foreground) |
-| `stop` | Stop the running app |
-| `restart` | Stop + start |
-| `test [spec\|all]` | Run E2E tests (default: smoke.spec.js only) |
+| `cargo xtask e2e build` | Build the webdriver-enabled binary |
+| `cargo xtask e2e test` | Run the default non-fixture E2E set |
 | `test-fixture <nb> <spec>` | Run a fixture test (fresh app per test) |
-| `test-fixtures` | Run all fixture tests |
-| `test-untitled-pyproject` | Test untitled notebook with pyproject.toml (CWD = fixture dir) |
-| `cycle` | Build + start + test in one shot |
-| `status` | Check if WebDriver server is running |
-| `daemon` | Check if E2E daemon is running |
-| `session` | Create a session and print ID |
-| `exec 'js'` | Execute JS in the app |
+| `cargo xtask e2e test-all` | Run the default suite plus fixture coverage |
 
 ### Port Configuration
 
-The WebDriver port uses this fallback chain (same in `dev.sh` and `wdio.conf.js`):
+The WebDriver port uses this fallback chain (same in `wdio.conf.js`):
 
 ```
-WEBDRIVER_PORT > CONDUCTOR_PORT > PORT > 4444
+WEBDRIVER_PORT > CONDUCTOR_PORT > PORT > 4445
 ```
 
-Most contributors don't need to set anything — the default `4444` works fine.
+Most contributors don't need to set anything — the default `4445` works fine.
 
 ### Docker Mode (CI / Linux)
 
@@ -85,7 +69,7 @@ docker compose --profile dev run --rm tauri-e2e-shell
 
 There are two kinds of E2E specs:
 
-**Regular specs** run against whatever notebook the app opens by default. They share a single app instance during `./e2e/dev.sh test all`. Good for testing general UI features that don't depend on specific notebook content.
+**Regular specs** run against whatever notebook the app opens by default. They share a single app instance during `cargo xtask e2e test`. Good for testing general UI features that don't depend on specific notebook content.
 
 **Fixture specs** require a specific notebook (`NOTEBOOK_PATH` env var) and get a fresh app instance per test. Each is listed in `FIXTURE_SPECS` in `wdio.conf.js` so it's automatically excluded from the default `test all` run.
 
@@ -154,12 +138,7 @@ Multiple specs can reuse the same fixture notebook — each gets its own fresh a
    ];
    ```
 
-4. **Add to `test-fixtures`** in `e2e/dev.sh`:
-   ```bash
-   $0 test-fixture \
-     crates/notebook/fixtures/audit-test/1-vanilla.ipynb \
-     e2e/specs/my-feature.spec.js || FAIL=1
-   ```
+4. **Add to the fixture coverage list** in `crates/xtask/src/main.rs` if it should run under `cargo xtask e2e test-all`.
 
 5. **Add to CI** in `.github/workflows/build.yml`:
    ```yaml
@@ -171,8 +150,8 @@ Multiple specs can reuse the same fixture notebook — each gets its own fresh a
 
 6. **Verify locally:**
    ```bash
-   ./e2e/dev.sh build
-   ./e2e/dev.sh test-fixture \
+   cargo xtask e2e build
+   cargo xtask e2e test-fixture \
      crates/notebook/fixtures/audit-test/1-vanilla.ipynb \
      e2e/specs/my-feature.spec.js
    ```
@@ -180,7 +159,7 @@ Multiple specs can reuse the same fixture notebook — each gets its own fresh a
 ### Checklist: New Regular Test
 
 1. Create the spec at `e2e/specs/my-feature.spec.js` (same structure, no `Requires:` comment).
-2. That's it — `test all` picks up `*.spec.js` files automatically (anything not in `FIXTURE_SPECS`).
+2. That's it — `cargo xtask e2e test` picks up `*.spec.js` files automatically (anything not in `FIXTURE_SPECS`).
 
 ## Shared Helpers
 
@@ -541,50 +520,36 @@ const result = await browser.execute(() => {
 await browser.pause(5000);
 ```
 
-### dev.sh Shortcuts
-
-```bash
-# Quick JS evaluation against the running app
-./e2e/dev.sh exec 'return document.title'
-
-# Check if WebDriver is up
-./e2e/dev.sh status
-```
-
 ## Troubleshooting
 
 ### "E2E binary not found"
 
-The WebDriver-enabled binary hasn't been built yet. `dev.sh` will tell you exactly what to run:
+The WebDriver-enabled binary hasn't been built yet:
 
 ```bash
-./e2e/dev.sh build       # fast: recompiles Rust only (skips frontend)
-./e2e/dev.sh build-full  # full: rebuilds frontend + sidecars + Rust
+cargo xtask e2e build
 ```
 
-Use `build-full` the first time or after changing React components (e.g., adding `data-testid`). After that, `build` is much faster for Rust-only changes.
+If frontend assets changed, run a fresh `cargo xtask build` or `pnpm build` before the E2E build.
 
-### "No WebDriver server on port 4444"
+### "No WebDriver server on port 4445"
 
-You ran `./e2e/dev.sh test` without starting the app first. The `test` command connects to an already-running app — it does **not** start one.
+If you are using `cargo xtask e2e test` or `test-fixture`, xtask should start the app for you. If you are running `pnpm test:e2e` directly, make sure a webdriver-enabled app is already running on the expected port.
 
-Either:
-- Start the app in one terminal (`./e2e/dev.sh start`) and run tests in another (`./e2e/dev.sh test`)
-- Use `./e2e/dev.sh cycle` to build + start + test in one shot
-- Use `./e2e/dev.sh test-fixture` which starts a fresh app instance automatically
-
-**Key distinction:** `test` requires a running app. `test-fixture` manages its own app lifecycle.
+Preferred fix:
+- Use `cargo xtask e2e test` for the default suite
+- Use `cargo xtask e2e test-fixture <notebook> <spec>` for fixture runs
 
 ### "Notebook file not found" / "Spec file not found"
 
-Paths are relative to the project root. `dev.sh` will list available fixtures and specs when it can't find a file.
+Paths are relative to the project root.
 
 ```bash
 # Correct:
-./e2e/dev.sh test-fixture crates/notebook/fixtures/audit-test/1-vanilla.ipynb e2e/specs/prewarmed-uv.spec.js
+cargo xtask e2e test-fixture crates/notebook/fixtures/audit-test/1-vanilla.ipynb e2e/specs/prewarmed-uv.spec.js
 
 # Wrong — don't use absolute paths or paths from other directories:
-./e2e/dev.sh test-fixture /Users/me/runt/crates/notebook/fixtures/audit-test/1-vanilla.ipynb ...
+cargo xtask e2e test-fixture /Users/me/runt/crates/notebook/fixtures/audit-test/1-vanilla.ipynb ...
 ```
 
 ### "Malformed type for elementId parameter"
@@ -602,16 +567,16 @@ You're hitting the wry text-selector bug. Replace `$("button*=Text")` with `$('[
 If you see many `Request failed with status 500` or connection errors, the app is not running or not listening on the expected port. Check:
 
 ```bash
-./e2e/dev.sh status    # should print JSON response, not "Not running"
+curl -s http://localhost:4445/status
 ```
 
-The port fallback chain is `WEBDRIVER_PORT > CONDUCTOR_PORT > PORT > 4444`. If you're in a worktree with `CONDUCTOR_PORT` set, tests will use that port — make sure the app was started with the same port.
+The port fallback chain is `WEBDRIVER_PORT > CONDUCTOR_PORT > PORT > 4445`. If you're in a worktree with `CONDUCTOR_PORT` set, tests will use that port — make sure the app was started with the same port.
 
 ### Timeout Errors
 
 - Kernel startup is slow on first run — increase timeout to 60s
 - Environment creation can take 2+ minutes — fixture tests default to 120s
-- Check if the app loaded correctly with `./e2e/dev.sh status`
+- Check if the app loaded correctly with `curl -s http://localhost:4445/status`
 
 ### Flaky Tests
 

@@ -47,7 +47,7 @@ Environment-specific settings (packages, future: channels) live under `uv/` and 
 
 ## Settings File
 
-Settings are persisted to a JSON file shared across all notebook windows. Both the daemon and the notebook app write the same nested JSON format.
+Settings are persisted to a JSON file shared across all notebook windows. The daemon is the sole writer; the notebook app reads the same nested JSON format as a fallback when the daemon is unavailable.
 
 | Platform | Path |
 |----------|------|

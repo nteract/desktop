@@ -124,7 +124,7 @@ doc.merge(&mut fork).ok();
 
 **Why this matters:** Without fork+merge, the async gap is a data loss window. If a user types while ruff formats, or another peer edits while the file watcher processes, the write-back silently overwrites those changes. Fork+merge lets Automerge's text CRDT compose both sets of changes.
 
-**`fork_at(heads)`** is for changes relative to a known historic point (e.g., the file watcher forking at the last save point so disk content merges cleanly with post-save CRDT changes).
+**Do not use `fork_at(heads)` / `fork_at_and_merge(...)` in daemon mutation paths right now.** `fork_at(...)` currently triggers automerge/automerge#1327 (`MissingOps` in the change collector) on documents with interleaved text splices and merges. For file-watcher and other external-content merges, compare against the saved-on-disk baseline (`last_save_sources`), then `fork()` at current heads and `merge()`.
 
 ### Helpers for Synchronous Blocks
 
@@ -137,10 +137,6 @@ doc.fork_and_merge(|fork| {
     fork.set_cell_resolved_assets("cell-2", &assets);
 });
 
-// Fork at a historic point (e.g., file watcher at last save)
-doc.fork_at_and_merge(&save_heads, |fork| {
-    fork.update_source("cell-1", &disk_source);
-})?;
 ```
 
 These encapsulate the fork-before/merge-after pattern. For **async** work between fork and merge, use `fork()` and `merge()` directly — the fork must be created before the `.await` and merged after.
@@ -153,8 +149,8 @@ All async CRDT mutation paths in the daemon are now protected:
 |------|-----------|
 | ExecuteCell / RunAllCells formatting | `fork()` before `tokio::spawn`, merge in task |
 | `format_notebook_cells` (Cmd+S) | `fork()` before format loop, merge after |
-| File watcher source updates | `fork_at(last_save_heads)` + merge |
-| File watcher order-changed rebuild | `fork_at(last_save_heads)` + merge |
+| File watcher source updates | Compare against `last_save_sources`, then `fork()` + merge |
+| File watcher order-changed rebuild | Compare against `last_save_sources`, then `fork()` + merge |
 | `UpdateDisplayData` IOPub | `fork()` before blob I/O, merge after |
 | `process_markdown_assets` | `fork()` before async resolution, merge after |
 | `handle_sync_environment` | Fresh read (no CRDT write, only in-memory state) |

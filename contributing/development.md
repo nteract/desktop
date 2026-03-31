@@ -141,9 +141,9 @@ pnpm build          # Build notebook UI (isolated-renderer built inline)
 cargo build         # Build Rust
 ```
 
-> **Note:** If you've changed `crates/runtimed-wasm/`, you need to run
-> `wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm`
-> before `pnpm build`. `cargo xtask build` handles this automatically.
+> **Note:** If you've changed `crates/runtimed-wasm/`, rebuild it explicitly with
+> `cargo xtask wasm` (or the equivalent `wasm-pack build ...` command) before `pnpm build`.
+> Normal `cargo xtask build` only verifies that the committed WASM artifact exists; it does not regenerate it for you.
 
 ## Test Notebooks
 
@@ -172,8 +172,10 @@ If you have the repo-local `nteract-dev` MCP entry configured, the daemon is man
 
 - `supervisor_restart(target="daemon")` — start or restart the dev daemon
 - `supervisor_status` — check daemon status (includes `daemon_managed: true/false`)
-- `supervisor_rebuild` — rebuild Python bindings + restart
+- `supervisor_rebuild` — rebuild the daemon binary plus Rust Python bindings, then restart the daemon and MCP child
 - `supervisor_logs` — tail daemon logs
+- `supervisor_vite_logs` — tail the Vite dev server log file
+- `supervisor_set_mode` — switch the managed daemon between `debug` and `release`
 
 No env vars or extra terminals needed. nteract-dev handles per-worktree isolation automatically.
 
@@ -369,10 +371,12 @@ These tools are always available, even when the Python child is down:
 |------|---------|
 | `supervisor_status` | Child process, daemon, restart count, last error |
 | `supervisor_restart` | Restart child or daemon |
-| `supervisor_rebuild` | `maturin develop` into `.venv` + restart (after Rust changes) |
+| `supervisor_rebuild` | Rebuild the daemon binary plus Rust Python bindings, then restart the daemon and MCP child |
 | `supervisor_logs` | Tail the daemon log file |
+| `supervisor_vite_logs` | Tail the Vite dev server log file |
 | `supervisor_start_vite` | Start the Vite dev server for hot-reload frontend development |
 | `supervisor_stop` | Stop a managed process by name (e.g. `"vite"`) |
+| `supervisor_set_mode` | Switch the managed daemon between `debug` and `release` builds |
 
 #### Hot reload
 

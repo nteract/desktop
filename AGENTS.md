@@ -30,10 +30,10 @@ The supervisor automatically handles per-worktree isolation, env var plumbing, a
 
 ### Manual commands (when supervisor is not available)
 
-All commands that interact with the dev daemon require two env vars. Without them you'll hit the system daemon and cause problems.
+For raw terminal commands, opt into dev mode explicitly. `RUNTIMED_DEV=1` is what enables per-worktree daemon isolation. `RUNTIMED_WORKSPACE_PATH` is the safest way to pin the current worktree, though binaries launched from the repo root can also discover the worktree via git.
 
 ```bash
-# ── Dev daemon env vars (required for ALL dev commands) ────────────
+# ── Recommended env vars for raw dev-daemon commands ───────────────
 export RUNTIMED_DEV=1
 export RUNTIMED_WORKSPACE_PATH="$(pwd)"
 ```
@@ -232,10 +232,12 @@ For the installed app, `runt mcp` ships as a sidecar binary alongside `runtimed`
 |------|---------|
 | `supervisor_status` | Check child process, daemon, build mode, restart count, last error |
 | `supervisor_restart` | Restart child (`target="child"`) or daemon (`target="daemon"`) |
-| `supervisor_rebuild` | Run `maturin develop` to rebuild Rust Python bindings, then restart |
+| `supervisor_rebuild` | Rebuild the daemon binary and Rust Python bindings, restart the daemon, then restart the MCP child |
 | `supervisor_logs` | Tail the daemon log file |
+| `supervisor_vite_logs` | Tail the Vite dev server log file |
 | `supervisor_start_vite` | Start the Vite dev server for hot-reload frontend development |
 | `supervisor_stop` | Stop a managed process by name (e.g. `"vite"`) |
+| `supervisor_set_mode` | Switch the managed daemon between `debug` and `release` builds and restart it |
 
 ### nteract MCP Tools (27 tools for notebook interaction)
 
@@ -411,7 +413,7 @@ Three implementations **must stay in sync** — if you change MIME classificatio
 | Location | Language | Function |
 |----------|----------|----------|
 | `crates/runtimed/src/output_store.rs` | Rust | `is_binary_mime()` |
-| `crates/runtimed-py/src/output_resolver.rs` | Rust | `is_binary_mime()` |
+| `crates/runtimed-client/src/output_resolver.rs` | Rust | `mime_kind()` |
 | `apps/notebook/src/lib/manifest-resolution.ts` | TypeScript | `isBinaryMime()` |
 
 The rule: `image/*` → binary (EXCEPT `image/svg+xml` — that's text). `audio/*`, `video/*` → binary. `application/*` → binary by default (EXCEPT json, javascript, xml, and `+json`/`+xml` suffixes). `text/*` → always text.

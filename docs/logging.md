@@ -12,8 +12,10 @@ The daemon (`runtimed`) logs to a file that persists across sessions.
 |----------|------|
 | macOS | `~/Library/Caches/runt/runtimed.log` |
 | Linux | `~/.cache/runt/runtimed.log` |
-| Dev mode (macOS) | `~/Library/Caches/runt-nightly/worktrees/{hash}/runtimed.log` |
-| Dev mode (Linux) | `~/.cache/runt-nightly/worktrees/{hash}/runtimed.log` |
+| Dev mode (macOS) | `~/Library/Caches/{cache_namespace}/worktrees/{hash}/runtimed.log` |
+| Dev mode (Linux) | `~/.cache/{cache_namespace}/worktrees/{hash}/runtimed.log` |
+
+Source builds default to the `runt-nightly` cache namespace. If you intentionally build with `RUNT_BUILD_CHANNEL=stable`, the namespace is `runt` instead.
 
 ### Viewing Logs
 

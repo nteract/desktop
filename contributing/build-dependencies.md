@@ -74,14 +74,14 @@ here is what happens under the hood:
 
 ```mermaid
 graph LR
-    A["1. pnpm install"] --> W["2. wasm-pack build<br/>crates/runtimed-wasm"]
-    W --> C["3. pnpm --dir apps/notebook build<br/>(includes isolated-renderer)"]
-    C --> D["4. cargo build --release<br/>-p runtimed -p runt-cli"]
-    D --> E["5. Copy binaries to<br/>crates/notebook/binaries/"]
-    E --> F["6. cargo tauri build"]
+    A["1. pnpm install"] --> M["2. Build MCP widget HTML<br/>crates/runt-mcp/assets/_output.html"]
+    M --> R["3. cargo build<br/>-p runtimed -p runt-cli -p mcp-supervisor -p notebook"]
+    R --> E["4. Copy sidecar binaries<br/>for Tauri bundling"]
+    E --> P["5. In parallel:<br/>uv sync + maturin develop<br/>and pnpm frontend build"]
+    P --> F["6. cargo tauri build<br/>or debug link step"]
 
     classDef step fill:#f3e5f5,stroke:#7b1fa2
-    class A,W,C,D,E,F step
+    class A,M,R,E,P,F step
 ```
 
 ## Rust Crate Dependency Graph

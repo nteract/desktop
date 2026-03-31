@@ -19,9 +19,9 @@ Any daemon code that reads from the CRDT doc, does async work (subprocess, I/O, 
 
 - **Async pattern:** `fork()` before the `.await`, mutate the fork, `merge()` after. The fork must be created *before* async work starts.
 - **Sync pattern:** `doc.fork_and_merge(|fork| { ... })` — handles fork/merge ordering automatically.
-- **Historic point:** `doc.fork_at_and_merge(&save_heads, |fork| { ... })` — for external content relative to a known save point.
+- **Historic save comparison:** compare against `last_save_sources`, then `fork()` at current heads and `merge()`. Avoid `fork_at(...)` in current daemon paths because of automerge/automerge#1327.
 
-Key methods on `NotebookDoc`: `fork()`, `fork_at(heads)`, `get_heads()`, `merge()`, `fork_and_merge(f)`, `fork_at_and_merge(heads, f)`.
+Key methods on `NotebookDoc`: `fork()`, `get_heads()`, `merge()`, `fork_and_merge(f)`.
 
 ## Common review questions
 

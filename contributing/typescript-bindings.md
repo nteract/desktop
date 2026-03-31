@@ -10,8 +10,8 @@ The `ts-rs` crate generates TypeScript type definitions from Rust types annotate
 
 | Rust File | Generated Types |
 |-----------|-----------------|
-| `crates/runtimed/src/settings_doc.rs` | `ThemeMode`, `PythonEnvType`, `UvDefaults`, `CondaDefaults`, `SyncedSettings` |
-| `crates/runtimed/src/runtime.rs` | `Runtime` |
+| `crates/runtimed-client/src/settings_doc.rs` | `ThemeMode`, `PythonEnvType`, `UvDefaults`, `CondaDefaults`, `SyncedSettings` |
+| `crates/runtimed-client/src/runtime.rs` | `Runtime` |
 
 ## How It Works
 
@@ -136,7 +136,7 @@ function Settings() {
 | File | Role |
 |------|------|
 | `.cargo/config.toml` | Sets `TS_RS_EXPORT_DIR` |
-| `crates/runtimed/src/settings_doc.rs` | Main source of settings types |
-| `crates/runtimed/src/runtime.rs` | Runtime enum |
+| `crates/runtimed-client/src/settings_doc.rs` | Main source of settings types |
+| `crates/runtimed-client/src/runtime.rs` | Runtime enum |
 | `src/bindings/index.ts` | Re-exports all generated types |
 | `src/hooks/useSyncedSettings.ts` | Consumes the generated types |

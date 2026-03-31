@@ -92,10 +92,12 @@ When iterating on daemon code, you often want to test changes in the notebook ap
 The supervisor manages the dev daemon for you. No env vars or extra terminals needed.
 
 - `supervisor_restart(target="daemon")` — start or restart the dev daemon after code changes
-- `supervisor_rebuild` — rebuild Rust bindings + Python bindings (`maturin develop`) + restart
+- `supervisor_rebuild` — rebuild the daemon binary plus Rust Python bindings, then restart the daemon and MCP child
 - `supervisor_status` — check daemon status (`daemon_managed: true` confirms it's running)
 - `supervisor_logs` — tail daemon logs
+- `supervisor_vite_logs` — tail the Vite dev server log file
 - `supervisor_start_vite` — start the Vite dev server for hot-reload
+- `supervisor_set_mode` — switch the managed daemon between `debug` and `release`
 
 Then build and run the app normally:
 ```bash
@@ -202,16 +204,9 @@ These are critical for performance — `get_cells()` materializes every cell's s
 ```
 crates/runtimed/
 ├── src/
-│   ├── lib.rs                   # Public types, path helpers (default_socket_path, etc.)
-│   ├── main.rs                  # CLI entry point (run, install, status, etc.)
+│   ├── lib.rs                   # Daemon crate + backward-compatible re-exports from runtimed-client
+│   ├── main.rs                  # Daemon CLI entry point
 │   ├── daemon.rs                # Daemon state, pool management, connection routing
-│   ├── protocol.rs              # BlobRequest/BlobResponse + re-exports from notebook-protocol
-│   ├── client.rs                # PoolClient for pool operations
-│   ├── singleton.rs             # File-based locking for single instance
-│   ├── service.rs               # Cross-platform service installation (launchd/systemd)
-│   ├── settings_doc.rs          # Settings Automerge document, schema, migration
-│   ├── sync_server.rs           # Settings sync handler
-│   ├── sync_client.rs           # Settings sync client library
 │   ├── notebook_sync_server.rs  # NotebookRoom, room lifecycle, autosave, re-keying, sync loop
 │   ├── kernel_manager.rs        # RoomKernel: kernel lifecycle, execution queue, IOPub output routing
 │   ├── kernel_pids.rs           # Kernel PID tracking and orphan reaping
@@ -223,10 +218,18 @@ crates/runtimed/
 │   ├── project_file.rs          # Project file detection (pyproject.toml, pixi.toml, etc.)
 │   ├── markdown_assets.rs       # Markdown image/asset resolution and rewriting
 │   ├── stream_terminal.rs       # Stream terminal output handling (carriage return, ANSI)
-│   ├── runtime.rs               # Runtime enum definition (Python/Deno/Other)
 │   └── terminal_size.rs         # Terminal size tracking
-└── tests/
-    └── integration.rs           # Integration tests (daemon, pool, settings sync, notebook sync)
+├── tests/
+│   └── integration.rs           # Integration tests (daemon, pool, settings sync, notebook sync)
+crates/runtimed-client/
+├── src/client.rs                # Pool/notebook client APIs
+├── src/protocol.rs              # Client-side protocol helpers and typed request wrappers
+├── src/settings_doc.rs          # Settings Automerge document, schema, migration
+├── src/singleton.rs             # File-based daemon discovery/locking helpers
+├── src/sync_client.rs           # Settings sync client library
+└── src/service.rs               # Cross-platform service install/uninstall helpers
+crates/runt-workspace/
+└── src/lib.rs                   # Build-channel naming, socket/cache paths, dev/worktree detection
 ```
 
 **Related crates** (shared across daemon, WASM, Python):
@@ -448,7 +451,7 @@ If `session.run()` shows outputs but `session.get_cell()` returns `outputs=[]`:
 
 ## Shipped App Behavior
 
-When shipped as a release build, the daemon installs as a system service that starts at login. This is handled by `crates/runtimed/src/service.rs`:
+When shipped as a release build, the daemon installs as a system service that starts at login. The cross-platform install/uninstall helpers live in `crates/runtimed-client/src/service.rs` and are used by the CLI/app flows:
 
 - **macOS**: launchd plist in `~/Library/LaunchAgents/`
 - **Linux**: systemd user service in `~/.config/systemd/user/`

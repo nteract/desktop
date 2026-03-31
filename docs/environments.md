@@ -20,8 +20,9 @@ This means Python and Deno notebooks can coexist in the same project directory �
 For Python notebooks, nteract Desktop looks for dependencies in this order:
 
 1. **Inline dependencies** stored in the notebook itself
-2. **Closest project file** — nteract Desktop walks up from the notebook's directory looking for `pyproject.toml`, `pixi.toml`, or `environment.yml`/`environment.yaml`. The closest match wins, regardless of file type. If the same directory has multiple project files, the tiebreaker is: pyproject.toml > pixi.toml > environment.yml > environment.yaml
-3. If none found, a **prewarmed environment** with just the basics
+2. **PEP 723 script metadata** embedded in Python cell source (`# /// script` blocks) — nteract Desktop creates a cached UV environment from those dependencies
+3. **Closest project file** — nteract Desktop walks up from the notebook's directory looking for `pyproject.toml`, `pixi.toml`, or `environment.yml`/`environment.yaml`. The closest match wins, regardless of file type. If the same directory has multiple project files, the tiebreaker is: pyproject.toml > pixi.toml > environment.yml > environment.yaml
+4. If none found, a **prewarmed environment** with just the basics
 
 The search stops at git repository boundaries and your home directory, so project files from unrelated repos won't interfere.
 
@@ -34,6 +35,8 @@ The simplest way to manage packages. Dependencies are stored directly in the not
 **Adding packages**: Use the dependency panel in the sidebar to add, remove, or sync packages. UV dependencies use pip-style package names (`pandas`, `numpy>=2.0`). Conda dependencies support conda channels.
 
 **How it's stored**: Dependencies live in the notebook's JSON metadata under `metadata.runt.uv.dependencies` (for UV/pip packages) or `metadata.runt.conda.dependencies` (for conda packages). Legacy notebooks may use `metadata.uv` / `metadata.conda` directly — these are still read as fallbacks.
+
+Python notebooks can also declare dependencies directly in cell source via a PEP 723 `# /// script` block. When present, nteract Desktop treats those as UV dependencies and prepares a cached environment with `env_source = "uv:pep723"`.
 
 ## Working with pyproject.toml
 

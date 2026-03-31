@@ -141,26 +141,16 @@ let mut doc = room.doc.write().await;
 doc.merge(&mut fork).ok();
 ```
 
-For changes relative to a saved snapshot (e.g., file watcher):
-```rust
-let mut fork = doc.fork_at(&save_heads)?;
-fork.update_source(&cell_id, &disk_source).ok();
-doc.merge(&mut fork).ok();
-```
-
 For synchronous mutation blocks (no `.await` between fork and merge), prefer the helpers:
 ```rust
 doc.fork_and_merge(|fork| {
     fork.update_source(&cell_id, &new_source);
 });
-
-// Or at a historic point (e.g., file watcher at last save)
-doc.fork_at_and_merge(&save_heads, |fork| {
-    fork.update_source(&cell_id, &disk_source);
-})?;
 ```
 
-Key methods on `NotebookDoc`: `fork()`, `fork_at(heads)`, `get_heads()`, `merge()`, `fork_and_merge(f)`, `fork_at_and_merge(heads, f)`.
+Do not use `fork_at(...)` in current daemon code paths. The file watcher now compares against `last_save_sources` and uses `fork()` at current heads because `fork_at(...)` can trigger automerge/automerge#1327 on complex text histories.
+
+Key methods on `NotebookDoc`: `fork()`, `get_heads()`, `merge()`, `fork_and_merge(f)`.
 
 All async CRDT mutation paths in the daemon are now protected — see #1216.
 
@@ -171,7 +161,6 @@ crates/runtimed/src/
   lib.rs                   — Public types, path helpers
   main.rs                  — CLI entry point
   daemon.rs                — Daemon state, pool management, connection routing
-  protocol.rs              — BlobRequest/BlobResponse + re-exports
   notebook_sync_server.rs  — NotebookRoom, room lifecycle, autosave, re-keying
   kernel_manager.rs        — RoomKernel: lifecycle, execution queue, IOPub routing
   comm_state.rs            — Widget comm state + Output widget capture routing
@@ -179,18 +168,19 @@ crates/runtimed/src/
   blob_store.rs            — Content-addressed blob store with metadata sidecars
   blob_server.rs           — HTTP read server for blobs
   inline_env.rs            — Inline dependency environment caching
-  settings_doc.rs          — Settings Automerge document, schema, migration
-  sync_server.rs           — Settings sync handler
   stream_terminal.rs       — Stream terminal output handling
-  client.rs                — Internal daemon client for programmatic access
-  sync_client.rs           — Sync-flavored client wrapper
   singleton.rs             — Daemon singleton management (lock file, PID tracking)
   kernel_pids.rs           — Kernel process ID tracking and cleanup
   markdown_assets.rs       — Markdown output asset rendering and resolution
   terminal_size.rs         — Terminal size detection for kernel PTY
   project_file.rs          — Unified project file discovery (pyproject, pixi, env.yml)
+crates/runtimed-client/src/
+  client.rs                — Client APIs used by Python bindings and MCP
+  protocol.rs              — Client-side protocol helpers and typed request wrappers
+  settings_doc.rs          — Settings Automerge document, schema, migration
+  sync_client.rs           — Settings sync client wrapper
+  service.rs               — System service install/uninstall helpers
   runtime.rs               — Runtime enum (Python, Deno) and detection
-  service.rs               — System service install/uninstall (launchd, systemd)
 ```
 
 ## Related Crates
@@ -247,7 +237,7 @@ Each cell execution is tracked by a unique `execution_id` (UUID):
 
 Settings are synced via a **separate Automerge document** (not the notebook doc). The daemon holds the canonical copy and persists to disk. Any window can write; all others receive changes via sync.
 
-Key files: `crates/runtimed/src/settings_doc.rs` (schema), `src/hooks/useSyncedSettings.ts` (frontend).
+Key files: `crates/runtimed-client/src/settings_doc.rs` (schema), `src/hooks/useSyncedSettings.ts` (frontend).
 
 ## Troubleshooting
 

@@ -4,7 +4,7 @@ How versioning, releases, and publishing work across the project.
 
 ## Version Scheme
 
-All published artifacts share the same version and follow semver:
+The repo keeps a shared semver source version across its release inputs, but CI stamps desktop/CLI artifacts with channel-specific suffixes at publish time:
 
 | Artifact | Where | Version source |
 |---|---|---|
@@ -12,6 +12,7 @@ All published artifacts share the same version and follow semver:
 | `runt` CLI | GitHub Releases | `crates/runt/Cargo.toml` |
 | `runtimed` daemon | Bundled in app + Python wheel | `crates/runtimed/Cargo.toml` |
 | `runtimed` Python package | PyPI | `python/runtimed/pyproject.toml` |
+| `nteract` Python package | PyPI | `python/nteract/pyproject.toml` |
 
 Standard semver rules apply:
 
@@ -62,13 +63,13 @@ This triggers `release-stable.yml` → `release-common.yml`, which:
 
 1. Builds the desktop app (macOS, Windows, Linux)
 2. Builds `runt` CLI binaries
-3. Builds Python wheels at the version in `pyproject.toml` (no alpha stamp)
+3. Builds desktop/CLI artifacts with a CI-stamped stable suffix (`-stable.{timestamp}`) while keeping stable Python packages at the plain `pyproject.toml` version
 4. Publishes wheels to PyPI (stable release)
 5. Creates a GitHub Release with all artifacts
 6. Updates the `stable-latest` Tauri updater channel
 7. Posts to Discord
 
-The stable release publishes the Python package to PyPI at the exact version from `pyproject.toml`. This means tagging `v2.1.0` also ships `runtimed==2.1.0` on PyPI — no separate Python tag needed.
+The stable release publishes the Python packages to PyPI at the exact versions from `python/runtimed/pyproject.toml` and `python/nteract/pyproject.toml`. Desktop and CLI artifacts are stamped during the workflow, so the release tag is not the final desktop/CLI artifact version string.
 
 ### Nightly Release
 
@@ -98,14 +99,14 @@ git tag python-v2.1.1
 git push origin python-v2.1.1
 ```
 
-This builds macOS + Linux wheels and publishes to PyPI. Use this when you need to ship a Python patch without cutting a new desktop release.
+This builds macOS and Linux Python artifacts for both `runtimed` and `nteract`, then publishes them to PyPI. Use this when you need to ship a Python patch without cutting a new desktop release.
 
 ## Tag Reference
 
 | Tag pattern | Workflow | What it publishes |
 |---|---|---|
 | `v*` | `release-stable.yml` | Desktop app + CLI + Python (stable) |
-| `python-v*` | `python-package.yml` | Python wheels only |
+| `python-v*` | `python-package.yml` | Python packages only (`runtimed` + `nteract`) |
 | _(cron)_ | `release-nightly.yml` | Desktop app + CLI + Python (pre-release) |
 
 ## Protocol Version Changes

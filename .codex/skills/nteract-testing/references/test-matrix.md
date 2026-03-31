@@ -6,7 +6,7 @@
 - `crates/runtimed-wasm/**`, `apps/notebook/src/wasm/**`, notebook sync plumbing: start with `deno test --allow-read --allow-env --no-check crates/runtimed-wasm/tests/`
 - `apps/notebook/src/**` or shared frontend code: start with `pnpm test:run`
 - `python/runtimed/**`, `python/nteract/**`, `crates/runtimed-py/**`: start with targeted pytest or `uv run nteract`
-- `e2e/**` or cross-window UX flows: use `./e2e/dev.sh ...`
+- `e2e/**` or cross-window UX flows: use `cargo xtask e2e ...`
 
 ## Commands
 
@@ -49,9 +49,10 @@ python/runtimed/.venv/bin/python -m pytest python/runtimed/tests/test_daemon_int
 E2E:
 
 ```bash
-./e2e/dev.sh build
-./e2e/dev.sh start
-./e2e/dev.sh test
+cargo xtask e2e build
+cargo xtask e2e test
+# or a targeted fixture/spec pair:
+cargo xtask e2e test-fixture crates/notebook/fixtures/audit-test/1-vanilla.ipynb e2e/specs/prewarmed-uv.spec.js
 ```
 
 ## Gotchas
@@ -59,4 +60,4 @@ E2E:
 - `crates/runtimed-wasm/tests/cross_impl_test.ts` touches `Deno.env` at module scope, so it needs `--allow-env` even before daemon-backed cases run.
 - Some Deno tests type-check poorly in spite of working at runtime; `--no-check` is often the intended mode in this repo.
 - Python integration failures are often socket-selection problems before they are logic regressions.
-- E2E flows require the repo’s helper scripts; do not replace them with ad hoc Tauri launch commands.
+- E2E flows should go through `cargo xtask e2e ...`; it builds the webdriver-enabled binary, launches the app on port `4445`, and runs `pnpm test:e2e` with the right wiring.
