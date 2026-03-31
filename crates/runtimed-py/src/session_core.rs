@@ -1510,23 +1510,26 @@ pub(crate) async fn set_cursor(
     line: u32,
     column: u32,
 ) -> PyResult<()> {
-    let actor_label = state.lock().await.actor_label.clone();
-    let data = notebook_doc::presence::encode_cursor_update_labeled(
-        "local",
-        peer_label,
-        actor_label.as_deref(),
-        &notebook_doc::presence::CursorPosition {
-            cell_id: cell_id.to_string(),
-            line,
-            column,
-        },
-    );
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
-
+    // Single lock: read actor_label and clone handle atomically so the
+    // encoded actor_label always matches the session's current identity.
+    let (data, handle) = {
+        let st = state.lock().await;
+        let data = notebook_doc::presence::encode_cursor_update_labeled(
+            "local",
+            peer_label,
+            st.actor_label.as_deref(),
+            &notebook_doc::presence::CursorPosition {
+                cell_id: cell_id.to_string(),
+                line,
+                column,
+            },
+        );
+        let handle = st
+            .handle
+            .clone()
+            .ok_or_else(|| to_py_err("Not connected"))?;
+        (data, handle)
+    };
     handle.send_presence(data).await.map_err(to_py_err)
 }
 
@@ -1540,25 +1543,26 @@ pub(crate) async fn set_selection(
     head_line: u32,
     head_col: u32,
 ) -> PyResult<()> {
-    let actor_label = state.lock().await.actor_label.clone();
-    let data = notebook_doc::presence::encode_selection_update_labeled(
-        "local",
-        peer_label,
-        actor_label.as_deref(),
-        &notebook_doc::presence::SelectionRange {
-            cell_id: cell_id.to_string(),
-            anchor_line,
-            anchor_col,
-            head_line,
-            head_col,
-        },
-    );
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
-
+    let (data, handle) = {
+        let st = state.lock().await;
+        let data = notebook_doc::presence::encode_selection_update_labeled(
+            "local",
+            peer_label,
+            st.actor_label.as_deref(),
+            &notebook_doc::presence::SelectionRange {
+                cell_id: cell_id.to_string(),
+                anchor_line,
+                anchor_col,
+                head_line,
+                head_col,
+            },
+        );
+        let handle = st
+            .handle
+            .clone()
+            .ok_or_else(|| to_py_err("Not connected"))?;
+        (data, handle)
+    };
     handle.send_presence(data).await.map_err(to_py_err)
 }
 
@@ -1683,18 +1687,20 @@ pub(crate) async fn set_focus(
     peer_label: Option<&str>,
     cell_id: &str,
 ) -> PyResult<()> {
-    let actor_label = state.lock().await.actor_label.clone();
-    let data = notebook_doc::presence::encode_focus_update_labeled(
-        "local",
-        peer_label,
-        actor_label.as_deref(),
-        cell_id,
-    );
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    let (data, handle) = {
+        let st = state.lock().await;
+        let data = notebook_doc::presence::encode_focus_update_labeled(
+            "local",
+            peer_label,
+            st.actor_label.as_deref(),
+            cell_id,
+        );
+        let handle = st
+            .handle
+            .clone()
+            .ok_or_else(|| to_py_err("Not connected"))?;
+        (data, handle)
+    };
     handle.send_presence(data).await.map_err(to_py_err)
 }
 
