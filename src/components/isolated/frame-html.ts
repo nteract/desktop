@@ -35,7 +35,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
   // Start with transparent backgrounds to prevent flash while theme loads
   // Parent will send theme message immediately after iframe is ready
   return `<!DOCTYPE html>
-<html style="background:${darkMode ? "#0a0a0a" : "#ffffff"};color-scheme:${darkMode ? "dark" : "light"}">
+<html style="background:transparent;color-scheme:${darkMode ? "dark" : "light"}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -61,7 +61,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
       padding: 0;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       line-height: 1.5;
-      background: var(--bg-primary);
+      background: transparent;
       color: var(--text-primary);
       overflow: hidden;
     }
@@ -420,7 +420,7 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
           // Set color-scheme for prefers-color-scheme media queries
           rootEl.style.colorScheme = isDark ? 'dark' : 'light';
           // Set CSS variables
-          rootEl.style.setProperty('--bg-primary', isDark ? '#0a0a0a' : '#ffffff');
+          rootEl.style.setProperty('--bg-primary', 'transparent');
           rootEl.style.setProperty('--bg-secondary', isDark ? '#1a1a1a' : '#f5f5f5');
           rootEl.style.setProperty('--text-primary', isDark ? '#e0e0e0' : '#1a1a1a');
           rootEl.style.setProperty('--text-secondary', isDark ? '#a0a0a0' : '#666666');

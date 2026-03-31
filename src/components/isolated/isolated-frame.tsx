@@ -738,7 +738,7 @@ export const IsolatedFrame = forwardRef<
         opacity: displayOpacity,
         border: "none",
         display: "block",
-        background: darkMode ? "#0a0a0a" : "#ffffff",
+        background: "transparent",
         colorScheme: darkMode ? "dark" : "light",
         // Hide iframe during reload to prevent white flash from blank document.
         // visibility:hidden preserves layout (keeps height) while hiding content.
