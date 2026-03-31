@@ -476,7 +476,7 @@ Same WebdriverIO tests, but the app runs inside a Docker container with
 Configuration is in `e2e/wdio.conf.js`:
 
 - **maxInstances**: 1 (single Tauri app instance)
-- **timeout**: 180000ms per test (3 minutes, for kernel startup scenarios)
+- **timeout**: 780000ms per test (13 minutes, for conda inline env creation on cold CI)
 - **waitforTimeout**: 10000ms for `waitFor*` methods
 - **connectionRetryTimeout**: 120000ms for WebDriver connection
 - **Screenshots**: On failure, saved to `e2e-screenshots/failures/` (configurable via `E2E_SCREENSHOT_DIR`)

@@ -22,6 +22,7 @@ test: {
   include: [
     "src/**/__tests__/**/*.test.{ts,tsx}",
     "apps/notebook/src/**/__tests__/**/*.test.{ts,tsx}",
+    "packages/**/tests/**/*.test.{ts,tsx}",
   ],
   globals: true,
   setupFiles: ["./src/test-setup.ts"],

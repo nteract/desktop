@@ -73,7 +73,7 @@
   },
   {
     "label": "E2E Build",
-    "command": "./e2e/dev.sh build",
+    "command": "cargo xtask e2e build",
     "env": {
       "RUNTIMED_WORKSPACE_PATH": "$ZED_WORKTREE_ROOT",
     },
@@ -83,7 +83,7 @@
   },
   {
     "label": "E2E Fixture Tests",
-    "command": "./e2e/dev.sh test-fixtures",
+    "command": "cargo xtask e2e test-all",
     "env": {
       "RUNTIMED_WORKSPACE_PATH": "$ZED_WORKTREE_ROOT",
     },
@@ -94,7 +94,7 @@
   },
   {
     "label": "E2E All Tests",
-    "command": "./e2e/dev.sh cycle",
+    "command": "cargo xtask e2e test-all",
     "env": {
       "RUNTIMED_WORKSPACE_PATH": "$ZED_WORKTREE_ROOT",
     },

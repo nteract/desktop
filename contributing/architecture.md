@@ -239,7 +239,7 @@ The frontend now owns a local Automerge doc via `runtimed-wasm` WASM bindings, m
 - `crates/notebook-sync/src/connect.rs` — `connect_open_relay()`, `connect_create_relay()`: transparent byte pipe setup
 - `crates/runtimed-wasm/src/lib.rs` — WASM bindings: local Automerge peer, frame demux, per-cell accessors, `CellChangeset`
 - `crates/notebook/src/lib.rs` — Tauri commands and relay tasks (`send_frame` accepts raw binary via `tauri::ipc::Request`, `setup_sync_receivers`)
-- `crates/notebook-doc/src/frame_types.rs` — Shared frame type constants (0x00–0x04)
+- `crates/notebook-doc/src/frame_types.rs` — Shared frame type constants (0x00–0x05)
 - `apps/notebook/src/lib/frame-types.ts` — Frame type constants + `sendFrame()` binary IPC helper
 - `apps/notebook/src/hooks/useAutomergeNotebook.ts` — WASM handle owner, `scheduleMaterialize`, `CellChangeset` dispatch
 - `apps/notebook/src/lib/materialize-cells.ts` — `materializeCellFromWasm()` (per-cell) + `cellSnapshotsToNotebookCells()` (full)
