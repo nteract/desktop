@@ -1036,8 +1036,7 @@ impl NotebookHandle {
     /// Normalize pool sync state via encode→decode round-trip.
     fn normalize_pool_sync_state(&mut self) {
         let encoded = self.pool_sync_state.encode();
-        self.pool_sync_state =
-            sync::State::decode(&encoded).unwrap_or_else(|_| sync::State::new());
+        self.pool_sync_state = sync::State::decode(&encoded).unwrap_or_else(|_| sync::State::new());
     }
 
     /// Rebuild the RuntimeStateDoc via save→load.

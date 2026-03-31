@@ -90,8 +90,7 @@ impl PoolDoc {
             .expect("scaffold uv");
         doc.put(&uv, "available", 0u64)
             .expect("scaffold uv.available");
-        doc.put(&uv, "warming", 0u64)
-            .expect("scaffold uv.warming");
+        doc.put(&uv, "warming", 0u64).expect("scaffold uv.warming");
         doc.put(&uv, "pool_size", 0u64)
             .expect("scaffold uv.pool_size");
         doc.put(&uv, "consecutive_failures", 0u64)
@@ -176,8 +175,11 @@ impl PoolDoc {
         self.doc.put(&obj, "available", state.available)?;
         self.doc.put(&obj, "warming", state.warming)?;
         self.doc.put(&obj, "pool_size", state.pool_size)?;
-        self.doc
-            .put(&obj, "consecutive_failures", state.consecutive_failures as u64)?;
+        self.doc.put(
+            &obj,
+            "consecutive_failures",
+            state.consecutive_failures as u64,
+        )?;
         self.doc.put(&obj, "retry_in_secs", state.retry_in_secs)?;
 
         // Error: set string when Some, delete key when None
@@ -255,10 +257,7 @@ impl PoolDoc {
     // ── Sync protocol ───────────────────────────────────────────────
 
     /// Generate a sync message to send to a peer.
-    pub fn generate_sync_message(
-        &mut self,
-        peer_state: &mut sync::State,
-    ) -> Option<sync::Message> {
+    pub fn generate_sync_message(&mut self, peer_state: &mut sync::State) -> Option<sync::Message> {
         self.doc.sync().generate_sync_message(peer_state)
     }
 
@@ -429,11 +428,7 @@ mod tests {
         }
 
         // Client tries to write — should be stripped by daemon
-        let (_, uv_id) = client_doc
-            .doc_mut()
-            .get(&ROOT, "uv")
-            .unwrap()
-            .unwrap();
+        let (_, uv_id) = client_doc.doc_mut().get(&ROOT, "uv").unwrap().unwrap();
         client_doc
             .doc_mut()
             .put(&uv_id, "available", 999u64)

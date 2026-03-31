@@ -33,7 +33,11 @@ import {
   notifyMetadataChanged,
   setNotebookHandle,
 } from "../lib/notebook-metadata";
-import { type PoolState, resetPoolState, setPoolState } from "../lib/pool-state";
+import {
+  type PoolState,
+  resetPoolState,
+  setPoolState,
+} from "../lib/pool-state";
 import {
   type RuntimeState,
   resetRuntimeState,
