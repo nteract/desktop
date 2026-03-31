@@ -22,6 +22,7 @@ pub(crate) fn is_connection_closed(e: &anyhow::Error) -> bool {
             std::io::ErrorKind::ConnectionReset
                 | std::io::ErrorKind::BrokenPipe
                 | std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::NotConnected
         )
     } else {
         false

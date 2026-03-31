@@ -454,9 +454,12 @@ export function useDaemonKernel({
         }
 
         default: {
-          logger.debug(
-            `[daemon-kernel] Unknown broadcast event: ${(broadcast as { event: string }).event}`,
-          );
+          const event = (broadcast as { event?: string }).event;
+          // Internal SyncEngine broadcasts (e.g. text_attribution) use
+          // "type" not "event" — skip logging for those.
+          if (event !== undefined) {
+            logger.debug(`[daemon-kernel] Unknown broadcast event: ${event}`);
+          }
         }
       }
     });

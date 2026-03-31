@@ -1080,18 +1080,36 @@ impl NotebookHandle {
             }
             frame_types::BROADCAST => {
                 // Parse JSON broadcast payload
-                let Ok(value) = serde_json::from_slice::<serde_json::Value>(payload) else {
-                    return JsValue::UNDEFINED;
+                let value = match serde_json::from_slice::<serde_json::Value>(payload) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        web_sys::console::warn_1(
+                            &format!("[wasm] broadcast frame parse failed: {e}").into(),
+                        );
+                        return JsValue::UNDEFINED;
+                    }
                 };
                 events.push(FrameEvent::Broadcast { payload: value });
             }
             frame_types::PRESENCE => {
                 // Decode CBOR presence and convert to JSON value for the frontend
-                let Ok(msg) = presence::decode_message(payload) else {
-                    return JsValue::UNDEFINED;
+                let msg = match presence::decode_message(payload) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        web_sys::console::warn_1(
+                            &format!("[wasm] presence frame decode failed: {e}").into(),
+                        );
+                        return JsValue::UNDEFINED;
+                    }
                 };
-                let Ok(value) = serde_json::to_value(&msg) else {
-                    return JsValue::UNDEFINED;
+                let value = match serde_json::to_value(&msg) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        web_sys::console::warn_1(
+                            &format!("[wasm] presence frame serialize failed: {e}").into(),
+                        );
+                        return JsValue::UNDEFINED;
+                    }
                 };
                 events.push(FrameEvent::Presence { payload: value });
             }
