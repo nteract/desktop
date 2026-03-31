@@ -27,7 +27,7 @@ Three phases:
 
 ## Crate dependency graph
 
-Leaf crates (no internal deps): `tauri-jupyter`, `kernel-launch`, `runt-trust`, `runt-workspace`
+Leaf crates (no internal deps): `kernel-launch`, `runt-trust`, `runt-workspace`
 
 Shared:
 - `notebook-doc` → no internal deps
@@ -36,9 +36,10 @@ Shared:
 - `runtimed` → `notebook-doc`, `notebook-protocol`, `kernel-launch`, `kernel-env`, `runt-trust`, `runt-workspace`
 
 App binaries:
-- `notebook` (Tauri) → `runtimed`, `notebook-sync`, `runt-trust`, `runt-workspace`
-- `runt-cli` → `runtimed`, `runt-workspace`
-- `runtimed-py` → `runtimed`, `notebook-doc`, `notebook-protocol`, `notebook-sync`, `runt-workspace`
+- `notebook` (Tauri) → `runtimed-client`, `notebook-doc`, `notebook-protocol`, `notebook-sync`, `runt-trust`, `runt-workspace`
+- `runt-cli` → `runtimed-client`, `notebook-doc`, `runt-workspace`, `kernel-env`, `runt-mcp`
+- `runtimed` → `runtimed-client`, `notebook-doc`, `notebook-protocol`, `kernel-launch`, `kernel-env`, `runt-trust`, `runt-workspace`
+- `runtimed-py` → `runtimed-client`, `notebook-doc`, `notebook-protocol`, `kernel-env`, `notebook-sync`, `runt-workspace`
 - `runtimed-wasm` → `notebook-doc`
 
 ## WASM rebuild

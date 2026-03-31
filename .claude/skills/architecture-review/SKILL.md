@@ -38,11 +38,11 @@ These are settled decisions. Treat them as given:
    `allow-same-origin`, blob URL origin isolation).
 6. **Content-addressed blob store** for outputs (binary data stays out of the CRDT).
 7. **Rust daemon** as the stateful backend (not an in-process library).
-8. **Python bindings (PyO3/maturin)** for the SDK and MCP server.
+8. **Python bindings (PyO3/maturin)** for the SDK and convenience wrappers around the runtime tooling.
 
 ## What Currently Exists
 
-The system is split into 15 Rust crates, a React/TypeScript frontend, and 3
+The system is split into 16 Rust crates, a React/TypeScript frontend, and 3
 Python packages. The major architectural seams are:
 
 ### Daemon ↔ Client Protocol

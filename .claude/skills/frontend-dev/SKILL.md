@@ -124,7 +124,7 @@ RUNTIMED_DEV=1 cargo xtask notebook      # Terminal 2
 cargo xtask run-mcp
 ```
 
-Starts dev daemon, syncs venv, builds Python bindings, spawns nteract MCP server, proxies tool calls, watches for file changes, hot-reloads.
+Starts the dev daemon, launches the dev-only `nteract-dev` supervisor, spawns a child `runt mcp`, proxies notebook tool calls, watches for file changes, and hot-reloads. Python bindings are rebuilt when the watched Rust paths require it.
 
 For editor config:
 

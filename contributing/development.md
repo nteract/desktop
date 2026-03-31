@@ -380,11 +380,14 @@ These tools are always available, even when the Python child is down:
 
 #### Hot reload
 
-The supervisor watches `python/nteract/src/`, `python/runtimed/src/`,
-`crates/runtimed-py/src/`, and `crates/runtimed/src/`:
+The supervisor watches `crates/runt-mcp/src/`, `crates/runtimed-client/src/`,
+`python/nteract/src/`, `python/runtimed/src/`, `crates/runtimed-py/src/`, and
+`crates/runtimed/src/`:
 
+- **`crates/runt-mcp/src/`** → `cargo build -p runt-cli`, then child restart
+- **`crates/runtimed-client/src/`** → `cargo build -p runt-cli` + `maturin develop`, then child restart
 - **Python changes** → child restarts automatically
-- **Rust changes** → `maturin develop` runs first, then child restarts
+- **Daemon / bindings Rust changes** → `maturin develop` runs first, then child restarts
 - **Behavior changes** take effect immediately on the next tool call
 - **New/removed tools** may take a moment for the client to discover
 
@@ -403,15 +406,17 @@ cargo xtask dev-mcp
 
 ### How it works
 
-The MCP server is a pure Python package (`python/nteract/`) that depends on
-`runtimed` (PyO3 bindings in `python/runtimed/`, built from
-`crates/runtimed-py/`). Both are workspace members of the repo-root
-`pyproject.toml`, so `uv sync` installs them into `.venv` at the repo root.
+`nteract-dev` is the **dev-only supervisor server** for this source tree. It
+exposes the extra `supervisor_*` tools itself, then proxies the regular notebook
+tools from a child `runt mcp` process launched inside the supervisor. That child
+is the Rust-native MCP implementation from `crates/runt-mcp/`, not a Python MCP
+server.
 
-The nteract-dev supervisor (`crates/mcp-supervisor/`) uses the `rmcp` Rust SDK to
-act as both an MCP server (facing the client) and an MCP client (facing the
-Python child process). It spawns the child via `uv run --directory . nteract`
-from the repo root.
+The Python workspace packages still matter for local development: `python/runtimed/`
+provides the PyO3 bindings, and `python/nteract/` is the convenience wrapper that
+finds and launches `runt mcp` outside the supervisor flow. Both are workspace
+members of the repo-root `pyproject.toml`, so `uv sync` installs them into `.venv`
+at the repo root.
 
 ## Before You Commit
 

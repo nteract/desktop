@@ -51,19 +51,12 @@ For persistent verbose logging, you can modify the launch agent/service configur
 
 The notebook app logs to the webview console (View > Developer > Developer Tools).
 
-### Enabling Debug Mode
+### Viewing Frontend Debug Logs
 
-By default, routine operations are not logged in production. To enable verbose logging:
-
-1. Open the webview console (Cmd+Option+I)
-2. Run: `localStorage.setItem('runt:debug', 'true')`
-3. Reload the page
-
-To disable:
-```javascript
-localStorage.removeItem('runt:debug');
-// Reload the page
-```
+There is no `localStorage` debug toggle in the current app. In development,
+frontend logs are mirrored into the webview console via `attachConsole()` in
+`apps/notebook/src/lib/logger.ts`. In packaged builds, what you see is governed
+by the app-side log level from `tauri-plugin-log`.
 
 ### Log Prefixes
 
@@ -83,7 +76,7 @@ runt daemon logs -n 50 | grep -i error
 
 ### Outputs Not Displaying
 
-Enable debug mode and check for manifest resolution errors in the webview console.
+Check the webview console in a development build for manifest resolution errors.
 
 ### Environment Issues
 

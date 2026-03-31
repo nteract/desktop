@@ -109,9 +109,11 @@ This prevents other windows/iframes from injecting messages.
 |-----------|----------|---------|
 | `IsolatedFrame` | `src/components/isolated/isolated-frame.tsx` | React component that manages blob URL lifecycle |
 | `CommBridgeManager` | `src/components/isolated/comm-bridge-manager.ts` | Parent-side: syncs widget state to iframe |
-| `WidgetBridgeClient` | `src/isolated-renderer/widget-bridge-client.ts` | Iframe-side: receives comm messages (via `createWidgetBridgeClient`) |
+| `jsonrpc-transport.ts` | `src/components/isolated/jsonrpc-transport.ts` | JSON-RPC 2.0 transport over `postMessage` |
+| `rpc-methods.ts` | `src/components/isolated/rpc-methods.ts` | Shared widget bridge method constants |
+| `WidgetBridgeClient` | `src/isolated-renderer/widget-bridge-client.ts` | Iframe-side JSON-RPC widget bridge (via `createWidgetBridgeClient`) |
 | `frame-html.ts` | `src/components/isolated/frame-html.ts` | Generates bootstrap HTML for iframe |
-| `frame-bridge.ts` | `src/components/isolated/frame-bridge.ts` | Message type definitions |
+| `frame-bridge.ts` | `src/components/isolated/frame-bridge.ts` | Legacy frame message definitions |
 
 ### Renderer Bundle
 
@@ -119,57 +121,29 @@ The isolated renderer code is built inline during the notebook app build via the
 
 ## Message Protocol
 
-All communication uses structured `postMessage` calls.
+Two message layers coexist:
 
-### Parent → Iframe
+1. **Frame bootstrap/render messages** in `frame-bridge.ts` cover output rendering,
+   theming, resize notifications, link clicks, and in-iframe search flow.
+2. **Widget sync traffic** uses JSON-RPC 2.0 over `postMessage`, implemented by
+   `jsonrpc-transport.ts` and `rpc-methods.ts`.
 
-| Message | Purpose |
-|---------|---------|
-| `eval` | Bootstrap: inject React renderer bundle |
-| `render` | Render output content (HTML, markdown, etc.) |
-| `theme` | Sync dark/light mode |
-| `clear` | Clear all outputs |
-| `comm_open` | Forward widget creation from kernel |
-| `comm_msg` | Forward state update or custom message |
-| `comm_close` | Forward widget destruction |
-| `comm_sync` | Bulk sync all existing models on ready |
-| `bridge_ready` | Signal parent bridge is initialized |
-| `widget_state` | Send widget state to iframe |
-| `ping` | Liveness check |
-| `search` | Trigger in-iframe text search |
-| `search_navigate` | Navigate between search matches |
-
-### Iframe → Parent
-
-| Message | Purpose |
-|---------|---------|
-| `ready` | Bootstrap HTML loaded |
-| `renderer_ready` | React bundle initialized |
-| `widget_ready` | Widget system ready for comm_sync |
-| `resize` | Content height changed |
-| `error` | JavaScript error occurred |
-| `link_click` | User clicked a link |
-| `widget_comm_msg` | Widget state update (forward to kernel) |
-| `widget_comm_close` | Widget close request |
-| `pong` | Response to `ping` |
-| `eval_result` | Result of eval'd script |
-| `render_complete` | Content finished rendering |
-| `dblclick` | Double-click event (for cell editing) |
-| `widget_update` | Widget display update |
-| `search_results` | Search match count/position info |
+The JSON-RPC widget methods include:
+- Parent → iframe: `nteract/bridgeReady`, `nteract/commOpen`, `nteract/commMsg`, `nteract/commClose`, `nteract/commSync`
+- Iframe → parent: `nteract/widgetReady`, `nteract/widgetCommMsg`, `nteract/widgetCommClose`
 
 ### Widget Sync Flow
 
 ```
 1. IsolatedFrame mounts
 2. Iframe sends: ready
-3. Parent sends: eval (React bundle)
-4. Iframe sends: renderer_ready
-5. CommBridgeManager sends: bridge_ready
-6. Iframe sends: widget_ready
-7. CommBridgeManager sends: comm_sync (all existing models)
+3. Parent sends: `eval` (React bundle)
+4. Iframe sends: `renderer_ready`
+5. CommBridgeManager sends: `nteract/bridgeReady`
+6. Iframe sends: `nteract/widgetReady`
+7. CommBridgeManager sends: `nteract/commSync` (all existing models)
 8. Iframe renders widgets
-9. Bidirectional updates via comm_msg / widget_comm_msg
+9. Bidirectional widget updates flow through JSON-RPC notifications
 ```
 
 ## Critical Code Paths
@@ -194,7 +168,8 @@ The `subscribeToModelCustomMessages` method was added to support anywidgets like
 ### 4. Type Guard Whitelist
 **File:** `src/components/isolated/frame-bridge.ts` — `isIframeMessage`
 
-The `isIframeMessage` function whitelists valid message types. New message types must be added here.
+The `isIframeMessage` function whitelists the legacy frame-bridge message types.
+JSON-RPC widget methods are defined separately in `rpc-methods.ts`.
 
 ## Code Review Checklist
 
@@ -239,14 +214,14 @@ Press `Cmd+Shift+I` in debug builds to open the isolation test panel.
 ### Widget Not Rendering
 
 1. Check console for errors in iframe (may need to inspect iframe in DevTools)
-2. Verify `comm_sync` was sent (look for `[CommBridge]` logs)
-3. Check if widget type is in `ISOLATED_MIME_TYPES`
+2. Verify `nteract/commSync` was sent and the iframe answered with `nteract/widgetReady`
+3. Check `jsonrpc-transport.ts` / `rpc-methods.ts` if the bridge handshake changed
 
 ### Widget Not Receiving Updates
 
 1. Check if custom messages are being forwarded
 2. Look for `subscribeToModelCustomMessages` being called
-3. Verify kernel is sending `comm_msg` with correct comm_id
+3. Verify kernel comm traffic is being translated into `nteract/commMsg` notifications with the correct `commId`
 
 ### Theme Not Syncing
 

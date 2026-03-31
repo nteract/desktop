@@ -76,7 +76,7 @@ logger.error("[component] Failure:", error);
 ### Log Level Behavior
 
 - **Nightly**: All levels (`debug`, `info`, `warn`, `error`) enabled by default
-- **Stable**: `logger.debug()` suppressed; `info`, `warn`, `error` always enabled
+- **Stable**: `logger.debug()` still goes through the logger, but the Rust-side filter usually drops it; `info`, `warn`, `error` remain visible
 - Level filter applied server-side by `tauri-plugin-log`
 
 ### What NOT to Log at Info Level
@@ -86,21 +86,12 @@ logger.error("[component] Failure:", error);
 - Internal state (blob port resolution, queue state)
 - Success cases for routine operations (hot-sync succeeded)
 
-### Enabling Debug Logs
+### Seeing Frontend Debug Logs
 
-In the browser console:
-```javascript
-localStorage.setItem('runt:debug', 'true');
-// Reload the page
-```
-
-To disable:
-```javascript
-localStorage.removeItem('runt:debug');
-// Reload the page
-```
-
-Debug mode is always enabled in development (`import.meta.env.DEV`).
+There is no `localStorage` debug toggle in the current app. Frontend logs go
+through `apps/notebook/src/lib/logger.ts`, and in development
+(`import.meta.env.DEV`) `attachConsole()` mirrors them into browser devtools.
+In packaged builds, visibility is controlled by the Rust-side app log level.
 
 ## Adding New Logging
 

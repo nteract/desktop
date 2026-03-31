@@ -57,11 +57,12 @@ Most contributors don't need to set anything — the default `4445` works fine.
 ### Docker Mode (CI / Linux)
 
 ```bash
-pnpm test:e2e:docker
-
-# Interactive debugging
 docker compose --profile dev run --rm tauri-e2e-shell
 ```
+
+There is no dedicated `pnpm test:e2e:docker` script in this repo. CI runs the
+driver/container setup around the normal `pnpm test:e2e` command. For local
+Linux debugging, open the shell above and run the same E2E commands from there.
 
 ## Test Types
 
@@ -91,13 +92,14 @@ Use a regular test when:
 | `2-uv-inline.ipynb` | `trust-dialog-dismiss.spec.js` | Trust dialog dismiss flow |
 | `3-conda-inline.ipynb` | `conda-inline.spec.js` | Conda inline dependency resolution |
 | `10-deno.ipynb` | `deno.spec.js` | Deno kernel start + TypeScript execution |
+| `14-cell-visibility.ipynb` | `cell-visibility.spec.js` | Source/output visibility toggles with existing outputs |
+| `15-run-all-output-lifecycle.ipynb` | `run-all-output-lifecycle.spec.js` | Run-all behavior with stale outputs present |
 | `pyproject-project/5-pyproject.ipynb` | `uv-pyproject.spec.js` | pyproject.toml environment detection |
 | *(untitled)* | `untitled-pyproject.spec.js` | pyproject.toml detection from CWD (requires `test-untitled-pyproject`) |
 
 **Regular specs** (run against default app, not fixtures):
 - `smoke.spec.js` — Basic cell execution and output
 - `tab-completion.spec.js` — Tab completion in code cells
-- `cell-visibility.spec.js` — Source/output visibility toggles
 
 Multiple specs can reuse the same fixture notebook — each gets its own fresh app instance.
 
