@@ -7,6 +7,11 @@
 use notebook_doc::presence::{self, CursorPosition};
 use notebook_sync::handle::DocHandle;
 
+/// Get the actor label from the handle, or empty string on error.
+fn actor_label(handle: &DocHandle) -> Option<String> {
+    handle.get_actor_id().ok().filter(|s| !s.is_empty())
+}
+
 /// Emit a cursor position (line, column in a cell).
 ///
 /// Shows a blinking cursor in the notebook app at the specified position.
@@ -18,9 +23,11 @@ pub async fn emit_cursor(
     column: u32,
     peer_label: &str,
 ) {
+    let actor = actor_label(handle);
     let data = presence::encode_cursor_update_labeled(
         "local",
         Some(peer_label),
+        actor.as_deref(),
         &CursorPosition {
             cell_id: cell_id.to_string(),
             line,
@@ -35,7 +42,9 @@ pub async fn emit_cursor(
 /// Shows a presence dot on the cell without a blinking cursor.
 /// `peer_label` is the MCP client's display name (e.g. "Claude Code").
 pub async fn emit_focus(handle: &DocHandle, cell_id: &str, peer_label: &str) {
-    let data = presence::encode_focus_update_labeled("local", Some(peer_label), cell_id);
+    let actor = actor_label(handle);
+    let data =
+        presence::encode_focus_update_labeled("local", Some(peer_label), actor.as_deref(), cell_id);
     let _ = handle.send_presence(data).await;
 }
 
@@ -44,10 +53,11 @@ pub async fn emit_focus(handle: &DocHandle, cell_id: &str, peer_label: &str) {
 /// Without this, the peer is invisible in the presence UI until it performs
 /// an action that emits presence (e.g. editing a cell).
 pub async fn announce(handle: &DocHandle, peer_label: &str) {
+    let actor = actor_label(handle);
     let data = if let Some(cell_id) = handle.first_cell_id() {
-        presence::encode_focus_update_labeled("local", Some(peer_label), &cell_id)
+        presence::encode_focus_update_labeled("local", Some(peer_label), actor.as_deref(), &cell_id)
     } else {
-        presence::encode_custom_update_labeled("local", Some(peer_label), &[])
+        presence::encode_custom_update_labeled("local", Some(peer_label), actor.as_deref(), &[])
     };
     let _ = handle.send_presence(data).await;
 }

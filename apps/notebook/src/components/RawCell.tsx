@@ -19,17 +19,20 @@ import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { useCrdtBridge } from "../hooks/useCrdtBridge";
 import {
-  registerAttributionEditor,
-  unregisterAttributionEditor,
-} from "../lib/attribution-registry";
-import {
   useIsCellFocused,
   useIsNextCellFromFocused,
   useIsPreviousCellFromFocused,
   useSearchQuery,
 } from "../lib/cell-ui-state";
-import { registerEditor, unregisterEditor } from "../lib/cursor-registry";
+import {
+  onEditorRegistered,
+  onEditorUnregistered,
+} from "../lib/cursor-registry";
 import { detectRawFormat } from "../lib/detect-raw-format";
+import {
+  registerCellEditor,
+  unregisterCellEditor,
+} from "../lib/editor-registry";
 import { presenceSenderExtension } from "../lib/presence-sender";
 import type { RawCell as RawCellType } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
@@ -77,8 +80,8 @@ export const RawCell = memo(function RawCell({
       const view = editorRef.current?.getEditor() ?? null;
       if (view && view !== registeredViewRef.current) {
         registeredViewRef.current = view;
-        registerEditor(cell.id, view);
-        registerAttributionEditor(cell.id, view);
+        registerCellEditor(cell.id, view);
+        onEditorRegistered(cell.id);
         return true;
       }
       return false;
@@ -96,8 +99,8 @@ export const RawCell = memo(function RawCell({
       return () => {
         clearInterval(intervalId);
         if (registeredViewRef.current) {
-          unregisterEditor(cell.id);
-          unregisterAttributionEditor(cell.id);
+          onEditorUnregistered(cell.id);
+          unregisterCellEditor(cell.id);
           registeredViewRef.current = null;
         }
       };
@@ -105,8 +108,8 @@ export const RawCell = memo(function RawCell({
 
     return () => {
       if (registeredViewRef.current) {
-        unregisterEditor(cell.id);
-        unregisterAttributionEditor(cell.id);
+        onEditorUnregistered(cell.id);
+        unregisterCellEditor(cell.id);
         registeredViewRef.current = null;
       }
     };

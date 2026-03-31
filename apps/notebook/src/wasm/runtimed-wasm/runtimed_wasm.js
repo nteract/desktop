@@ -1642,26 +1642,29 @@ export function encode_clear_channel_presence(peer_id, channel) {
  * (e.g. the OS username). Pass an empty string to omit.
  * @param {string} peer_id
  * @param {string} peer_label
+ * @param {string} actor_label
  * @param {string} cell_id
  * @param {number} line
  * @param {number} column
  * @returns {Uint8Array}
  */
-export function encode_cursor_presence(peer_id, peer_label, cell_id, line, column) {
+export function encode_cursor_presence(peer_id, peer_label, actor_label, cell_id, line, column) {
     try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
         const ptr0 = passStringToWasm0(peer_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(peer_label, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(cell_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const ptr2 = passStringToWasm0(actor_label, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len2 = WASM_VECTOR_LEN;
-        wasm.encode_cursor_presence(retptr, ptr0, len0, ptr1, len1, ptr2, len2, line, column);
+        const ptr3 = passStringToWasm0(cell_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len3 = WASM_VECTOR_LEN;
+        wasm.encode_cursor_presence(retptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, line, column);
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-        var v4 = getArrayU8FromWasm0(r0, r1).slice();
+        var v5 = getArrayU8FromWasm0(r0, r1).slice();
         wasm.__wbindgen_export4(r0, r1 * 1, 1);
-        return v4;
+        return v5;
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
     }
@@ -1672,24 +1675,27 @@ export function encode_cursor_presence(peer_id, peer_label, cell_id, line, colum
  * Focus means "I'm on this cell" without an editor cursor position.
  * @param {string} peer_id
  * @param {string} peer_label
+ * @param {string} actor_label
  * @param {string} cell_id
  * @returns {Uint8Array}
  */
-export function encode_focus_presence(peer_id, peer_label, cell_id) {
+export function encode_focus_presence(peer_id, peer_label, actor_label, cell_id) {
     try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
         const ptr0 = passStringToWasm0(peer_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(peer_label, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(cell_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const ptr2 = passStringToWasm0(actor_label, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len2 = WASM_VECTOR_LEN;
-        wasm.encode_focus_presence(retptr, ptr0, len0, ptr1, len1, ptr2, len2);
+        const ptr3 = passStringToWasm0(cell_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len3 = WASM_VECTOR_LEN;
+        wasm.encode_focus_presence(retptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-        var v4 = getArrayU8FromWasm0(r0, r1).slice();
+        var v5 = getArrayU8FromWasm0(r0, r1).slice();
         wasm.__wbindgen_export4(r0, r1 * 1, 1);
-        return v4;
+        return v5;
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
     }
@@ -1699,6 +1705,7 @@ export function encode_focus_presence(peer_id, peer_label, cell_id) {
  * Encode a selection range as a presence frame payload (CBOR).
  * @param {string} peer_id
  * @param {string} peer_label
+ * @param {string} actor_label
  * @param {string} cell_id
  * @param {number} anchor_line
  * @param {number} anchor_col
@@ -1706,21 +1713,23 @@ export function encode_focus_presence(peer_id, peer_label, cell_id) {
  * @param {number} head_col
  * @returns {Uint8Array}
  */
-export function encode_selection_presence(peer_id, peer_label, cell_id, anchor_line, anchor_col, head_line, head_col) {
+export function encode_selection_presence(peer_id, peer_label, actor_label, cell_id, anchor_line, anchor_col, head_line, head_col) {
     try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
         const ptr0 = passStringToWasm0(peer_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(peer_label, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(cell_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const ptr2 = passStringToWasm0(actor_label, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len2 = WASM_VECTOR_LEN;
-        wasm.encode_selection_presence(retptr, ptr0, len0, ptr1, len1, ptr2, len2, anchor_line, anchor_col, head_line, head_col);
+        const ptr3 = passStringToWasm0(cell_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len3 = WASM_VECTOR_LEN;
+        wasm.encode_selection_presence(retptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, anchor_line, anchor_col, head_line, head_col);
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-        var v4 = getArrayU8FromWasm0(r0, r1).slice();
+        var v5 = getArrayU8FromWasm0(r0, r1).slice();
         wasm.__wbindgen_export4(r0, r1 * 1, 1);
-        return v4;
+        return v5;
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
     }
@@ -1933,6 +1942,9 @@ function __wbg_get_imports() {
         __wbg_value_667dcb90597486a6: function(arg0) {
             const ret = getObject(arg0).value;
             return addHeapObject(ret);
+        },
+        __wbg_warn_3310c7343993c074: function(arg0) {
+            console.warn(getObject(arg0));
         },
         __wbindgen_cast_0000000000000001: function(arg0) {
             // Cast intrinsic for `F64 -> Externref`.

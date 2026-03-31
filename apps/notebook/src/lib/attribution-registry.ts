@@ -25,7 +25,8 @@ import {
   type AttributionMark,
   addTextAttributions,
 } from "@/components/editor/text-attribution";
-import { findPeerColorByLabel } from "./cursor-registry";
+import { findPeerColorByActorLabel } from "./cursor-registry";
+import { getCellEditor } from "./editor-registry";
 import { subscribeBroadcast } from "./notebook-frame-bus";
 
 // ── Types (text_attribution event shape from WASM) ───────────────────
@@ -39,35 +40,6 @@ interface TextAttributionEvent {
     deleted: number;
     actors: string[];
   }>;
-}
-
-// ── Editor registry ──────────────────────────────────────────────────
-//
-// Cells register/unregister their EditorView here. This is a separate map
-// from cursor-registry because the two systems have independent lifecycles
-// and we want to avoid tight coupling. The registration calls are cheap
-// (Map.set/delete) and happen at the same points as cursor registration.
-
-import type { EditorView } from "@codemirror/view";
-
-const editors = new Map<string, EditorView>();
-
-/**
- * Register a CodeMirror EditorView for a cell. The registry will dispatch
- * text attribution highlights to this view when attribution events arrive.
- */
-export function registerAttributionEditor(
-  cellId: string,
-  view: EditorView,
-): void {
-  editors.set(cellId, view);
-}
-
-/**
- * Unregister an EditorView when a cell unmounts or the view changes.
- */
-export function unregisterAttributionEditor(cellId: string): void {
-  editors.delete(cellId);
 }
 
 // ── Color cache ──────────────────────────────────────────────────────
@@ -84,13 +56,11 @@ export function unregisterAttributionEditor(cellId: string): void {
 function colorForActors(actors: string[]): string {
   if (actors.length === 0) return "#3b82f6"; // blue-500 fallback
 
-  // TODO(rgbkrk): This fuzzy matching is fragile — it works when the actor
-  // label contains the peer's display name (e.g., "agent:claude:ab12cd34"
-  // matches peer label "Claude") but breaks for generic labels like "Agent".
-  // The real fix is unifying peer_label and actor_label so both systems hash
-  // the same string. See the discussion on identity alignment in #833.
+  // Exact match: look up the actor label in the cursor-registry's peer map.
+  // Each peer's presence update includes their Automerge actor label, so
+  // we can directly map attribution actors to cursor colors.
   for (const actor of actors) {
-    const peerMatch = findPeerColorByLabel(actor);
+    const peerMatch = findPeerColorByActorLabel(actor);
     if (peerMatch) return peerMatch;
   }
 
@@ -132,7 +102,7 @@ function dispatchAttributionMarks(
   const byCellId = new Map<string, AttributionMark[]>();
 
   for (const attr of attributions) {
-    const view = editors.get(attr.cell_id);
+    const view = getCellEditor(attr.cell_id);
     if (!view) continue;
 
     // Skip pure deletions — nothing to highlight (the text is gone)
@@ -169,7 +139,7 @@ function dispatchAttributionMarks(
 
   // Dispatch to each affected cell's EditorView
   for (const [cellId, marks] of byCellId) {
-    const view = editors.get(cellId);
+    const view = getCellEditor(cellId);
     if (view) {
       addTextAttributions(view, marks);
     }
@@ -188,6 +158,5 @@ export function startAttributionDispatch(): () => void {
 
   return () => {
     unsubscribe();
-    editors.clear();
   };
 }

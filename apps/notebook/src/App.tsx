@@ -1013,7 +1013,11 @@ function AppContent() {
   }, []);
 
   return (
-    <PresenceProvider peerId={peerIdRef.current} peerLabel={peerLabel}>
+    <PresenceProvider
+      peerId={peerIdRef.current}
+      peerLabel={peerLabel}
+      actorLabel={localActor}
+    >
       <div className="flex h-full flex-col bg-background overflow-hidden">
         {gitInfo && (
           <DebugBanner

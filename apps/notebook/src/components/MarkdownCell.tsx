@@ -23,10 +23,6 @@ import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { useCrdtBridge } from "../hooks/useCrdtBridge";
-import {
-  registerAttributionEditor,
-  unregisterAttributionEditor,
-} from "../lib/attribution-registry";
 import { useBlobPort } from "../lib/blob-port";
 import {
   useIsCellFocused,
@@ -34,7 +30,14 @@ import {
   useIsPreviousCellFromFocused,
   useSearchQuery,
 } from "../lib/cell-ui-state";
-import { registerEditor, unregisterEditor } from "../lib/cursor-registry";
+import {
+  onEditorRegistered,
+  onEditorUnregistered,
+} from "../lib/cursor-registry";
+import {
+  registerCellEditor,
+  unregisterCellEditor,
+} from "../lib/editor-registry";
 import { logger } from "../lib/logger";
 import { rewriteMarkdownAssetRefs } from "../lib/markdown-assets";
 import { openUrl } from "../lib/open-url";
@@ -165,8 +168,8 @@ export const MarkdownCell = memo(function MarkdownCell({
   useEffect(() => {
     if (!editing) {
       if (registeredViewRef.current) {
-        unregisterEditor(cell.id);
-        unregisterAttributionEditor(cell.id);
+        onEditorUnregistered(cell.id);
+        unregisterCellEditor(cell.id);
         registeredViewRef.current = null;
       }
       return;
@@ -176,8 +179,8 @@ export const MarkdownCell = memo(function MarkdownCell({
       const view = editorRef.current?.getEditor() ?? null;
       if (view && view !== registeredViewRef.current) {
         registeredViewRef.current = view;
-        registerEditor(cell.id, view);
-        registerAttributionEditor(cell.id, view);
+        registerCellEditor(cell.id, view);
+        onEditorRegistered(cell.id);
         return true;
       }
       return false;
@@ -195,8 +198,8 @@ export const MarkdownCell = memo(function MarkdownCell({
       return () => {
         clearInterval(intervalId);
         if (registeredViewRef.current) {
-          unregisterEditor(cell.id);
-          unregisterAttributionEditor(cell.id);
+          onEditorUnregistered(cell.id);
+          unregisterCellEditor(cell.id);
           registeredViewRef.current = null;
         }
       };
@@ -204,8 +207,8 @@ export const MarkdownCell = memo(function MarkdownCell({
 
     return () => {
       if (registeredViewRef.current) {
-        unregisterEditor(cell.id);
-        unregisterAttributionEditor(cell.id);
+        onEditorUnregistered(cell.id);
+        unregisterCellEditor(cell.id);
         registeredViewRef.current = null;
       }
     };
