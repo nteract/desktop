@@ -1684,6 +1684,7 @@ where
                 .map(|p| presence::PeerSnapshot {
                     peer_id: p.peer_id.clone(),
                     peer_label: p.peer_label.clone(),
+                    actor_label: p.actor_label.clone(),
                     channels: p.channels.values().cloned().collect(),
                 })
                 .collect();
@@ -1830,13 +1831,14 @@ where
                                     .as_millis() as u64;
 
                                 match presence::decode_message(&frame.payload) {
-                                    Ok(presence::PresenceMessage::Update { data, peer_label, .. }) => {
+                                    Ok(presence::PresenceMessage::Update { data, peer_label, actor_label, .. }) => {
                                         // Reject daemon-owned channels before updating shared state.
                                         // This prevents clients from spoofing kernel status.
                                         if matches!(data, presence::ChannelData::KernelState(_)) {
                                             warn!("[notebook-sync] Client tried to publish KernelState presence, ignoring");
                                         } else {
                                             let data_for_relay = data.clone();
+                                            let actor_label_for_relay = actor_label.clone();
                                             // Sanitize peer_label: trim whitespace, clamp length,
                                             // treat empty as fallback. Prevents UI/memory issues
                                             // from malicious or buggy clients.
@@ -1847,6 +1849,7 @@ where
                                             let is_new = room.presence.write().await.update_peer(
                                                 peer_id,
                                                 &label,
+                                                actor_label.as_deref(),
                                                 data,
                                                 now_ms,
                                             );
@@ -1863,6 +1866,7 @@ where
                                                     .map(|p| presence::PeerSnapshot {
                                                         peer_id: p.peer_id.clone(),
                                                         peer_label: p.peer_label.clone(),
+                                                        actor_label: p.actor_label.clone(),
                                                         channels: p.channels.values().cloned().collect(),
                                                     })
                                                     .collect();
@@ -1883,6 +1887,7 @@ where
                                                 &presence::PresenceMessage::Update {
                                                     peer_id: peer_id.to_string(),
                                                     peer_label: sanitized_label,
+                                                    actor_label: actor_label_for_relay,
                                                     data: data_for_relay,
                                                 },
                                             ) {
@@ -2822,6 +2827,7 @@ pub(crate) async fn update_kernel_presence(
     presence_state.write().await.update_peer(
         "daemon",
         "daemon",
+        None,
         presence::ChannelData::KernelState(data.clone()),
         now_ms,
     );

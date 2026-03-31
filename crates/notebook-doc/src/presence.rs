@@ -162,6 +162,11 @@ pub enum PresenceMessage {
         peer_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         peer_label: Option<String>,
+        /// Automerge actor label (e.g. "human:abc123", "agent:claude:def456").
+        /// Bridges presence identity to CRDT attribution identity so
+        /// attribution highlights can use the same color as the peer's cursor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        actor_label: Option<String>,
         #[serde(flatten)]
         data: ChannelData,
     },
@@ -190,6 +195,9 @@ pub struct PeerSnapshot {
     pub peer_id: String,
     /// Free-form label identifying the peer (e.g. "human", "agent", "daemon").
     pub peer_label: String,
+    /// Automerge actor label for CRDT attribution color matching.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_label: Option<String>,
     pub channels: Vec<ChannelData>,
 }
 
@@ -223,19 +231,21 @@ pub fn decode_message(data: &[u8]) -> Result<PresenceMessage, PresenceError> {
 
 /// Encode a cursor update message.
 pub fn encode_cursor_update(peer_id: &str, pos: &CursorPosition) -> Vec<u8> {
-    encode_cursor_update_labeled(peer_id, None, pos)
+    encode_cursor_update_labeled(peer_id, None, None, pos)
 }
 
-/// Encode a cursor update with an optional peer label.
+/// Encode a cursor update with optional peer and actor labels.
 pub fn encode_cursor_update_labeled(
     peer_id: &str,
     peer_label: Option<&str>,
+    actor_label: Option<&str>,
     pos: &CursorPosition,
 ) -> Vec<u8> {
     // Cursor encoding is infallible for valid types — unwrap is safe here.
     encode_message(&PresenceMessage::Update {
         peer_id: peer_id.to_string(),
         peer_label: peer_label.map(|s| s.to_string()),
+        actor_label: actor_label.map(|s| s.to_string()),
         data: ChannelData::Cursor(pos.clone()),
     })
     .expect("CBOR encoding of cursor should not fail")
@@ -243,18 +253,20 @@ pub fn encode_cursor_update_labeled(
 
 /// Encode a selection update message.
 pub fn encode_selection_update(peer_id: &str, sel: &SelectionRange) -> Vec<u8> {
-    encode_selection_update_labeled(peer_id, None, sel)
+    encode_selection_update_labeled(peer_id, None, None, sel)
 }
 
-/// Encode a selection update with an optional peer label.
+/// Encode a selection update with optional peer and actor labels.
 pub fn encode_selection_update_labeled(
     peer_id: &str,
     peer_label: Option<&str>,
+    actor_label: Option<&str>,
     sel: &SelectionRange,
 ) -> Vec<u8> {
     encode_message(&PresenceMessage::Update {
         peer_id: peer_id.to_string(),
         peer_label: peer_label.map(|s| s.to_string()),
+        actor_label: actor_label.map(|s| s.to_string()),
         data: ChannelData::Selection(sel.clone()),
     })
     .expect("CBOR encoding of selection should not fail")
@@ -262,18 +274,20 @@ pub fn encode_selection_update_labeled(
 
 /// Encode a focus update message (cell-level presence without cursor).
 pub fn encode_focus_update(peer_id: &str, cell_id: &str) -> Vec<u8> {
-    encode_focus_update_labeled(peer_id, None, cell_id)
+    encode_focus_update_labeled(peer_id, None, None, cell_id)
 }
 
-/// Encode a focus update with an optional peer label.
+/// Encode a focus update with optional peer and actor labels.
 pub fn encode_focus_update_labeled(
     peer_id: &str,
     peer_label: Option<&str>,
+    actor_label: Option<&str>,
     cell_id: &str,
 ) -> Vec<u8> {
     encode_message(&PresenceMessage::Update {
         peer_id: peer_id.to_string(),
         peer_label: peer_label.map(|s| s.to_string()),
+        actor_label: actor_label.map(|s| s.to_string()),
         data: ChannelData::Focus(CellFocus {
             cell_id: cell_id.to_string(),
         }),
@@ -295,6 +309,7 @@ pub fn encode_kernel_state_update(peer_id: &str, state: &KernelStateData) -> Vec
     encode_message(&PresenceMessage::Update {
         peer_id: peer_id.to_string(),
         peer_label: None,
+        actor_label: None,
         data: ChannelData::KernelState(state.clone()),
     })
     .expect("CBOR encoding of kernel state should not fail")
@@ -307,6 +322,7 @@ pub fn encode_custom_update(peer_id: &str, data: &[u8]) -> Result<Vec<u8>, Prese
     encode_message(&PresenceMessage::Update {
         peer_id: peer_id.to_string(),
         peer_label: None,
+        actor_label: None,
         data: ChannelData::Custom(data.to_vec()),
     })
 }
@@ -320,6 +336,7 @@ pub fn encode_custom_update_labeled(
     encode_message(&PresenceMessage::Update {
         peer_id: peer_id.to_string(),
         peer_label: peer_label.map(|s| s.to_string()),
+        actor_label: None,
         data: ChannelData::Custom(data.to_vec()),
     })
     .expect("CBOR encoding of custom update should not fail")
@@ -373,6 +390,8 @@ pub struct PeerPresence {
     pub peer_id: String,
     /// Free-form label identifying the peer (e.g. "human", "agent", "daemon").
     pub peer_label: String,
+    /// Automerge actor label for CRDT attribution color matching.
+    pub actor_label: Option<String>,
     pub channels: HashMap<Channel, ChannelData>,
     /// Last time this peer sent any message (update or heartbeat), in ms.
     pub last_seen_ms: u64,
@@ -406,6 +425,7 @@ impl PresenceState {
         &mut self,
         peer_id: &str,
         peer_label: &str,
+        actor_label: Option<&str>,
         data: ChannelData,
         now_ms: u64,
     ) -> bool {
@@ -417,6 +437,7 @@ impl PresenceState {
             .or_insert_with(|| PeerPresence {
                 peer_id: peer_id.to_string(),
                 peer_label: peer_label.to_string(),
+                actor_label: actor_label.map(|s| s.to_string()),
                 channels: HashMap::new(),
                 last_seen_ms: now_ms,
                 last_active_ms: now_ms,
@@ -425,6 +446,9 @@ impl PresenceState {
         entry.last_seen_ms = now_ms;
         entry.last_active_ms = now_ms;
         entry.peer_label = peer_label.to_string();
+        if let Some(al) = actor_label {
+            entry.actor_label = Some(al.to_string());
+        }
         is_new
     }
 
@@ -500,6 +524,7 @@ impl PresenceState {
             .map(|peer| PeerSnapshot {
                 peer_id: peer.peer_id.clone(),
                 peer_label: peer.peer_label.clone(),
+                actor_label: peer.actor_label.clone(),
                 channels: peer.channels.values().cloned().collect(),
             })
             .collect();
@@ -518,6 +543,7 @@ impl PresenceState {
                 PeerPresence {
                     peer_id: snap.peer_id.clone(),
                     peer_label: snap.peer_label.clone(),
+                    actor_label: snap.actor_label.clone(),
                     channels,
                     last_seen_ms: now_ms,
                     last_active_ms: now_ms,
@@ -587,6 +613,7 @@ mod tests {
                 peer_id,
                 peer_label,
                 data,
+                ..
             } => {
                 assert_eq!(peer_id, "peer-1");
                 assert_eq!(peer_label, None);
@@ -603,13 +630,14 @@ mod tests {
             line: 10,
             column: 3,
         };
-        let encoded = encode_cursor_update_labeled("peer-1", Some("Codex"), &pos);
+        let encoded = encode_cursor_update_labeled("peer-1", Some("Codex"), None, &pos);
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::Update {
                 peer_id,
                 peer_label,
                 data,
+                ..
             } => {
                 assert_eq!(peer_id, "peer-1");
                 assert_eq!(peer_label, Some("Codex".to_string()));
@@ -628,13 +656,14 @@ mod tests {
             head_line: 3,
             head_col: 10,
         };
-        let encoded = encode_selection_update_labeled("agent-1", Some("Claude"), &sel);
+        let encoded = encode_selection_update_labeled("agent-1", Some("Claude"), None, &sel);
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::Update {
                 peer_id,
                 peer_label,
                 data,
+                ..
             } => {
                 assert_eq!(peer_id, "agent-1");
                 assert_eq!(peer_label, Some("Claude".to_string()));
@@ -660,6 +689,7 @@ mod tests {
                 peer_id,
                 peer_label,
                 data,
+                ..
             } => {
                 assert_eq!(peer_id, "editor-2");
                 assert_eq!(peer_label, None);
@@ -712,6 +742,7 @@ mod tests {
             PeerSnapshot {
                 peer_id: "user-1".into(),
                 peer_label: "human".into(),
+                actor_label: None,
                 channels: vec![ChannelData::Cursor(CursorPosition {
                     cell_id: "c1".into(),
                     line: 10,
@@ -721,6 +752,7 @@ mod tests {
             PeerSnapshot {
                 peer_id: "daemon".into(),
                 peer_label: "daemon".into(),
+                actor_label: None,
                 channels: vec![ChannelData::KernelState(KernelStateData {
                     status: KernelStatus::Busy,
                     env_source: "conda:prewarmed".into(),
@@ -801,7 +833,7 @@ mod tests {
             line: 1,
             column: 0,
         });
-        let is_new = state.update_peer("peer-1", "human", cursor, 1000);
+        let is_new = state.update_peer("peer-1", "human", None, cursor, 1000);
         assert!(is_new);
         assert_eq!(state.peer_count(), 1);
         assert!(state.get_peer("peer-1").is_some());
@@ -820,8 +852,8 @@ mod tests {
             line: 5,
             column: 10,
         });
-        assert!(state.update_peer("peer-1", "human", c1, 1000));
-        assert!(!state.update_peer("peer-1", "human", c2, 2000));
+        assert!(state.update_peer("peer-1", "human", None, c1, 1000));
+        assert!(!state.update_peer("peer-1", "human", None, c2, 2000));
         assert_eq!(state.peer_count(), 1);
         let peer = state.get_peer("peer-1").unwrap();
         assert_eq!(peer.last_active_ms, 2000);
@@ -839,8 +871,8 @@ mod tests {
             line: 0,
             column: 0,
         });
-        state.update_peer("old", "human", cursor.clone(), 1000);
-        state.update_peer("recent", "agent", cursor, 50_000);
+        state.update_peer("old", "human", None, cursor.clone(), 1000);
+        state.update_peer("recent", "agent", None, cursor, 50_000);
 
         let pruned = state.prune_stale(60_000, DEFAULT_PEER_TTL_MS);
         assert_eq!(pruned, vec!["old"]);
@@ -856,7 +888,7 @@ mod tests {
             line: 0,
             column: 0,
         });
-        state.update_peer("peer-1", "human", cursor, 1000);
+        state.update_peer("peer-1", "human", None, cursor, 1000);
 
         // Heartbeat at 30s keeps it alive
         state.mark_seen("peer-1", 30_000);
@@ -874,7 +906,7 @@ mod tests {
             line: 0,
             column: 0,
         });
-        state.update_peer("peer-1", "human", cursor, 1000);
+        state.update_peer("peer-1", "human", None, cursor, 1000);
         assert_eq!(state.peer_count(), 1);
         let removed = state.remove_peer("peer-1");
         assert!(removed.is_some());
@@ -890,7 +922,7 @@ mod tests {
             status: KernelStatus::Idle,
             env_source: "uv:inline".into(),
         });
-        state.update_peer("daemon", "daemon", ks, 1000);
+        state.update_peer("daemon", "daemon", None, ks, 1000);
 
         let kernel = state.kernel_state().unwrap();
         assert_eq!(kernel.status, KernelStatus::Idle);
@@ -910,8 +942,8 @@ mod tests {
             line: 5,
             column: 3,
         });
-        state.update_peer("me", "human", c1, 1000);
-        state.update_peer("agent", "agent", c2, 1000);
+        state.update_peer("me", "human", None, c1, 1000);
+        state.update_peer("agent", "agent", None, c2, 1000);
 
         let cursors = state.remote_cursors("me");
         assert_eq!(cursors.len(), 1);
@@ -948,8 +980,8 @@ mod tests {
             status: KernelStatus::Busy,
             env_source: "conda:prewarmed".into(),
         });
-        state1.update_peer("user", "human", cursor, 1000);
-        state1.update_peer("daemon", "daemon", ks, 1000);
+        state1.update_peer("user", "human", None, cursor, 1000);
+        state1.update_peer("daemon", "daemon", None, ks, 1000);
 
         let snapshot_bytes = state1.encode_snapshot("daemon");
 
@@ -994,8 +1026,8 @@ mod tests {
             head_line: 3,
             head_col: 10,
         });
-        state.update_peer("peer-1", "human", cursor, 1000);
-        state.update_peer("peer-1", "human", sel, 1000);
+        state.update_peer("peer-1", "human", None, cursor, 1000);
+        state.update_peer("peer-1", "human", None, sel, 1000);
 
         let peer = state.get_peer("peer-1").unwrap();
         assert_eq!(peer.channels.len(), 2);
@@ -1047,6 +1079,7 @@ mod tests {
                 peer_id,
                 peer_label,
                 data,
+                ..
             } => {
                 assert_eq!(peer_id, "peer-1");
                 assert_eq!(peer_label, None);
@@ -1063,13 +1096,14 @@ mod tests {
 
     #[test]
     fn test_focus_labeled_roundtrip() {
-        let encoded = encode_focus_update_labeled("agent-1", Some("Claude"), "cell-xyz");
+        let encoded = encode_focus_update_labeled("agent-1", Some("Claude"), None, "cell-xyz");
         let msg = decode_message(&encoded).unwrap();
         match msg {
             PresenceMessage::Update {
                 peer_id,
                 peer_label,
                 data,
+                ..
             } => {
                 assert_eq!(peer_id, "agent-1");
                 assert_eq!(peer_label, Some("Claude".to_string()));
@@ -1161,8 +1195,8 @@ mod tests {
             head_line: 3,
             head_col: 10,
         });
-        state.update_peer("peer-1", "human", cursor, 1000);
-        state.update_peer("peer-1", "human", sel, 1000);
+        state.update_peer("peer-1", "human", None, cursor, 1000);
+        state.update_peer("peer-1", "human", None, sel, 1000);
         assert_eq!(state.get_peer("peer-1").unwrap().channels.len(), 2);
 
         // Clear cursor channel
@@ -1185,7 +1219,7 @@ mod tests {
             line: 0,
             column: 0,
         });
-        state.update_peer("peer-1", "human", cursor, 1000);
+        state.update_peer("peer-1", "human", None, cursor, 1000);
         assert!(!state.clear_channel("peer-1", Channel::Selection));
         assert_eq!(state.get_peer("peer-1").unwrap().channels.len(), 1);
     }
@@ -1205,8 +1239,8 @@ mod tests {
             head_line: 2,
             head_col: 8,
         });
-        state.update_peer("peer-1", "human", cursor, 1000);
-        state.update_peer("peer-1", "human", sel, 1000);
+        state.update_peer("peer-1", "human", None, cursor, 1000);
+        state.update_peer("peer-1", "human", None, sel, 1000);
 
         // Clear selection, snapshot should only have cursor
         state.clear_channel("peer-1", Channel::Selection);
@@ -1228,7 +1262,7 @@ mod tests {
         let focus = ChannelData::Focus(CellFocus {
             cell_id: "cell-a".into(),
         });
-        state.update_peer("agent", "Claude", focus, 1000);
+        state.update_peer("agent", "Claude", None, focus, 1000);
 
         let snapshot_bytes = state.encode_snapshot("daemon");
         let msg = decode_message(&snapshot_bytes).unwrap();

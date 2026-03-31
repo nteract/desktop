@@ -12,7 +12,6 @@
  *       → setRemoteCursors(view, ...) / setRemoteSelections(view, ...)
  */
 
-import type { EditorView } from "@codemirror/view";
 import {
   peerColor,
   type RemoteCursorState,
@@ -20,6 +19,7 @@ import {
   setRemoteCursors,
   setRemoteSelections,
 } from "@/components/editor/remote-cursors";
+import { getAllCellEditors, getCellEditor } from "./editor-registry";
 import { logger } from "./logger";
 import { subscribePresence } from "./notebook-frame-bus";
 
@@ -48,6 +48,7 @@ interface PresenceUpdate {
   type: "update";
   peer_id: string;
   peer_label?: string;
+  actor_label?: string;
   channel: string;
   data: unknown;
 }
@@ -58,6 +59,7 @@ interface PresenceSnapshot {
   peers: Array<{
     peer_id: string;
     peer_label: string;
+    actor_label?: string;
     channels: ChannelEntry[];
   }>;
 }
@@ -90,6 +92,7 @@ type PresenceMessage =
 export interface PeerCursorInfo {
   peerId: string;
   peerLabel: string;
+  actorLabel?: string;
   color: string;
   cursor?: CursorData;
   selection?: SelectionData;
@@ -98,32 +101,27 @@ export interface PeerCursorInfo {
 
 // ── Registry state ───────────────────────────────────────────────────
 
-/** Map of cellId → registered EditorView */
-const editors = new Map<string, EditorView>();
-
 /** Map of peerId → current cursor/selection state */
 const peers = new Map<string, PeerCursorInfo>();
 
 /** The local peer ID (excluded from remote cursor rendering) */
 let localPeerId: string | null = null;
 
-// ── Editor registration ──────────────────────────────────────────────
+// ── Dispatch helpers ─────────────────────────────────────────────────
 
 /**
- * Register a CodeMirror EditorView for a cell. The registry will dispatch
- * remote cursor StateEffects to this view when presence updates arrive.
+ * Called when a cell editor is registered via editor-registry.
+ * Immediately render any existing cursors for this cell.
  */
-export function registerEditor(cellId: string, view: EditorView): void {
-  editors.set(cellId, view);
-  // Immediately render any existing cursors for this cell
+export function onEditorRegistered(cellId: string): void {
   dispatchToCell(cellId);
 }
 
 /**
- * Unregister an EditorView when a cell unmounts or the view changes.
+ * Called when a cell editor is unregistered.
+ * Clears peer state referencing that cell.
  */
-export function unregisterEditor(cellId: string): void {
-  editors.delete(cellId);
+export function onEditorUnregistered(cellId: string): void {
   for (const peer of peers.values()) {
     if (peer.cursor?.cell_id === cellId) {
       peer.cursor = undefined;
@@ -137,11 +135,9 @@ export function unregisterEditor(cellId: string): void {
   }
 }
 
-// ── Dispatch helpers ─────────────────────────────────────────────────
-
 /** Collect all remote cursors for a cell and dispatch to its EditorView. */
 function dispatchToCell(cellId: string): void {
-  const view = editors.get(cellId);
+  const view = getCellEditor(cellId);
   if (!view) {
     logger.debug(`[cursor-registry] dispatchToCell: no view for ${cellId}`);
     return;
@@ -212,6 +208,10 @@ function handlePresence(payload: unknown): void {
       if (msg.peer_label) {
         peer.peerLabel = msg.peer_label;
       }
+      // Store actor label for CRDT attribution color matching
+      if (msg.actor_label) {
+        peer.actorLabel = msg.actor_label;
+      }
 
       const affectedCells = new Set<string>();
 
@@ -278,6 +278,7 @@ function handlePresence(payload: unknown): void {
         const peer: PeerCursorInfo = {
           peerId: snap.peer_id,
           peerLabel: snap.peer_label,
+          actorLabel: snap.actor_label,
           color: peerColor(snap.peer_id),
         };
 
@@ -361,7 +362,7 @@ export function startCursorDispatch(peerId: string): () => void {
   // canonical peers map. This self-heals if individual update messages
   // were lost, misordered, or if the rendering diverged from state.
   const reconcileTimer = setInterval(() => {
-    for (const cellId of editors.keys()) {
+    for (const cellId of getAllCellEditors().keys()) {
       dispatchToCell(cellId);
     }
   }, RECONCILE_INTERVAL_MS);
@@ -372,14 +373,10 @@ export function startCursorDispatch(peerId: string): () => void {
     localPeerId = null;
     peers.clear();
     // Clear all editors' cursors on shutdown
-    for (const [cellId] of editors) {
-      const view = editors.get(cellId);
-      if (view) {
-        setRemoteCursors(view, []);
-        setRemoteSelections(view, []);
-      }
+    for (const [, view] of getAllCellEditors()) {
+      setRemoteCursors(view, []);
+      setRemoteSelections(view, []);
     }
-    editors.clear();
     // Clear cell subscriptions
     cellSubscribers.clear();
   };
@@ -393,22 +390,20 @@ const cellSubscribers = new Map<string, Set<() => void>>();
 /**
  * Find a connected peer's color by matching against an actor label.
  *
- * Actor labels follow the convention `"agent:<name>:<session>"` while
- * peer labels are display names like `"Claude"` or `"🤖 Agent"`.
- * We match by checking if the actor label contains the peer label
- * (case-insensitive), so `"agent:claude:ab12cd34"` matches a peer
- * labeled `"Claude"`.
+ * Exact match against the `actorLabel` field stored from presence
+ * messages. This bridges CRDT attribution identity (actor labels like
+ * `"agent:claude:ab12cd34"`) to presence colors.
  *
  * Returns the peer's cursor color if found, or `undefined` if no
  * connected peer matches. This lets text attribution highlights use
  * the same color as the peer's live cursor.
  */
-export function findPeerColorByLabel(actorLabel: string): string | undefined {
-  const lower = actorLabel.toLowerCase();
+export function findPeerColorByActorLabel(
+  actorLabel: string,
+): string | undefined {
   for (const peer of peers.values()) {
     if (peer.peerId === localPeerId) continue;
-    const peerLower = peer.peerLabel.toLowerCase();
-    if (peerLower && lower.includes(peerLower)) {
+    if (peer.actorLabel && peer.actorLabel === actorLabel) {
       return peer.color;
     }
   }

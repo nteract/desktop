@@ -453,10 +453,17 @@ async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
                         PresenceMessage::Update {
                             peer_id,
                             peer_label,
+                            actor_label,
                             data,
                         } => {
                             let label = peer_label.as_deref().unwrap_or(&peer_id);
-                            state.presence.update_peer(&peer_id, label, data, now_ms);
+                            state.presence.update_peer(
+                                &peer_id,
+                                label,
+                                actor_label.as_deref(),
+                                data,
+                                now_ms,
+                            );
                         }
                         PresenceMessage::Snapshot { peers, .. } => {
                             state.presence.apply_snapshot(&peers, now_ms);

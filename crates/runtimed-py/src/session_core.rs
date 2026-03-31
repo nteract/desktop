@@ -212,10 +212,16 @@ pub(crate) async fn announce_presence(state: &SessionState) {
         None => return,
     };
     let peer_label = state.peer_label.as_deref();
+    let actor_label = state.actor_label.as_deref();
     let first_cell_id = handle.first_cell_id();
 
     let data = if let Some(cell_id) = first_cell_id {
-        notebook_doc::presence::encode_focus_update_labeled("local", peer_label, &cell_id)
+        notebook_doc::presence::encode_focus_update_labeled(
+            "local",
+            peer_label,
+            actor_label,
+            &cell_id,
+        )
     } else {
         notebook_doc::presence::encode_custom_update_labeled("local", peer_label, &[])
     };
@@ -1504,9 +1510,11 @@ pub(crate) async fn set_cursor(
     line: u32,
     column: u32,
 ) -> PyResult<()> {
+    let actor_label = state.lock().await.actor_label.clone();
     let data = notebook_doc::presence::encode_cursor_update_labeled(
         "local",
         peer_label,
+        actor_label.as_deref(),
         &notebook_doc::presence::CursorPosition {
             cell_id: cell_id.to_string(),
             line,
@@ -1532,9 +1540,11 @@ pub(crate) async fn set_selection(
     head_line: u32,
     head_col: u32,
 ) -> PyResult<()> {
+    let actor_label = state.lock().await.actor_label.clone();
     let data = notebook_doc::presence::encode_selection_update_labeled(
         "local",
         peer_label,
+        actor_label.as_deref(),
         &notebook_doc::presence::SelectionRange {
             cell_id: cell_id.to_string(),
             anchor_line,
@@ -1601,9 +1611,11 @@ async fn emit_cursor_presence_internal(
     let (data, handle) = {
         let st = state.lock().await;
         let peer_label = st.peer_label.clone();
+        let actor_label = st.actor_label.clone();
         let data = notebook_doc::presence::encode_cursor_update_labeled(
             "local",
             peer_label.as_deref(),
+            actor_label.as_deref(),
             &notebook_doc::presence::CursorPosition {
                 cell_id: cell_id.to_string(),
                 line,
@@ -1629,9 +1641,11 @@ async fn emit_focus_presence_internal(
     let (data, handle) = {
         let st = state.lock().await;
         let peer_label = st.peer_label.clone();
+        let actor_label = st.actor_label.clone();
         let data = notebook_doc::presence::encode_focus_update_labeled(
             "local",
             peer_label.as_deref(),
+            actor_label.as_deref(),
             cell_id,
         );
         let handle = st.handle.clone().ok_or("Not connected")?;
@@ -1669,7 +1683,13 @@ pub(crate) async fn set_focus(
     peer_label: Option<&str>,
     cell_id: &str,
 ) -> PyResult<()> {
-    let data = notebook_doc::presence::encode_focus_update_labeled("local", peer_label, cell_id);
+    let actor_label = state.lock().await.actor_label.clone();
+    let data = notebook_doc::presence::encode_focus_update_labeled(
+        "local",
+        peer_label,
+        actor_label.as_deref(),
+        cell_id,
+    );
     let st = state.lock().await;
     let handle = st
         .handle

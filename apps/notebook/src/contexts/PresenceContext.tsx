@@ -34,18 +34,18 @@ const PresenceContext = createContext<PresenceContextValue | null>(null);
 interface PresenceProviderProps {
   peerId: string;
   peerLabel?: string;
+  actorLabel?: string;
   children: ReactNode;
 }
 
 export function PresenceProvider({
   peerId,
   peerLabel = "",
+  actorLabel = "",
   children,
 }: PresenceProviderProps) {
-  const presence = usePresence(peerId, peerLabel);
+  const presence = usePresence(peerId, peerLabel, actorLabel);
 
-  // Wrap the presence methods to match the interface we want to expose
-  // (the hook already has these, but we're making them explicit)
   const setCursor = useCallback(
     (cellId: string, line: number, column: number) => {
       presence.setCursor(cellId, line, column);

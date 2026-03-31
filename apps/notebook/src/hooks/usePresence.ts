@@ -1,191 +1,37 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback } from "react";
 import { frame_types, sendFrame } from "../lib/frame-types";
 import { logger } from "../lib/logger";
-import { subscribePresence } from "../lib/notebook-frame-bus";
 import {
   encode_cursor_presence,
   encode_selection_presence,
 } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
-// ── Types ────────────────────────────────────────────────────────────
-
-export interface CursorPosition {
-  cell_id: string;
-  line: number;
-  column: number;
-}
-
-export interface SelectionRange {
-  cell_id: string;
-  anchor_line: number;
-  anchor_col: number;
-  head_line: number;
-  head_col: number;
-}
-
-export interface RemotePeer {
-  peerId: string;
-  peerLabel: string;
-  cursor?: CursorPosition;
-  selection?: SelectionRange;
-}
-
-// ── Presence message types (JSON from WASM decode of CBOR) ───────────
-
-interface PresenceUpdate {
-  type: "update";
-  peer_id: string;
-  peer_label?: string;
-  channel: "cursor" | "selection" | "kernel_state" | "custom";
-  data: CursorPosition | SelectionRange | unknown;
-}
-
-interface PresenceSnapshot {
-  type: "snapshot";
-  peer_id: string;
-  peers: Array<{
-    peer_id: string;
-    peer_label: string;
-    channels: Array<{
-      channel: "cursor" | "selection" | "kernel_state" | "custom";
-      data: unknown;
-    }>;
-  }>;
-}
-
-interface PresenceLeft {
-  type: "left";
-  peer_id: string;
-}
-
-interface PresenceHeartbeat {
-  type: "heartbeat";
-  peer_id: string;
-}
-
-type PresenceMessage =
-  | PresenceUpdate
-  | PresenceSnapshot
-  | PresenceLeft
-  | PresenceHeartbeat;
-
 // ── Hook ─────────────────────────────────────────────────────────────
 
 /**
- * Manages presence state (remote cursors, selections) from the unified frame pipe.
+ * Send-only presence hook. Provides methods to broadcast local cursor
+ * and selection positions to remote peers via the daemon.
  *
- * Presence events arrive as decoded JSON via the notebook frame bus,
- * dispatched by `useAutomergeNotebook` after WASM demux. This hook maintains
- * a map of remote peers and exposes helpers for sending local presence and
- * querying remote presence per cell.
- *
- * This is infrastructure-only — no UI rendering. Cell components can use
- * `cursorsForCell` / `selectionsForCell` to render remote indicators.
+ * Read-side presence (remote cursors, selections, peer tracking) is
+ * handled by cursor-registry.ts — a module-level frame bus subscriber
+ * that dispatches directly to CodeMirror without React involvement.
  *
  * @param peerId The local peer's ID. When `null`, the hook is inactive.
  * @param peerLabel Human-readable label for this peer (e.g. OS username).
+ * @param actorLabel Automerge actor label for CRDT attribution identity.
  */
-export function usePresence(peerId: string | null, peerLabel: string = "") {
-  // Ref-based peers map to avoid re-renders on every cursor move.
-  const peersRef = useRef<Map<string, RemotePeer>>(new Map());
-
-  // Bumped when the set of peers changes (join/leave/snapshot) to
-  // trigger re-renders for components that care about the peer list.
-  const [peerVersion, setPeerVersion] = useState(0);
-
-  // ── Incoming presence ────────────────────────────────────────────
-
-  useEffect(() => {
-    if (!peerId) return;
-
-    let cancelled = false;
-
-    const unsubscribePresence = subscribePresence((payload) => {
-      if (cancelled) return;
-      const msg = payload as PresenceMessage;
-
-      switch (msg.type) {
-        case "update": {
-          // Ignore our own presence echoed back
-          if (msg.peer_id === peerId) return;
-
-          const existing = peersRef.current.get(msg.peer_id);
-          const peer: RemotePeer = existing ?? {
-            peerId: msg.peer_id,
-            peerLabel: msg.peer_label ?? "",
-          };
-
-          // Update peer_label if provided (may arrive with cursor/selection updates)
-          if (msg.peer_label && !peer.peerLabel) {
-            peer.peerLabel = msg.peer_label;
-          }
-
-          if (msg.channel === "cursor") {
-            peer.cursor = msg.data as CursorPosition;
-          } else if (msg.channel === "selection") {
-            peer.selection = msg.data as SelectionRange;
-          }
-          // kernel_state and custom channels are ignored for now
-
-          const isNew = !existing;
-          peersRef.current.set(msg.peer_id, peer);
-          if (isNew) {
-            setPeerVersion((v) => v + 1);
-          }
-          break;
-        }
-
-        case "snapshot": {
-          const newPeers = new Map<string, RemotePeer>();
-          for (const snap of msg.peers) {
-            // Skip our own peer entry from snapshots
-            if (snap.peer_id === peerId) continue;
-
-            const peer: RemotePeer = {
-              peerId: snap.peer_id,
-              peerLabel: snap.peer_label,
-            };
-            for (const ch of snap.channels) {
-              if (ch.channel === "cursor") {
-                peer.cursor = ch.data as CursorPosition;
-              } else if (ch.channel === "selection") {
-                peer.selection = ch.data as SelectionRange;
-              }
-            }
-            newPeers.set(snap.peer_id, peer);
-          }
-          peersRef.current = newPeers;
-          setPeerVersion((v) => v + 1);
-          break;
-        }
-
-        case "left": {
-          if (peersRef.current.delete(msg.peer_id)) {
-            setPeerVersion((v) => v + 1);
-          }
-          break;
-        }
-
-        case "heartbeat":
-          // No state change needed — staleness pruning is a future concern
-          break;
-      }
-    });
-
-    return () => {
-      cancelled = true;
-      unsubscribePresence();
-    };
-  }, [peerId]);
-
-  // ── Outgoing presence ────────────────────────────────────────────
-
+export function usePresence(
+  peerId: string | null,
+  peerLabel: string = "",
+  actorLabel: string = "",
+) {
   const setCursor = useCallback(
     (cellId: string, line: number, column: number) => {
       if (!peerId) return;
       const payload = encode_cursor_presence(
         peerId,
         peerLabel,
+        actorLabel,
         cellId,
         line,
         column,
@@ -194,7 +40,7 @@ export function usePresence(peerId: string | null, peerLabel: string = "") {
         logger.warn("[presence] send cursor failed:", e),
       );
     },
-    [peerId, peerLabel],
+    [peerId, peerLabel, actorLabel],
   );
 
   const setSelection = useCallback(
@@ -209,6 +55,7 @@ export function usePresence(peerId: string | null, peerLabel: string = "") {
       const payload = encode_selection_presence(
         peerId,
         peerLabel,
+        actorLabel,
         cellId,
         anchorLine,
         anchorCol,
@@ -219,70 +66,13 @@ export function usePresence(peerId: string | null, peerLabel: string = "") {
         logger.warn("[presence] send selection failed:", e),
       );
     },
-    [peerId, peerLabel],
+    [peerId, peerLabel, actorLabel],
   );
 
-  // ── Queries ──────────────────────────────────────────────────────
-  //
-  // Plain functions (no useCallback) — cheap to create and naturally
-  // get fresh references when peerVersion triggers a re-render.
-
-  const cursorsForCell = (
-    cellId: string,
-  ): Array<{ peerId: string; peerLabel: string; cursor: CursorPosition }> => {
-    const results: Array<{
-      peerId: string;
-      peerLabel: string;
-      cursor: CursorPosition;
-    }> = [];
-    for (const peer of peersRef.current.values()) {
-      if (peer.cursor?.cell_id === cellId) {
-        results.push({
-          peerId: peer.peerId,
-          peerLabel: peer.peerLabel,
-          cursor: peer.cursor,
-        });
-      }
-    }
-    return results;
-  };
-
-  const selectionsForCell = (
-    cellId: string,
-  ): Array<{
-    peerId: string;
-    peerLabel: string;
-    selection: SelectionRange;
-  }> => {
-    const results: Array<{
-      peerId: string;
-      peerLabel: string;
-      selection: SelectionRange;
-    }> = [];
-    for (const peer of peersRef.current.values()) {
-      if (peer.selection?.cell_id === cellId) {
-        results.push({
-          peerId: peer.peerId,
-          peerLabel: peer.peerLabel,
-          selection: peer.selection,
-        });
-      }
-    }
-    return results;
-  };
-
   return {
-    /** All remote peers (read from ref — use peerVersion for reactivity). */
-    peers: peersRef.current,
-    /** Incremented when peer set changes (join/leave/snapshot). */
-    peerVersion,
     /** Set the local cursor position (fire-and-forget). */
     setCursor,
     /** Set the local selection range (fire-and-forget). */
     setSelection,
-    /** Get all remote cursors in a specific cell. */
-    cursorsForCell,
-    /** Get all remote selections in a specific cell. */
-    selectionsForCell,
   };
 }
