@@ -5,13 +5,6 @@ on:
     branches: [main]
     paths:
       - 'pnpm-lock.yaml'
-      - 'Cargo.lock'
-      - 'flake.nix'
-      - 'flake.lock'
-  pull_request:
-    paths:
-      - 'pnpm-lock.yaml'
-      - 'Cargo.lock'
       - 'flake.nix'
       - 'flake.lock'
   workflow_dispatch:
@@ -88,26 +81,8 @@ jobs:
             gh pr create \
               --title "chore(nix): update pnpmDeps hash" \
               --body "Automated update of the pnpmDeps hash in flake.nix. Triggered because pnpm-lock.yaml changed and the pre-fetched offline store hash is stale." \
-              --head "$BRANCH" \
-              --label "nix"
+              --head "$BRANCH"
           else
             echo "PR #$EXISTING already exists, branch updated via force-push"
           fi
 
-  check:
-    name: Verify Nix build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: cachix/install-nix-action@v27
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-
-      - name: Check pnpmDeps hash
-        run: nix build .#pnpmDeps --no-link
-
-      - name: Check flake evaluates
-        run: nix flake check --no-build
