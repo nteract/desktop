@@ -22,7 +22,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     render_top_bar(frame, app, top_bar);
     render_cells(frame, app, cell_area);
-    render_bottom_bar(frame, bottom_bar);
+    render_bottom_bar(frame, app, bottom_bar);
 }
 
 fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
@@ -94,7 +94,7 @@ fn render_cells(frame: &mut Frame, app: &App, area: Rect) {
         .cells
         .iter()
         .enumerate()
-        .map(|(i, cell)| cell_height(cell, area.width, i == app.selected))
+        .map(|(i, cell)| cell_height(cell, area.width, i == app.selected, app))
         .collect();
 
     // Find the y-offset so the selected cell is visible
@@ -135,15 +135,21 @@ fn render_cells(frame: &mut Frame, app: &App, area: Rect) {
 
         if render_height > 0 {
             let cell_area = Rect::new(area.x, render_y, area.width, render_height);
-            render_cell(frame, cell, cell_area, i == app.selected);
+            render_cell(frame, cell, cell_area, i == app.selected, app);
         }
 
         y += h;
     }
 }
 
-fn cell_height(cell: &CellView, width: u16, _selected: bool) -> u16 {
-    let source_lines = cell.source.lines().count().max(1) as u16;
+fn cell_height(cell: &CellView, width: u16, _selected: bool, app: &App) -> u16 {
+    use super::state::Mode;
+
+    let source_lines = if _selected && app.mode == Mode::Edit {
+        app.edit_buffer.len().max(1) as u16
+    } else {
+        cell.source.lines().count().max(1) as u16
+    };
     // Prompt line (In [N]:) + source block (with borders = +2) + output lines + 1 gap
     let border_overhead: u16 = 2; // top + bottom border
     let source_height = source_lines + border_overhead;
@@ -169,12 +175,15 @@ fn cell_height(cell: &CellView, width: u16, _selected: bool) -> u16 {
     source_height + output_height + 1 // +1 gap between cells
 }
 
-fn render_cell(frame: &mut Frame, cell: &CellView, area: Rect, selected: bool) {
+fn render_cell(frame: &mut Frame, cell: &CellView, area: Rect, selected: bool, app: &App) {
+    use super::state::Mode;
+
     if area.height == 0 {
         return;
     }
 
     let is_code = cell.cell_type == "code";
+    let is_editing = selected && app.mode == Mode::Edit;
 
     // Prompt text
     let prompt = if is_code {
@@ -186,14 +195,22 @@ fn render_cell(frame: &mut Frame, cell: &CellView, area: Rect, selected: bool) {
         "Md:".to_string()
     };
 
-    let prompt_width = 9; // "In [99]: " — fixed width for alignment
+    let prompt_width = 9;
 
     // Selection marker
-    let marker = if selected { "► " } else { "  " };
+    let marker = if is_editing {
+        "* "
+    } else if selected {
+        "► "
+    } else {
+        "  "
+    };
     let left_margin = marker.len() + prompt_width;
 
     // Source block
-    let border_style = if selected {
+    let border_style = if is_editing {
+        Style::default().fg(Color::Yellow)
+    } else if selected {
         Style::default().fg(Color::Cyan)
     } else {
         Style::default().fg(Color::DarkGray)
@@ -203,15 +220,26 @@ fn render_cell(frame: &mut Frame, cell: &CellView, area: Rect, selected: bool) {
         .borders(Borders::ALL)
         .border_style(border_style);
 
-    let source_text = Paragraph::new(cell.source.as_str())
+    // Use edit buffer when editing, otherwise cell source
+    let source_str = if is_editing {
+        app.edit_buffer.join("\n")
+    } else {
+        cell.source.clone()
+    };
+
+    let source_text = Paragraph::new(source_str.as_str())
         .block(source_block)
         .wrap(Wrap { trim: false });
 
-    let source_lines = cell.source.lines().count().max(1) as u16;
-    let source_height = (source_lines + 2).min(area.height); // +2 for borders
+    let source_lines = source_str.lines().count().max(1) as u16;
+    let source_height = (source_lines + 2).min(area.height);
 
     // Render prompt
-    let prompt_style = if selected {
+    let prompt_style = if is_editing {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else if selected {
         Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD)
@@ -220,7 +248,14 @@ fn render_cell(frame: &mut Frame, cell: &CellView, area: Rect, selected: bool) {
     };
 
     let prompt_line = Line::from(vec![
-        Span::styled(marker, Style::default().fg(Color::Cyan)),
+        Span::styled(
+            marker,
+            Style::default().fg(if is_editing {
+                Color::Yellow
+            } else {
+                Color::Cyan
+            }),
+        ),
         Span::styled(
             format!("{:>width$}", prompt, width = prompt_width),
             prompt_style,
@@ -242,6 +277,15 @@ fn render_cell(frame: &mut Frame, cell: &CellView, area: Rect, selected: bool) {
             source_text,
             Rect::new(source_x, area.y, source_w, source_height),
         );
+    }
+
+    // Position cursor when editing (+1 for border)
+    if is_editing {
+        let cursor_x = source_x + 1 + app.cursor.col as u16;
+        let cursor_y = area.y + 1 + app.cursor.line as u16;
+        if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
     }
 
     // Render outputs below source
@@ -339,17 +383,37 @@ fn render_outputs(frame: &mut Frame, cell: &CellView, x: u16, y: u16, width: u16
     }
 }
 
-fn render_bottom_bar(frame: &mut Frame, area: Rect) {
-    let hints = Line::from(vec![
-        Span::styled(" j/k", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(":navigate  "),
-        Span::styled("Ctrl+Enter", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(":execute  "),
-        Span::styled("g/G", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(":first/last  "),
-        Span::styled("q", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(":quit"),
-    ]);
+fn render_bottom_bar(frame: &mut Frame, app: &App, area: Rect) {
+    use super::state::Mode;
+
+    let hints = match app.mode {
+        Mode::Normal => Line::from(vec![
+            Span::styled(" j/k", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(":navigate  "),
+            Span::styled("i/Enter", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(":edit  "),
+            Span::styled("Shift+Enter", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(":execute  "),
+            Span::styled("g/G", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(":first/last  "),
+            Span::styled("q", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(":quit"),
+        ]),
+        Mode::Edit => Line::from(vec![
+            Span::styled(
+                " -- EDIT -- ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(":done  "),
+            Span::styled("Shift+Enter", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(":run & move down  "),
+            Span::styled("Tab", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(":indent"),
+        ]),
+    };
 
     frame.render_widget(
         Paragraph::new(hints).style(Style::default().bg(Color::DarkGray).fg(Color::White)),
