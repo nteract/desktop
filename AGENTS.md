@@ -30,10 +30,10 @@ The supervisor automatically handles per-worktree isolation, env var plumbing, a
 
 ### Manual commands (when supervisor is not available)
 
-All commands that interact with the dev daemon require two env vars. Without them you'll hit the system daemon and cause problems.
+For raw terminal commands, opt into dev mode explicitly. `RUNTIMED_DEV=1` is what enables per-worktree daemon isolation. `RUNTIMED_WORKSPACE_PATH` is the safest way to pin the current worktree, though binaries launched from the repo root can also discover the worktree via git.
 
 ```bash
-# ── Dev daemon env vars (required for ALL dev commands) ────────────
+# ── Recommended env vars for raw dev-daemon commands ───────────────
 export RUNTIMED_DEV=1
 export RUNTIMED_WORKSPACE_PATH="$(pwd)"
 ```
@@ -232,10 +232,12 @@ For the installed app, `runt mcp` ships as a sidecar binary alongside `runtimed`
 |------|---------|
 | `supervisor_status` | Check child process, daemon, build mode, restart count, last error |
 | `supervisor_restart` | Restart child (`target="child"`) or daemon (`target="daemon"`) |
-| `supervisor_rebuild` | Run `maturin develop` to rebuild Rust Python bindings, then restart |
+| `supervisor_rebuild` | Rebuild the daemon binary and Rust Python bindings, restart the daemon, then restart the MCP child |
 | `supervisor_logs` | Tail the daemon log file |
+| `supervisor_vite_logs` | Tail the Vite dev server log file |
 | `supervisor_start_vite` | Start the Vite dev server for hot-reload frontend development |
 | `supervisor_stop` | Stop a managed process by name (e.g. `"vite"`) |
+| `supervisor_set_mode` | Switch the managed daemon between `debug` and `release` builds and restart it |
 
 ### nteract MCP Tools (27 tools for notebook interaction)
 
@@ -269,7 +271,7 @@ The supervisor watches source directories and auto-restarts the child on changes
 - **No MCP server** → use `cargo xtask run-mcp` to set one up
 - **Dev daemon not running** → nteract-dev starts it automatically via `supervisor_restart(target="daemon")`
 
-## Workspace Crates (17)
+## Workspace Crates (16)
 
 | Crate | Purpose |
 |-------|---------|
@@ -282,12 +284,11 @@ The supervisor watches source directories and auto-restarts the child on changes
 | `notebook-protocol` | Wire types — requests, responses, broadcasts |
 | `notebook-sync` | Automerge sync client — `DocHandle`, per-cell Python accessors |
 | `runt` | CLI — daemon management, kernel control, notebook launching, MCP server |
-| `runt-mcp` | Rust-native MCP server — 26 tools for notebook interaction via `runt mcp` |
+| `runt-mcp` | Rust-native MCP server — 27 tools for notebook interaction via `runt mcp` |
 | `runt-trust` | Notebook trust (HMAC-SHA256 over dependency metadata) |
 | `runt-workspace` | Per-worktree daemon isolation, socket path management |
 | `kernel-launch` | Kernel launching, tool bootstrapping (deno, uv, ruff via rattler) |
 | `kernel-env` | Python environment management (UV + Conda) with progress reporting |
-| `tauri-jupyter` | Shared Jupyter message types for Tauri/WebView |
 | `mcp-supervisor` | nteract-dev — MCP supervisor proxy, daemon/vite lifecycle management |
 | `xtask` | Build system orchestration |
 
@@ -300,23 +301,30 @@ All build, lint, and dev commands go through `cargo xtask`. **Run `cargo xtask h
 | Category | Command | Description |
 |----------|---------|-------------|
 | Dev | `cargo xtask dev` | Full setup: deps + build + daemon + app |
+| | `cargo xtask dev --skip-build` | Reuse existing build artifacts before launch |
+| | `cargo xtask dev --skip-install` | Reuse existing pnpm install before launch |
 | | `cargo xtask notebook` | Hot-reload dev server (Vite on port 5174) |
 | | `cargo xtask notebook --attach` | Attach Tauri to existing Vite server |
 | | `cargo xtask vite` | Start Vite standalone |
 | | `cargo xtask build` | Full debug build (frontend + Rust) |
 | | `cargo xtask build --rust-only` | Rebuild Rust only, reuse frontend |
 | | `cargo xtask run` | Run bundled debug binary |
+| Release | `cargo xtask build-app` | Build the desktop app bundle with icons |
+| | `cargo xtask build-dmg` | Build a DMG bundle (CI/release packaging) |
 | Daemon | `cargo xtask dev-daemon` | Per-worktree dev daemon |
+| | `cargo xtask dev-daemon --release` | Run the per-worktree daemon in release mode |
 | | `cargo xtask install-daemon` | Install runtimed as system daemon |
 | MCP | `cargo xtask run-mcp` | nteract-dev supervisor (daemon + MCP + auto-restart) |
 | | `cargo xtask run-mcp --print-config` | Print MCP client config JSON |
 | | `cargo xtask dev-mcp` | Direct nteract MCP (no supervisor) |
+| | `cargo xtask dev-mcp --print-config` | Print direct MCP client config JSON |
 | Lint | `cargo xtask lint` | Check formatting (Rust, JS/TS, Python) |
 | | `cargo xtask lint --fix` | Auto-fix formatting |
 | Test | `cargo xtask integration [filter]` | Python integration tests with isolated daemon |
 | | `cargo xtask e2e` | E2E testing (WebdriverIO) |
 | Other | `cargo xtask wasm` | Rebuild runtimed-wasm |
 | | `cargo xtask icons [source.png]` | Generate icon variants |
+| | `cargo xtask mcpb` | Package nteract as a Claude Desktop extension (`.mcpb`) |
 
 ## Runtime Daemon (`runtimed`)
 
@@ -411,7 +419,7 @@ Three implementations **must stay in sync** — if you change MIME classificatio
 | Location | Language | Function |
 |----------|----------|----------|
 | `crates/runtimed/src/output_store.rs` | Rust | `is_binary_mime()` |
-| `crates/runtimed-py/src/output_resolver.rs` | Rust | `is_binary_mime()` |
+| `crates/runtimed-client/src/output_resolver.rs` | Rust | `mime_kind()` |
 | `apps/notebook/src/lib/manifest-resolution.ts` | TypeScript | `isBinaryMime()` |
 
 The rule: `image/*` → binary (EXCEPT `image/svg+xml` — that's text). `audio/*`, `video/*` → binary. `application/*` → binary by default (EXCEPT json, javascript, xml, and `+json`/`+xml` suffixes). `text/*` → always text.

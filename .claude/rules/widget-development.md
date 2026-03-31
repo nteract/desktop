@@ -10,9 +10,9 @@ paths:
 
 Widgets run inside a security-isolated iframe. The parent window owns the WidgetStore and proxies Jupyter comm messages through the CommBridgeManager via postMessage. The iframe has no access to `window.__TAURI__` or parent DOM.
 
-**Parent window:** Kernel (via daemon) <-> WidgetStore (state management) <-> CommBridgeManager (routes messages) <-> postMessage boundary
+**Parent window:** Kernel (via daemon) <-> WidgetStore (state management) <-> CommBridgeManager (routes messages) <-> JSON-RPC `postMessage` boundary
 
-**Isolated iframe:** WidgetBridgeClient (receives msgs) <-> Widget Components (React renders)
+**Isolated iframe:** WidgetBridgeClient (JSON-RPC bridge) <-> Widget Components (React renders)
 
 ### Current State Architecture
 
@@ -35,8 +35,10 @@ New clients receive a `CommSync` broadcast (snapshot of all active widgets) on c
 | `src/components/widgets/anywidget-view.tsx` | AFM loader for anywidget ESM modules |
 | `src/components/widgets/widget-view.tsx` | Renders widgets by looking up registry |
 | `src/components/isolated/comm-bridge-manager.ts` | Routes comm messages between store and iframe |
-| `src/components/isolated/frame-bridge.ts` | Message protocol types and guards |
-| `src/isolated-renderer/widget-bridge-client.ts` | Iframe-side message handler |
+| `src/components/isolated/frame-bridge.ts` | Legacy frame message types and guards |
+| `src/components/isolated/jsonrpc-transport.ts` | JSON-RPC 2.0 transport over `postMessage` |
+| `src/components/isolated/rpc-methods.ts` | Shared widget bridge method constants |
+| `src/isolated-renderer/widget-bridge-client.ts` | Iframe-side JSON-RPC widget bridge |
 
 ## WidgetStore API
 
@@ -133,12 +135,9 @@ Anywidgets use ESM modules loaded at runtime. `anywidget-view.tsx` detects `_esm
 
 **Unit tests:** `src/components/widgets/__tests__/`
 
-**Enable debug logging:**
-```javascript
-// Browser console
-localStorage.setItem("runt:debug", "true");
-// Reload the page
-```
+**Frontend debug logs:** In development builds, `apps/notebook/src/lib/logger.ts`
+calls `attachConsole()` so frontend logs appear in browser devtools. There is no
+`localStorage` debug toggle in the current app.
 
 **Daemon comm logs:**
 ```bash
@@ -146,5 +145,5 @@ runt daemon logs -f | grep -i comm
 ```
 
 **Troubleshooting:**
-- Widget not rendering: Check iframe console, verify `comm_sync` was sent (look for `[CommBridge]` logs), check if type is in `ISOLATED_MIME_TYPES`
+- Widget not rendering: Check iframe console, verify `nteract/commSync` was sent and the iframe answered with `nteract/widgetReady`
 - Widget not receiving updates: Check custom message forwarding, verify `subscribeToModelCustomMessages` is called

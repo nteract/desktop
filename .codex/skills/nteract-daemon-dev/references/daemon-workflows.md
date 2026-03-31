@@ -65,6 +65,8 @@ If the MCP supervisor is available, prefer:
 - `supervisor_restart(target="daemon")`
 - `supervisor_status`
 - `supervisor_logs`
+- `supervisor_vite_logs` when you need the Vite side of a hot-reload session
+- `supervisor_set_mode` when you intentionally need the managed daemon in `release` instead of `debug`
 
 These avoid manual env-var mistakes.
 

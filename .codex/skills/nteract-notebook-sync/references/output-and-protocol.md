@@ -19,7 +19,7 @@ When changing the wire handshake or typed frame semantics, also inspect:
 Keep these implementations in sync when changing text-vs-binary rules:
 
 - `crates/runtimed/src/output_store.rs`
-- `crates/runtimed-py/src/output_resolver.rs`
+- `crates/runtimed-client/src/output_resolver.rs`
 - `apps/notebook/src/lib/manifest-resolution.ts`
 
 Important rule: `image/svg+xml` is text, not binary.

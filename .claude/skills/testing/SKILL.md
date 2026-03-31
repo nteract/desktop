@@ -9,7 +9,7 @@ description: Run and write tests. Use when running tests, writing new tests, deb
 
 | Type | Location | Command | Framework |
 |------|----------|---------|-----------|
-| E2E | `e2e/specs/` | `./e2e/dev.sh test` | WebdriverIO + Mocha |
+| E2E | `e2e/specs/` | `cargo xtask e2e test` | WebdriverIO + Mocha |
 | Frontend unit | `src/**/__tests__/`, `apps/notebook/src/**/__tests__/` | `pnpm test` | Vitest + jsdom |
 | Rust unit | inline `#[cfg(test)]` | `cargo test` | built-in |
 | CLI behavior | `crates/runt/tests/*.hone` | `cargo hone test` | Hone (not yet published) |
@@ -125,26 +125,21 @@ RUNTIMED_INTEGRATION_TEST=1 pytest python/runtimed/tests/ -v
 ### Running (Native Mode)
 
 ```bash
-./e2e/dev.sh cycle          # Build + start + test
-./e2e/dev.sh build          # Build with WebDriver support
-./e2e/dev.sh start          # Start app with WebDriver server
-./e2e/dev.sh test           # Smoke test only
-./e2e/dev.sh test all       # All non-fixture specs
-./e2e/dev.sh stop           # Stop the running app
+cargo xtask e2e build       # Build with WebDriver support
+cargo xtask e2e test        # Smoke/default E2E run
+cargo xtask e2e test-all    # Full suite, including fixture coverage
 ```
 
-**Important:** Use `./e2e/dev.sh build` (not plain `cargo build`) — Tauri embeds frontend assets.
+**Important:** Use `cargo xtask e2e build` (not plain `cargo build`) — the E2E binary embeds frontend assets and enables the webdriver feature.
 
 ### Fixture Tests
 
 Fixture tests open a specific notebook and get a fresh app instance per test:
 
 ```bash
-./e2e/dev.sh test-fixture \
+cargo xtask e2e test-fixture \
   crates/notebook/fixtures/audit-test/1-vanilla.ipynb \
   e2e/specs/prewarmed-uv.spec.js
-
-./e2e/dev.sh test-fixtures   # Run all fixture tests
 ```
 
 ### Current Fixture Mapping
@@ -163,14 +158,14 @@ Fixture tests open a specific notebook and get a fresh app instance per test:
 1. Choose or create a fixture notebook in `crates/notebook/fixtures/audit-test/`
 2. Create the spec at `e2e/specs/my-feature.spec.js`
 3. Add to `FIXTURE_SPECS` in `e2e/wdio.conf.js`
-4. Add to `test-fixtures` in `e2e/dev.sh`
+4. Add it to the fixture coverage in `crates/xtask/src/main.rs` if it should participate in `cargo xtask e2e test-all`
 5. Add to CI in `.github/workflows/build.yml`
-6. Verify locally with `./e2e/dev.sh test-fixture`
+6. Verify locally with `cargo xtask e2e test-fixture ...`
 
 ### Adding a New Regular Test
 
 1. Create the spec at `e2e/specs/my-feature.spec.js`
-2. `test all` picks up `*.spec.js` files automatically (anything not in `FIXTURE_SPECS`)
+2. `cargo xtask e2e test` picks up non-fixture `*.spec.js` files automatically (anything not in `FIXTURE_SPECS`)
 
 ### Shared Helpers (e2e/helpers.js)
 
@@ -211,8 +206,8 @@ Other: `[data-cell-type="code"]`, `[data-cell-type="markdown"]`, `.cm-content[co
 
 ### Troubleshooting
 
-- **"E2E binary not found"** — Run `./e2e/dev.sh build` or `./e2e/dev.sh build-full`.
-- **"No WebDriver server on port 4444"** — Start the app first (`./e2e/dev.sh start`) or use `cycle`.
+- **"E2E binary not found"** — Run `cargo xtask e2e build`.
+- **"No WebDriver server on port 4445"** — Run `cargo xtask e2e test` / `test-fixture` so xtask launches the app and waits for the embedded webdriver server.
 - **"Malformed type for elementId"** — wry text-selector bug. Use `data-testid` selectors.
 - **Timeout errors** — Kernel startup is slow on first run. Use 60s+ timeouts.
 - **Flaky tests** — Use `waitUntil()` not `pause()`, use `typeSlowly()`, use `data-testid`.

@@ -43,46 +43,26 @@ The iframe's message handler validates `event.source !== window.parent` to rejec
 |-----------|----------|---------|
 | `IsolatedFrame` | `src/components/isolated/isolated-frame.tsx` | Manages blob URL lifecycle |
 | `CommBridgeManager` | `src/components/isolated/comm-bridge-manager.ts` | Parent-side: syncs widget state to iframe |
-| `WidgetBridgeClient` | `src/isolated-renderer/widget-bridge-client.ts` | Iframe-side: receives comm messages |
+| `jsonrpc-transport.ts` | `src/components/isolated/jsonrpc-transport.ts` | JSON-RPC 2.0 transport over `postMessage` |
+| `rpc-methods.ts` | `src/components/isolated/rpc-methods.ts` | Shared widget bridge method constants |
+| `WidgetBridgeClient` | `src/isolated-renderer/widget-bridge-client.ts` | Iframe-side JSON-RPC widget bridge |
 | `frame-html.ts` | `src/components/isolated/frame-html.ts` | Generates bootstrap HTML for iframe |
-| `frame-bridge.ts` | `src/components/isolated/frame-bridge.ts` | Message type definitions and guards |
+| `frame-bridge.ts` | `src/components/isolated/frame-bridge.ts` | Legacy frame message definitions and guards |
 
 The isolated renderer bundle is built inline via Vite plugin (`apps/notebook/vite-plugin-isolated-renderer.ts`) and provided via `IsolatedRendererProvider` context.
 
 ## Message Protocol
 
-### Parent -> Iframe
+Two layers coexist:
 
-| Message | Purpose |
-|---------|---------|
-| `eval` | Bootstrap: inject React renderer bundle |
-| `render` | Render output content (HTML, markdown, etc.) |
-| `theme` | Sync dark/light mode |
-| `clear` | Clear all outputs |
-| `comm_open` | Forward widget creation from kernel |
-| `comm_msg` | Forward state update or custom message |
-| `comm_close` | Forward widget destruction |
-| `comm_sync` | Bulk sync all existing models on ready |
-| `bridge_ready` | Signal parent bridge is initialized |
-| `ping` | Liveness check |
-| `search` | Trigger in-iframe text search |
+1. **Frame bootstrap/render messages** in `frame-bridge.ts` handle events like
+   `eval`, `render`, `theme`, `clear`, `resize`, `link_click`, and search flow.
+2. **Widget sync traffic** uses JSON-RPC 2.0 over `postMessage`, implemented by
+   `jsonrpc-transport.ts` and `rpc-methods.ts`.
 
-### Iframe -> Parent
-
-| Message | Purpose |
-|---------|---------|
-| `ready` | Bootstrap HTML loaded |
-| `renderer_ready` | React bundle initialized |
-| `widget_ready` | Widget system ready for comm_sync |
-| `resize` | Content height changed |
-| `error` | JavaScript error occurred |
-| `link_click` | User clicked a link |
-| `widget_comm_msg` | Widget state update (forward to kernel) |
-| `widget_comm_close` | Widget close request |
-| `pong` | Response to ping |
-| `render_complete` | Content finished rendering |
-| `dblclick` | Double-click event (for cell editing) |
-| `search_results` | Search match count/position info |
+The JSON-RPC widget methods include:
+- Parent -> iframe: `nteract/bridgeReady`, `nteract/commOpen`, `nteract/commMsg`, `nteract/commClose`, `nteract/commSync`
+- Iframe -> parent: `nteract/widgetReady`, `nteract/widgetCommMsg`, `nteract/widgetCommClose`
 
 ### Widget Sync Flow
 
@@ -90,11 +70,11 @@ The isolated renderer bundle is built inline via Vite plugin (`apps/notebook/vit
 2. Iframe sends `ready`
 3. Parent sends `eval` (React bundle)
 4. Iframe sends `renderer_ready`
-5. CommBridgeManager sends `bridge_ready`
-6. Iframe sends `widget_ready`
-7. CommBridgeManager sends `comm_sync` (all existing models)
+5. CommBridgeManager sends `nteract/bridgeReady`
+6. Iframe sends `nteract/widgetReady`
+7. CommBridgeManager sends `nteract/commSync` (all existing models)
 8. Iframe renders widgets
-9. Bidirectional updates via `comm_msg` / `widget_comm_msg`
+9. Bidirectional widget updates flow through JSON-RPC notifications
 
 ## Critical Code Paths for Review
 

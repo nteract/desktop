@@ -201,7 +201,10 @@ Execution requests go to the daemon via dedicated Tauri commands (`execute_cell_
 
 ### CellChangeset types
 
-The `CellChangeset` from WASM (`notebook-doc/src/diff.rs`) has TypeScript mirrors defined inline in `apps/notebook/src/hooks/useAutomergeNotebook.ts` (module-private; tests duplicate them in `apps/notebook/src/lib/__tests__/cell-changeset.test.ts`):
+The `CellChangeset` shape originates in Rust (`notebook-doc/src/diff.rs`), but
+the current TypeScript source of truth lives in `packages/runtimed/src/cell-changeset.ts`.
+The notebook app re-exports those helpers through `apps/notebook/src/lib/cell-changeset.ts`
+and `apps/notebook/src/lib/frame-pipeline.ts`:
 - `CellChangeset` — `{ changed, added, removed, order_changed }`
 - `ChangedCell` — `{ cell_id, fields }` where `fields` has boolean flags per field (`source`, `outputs`, `execution_count`, `cell_type`, `metadata`, `position`, `resolved_assets`)
 - `mergeChangesets()` — union semantics for the coalescing window

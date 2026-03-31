@@ -25,12 +25,15 @@ This guide covers widget system internals for developers. For user-facing widget
 │                                                                         │
 │  ┌─────────────────┐         ┌──────────────────┐                      │
 │  │ WidgetBridge    │◄───────►│ Widget Components │                      │
-│  │ (receives msgs) │         │ (React renders)   │                      │
+│  │ (JSON-RPC 2.0)  │         │ (React renders)   │                      │
 │  └─────────────────┘         └──────────────────┘                      │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-Widgets run inside a security-isolated iframe. The parent window owns the WidgetStore and proxies Jupyter comm messages through the CommBridgeManager.
+Widgets run inside a security-isolated iframe. The parent window owns the
+WidgetStore and proxies Jupyter comm messages through the CommBridgeManager.
+Across the iframe boundary, widget traffic now uses JSON-RPC 2.0 over
+`postMessage` via `jsonrpc-transport.ts` and `rpc-methods.ts`.
 
 ## Key Files
 
@@ -43,8 +46,10 @@ Widgets run inside a security-isolated iframe. The parent window owns the Widget
 | `src/components/widgets/anywidget-view.tsx` | AFM loader for anywidget ESM modules |
 | `src/components/widgets/widget-view.tsx` | Renders widgets by looking up registry |
 | `src/components/isolated/comm-bridge-manager.ts` | Routes comm messages between store and iframe |
-| `src/components/isolated/frame-bridge.ts` | Message protocol types and guards |
-| `src/isolated-renderer/widget-bridge-client.ts` | Iframe-side message handler |
+| `src/components/isolated/frame-bridge.ts` | Legacy message types and guards for frame bootstrap/render events |
+| `src/components/isolated/jsonrpc-transport.ts` | JSON-RPC 2.0 transport over `postMessage` |
+| `src/components/isolated/rpc-methods.ts` | Shared widget bridge method names |
+| `src/isolated-renderer/widget-bridge-client.ts` | Iframe-side JSON-RPC widget bridge |
 
 ## WidgetStore API
 
@@ -98,7 +103,7 @@ Widget communication follows the Jupyter Comm protocol:
 
 The CommBridgeManager:
 1. Subscribes to WidgetStore changes
-2. Forwards model updates to the isolated iframe via postMessage
+2. Forwards model updates to the isolated iframe via JSON-RPC notifications
 3. Receives iframe messages and routes them to kernel or store
 
 ## Adding a New Built-in Widget
@@ -203,13 +208,9 @@ display(slider)
 
 ## Debugging
 
-Enable widget debug logging:
-
-```typescript
-// In browser console — enables all frontend debug logging
-localStorage.setItem("runt:debug", "true");
-// Reload the page for it to take effect
-```
+There is no `localStorage` widget-debug toggle in the current app. Use the
+browser devtools console in development builds, where `logger.ts` calls
+`attachConsole()`, and use daemon logs for comm-level tracing:
 
 Watch for comm messages in the daemon logs:
 

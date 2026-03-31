@@ -18,8 +18,8 @@ graph TD
     end
 
     subgraph "Rust Crates (Cargo workspace)"
-        TJ["tauri-jupyter<br/><i>shared Jupyter types</i>"]
         ND["notebook-doc<br/><i>shared Automerge doc ops</i>"]
+        RTC["runtimed-client<br/><i>shared client/runtime helpers</i>"]
         RD["runtimed (lib + bin)<br/><i>daemon</i>"]
         RC["runt-cli (bin: runt)<br/><i>CLI</i>"]
         NB["notebook (Tauri app)<br/><i>main app</i>"]
@@ -38,13 +38,14 @@ graph TD
     RWASM -->|"wasm-pack output in<br/>apps/notebook/src/wasm/"| NUI
 
     %% Rust crate dependencies (path deps in Cargo.toml)
-    TJ -->|"path dep"| NB
     ND -->|"path dep"| RD
     ND -->|"path dep"| RWASM
     ND -->|"path dep"| RDPY
-    RD -->|"path dep"| NB
-    RD -->|"path dep"| RC
-    RD -->|"path dep"| RDPY
+    ND -->|"path dep"| RTC
+    RTC -->|"path dep"| NB
+    RTC -->|"path dep"| RC
+    RTC -->|"path dep"| RD
+    RTC -->|"path dep"| RDPY
 
     %% External binary bundling (not a Cargo dep — a Tauri bundle dep)
     RD -.->|"binary copied to<br/>crates/notebook/binaries/"| APP
@@ -63,7 +64,7 @@ graph TD
     classDef artifact fill:#e8f5e9,stroke:#2e7d32
 
     class NUI frontend
-    class TJ,ND,RD,RC,NB,XT,RWASM,RDPY rust
+    class ND,RTC,RD,RC,NB,XT,RWASM,RDPY rust
     class APP,PY artifact
 ```
 
@@ -74,14 +75,14 @@ here is what happens under the hood:
 
 ```mermaid
 graph LR
-    A["1. pnpm install"] --> W["2. wasm-pack build<br/>crates/runtimed-wasm"]
-    W --> C["3. pnpm --dir apps/notebook build<br/>(includes isolated-renderer)"]
-    C --> D["4. cargo build --release<br/>-p runtimed -p runt-cli"]
-    D --> E["5. Copy binaries to<br/>crates/notebook/binaries/"]
-    E --> F["6. cargo tauri build"]
+    A["1. pnpm install"] --> M["2. Build MCP widget HTML<br/>crates/runt-mcp/assets/_output.html"]
+    M --> R["3. cargo build<br/>-p runtimed -p runt-cli -p mcp-supervisor -p notebook"]
+    R --> E["4. Copy sidecar binaries<br/>for Tauri bundling"]
+    E --> P["5. In parallel:<br/>uv sync + maturin develop<br/>and pnpm frontend build"]
+    P --> F["6. cargo tauri build<br/>or debug link step"]
 
     classDef step fill:#f3e5f5,stroke:#7b1fa2
-    class A,W,C,D,E,F step
+    class A,M,R,E,P,F step
 ```
 
 ## Rust Crate Dependency Graph
@@ -90,8 +91,8 @@ Shows only the Cargo `path` dependencies between workspace members:
 
 ```mermaid
 graph BT
-    TJ["tauri-jupyter"]
     RD["runtimed"]
+    RTC["runtimed-client"]
     RC["runt-cli"]
     NB["notebook"]
     ND["notebook-doc"]
@@ -105,39 +106,47 @@ graph BT
     RDPY["runtimed-py"]
     RWASM["runtimed-wasm"]
 
-    NB -->|"depends on"| TJ
-    NB -->|"depends on"| RD
+    NB -->|"depends on"| RTC
+    NB -->|"depends on"| ND
+    NB -->|"depends on"| NP
     NB -->|"depends on"| NS
     NB -->|"depends on"| RT
     NB -->|"depends on"| RW
-    RC -->|"depends on"| RD
+    RC -->|"depends on"| RTC
+    RC -->|"depends on"| ND
     RC -->|"depends on"| RW
+    RC -->|"depends on"| KE
     RD -->|"depends on"| ND
     RD -->|"depends on"| NP
+    RD -->|"depends on"| RTC
     RD -->|"depends on"| KL
     RD -->|"depends on"| KE
     RD -->|"depends on"| RT
     RD -->|"depends on"| RW
-    RDPY -->|"depends on"| RD
+    RDPY -->|"depends on"| RTC
     RDPY -->|"depends on"| ND
     RDPY -->|"depends on"| NP
     RDPY -->|"depends on"| NS
     RDPY -->|"depends on"| RW
+    RDPY -->|"depends on"| KE
     RWASM -->|"depends on"| ND
     NP -->|"depends on"| ND
     NP -->|"depends on"| KE
     NS -->|"depends on"| ND
     NS -->|"depends on"| NP
-    KE -->|"depends on"| KL
+    NS -->|"depends on"| RTC
+    RTC -->|"depends on"| ND
+    RTC -->|"depends on"| NP
+    RTC -->|"depends on"| RW
 
     classDef standalone fill:#fff9c4,stroke:#f9a825
     classDef leaf fill:#c8e6c9,stroke:#388e3c
     classDef shared fill:#e3f2fd,stroke:#1976d2
 
-    class TJ,KL,KE,RT,RW,RWASM standalone
+    class KL,KE,RT,RW,RWASM standalone
     class XT standalone
     class NB,RC,RDPY leaf
-    class RD,ND,NP,NS shared
+    class RD,RTC,ND,NP,NS shared
 ```
 
 ## Key Points

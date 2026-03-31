@@ -170,11 +170,11 @@ Auto-upgrade: the client detects version mismatches and replaces the binary.
 | File | Role |
 |------|------|
 | `daemon.rs` | Daemon state, pool management, warming loops, connection routing |
-| `protocol.rs` | Request/Response enums, BlobRequest/BlobResponse |
-| `connection.rs` | Unified framing, handshake enum, send/recv helpers |
-| `client.rs` | Client library (PoolClient) for notebook apps |
-| `singleton.rs` | File locking, DaemonInfo discovery |
-| `service.rs` | Platform-specific install/start/stop |
+| `crates/notebook-protocol/src/protocol.rs` | Notebook request/response/broadcast wire types |
+| `crates/notebook-protocol/src/connection.rs` | Unified framing, handshake enum, send/recv helpers |
+| `crates/runtimed-client/src/client.rs` | Client library (`PoolClient`, notebook clients) |
+| `crates/runtimed-client/src/singleton.rs` | File locking, `DaemonInfo` discovery |
+| `crates/runtimed-client/src/service.rs` | Platform-specific install/start/stop helpers |
 | `main.rs` | CLI entry point |
 
 ---
@@ -258,7 +258,7 @@ See source for full definition (includes `working_dir`, `nbformat_attachments`, 
 2. Client sends `Handshake::NotebookSync { notebook_id }`, then exchanges Automerge sync messages
 3. Additional windows join the same room, incrementing `active_peers`
 4. Changes from any peer -> applied under write lock -> persisted to disk (outside lock) -> broadcast to all other peers
-5. Last peer disconnects -> `active_peers` hits 0 -> room evicted from map (doc already on disk)
+5. Last peer disconnects -> `active_peers` hits 0 -> delayed eviction begins (`keep_alive_secs`, default 30s); if no peer reconnects, the kernel shuts down and the room is removed
 
 **Persistence**: Documents saved to `~/.cache/runt/notebook-docs/{sha256(notebook_id)}.automerge`. SHA-256 hashing sanitizes notebook IDs (which may be file paths with special characters) into safe filenames. Persistence runs after every sync message, with serialization inside the write lock and disk I/O outside it.
 
@@ -274,11 +274,11 @@ See source for full definition (includes `working_dir`, `nbformat_attachments`, 
 
 | File | Role |
 |------|------|
-| `settings_doc.rs` | Settings Automerge document, schema, migration |
-| `sync_server.rs` | Settings sync handler |
-| `sync_client.rs` | Settings sync client library |
+| `crates/runtimed-client/src/settings_doc.rs` | Settings Automerge document, schema, migration |
+| `crates/runtimed/src/sync_server.rs` | Settings sync handler |
+| `crates/runtimed-client/src/sync_client.rs` | Settings sync client library |
 | `crates/notebook-doc/src/lib.rs` | Notebook Automerge document, cell CRUD, text editing, persistence |
-| `notebook_sync_server.rs` | Room-based notebook sync, peer management, eviction |
+| `crates/runtimed/src/notebook_sync_server.rs` | Room-based notebook sync, peer management, eviction |
 | `crates/notebook-sync/src/relay.rs` | Relay handle for notebook sync connections |
 
 ---
@@ -449,12 +449,12 @@ pub enum BlobResponse {
 |------|------|
 | `crates/notebook-protocol/src/connection.rs` | Unified framing, handshake enum, send/recv helpers |
 | `daemon.rs` | Single accept loop, `route_connection()` dispatcher |
-| `client.rs` | Uses `Handshake::Pool` |
-| `sync_client.rs` | Uses `Handshake::SettingsSync` |
-| `sync_server.rs` | Handler function (no longer owns accept loop) |
+| `crates/runtimed-client/src/client.rs` | Uses `Handshake::Pool` |
+| `crates/runtimed-client/src/sync_client.rs` | Uses `Handshake::SettingsSync` |
+| `crates/runtimed/src/sync_server.rs` | Handler function (no longer owns accept loop) |
 | `crates/notebook-sync/src/connect.rs` | Uses `Handshake::NotebookSync` for relay connections |
-| `notebook_sync_server.rs` | Handler function, room lookup |
-| `protocol.rs` | `BlobRequest`/`BlobResponse` enums |
+| `crates/runtimed/src/notebook_sync_server.rs` | Handler function, room lookup |
+| `crates/runtimed-client/src/protocol.rs` | `BlobRequest`/`BlobResponse` enums |
 
 ---
 
@@ -678,7 +678,7 @@ This needs a loading state per output (while manifest is being fetched) and cach
 
 ### Python bindings: MIME type contract
 
-The Python bindings (`crates/runtimed-py/src/output_resolver.rs`) resolve manifests and ContentRefs into native Python values, typed by MIME category:
+The Python bindings delegate output resolution to `crates/runtimed-client/src/output_resolver.rs`, which resolves manifests and ContentRefs into native Python values, typed by MIME category:
 
 | MIME category | Python type | Examples |
 |---------------|-------------|----------|
@@ -692,7 +692,7 @@ Key differences from the frontend path:
 - **JSON types return native dicts.** `application/json` and `*+json` ContentRefs are parsed into Python dicts/lists, not returned as JSON strings.
 - **`text/llm+plain` synthesis.** When an output contains binary image data but no `text/llm+plain` entry, the output resolver synthesizes one. The synthesized text includes the image MIME type, size in KB, and — when available — the blob URL (`http://localhost:{port}/blob/{hash}`). This gives LLM-based agents a text representation of image outputs without requiring them to consume raw bytes.
 
-The MIME classification logic (`mime_kind()`) is shared conceptually with the TypeScript frontend (`isBinaryMime()` in `apps/notebook/src/lib/manifest-resolution.ts`) and the Rust output store (`is_binary_mime()` in `crates/runtimed/src/output_store.rs`), though each consumer uses its own copy.
+The MIME classification logic is implemented in `mime_kind()` in `crates/runtimed-client/src/output_resolver.rs`, mirrored by `isBinaryMime()` in `apps/notebook/src/lib/manifest-resolution.ts`, and kept aligned with `is_binary_mime()` in `crates/runtimed/src/output_store.rs`.
 
 ### Key files
 
@@ -701,7 +701,7 @@ The MIME classification logic (`mime_kind()`) is shared conceptually with the Ty
 | `crates/runtimed/src/output_store.rs` | Manifest construction, ContentRef, inlining threshold |
 | `crates/runtimed/src/blob_server.rs` | HTTP read server (`GET /blob/{hash}`, `GET /health`) |
 | `crates/runtimed/src/kernel_manager.rs` | iopub listener constructs manifests and stores blobs |
-| `crates/runtimed-py/src/output_resolver.rs` | Python bindings: manifest resolution, MIME typing, `text/llm+plain` synthesis |
+| `crates/runtimed-client/src/output_resolver.rs` | Shared manifest resolution, MIME typing, `text/llm+plain` synthesis used by Python/MCP consumers |
 | `src/components/cell/OutputArea.tsx` | Fetch manifests, resolve blob URLs |
 | `apps/notebook/src/hooks/useManifestResolver.ts` | Hook for fetching/caching output manifests |
 
@@ -765,7 +765,7 @@ The daemon owns kernel processes and the output pipeline. Notebook windows are v
 
 ```
 Notebook window (thin view)
-  +-- sends LaunchKernel/QueueCell/RunAll to daemon
+  +-- sends LaunchKernel/ExecuteCell/RunAllCells to daemon
   +-- receives broadcasts (KernelStatus, Output, ExecutionStarted)
   +-- syncs cell source via Automerge
   +-- renders outputs from Automerge doc

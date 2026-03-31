@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 ## Version Scheme
 
-All published artifacts share the same version (semver). Four sources must stay in sync:
+All published artifacts share the same version (semver). Five sources must stay in sync:
 
 | Artifact | Version source |
 |---|---|
@@ -16,6 +16,7 @@ All published artifacts share the same version (semver). Four sources must stay 
 | `runt` CLI | `crates/runt/Cargo.toml` |
 | `runtimed` daemon | `crates/runtimed/Cargo.toml` |
 | `runtimed` Python package | `python/runtimed/pyproject.toml` |
+| `nteract` Python package | `python/nteract/pyproject.toml` |
 
 ### Internal Compatibility Markers
 
@@ -35,6 +36,7 @@ These evolve independently from each other and from the artifact version.
 #   crates/notebook/Cargo.toml
 #   crates/notebook/tauri.conf.json
 #   python/runtimed/pyproject.toml
+#   python/nteract/pyproject.toml
 
 # Then let Cargo.lock catch up:
 cargo check

@@ -124,7 +124,7 @@ RUNTIMED_DEV=1 cargo xtask notebook      # Terminal 2
 cargo xtask run-mcp
 ```
 
-Starts dev daemon, syncs venv, builds Python bindings, spawns nteract MCP server, proxies tool calls, watches for file changes, hot-reloads.
+Starts the dev daemon, launches the dev-only `nteract-dev` supervisor, spawns a child `runt mcp`, proxies notebook tool calls, watches for file changes, and hot-reloads. Python bindings are rebuilt when the watched Rust paths require it.
 
 For editor config:
 
@@ -166,10 +166,12 @@ cargo xtask dev-mcp
 |------|---------|
 | `supervisor_status` | Child process, daemon, restart count, last error |
 | `supervisor_restart` | Restart child or daemon |
-| `supervisor_rebuild` | `maturin develop` into `.venv` + restart |
+| `supervisor_rebuild` | Rebuild the daemon binary plus Rust Python bindings, then restart the daemon and MCP child |
 | `supervisor_logs` | Tail daemon log file |
+| `supervisor_vite_logs` | Tail Vite dev server log file |
 | `supervisor_start_vite` | Start Vite dev server for hot-reload frontend dev |
 | `supervisor_stop` | Stop a managed process by name |
+| `supervisor_set_mode` | Switch the managed daemon between `debug` and `release` builds |
 
 ### Hot Reload
 

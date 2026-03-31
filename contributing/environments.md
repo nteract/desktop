@@ -21,6 +21,7 @@ Notebook opened
   │   ├─ "python" / "python3" ─────────── Resolve Python environment:
   │   │   │
   │   │   ├─ Has inline deps? ─────────── Use UV or Conda with those deps
+  │   │   ├─ Has PEP 723 script block? ── Use cached UV env from cell source (`uv:pep723`)
   │   │   │
   │   │   ├─ Closest project file?        (walk up from notebook, stop at .git / home)
   │   │   │   ├─ pyproject.toml ───────── Use `uv run` (project's .venv)
@@ -178,6 +179,10 @@ sequenceDiagram
         DM->>IE: prepare_uv_inline_env(deps)
         IE-->>DM: PreparedEnv{python_path}
         DM-->>DM: env_source = "uv:inline"
+    else Has PEP 723 script block in cell source
+        DM->>IE: prepare_uv_inline_env(pep723_deps)
+        IE-->>DM: PreparedEnv{python_path}
+        DM-->>DM: env_source = "uv:pep723"
     else Has inline Conda deps (metadata.conda.dependencies)
         DM->>IE: prepare_conda_inline_env(deps)
         IE-->>DM: PreparedEnv{python_path}
@@ -298,7 +303,7 @@ The diagrams show two main layers:
 
 1. **Frontend** (blue) — React hooks that invoke Tauri commands and listen for `notebook:broadcast` events (kernel status, execution lifecycle) and `notebook:frame` events (document state including outputs via Automerge sync, demuxed by WASM). `useDaemonKernel.ts` handles kernel lifecycle via the daemon. The daemon sends `Output` broadcasts and `useDaemonKernel.ts` processes them (blob resolution), but the `onOutput` rendering callback is a no-op — output **rendering** is driven by Automerge sync (`materializeCells`).
 
-2. **runtimed Daemon** (indigo) — A singleton background process that owns kernel processes and manages prewarmed UV and Conda environment pools. The daemon runs the detection priority chain: inline deps first, then closest project file, then prewarmed pool. Communicates via length-prefixed JSON over Unix domain sockets (or Windows named pipes). Also runs an Automerge CRDT sync server for cross-window settings and notebook state.
+2. **runtimed Daemon** (indigo) — A singleton background process that owns kernel processes and manages prewarmed UV and Conda environment pools. The daemon runs the detection priority chain: metadata inline deps first, then PEP 723 cell metadata (`uv:pep723`), then closest project file, then prewarmed pool. Communicates via length-prefixed JSON over Unix domain sockets (or Windows named pipes). Also runs an Automerge CRDT sync server for cross-window settings and notebook state.
 
 3. **External Tools** (grey) — `uv` for pip-compatible package management, `rattler` for conda solving/installing, and `deno` for TypeScript notebooks.
 
@@ -332,7 +337,7 @@ For Python notebooks, the daemon resolves which environment to use:
 | 2 | Closest project file | Single walk-up via `project_file::find_nearest_project_file` | Depends on file type |
 | 3 | User preference | Prewarmed UV or Conda env from pool | Shared pool env |
 
-For step 2, the walk-up checks for `pyproject.toml`, `pixi.toml`, and `environment.yml`/`environment.yaml` at **each directory level**, starting from the notebook's location. The first (closest) match wins. When multiple project files exist in the same directory, the tiebreaker order is: pyproject.toml > pixi.toml > environment.yml.
+For step 2, the walk-up checks for `pyproject.toml`, `pixi.toml`, and `environment.yml`/`environment.yaml` at **each directory level**, starting from the notebook's location. The first (closest) match wins. When multiple project files exist in the same directory, the tiebreaker order is: pyproject.toml > pixi.toml > environment.yml > environment.yaml.
 
 The walk-up stops at `.git` boundaries and the user's home directory, preventing cross-repository project file pollution.
 
