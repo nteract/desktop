@@ -18,12 +18,14 @@ use tokio::sync::RwLock;
 pub mod editing;
 pub mod execution;
 pub mod formatting;
+pub mod health;
 pub mod presence;
 mod resources;
 mod session;
 mod structured;
 pub mod tools;
 
+use health::DaemonState;
 use session::NotebookSession;
 
 /// The nteract MCP server.
@@ -35,9 +37,11 @@ pub struct NteractMcp {
     /// The MCP client's display name, sniffed from the initialize handshake.
     /// Used as the peer label in notebook sessions so the notebook app shows
     /// "Claude Desktop" or "Claude Code" instead of "Agent".
-    peer_label: RwLock<String>,
+    peer_label: Arc<RwLock<String>>,
     /// When true, the `show_notebook` tool is not registered (headless environments).
     no_show: bool,
+    /// Current daemon connection state, updated by the health monitor.
+    daemon_state: Arc<RwLock<DaemonState>>,
 }
 
 impl NteractMcp {
@@ -46,14 +50,16 @@ impl NteractMcp {
         socket_path: PathBuf,
         blob_base_url: Option<String>,
         blob_store_path: Option<PathBuf>,
+        initial_daemon_state: DaemonState,
     ) -> Self {
         Self {
             socket_path,
             blob_base_url,
             blob_store_path,
             session: Arc::new(RwLock::new(None)),
-            peer_label: RwLock::new("Agent".to_string()),
+            peer_label: Arc::new(RwLock::new("Agent".to_string())),
             no_show: false,
+            daemon_state: Arc::new(RwLock::new(initial_daemon_state)),
         }
     }
 
@@ -62,8 +68,14 @@ impl NteractMcp {
         socket_path: PathBuf,
         blob_base_url: Option<String>,
         blob_store_path: Option<PathBuf>,
+        initial_daemon_state: DaemonState,
     ) -> Self {
-        let mut server = Self::new(socket_path, blob_base_url, blob_store_path);
+        let mut server = Self::new(
+            socket_path,
+            blob_base_url,
+            blob_store_path,
+            initial_daemon_state,
+        );
         server.no_show = true;
         server
     }
@@ -71,6 +83,21 @@ impl NteractMcp {
     /// Get the peer label for notebook connections.
     pub async fn get_peer_label(&self) -> String {
         self.peer_label.read().await.clone()
+    }
+
+    /// Get the shared daemon state (for the health monitor).
+    pub fn daemon_state(&self) -> &Arc<RwLock<DaemonState>> {
+        &self.daemon_state
+    }
+
+    /// Get the shared session (for the health monitor).
+    pub fn session(&self) -> &Arc<RwLock<Option<NotebookSession>>> {
+        &self.session
+    }
+
+    /// Get the shared peer label (for the health monitor).
+    pub fn peer_label_shared(&self) -> &Arc<RwLock<String>> {
+        &self.peer_label
     }
 }
 

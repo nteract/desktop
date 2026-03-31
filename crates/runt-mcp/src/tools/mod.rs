@@ -297,6 +297,14 @@ pub async fn dispatch(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
+    // Check daemon health before dispatching
+    {
+        let state = server.daemon_state().read().await;
+        if let Some(msg) = state.reconnecting_message() {
+            return tool_error(&msg);
+        }
+    }
+
     match request.name.as_ref() {
         // Session
         "list_active_notebooks" => session::list_active_notebooks(server).await,

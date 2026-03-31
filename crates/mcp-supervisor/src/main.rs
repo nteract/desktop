@@ -575,10 +575,19 @@ impl Supervisor {
     }
 
     /// Attempt to restart the nteract child process.
+    ///
+    /// The child (`runt mcp`) handles daemon reconnection internally with
+    /// exponential backoff. It only exits when the daemon has been upgraded
+    /// (exit code 75 / EX_TEMPFAIL), so restarts here typically mean the
+    /// MCP client should pick up the new binary — not a crash loop.
     async fn restart_child(&self) -> Result<(), String> {
         // Phase 1: Drop old client and check circuit breaker (hold lock briefly)
-        let (project_root, socket_path) = {
+        let (project_root, socket_path, child_was_dead) = {
             let mut state = self.state.write().await;
+
+            // Check if the child already exited (e.g., daemon upgrade exit code 75)
+            // vs still running but failing (protocol error during a call).
+            let child_was_dead = state.child_client.as_ref().is_none();
 
             // Drop old client
             if let Some(old) = state.child_client.take() {
@@ -586,24 +595,38 @@ impl Supervisor {
             }
 
             info!(
-                "Restarting nteract MCP server (restart #{})",
-                state.restart_count + 1
+                "Restarting nteract MCP server (restart #{}{})",
+                state.restart_count + 1,
+                if child_was_dead {
+                    ", child had exited"
+                } else {
+                    ""
+                }
             );
 
-            // Check circuit breaker
-            if !state.should_retry() {
+            // Check circuit breaker (skip if child exited on its own — likely
+            // a daemon upgrade, not a crash)
+            if !child_was_dead && !state.should_retry() {
                 let msg =
                     "Too many crashes, auto-restart disabled. Call supervisor_restart to retry.";
                 state.last_error = Some(msg.to_string());
                 return Err(msg.to_string());
             }
 
-            (state.project_root.clone(), state.socket_path.clone())
+            (
+                state.project_root.clone(),
+                state.socket_path.clone(),
+                child_was_dead,
+            )
             // Lock dropped here
         };
 
-        // Phase 2: Sleep without holding the lock (other tasks can read state)
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Phase 2: Sleep without holding the lock (other tasks can read state).
+        // Skip the sleep if the child already exited (daemon upgrade) — it's
+        // not a crash loop, no need to throttle.
+        if !child_was_dead {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
 
         // Phase 3: Spawn child without holding the lock
         let (upstream_name, upstream_title) = {
