@@ -651,21 +651,13 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     let initial_state = match runtimed_client::singleton::read_daemon_info(&info_path) {
         Some(info) => runt_mcp::health::DaemonState::Connected { info },
         None => {
-            // Daemon not yet available — start in reconnecting mode.
-            // Use a placeholder DaemonInfo; the health monitor will pick up
-            // the real info once the daemon appears.
+            // Daemon not yet available — start in reconnecting mode with no
+            // prior version info. The health monitor will treat the first
+            // successful connection as a fresh connect (not an upgrade).
             runt_mcp::health::DaemonState::Reconnecting {
                 since: std::time::Instant::now(),
                 attempt: 0,
-                last_info: runtimed_client::singleton::DaemonInfo {
-                    endpoint: socket_path.to_string_lossy().to_string(),
-                    pid: 0,
-                    version: String::new(),
-                    started_at: chrono::Utc::now(),
-                    blob_port: None,
-                    worktree_path: None,
-                    workspace_description: None,
-                },
+                last_info: None,
             }
         }
     };

@@ -26,10 +26,11 @@ pub enum DaemonState {
     /// Connected and healthy.
     Connected { info: DaemonInfo },
     /// Daemon is unreachable; reconnecting with backoff.
+    /// `last_info` is `None` when `runt mcp` started before the daemon was available.
     Reconnecting {
         since: Instant,
         attempt: u32,
-        last_info: DaemonInfo,
+        last_info: Option<DaemonInfo>,
     },
 }
 
@@ -91,14 +92,28 @@ pub async fn daemon_health_monitor(
                 let mut state = daemon_state.write().await;
                 match &*state {
                     DaemonState::Connected { info } => {
-                        // Still connected — check for version change (upgrade while running)
                         if let Some(current) = read_daemon_info(&info_path) {
-                            if current.version != info.version || current.pid != info.pid {
+                            if current.version != info.version {
+                                // Version changed — genuine upgrade, exit for new binary
                                 info!(
-                                    "Daemon upgraded while connected: {} (PID {}) → {} (PID {})",
-                                    info.version, info.pid, current.version, current.pid
+                                    "Daemon upgraded while connected: {} → {}",
+                                    info.version, current.version
                                 );
                                 return EXIT_DAEMON_UPGRADED;
+                            }
+                            if current.pid != info.pid {
+                                // Same version, different PID — daemon restarted.
+                                // Transition to Reconnecting so we rejoin the notebook
+                                // session once the new daemon is fully ready.
+                                info!(
+                                    "Daemon restarted (same version {}, PID {} → {}), will rejoin session",
+                                    info.version, info.pid, current.pid
+                                );
+                                *state = DaemonState::Reconnecting {
+                                    since: Instant::now(),
+                                    attempt: 0,
+                                    last_info: Some(info.clone()),
+                                };
                             }
                         }
                     }
@@ -111,11 +126,11 @@ pub async fn daemon_health_monitor(
                         let elapsed = since.elapsed();
                         let current_info = read_daemon_info(&info_path);
 
-                        if let Some(ref current) = current_info {
-                            if current.version != last_info.version {
+                        if let (Some(ref current), Some(ref last)) = (&current_info, last_info) {
+                            if current.version != last.version {
                                 info!(
                                     "Daemon upgraded: {} → {} (reconnected after {:.1}s, {} attempts)",
-                                    last_info.version,
+                                    last.version,
                                     current.version,
                                     elapsed.as_secs_f64(),
                                     attempt
@@ -124,22 +139,38 @@ pub async fn daemon_health_monitor(
                             }
                         }
 
-                        // Same version — reconnect
-                        let new_info = current_info.unwrap_or_else(|| last_info.clone());
-                        info!(
-                            "Daemon reconnected after {:.1}s ({} attempts)",
-                            elapsed.as_secs_f64(),
-                            attempt
-                        );
-                        *state = DaemonState::Connected {
-                            info: new_info.clone(),
+                        // Same version (or first connect with no prior info) — connect.
+                        // We need daemon info to enter Connected; if neither the info
+                        // file nor last_info is available, stay in Reconnecting.
+                        let Some(new_info) = current_info.or_else(|| last_info.clone()) else {
+                            warn!("Daemon responds to ping but info file is missing, retrying");
+                            continue;
                         };
+
+                        if last_info.is_some() {
+                            info!(
+                                "Daemon reconnected after {:.1}s ({} attempts)",
+                                elapsed.as_secs_f64(),
+                                attempt
+                            );
+                        } else {
+                            info!(
+                                "Daemon became available after {:.1}s ({} attempts)",
+                                elapsed.as_secs_f64(),
+                                attempt
+                            );
+                        }
+
+                        let should_rejoin = last_info.is_some();
+                        *state = DaemonState::Connected { info: new_info };
 
                         // Drop the state lock before auto-rejoin
                         drop(state);
 
-                        // Auto-rejoin notebook session if one was active
-                        auto_rejoin_session(&socket_path, &session, &peer_label).await;
+                        // Auto-rejoin notebook session if daemon was previously connected
+                        if should_rejoin {
+                            auto_rejoin_session(&socket_path, &session, &peer_label).await;
+                        }
                     }
                 }
             }
@@ -151,7 +182,7 @@ pub async fn daemon_health_monitor(
                         *state = DaemonState::Reconnecting {
                             since: Instant::now(),
                             attempt: 1,
-                            last_info: info.clone(),
+                            last_info: Some(info.clone()),
                         };
                     }
                     DaemonState::Reconnecting {
