@@ -6,44 +6,16 @@ interface VegaOutputProps {
   className?: string;
 }
 
-function vegaEmbedOptions(isDark: boolean) {
-  const textColor = isDark ? "#ccc" : "#333";
-  const gridColor = isDark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.1)";
-  const domainColor = isDark ? "#666" : "#888";
+interface VegaView {
+  finalize: () => void;
+  background: (color: string | null) => void;
+}
 
+function embedOptions(isDark: boolean) {
   return {
     actions: false,
     renderer: "svg" as const,
-    // Don't use theme: "dark" — it sets its own opaque background.
-    // Instead, apply dark-mode colors manually via config overrides.
-    config: {
-      background: "transparent",
-      axis: {
-        domainColor,
-        gridColor,
-        tickColor: domainColor,
-        labelColor: textColor,
-        titleColor: textColor,
-      },
-      legend: {
-        labelColor: textColor,
-        titleColor: textColor,
-      },
-      title: { color: textColor },
-      style: {
-        "guide-label": { fill: textColor },
-        "guide-title": { fill: textColor },
-      },
-      range: isDark
-        ? {
-            category: [
-              "#4c78a8", "#f58518", "#e45756", "#72b7b2",
-              "#54a24b", "#eeca3b", "#b279a2", "#ff9da6",
-              "#9d755d", "#bab0ac",
-            ],
-          }
-        : undefined,
-    },
+    theme: isDark ? ("dark" as const) : undefined,
   };
 }
 
@@ -65,10 +37,15 @@ export function VegaOutput({ data, className }: VegaOutputProps) {
     const el = containerRef.current;
     const isDark = document.documentElement.classList.contains("dark");
 
-    let view: { finalize: () => void } | null = null;
+    let view: VegaView | null = null;
 
-    vegaEmbed(el, data, vegaEmbedOptions(isDark)).then(
-      (result: { view: { finalize: () => void } }) => {
+    // Force transparent background on the spec so it blends with the cell.
+    // Spec-level background has the highest priority in Vega's merge chain,
+    // so this reliably overrides theme and config defaults.
+    const spec = { ...data, background: "transparent" };
+
+    vegaEmbed(el, spec, embedOptions(isDark)).then(
+      (result: { view: VegaView }) => {
         view = result.view;
       },
     );
@@ -76,8 +53,8 @@ export function VegaOutput({ data, className }: VegaOutputProps) {
     const themeObserver = new MutationObserver(() => {
       const nowDark = document.documentElement.classList.contains("dark");
       view?.finalize();
-      vegaEmbed(el, data, vegaEmbedOptions(nowDark)).then(
-        (result: { view: { finalize: () => void } }) => {
+      vegaEmbed(el, spec, embedOptions(nowDark)).then(
+        (result: { view: VegaView }) => {
           view = result.view;
         },
       );
