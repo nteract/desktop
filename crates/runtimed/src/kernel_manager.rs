@@ -17,6 +17,7 @@ use std::collections::{HashMap, VecDeque};
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use anyhow::Result;
@@ -320,6 +321,8 @@ pub struct RoomKernel {
     blob_store: Arc<BlobStore>,
     /// Comm state for widget synchronization across windows
     comm_state: Arc<CommState>,
+    /// Monotonic counter for comm insertion order (dual-write to RuntimeStateDoc).
+    comm_seq: Arc<AtomicU64>,
     /// Pending history requests: msg_id → response channel
     pending_history: Arc<StdMutex<HashMap<String, oneshot::Sender<Vec<HistoryEntry>>>>>,
     /// Pending completion requests: msg_id → response channel
@@ -442,6 +445,7 @@ impl RoomKernel {
             changed_tx,
             blob_store,
             comm_state,
+            comm_seq: Arc::new(AtomicU64::new(0)),
             pending_history: Arc::new(StdMutex::new(HashMap::new())),
             pending_completions: Arc::new(StdMutex::new(HashMap::new())),
             stream_terminals: Arc::new(tokio::sync::Mutex::new(StreamTerminals::new())),
@@ -944,6 +948,7 @@ impl RoomKernel {
         let changed_tx = self.changed_tx.clone();
         let blob_store = self.blob_store.clone();
         let comm_state = self.comm_state.clone();
+        let comm_seq = self.comm_seq.clone();
         let stream_terminals = self.stream_terminals.clone();
         let state_doc_for_iopub = self.state_doc.clone();
         let state_changed_for_iopub = self.state_changed_tx.clone();
@@ -1587,6 +1592,33 @@ impl RoomKernel {
                                     )
                                     .await;
 
+                                // Dual-write to RuntimeStateDoc
+                                {
+                                    let empty_obj = serde_json::json!({});
+                                    let state = data.get("state").unwrap_or(&empty_obj);
+                                    let state_json =
+                                        serde_json::to_string(state).unwrap_or_default();
+                                    let model_module = state
+                                        .get("_model_module")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let model_name = state
+                                        .get("_model_name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let seq = comm_seq.fetch_add(1, Ordering::Relaxed);
+                                    let mut sd = state_doc_for_iopub.write().await;
+                                    sd.put_comm(
+                                        &open.comm_id.0,
+                                        &open.target_name,
+                                        model_module,
+                                        model_name,
+                                        &state_json,
+                                        seq,
+                                    );
+                                    let _ = state_changed_for_iopub.send(());
+                                }
+
                                 let _ = broadcast_tx.send(NotebookBroadcast::Comm {
                                     msg_type: message.header.msg_type.clone(),
                                     content,
@@ -1609,8 +1641,26 @@ impl RoomKernel {
 
                                 debug!("[comm_msg] comm_id={} method={:?}", msg.comm_id.0, method);
                                 if method == Some("update") {
-                                    if let Some(state) = data.get("state") {
-                                        comm_state.on_comm_update(&msg.comm_id.0, state).await;
+                                    if let Some(state_delta) = data.get("state") {
+                                        comm_state
+                                            .on_comm_update(&msg.comm_id.0, state_delta)
+                                            .await;
+
+                                        // Dual-write merged state to RuntimeStateDoc.
+                                        // Read merged state back from CommState (it already
+                                        // applied the delta).
+                                        let all_comms = comm_state.get_all().await;
+                                        if let Some(snapshot) =
+                                            all_comms.iter().find(|c| c.comm_id == msg.comm_id.0)
+                                        {
+                                            let merged_json =
+                                                serde_json::to_string(&snapshot.state)
+                                                    .unwrap_or_default();
+                                            let mut sd = state_doc_for_iopub.write().await;
+                                            if sd.update_comm_state(&msg.comm_id.0, &merged_json) {
+                                                let _ = state_changed_for_iopub.send(());
+                                            }
+                                        }
                                     }
                                 }
 
@@ -1633,6 +1683,14 @@ impl RoomKernel {
 
                                 // Remove from comm state
                                 comm_state.on_comm_close(&close.comm_id.0).await;
+
+                                // Dual-write removal to RuntimeStateDoc
+                                {
+                                    let mut sd = state_doc_for_iopub.write().await;
+                                    if sd.remove_comm(&close.comm_id.0) {
+                                        let _ = state_changed_for_iopub.send(());
+                                    }
+                                }
 
                                 let _ = broadcast_tx.send(NotebookBroadcast::Comm {
                                     msg_type: message.header.msg_type.clone(),

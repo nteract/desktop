@@ -2524,6 +2524,12 @@ async fn auto_launch_kernel(
 
     // Clear any stale comm state from a previous kernel (in case it crashed)
     room.comm_state.clear().await;
+    {
+        let mut sd = room.state_doc.write().await;
+        if sd.clear_comms() {
+            let _ = room.state_changed_tx.send(());
+        }
+    }
 
     // Create new kernel
     let mut kernel = RoomKernel::new(
@@ -3162,6 +3168,12 @@ async fn handle_notebook_request(
 
             // Clear any stale comm state from a previous kernel (in case it crashed)
             room.comm_state.clear().await;
+            {
+                let mut sd = room.state_doc.write().await;
+                if sd.clear_comms() {
+                    let _ = room.state_changed_tx.send(());
+                }
+            }
 
             // Trust is approved if user explicitly launches kernel — update RuntimeStateDoc
             // Also set "starting" + "resolving" phase immediately
@@ -3846,6 +3858,12 @@ async fn handle_notebook_request(
                         *kernel_guard = None;
                         // Clear comm state - all widgets become invalid when kernel shuts down
                         room.comm_state.clear().await;
+                        {
+                            let mut sd = room.state_doc.write().await;
+                            if sd.clear_comms() {
+                                let _ = room.state_changed_tx.send(());
+                            }
+                        }
                         // Drop the kernel lock before awaiting the presence update
                         drop(kernel_guard);
                         // Publish shutdown presence so late joiners don't see stale kernel state
