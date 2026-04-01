@@ -1,6 +1,31 @@
 import { useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 
+const DARK_TEXT = "rgba(200, 200, 200, 1)";
+const LIGHT_TEXT = "rgba(68, 68, 68, 1)";
+
+function darkLayoutOverrides(isDark: boolean): Record<string, unknown> {
+  const textColor = isDark ? DARK_TEXT : LIGHT_TEXT;
+  const gridColor = isDark
+    ? "rgba(255, 255, 255, 0.1)"
+    : "rgba(0, 0, 0, 0.1)";
+
+  return {
+    paper_bgcolor: "transparent",
+    plot_bgcolor: isDark ? "rgba(30, 30, 30, 1)" : "rgba(255, 255, 255, 1)",
+    font: { color: textColor },
+    xaxis: { gridcolor: gridColor, zerolinecolor: gridColor, color: textColor },
+    yaxis: { gridcolor: gridColor, zerolinecolor: gridColor, color: textColor },
+    legend: { font: { color: textColor } },
+    colorway: isDark
+      ? [
+          "#636efa", "#ef553b", "#00cc96", "#ab63fa", "#ffa15a",
+          "#19d3f3", "#ff6692", "#b6e880", "#ff97ff", "#fecb52",
+        ]
+      : undefined,
+  };
+}
+
 interface PlotlyData {
   data: unknown[];
   layout?: Record<string, unknown>;
@@ -33,9 +58,7 @@ export function PlotlyOutput({ data, className }: PlotlyOutputProps) {
 
     const layout: Record<string, unknown> = {
       ...data.layout,
-      template: isDark ? "plotly_dark" : undefined,
-      paper_bgcolor: "transparent",
-      plot_bgcolor: isDark ? "rgba(30,30,30,1)" : "rgba(255,255,255,1)",
+      ...darkLayoutOverrides(isDark),
       autosize: true,
     };
 
@@ -54,11 +77,7 @@ export function PlotlyOutput({ data, className }: PlotlyOutputProps) {
 
     const themeObserver = new MutationObserver(() => {
       const nowDark = document.documentElement.classList.contains("dark");
-      Plotly.relayout(el, {
-        template: nowDark ? "plotly_dark" : undefined,
-        paper_bgcolor: "transparent",
-        plot_bgcolor: nowDark ? "rgba(30,30,30,1)" : "rgba(255,255,255,1)",
-      });
+      Plotly.relayout(el, darkLayoutOverrides(nowDark));
     });
     themeObserver.observe(document.documentElement, {
       attributes: true,

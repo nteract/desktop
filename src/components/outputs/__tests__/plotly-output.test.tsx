@@ -80,8 +80,9 @@ describe("PlotlyOutput", () => {
     render(<PlotlyOutput data={sampleData} />);
 
     const [, , layout] = mockPlotly.newPlot.mock.calls[0];
-    expect(layout.template).toBe("plotly_dark");
-    expect(layout.plot_bgcolor).toBe("rgba(30,30,30,1)");
+    expect(layout.plot_bgcolor).toBe("rgba(30, 30, 30, 1)");
+    expect(layout.font.color).toBe("rgba(200, 200, 200, 1)");
+    expect(layout.paper_bgcolor).toBe("transparent");
 
     document.documentElement.classList.remove("dark");
   });
@@ -91,8 +92,8 @@ describe("PlotlyOutput", () => {
     render(<PlotlyOutput data={sampleData} />);
 
     const [, , layout] = mockPlotly.newPlot.mock.calls[0];
-    expect(layout.template).toBeUndefined();
-    expect(layout.plot_bgcolor).toBe("rgba(255,255,255,1)");
+    expect(layout.plot_bgcolor).toBe("rgba(255, 255, 255, 1)");
+    expect(layout.font.color).toBe("rgba(68, 68, 68, 1)");
   });
 
   it("merges user config with defaults", () => {
