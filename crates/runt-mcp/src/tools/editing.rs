@@ -84,9 +84,9 @@ pub async fn replace_match(
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
 
-    // Clone handle and resubscribe broadcast_rx, then drop session lock
-    // so other tools (interrupt_kernel, etc.) aren't blocked during execution.
-    let (handle, broadcast_rx) = {
+    // Clone handle, then drop session lock so other tools
+    // (interrupt_kernel, etc.) aren't blocked during execution.
+    let handle = {
         let session = server.session.read().await;
         let session = match session.as_ref() {
             Some(s) => s,
@@ -96,7 +96,7 @@ pub async fn replace_match(
                 )
             }
         };
-        (session.handle.clone(), session.broadcast_rx.resubscribe())
+        session.handle.clone()
     };
 
     let source = match handle.get_cell_source(cell_id) {
@@ -132,10 +132,8 @@ pub async fn replace_match(
     crate::presence::emit_cursor(&handle, cell_id, line, col, &peer_label).await;
 
     if and_run {
-        let mut broadcast_rx = broadcast_rx;
         let result = execution::execute_and_wait(
             &handle,
-            &mut broadcast_rx,
             cell_id,
             Duration::from_secs_f64(timeout_secs),
             &server.blob_base_url,
@@ -176,8 +174,8 @@ pub async fn replace_regex(
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
 
-    // Clone handle and resubscribe broadcast_rx, then drop session lock
-    let (handle, broadcast_rx) = {
+    // Clone handle, then drop session lock
+    let handle = {
         let session = server.session.read().await;
         let session = match session.as_ref() {
             Some(s) => s,
@@ -187,7 +185,7 @@ pub async fn replace_regex(
                 )
             }
         };
-        (session.handle.clone(), session.broadcast_rx.resubscribe())
+        session.handle.clone()
     };
 
     let source = match handle.get_cell_source(cell_id) {
@@ -223,10 +221,8 @@ pub async fn replace_regex(
     crate::presence::emit_cursor(&handle, cell_id, line, col, &peer_label).await;
 
     if and_run {
-        let mut broadcast_rx = broadcast_rx;
         let result = execution::execute_and_wait(
             &handle,
-            &mut broadcast_rx,
             cell_id,
             Duration::from_secs_f64(timeout_secs),
             &server.blob_base_url,

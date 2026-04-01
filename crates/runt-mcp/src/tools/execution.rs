@@ -38,9 +38,9 @@ pub async fn execute_cell(
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
-    // Clone handle and resubscribe broadcast_rx, then drop session lock
-    // so other tools (interrupt_kernel, etc.) aren't blocked during execution.
-    let (handle, mut broadcast_rx) = {
+    // Clone handle, then drop session lock so other tools
+    // (interrupt_kernel, etc.) aren't blocked during execution.
+    let handle = {
         let session = server.session.read().await;
         let session = match session.as_ref() {
             Some(s) => s,
@@ -50,7 +50,7 @@ pub async fn execute_cell(
                 )
             }
         };
-        (session.handle.clone(), session.broadcast_rx.resubscribe())
+        session.handle.clone()
     };
 
     let timeout_secs = request
@@ -70,7 +70,6 @@ pub async fn execute_cell(
 
     let result = execution::execute_and_wait(
         &handle,
-        &mut broadcast_rx,
         cell_id,
         Duration::from_secs_f64(timeout_secs),
         &server.blob_base_url,

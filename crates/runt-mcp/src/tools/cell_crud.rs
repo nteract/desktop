@@ -103,9 +103,9 @@ pub async fn create_cell(
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
 
-    // Clone handle and resubscribe broadcast_rx, then drop the session lock
-    // so other tools (interrupt_kernel, etc.) aren't blocked during execution.
-    let (handle, mut broadcast_rx, cell_id) = {
+    // Clone handle, then drop the session lock so other tools
+    // (interrupt_kernel, etc.) aren't blocked during execution.
+    let (handle, cell_id) = {
         let session = server.session.read().await;
         let session = match session.as_ref() {
             Some(s) => s,
@@ -117,7 +117,6 @@ pub async fn create_cell(
         };
 
         let handle = session.handle.clone();
-        let broadcast_rx = session.broadcast_rx.resubscribe();
         let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
 
         // Determine after_cell_id based on index
@@ -142,7 +141,7 @@ pub async fn create_cell(
             .add_cell_with_source(&cell_id, cell_type, after_cell_id.as_deref(), source)
             .map_err(|e| McpError::internal_error(format!("Failed to create cell: {e}"), None))?;
 
-        (handle, broadcast_rx, cell_id)
+        (handle, cell_id)
     };
 
     // Sync so the daemon (and peers) know about the new cell before we send presence
@@ -156,7 +155,6 @@ pub async fn create_cell(
     if and_run && cell_type == "code" {
         let result = execution::execute_and_wait(
             &handle,
-            &mut broadcast_rx,
             &cell_id,
             Duration::from_secs_f64(timeout_secs),
             &server.blob_base_url,
@@ -193,8 +191,8 @@ pub async fn set_cell(
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
 
-    // Clone handle and resubscribe broadcast_rx, then drop session lock
-    let (handle, broadcast_rx) = {
+    // Clone handle, then drop session lock
+    let handle = {
         let session = server.session.read().await;
         let session = match session.as_ref() {
             Some(s) => s,
@@ -204,7 +202,7 @@ pub async fn set_cell(
                 )
             }
         };
-        (session.handle.clone(), session.broadcast_rx.resubscribe())
+        session.handle.clone()
     };
 
     // Verify cell exists
@@ -239,10 +237,8 @@ pub async fn set_cell(
 
     let current_type = handle.get_cell_type(cell_id).unwrap_or_default();
     if and_run && current_type == "code" {
-        let mut broadcast_rx = broadcast_rx;
         let result = execution::execute_and_wait(
             &handle,
-            &mut broadcast_rx,
             cell_id,
             Duration::from_secs_f64(timeout_secs),
             &server.blob_base_url,
