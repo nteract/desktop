@@ -155,17 +155,19 @@ pub struct TrustRuntimeState {
 
 /// Snapshot of a single comm entry in the RuntimeStateDoc.
 ///
-/// Mirrors the daemon's `CommSnapshot` but stores state as a JSON string
-/// (Automerge stores strings, not structured JSON).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// State is stored as a native Automerge map for per-property merge.
+/// Two peers editing different widget properties (e.g., `value` and
+/// `description`) compose cleanly via CRDT semantics.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CommDocEntry {
     pub target_name: String,
     #[serde(default)]
     pub model_module: String,
     #[serde(default)]
     pub model_name: String,
-    /// JSON-encoded widget state.
-    pub state: String,
+    /// Widget state as a JSON object (stored as native Automerge map).
+    #[serde(default = "default_empty_state")]
+    pub state: serde_json::Value,
     /// Output manifest hashes (OutputModel widgets only).
     #[serde(default)]
     pub outputs: Vec<String>,
@@ -174,8 +176,12 @@ pub struct CommDocEntry {
     pub seq: u64,
 }
 
+fn default_empty_state() -> serde_json::Value {
+    serde_json::json!({})
+}
+
 /// Full runtime state snapshot.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeState {
     pub kernel: KernelState,
     pub queue: QueueState,
@@ -1224,7 +1230,7 @@ impl RuntimeStateDoc {
         target_name: &str,
         model_module: &str,
         model_name: &str,
-        state_json: &str,
+        state: &serde_json::Value,
         seq: u64,
     ) {
         let comms = self.get_map("comms").expect("comms map must exist");
@@ -1241,9 +1247,8 @@ impl RuntimeStateDoc {
         self.doc
             .put(&entry, "model_name", model_name)
             .expect("put comm.model_name");
-        self.doc
-            .put(&entry, "state", state_json)
-            .expect("put comm.state");
+        // Store state as a native Automerge map for per-property merge.
+        crate::put_json_at_key(&mut self.doc, &entry, "state", state).expect("put comm.state");
         self.doc
             .put(&entry, "seq", seq as i64)
             .expect("put comm.seq");
@@ -1252,20 +1257,46 @@ impl RuntimeStateDoc {
             .expect("put comm.outputs");
     }
 
-    /// Overwrite the state JSON string for an existing comm (used on `comm_msg` update).
+    /// Replace the full state for an existing comm.
     ///
+    /// Overwrites the native Automerge state map with the given JSON value.
     /// Returns `false` if the comm doesn't exist.
     #[allow(clippy::expect_used)]
-    pub fn update_comm_state(&mut self, comm_id: &str, new_state_json: &str) -> bool {
+    pub fn update_comm_state(&mut self, comm_id: &str, new_state: &serde_json::Value) -> bool {
         let Some(comms) = self.get_map("comms") else {
             return false;
         };
         let Some((_, entry)) = self.doc.get(&comms, comm_id).ok().flatten() else {
             return false;
         };
-        self.doc
-            .put(&entry, "state", new_state_json)
-            .expect("put comm.state");
+        crate::put_json_at_key(&mut self.doc, &entry, "state", new_state).expect("put comm.state");
+        true
+    }
+
+    /// Set a single property in a comm's state map.
+    ///
+    /// Writes directly to `comms/{comm_id}/state/{key}` as a native
+    /// Automerge value. This is the per-property write path used by
+    /// the frontend for CRDT-based widget updates.
+    #[allow(clippy::expect_used)]
+    pub fn set_comm_state_property(
+        &mut self,
+        comm_id: &str,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> bool {
+        let Some(comms) = self.get_map("comms") else {
+            return false;
+        };
+        let Some((_, entry)) = self.doc.get(&comms, comm_id).ok().flatten() else {
+            return false;
+        };
+        let Some((Value::Object(ObjType::Map), state_id)) =
+            self.doc.get(&entry, "state").ok().flatten()
+        else {
+            return false;
+        };
+        crate::put_json_at_key(&mut self.doc, &state_id, key, value).expect("put comm.state.key");
         true
     }
 
@@ -1306,11 +1337,14 @@ impl RuntimeStateDoc {
     pub fn get_comm(&self, comm_id: &str) -> Option<CommDocEntry> {
         let comms = self.get_map("comms")?;
         let (_, entry) = self.doc.get(&comms, comm_id).ok().flatten()?;
+        // Read state as native Automerge map → serde_json::Value
+        let state = crate::read_json_value(&self.doc, &entry, "state")
+            .unwrap_or_else(|| serde_json::json!({}));
         Some(CommDocEntry {
             target_name: self.read_str(&entry, "target_name"),
             model_module: self.read_str(&entry, "model_module"),
             model_name: self.read_str(&entry, "model_name"),
-            state: self.read_str(&entry, "state"),
+            state,
             outputs: self.read_str_list(&entry, "outputs"),
             seq: self.read_i64(&entry, "seq") as u64,
         })
@@ -2316,12 +2350,13 @@ mod tests {
     #[test]
     fn test_put_comm_roundtrip() {
         let mut doc = RuntimeStateDoc::new();
+        let state = serde_json::json!({"value": 42});
         doc.put_comm(
             "comm-1",
             "jupyter.widget",
             "@jupyter-widgets/controls",
             "IntSliderModel",
-            r#"{"value":42}"#,
+            &state,
             0,
         );
 
@@ -2329,16 +2364,17 @@ mod tests {
         assert_eq!(entry.target_name, "jupyter.widget");
         assert_eq!(entry.model_module, "@jupyter-widgets/controls");
         assert_eq!(entry.model_name, "IntSliderModel");
-        assert_eq!(entry.state, r#"{"value":42}"#);
+        assert_eq!(entry.state, serde_json::json!({"value": 42}));
         assert!(entry.outputs.is_empty());
         assert_eq!(entry.seq, 0);
     }
 
     #[test]
     fn test_put_comm_overwrites() {
+        let empty = serde_json::json!({});
         let mut doc = RuntimeStateDoc::new();
-        doc.put_comm("comm-1", "jupyter.widget", "mod-a", "ModelA", "{}", 0);
-        doc.put_comm("comm-1", "jupyter.widget", "mod-b", "ModelB", "{}", 1);
+        doc.put_comm("comm-1", "jupyter.widget", "mod-a", "ModelA", &empty, 0);
+        doc.put_comm("comm-1", "jupyter.widget", "mod-b", "ModelB", &empty, 1);
 
         let entry = doc.get_comm("comm-1").unwrap();
         assert_eq!(entry.model_module, "mod-b");
@@ -2349,22 +2385,33 @@ mod tests {
     #[test]
     fn test_update_comm_state() {
         let mut doc = RuntimeStateDoc::new();
-        doc.put_comm("comm-1", "jupyter.widget", "", "", r#"{"value":1}"#, 0);
+        doc.put_comm(
+            "comm-1",
+            "jupyter.widget",
+            "",
+            "",
+            &serde_json::json!({"value": 1}),
+            0,
+        );
 
-        assert!(doc.update_comm_state("comm-1", r#"{"value":2}"#));
-        assert_eq!(doc.get_comm("comm-1").unwrap().state, r#"{"value":2}"#);
+        assert!(doc.update_comm_state("comm-1", &serde_json::json!({"value": 2})));
+        assert_eq!(
+            doc.get_comm("comm-1").unwrap().state,
+            serde_json::json!({"value": 2})
+        );
     }
 
     #[test]
     fn test_update_comm_state_nonexistent() {
         let mut doc = RuntimeStateDoc::new();
-        assert!(!doc.update_comm_state("nope", "{}"));
+        assert!(!doc.update_comm_state("nope", &serde_json::json!({})));
     }
 
     #[test]
     fn test_remove_comm() {
+        let empty = serde_json::json!({});
         let mut doc = RuntimeStateDoc::new();
-        doc.put_comm("comm-1", "jupyter.widget", "", "", "{}", 0);
+        doc.put_comm("comm-1", "jupyter.widget", "", "", &empty, 0);
         assert!(doc.remove_comm("comm-1"));
         assert!(doc.get_comm("comm-1").is_none());
     }
@@ -2377,9 +2424,10 @@ mod tests {
 
     #[test]
     fn test_clear_comms() {
+        let empty = serde_json::json!({});
         let mut doc = RuntimeStateDoc::new();
-        doc.put_comm("comm-1", "jupyter.widget", "", "", "{}", 0);
-        doc.put_comm("comm-2", "jupyter.widget", "", "", "{}", 1);
+        doc.put_comm("comm-1", "jupyter.widget", "", "", &empty, 0);
+        doc.put_comm("comm-2", "jupyter.widget", "", "", &empty, 1);
         assert!(doc.clear_comms());
         assert!(doc.get_comm("comm-1").is_none());
         assert!(doc.get_comm("comm-2").is_none());
@@ -2394,8 +2442,22 @@ mod tests {
     #[test]
     fn test_comms_in_read_state() {
         let mut doc = RuntimeStateDoc::new();
-        doc.put_comm("comm-1", "jupyter.widget", "mod", "Slider", r#"{"v":1}"#, 0);
-        doc.put_comm("comm-2", "jupyter.widget", "mod", "Button", r#"{"v":2}"#, 1);
+        doc.put_comm(
+            "comm-1",
+            "jupyter.widget",
+            "mod",
+            "Slider",
+            &serde_json::json!({"v": 1}),
+            0,
+        );
+        doc.put_comm(
+            "comm-2",
+            "jupyter.widget",
+            "mod",
+            "Button",
+            &serde_json::json!({"v": 2}),
+            1,
+        );
 
         let state = doc.read_state();
         assert_eq!(state.comms.len(), 2);
@@ -2405,12 +2467,13 @@ mod tests {
 
     #[test]
     fn test_fork_and_merge_comms() {
+        let empty = serde_json::json!({});
         let mut doc = RuntimeStateDoc::new();
-        doc.put_comm("comm-1", "jupyter.widget", "", "", "{}", 0);
+        doc.put_comm("comm-1", "jupyter.widget", "", "", &empty, 0);
 
         let mut fork = doc.fork();
         fork.set_actor("runtimed:state:comms");
-        fork.put_comm("comm-2", "jupyter.widget", "", "New", "{}", 1);
+        fork.put_comm("comm-2", "jupyter.widget", "", "New", &empty, 1);
 
         doc.merge(&mut fork).unwrap();
         assert!(doc.get_comm("comm-1").is_some());
@@ -2419,8 +2482,9 @@ mod tests {
 
     #[test]
     fn test_comm_output_append_and_clear() {
+        let empty = serde_json::json!({});
         let mut doc = RuntimeStateDoc::new();
-        doc.put_comm("comm-1", "jupyter.widget", "", "OutputModel", "{}", 0);
+        doc.put_comm("comm-1", "jupyter.widget", "", "OutputModel", &empty, 0);
 
         assert!(doc.append_comm_output("comm-1", "hash-a"));
         assert!(doc.append_comm_output("comm-1", "hash-b"));
@@ -2447,6 +2511,50 @@ mod tests {
     fn test_new_doc_has_empty_comms() {
         let doc = RuntimeStateDoc::new();
         assert!(doc.read_state().comms.is_empty());
+    }
+
+    #[test]
+    fn test_set_comm_state_property() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.put_comm(
+            "comm-1",
+            "jupyter.widget",
+            "",
+            "IntSliderModel",
+            &serde_json::json!({"value": 50, "min": 0, "max": 100}),
+            0,
+        );
+
+        // Set a single property
+        assert!(doc.set_comm_state_property("comm-1", "value", &serde_json::json!(75)));
+
+        let entry = doc.get_comm("comm-1").unwrap();
+        assert_eq!(entry.state["value"], 75);
+        // Other properties preserved
+        assert_eq!(entry.state["min"], 0);
+        assert_eq!(entry.state["max"], 100);
+    }
+
+    #[test]
+    fn test_set_comm_state_property_nonexistent() {
+        let mut doc = RuntimeStateDoc::new();
+        assert!(!doc.set_comm_state_property("nope", "value", &serde_json::json!(42)));
+    }
+
+    #[test]
+    fn test_native_state_roundtrip() {
+        let mut doc = RuntimeStateDoc::new();
+        let state = serde_json::json!({
+            "value": 42,
+            "description": "Speed:",
+            "disabled": false,
+            "layout": "IPY_MODEL_abc123",
+            "nested": {"a": [1, 2, 3]}
+        });
+        doc.put_comm("comm-1", "jupyter.widget", "", "", &state, 0);
+
+        let entry = doc.get_comm("comm-1").unwrap();
+        assert_eq!(entry.state, state);
     }
 
     // ── Output diff tests ─────────────────────────────────────────

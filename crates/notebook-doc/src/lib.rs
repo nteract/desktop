@@ -1970,7 +1970,7 @@ fn scalar_to_json(s: &automerge::ScalarValue) -> Option<serde_json::Value> {
 }
 
 /// Recursively read an Automerge value (scalar, Map, List, or Text) as JSON.
-fn read_json_value<P: Into<automerge::Prop>>(
+pub(crate) fn read_json_value<P: Into<automerge::Prop>>(
     doc: &AutoCommit,
     parent: &ObjId,
     prop: P,
@@ -2002,7 +2002,7 @@ fn read_json_value<P: Into<automerge::Prop>>(
 }
 
 /// Recursively write a JSON value into an Automerge Map at a string key.
-fn put_json_at_key(
+pub(crate) fn put_json_at_key(
     doc: &mut AutoCommit,
     parent: &ObjId,
     key: &str,
@@ -2044,7 +2044,7 @@ fn put_json_at_key(
 }
 
 /// Recursively insert a JSON value into an Automerge List at a given index.
-fn insert_json_at_index(
+pub(crate) fn insert_json_at_index(
     doc: &mut AutoCommit,
     parent: &ObjId,
     index: usize,
