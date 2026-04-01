@@ -65,6 +65,7 @@ export function PlotlyOutput({ data, className }: PlotlyOutputProps) {
     const config: Record<string, unknown> = {
       responsive: true,
       displaylogo: false,
+      modeBarButtonsToRemove: ["toImage"],
       ...data.config,
     };
 
