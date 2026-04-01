@@ -427,10 +427,10 @@ export function useDaemonKernel({
           // Handled by useEnvProgress hook's own frame bus subscriber
           break;
 
-        // ── State broadcasts — now read from RuntimeStateDoc ─────
-        // Keep cases to avoid "unknown broadcast" log spam, but don't
-        // set state — the RuntimeStateDoc is the source of truth.
-
+        // State broadcasts — redundant with RuntimeStateDoc.
+        // The daemon still sends these for backward compatibility;
+        // we silently ignore them. Will be removed from daemon in
+        // a future cleanup.
         case "execution_started":
         case "execution_done":
         case "kernel_status":
