@@ -1,16 +1,16 @@
 /**
- * Resolve {"$blob": "<hash>"} sentinels in widget state objects.
+ * Convert {"$blob": "<hash>"} sentinels in widget state to blob URLs.
  *
- * Widget binary buffers are stored in the blob store and referenced
- * as sentinels in the CRDT state. This module resolves them to
- * ArrayBuffers via the blob HTTP server before passing to widgets.
+ * Widget binary buffers are stored in the daemon's blob store and
+ * referenced as sentinels in the CRDT state. This module replaces
+ * them with HTTP blob URLs that the iframe can fetch directly.
+ *
+ * The iframe resolves URLs to ArrayBuffers via fetch() — this avoids
+ * the DataCloneError from passing non-transferable objects through
+ * postMessage.
  */
 
-import { getBlobPort, refreshBlobPort } from "./blob-port";
-import { logger } from "./logger";
-
-/** Cache of resolved blobs by hash. */
-const blobCache = new Map<string, ArrayBuffer>();
+import { getBlobPort } from "./blob-port";
 
 /** Check if a value is a blob sentinel. */
 function isBlobSentinel(value: unknown): value is { $blob: string } {
@@ -23,117 +23,61 @@ function isBlobSentinel(value: unknown): value is { $blob: string } {
 }
 
 /**
- * Resolve all blob sentinels in a widget state object.
+ * Replace all blob sentinels in a widget state object with blob URLs.
  *
- * Walks the state recursively, replacing {"$blob": "<hash>"} with
- * resolved ArrayBuffers. Returns the state with sentinels replaced
- * and an array of resolved buffers (for the Jupyter buffer protocol).
+ * Walks the state recursively, replacing `{"$blob": "<hash>"}` with
+ * `"http://127.0.0.1:{port}/blob/{hash}"`. Returns the modified state
+ * and the paths where replacements occurred.
  *
- * Uses a cache to avoid re-fetching the same blob.
+ * This is synchronous — no async fetches. The iframe fetches the
+ * actual binary data via the URL.
  */
-export async function resolveBlobSentinels(
-  state: Record<string, unknown>,
-): Promise<{
-  resolvedState: Record<string, unknown>;
-  buffers: ArrayBuffer[];
+export function replaceSentinelsWithBlobUrls(state: Record<string, unknown>): {
+  state: Record<string, unknown>;
   bufferPaths: string[][];
-}> {
-  const buffers: ArrayBuffer[] = [];
+} {
+  const blobPort = getBlobPort();
+  if (blobPort === null) {
+    return { state, bufferPaths: [] };
+  }
+
   const bufferPaths: string[][] = [];
-  const resolvedState = { ...state };
-
-  // Collect all sentinel paths and hashes
-  const sentinels: { path: string[]; hash: string }[] = [];
-  collectSentinels(resolvedState, [], sentinels);
-
-  if (sentinels.length === 0) {
-    return { resolvedState, buffers: [], bufferPaths: [] };
-  }
-
-  let blobPort = getBlobPort();
-  if (blobPort === null) {
-    blobPort = await refreshBlobPort();
-  }
-  if (blobPort === null) {
-    logger.warn(
-      "[blob-sentinel] No blob port available, cannot resolve sentinels",
-    );
-    return { resolvedState, buffers: [], bufferPaths: [] };
-  }
-
-  // Resolve all blobs in parallel
-  const resolved = await Promise.all(
-    sentinels.map(async ({ hash }) => {
-      const cached = blobCache.get(hash);
-      if (cached) return cached;
-
-      try {
-        const response = await fetch(
-          `http://127.0.0.1:${blobPort}/blob/${hash}`,
-        );
-        if (!response.ok) {
-          logger.warn(
-            `[blob-sentinel] Failed to fetch blob ${hash.slice(0, 16)}...: ${response.status}`,
-          );
-          return null;
-        }
-        const buffer = await response.arrayBuffer();
-        blobCache.set(hash, buffer);
-        return buffer;
-      } catch (e) {
-        logger.warn(
-          `[blob-sentinel] Failed to fetch blob ${hash.slice(0, 16)}...:`,
-          e,
-        );
-        return null;
-      }
-    }),
-  );
-
-  // Replace sentinels with resolved buffers
-  for (let i = 0; i < sentinels.length; i++) {
-    const buffer = resolved[i];
-    if (!buffer) continue;
-
-    const { path } = sentinels[i];
-    buffers.push(buffer);
-    bufferPaths.push(path);
-
-    // Navigate to parent and replace sentinel with buffer
-    let current: Record<string, unknown> = resolvedState;
-    for (let j = 0; j < path.length - 1; j++) {
-      const next = current[path[j]];
-      if (typeof next !== "object" || next === null) break;
-      current = next as Record<string, unknown>;
-    }
-    const lastKey = path[path.length - 1];
-    if (lastKey) {
-      current[lastKey] = buffer;
-    }
-  }
-
-  return { resolvedState, buffers, bufferPaths };
+  const result = walkAndReplace(state, [], bufferPaths, blobPort);
+  return {
+    state: result as Record<string, unknown>,
+    bufferPaths,
+  };
 }
 
-/** Recursively collect blob sentinels with their paths. */
-function collectSentinels(
-  obj: Record<string, unknown>,
+function walkAndReplace(
+  value: unknown,
   currentPath: string[],
-  out: { path: string[]; hash: string }[],
-): void {
-  for (const [key, value] of Object.entries(obj)) {
-    if (isBlobSentinel(value)) {
-      out.push({ path: [...currentPath, key], hash: value.$blob });
-    } else if (
-      typeof value === "object" &&
-      value !== null &&
-      !ArrayBuffer.isView(value)
-    ) {
-      collectSentinels(
-        value as Record<string, unknown>,
+  bufferPaths: string[][],
+  blobPort: number,
+): unknown {
+  if (isBlobSentinel(value)) {
+    bufferPaths.push([...currentPath]);
+    return `http://127.0.0.1:${blobPort}/blob/${value.$blob}`;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item, i) =>
+      walkAndReplace(item, [...currentPath, String(i)], bufferPaths, blobPort),
+    );
+  }
+
+  if (typeof value === "object" && value !== null) {
+    const result: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value)) {
+      result[key] = walkAndReplace(
+        val,
         [...currentPath, key],
-        out,
+        bufferPaths,
+        blobPort,
       );
     }
+    return result;
   }
+
+  return value;
 }

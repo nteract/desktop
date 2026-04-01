@@ -31,6 +31,52 @@ import {
   type WidgetStore,
 } from "@/components/widgets/widget-store";
 
+/** Blob URL pattern: http://127.0.0.1:{port}/blob/{hash} */
+const BLOB_URL_RE = /^https?:\/\/127\.0\.0\.1:\d+\/blob\/[a-f0-9]+$/;
+
+/**
+ * Resolve blob URLs in state at buffer_paths positions to ArrayBuffers.
+ * Returns resolved buffers; also replaces the URL strings in state with
+ * the ArrayBuffers (via applyBufferPaths).
+ */
+async function resolveBlobUrls(
+  state: Record<string, unknown>,
+  bufferPaths?: string[][],
+): Promise<ArrayBuffer[]> {
+  if (!bufferPaths || bufferPaths.length === 0) return [];
+
+  const resolved = await Promise.all(
+    bufferPaths.map(async (path) => {
+      // Navigate to the value at this path
+      let current: unknown = state;
+      for (const segment of path) {
+        if (typeof current !== "object" || current === null) return null;
+        current = (current as Record<string, unknown>)[segment];
+      }
+      // If it's a blob URL string, fetch it
+      if (typeof current === "string" && BLOB_URL_RE.test(current)) {
+        try {
+          const resp = await fetch(current);
+          if (!resp.ok) return null;
+          const buffer = await resp.arrayBuffer();
+          // Replace the URL in state with the buffer (DataView for widget protocol)
+          let parent: Record<string, unknown> = state;
+          for (let i = 0; i < path.length - 1; i++) {
+            parent = parent[path[i]] as Record<string, unknown>;
+          }
+          parent[path[path.length - 1]] = new DataView(buffer);
+          return buffer;
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    }),
+  );
+
+  return resolved.filter((b): b is ArrayBuffer => b !== null);
+}
+
 /**
  * Interface for the widget bridge client.
  * Provides access to the local store and methods to communicate with parent.
@@ -93,24 +139,37 @@ export function createWidgetBridgeClient(
     sendWidgetReady();
   });
 
-  transport.onNotification(NTERACT_COMM_OPEN, (params) => {
-    const { commId, state, buffers } = params as {
+  transport.onNotification(NTERACT_COMM_OPEN, async (params) => {
+    const { commId, state, buffers, bufferPaths } = params as {
       commId: string;
       state: Record<string, unknown>;
       buffers?: ArrayBuffer[];
+      bufferPaths?: string[][];
     };
-    store.createModel(commId, state, buffers);
+    // Resolve blob URLs at buffer_paths positions to ArrayBuffers.
+    const resolvedBuffers = await resolveBlobUrls(state, bufferPaths);
+    store.createModel(
+      commId,
+      state,
+      resolvedBuffers.length > 0 ? resolvedBuffers : buffers,
+    );
   });
 
-  transport.onNotification(NTERACT_COMM_MSG, (params) => {
-    const { commId, method, data, buffers } = params as {
+  transport.onNotification(NTERACT_COMM_MSG, async (params) => {
+    const { commId, method, data, buffers, bufferPaths } = params as {
       commId: string;
       method: "update" | "custom";
       data: Record<string, unknown>;
       buffers?: ArrayBuffer[];
+      bufferPaths?: string[][];
     };
     if (method === "update") {
-      store.updateModel(commId, data, buffers);
+      const resolvedBuffers = await resolveBlobUrls(data, bufferPaths);
+      store.updateModel(
+        commId,
+        data,
+        resolvedBuffers.length > 0 ? resolvedBuffers : buffers,
+      );
     } else if (method === "custom") {
       store.emitCustomMessage(commId, data, buffers);
     }
