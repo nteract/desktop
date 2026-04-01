@@ -39,6 +39,7 @@ export function isBinaryMime(mime: string): boolean {
       subtype === "x-latex" ||
       subtype === "x-tex" ||
       subtype.endsWith("+json") ||
+      subtype.endsWith(".json") ||
       subtype.endsWith("+xml");
     return !isText;
   }

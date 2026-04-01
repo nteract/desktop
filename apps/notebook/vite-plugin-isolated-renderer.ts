@@ -71,6 +71,22 @@ export function isolatedRendererPlugin(
         // Don't use React plugin - use esbuild's native JSX handling instead
         // The React plugin uses Babel which doesn't respect mode for JSX transform
         tailwindcss(),
+        // Resolve vega-raw/vega-lite-raw/vega-embed-raw virtual modules.
+        // These bypass restrictive "exports" fields in vega packages (v6+).
+        {
+          name: "vega-raw-resolve",
+          resolveId(source: string) {
+            const nodeModules = path.resolve(__dirname, "../../node_modules");
+            const mapping: Record<string, string> = {
+              "vega-raw": path.join(nodeModules, "vega/build/vega.min.js"),
+              "vega-lite-raw": path.join(nodeModules, "vega-lite/build/vega-lite.min.js"),
+              "vega-embed-raw": path.join(nodeModules, "vega-embed/build/vega-embed.min.js"),
+            };
+            const filePath = mapping[source];
+            if (filePath) return `${filePath}?raw`;
+            return null;
+          },
+        },
       ],
       esbuild: {
         // Use esbuild's native JSX handling with automatic runtime
