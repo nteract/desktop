@@ -210,6 +210,7 @@ mod tests {
             env_type: EnvType::Uv,
             venv_path: PathBuf::from("/tmp/test-venv"),
             python_path: PathBuf::from("/tmp/test-venv/bin/python"),
+            prewarmed_packages: vec![],
         };
         let req = Request::Return { env: env.clone() };
         match roundtrip_request(&req) {
@@ -256,6 +257,7 @@ mod tests {
             env_type: EnvType::Uv,
             venv_path: PathBuf::from("/tmp/test-venv"),
             python_path: PathBuf::from("/tmp/test-venv/bin/python"),
+            prewarmed_packages: vec![],
         };
         let resp = Response::Env { env: env.clone() };
         match roundtrip_response(&resp) {

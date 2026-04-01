@@ -873,21 +873,28 @@ pub struct PyEnvState {
     pub channels_changed: bool,
     /// Whether deno config differs.
     pub deno_changed: bool,
+    /// Packages pre-installed in the prewarmed environment.
+    pub prewarmed_packages: Vec<String>,
 }
 
 #[pymethods]
 impl PyEnvState {
     fn __repr__(&self) -> String {
-        if self.in_sync {
-            "EnvState(in_sync)".to_string()
+        let base = if self.in_sync {
+            "EnvState(in_sync".to_string()
         } else {
             format!(
-                "EnvState(drift: +{} -{} channels={} deno={})",
+                "EnvState(drift: +{} -{} channels={} deno={}",
                 self.added.len(),
                 self.removed.len(),
                 self.channels_changed,
                 self.deno_changed,
             )
+        };
+        if self.prewarmed_packages.is_empty() {
+            format!("{base})")
+        } else {
+            format!("{base}, prewarmed={})", self.prewarmed_packages.len())
         }
     }
 
@@ -999,6 +1006,7 @@ impl From<notebook_doc::runtime_state::RuntimeState> for PyRuntimeState {
                 removed: rs.env.removed,
                 channels_changed: rs.env.channels_changed,
                 deno_changed: rs.env.deno_changed,
+                prewarmed_packages: rs.env.prewarmed_packages,
             },
             last_saved: rs.last_saved,
             executions: rs

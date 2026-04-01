@@ -130,6 +130,9 @@ pub struct EnvState {
     pub channels_changed: bool,
     #[serde(default)]
     pub deno_changed: bool,
+    /// Packages pre-installed in the prewarmed environment (empty for inline envs).
+    #[serde(default)]
+    pub prewarmed_packages: Vec<String>,
 }
 
 impl Default for EnvState {
@@ -140,6 +143,7 @@ impl Default for EnvState {
             removed: Vec::new(),
             channels_changed: false,
             deno_changed: false,
+            prewarmed_packages: Vec::new(),
         }
     }
 }
@@ -263,6 +267,8 @@ impl RuntimeStateDoc {
             .expect("scaffold env.channels_changed");
         doc.put(&env, "deno_changed", false)
             .expect("scaffold env.deno_changed");
+        doc.put_object(&env, "prewarmed_packages", ObjType::List)
+            .expect("scaffold env.prewarmed_packages");
 
         // trust/
         let trust = doc
@@ -1179,6 +1185,36 @@ impl RuntimeStateDoc {
         true
     }
 
+    /// Update prewarmed packages list. Returns `true` if mutated.
+    #[allow(clippy::expect_used)]
+    pub fn set_prewarmed_packages(&mut self, packages: &[String]) -> bool {
+        let env = self.get_map("env").expect("env map must exist");
+        let current = self.read_str_list(&env, "prewarmed_packages");
+        if current == packages {
+            return false;
+        }
+
+        let list = self
+            .doc
+            .get(&env, "prewarmed_packages")
+            .expect("get env.prewarmed_packages")
+            .map(|(_, id)| id)
+            .expect("prewarmed_packages list must exist");
+        let len = self.doc.length(&list);
+        for i in (0..len).rev() {
+            self.doc
+                .delete(&list, i)
+                .expect("delete prewarmed_packages entry");
+        }
+        for (i, pkg) in packages.iter().enumerate() {
+            self.doc
+                .insert(&list, i, pkg.as_str())
+                .expect("insert prewarmed_packages pkg");
+        }
+
+        true
+    }
+
     /// Set the `last_saved` timestamp. Returns `true` if mutated.
     #[allow(clippy::expect_used)]
     pub fn set_last_saved(&mut self, timestamp: Option<&str>) -> bool {
@@ -1470,6 +1506,7 @@ impl RuntimeStateDoc {
                 removed: self.read_str_list(e, "removed"),
                 channels_changed: self.read_bool(e, "channels_changed"),
                 deno_changed: self.read_bool(e, "deno_changed"),
+                prewarmed_packages: self.read_str_list(e, "prewarmed_packages"),
             })
             .unwrap_or_default();
 

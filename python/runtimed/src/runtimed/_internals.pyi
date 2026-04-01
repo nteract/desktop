@@ -293,6 +293,10 @@ class EnvState:
     def deno_changed(self) -> bool:
         """Whether deno config differs."""
         ...
+    @property
+    def prewarmed_packages(self) -> list[str]:
+        """Packages pre-installed in the prewarmed environment."""
+        ...
 
 class ExecutionState:
     """Execution lifecycle state for a single execution."""

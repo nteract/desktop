@@ -31,6 +31,7 @@ export interface EnvState {
   removed: string[];
   channels_changed: boolean;
   deno_changed: boolean;
+  prewarmed_packages: string[];
 }
 
 export interface TrustState {
@@ -97,6 +98,7 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
     removed: [],
     channels_changed: false,
     deno_changed: false,
+    prewarmed_packages: [],
   },
   trust: {
     status: "no_dependencies",

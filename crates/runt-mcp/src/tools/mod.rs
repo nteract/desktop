@@ -264,7 +264,7 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "get_dependencies",
-            "Get the notebook's current package dependencies.",
+            "Get the notebook's declared dependencies and any pre-installed packages available in the environment.",
             schema_for::<deps::GetDependenciesParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),

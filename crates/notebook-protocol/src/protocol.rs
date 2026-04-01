@@ -73,6 +73,10 @@ pub struct LaunchedEnvConfig {
     /// Used to detect if kernel was swapped during async operations (e.g., hot-sync).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub launch_id: Option<String>,
+
+    /// Packages pre-installed in the prewarmed environment (empty for inline envs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prewarmed_packages: Vec<String>,
 }
 
 /// Deno configuration captured at kernel launch time.

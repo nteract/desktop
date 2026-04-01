@@ -115,7 +115,18 @@ pub async fn get_dependencies(
 
     let deps = get_deps_list(&session.handle);
 
-    let result = serde_json::json!({ "dependencies": deps });
+    // Include prewarmed packages from RuntimeStateDoc when available
+    let prewarmed = session
+        .handle
+        .get_runtime_state()
+        .ok()
+        .map(|s| s.env.prewarmed_packages)
+        .unwrap_or_default();
+
+    let mut result = serde_json::json!({ "dependencies": deps });
+    if !prewarmed.is_empty() {
+        result["available_packages"] = serde_json::json!(prewarmed);
+    }
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }
 

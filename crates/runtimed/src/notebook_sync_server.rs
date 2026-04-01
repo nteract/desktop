@@ -170,6 +170,7 @@ fn build_launched_config(
     metadata_snapshot: Option<&NotebookMetadataSnapshot>,
     venv_path: Option<PathBuf>,
     python_path: Option<PathBuf>,
+    prewarmed_packages: Option<&[String]>,
 ) -> LaunchedEnvConfig {
     let mut config = LaunchedEnvConfig::default();
 
@@ -192,12 +193,18 @@ fn build_launched_config(
             // uv_deps stays None to indicate no baseline deps were installed
             config.venv_path = venv_path;
             config.python_path = python_path;
+            if let Some(pkgs) = prewarmed_packages {
+                config.prewarmed_packages = pkgs.to_vec();
+            }
         }
         "conda:prewarmed" => {
             // Store paths so hot-sync can install deps into the prewarmed conda env
             // conda_deps stays None to indicate no baseline deps were installed
             config.venv_path = venv_path;
             config.python_path = python_path;
+            if let Some(pkgs) = prewarmed_packages {
+                config.prewarmed_packages = pkgs.to_vec();
+            }
         }
         _ => {}
     }
@@ -598,6 +605,7 @@ pub(crate) async fn apply_kernel_died_to_state_doc(
     // Apply all mutations on the fork
     fork.set_kernel_status("error");
     fork.set_queue(None, &[]);
+    fork.set_prewarmed_packages(&[]);
     if let Some((_, ref execution_id)) = interrupted {
         fork.set_execution_done(execution_id, false);
     }
@@ -2523,7 +2531,10 @@ fn is_untitled_notebook(notebook_id: &str) -> bool {
 /// Used when an early exit prevents kernel launch after status was set to "starting".
 async fn reset_starting_state(room: &NotebookRoom) {
     let mut sd = room.state_doc.write().await;
-    if sd.set_kernel_status("not_started") {
+    let mut changed = false;
+    changed |= sd.set_kernel_status("not_started");
+    changed |= sd.set_prewarmed_packages(&[]);
+    if changed {
         let _ = room.state_changed_tx.send(());
     }
 }
@@ -2843,6 +2854,7 @@ async fn auto_launch_kernel(
                         env_type: crate::EnvType::Uv,
                         venv_path: prepared.env_path,
                         python_path: prepared.python_path,
+                        prewarmed_packages: vec![],
                     });
                     (env, Some(deps.clone()))
                 }
@@ -2886,6 +2898,7 @@ async fn auto_launch_kernel(
                         env_type: crate::EnvType::Uv,
                         venv_path: prepared.env_path,
                         python_path: prepared.python_path,
+                        prewarmed_packages: vec![],
                     });
                     (env, Some(deps))
                 }
@@ -2930,6 +2943,7 @@ async fn auto_launch_kernel(
                         env_type: crate::EnvType::Conda,
                         venv_path: prepared.env_path,
                         python_path: prepared.python_path,
+                        prewarmed_packages: vec![],
                     });
                     (env, Some(deps))
                 }
@@ -2955,6 +2969,7 @@ async fn auto_launch_kernel(
     // Build LaunchedEnvConfig to track what config the kernel was launched with
     let venv_path = pooled_env.as_ref().map(|e| e.venv_path.clone());
     let python_path = pooled_env.as_ref().map(|e| e.python_path.clone());
+    let prewarmed_pkgs = pooled_env.as_ref().map(|e| e.prewarmed_packages.clone());
     let launched_config = build_launched_config(
         kernel_type,
         &env_source,
@@ -2962,6 +2977,7 @@ async fn auto_launch_kernel(
         metadata_snapshot.as_ref(),
         venv_path,
         python_path,
+        prewarmed_pkgs.as_deref(),
     );
 
     // Transition to "launching" phase before starting the kernel process
@@ -2971,6 +2987,9 @@ async fn auto_launch_kernel(
             let _ = room.state_changed_tx.send(());
         }
     }
+
+    // Save prewarmed packages before launched_config is moved into kernel.launch()
+    let prewarmed_packages = launched_config.prewarmed_packages.clone();
 
     match kernel
         .launch(
@@ -3011,6 +3030,7 @@ async fn auto_launch_kernel(
                 let mut changed = false;
                 changed |= sd.set_kernel_status("idle");
                 changed |= sd.set_kernel_info(&kt, kernel_type, &es);
+                changed |= sd.set_prewarmed_packages(&prewarmed_packages);
                 if changed {
                     let _ = room.state_changed_tx.send(());
                 }
@@ -3033,7 +3053,10 @@ async fn auto_launch_kernel(
             // Dual-write error to state_doc
             {
                 let mut sd = room.state_doc.write().await;
-                if sd.set_kernel_status("error") {
+                let mut changed = false;
+                changed |= sd.set_kernel_status("error");
+                changed |= sd.set_prewarmed_packages(&[]);
+                if changed {
                     let _ = room.state_changed_tx.send(());
                 }
             }
@@ -3546,6 +3569,7 @@ async fn handle_notebook_request(
                                 env_type: crate::EnvType::Uv,
                                 venv_path: prepared.env_path,
                                 python_path: prepared.python_path,
+                                prewarmed_packages: vec![],
                             });
                             (env, Some(deps))
                         }
@@ -3589,6 +3613,7 @@ async fn handle_notebook_request(
                                 env_type: crate::EnvType::Uv,
                                 venv_path: prepared.env_path,
                                 python_path: prepared.python_path,
+                                prewarmed_packages: vec![],
                             });
                             (env, Some(deps))
                         }
@@ -3628,6 +3653,7 @@ async fn handle_notebook_request(
                                 env_type: crate::EnvType::Conda,
                                 venv_path: prepared.env_path,
                                 python_path: prepared.python_path,
+                                prewarmed_packages: vec![],
                             });
                             (env, Some(deps))
                         }
@@ -3648,6 +3674,7 @@ async fn handle_notebook_request(
             // Build LaunchedEnvConfig to track what config the kernel was launched with
             let venv_path = pooled_env.as_ref().map(|e| e.venv_path.clone());
             let python_path = pooled_env.as_ref().map(|e| e.python_path.clone());
+            let prewarmed_pkgs = pooled_env.as_ref().map(|e| e.prewarmed_packages.clone());
             let launched_config = build_launched_config(
                 &resolved_kernel_type,
                 &resolved_env_source,
@@ -3655,6 +3682,7 @@ async fn handle_notebook_request(
                 metadata_snapshot.as_ref(),
                 venv_path,
                 python_path,
+                prewarmed_pkgs.as_deref(),
             );
 
             // Transition to "launching" phase before starting the kernel process
@@ -3695,6 +3723,7 @@ async fn handle_notebook_request(
                         let mut changed = false;
                         changed |= sd.set_kernel_status("idle");
                         changed |= sd.set_kernel_info(&kt, &resolved_kernel_type, &es);
+                        changed |= sd.set_prewarmed_packages(&launched_config.prewarmed_packages);
                         if changed {
                             let _ = room.state_changed_tx.send(());
                         }
@@ -3710,7 +3739,10 @@ async fn handle_notebook_request(
                     // Dual-write error to state_doc
                     {
                         let mut sd = room.state_doc.write().await;
-                        if sd.set_kernel_status("error") {
+                        let mut changed = false;
+                        changed |= sd.set_kernel_status("error");
+                        changed |= sd.set_prewarmed_packages(&[]);
+                        if changed {
                             let _ = room.state_changed_tx.send(());
                         }
                     }
@@ -3943,7 +3975,10 @@ async fn handle_notebook_request(
                         // Dual-write shutdown to state_doc
                         {
                             let mut sd = room.state_doc.write().await;
-                            if sd.set_kernel_status("shutdown") {
+                            let mut changed = false;
+                            changed |= sd.set_kernel_status("shutdown");
+                            changed |= sd.set_prewarmed_packages(&[]);
+                            if changed {
                                 let _ = room.state_changed_tx.send(());
                             }
                         }
@@ -8728,6 +8763,7 @@ mod tests {
             venv_path: None,
             python_path: None,
             launch_id: Some("abc".to_string()),
+            prewarmed_packages: vec![],
         };
         let snapshot = snapshot_with_uv(vec!["numpy".to_string(), "pandas".to_string()]);
         assert!(
@@ -8746,6 +8782,7 @@ mod tests {
             venv_path: None,
             python_path: None,
             launch_id: None,
+            prewarmed_packages: vec![],
         };
         let snapshot = snapshot_with_uv(vec!["numpy".to_string(), "requests".to_string()]);
         let diff = compute_env_sync_diff(&launched, &snapshot).expect("should detect drift");
@@ -8764,6 +8801,7 @@ mod tests {
             venv_path: None,
             python_path: None,
             launch_id: None,
+            prewarmed_packages: vec![],
         };
         let snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
         let diff = compute_env_sync_diff(&launched, &snapshot).expect("should detect drift");
@@ -8781,6 +8819,7 @@ mod tests {
             venv_path: None,
             python_path: None,
             launch_id: None,
+            prewarmed_packages: vec![],
         };
         let snapshot = snapshot_with_uv(vec!["numpy".to_string(), "new-pkg".to_string()]);
         let diff = compute_env_sync_diff(&launched, &snapshot).expect("should detect drift");
@@ -8798,6 +8837,7 @@ mod tests {
             venv_path: None,
             python_path: None,
             launch_id: None,
+            prewarmed_packages: vec![],
         };
         // Build a conda snapshot with a different channel
         let mut snapshot = snapshot_with_conda(vec!["scipy".to_string()]);
@@ -8822,6 +8862,7 @@ mod tests {
     fn test_build_launched_config_uv_prewarmed_stores_paths() {
         let venv = PathBuf::from("/tmp/pool/env-abc");
         let python = PathBuf::from("/tmp/pool/env-abc/bin/python");
+        let pkgs = vec!["ipykernel".to_string(), "pandas".to_string()];
         let config = build_launched_config(
             "python",
             "uv:prewarmed",
@@ -8829,10 +8870,12 @@ mod tests {
             None,
             Some(venv.clone()),
             Some(python.clone()),
+            Some(&pkgs),
         );
         assert_eq!(config.venv_path.as_ref(), Some(&venv));
         assert_eq!(config.python_path.as_ref(), Some(&python));
         assert!(config.uv_deps.is_none(), "prewarmed should not set uv_deps");
+        assert_eq!(config.prewarmed_packages, pkgs);
     }
 
     #[test]
@@ -8865,6 +8908,7 @@ mod tests {
             None,
             Some(venv.clone()),
             Some(python.clone()),
+            None,
         );
         assert_eq!(config.venv_path.as_ref(), Some(&venv));
         assert_eq!(config.python_path.as_ref(), Some(&python));
