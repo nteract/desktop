@@ -1210,22 +1210,6 @@ impl RoomKernel {
                                         }
                                     }
 
-                                    // Broadcast for real-time UI
-                                    let content = serde_json::json!({
-                                        "comm_id": widget_comm_id,
-                                        "data": {
-                                            "method": "custom",
-                                            "content": {
-                                                "method": "output",
-                                                "output": output
-                                            }
-                                        }
-                                    });
-                                    let _ = broadcast_tx.send(NotebookBroadcast::Comm {
-                                        msg_type: "comm_msg".to_string(),
-                                        content,
-                                        buffers: vec![],
-                                    });
                                     continue; // Skip normal cell output handling
                                 }
 
@@ -1389,23 +1373,6 @@ impl RoomKernel {
                                                 }
                                             }
                                         }
-
-                                        // Broadcast for real-time UI
-                                        let content = serde_json::json!({
-                                            "comm_id": widget_comm_id,
-                                            "data": {
-                                                "method": "custom",
-                                                "content": {
-                                                    "method": "output",
-                                                    "output": nbformat_value
-                                                }
-                                            }
-                                        });
-                                        let _ = broadcast_tx.send(NotebookBroadcast::Comm {
-                                            msg_type: "comm_msg".to_string(),
-                                            content,
-                                            buffers: vec![],
-                                        });
                                     }
                                     continue; // Skip normal cell output handling
                                 }
@@ -1593,23 +1560,6 @@ impl RoomKernel {
                                                 }
                                             }
                                         }
-
-                                        // Broadcast for real-time UI
-                                        let content = serde_json::json!({
-                                            "comm_id": widget_comm_id,
-                                            "data": {
-                                                "method": "custom",
-                                                "content": {
-                                                    "method": "output",
-                                                    "output": nbformat_value
-                                                }
-                                            }
-                                        });
-                                        let _ = broadcast_tx.send(NotebookBroadcast::Comm {
-                                            msg_type: "comm_msg".to_string(),
-                                            content,
-                                            buffers: vec![],
-                                        });
                                     }
                                     continue; // Skip normal cell output handling
                                 }
@@ -1710,30 +1660,16 @@ impl RoomKernel {
                                 if let Some(widget_comm_id) =
                                     comm_state.get_capture_widget(parent_msg_id).await
                                 {
-                                    // Clear captured outputs in CRDT
-                                    {
+                                    // Clear captured outputs in CRDT.
+                                    // Only clear immediately when wait=false. For wait=true,
+                                    // the clear is deferred until the next output arrives
+                                    // (the next append_comm_output implicitly replaces).
+                                    if !clear.wait {
                                         let mut sd = state_doc_for_iopub.write().await;
                                         if sd.clear_comm_outputs(&widget_comm_id) {
                                             let _ = state_changed_for_iopub.send(());
                                         }
                                     }
-
-                                    // Broadcast for real-time UI
-                                    let content = serde_json::json!({
-                                        "comm_id": widget_comm_id,
-                                        "data": {
-                                            "method": "custom",
-                                            "content": {
-                                                "method": "clear_output",
-                                                "wait": clear.wait
-                                            }
-                                        }
-                                    });
-                                    let _ = broadcast_tx.send(NotebookBroadcast::Comm {
-                                        msg_type: "comm_msg".to_string(),
-                                        content,
-                                        buffers: vec![],
-                                    });
                                 }
                                 // Note: We don't skip cell output clearing here because
                                 // clear_output for non-captured outputs should still work normally
