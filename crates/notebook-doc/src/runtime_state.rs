@@ -34,6 +34,14 @@
 //!   trust/
 //!     status: Str          ("trusted" | "untrusted" | "signature_invalid" | "no_dependencies")
 //!     needs_approval: bool
+//!   comms/                 Map (keyed by comm_id)
+//!     {comm_id}/           Map
+//!       target_name: Str
+//!       model_module: Str
+//!       model_name: Str
+//!       state: Str         (JSON-encoded widget state)
+//!       outputs: List[Str] (manifest hashes, OutputModel only)
+//!       seq: Int           (insertion order)
 //!   last_saved: Str|null   (ISO timestamp of last save)
 //! ```
 
@@ -145,6 +153,27 @@ pub struct TrustRuntimeState {
     pub needs_approval: bool,
 }
 
+/// Snapshot of a single comm entry in the RuntimeStateDoc.
+///
+/// Mirrors the daemon's `CommSnapshot` but stores state as a JSON string
+/// (Automerge stores strings, not structured JSON).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommDocEntry {
+    pub target_name: String,
+    #[serde(default)]
+    pub model_module: String,
+    #[serde(default)]
+    pub model_name: String,
+    /// JSON-encoded widget state.
+    pub state: String,
+    /// Output manifest hashes (OutputModel widgets only).
+    #[serde(default)]
+    pub outputs: Vec<String>,
+    /// Insertion order for dependency-correct replay.
+    #[serde(default)]
+    pub seq: u64,
+}
+
 /// Full runtime state snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeState {
@@ -156,6 +185,9 @@ pub struct RuntimeState {
     /// Execution lifecycle entries keyed by execution_id.
     #[serde(default)]
     pub executions: HashMap<String, ExecutionState>,
+    /// Active comm channels keyed by comm_id.
+    #[serde(default)]
+    pub comms: HashMap<String, CommDocEntry>,
 }
 
 // ── RuntimeStateDoc ─────────────────────────────────────────────────
@@ -234,6 +266,10 @@ impl RuntimeStateDoc {
             .expect("scaffold trust.status");
         doc.put(&trust, "needs_approval", false)
             .expect("scaffold trust.needs_approval");
+
+        // comms/ — keyed by comm_id, tracks widget state
+        doc.put_object(&ROOT, "comms", ObjType::Map)
+            .expect("scaffold comms");
 
         // last_saved
         doc.put(&ROOT, "last_saved", ScalarValue::Null)
@@ -401,6 +437,23 @@ impl RuntimeStateDoc {
                 _ => None,
             })
             .unwrap_or(false)
+    }
+
+    /// Read an integer scalar from a map object, defaulting to 0.
+    fn read_i64(&self, obj: &automerge::ObjId, key: &str) -> i64 {
+        self.doc
+            .get(obj, key)
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| match value {
+                Value::Scalar(s) => match s.as_ref() {
+                    ScalarValue::Int(n) => Some(*n),
+                    ScalarValue::Uint(n) => Some(*n as i64),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap_or(0)
     }
 
     /// Read a List[Str] from a map object.
@@ -1161,6 +1214,157 @@ impl RuntimeStateDoc {
         true
     }
 
+    // ── Comm lifecycle ────────────────────────────────────────────────
+
+    /// Insert or replace a full comm entry (used on `comm_open`).
+    #[allow(clippy::expect_used)]
+    pub fn put_comm(
+        &mut self,
+        comm_id: &str,
+        target_name: &str,
+        model_module: &str,
+        model_name: &str,
+        state_json: &str,
+        seq: u64,
+    ) {
+        let comms = self.get_map("comms").expect("comms map must exist");
+        let entry = self
+            .doc
+            .put_object(&comms, comm_id, ObjType::Map)
+            .expect("put comm entry");
+        self.doc
+            .put(&entry, "target_name", target_name)
+            .expect("put comm.target_name");
+        self.doc
+            .put(&entry, "model_module", model_module)
+            .expect("put comm.model_module");
+        self.doc
+            .put(&entry, "model_name", model_name)
+            .expect("put comm.model_name");
+        self.doc
+            .put(&entry, "state", state_json)
+            .expect("put comm.state");
+        self.doc
+            .put(&entry, "seq", seq as i64)
+            .expect("put comm.seq");
+        self.doc
+            .put_object(&entry, "outputs", ObjType::List)
+            .expect("put comm.outputs");
+    }
+
+    /// Overwrite the state JSON string for an existing comm (used on `comm_msg` update).
+    ///
+    /// Returns `false` if the comm doesn't exist.
+    #[allow(clippy::expect_used)]
+    pub fn update_comm_state(&mut self, comm_id: &str, new_state_json: &str) -> bool {
+        let Some(comms) = self.get_map("comms") else {
+            return false;
+        };
+        let Some((_, entry)) = self.doc.get(&comms, comm_id).ok().flatten() else {
+            return false;
+        };
+        self.doc
+            .put(&entry, "state", new_state_json)
+            .expect("put comm.state");
+        true
+    }
+
+    /// Remove a comm entry (used on `comm_close`).
+    ///
+    /// Returns `false` if the comm doesn't exist.
+    #[allow(clippy::expect_used)]
+    pub fn remove_comm(&mut self, comm_id: &str) -> bool {
+        let Some(comms) = self.get_map("comms") else {
+            return false;
+        };
+        if self.doc.get(&comms, comm_id).ok().flatten().is_none() {
+            return false;
+        }
+        self.doc.delete(&comms, comm_id).expect("delete comm");
+        true
+    }
+
+    /// Remove all comm entries (used on kernel shutdown/restart).
+    ///
+    /// Returns `false` if there were no comms to remove.
+    #[allow(clippy::expect_used)]
+    pub fn clear_comms(&mut self) -> bool {
+        let Some(comms) = self.get_map("comms") else {
+            return false;
+        };
+        let keys: Vec<String> = self.doc.keys(&comms).collect();
+        if keys.is_empty() {
+            return false;
+        }
+        for key in keys {
+            self.doc.delete(&comms, &key).expect("delete comm entry");
+        }
+        true
+    }
+
+    /// Read a single comm entry.
+    pub fn get_comm(&self, comm_id: &str) -> Option<CommDocEntry> {
+        let comms = self.get_map("comms")?;
+        let (_, entry) = self.doc.get(&comms, comm_id).ok().flatten()?;
+        Some(CommDocEntry {
+            target_name: self.read_str(&entry, "target_name"),
+            model_module: self.read_str(&entry, "model_module"),
+            model_name: self.read_str(&entry, "model_name"),
+            state: self.read_str(&entry, "state"),
+            outputs: self.read_str_list(&entry, "outputs"),
+            seq: self.read_i64(&entry, "seq") as u64,
+        })
+    }
+
+    /// Append a manifest hash to a comm's outputs list (OutputModel widgets).
+    ///
+    /// Returns `false` if the comm doesn't exist.
+    #[allow(clippy::expect_used)]
+    pub fn append_comm_output(&mut self, comm_id: &str, manifest_hash: &str) -> bool {
+        let Some(comms) = self.get_map("comms") else {
+            return false;
+        };
+        let Some((_, entry)) = self.doc.get(&comms, comm_id).ok().flatten() else {
+            return false;
+        };
+        let Some((Value::Object(ObjType::List), list_id)) =
+            self.doc.get(&entry, "outputs").ok().flatten()
+        else {
+            return false;
+        };
+        let len = self.doc.length(&list_id);
+        self.doc
+            .insert(&list_id, len, manifest_hash)
+            .expect("append comm output");
+        true
+    }
+
+    /// Clear a comm's outputs list (OutputModel widgets).
+    ///
+    /// Returns `false` if the comm doesn't exist or outputs is already empty.
+    #[allow(clippy::expect_used)]
+    pub fn clear_comm_outputs(&mut self, comm_id: &str) -> bool {
+        let Some(comms) = self.get_map("comms") else {
+            return false;
+        };
+        let Some((_, entry)) = self.doc.get(&comms, comm_id).ok().flatten() else {
+            return false;
+        };
+        let Some((Value::Object(ObjType::List), list_id)) =
+            self.doc.get(&entry, "outputs").ok().flatten()
+        else {
+            return false;
+        };
+        let len = self.doc.length(&list_id);
+        if len == 0 {
+            return false;
+        }
+        for i in (0..len).rev() {
+            self.doc.delete(&list_id, i).expect("clear comm output");
+        }
+        true
+    }
+
     // ── Full state read ─────────────────────────────────────────────
 
     /// Read the full runtime state snapshot.
@@ -1257,6 +1461,20 @@ impl RuntimeStateDoc {
             })
             .unwrap_or_default();
 
+        // Read comms map
+        let comms = self
+            .get_map("comms")
+            .map(|comms_obj| {
+                let mut map = HashMap::new();
+                for key in self.doc.keys(&comms_obj) {
+                    if let Some(entry) = self.get_comm(&key) {
+                        map.insert(key, entry);
+                    }
+                }
+                map
+            })
+            .unwrap_or_default();
+
         RuntimeState {
             kernel: kernel_state,
             queue: queue_state,
@@ -1264,6 +1482,7 @@ impl RuntimeStateDoc {
             trust: trust_state,
             last_saved,
             executions,
+            comms,
         }
     }
 
@@ -2053,5 +2272,143 @@ mod tests {
         let doc = RuntimeStateDoc::new();
         // No execution entry → empty outputs
         assert!(doc.get_outputs("nope").is_empty());
+    }
+
+    // ── Comm tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_put_comm_roundtrip() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.put_comm(
+            "comm-1",
+            "jupyter.widget",
+            "@jupyter-widgets/controls",
+            "IntSliderModel",
+            r#"{"value":42}"#,
+            0,
+        );
+
+        let entry = doc.get_comm("comm-1").unwrap();
+        assert_eq!(entry.target_name, "jupyter.widget");
+        assert_eq!(entry.model_module, "@jupyter-widgets/controls");
+        assert_eq!(entry.model_name, "IntSliderModel");
+        assert_eq!(entry.state, r#"{"value":42}"#);
+        assert!(entry.outputs.is_empty());
+        assert_eq!(entry.seq, 0);
+    }
+
+    #[test]
+    fn test_put_comm_overwrites() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.put_comm("comm-1", "jupyter.widget", "mod-a", "ModelA", "{}", 0);
+        doc.put_comm("comm-1", "jupyter.widget", "mod-b", "ModelB", "{}", 1);
+
+        let entry = doc.get_comm("comm-1").unwrap();
+        assert_eq!(entry.model_module, "mod-b");
+        assert_eq!(entry.model_name, "ModelB");
+        assert_eq!(entry.seq, 1);
+    }
+
+    #[test]
+    fn test_update_comm_state() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.put_comm("comm-1", "jupyter.widget", "", "", r#"{"value":1}"#, 0);
+
+        assert!(doc.update_comm_state("comm-1", r#"{"value":2}"#));
+        assert_eq!(doc.get_comm("comm-1").unwrap().state, r#"{"value":2}"#);
+    }
+
+    #[test]
+    fn test_update_comm_state_nonexistent() {
+        let mut doc = RuntimeStateDoc::new();
+        assert!(!doc.update_comm_state("nope", "{}"));
+    }
+
+    #[test]
+    fn test_remove_comm() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.put_comm("comm-1", "jupyter.widget", "", "", "{}", 0);
+        assert!(doc.remove_comm("comm-1"));
+        assert!(doc.get_comm("comm-1").is_none());
+    }
+
+    #[test]
+    fn test_remove_comm_nonexistent() {
+        let mut doc = RuntimeStateDoc::new();
+        assert!(!doc.remove_comm("nope"));
+    }
+
+    #[test]
+    fn test_clear_comms() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.put_comm("comm-1", "jupyter.widget", "", "", "{}", 0);
+        doc.put_comm("comm-2", "jupyter.widget", "", "", "{}", 1);
+        assert!(doc.clear_comms());
+        assert!(doc.get_comm("comm-1").is_none());
+        assert!(doc.get_comm("comm-2").is_none());
+    }
+
+    #[test]
+    fn test_clear_comms_empty() {
+        let mut doc = RuntimeStateDoc::new();
+        assert!(!doc.clear_comms());
+    }
+
+    #[test]
+    fn test_comms_in_read_state() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.put_comm("comm-1", "jupyter.widget", "mod", "Slider", r#"{"v":1}"#, 0);
+        doc.put_comm("comm-2", "jupyter.widget", "mod", "Button", r#"{"v":2}"#, 1);
+
+        let state = doc.read_state();
+        assert_eq!(state.comms.len(), 2);
+        assert_eq!(state.comms["comm-1"].model_name, "Slider");
+        assert_eq!(state.comms["comm-2"].model_name, "Button");
+    }
+
+    #[test]
+    fn test_fork_and_merge_comms() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.put_comm("comm-1", "jupyter.widget", "", "", "{}", 0);
+
+        let mut fork = doc.fork();
+        fork.set_actor("runtimed:state:comms");
+        fork.put_comm("comm-2", "jupyter.widget", "", "New", "{}", 1);
+
+        doc.merge(&mut fork).unwrap();
+        assert!(doc.get_comm("comm-1").is_some());
+        assert_eq!(doc.get_comm("comm-2").unwrap().model_name, "New");
+    }
+
+    #[test]
+    fn test_comm_output_append_and_clear() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.put_comm("comm-1", "jupyter.widget", "", "OutputModel", "{}", 0);
+
+        assert!(doc.append_comm_output("comm-1", "hash-a"));
+        assert!(doc.append_comm_output("comm-1", "hash-b"));
+        assert_eq!(
+            doc.get_comm("comm-1").unwrap().outputs,
+            vec!["hash-a", "hash-b"]
+        );
+
+        assert!(doc.clear_comm_outputs("comm-1"));
+        assert!(doc.get_comm("comm-1").unwrap().outputs.is_empty());
+
+        // Clearing already-empty returns false
+        assert!(!doc.clear_comm_outputs("comm-1"));
+    }
+
+    #[test]
+    fn test_comm_output_nonexistent() {
+        let mut doc = RuntimeStateDoc::new();
+        assert!(!doc.append_comm_output("nope", "hash"));
+        assert!(!doc.clear_comm_outputs("nope"));
+    }
+
+    #[test]
+    fn test_new_doc_has_empty_comms() {
+        let doc = RuntimeStateDoc::new();
+        assert!(doc.read_state().comms.is_empty());
     }
 }
