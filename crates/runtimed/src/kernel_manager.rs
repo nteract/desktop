@@ -1648,22 +1648,15 @@ impl RoomKernel {
                                         comm_state
                                             .on_comm_update(&msg.comm_id.0, state_delta)
                                             .await;
-
-                                        // Dual-write merged state to RuntimeStateDoc.
-                                        // Read merged state back from CommState (it already
-                                        // applied the delta).
-                                        let all_comms = comm_state.get_all().await;
-                                        if let Some(snapshot) =
-                                            all_comms.iter().find(|c| c.comm_id == msg.comm_id.0)
-                                        {
-                                            let merged_json =
-                                                serde_json::to_string(&snapshot.state)
-                                                    .unwrap_or_default();
-                                            let mut sd = state_doc_for_iopub.write().await;
-                                            if sd.update_comm_state(&msg.comm_id.0, &merged_json) {
-                                                let _ = state_changed_for_iopub.send(());
-                                            }
-                                        }
+                                        // Note: we intentionally do NOT dual-write to
+                                        // RuntimeStateDoc on every comm_msg update.
+                                        // High-frequency widgets (sliders) generate dozens
+                                        // of updates per second, and each CRDT write +
+                                        // sync notification overwhelms the pipeline.
+                                        // Phase D will add coalesced writes (16ms window).
+                                        // For now, the CRDT has the initial state from
+                                        // comm_open, and real-time updates flow via
+                                        // broadcasts.
                                     }
                                 }
 
