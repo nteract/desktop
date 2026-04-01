@@ -1015,8 +1015,8 @@ impl NotebookRoom {
                 let mut sd = state_doc.blocking_write();
                 for (cell_id, outputs) in &cell_outputs {
                     let synthetic_eid = uuid::Uuid::new_v4().to_string();
-                    let _ = sd.set_outputs(&synthetic_eid, outputs);
                     sd.create_execution(&synthetic_eid, cell_id);
+                    let _ = sd.set_outputs(&synthetic_eid, outputs);
                     sd.set_execution_done(&synthetic_eid, true);
                     let _ = doc.set_execution_id(cell_id, Some(&synthetic_eid));
                 }
@@ -5747,8 +5747,8 @@ where
             for (_idx, cell, output_refs, _resolved_assets) in &batch {
                 if !output_refs.is_empty() {
                     let synthetic_eid = uuid::Uuid::new_v4().to_string();
-                    let _ = sd.set_outputs(&synthetic_eid, output_refs);
                     sd.create_execution(&synthetic_eid, &cell.id);
+                    let _ = sd.set_outputs(&synthetic_eid, output_refs);
                     sd.set_execution_done(&synthetic_eid, true);
                     cell_eids.insert(cell.id.clone(), synthetic_eid);
                 }
@@ -5899,11 +5899,9 @@ pub async fn load_notebook_from_disk_with_state_doc(
             // The cell's execution_id pointer links it to the outputs.
             let synthetic_eid = uuid::Uuid::new_v4().to_string();
             if let Some(ref mut sd) = state_doc {
+                sd.create_execution(&synthetic_eid, &cell.id);
                 sd.set_outputs(&synthetic_eid, &output_refs)
                     .map_err(|e| format!("Failed to set outputs in state doc: {}", e))?;
-                // Create a "done" execution entry so the frontend knows this
-                // execution is complete (loaded from disk).
-                sd.create_execution(&synthetic_eid, &cell.id);
                 sd.set_execution_done(&synthetic_eid, true);
             }
             doc.set_execution_id(&cell.id, Some(&synthetic_eid))
@@ -6198,8 +6196,8 @@ async fn apply_ipynb_changes(
                         if !ext_outputs.is_empty() {
                             let synthetic_eid = uuid::Uuid::new_v4().to_string();
                             let mut sd = room.state_doc.write().await;
-                            let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
                             sd.create_execution(&synthetic_eid, &ext_cell.id);
+                            let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
                             sd.set_execution_done(&synthetic_eid, true);
                             let _ = fork.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
                             let _ = room.state_changed_tx.send(());
@@ -6214,8 +6212,8 @@ async fn apply_ipynb_changes(
                     if !ext_outputs.is_empty() {
                         let synthetic_eid = uuid::Uuid::new_v4().to_string();
                         let mut sd = room.state_doc.write().await;
-                        let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
                         sd.create_execution(&synthetic_eid, &ext_cell.id);
+                        let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
                         sd.set_execution_done(&synthetic_eid, true);
                         let _ = fork.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
                         let _ = room.state_changed_tx.send(());
@@ -6347,8 +6345,8 @@ async fn apply_ipynb_changes(
                     if !ext_outputs.is_empty() {
                         let synthetic_eid = uuid::Uuid::new_v4().to_string();
                         let mut sd = room.state_doc.write().await;
-                        let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
                         sd.create_execution(&synthetic_eid, &ext_cell.id);
+                        let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
                         sd.set_execution_done(&synthetic_eid, true);
                         let _ = doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
                         let _ = room.state_changed_tx.send(());
@@ -6401,8 +6399,8 @@ async fn apply_ipynb_changes(
                 if !ext_outputs.is_empty() {
                     let synthetic_eid = uuid::Uuid::new_v4().to_string();
                     let mut sd = room.state_doc.write().await;
-                    let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
                     sd.create_execution(&synthetic_eid, &ext_cell.id);
+                    let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
                     sd.set_execution_done(&synthetic_eid, true);
                     let _ = doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
                     let _ = room.state_changed_tx.send(());
@@ -7241,8 +7239,8 @@ mod tests {
         {
             let mut sd = room.state_doc.write().await;
             let output = r#"{"output_type": "stream", "name": "stdout", "text": ["hello\n"]}"#;
-            sd.set_outputs(eid, &[output.to_string()]).unwrap();
             sd.create_execution(eid, "cell1");
+            sd.set_outputs(eid, &[output.to_string()]).unwrap();
             sd.set_execution_done(eid, true);
         }
 

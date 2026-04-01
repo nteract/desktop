@@ -95,11 +95,10 @@ pub enum FrameEvent {
         /// True if the runtime state document changed.
         changed: bool,
         /// The full current runtime state snapshot (only when changed).
+        /// Includes outputs inline in each ExecutionState entry.
         #[serde(skip_serializing_if = "Option::is_none")]
         state: Option<Box<RuntimeState>>,
         /// Cell IDs whose outputs changed in this sync frame.
-        /// The SyncEngine should inject a synthetic CellChangeset with
-        /// `outputs: true` for each, triggering re-materialization.
         #[serde(skip_serializing_if = "Vec::is_empty")]
         output_changed_cells: Vec<String>,
     },
@@ -168,11 +167,10 @@ pub struct NotebookHandle {
     /// Runtime state doc — daemon-authoritative, synced read-only.
     state_doc: RuntimeStateDoc,
     state_sync_state: sync::State,
-    /// Previous outputs snapshot for diffing — maps execution_id to manifest hashes.
-    /// Used to detect mid-execution output changes (stream append, display update,
-    /// error) that need re-materialization. Only stores 64-char hex strings, not
-    /// actual output data.
-    prev_outputs: std::collections::HashMap<String, Vec<String>>,
+    /// Previous outputs per execution_id for diffing. Extracted from
+    /// `state.executions[eid].outputs` on each sync frame to detect
+    /// mid-execution output changes (stream append, display update, error).
+    prev_execution_outputs: std::collections::HashMap<String, Vec<String>>,
     /// Pool state doc — daemon-authoritative, global, synced read-only.
     pool_doc: PoolDoc,
     pool_sync_state: sync::State,
@@ -275,7 +273,7 @@ impl NotebookHandle {
             sync_state: sync::State::new(),
             state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
-            prev_outputs: std::collections::HashMap::new(),
+            prev_execution_outputs: std::collections::HashMap::new(),
             pool_doc: PoolDoc::new_empty(),
             pool_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
@@ -292,7 +290,7 @@ impl NotebookHandle {
             sync_state: sync::State::new(),
             state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
-            prev_outputs: std::collections::HashMap::new(),
+            prev_execution_outputs: std::collections::HashMap::new(),
             pool_doc: PoolDoc::new_empty(),
             pool_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
@@ -323,7 +321,7 @@ impl NotebookHandle {
             sync_state: sync::State::new(),
             state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
-            prev_outputs: std::collections::HashMap::new(),
+            prev_execution_outputs: std::collections::HashMap::new(),
             pool_doc: PoolDoc::new_empty(),
             pool_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
@@ -1260,38 +1258,32 @@ impl NotebookHandle {
                     None
                 };
 
-                // Diff outputs to detect mid-execution output changes.
-                // Read outputs separately from read_state() to avoid the
-                // O(E×O) cost on every frame — only read when doc changed.
+                // Diff outputs inline in executions — detect mid-execution
+                // changes (stream append, display update, error).
                 let output_changed_cells = if changed {
-                    let current_outputs = self.state_doc.read_outputs();
                     let current_state = state.as_ref().unwrap();
                     let mut changed_cells = Vec::new();
 
-                    // Check for new or changed outputs
-                    for (eid, hashes) in &current_outputs {
-                        let prev = self.prev_outputs.get(eid);
-                        let changed = match prev {
-                            None => true,
-                            Some(prev) => prev != hashes,
+                    for (eid, exec) in &current_state.executions {
+                        let prev = self.prev_execution_outputs.get(eid);
+                        let outputs_changed = match prev {
+                            None => !exec.outputs.is_empty(),
+                            Some(prev) => prev != &exec.outputs,
                         };
-                        if changed {
-                            if let Some(exec) = current_state.executions.get(eid) {
-                                changed_cells.push(exec.cell_id.clone());
-                            }
+                        if outputs_changed {
+                            changed_cells.push(exec.cell_id.clone());
                         }
                     }
-                    // Check for removed outputs (eid in prev but not in current)
-                    for eid in self.prev_outputs.keys() {
-                        if !current_outputs.contains_key(eid) {
-                            if let Some(exec) = current_state.executions.get(eid) {
-                                changed_cells.push(exec.cell_id.clone());
-                            }
-                        }
-                    }
+                    // Removed executions (trimmed) don't need notification —
+                    // the cell either has a newer execution or was deleted.
 
-                    // Update prev snapshot
-                    self.prev_outputs = current_outputs;
+                    // Update snapshot from inline execution outputs
+                    self.prev_execution_outputs = current_state
+                        .executions
+                        .iter()
+                        .filter(|(_, e)| !e.outputs.is_empty())
+                        .map(|(eid, e)| (eid.clone(), e.outputs.clone()))
+                        .collect();
 
                     changed_cells
                 } else {
