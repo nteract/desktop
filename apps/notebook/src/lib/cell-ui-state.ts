@@ -32,21 +32,16 @@ function emit(subs: Set<() => void>): void {
   for (const cb of subs) cb();
 }
 
-// Subscriber sets that need deferred notification.
-const _pendingEmits = new Set<Set<() => void>>();
-let _emitScheduled = false;
+// Subscriber sets dirtied during the current render pass.
+// Flushed by useLayoutEffect in AppContent — never during render itself.
+const _dirtySubscribers = new Set<Set<() => void>>();
 
-function deferEmit(subs: Set<() => void>): void {
-  _pendingEmits.add(subs);
-  if (!_emitScheduled) {
-    _emitScheduled = true;
-    queueMicrotask(() => {
-      _emitScheduled = false;
-      const batch = [..._pendingEmits];
-      _pendingEmits.clear();
-      for (const s of batch) emit(s);
-    });
-  }
+/** Flush pending subscriber notifications. Call from useLayoutEffect. */
+export function flushCellUIState(): void {
+  if (_dirtySubscribers.size === 0) return;
+  const batch = [..._dirtySubscribers];
+  _dirtySubscribers.clear();
+  for (const subs of batch) emit(subs);
 }
 
 function setsEqual(a: Set<string>, b: Set<string>): boolean {
@@ -57,42 +52,42 @@ function setsEqual(a: Set<string>, b: Set<string>): boolean {
 
 // ── Setters ─────────────────────────────────────────────────────────────
 //
-// Two-phase update pattern for compatibility with React's render rules:
+// Two-phase update pattern for StrictMode safety:
 //
-// 1. Assign the variable immediately — so useSyncExternalStore snapshot
-//    functions return the current value during the same render cycle.
-// 2. Defer subscriber notification via queueMicrotask — so React doesn't
-//    see a cross-component setState during render. Subscribers re-render
-//    on the next microtask, which is still before the browser paints.
+// 1. Assign the variable immediately during render — so useSyncExternalStore
+//    snapshot functions return current values when children render.
+// 2. Mark the subscriber set as dirty. Actual notification is deferred to
+//    useLayoutEffect (commit phase) via flushCellUIState(), so discarded
+//    renders never trigger subscriber notifications.
 
 export function setFocusedCellId(id: string | null): void {
   if (id === _focusedCellId) return;
   _focusedCellId = id;
-  deferEmit(_focusSubscribers);
+  _dirtySubscribers.add(_focusSubscribers);
 }
 
 export function setExecutingCellIds(ids: Set<string>): void {
   if (setsEqual(_executingCellIds, ids)) return;
   _executingCellIds = ids;
-  deferEmit(_executingSubscribers);
+  _dirtySubscribers.add(_executingSubscribers);
 }
 
 export function setQueuedCellIds(ids: Set<string>): void {
   if (setsEqual(_queuedCellIds, ids)) return;
   _queuedCellIds = ids;
-  deferEmit(_queuedSubscribers);
+  _dirtySubscribers.add(_queuedSubscribers);
 }
 
 export function setSearchQuery(query: string | undefined): void {
   if (query === _searchQuery) return;
   _searchQuery = query;
-  deferEmit(_searchQuerySubscribers);
+  _dirtySubscribers.add(_searchQuerySubscribers);
 }
 
 export function setSearchCurrentMatch(match: FindMatch | null): void {
   if (_searchCurrentMatch === match) return;
   _searchCurrentMatch = match;
-  deferEmit(_searchMatchSubscribers);
+  _dirtySubscribers.add(_searchMatchSubscribers);
 }
 
 // ── Snapshot readers (non-reactive) ─────────────────────────────────────
