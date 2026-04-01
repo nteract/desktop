@@ -284,7 +284,7 @@ pub fn all_tools() -> Vec<Tool> {
         .with_meta(app_tool_meta()),
         Tool::new(
             "replace_regex",
-            "Replace a regex-matched span. Use for anchors, lookarounds, or zero-width insertions. Fails if 0 or >1 matches.",
+            "Replace a regex-matched span (fancy-regex engine, Rust). Use for anchors, lookarounds, or zero-width insertions. Fails if 0 or >1 matches. Replacement content is literal (no escape interpretation — use actual newline chars, not \\n).",
             schema_for::<editing::ReplaceRegexParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(false).open_world(false))

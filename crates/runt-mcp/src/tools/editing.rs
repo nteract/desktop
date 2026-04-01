@@ -44,9 +44,9 @@ pub struct ReplaceMatchParams {
 pub struct ReplaceRegexParams {
     /// The cell ID to edit.
     pub cell_id: String,
-    /// Regex pattern (must match exactly once). MULTILINE enabled.
+    /// Regex pattern (must match exactly once). MULTILINE ((?m)) enabled by default — ^/$ match line boundaries. DOTALL is off — . does not match \n unless you add (?s).
     pub pattern: String,
-    /// Literal replacement text.
+    /// Literal replacement text — not interpreted as a regex or escape sequence. To insert a newline, use an actual newline character in the JSON string.
     pub content: String,
     /// Execute the cell immediately after edit.
     #[serde(default)]
