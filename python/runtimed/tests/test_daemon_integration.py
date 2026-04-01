@@ -644,12 +644,11 @@ class TestPerCellAccessors:
         assert result is None
 
     async def test_get_cell_outputs(self, session):
-        """get_cell_outputs returns raw output strings."""
+        """get_cell_outputs returns None for unexecuted cells (no execution_id)."""
         cell_id = await session.create_cell("x = 1")
         outputs = await session.get_cell_outputs(cell_id)
-        assert outputs is not None
-        assert isinstance(outputs, list)
-        assert len(outputs) == 0  # No outputs before execution
+        # Unexecuted cells have no execution_id → no outputs in RuntimeStateDoc
+        assert outputs is None
 
     async def test_get_cell_outputs_nonexistent(self, session):
         """get_cell_outputs returns None for missing cells."""
