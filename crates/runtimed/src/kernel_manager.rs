@@ -49,6 +49,79 @@ use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
 /// path, and rapid re-execution of the same cell accumulates entries fast.
 const MAX_EXECUTION_ENTRIES: usize = 64;
 
+/// Store widget buffers in the blob store and replace values in the state
+/// dict with `{"$blob": "<hash>"}` sentinels at the given buffer_paths.
+///
+/// Returns the modified state and the buffer_paths used. If there are no
+/// buffers or no buffer_paths, returns the state unchanged and empty paths.
+async fn store_widget_buffers(
+    state: &serde_json::Value,
+    buffer_paths: &[Vec<String>],
+    buffers: &[Vec<u8>],
+    blob_store: &crate::blob_store::BlobStore,
+) -> (serde_json::Value, Vec<Vec<String>>) {
+    if buffers.is_empty() || buffer_paths.is_empty() {
+        return (state.clone(), vec![]);
+    }
+
+    let mut modified = state.clone();
+    let mut used_paths = Vec::new();
+
+    for (i, path) in buffer_paths.iter().enumerate() {
+        if i >= buffers.len() || path.is_empty() {
+            continue;
+        }
+
+        // Store buffer in blob store
+        let hash = match blob_store
+            .put(&buffers[i], "application/octet-stream")
+            .await
+        {
+            Ok(h) => h,
+            Err(e) => {
+                log::warn!("[kernel-manager] Failed to store widget buffer: {}", e);
+                continue;
+            }
+        };
+
+        // Navigate to the parent in the state dict and replace with sentinel.
+        // Use a pointer-based approach to avoid nested mutable borrows.
+        if let Some(last_key) = path.last() {
+            let parent_path = &path[..path.len() - 1];
+            let parent = parent_path
+                .iter()
+                .try_fold(&mut modified, |v, key| v.get_mut(key));
+            if let Some(parent) = parent {
+                if let Some(obj) = parent.as_object_mut() {
+                    obj.insert(last_key.clone(), serde_json::json!({"$blob": hash}));
+                    used_paths.push(path.clone());
+                }
+            }
+        }
+    }
+
+    (modified, used_paths)
+}
+
+/// Extract buffer_paths from a Jupyter comm data payload.
+fn extract_buffer_paths(data: &serde_json::Value) -> Vec<Vec<String>> {
+    data.get("buffer_paths")
+        .or_else(|| data.get("state").and_then(|s| s.get("buffer_paths")))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|path| {
+                    path.as_array().map(|p| {
+                        p.iter()
+                            .filter_map(|s| s.as_str().map(String::from))
+                            .collect()
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Convert a protocol QueueEntry to a RuntimeStateDoc QueueEntry.
 fn to_doc_entry(e: &QueueEntry) -> DocQueueEntry {
     DocQueueEntry {
@@ -1595,15 +1668,25 @@ impl RoomKernel {
                                     )
                                     .await;
 
-                                // Dual-write to RuntimeStateDoc (native Automerge map)
+                                // Dual-write to RuntimeStateDoc (native Automerge map).
+                                // If the message has binary buffers, store them in the blob
+                                // store and replace with {"$blob": "<hash>"} sentinels.
                                 {
                                     let empty_obj = serde_json::json!({});
                                     let state = data.get("state").unwrap_or(&empty_obj);
-                                    let model_module = state
+                                    let buffer_paths = extract_buffer_paths(&data);
+                                    let (state_with_blobs, _used_paths) = store_widget_buffers(
+                                        state,
+                                        &buffer_paths,
+                                        &buffers,
+                                        &blob_store,
+                                    )
+                                    .await;
+                                    let model_module = state_with_blobs
                                         .get("_model_module")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("");
-                                    let model_name = state
+                                    let model_name = state_with_blobs
                                         .get("_model_name")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("");
@@ -1614,7 +1697,7 @@ impl RoomKernel {
                                         &open.target_name,
                                         model_module,
                                         model_name,
-                                        state,
+                                        &state_with_blobs,
                                         seq,
                                     );
                                     let _ = state_changed_for_iopub.send(());
