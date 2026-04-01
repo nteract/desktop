@@ -37,6 +37,8 @@ import { ImageOutput } from "@/components/outputs/image-output";
 import { JsonOutput } from "@/components/outputs/json-output";
 import { MarkdownOutput } from "@/components/outputs/markdown-output";
 import { PlotlyOutput } from "@/components/outputs/plotly-output";
+import { VegaOutput } from "@/components/outputs/vega-output";
+import { isVegaMimeType } from "@/components/outputs/vega-mime";
 import { SvgOutput } from "@/components/outputs/svg-output";
 import { WidgetView } from "@/components/widgets/widget-view";
 // Import widget support
@@ -314,6 +316,13 @@ function OutputRenderer({ payload }: { payload: RenderPayload }) {
     const plotlyData =
       typeof content === "string" ? JSON.parse(content) : content;
     return <PlotlyOutput data={plotlyData} />;
+  }
+
+  // Vega / Vega-Lite (any version, both +json and .json suffixes)
+  if (isVegaMimeType(mimeType)) {
+    const vegaData =
+      typeof content === "string" ? JSON.parse(content) : content;
+    return <VegaOutput data={vegaData} />;
   }
 
   // JSON

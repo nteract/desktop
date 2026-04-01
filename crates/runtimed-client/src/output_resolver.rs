@@ -34,7 +34,7 @@ pub fn mime_kind(mime: &str) -> MimeKind {
         return MimeKind::Json;
     }
     if let Some(subtype) = mime.strip_prefix("application/") {
-        if subtype.ends_with("+json") {
+        if subtype.ends_with("+json") || subtype.ends_with(".json") {
             return MimeKind::Json;
         }
     }

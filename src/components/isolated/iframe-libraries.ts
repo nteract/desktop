@@ -12,6 +12,7 @@
 
 import type { JupyterOutput } from "@/components/cell/OutputArea";
 import type { IsolatedFrameHandle } from "@/components/isolated/isolated-frame";
+import { isVegaMimeType } from "@/components/outputs/vega-mime";
 
 /**
  * Map of MIME types to the library name they require.
@@ -20,6 +21,12 @@ import type { IsolatedFrameHandle } from "@/components/isolated/isolated-frame";
 const MIME_LIBRARIES: Record<string, string> = {
   "application/vnd.plotly.v1+json": "plotly",
 };
+
+function libraryForMime(mime: string): string | undefined {
+  if (MIME_LIBRARIES[mime]) return MIME_LIBRARIES[mime];
+  if (isVegaMimeType(mime)) return "vega";
+  return undefined;
+}
 
 /** Cache of library code promises (shared across all iframes). */
 const codeCache = new Map<string, Promise<string>>();
@@ -38,6 +45,19 @@ function loadLibraryCode(name: string): Promise<string> {
       case "plotly": {
         const mod = await import("plotly.js-dist-min/plotly.min.js?raw");
         return mod.default;
+      }
+      case "vega": {
+        // Load all three in parallel: vega (runtime), vega-lite (compiler), vega-embed (renderer).
+        // Eval order matters: vega-embed expects window.vega and window.vl to exist.
+        // These packages use restrictive "exports" fields that block deep ?raw imports,
+        // so we use resolve aliases defined in vite.config.ts and vitest.config.ts
+        // to bypass the exports restriction and load the UMD builds as raw strings.
+        const [vegaMod, vegaLiteMod, vegaEmbedMod] = await Promise.all([
+          import("vega-raw"),
+          import("vega-lite-raw"),
+          import("vega-embed-raw"),
+        ]);
+        return `${vegaMod.default}\n${vegaLiteMod.default}\n${vegaEmbedMod.default}`;
       }
       default:
         throw new Error(`Unknown iframe library: ${name}`);
@@ -64,7 +84,7 @@ export function getRequiredLibraries(
     ) {
       const mime = selectMimeType(output.data);
       if (mime) {
-        const lib = MIME_LIBRARIES[mime];
+        const lib = libraryForMime(mime);
         if (lib) libs.add(lib);
       }
     }

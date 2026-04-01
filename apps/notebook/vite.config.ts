@@ -2,8 +2,36 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 import { visualizer } from "rollup-plugin-visualizer";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import { isolatedRendererPlugin } from "./vite-plugin-isolated-renderer";
+
+/**
+ * Vega packages (v6+) use restrictive "exports" fields that block deep imports
+ * like `vega/build/vega.min.js?raw`. This plugin resolves virtual module names
+ * (vega-raw, vega-lite-raw, vega-embed-raw) to the actual UMD build files with
+ * the ?raw suffix so they load as strings for iframe injection.
+ */
+function vegaRawPlugin(nodeModulesDir: string): Plugin {
+  const mapping: Record<string, string> = {
+    "vega-raw": path.join(nodeModulesDir, "vega/build/vega.min.js"),
+    "vega-lite-raw": path.join(
+      nodeModulesDir,
+      "vega-lite/build/vega-lite.min.js",
+    ),
+    "vega-embed-raw": path.join(
+      nodeModulesDir,
+      "vega-embed/build/vega-embed.min.js",
+    ),
+  };
+  return {
+    name: "vega-raw-resolve",
+    resolveId(source) {
+      const filePath = mapping[source];
+      if (filePath) return `${filePath}?raw`;
+      return null;
+    },
+  };
+}
 
 export default defineConfig(({ command }) => {
   const debugBundleSourceMapsEnabled =
@@ -15,6 +43,7 @@ export default defineConfig(({ command }) => {
     plugins: [
       react(),
       tailwindcss(),
+      vegaRawPlugin(path.resolve(__dirname, "../../node_modules")),
       isolatedRendererPlugin({
         minify: command !== "serve",
         sourcemap: isolatedRendererSourceMapsEnabled ? "inline" : false,

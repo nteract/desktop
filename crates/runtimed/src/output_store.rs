@@ -702,6 +702,7 @@ fn is_binary_mime(mime: &str) -> bool {
             || subtype == "x-latex"
             || subtype == "x-tex"
             || subtype.ends_with("+json")
+            || subtype.ends_with(".json")
             || subtype.ends_with("+xml");
         return !is_text;
     }

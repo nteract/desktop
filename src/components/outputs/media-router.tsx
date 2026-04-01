@@ -1,4 +1,5 @@
 import { lazy, type ReactNode, Suspense } from "react";
+import { isVegaMimeType } from "@/components/outputs/vega-mime";
 import { useMediaContext } from "./media-provider";
 
 // Lazy load built-in output components for better bundle splitting
@@ -44,10 +45,16 @@ export const DEFAULT_PRIORITY = [
   // Rich formats first
   "application/vnd.jupyter.widget-view+json",
   "application/vnd.plotly.v1+json",
+  "application/vnd.vegalite.v6+json",
+  "application/vnd.vegalite.v6.json",
   "application/vnd.vegalite.v5+json",
+  "application/vnd.vegalite.v5.json",
   "application/vnd.vegalite.v4+json",
   "application/vnd.vegalite.v3+json",
+  "application/vnd.vega.v6+json",
+  "application/vnd.vega.v6.json",
   "application/vnd.vega.v5+json",
+  "application/vnd.vega.v5.json",
   "application/vnd.vega.v4+json",
   "application/geo+json",
   // HTML and markdown
@@ -284,7 +291,8 @@ export function MediaRouter({
       mimeType === "text/markdown" ||
       mimeType === "text/html" ||
       mimeType === "image/svg+xml" ||
-      mimeType === "application/vnd.plotly.v1+json";
+      mimeType === "application/vnd.plotly.v1+json" ||
+      isVegaMimeType(mimeType);
 
     if (needsIsolation && !isInIframe()) {
       if (process.env.NODE_ENV === "development") {

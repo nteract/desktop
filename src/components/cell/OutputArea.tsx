@@ -10,6 +10,7 @@ import {
   getRequiredLibraries,
   injectLibraries,
 } from "@/components/isolated/iframe-libraries";
+import { isVegaMimeType } from "@/components/outputs/vega-mime";
 import {
   AnsiErrorOutput,
   AnsiStreamOutput,
@@ -138,11 +139,6 @@ const ISOLATED_MIME_TYPES = new Set([
   "image/svg+xml",
   "application/vnd.jupyter.widget-view+json",
   "application/vnd.plotly.v1+json",
-  "application/vnd.vegalite.v5+json",
-  "application/vnd.vegalite.v4+json",
-  "application/vnd.vegalite.v3+json",
-  "application/vnd.vega.v5+json",
-  "application/vnd.vega.v4+json",
 ]);
 
 /**
@@ -174,7 +170,9 @@ function outputNeedsIsolation(
     output.output_type === "display_data"
   ) {
     const mimeType = selectMimeType(output.data, priority);
-    return mimeType ? ISOLATED_MIME_TYPES.has(mimeType) : false;
+    return mimeType
+      ? ISOLATED_MIME_TYPES.has(mimeType) || isVegaMimeType(mimeType)
+      : false;
   }
   // stream and error outputs don't need isolation
   return false;
