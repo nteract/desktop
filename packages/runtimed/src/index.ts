@@ -30,15 +30,16 @@ export {
 
 // Runtime state
 export {
-  type RuntimeState,
+  type CommDocEntry,
+  DEFAULT_RUNTIME_STATE,
+  type EnvState,
+  type ExecutionState,
+  type ExecutionTransition,
   type KernelState,
   type QueueEntry,
   type QueueState,
-  type EnvState,
+  type RuntimeState,
   type TrustState,
-  type ExecutionState,
-  type ExecutionTransition,
-  DEFAULT_RUNTIME_STATE,
   diffExecutions,
 } from "./runtime-state";
 
