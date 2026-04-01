@@ -901,6 +901,7 @@ impl Daemon {
                                 env_type: EnvType::Uv,
                                 venv_path: env_path.clone(),
                                 python_path,
+                                prewarmed_packages: vec![],
                             },
                             created_at: Instant::now(),
                         });
@@ -929,6 +930,7 @@ impl Daemon {
                                 env_type: EnvType::Conda,
                                 venv_path: env_path.clone(),
                                 python_path,
+                                prewarmed_packages: vec![],
                             },
                             created_at: Instant::now(),
                         });
@@ -2437,6 +2439,7 @@ impl Daemon {
                     env_type: EnvType::Conda,
                     venv_path: env_path.clone(),
                     python_path,
+                    prewarmed_packages: vec![],
                 });
             }
 
@@ -2831,6 +2834,7 @@ print("warmup complete")
                     env_type: EnvType::Uv,
                     venv_path,
                     python_path,
+                    prewarmed_packages: install_packages,
                 });
             }
             self.update_pool_doc().await;
@@ -2878,6 +2882,7 @@ mod tests {
             env_type: EnvType::Uv,
             venv_path,
             python_path,
+            prewarmed_packages: vec![],
         }
     }
 
@@ -2925,6 +2930,7 @@ mod tests {
             env_type: EnvType::Uv,
             venv_path: PathBuf::from("/nonexistent/path"),
             python_path: PathBuf::from("/nonexistent/path/bin/python"),
+            prewarmed_packages: vec![],
         };
         pool.available.push_back(PoolEntry {
             env: missing_env,
@@ -3150,6 +3156,7 @@ mod tests {
             env_type: EnvType::Uv,
             venv_path,
             python_path,
+            prewarmed_packages: vec![],
         };
         pool.add(unwarmed_env);
 

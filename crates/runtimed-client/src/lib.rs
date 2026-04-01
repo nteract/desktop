@@ -81,6 +81,9 @@ pub struct PooledEnv {
     pub env_type: EnvType,
     pub venv_path: PathBuf,
     pub python_path: PathBuf,
+    /// Packages that were pre-installed in this pooled environment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prewarmed_packages: Vec<String>,
 }
 
 /// Get the default cache directory for environments.

@@ -75,6 +75,12 @@ fn read_runtime_info(handle: &notebook_sync::handle::DocHandle) -> serde_json::V
             if !state.env.in_sync {
                 info.insert("env_in_sync".into(), serde_json::json!(false));
             }
+            if !state.env.prewarmed_packages.is_empty() {
+                info.insert(
+                    "prewarmed_packages".into(),
+                    serde_json::json!(state.env.prewarmed_packages),
+                );
+            }
         }
         Err(_) => {
             info.insert("kernel_status".into(), serde_json::json!("unknown"));
