@@ -57,6 +57,8 @@ dev = [
     "matplotlib>=3.8",
     "pydantic-ai>=0.2.0",
     "anywidget>=0.9.21",
+    "quak>=0.3.4",
+    "polars>=1.39.3",
 ]
 agents = [
     "claude-agent-sdk>=0.1.0",

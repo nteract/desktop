@@ -49,6 +49,103 @@ use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
 /// path, and rapid re-execution of the same cell accumulates entries fast.
 const MAX_EXECUTION_ENTRIES: usize = 64;
 
+/// Store widget buffers in the blob store and replace values in the state
+/// dict with `{"$blob": "<hash>"}` sentinels at the given buffer_paths.
+///
+/// Returns the modified state and the buffer_paths used. If there are no
+/// buffers or no buffer_paths, returns the state unchanged and empty paths.
+async fn store_widget_buffers(
+    state: &serde_json::Value,
+    buffer_paths: &[Vec<String>],
+    buffers: &[Vec<u8>],
+    blob_store: &crate::blob_store::BlobStore,
+) -> (serde_json::Value, Vec<Vec<String>>) {
+    if buffers.is_empty() || buffer_paths.is_empty() {
+        return (state.clone(), vec![]);
+    }
+
+    let mut modified = state.clone();
+    let mut used_paths = Vec::new();
+
+    for (i, path) in buffer_paths.iter().enumerate() {
+        if i >= buffers.len() || path.is_empty() {
+            continue;
+        }
+
+        // Store buffer in blob store
+        let hash = match blob_store
+            .put(&buffers[i], "application/octet-stream")
+            .await
+        {
+            Ok(h) => h,
+            Err(e) => {
+                log::warn!("[kernel-manager] Failed to store widget buffer: {}", e);
+                continue;
+            }
+        };
+
+        // Navigate to the parent in the state dict and replace with sentinel.
+        // Handles both object keys (strings) and array indices (integers).
+        if let Some(last_key) = path.last() {
+            let parent_path = &path[..path.len() - 1];
+            let parent = parent_path
+                .iter()
+                .try_fold(&mut modified, |v, key| json_get_mut(v, key));
+            if let Some(parent) = parent {
+                let sentinel = serde_json::json!({"$blob": hash});
+                if let Some(obj) = parent.as_object_mut() {
+                    obj.insert(last_key.clone(), sentinel);
+                    used_paths.push(path.clone());
+                } else if let Some(arr) = parent.as_array_mut() {
+                    if let Ok(idx) = last_key.parse::<usize>() {
+                        if idx < arr.len() {
+                            arr[idx] = sentinel;
+                            used_paths.push(path.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (modified, used_paths)
+}
+
+/// Navigate into a JSON value by key (object) or index (array).
+fn json_get_mut<'a>(v: &'a mut serde_json::Value, key: &str) -> Option<&'a mut serde_json::Value> {
+    match v {
+        serde_json::Value::Object(map) => map.get_mut(key),
+        serde_json::Value::Array(arr) => key.parse::<usize>().ok().and_then(|idx| arr.get_mut(idx)),
+        _ => None,
+    }
+}
+
+/// Extract buffer_paths from a Jupyter comm data payload.
+fn extract_buffer_paths(data: &serde_json::Value) -> Vec<Vec<String>> {
+    data.get("buffer_paths")
+        .or_else(|| data.get("state").and_then(|s| s.get("buffer_paths")))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|path| {
+                    path.as_array().map(|p| {
+                        p.iter()
+                            .filter_map(|s| {
+                                // Handle both string and integer path segments
+                                // (ipywidgets uses integers for list indices)
+                                s.as_str()
+                                    .map(|v| v.to_string())
+                                    .or_else(|| s.as_u64().map(|v| v.to_string()))
+                                    .or_else(|| s.as_i64().map(|v| v.to_string()))
+                            })
+                            .collect()
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Convert a protocol QueueEntry to a RuntimeStateDoc QueueEntry.
 fn to_doc_entry(e: &QueueEntry) -> DocQueueEntry {
     DocQueueEntry {
@@ -1595,15 +1692,25 @@ impl RoomKernel {
                                     )
                                     .await;
 
-                                // Dual-write to RuntimeStateDoc (native Automerge map)
+                                // Dual-write to RuntimeStateDoc (native Automerge map).
+                                // If the message has binary buffers, store them in the blob
+                                // store and replace with {"$blob": "<hash>"} sentinels.
                                 {
                                     let empty_obj = serde_json::json!({});
                                     let state = data.get("state").unwrap_or(&empty_obj);
-                                    let model_module = state
+                                    let buffer_paths = extract_buffer_paths(&data);
+                                    let (state_with_blobs, _used_paths) = store_widget_buffers(
+                                        state,
+                                        &buffer_paths,
+                                        &buffers,
+                                        &blob_store,
+                                    )
+                                    .await;
+                                    let model_module = state_with_blobs
                                         .get("_model_module")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("");
-                                    let model_name = state
+                                    let model_name = state_with_blobs
                                         .get("_model_name")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("");
@@ -1614,7 +1721,7 @@ impl RoomKernel {
                                         &open.target_name,
                                         model_module,
                                         model_name,
-                                        state,
+                                        &state_with_blobs,
                                         seq,
                                     );
                                     let _ = state_changed_for_iopub.send(());
