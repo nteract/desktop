@@ -10,7 +10,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getBlobPort, refreshBlobPort, resetBlobPort } from "../lib/blob-port";
-import { replaceSentinelsWithBlobUrls } from "../lib/blob-sentinel";
 import {
   isKernelStatus,
   KERNEL_STATUS,
