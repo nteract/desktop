@@ -118,7 +118,7 @@ jobs:
         working-directory: python/nteract
 
       - name: Run smoke tests
-        run: uv run pytest --ignore=tests/test_mcp_integration.py
+        run: uv run pytest -v
         working-directory: python/nteract
 
   nteract-test-skip:

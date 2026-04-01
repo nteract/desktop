@@ -8,16 +8,7 @@ authors = [
     { name = "Kyle Kelley", email = "rgbkrk@gmail.com" }
 ]
 requires-python = ">=3.10"
-dependencies = [
-    "fastmcp>=3.1.0",
-    "mcp>=1.26.0",
-    "httpx>=0.27.0,<1.0",
-    "pydantic>=2.0",
-    "runtimed>=2.0.0a0,<3.0",
-]
-
-[tool.uv.sources]
-runtimed = { workspace = true }
+dependencies = []
 
 [project.scripts]
 nteract = "nteract._mcp_server:main"
@@ -31,16 +22,10 @@ packages = ["src/nteract"]
 
 [dependency-groups]
 dev = [
-    "anyio>=4.0",
     "pytest>=8.0",
-    "pytest-asyncio>=0.23",
     "ruff>=0.9",
     "ty>=0.0.1a7",
 ]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
 
 [tool.ty.environment]
 python-version = "3.10"

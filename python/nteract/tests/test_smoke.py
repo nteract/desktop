@@ -1,7 +1,8 @@
-"""Smoke tests to verify the package can be imported."""
+"""Smoke tests for the nteract package."""
 
-import asyncio
 from unittest.mock import patch
+
+import pytest
 
 
 def test_import():
@@ -11,85 +12,50 @@ def test_import():
     assert hasattr(nteract, "main")
 
 
-def test_mcp_server_import():
-    """Verify the MCP server module can be imported and NteractServer works."""
-    from nteract._mcp_server import NteractServer
-
-    server = NteractServer()
-    assert server.mcp.name == "nteract"
-
-
-def test_migration_guide_tool_when_deprecated():
-    """deprecated=True registers a migration_guide tool."""
-    from nteract._mcp_server import NteractServer
-
-    server = NteractServer(deprecated=True)
-    tool_names = [t.name for t in asyncio.run(server.mcp.list_tools())]
-    assert "migration_guide" in tool_names
-
-
-def test_no_migration_guide_tool_when_not_deprecated():
-    """deprecated=False does not register migration_guide."""
-    from nteract._mcp_server import NteractServer
-
-    server = NteractServer(deprecated=False)
-    tool_names = [t.name for t in asyncio.run(server.mcp.list_tools())]
-    assert "migration_guide" not in tool_names
-
-
-def test_instructions_include_deprecation_when_deprecated():
-    """Server instructions mention deprecation when deprecated=True."""
-    from nteract._mcp_server import NteractServer
-
-    server = NteractServer(deprecated=True)
-    assert "deprecated" in server.mcp.instructions.lower()
-
-
-def test_instructions_no_deprecation_when_not_deprecated():
-    """Server instructions do not mention deprecation when deprecated=False."""
-    from nteract._mcp_server import NteractServer
-
-    server = NteractServer(deprecated=False)
-    assert "deprecated" not in (server.mcp.instructions or "").lower()
-
-
-def test_fallback_when_runt_not_found():
-    """When runt is not found, main() falls back to Python server instead of exiting."""
+def test_main_exits_when_runt_not_found(capsys):
+    """When runt is not found, main() exits with code 1 and points to nteract.io."""
     from nteract._mcp_server import main
 
     with (
         patch("nteract._mcp_server._find_runt_binary", return_value=None),
-        patch("nteract._mcp_server.NteractServer") as MockServer,
         patch("sys.argv", ["nteract"]),
+        pytest.raises(SystemExit) as exc_info,
     ):
-        instance = MockServer.return_value
-        instance.mcp.run.side_effect = KeyboardInterrupt
-        instance.cleanup = lambda: None
-        try:
-            main()
-        except SystemExit as e:
-            # Should exit 130 (KeyboardInterrupt), NOT 1
-            assert e.code == 130, f"Expected exit code 130 (fallback), got {e.code}"
-        MockServer.assert_called_once()
-        _, kwargs = MockServer.call_args
-        assert kwargs["deprecated"] is True
+        main()
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "nteract.io" in captured.err
 
 
-def test_keyboard_interrupt_exits_130():
-    """Ctrl+C should exit with code 130 (Unix SIGINT convention), not dump a traceback."""
+def test_main_execs_runt_when_found():
+    """When runt is found, main() exec's it with the right arguments."""
     from nteract._mcp_server import main
 
     with (
-        patch("nteract._mcp_server.NteractServer") as MockServer,
-        patch("sys.argv", ["nteract", "--legacy"]),
+        patch("nteract._mcp_server._find_runt_binary", return_value="/usr/local/bin/runt"),
+        patch("nteract._mcp_server.os.execvp") as mock_execvp,
+        patch("sys.argv", ["nteract"]),
     ):
-        instance = MockServer.return_value
-        instance.mcp.run.side_effect = KeyboardInterrupt
-        instance.cleanup = lambda: None
-        try:
+        # execvp never returns in real usage; make it raise so main() stops
+        mock_execvp.side_effect = SystemExit(0)
+        with pytest.raises(SystemExit):
             main()
-            raised = False
-        except SystemExit as e:
-            raised = True
-            assert e.code == 130, f"Expected exit code 130, got {e.code}"
-        assert raised, "main() should have called sys.exit(130)"
+        mock_execvp.assert_called_once_with("/usr/local/bin/runt", ["/usr/local/bin/runt", "mcp"])
+
+
+def test_main_passes_no_show_flag():
+    """--no-show is forwarded to runt mcp."""
+    from nteract._mcp_server import main
+
+    with (
+        patch("nteract._mcp_server._find_runt_binary", return_value="/usr/local/bin/runt"),
+        patch("nteract._mcp_server.os.execvp") as mock_execvp,
+        patch("sys.argv", ["nteract", "--no-show"]),
+    ):
+        mock_execvp.side_effect = SystemExit(0)
+        with pytest.raises(SystemExit):
+            main()
+        mock_execvp.assert_called_once_with(
+            "/usr/local/bin/runt", ["/usr/local/bin/runt", "mcp", "--no-show"]
+        )
