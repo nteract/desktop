@@ -218,7 +218,13 @@ fn scenario_output_streaming() {
     }
 
     // Write outputs to RuntimeStateDoc
-    fixture_add_outputs(&mut daemon, &mut state_doc, "cell-1", "exec-001", &output_hashes);
+    fixture_add_outputs(
+        &mut daemon,
+        &mut state_doc,
+        "cell-1",
+        "exec-001",
+        &output_hashes,
+    );
 
     // Broadcast frames reference the manifest hashes
     let broadcast_frames: Vec<Vec<u8>> = output_manifests
@@ -282,7 +288,13 @@ fn scenario_execution_with_error() {
         traceback: inline(&traceback_json),
     };
     let (hash, manifest_json) = hash_manifest(&manifest);
-    fixture_add_outputs(&mut daemon, &mut state_doc, "cell-1", "exec-001", &[hash.clone()]);
+    fixture_add_outputs(
+        &mut daemon,
+        &mut state_doc,
+        "cell-1",
+        "exec-001",
+        std::slice::from_ref(&hash),
+    );
 
     let test_manifest = json!({
         "scenario": "execution_with_error",
@@ -321,7 +333,13 @@ fn scenario_re_execution() {
         text: inline("hello\n"),
     };
     let (first_hash, _) = hash_manifest(&first_manifest);
-    fixture_add_outputs(&mut daemon, &mut state_doc, "cell-1", "exec-001", &[first_hash]);
+    fixture_add_outputs(
+        &mut daemon,
+        &mut state_doc,
+        "cell-1",
+        "exec-001",
+        &[first_hash],
+    );
 
     // Second execution: new execution_id implicitly replaces the first
     daemon.set_execution_count("cell-1", "2").unwrap();
@@ -334,7 +352,13 @@ fn scenario_re_execution() {
         execution_count: Some(2),
     };
     let (second_hash, second_json) = hash_manifest(&second_manifest);
-    fixture_add_outputs(&mut daemon, &mut state_doc, "cell-1", "exec-002", &[second_hash.clone()]);
+    fixture_add_outputs(
+        &mut daemon,
+        &mut state_doc,
+        "cell-1",
+        "exec-002",
+        std::slice::from_ref(&second_hash),
+    );
 
     let test_manifest = json!({
         "scenario": "re_execution",
@@ -380,7 +404,13 @@ fn scenario_multi_cell_execution() {
         text: inline("42\n"),
     };
     let (hash, manifest_json) = hash_manifest(&manifest);
-    fixture_add_outputs(&mut daemon, &mut state_doc, "cell-2", "exec-002", &[hash.clone()]);
+    fixture_add_outputs(
+        &mut daemon,
+        &mut state_doc,
+        "cell-2",
+        "exec-002",
+        std::slice::from_ref(&hash),
+    );
 
     let test_manifest = json!({
         "scenario": "multi_cell_execution",
@@ -437,7 +467,13 @@ fn scenario_display_data_output() {
         metadata: BTreeMap::new(),
     };
     let (hash, manifest_json) = hash_manifest(&manifest);
-    fixture_add_outputs(&mut daemon, &mut state_doc, "cell-1", "exec-001", &[hash.clone()]);
+    fixture_add_outputs(
+        &mut daemon,
+        &mut state_doc,
+        "cell-1",
+        "exec-001",
+        std::slice::from_ref(&hash),
+    );
 
     let test_manifest = json!({
         "scenario": "display_data_output",
