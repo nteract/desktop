@@ -115,9 +115,7 @@ async fn store_widget_buffers(
 fn json_get_mut<'a>(v: &'a mut serde_json::Value, key: &str) -> Option<&'a mut serde_json::Value> {
     match v {
         serde_json::Value::Object(map) => map.get_mut(key),
-        serde_json::Value::Array(arr) => {
-            key.parse::<usize>().ok().and_then(|idx| arr.get_mut(idx))
-        }
+        serde_json::Value::Array(arr) => key.parse::<usize>().ok().and_then(|idx| arr.get_mut(idx)),
         _ => None,
     }
 }
