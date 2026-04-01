@@ -126,6 +126,9 @@ impl ChangedFields {
             "metadata" => self.metadata = true,
             "position" => self.position = true,
             "resolved_assets" => self.resolved_assets = true,
+            // execution_id change means the cell points to a different execution's
+            // outputs in RuntimeStateDoc — trigger output re-materialization
+            "execution_id" => self.outputs = true,
             "id" => { /* Cell ID field — not a meaningful change */ }
             _ => return false,
         }

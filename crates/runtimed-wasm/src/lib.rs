@@ -383,8 +383,24 @@ impl NotebookHandle {
     ///
     /// Each element is a JSON-encoded Jupyter output object (or manifest hash).
     /// Returns undefined if the cell doesn't exist.
+    ///
+    /// Outputs now live in the RuntimeStateDoc keyed by execution_id. This
+    /// method reads the cell's `execution_id` from the notebook doc, then
+    /// looks up outputs in the state doc — providing a transparent facade
+    /// for all existing callers.
     pub fn get_cell_outputs(&self, cell_id: &str) -> JsValue {
-        match self.doc.get_cell_outputs(cell_id) {
+        let outputs = match self.doc.get_execution_id(cell_id) {
+            Some(eid) => {
+                let out = self.state_doc.get_outputs(&eid);
+                if out.is_empty() {
+                    None
+                } else {
+                    Some(out)
+                }
+            }
+            None => None,
+        };
+        match outputs {
             Some(outputs) => serialize_to_js(&outputs).unwrap_or(JsValue::UNDEFINED),
             None => JsValue::UNDEFINED,
         }

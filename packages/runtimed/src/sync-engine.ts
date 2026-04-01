@@ -99,6 +99,7 @@ export class SyncEngine {
   private subscription: Subscription | null = null;
   private awaitingInitialSync = true;
   private prevExecutions: Record<string, ExecutionState> = {};
+  private prevOutputs: Record<string, string[]> = {};
 
   // Internal subjects
   private readonly frameIn$ = new Subject<number[]>();
@@ -450,6 +451,7 @@ export class SyncEngine {
               state.executions,
             );
             this.prevExecutions = state.executions;
+            this.prevOutputs = state.outputs ?? {};
             this._runtimeState$.next(state);
             if (transitions.length > 0) {
               this._executionTransitions$.next(transitions);
@@ -486,10 +488,9 @@ export class SyncEngine {
                 // Inject synthetic changesets on execution lifecycle transitions
                 // so the materialization pipeline stays in sync with the CRDT.
                 //
-                // "started": the daemon cleared outputs in the CRDT on
-                //   execute_input — re-read from WASM to show empty outputs.
-                // "done"/"error": reconcile the store with the CRDT's final
-                //   state in case earlier materializations were missed.
+                // "started": execution_id changed on the cell — WASM facade
+                //   returns empty outputs for the new execution_id.
+                // "done"/"error": reconcile the store with the final state.
                 for (const t of transitions) {
                   if (t.kind === "started") {
                     log.debug(
@@ -507,6 +508,40 @@ export class SyncEngine {
                         fields: { outputs: true, execution_count: true },
                       },
                     ],
+                    added: [],
+                    removed: [],
+                    order_changed: false,
+                  });
+                }
+              }
+
+              // Diff outputs map to detect mid-execution output changes
+              // (stream chunks, display_data, etc.) that don't trigger
+              // execution lifecycle transitions.
+              const outputsChanged: string[] = [];
+              const outputs = state.outputs ?? {};
+              for (const [eid, hashes] of Object.entries(outputs)) {
+                const prev = this.prevOutputs[eid];
+                if (!prev || prev.length !== hashes.length || prev.some((h, i) => h !== hashes[i])) {
+                  // Find the cell_id for this execution_id
+                  const exec = state.executions[eid];
+                  if (exec?.cell_id) {
+                    outputsChanged.push(exec.cell_id);
+                  }
+                }
+              }
+              this.prevOutputs = outputs;
+
+              if (outputsChanged.length > 0) {
+                // Deduplicate against cells already handled by transitions
+                const transitionCells = new Set(transitions.map((t) => t.cell_id));
+                const newOutputCells = outputsChanged.filter((c) => !transitionCells.has(c));
+                if (newOutputCells.length > 0) {
+                  materialize$.next({
+                    changed: newOutputCells.map((cell_id) => ({
+                      cell_id,
+                      fields: { outputs: true },
+                    })),
                     added: [],
                     removed: [],
                     order_changed: false,
@@ -802,5 +837,6 @@ export class SyncEngine {
     this.opts.logger.info("[sync-engine] Resetting for bootstrap");
     this.awaitingInitialSync = true;
     this.prevExecutions = {};
+    this.prevOutputs = {};
   }
 }

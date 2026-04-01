@@ -31,7 +31,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use automerge::AutoCommit;
+use automerge::{AutoCommit, ReadDoc, Value};
 use log::debug;
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -401,7 +401,17 @@ impl DocHandle {
     /// Get a single cell by ID from the latest snapshot.
     pub fn get_cell(&self, cell_id: &str) -> Option<notebook_doc::CellSnapshot> {
         let snapshot = self.snapshot_rx.borrow();
-        snapshot.cells.iter().find(|c| c.id == cell_id).cloned()
+        let mut cell = snapshot.cells.iter().find(|c| c.id == cell_id).cloned()?;
+        // Populate outputs from RuntimeStateDoc via execution_id facade
+        if let Ok(state) = self.doc.lock() {
+            if let Some(eid) = read_execution_id(&state.doc, cell_id) {
+                let outputs = state.state_doc.get_outputs(&eid);
+                if !outputs.is_empty() {
+                    cell.outputs = outputs;
+                }
+            }
+        }
+        Some(cell)
     }
 
     /// Get the ordered list of cell IDs from the latest snapshot.
@@ -442,14 +452,20 @@ impl DocHandle {
             .map(|c| c.cell_type.clone())
     }
 
-    /// Get a single cell's JSON-encoded outputs.
+    /// Get a single cell's outputs (manifest hashes) from RuntimeStateDoc.
+    ///
+    /// Reads the cell's `execution_id` from the notebook doc, then looks up
+    /// outputs in the RuntimeStateDoc — providing a transparent facade.
     pub fn get_cell_outputs(&self, cell_id: &str) -> Option<Vec<String>> {
-        let snapshot = self.snapshot_rx.borrow();
-        snapshot
-            .cells
-            .iter()
-            .find(|c| c.id == cell_id)
-            .map(|c| c.outputs.clone())
+        let state = self.doc.lock().ok()?;
+        // Read execution_id from the raw Automerge doc
+        let eid = read_execution_id(&state.doc, cell_id)?;
+        let outputs = state.state_doc.get_outputs(&eid);
+        if outputs.is_empty() {
+            None
+        } else {
+            Some(outputs)
+        }
     }
 
     /// Get a single cell's execution count (e.g. "5" or "null").
@@ -640,9 +656,21 @@ impl DocHandle {
         self.snapshot_rx.borrow().clone()
     }
 
-    /// Get all cells from the latest snapshot.
+    /// Get all cells from the latest snapshot with outputs from RuntimeStateDoc.
     pub fn get_cells(&self) -> Vec<notebook_doc::CellSnapshot> {
-        self.snapshot_rx.borrow().cells.as_ref().clone()
+        let mut cells = self.snapshot_rx.borrow().cells.as_ref().clone();
+        // Populate outputs from RuntimeStateDoc for each cell
+        if let Ok(state) = self.doc.lock() {
+            for cell in &mut cells {
+                if let Some(eid) = read_execution_id(&state.doc, &cell.id) {
+                    let outputs = state.state_doc.get_outputs(&eid);
+                    if !outputs.is_empty() {
+                        cell.outputs = outputs;
+                    }
+                }
+            }
+        }
+        cells
     }
 
     /// Get the typed notebook metadata from the latest snapshot.
@@ -682,5 +710,19 @@ impl DocHandle {
     pub(crate) fn publish_snapshot_from_doc(&self, doc: &AutoCommit) {
         let snapshot = NotebookSnapshot::from_doc(doc);
         let _ = self.snapshot_tx.send(snapshot);
+    }
+}
+
+/// Read the execution_id for a cell directly from a raw AutoCommit document.
+fn read_execution_id(doc: &AutoCommit, cell_id: &str) -> Option<String> {
+    let (_, cells_id) = doc.get(&automerge::ROOT, "cells").ok().flatten()?;
+    let (_, cell_obj) = doc.get(&cells_id, cell_id).ok().flatten()?;
+    let (value, _) = doc.get(&cell_obj, "execution_id").ok().flatten()?;
+    match value {
+        Value::Scalar(s) => match s.as_ref() {
+            automerge::ScalarValue::Str(s) => Some(s.to_string()),
+            _ => None,
+        },
+        _ => None,
     }
 }

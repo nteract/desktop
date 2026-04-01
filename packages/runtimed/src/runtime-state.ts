@@ -60,6 +60,8 @@ export interface RuntimeState {
   trust: TrustState;
   last_saved: string | null;
   executions: Record<string, ExecutionState>;
+  /** Cell outputs keyed by execution_id. Each value is a list of manifest hashes. */
+  outputs: Record<string, string[]>;
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────
@@ -89,6 +91,7 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
   },
   last_saved: null,
   executions: {},
+  outputs: {},
 };
 
 // ── Utilities ────────────────────────────────────────────────────────
