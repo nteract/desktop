@@ -1722,6 +1722,7 @@ impl Daemon {
                 }
 
                 // Warming loops will detect the deficit and rebuild on their next iteration
+                self.update_pool_doc().await;
                 Response::Flushed
             }
 
@@ -2031,6 +2032,7 @@ impl Daemon {
 
             if deficit > 0 {
                 if should_retry {
+                    self.update_pool_doc().await;
                     info!("[runtimed] Creating {} UV environments", deficit);
                     for _ in 0..deficit {
                         self.create_uv_env().await;
@@ -2105,6 +2107,7 @@ impl Daemon {
 
             if deficit > 0 {
                 if should_retry {
+                    self.update_pool_doc().await;
                     info!(
                         "[runtimed] Conda pool deficit: {}, creating {} envs",
                         deficit, deficit
@@ -2428,17 +2431,14 @@ impl Daemon {
         let warmup_ok = self.warmup_conda_env(&python_path, &env_path).await;
 
         if warmup_ok {
-            // Add to pool and check if we're clearing a previous error state
-            let had_errors = {
+            {
                 let mut pool = self.conda_pool.lock().await;
-                let had = pool.failure_state.consecutive_failures > 0;
                 pool.add(PooledEnv {
                     env_type: EnvType::Conda,
                     venv_path: env_path.clone(),
                     python_path,
                 });
-                had
-            };
+            }
 
             info!(
                 "[runtimed] Conda environment ready: {:?} (pool: {}/{})",
@@ -2447,11 +2447,7 @@ impl Daemon {
                 self.config.conda_pool_size
             );
 
-            // Broadcast cleared state if we recovered from errors
-            if had_errors {
-                info!("[runtimed] Conda pool recovered from error state");
-                self.update_pool_doc().await;
-            }
+            self.update_pool_doc().await;
         } else {
             // Clean up failed env and record failure
             let _ = tokio::fs::remove_dir_all(&env_path).await;
@@ -2829,23 +2825,15 @@ print("warmup complete")
         if warmup_ok {
             info!("[runtimed] UV environment ready at {:?}", venv_path);
 
-            // Add to pool and check if we're clearing a previous error state
-            let had_errors = {
+            {
                 let mut pool = self.uv_pool.lock().await;
-                let had = pool.failure_state.consecutive_failures > 0;
                 pool.add(PooledEnv {
                     env_type: EnvType::Uv,
                     venv_path,
                     python_path,
                 });
-                had
-            };
-
-            // Broadcast cleared state if we recovered from errors
-            if had_errors {
-                info!("[runtimed] UV pool recovered from error state");
-                self.update_pool_doc().await;
             }
+            self.update_pool_doc().await;
         } else {
             // Clean up failed env and record failure
             let _ = tokio::fs::remove_dir_all(&venv_path).await;

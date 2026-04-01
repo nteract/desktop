@@ -1207,12 +1207,13 @@ async fn test_pipe_mode_only_pipes_allowed_frame_types() {
         frame_types::BROADCAST,
         frame_types::PRESENCE,
         frame_types::RUNTIME_STATE_SYNC,
+        frame_types::POOL_STATE_SYNC,
     ];
     for (i, frame) in frames.iter().enumerate() {
         assert!(!frame.is_empty(), "frame {} should not be empty", i);
         assert!(
             allowed_types.contains(&frame[0]),
-            "frame {} has unexpected type byte 0x{:02x} — only AUTOMERGE_SYNC, BROADCAST, PRESENCE, and RUNTIME_STATE_SYNC are piped",
+            "frame {} has unexpected type byte 0x{:02x} — only AUTOMERGE_SYNC, BROADCAST, PRESENCE, RUNTIME_STATE_SYNC, and POOL_STATE_SYNC are piped",
             i,
             frame[0]
         );
