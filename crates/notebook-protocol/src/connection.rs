@@ -293,27 +293,39 @@ pub async fn send_typed_json_frame<W: AsyncWrite + Unpin, T: Serialize>(
 
 /// Receive a typed notebook frame.
 /// Returns `None` on clean disconnect (EOF).
+/// Unknown frame types are logged and skipped for forward compatibility.
 pub async fn recv_typed_frame<R: AsyncRead + Unpin>(
     reader: &mut R,
 ) -> std::io::Result<Option<TypedNotebookFrame>> {
-    let Some(data) = recv_frame(reader).await? else {
-        return Ok(None);
-    };
+    loop {
+        let Some(data) = recv_frame(reader).await? else {
+            return Ok(None);
+        };
 
-    if data.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "empty frame",
-        ));
+        if data.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "empty frame",
+            ));
+        }
+
+        match NotebookFrameType::try_from(data[0]) {
+            Ok(frame_type) => {
+                return Ok(Some(TypedNotebookFrame {
+                    frame_type,
+                    payload: data[1..].to_vec(),
+                }));
+            }
+            Err(_) => {
+                log::warn!(
+                    "Skipping unknown notebook frame type 0x{:02x} ({} bytes payload)",
+                    data[0],
+                    data.len() - 1,
+                );
+                continue;
+            }
+        }
     }
-
-    let frame_type = NotebookFrameType::try_from(data[0])?;
-    let payload = data[1..].to_vec();
-
-    Ok(Some(TypedNotebookFrame {
-        frame_type,
-        payload,
-    }))
 }
 
 /// Send a length-prefixed frame.

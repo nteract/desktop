@@ -3757,6 +3757,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "kernel-env",
+ "log",
  "notebook-doc",
  "serde",
  "serde_json",

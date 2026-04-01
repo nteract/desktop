@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true }
 kernel-env = { path = "../kernel-env", default-features = false }
+log = "0.4"
 notebook-doc = { path = "../notebook-doc" }
 serde = { workspace = true }
 serde_json = { workspace = true }
