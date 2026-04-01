@@ -8,6 +8,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getCrdtCommWriter } from "./crdt-comm-writer";
 import {
   type SendMessage,
   useWidgetModel,
@@ -193,23 +194,34 @@ export function createAFMModelProxy(
     save_changes(): void {
       if (Object.keys(pendingChanges).length === 0) return;
 
-      // Send comm_msg with update method to kernel
-      // Full Jupyter protocol message format for strongly-typed backends
-      sendMessage({
-        header: createHeader("comm_msg"),
-        parent_header: null,
-        metadata: {},
-        content: {
-          comm_id: model.id,
-          data: {
-            method: "update",
-            state: { ...pendingChanges },
-            buffer_paths: [],
+      const patch = { ...pendingChanges };
+
+      // Try CRDT path first (writes directly to RuntimeStateDoc,
+      // no SendComm round-trip). Falls back to SendComm if CRDT
+      // writer isn't available yet.
+      const writer = getCrdtCommWriter();
+      if (writer) {
+        writer(model.id, patch);
+        // Optimistically update the WidgetStore for instant feedback
+        store.updateModel(model.id, patch);
+      } else {
+        // Fallback: Send comm_msg with update method to kernel
+        sendMessage({
+          header: createHeader("comm_msg"),
+          parent_header: null,
+          metadata: {},
+          content: {
+            comm_id: model.id,
+            data: {
+              method: "update",
+              state: patch,
+              buffer_paths: [],
+            },
           },
-        },
-        buffers: [],
-        channel: "shell",
-      });
+          buffers: [],
+          channel: "shell",
+        });
+      }
 
       // Clear pending changes after sending
       for (const key of Object.keys(pendingChanges)) {

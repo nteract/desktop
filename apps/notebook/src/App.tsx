@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IsolationTest } from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
+import { setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
 import {
   useWidgetStoreRequired,
   WidgetStoreProvider,
@@ -311,6 +312,20 @@ function AppContent() {
       setDaemonCommSender(null);
     };
   }, [sendCommMessage]);
+
+  // Set up CRDT comm writer for widget state updates.
+  // Writes directly to RuntimeStateDoc via WASM — no SendComm round-trip.
+  useEffect(() => {
+    setCrdtCommWriter((commId: string, patch: Record<string, unknown>) => {
+      const handle = getHandle();
+      if (!handle) return;
+      handle.set_comm_state_batch(commId, JSON.stringify(patch));
+      triggerSync();
+    });
+    return () => {
+      setCrdtCommWriter(null);
+    };
+  }, [getHandle, triggerSync]);
 
   // Split queue state into executing (currently running) and queued (waiting).
   const executingCellIds = new Set(
