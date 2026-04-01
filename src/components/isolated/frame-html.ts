@@ -568,6 +568,9 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
       document.addEventListener('click', function(e) {
         const link = e.target.closest('a');
         if (link && link.href) {
+          // Allow download links (e.g. plotly "Download as PNG") to proceed
+          // natively — the iframe sandbox has allow-downloads enabled.
+          if (link.hasAttribute('download')) return;
           e.preventDefault();
           sendRpc('nteract/linkClick', {
             url: link.href,
