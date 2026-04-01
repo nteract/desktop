@@ -108,18 +108,9 @@ export class NotebookHandle {
      */
     cell_count(): number;
     /**
-     * Clear outputs and execution counts from every code cell in the CRDT.
-     * Returns the IDs of cells that were cleared.
-     */
-    clear_all_outputs(): string[];
-    /**
      * Clear the Conda section entirely.
      */
     clear_conda_section(): void;
-    /**
-     * Clear all outputs from a cell in the CRDT.
-     */
-    clear_outputs(cell_id: string): boolean;
     /**
      * Clear the UV section entirely (deps + requires-python).
      */
@@ -237,6 +228,11 @@ export class NotebookHandle {
      *
      * Each element is a JSON-encoded Jupyter output object (or manifest hash).
      * Returns undefined if the cell doesn't exist.
+     *
+     * Outputs now live in the RuntimeStateDoc keyed by execution_id. This
+     * method reads the cell's `execution_id` from the notebook doc, then
+     * looks up outputs in the state doc — providing a transparent facade
+     * for all existing callers.
      */
     get_cell_outputs(cell_id: string): any;
     /**
@@ -307,6 +303,13 @@ export class NotebookHandle {
      * Load a notebook document from saved bytes (e.g., from get_automerge_doc_bytes).
      */
     static load(bytes: Uint8Array): NotebookHandle;
+    /**
+     * Load a RuntimeStateDoc from saved bytes.
+     *
+     * Used by test fixtures to provide pre-populated state doc data
+     * (outputs, executions) alongside the notebook doc.
+     */
+    load_state_doc(bytes: Uint8Array): void;
     /**
      * Move a cell to a new position (after the specified cell).
      *
@@ -526,6 +529,7 @@ export interface InitOutput {
     readonly notebookhandle_create_bootstrap: (a: number, b: number) => number;
     readonly notebookhandle_create_empty: () => number;
     readonly notebookhandle_load: (a: number, b: number, c: number) => void;
+    readonly notebookhandle_load_state_doc: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_get_actor_id: (a: number, b: number) => void;
     readonly notebookhandle_set_actor: (a: number, b: number, c: number) => void;
     readonly notebookhandle_contributing_actors: (a: number, b: number) => void;
@@ -546,8 +550,6 @@ export interface InitOutput {
     readonly notebookhandle_delete_cell: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_update_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_splice_source: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
-    readonly notebookhandle_clear_outputs: (a: number, b: number, c: number, d: number) => void;
-    readonly notebookhandle_clear_all_outputs: (a: number, b: number) => void;
     readonly notebookhandle_set_execution_count: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_append_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_get_metadata: (a: number, b: number, c: number, d: number) => void;

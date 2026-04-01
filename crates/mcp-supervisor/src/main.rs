@@ -298,11 +298,13 @@ fn augmented_path() -> String {
 ///
 /// Returns `true` on success, `false` on failure.
 fn run_cargo_build_daemon(project_root: &Path) -> bool {
-    info!("Building daemon binary (cargo build -p runtimed)...");
+    info!("Building daemon + CLI (cargo build -p runtimed -p runt-cli)...");
     let mut cmd = std::process::Command::new("cargo");
     cmd.arg("build")
         .arg("-p")
         .arg("runtimed")
+        .arg("-p")
+        .arg("runt-cli")
         .current_dir(project_root)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
@@ -1503,19 +1505,24 @@ impl ServerHandler for Supervisor {
                     state.project_root.clone()
                 };
 
-                // 1. Rebuild daemon binary (cargo build -p runtimed)
+                // 1. Rebuild daemon binary and CLI (cargo build -p runtimed -p runt-cli)
                 if !run_cargo_build_daemon(&project_root) {
                     return Ok(CallToolResult::success(vec![Content::text(
                         "cargo build -p runtimed failed — check the supervisor logs for details",
                     )]));
                 }
 
-                // 2. Rebuild Python bindings (maturin develop)
-                if !run_maturin_develop(&project_root) {
-                    return Ok(CallToolResult::success(vec![Content::text(
-                        "maturin develop failed — check the supervisor logs for details\n\
-                         (daemon binary was rebuilt successfully)",
-                    )]));
+                // 2. Rebuild Python bindings (maturin develop) — skip if
+                // SKIP_MATURIN=1 is set (speeds up Rust-only iteration).
+                if std::env::var("SKIP_MATURIN").unwrap_or_default() != "1" {
+                    if !run_maturin_develop(&project_root) {
+                        return Ok(CallToolResult::success(vec![Content::text(
+                            "maturin develop failed — check the supervisor logs for details\n\
+                             (daemon binary was rebuilt successfully)",
+                        )]));
+                    }
+                } else {
+                    info!("Skipping maturin develop (SKIP_MATURIN=1)");
                 }
 
                 // 3. Stop whatever daemon is running (managed or not) and start fresh

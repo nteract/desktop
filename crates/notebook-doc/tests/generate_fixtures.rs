@@ -15,6 +15,7 @@
 //! Run with:
 //!   cargo test -p notebook-doc --test generate_fixtures -- --nocapture
 
+use notebook_doc::runtime_state::RuntimeStateDoc;
 use notebook_doc::{frame_types, NotebookDoc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -116,10 +117,11 @@ fn store_manifest_file(dir: &std::path::Path, hash: &str, manifest_json: &str) {
     fs::write(blobs_dir.join(hash), manifest_json).unwrap();
 }
 
-/// Write a scenario: manifest.json + doc.bin + blob manifest files.
+/// Write a scenario: manifest.json + doc.bin + state_doc.bin + blob manifest files.
 fn write_scenario(
     name: &str,
     daemon: &mut NotebookDoc,
+    state_doc: &mut RuntimeStateDoc,
     test_manifest: &serde_json::Value,
     output_manifests: &[(String, String)], // (hash, json) pairs
 ) {
@@ -133,12 +135,14 @@ fn write_scenario(
         store_manifest_file(&dir, hash, json);
     }
     fs::write(dir.join("doc.bin"), daemon.save()).unwrap();
+    fs::write(dir.join("state_doc.bin"), state_doc.doc_mut().save()).unwrap();
 }
 
 /// Write a scenario with broadcast frame files alongside the doc.
 fn write_scenario_with_broadcasts(
     name: &str,
     daemon: &mut NotebookDoc,
+    state_doc: &mut RuntimeStateDoc,
     test_manifest: &serde_json::Value,
     output_manifests: &[(String, String)],
     broadcast_frames: &[Vec<u8>],
@@ -153,9 +157,34 @@ fn write_scenario_with_broadcasts(
         store_manifest_file(&dir, hash, json);
     }
     fs::write(dir.join("doc.bin"), daemon.save()).unwrap();
+    fs::write(dir.join("state_doc.bin"), state_doc.doc_mut().save()).unwrap();
     for (i, frame) in broadcast_frames.iter().enumerate() {
         fs::write(dir.join(format!("broadcast_{i:03}.bin")), frame).unwrap();
     }
+}
+
+/// Helper to add outputs to a RuntimeStateDoc for a cell.
+///
+/// Creates a synthetic execution entry, writes output hashes, and sets
+/// the execution_id on the cell in the notebook doc.
+fn fixture_add_outputs(
+    doc: &mut NotebookDoc,
+    state_doc: &mut RuntimeStateDoc,
+    cell_id: &str,
+    execution_id: &str,
+    hashes: &[String],
+) {
+    // Write outputs to RuntimeStateDoc
+    state_doc.create_execution(execution_id, cell_id);
+    state_doc.set_execution_done(execution_id, true);
+    if !hashes.is_empty() {
+        state_doc
+            .set_outputs(execution_id, hashes)
+            .expect("set_outputs");
+    }
+    // Link cell to execution_id in notebook doc
+    doc.set_execution_id(cell_id, Some(execution_id))
+        .expect("set_execution_id");
 }
 
 // ── Scenarios ────────────────────────────────────────────────────────
@@ -165,17 +194,18 @@ fn scenario_output_streaming() {
     //! Daemon creates a cell, executes it, and streams stdout output.
 
     let mut daemon = NotebookDoc::new_with_actor("output-streaming", "fixture-output-streaming");
+    let mut state_doc = RuntimeStateDoc::new();
     daemon.add_cell(0, "cell-1", "code").unwrap();
     daemon
         .update_source("cell-1", "for i in range(3):\n    print(i)")
         .unwrap();
 
-    daemon.clear_outputs("cell-1").unwrap();
     daemon.set_execution_count("cell-1", "1").unwrap();
 
     // Build real manifests for each streamed line
     let lines = ["0\n", "1\n", "2\n"];
     let mut output_manifests = Vec::new();
+    let mut output_hashes = Vec::new();
 
     for line in &lines {
         let manifest = OutputManifest::Stream {
@@ -183,9 +213,18 @@ fn scenario_output_streaming() {
             text: inline(line),
         };
         let (hash, json) = hash_manifest(&manifest);
-        daemon.append_output("cell-1", &hash).unwrap();
+        output_hashes.push(hash.clone());
         output_manifests.push((hash, json));
     }
+
+    // Write outputs to RuntimeStateDoc
+    fixture_add_outputs(
+        &mut daemon,
+        &mut state_doc,
+        "cell-1",
+        "exec-001",
+        &output_hashes,
+    );
 
     // Broadcast frames reference the manifest hashes
     let broadcast_frames: Vec<Vec<u8>> = output_manifests
@@ -219,6 +258,7 @@ fn scenario_output_streaming() {
     write_scenario_with_broadcasts(
         "output_streaming",
         &mut daemon,
+        &mut state_doc,
         &test_manifest,
         &output_manifests,
         &broadcast_frames,
@@ -230,6 +270,7 @@ fn scenario_execution_with_error() {
     //! Daemon executes a cell that raises an error.
 
     let mut daemon = NotebookDoc::new_with_actor("error-execution", "fixture-error-execution");
+    let mut state_doc = RuntimeStateDoc::new();
     daemon.add_cell(0, "cell-1", "code").unwrap();
     daemon.update_source("cell-1", "1 / 0").unwrap();
 
@@ -247,7 +288,13 @@ fn scenario_execution_with_error() {
         traceback: inline(&traceback_json),
     };
     let (hash, manifest_json) = hash_manifest(&manifest);
-    daemon.append_output("cell-1", &hash).unwrap();
+    fixture_add_outputs(
+        &mut daemon,
+        &mut state_doc,
+        "cell-1",
+        "exec-001",
+        std::slice::from_ref(&hash),
+    );
 
     let test_manifest = json!({
         "scenario": "execution_with_error",
@@ -264,6 +311,7 @@ fn scenario_execution_with_error() {
     write_scenario(
         "execution_with_error",
         &mut daemon,
+        &mut state_doc,
         &test_manifest,
         &[(hash, manifest_json)],
     );
@@ -274,6 +322,7 @@ fn scenario_re_execution() {
     //! Cell executed twice. First outputs cleared, then new output written.
 
     let mut daemon = NotebookDoc::new_with_actor("re-execution", "fixture-re-execution");
+    let mut state_doc = RuntimeStateDoc::new();
     daemon.add_cell(0, "cell-1", "code").unwrap();
     daemon.update_source("cell-1", "print('hello')").unwrap();
 
@@ -284,10 +333,15 @@ fn scenario_re_execution() {
         text: inline("hello\n"),
     };
     let (first_hash, _) = hash_manifest(&first_manifest);
-    daemon.append_output("cell-1", &first_hash).unwrap();
+    fixture_add_outputs(
+        &mut daemon,
+        &mut state_doc,
+        "cell-1",
+        "exec-001",
+        &[first_hash],
+    );
 
-    // Second execution: clear then new output
-    daemon.clear_outputs("cell-1").unwrap();
+    // Second execution: new execution_id implicitly replaces the first
     daemon.set_execution_count("cell-1", "2").unwrap();
 
     let mut data = BTreeMap::new();
@@ -298,7 +352,13 @@ fn scenario_re_execution() {
         execution_count: Some(2),
     };
     let (second_hash, second_json) = hash_manifest(&second_manifest);
-    daemon.append_output("cell-1", &second_hash).unwrap();
+    fixture_add_outputs(
+        &mut daemon,
+        &mut state_doc,
+        "cell-1",
+        "exec-002",
+        std::slice::from_ref(&second_hash),
+    );
 
     let test_manifest = json!({
         "scenario": "re_execution",
@@ -314,6 +374,7 @@ fn scenario_re_execution() {
     write_scenario(
         "re_execution",
         &mut daemon,
+        &mut state_doc,
         &test_manifest,
         &[(second_hash, second_json)],
     );
@@ -324,6 +385,7 @@ fn scenario_multi_cell_execution() {
     //! Multiple cells executed in sequence.
 
     let mut daemon = NotebookDoc::new_with_actor("multi-cell", "fixture-multi-cell");
+    let mut state_doc = RuntimeStateDoc::new();
     daemon.add_cell(0, "cell-1", "code").unwrap();
     daemon.update_source("cell-1", "x = 42").unwrap();
     daemon.add_cell(1, "cell-2", "code").unwrap();
@@ -333,6 +395,7 @@ fn scenario_multi_cell_execution() {
 
     // Execute cell-1 (no output)
     daemon.set_execution_count("cell-1", "1").unwrap();
+    fixture_add_outputs(&mut daemon, &mut state_doc, "cell-1", "exec-001", &[]);
 
     // Execute cell-2 (stream output)
     daemon.set_execution_count("cell-2", "2").unwrap();
@@ -341,7 +404,13 @@ fn scenario_multi_cell_execution() {
         text: inline("42\n"),
     };
     let (hash, manifest_json) = hash_manifest(&manifest);
-    daemon.append_output("cell-2", &hash).unwrap();
+    fixture_add_outputs(
+        &mut daemon,
+        &mut state_doc,
+        "cell-2",
+        "exec-002",
+        std::slice::from_ref(&hash),
+    );
 
     let test_manifest = json!({
         "scenario": "multi_cell_execution",
@@ -359,6 +428,7 @@ fn scenario_multi_cell_execution() {
     write_scenario(
         "multi_cell_execution",
         &mut daemon,
+        &mut state_doc,
         &test_manifest,
         &[(hash, manifest_json)],
     );
@@ -369,6 +439,7 @@ fn scenario_display_data_output() {
     //! Cell produces display_data with an image (manifest hash in CRDT).
 
     let mut daemon = NotebookDoc::new_with_actor("display-data", "fixture-display-data");
+    let mut state_doc = RuntimeStateDoc::new();
     daemon.add_cell(0, "cell-1", "code").unwrap();
     daemon
         .update_source(
@@ -396,7 +467,13 @@ fn scenario_display_data_output() {
         metadata: BTreeMap::new(),
     };
     let (hash, manifest_json) = hash_manifest(&manifest);
-    daemon.append_output("cell-1", &hash).unwrap();
+    fixture_add_outputs(
+        &mut daemon,
+        &mut state_doc,
+        "cell-1",
+        "exec-001",
+        std::slice::from_ref(&hash),
+    );
 
     let test_manifest = json!({
         "scenario": "display_data_output",
@@ -412,6 +489,7 @@ fn scenario_display_data_output() {
     write_scenario(
         "display_data_output",
         &mut daemon,
+        &mut state_doc,
         &test_manifest,
         &[(hash, manifest_json)],
     );

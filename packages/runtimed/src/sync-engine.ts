@@ -486,10 +486,9 @@ export class SyncEngine {
                 // Inject synthetic changesets on execution lifecycle transitions
                 // so the materialization pipeline stays in sync with the CRDT.
                 //
-                // "started": the daemon cleared outputs in the CRDT on
-                //   execute_input — re-read from WASM to show empty outputs.
-                // "done"/"error": reconcile the store with the CRDT's final
-                //   state in case earlier materializations were missed.
+                // "started": execution_id changed on the cell — WASM facade
+                //   returns empty outputs for the new execution_id.
+                // "done"/"error": reconcile the store with the final state.
                 for (const t of transitions) {
                   if (t.kind === "started") {
                     log.debug(
@@ -507,6 +506,30 @@ export class SyncEngine {
                         fields: { outputs: true, execution_count: true },
                       },
                     ],
+                    added: [],
+                    removed: [],
+                    order_changed: false,
+                  });
+                }
+              }
+
+              // Output changes detected by WASM-side diff of RuntimeStateDoc.
+              // The WASM compares output hash lists before/after sync and
+              // reports cell IDs that need re-materialization.
+              const outputChangedCells: string[] = e.output_changed_cells ?? [];
+              if (outputChangedCells.length > 0) {
+                // Deduplicate against cells already handled by transitions
+                const transitionCells = new Set(transitions.map((t) => t.cell_id));
+                const newOutputCells = outputChangedCells.filter((c) => !transitionCells.has(c));
+                if (newOutputCells.length > 0) {
+                  log.debug(
+                    `[sync-engine] output changes for ${newOutputCells.length} cells from RuntimeStateDoc`,
+                  );
+                  materialize$.next({
+                    changed: newOutputCells.map((cell_id) => ({
+                      cell_id,
+                      fields: { outputs: true },
+                    })),
                     added: [],
                     removed: [],
                     order_changed: false,

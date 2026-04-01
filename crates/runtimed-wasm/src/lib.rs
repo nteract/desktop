@@ -97,6 +97,11 @@ pub enum FrameEvent {
         /// The full current runtime state snapshot (only when changed).
         #[serde(skip_serializing_if = "Option::is_none")]
         state: Option<Box<RuntimeState>>,
+        /// Cell IDs whose outputs changed in this sync frame.
+        /// The SyncEngine should inject a synthetic CellChangeset with
+        /// `outputs: true` for each, triggering re-materialization.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        output_changed_cells: Vec<String>,
     },
     /// Sync error recovered — doc rebuilt and sync state normalized.
     ///
@@ -163,6 +168,11 @@ pub struct NotebookHandle {
     /// Runtime state doc — daemon-authoritative, synced read-only.
     state_doc: RuntimeStateDoc,
     state_sync_state: sync::State,
+    /// Previous outputs snapshot for diffing — maps execution_id to manifest hashes.
+    /// Used to detect mid-execution output changes (stream append, display update,
+    /// error) that need re-materialization. Only stores 64-char hex strings, not
+    /// actual output data.
+    prev_outputs: std::collections::HashMap<String, Vec<String>>,
     /// Pool state doc — daemon-authoritative, global, synced read-only.
     pool_doc: PoolDoc,
     pool_sync_state: sync::State,
@@ -265,6 +275,7 @@ impl NotebookHandle {
             sync_state: sync::State::new(),
             state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
+            prev_outputs: std::collections::HashMap::new(),
             pool_doc: PoolDoc::new_empty(),
             pool_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
@@ -281,6 +292,7 @@ impl NotebookHandle {
             sync_state: sync::State::new(),
             state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
+            prev_outputs: std::collections::HashMap::new(),
             pool_doc: PoolDoc::new_empty(),
             pool_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
@@ -311,10 +323,22 @@ impl NotebookHandle {
             sync_state: sync::State::new(),
             state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
+            prev_outputs: std::collections::HashMap::new(),
             pool_doc: PoolDoc::new_empty(),
             pool_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
         })
+    }
+
+    /// Load a RuntimeStateDoc from saved bytes.
+    ///
+    /// Used by test fixtures to provide pre-populated state doc data
+    /// (outputs, executions) alongside the notebook doc.
+    pub fn load_state_doc(&mut self, bytes: &[u8]) -> Result<(), JsError> {
+        let doc = automerge::AutoCommit::load(bytes)
+            .map_err(|e| JsError::new(&format!("load_state_doc failed: {}", e)))?;
+        self.state_doc = RuntimeStateDoc::from_doc(doc);
+        Ok(())
     }
 
     /// Get the actor identity label for this document.
@@ -383,8 +407,24 @@ impl NotebookHandle {
     ///
     /// Each element is a JSON-encoded Jupyter output object (or manifest hash).
     /// Returns undefined if the cell doesn't exist.
+    ///
+    /// Outputs now live in the RuntimeStateDoc keyed by execution_id. This
+    /// method reads the cell's `execution_id` from the notebook doc, then
+    /// looks up outputs in the state doc — providing a transparent facade
+    /// for all existing callers.
     pub fn get_cell_outputs(&self, cell_id: &str) -> JsValue {
-        match self.doc.get_cell_outputs(cell_id) {
+        let outputs = match self.doc.get_execution_id(cell_id) {
+            Some(eid) => {
+                let out = self.state_doc.get_outputs(&eid);
+                if out.is_empty() {
+                    None
+                } else {
+                    Some(out)
+                }
+            }
+            None => None,
+        };
+        match outputs {
             Some(outputs) => serialize_to_js(&outputs).unwrap_or(JsValue::UNDEFINED),
             None => JsValue::UNDEFINED,
         }
@@ -493,21 +533,6 @@ impl NotebookHandle {
         self.doc
             .splice_source(cell_id, index, delete_count, text)
             .map_err(|e| JsError::new(&format!("splice_source failed: {}", e)))
-    }
-
-    /// Clear all outputs from a cell in the CRDT.
-    pub fn clear_outputs(&mut self, cell_id: &str) -> Result<bool, JsError> {
-        self.doc
-            .clear_outputs(cell_id)
-            .map_err(|e| JsError::new(&format!("clear_outputs failed: {}", e)))
-    }
-
-    /// Clear outputs and execution counts from every code cell in the CRDT.
-    /// Returns the IDs of cells that were cleared.
-    pub fn clear_all_outputs(&mut self) -> Result<Vec<String>, JsError> {
-        self.doc
-            .clear_all_outputs()
-            .map_err(|e| JsError::new(&format!("clear_all_outputs failed: {}", e)))
     }
 
     /// Set the execution count for a cell. Pass "null" or a number string like "5".
@@ -1235,7 +1260,49 @@ impl NotebookHandle {
                     None
                 };
 
-                events.push(FrameEvent::RuntimeStateSyncApplied { changed, state });
+                // Diff outputs to detect mid-execution output changes.
+                // Read outputs separately from read_state() to avoid the
+                // O(E×O) cost on every frame — only read when doc changed.
+                let output_changed_cells = if changed {
+                    let current_outputs = self.state_doc.read_outputs();
+                    let current_state = state.as_ref().unwrap();
+                    let mut changed_cells = Vec::new();
+
+                    // Check for new or changed outputs
+                    for (eid, hashes) in &current_outputs {
+                        let prev = self.prev_outputs.get(eid);
+                        let changed = match prev {
+                            None => true,
+                            Some(prev) => prev != hashes,
+                        };
+                        if changed {
+                            if let Some(exec) = current_state.executions.get(eid) {
+                                changed_cells.push(exec.cell_id.clone());
+                            }
+                        }
+                    }
+                    // Check for removed outputs (eid in prev but not in current)
+                    for eid in self.prev_outputs.keys() {
+                        if !current_outputs.contains_key(eid) {
+                            if let Some(exec) = current_state.executions.get(eid) {
+                                changed_cells.push(exec.cell_id.clone());
+                            }
+                        }
+                    }
+
+                    // Update prev snapshot
+                    self.prev_outputs = current_outputs;
+
+                    changed_cells
+                } else {
+                    Vec::new()
+                };
+
+                events.push(FrameEvent::RuntimeStateSyncApplied {
+                    changed,
+                    state,
+                    output_changed_cells,
+                });
             }
             frame_types::POOL_STATE_SYNC => {
                 // Apply daemon's PoolDoc sync message to our local replica.

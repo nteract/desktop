@@ -2,7 +2,7 @@
 //!
 //! This module provides terminal emulation using `alacritty_terminal` to properly
 //! handle escape sequences like carriage returns (for progress bars), backspaces,
-//! and cursor movement. Each (cell_id, stream_name) pair gets its own terminal
+//! and cursor movement. Each (execution_id, stream_name) pair gets its own terminal
 //! emulator, and the rendered content is serialized back to ANSI text for the
 //! frontend to display.
 
@@ -22,7 +22,7 @@ use crate::terminal_size::{TERMINAL_COLUMNS, TERMINAL_LINES};
 /// Keep minimal since notebook outputs don't need scrollback.
 const SCROLLBACK_HISTORY: usize = 10000;
 
-/// Key for terminal buffers: (cell_id, stream_name).
+/// Key for terminal buffers: (execution_id, stream_name).
 type StreamKey = (String, String);
 
 // Re-export from the shared notebook-doc crate so existing callers
@@ -60,7 +60,7 @@ impl Dimensions for TermDimensions {
 
 /// Manages terminal emulators for stream outputs.
 ///
-/// Each (cell_id, stream_name) pair gets its own terminal emulator to properly
+/// Each (execution_id, stream_name) pair gets its own terminal emulator to properly
 /// handle escape sequences. When text is fed to a stream, it's processed through
 /// the terminal and the rendered content is returned as ANSI text.
 ///
@@ -69,7 +69,7 @@ impl Dimensions for TermDimensions {
 pub struct StreamTerminals {
     terminals: HashMap<StreamKey, Term<VoidListener>>,
     processors: HashMap<StreamKey, Processor>,
-    /// Output state for each (cell_id, stream_name) - tracks index and last hash for validation.
+    /// Output state for each (execution_id, stream_name) - tracks index and last hash for validation.
     output_states: HashMap<StreamKey, StreamOutputState>,
 }
 
@@ -89,13 +89,13 @@ impl StreamTerminals {
         }
     }
 
-    /// Feed text to the terminal for (cell_id, stream_name).
+    /// Feed text to the terminal for (execution_id, stream_name).
     ///
     /// Returns the rendered ANSI text representation of the terminal content.
     /// This handles escape sequences like `\r` (carriage return) and cursor
     /// movement, so progress bars will show only their final state.
-    pub fn feed(&mut self, cell_id: &str, stream_name: &str, text: &str) -> String {
-        let key = (cell_id.to_string(), stream_name.to_string());
+    pub fn feed(&mut self, execution_id: &str, stream_name: &str, text: &str) -> String {
+        let key = (execution_id.to_string(), stream_name.to_string());
 
         // Get or create terminal and processor for this stream
         let term = self.terminals.entry(key.clone()).or_insert_with(|| {
@@ -124,19 +124,20 @@ impl StreamTerminals {
         serialize_to_ansi(term)
     }
 
-    /// Clear terminal(s) for a cell.
+    /// Clear terminal(s) for an execution.
     ///
-    /// Called when a cell starts executing to reset the terminal state.
-    pub fn clear(&mut self, cell_id: &str) {
-        // Remove all terminals for this cell (both stdout and stderr)
-        self.terminals.retain(|(cid, _), _| cid != cell_id);
-        self.processors.retain(|(cid, _), _| cid != cell_id);
-        self.output_states.retain(|(cid, _), _| cid != cell_id);
+    /// Called when a non-stream output arrives to break the stream chain,
+    /// or when clearing outputs for an execution.
+    pub fn clear(&mut self, execution_id: &str) {
+        // Remove all terminals for this execution (both stdout and stderr)
+        self.terminals.retain(|(eid, _), _| eid != execution_id);
+        self.processors.retain(|(eid, _), _| eid != execution_id);
+        self.output_states.retain(|(eid, _), _| eid != execution_id);
     }
 
-    /// Check if a stream exists for a cell.
-    pub fn has_stream(&self, cell_id: &str, stream_name: &str) -> bool {
-        let key = (cell_id.to_string(), stream_name.to_string());
+    /// Check if a stream exists for an execution.
+    pub fn has_stream(&self, execution_id: &str, stream_name: &str) -> bool {
+        let key = (execution_id.to_string(), stream_name.to_string());
         self.terminals.contains_key(&key)
     }
 
@@ -144,8 +145,12 @@ impl StreamTerminals {
     ///
     /// Returns the state (index + manifest hash) we last wrote for this stream.
     /// Used to validate before updating in place.
-    pub fn get_output_state(&self, cell_id: &str, stream_name: &str) -> Option<&StreamOutputState> {
-        let key = (cell_id.to_string(), stream_name.to_string());
+    pub fn get_output_state(
+        &self,
+        execution_id: &str,
+        stream_name: &str,
+    ) -> Option<&StreamOutputState> {
+        let key = (execution_id.to_string(), stream_name.to_string());
         self.output_states.get(&key)
     }
 
@@ -153,8 +158,13 @@ impl StreamTerminals {
     ///
     /// Called after upserting a stream output to track its position and hash
     /// for future validation.
-    pub fn set_output_state(&mut self, cell_id: &str, stream_name: &str, state: StreamOutputState) {
-        let key = (cell_id.to_string(), stream_name.to_string());
+    pub fn set_output_state(
+        &mut self,
+        execution_id: &str,
+        stream_name: &str,
+        state: StreamOutputState,
+    ) {
+        let key = (execution_id.to_string(), stream_name.to_string());
         self.output_states.insert(key, state);
     }
 }

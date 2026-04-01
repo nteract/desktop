@@ -30,6 +30,8 @@
 //!     removed: List[Str]   (packages in kernel but not in metadata)
 //!     channels_changed: bool
 //!     deno_changed: bool
+//!   outputs/                Map (keyed by execution_id)
+//!     {execution_id}/       List[Str]  (manifest hashes)
 //!   trust/
 //!     status: Str          ("trusted" | "untrusted" | "signature_invalid" | "no_dependencies")
 //!     needs_approval: bool
@@ -42,6 +44,9 @@ use automerge::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+// Re-export StreamOutputState so callers can use it from either location.
+pub use crate::StreamOutputState;
 
 // ── Snapshot types for reading/comparing state ──────────────────────
 
@@ -149,6 +154,12 @@ pub struct RuntimeState {
     /// Execution lifecycle entries keyed by execution_id.
     #[serde(default)]
     pub executions: HashMap<String, ExecutionState>,
+    /// Cell outputs keyed by execution_id. Each value is a list of manifest hashes.
+    /// Skipped during serialization to JS — the outputs map can be large and is
+    /// only needed for Rust-side diffing in the WASM. Consumers read outputs via
+    /// the per-cell `get_cell_outputs()` facade, not from this snapshot.
+    #[serde(default, skip_serializing)]
+    pub outputs: HashMap<String, Vec<String>>,
 }
 
 // ── RuntimeStateDoc ─────────────────────────────────────────────────
@@ -204,6 +215,10 @@ impl RuntimeStateDoc {
         doc.put_object(&ROOT, "executions", ObjType::Map)
             .expect("scaffold executions");
 
+        // outputs/ — keyed by execution_id, each value is List[Str] of manifest hashes
+        doc.put_object(&ROOT, "outputs", ObjType::Map)
+            .expect("scaffold outputs");
+
         // env/
         let env = doc
             .put_object(&ROOT, "env", ObjType::Map)
@@ -246,6 +261,13 @@ impl RuntimeStateDoc {
             doc: AutoCommit::new(),
             // No scaffolding — sync populates everything
         }
+    }
+
+    /// Create a RuntimeStateDoc from a pre-existing Automerge document.
+    ///
+    /// Used by test fixtures and migration paths that have a saved state doc.
+    pub fn from_doc(doc: AutoCommit) -> Self {
+        Self { doc }
     }
 
     /// Access the underlying Automerge document (read-only).
@@ -749,6 +771,212 @@ impl RuntimeStateDoc {
         })
     }
 
+    // ── Output storage (keyed by execution_id) ──────────────────────
+
+    /// Get the ObjId for the `outputs/{execution_id}` list, if it exists.
+    fn get_output_list(&self, execution_id: &str) -> Option<automerge::ObjId> {
+        let outputs = self.get_map("outputs")?;
+        self.doc
+            .get(&outputs, execution_id)
+            .ok()
+            .flatten()
+            .and_then(|(value, id)| match value {
+                Value::Object(ObjType::List) => Some(id),
+                _ => None,
+            })
+    }
+
+    /// Ensure the `outputs/{execution_id}` list exists, creating it if absent.
+    /// Returns the ObjId of the list.
+    #[allow(clippy::expect_used)]
+    fn ensure_output_list(&mut self, execution_id: &str) -> automerge::ObjId {
+        let outputs = self.get_map("outputs").expect("outputs map must exist");
+        match self.doc.get(&outputs, execution_id).ok().flatten() {
+            Some((Value::Object(ObjType::List), id)) => id,
+            _ => self
+                .doc
+                .put_object(&outputs, execution_id, ObjType::List)
+                .expect("create output list for execution_id"),
+        }
+    }
+
+    /// Append a single manifest hash to the output list for an execution.
+    ///
+    /// Creates the `outputs/{execution_id}` list if it doesn't exist.
+    /// Returns `(changed, output_index)`.
+    #[allow(clippy::expect_used)]
+    pub fn append_output(
+        &mut self,
+        execution_id: &str,
+        manifest_hash: &str,
+    ) -> Result<usize, AutomergeError> {
+        let list_id = self.ensure_output_list(execution_id);
+        let len = self.doc.length(&list_id);
+        self.doc.insert(&list_id, len, manifest_hash)?;
+        Ok(len)
+    }
+
+    /// Replace all outputs for an execution.
+    ///
+    /// Used during notebook load to populate outputs for synthetic execution_ids.
+    #[allow(clippy::expect_used)]
+    pub fn set_outputs(
+        &mut self,
+        execution_id: &str,
+        hashes: &[String],
+    ) -> Result<bool, AutomergeError> {
+        let outputs = self.get_map("outputs").expect("outputs map must exist");
+
+        // Delete existing list and create fresh
+        let _ = self.doc.delete(&outputs, execution_id);
+        let list_id = self.doc.put_object(&outputs, execution_id, ObjType::List)?;
+        for (i, hash) in hashes.iter().enumerate() {
+            self.doc.insert(&list_id, i, hash.as_str())?;
+        }
+        Ok(true)
+    }
+
+    /// Clear all outputs for an execution.
+    #[allow(clippy::expect_used)]
+    pub fn clear_execution_outputs(&mut self, execution_id: &str) -> Result<bool, AutomergeError> {
+        let Some(outputs) = self.get_map("outputs") else {
+            return Ok(false);
+        };
+        if self
+            .doc
+            .get(&outputs, execution_id)
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            return Ok(false);
+        }
+        self.doc.delete(&outputs, execution_id)?;
+        Ok(true)
+    }
+
+    /// Update or insert a stream output for an execution.
+    ///
+    /// If `known_state` is provided, validates that the output at the cached index
+    /// still has the expected manifest hash. If validation passes, updates in place.
+    /// If validation fails (hash mismatch, index out of bounds, or no state), appends
+    /// a new output.
+    ///
+    /// Returns `(updated: bool, output_index: usize)` where `updated` is true if an
+    /// existing output was updated in place, false if a new output was appended.
+    pub fn upsert_stream_output(
+        &mut self,
+        execution_id: &str,
+        _stream_name: &str,
+        output_ref: &str,
+        known_state: Option<&StreamOutputState>,
+    ) -> Result<(bool, usize), AutomergeError> {
+        let list_id = self.ensure_output_list(execution_id);
+        let output_count = self.doc.length(&list_id);
+
+        // Validate cached state if provided
+        if let Some(state) = known_state {
+            // Must be the last output — if something was appended after (e.g., stderr
+            // between two stdout messages), we should append instead of updating
+            if state.index + 1 == output_count {
+                if let Ok(Some((value, _))) = self.doc.get(&list_id, state.index) {
+                    if let Ok(current_hash) = value.into_string() {
+                        if current_hash == state.manifest_hash {
+                            // Validated! Safe to update in place
+                            self.doc.put(&list_id, state.index, output_ref)?;
+                            return Ok((true, state.index));
+                        }
+                    }
+                }
+            }
+            // Validation failed — fall through to append
+        }
+
+        // No valid state, append new output
+        self.doc.insert(&list_id, output_count, output_ref)?;
+        Ok((false, output_count))
+    }
+
+    /// Replace an output at a specific index for an execution.
+    ///
+    /// Used by UpdateDisplayData handling for in-place manifest updates.
+    pub fn replace_output(
+        &mut self,
+        execution_id: &str,
+        output_idx: usize,
+        new_hash: &str,
+    ) -> Result<bool, AutomergeError> {
+        let Some(list_id) = self.get_output_list(execution_id) else {
+            return Ok(false);
+        };
+        if output_idx >= self.doc.length(&list_id) {
+            return Ok(false);
+        }
+        self.doc.put(&list_id, output_idx, new_hash)?;
+        Ok(true)
+    }
+
+    /// Read all outputs for an execution.
+    pub fn get_outputs(&self, execution_id: &str) -> Vec<String> {
+        let Some(list_id) = self.get_output_list(execution_id) else {
+            return Vec::new();
+        };
+        let len = self.doc.length(&list_id);
+        let mut out = Vec::with_capacity(len);
+        for i in 0..len {
+            if let Some(s) = self
+                .doc
+                .get(&list_id, i)
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| match value {
+                    Value::Scalar(s) => match s.as_ref() {
+                        ScalarValue::Str(s) => Some(s.to_string()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+            {
+                out.push(s);
+            }
+        }
+        out
+    }
+
+    /// Get all outputs across all executions.
+    ///
+    /// Returns `(execution_id, output_index, manifest_hash)` triples.
+    /// Used by UpdateDisplayData to find outputs with matching display_id.
+    pub fn get_all_outputs(&self) -> Vec<(String, usize, String)> {
+        let Some(outputs) = self.get_map("outputs") else {
+            return Vec::new();
+        };
+        let mut results = Vec::new();
+        for exec_id in self.doc.keys(&outputs) {
+            if let Some((Value::Object(ObjType::List), list_id)) =
+                self.doc.get(&outputs, &exec_id).ok().flatten()
+            {
+                let len = self.doc.length(&list_id);
+                for i in 0..len {
+                    if let Some(s) = self.doc.get(&list_id, i).ok().flatten().and_then(
+                        |(value, _)| match value {
+                            Value::Scalar(s) => match s.as_ref() {
+                                ScalarValue::Str(s) => Some(s.to_string()),
+                                _ => None,
+                            },
+                            _ => None,
+                        },
+                    ) {
+                        results.push((exec_id.clone(), i, s));
+                    }
+                }
+            }
+        }
+        results
+    }
+
+    // ── Execution lifecycle ────────────────────────────────────────
+
     /// Remove old executions, keeping the most recent `max` entries.
     ///
     /// Entries are removed in insertion order (oldest first). Always keeps
@@ -792,6 +1020,10 @@ impl RuntimeStateDoc {
             let cell_id = &keys[i].1;
             if last_per_cell.get(cell_id.as_str()) == Some(&i) {
                 continue;
+            }
+            // Also clean up corresponding outputs
+            if let Some(outputs) = self.get_map("outputs") {
+                let _ = self.doc.delete(&outputs, exec_id.as_str());
             }
             self.doc
                 .delete(&executions, exec_id.as_str())
@@ -1019,7 +1251,29 @@ impl RuntimeStateDoc {
             trust: trust_state,
             last_saved,
             executions,
+            outputs: HashMap::new(),
         }
+    }
+
+    /// Read the outputs map separately from `read_state()`.
+    ///
+    /// Returns `execution_id → [manifest_hash, …]` for all executions that
+    /// have at least one output. This is O(E×O) where E = execution count
+    /// and O = outputs per execution, so callers should avoid calling it on
+    /// every frame — prefer diffing only when the doc actually changed.
+    pub fn read_outputs(&self) -> HashMap<String, Vec<String>> {
+        self.get_map("outputs")
+            .map(|outputs_obj| {
+                let mut map = HashMap::new();
+                for exec_id in self.doc.keys(&outputs_obj) {
+                    let hashes = self.get_outputs(&exec_id);
+                    if !hashes.is_empty() {
+                        map.insert(exec_id, hashes);
+                    }
+                }
+                map
+            })
+            .unwrap_or_default()
     }
 
     // ── Automerge sync protocol ─────────────────────────────────────
@@ -1576,5 +1830,227 @@ mod tests {
         let state = doc.read_state();
         assert_eq!(state.kernel.status, "error");
         assert!(state.queue.executing.is_none());
+    }
+
+    // ── Output storage tests ───────────────────────────────────────
+
+    #[test]
+    fn test_append_output() {
+        let mut doc = RuntimeStateDoc::new();
+        let idx0 = doc.append_output("exec-1", "hash-a").unwrap();
+        assert_eq!(idx0, 0);
+        let idx1 = doc.append_output("exec-1", "hash-b").unwrap();
+        assert_eq!(idx1, 1);
+
+        assert_eq!(doc.get_outputs("exec-1"), vec!["hash-a", "hash-b"]);
+    }
+
+    #[test]
+    fn test_set_outputs() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.append_output("exec-1", "old-hash").unwrap();
+
+        let hashes = vec!["h1".to_string(), "h2".to_string(), "h3".to_string()];
+        doc.set_outputs("exec-1", &hashes).unwrap();
+
+        assert_eq!(doc.get_outputs("exec-1"), vec!["h1", "h2", "h3"]);
+    }
+
+    #[test]
+    fn test_clear_execution_outputs() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.append_output("exec-1", "hash-a").unwrap();
+        doc.append_output("exec-1", "hash-b").unwrap();
+
+        assert!(doc.clear_execution_outputs("exec-1").unwrap());
+        assert!(doc.get_outputs("exec-1").is_empty());
+
+        // Clearing nonexistent is a no-op
+        assert!(!doc.clear_execution_outputs("nope").unwrap());
+    }
+
+    #[test]
+    fn test_replace_output() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.append_output("exec-1", "hash-a").unwrap();
+        doc.append_output("exec-1", "hash-b").unwrap();
+
+        assert!(doc.replace_output("exec-1", 1, "hash-c").unwrap());
+        assert_eq!(doc.get_outputs("exec-1"), vec!["hash-a", "hash-c"]);
+
+        // Out of bounds
+        assert!(!doc.replace_output("exec-1", 5, "hash-d").unwrap());
+        // Nonexistent execution
+        assert!(!doc.replace_output("nope", 0, "hash-d").unwrap());
+    }
+
+    #[test]
+    fn test_upsert_stream_output_append() {
+        let mut doc = RuntimeStateDoc::new();
+
+        // No known state → append
+        let (updated, idx) = doc
+            .upsert_stream_output("exec-1", "stdout", "hash-a", None)
+            .unwrap();
+        assert!(!updated);
+        assert_eq!(idx, 0);
+        assert_eq!(doc.get_outputs("exec-1"), vec!["hash-a"]);
+    }
+
+    #[test]
+    fn test_upsert_stream_output_update_in_place() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.append_output("exec-1", "hash-a").unwrap();
+
+        let state = StreamOutputState {
+            index: 0,
+            manifest_hash: "hash-a".to_string(),
+        };
+        let (updated, idx) = doc
+            .upsert_stream_output("exec-1", "stdout", "hash-b", Some(&state))
+            .unwrap();
+        assert!(updated);
+        assert_eq!(idx, 0);
+        assert_eq!(doc.get_outputs("exec-1"), vec!["hash-b"]);
+    }
+
+    #[test]
+    fn test_upsert_stream_output_hash_mismatch_appends() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.append_output("exec-1", "hash-a").unwrap();
+
+        let state = StreamOutputState {
+            index: 0,
+            manifest_hash: "wrong-hash".to_string(),
+        };
+        let (updated, idx) = doc
+            .upsert_stream_output("exec-1", "stdout", "hash-b", Some(&state))
+            .unwrap();
+        assert!(!updated);
+        assert_eq!(idx, 1);
+        assert_eq!(doc.get_outputs("exec-1"), vec!["hash-a", "hash-b"]);
+    }
+
+    #[test]
+    fn test_get_all_outputs() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.append_output("exec-1", "h1").unwrap();
+        doc.append_output("exec-1", "h2").unwrap();
+        doc.append_output("exec-2", "h3").unwrap();
+
+        let all = doc.get_all_outputs();
+        assert_eq!(all.len(), 3);
+
+        // Check that all expected entries are present (order across execution_ids
+        // depends on Automerge key iteration order, so use contains)
+        assert!(all.contains(&("exec-1".to_string(), 0, "h1".to_string())));
+        assert!(all.contains(&("exec-1".to_string(), 1, "h2".to_string())));
+        assert!(all.contains(&("exec-2".to_string(), 0, "h3".to_string())));
+    }
+
+    #[test]
+    fn test_read_outputs() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.append_output("exec-1", "h1").unwrap();
+        doc.append_output("exec-1", "h2").unwrap();
+        doc.append_output("exec-2", "h3").unwrap();
+
+        let outputs = doc.read_outputs();
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs["exec-1"], vec!["h1", "h2"]);
+        assert_eq!(outputs["exec-2"], vec!["h3"]);
+
+        // read_state() should NOT include outputs (perf: avoid O(E×O) on every call)
+        let state = doc.read_state();
+        assert!(state.outputs.is_empty());
+    }
+
+    #[test]
+    fn test_trim_executions_also_trims_outputs() {
+        let mut doc = RuntimeStateDoc::new();
+        // Create 5 executions with outputs
+        for i in 1..=5 {
+            let eid = format!("e{i}");
+            let cid = if i % 2 == 0 { "cell-a" } else { "cell-b" };
+            doc.create_execution(&eid, cid);
+            doc.append_output(&eid, &format!("hash-{i}")).unwrap();
+        }
+
+        // Trim to 3
+        let removed = doc.trim_executions(3);
+        assert!(removed > 0);
+
+        let state = doc.read_state();
+        // Outputs for trimmed executions should be gone
+        for eid in state.executions.keys() {
+            assert!(
+                !doc.get_outputs(eid).is_empty(),
+                "surviving execution {eid} should still have outputs"
+            );
+        }
+        // Trimmed executions should not have output entries
+        for eid in ["e1", "e2", "e3", "e4", "e5"] {
+            if !state.executions.contains_key(eid) {
+                assert!(
+                    doc.get_outputs(eid).is_empty(),
+                    "trimmed execution {eid} should have no outputs"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_outputs_sync_between_docs() {
+        let mut daemon_doc = RuntimeStateDoc::new();
+        daemon_doc.append_output("exec-1", "h1").unwrap();
+        daemon_doc.append_output("exec-1", "h2").unwrap();
+        daemon_doc.append_output("exec-2", "h3").unwrap();
+
+        let mut client_doc = RuntimeStateDoc::new_empty();
+        let mut daemon_sync = sync::State::new();
+        let mut client_sync = sync::State::new();
+
+        for _ in 0..10 {
+            if let Some(msg) = daemon_doc.generate_sync_message(&mut daemon_sync) {
+                client_doc
+                    .doc_mut()
+                    .sync()
+                    .receive_sync_message(&mut client_sync, msg)
+                    .expect("client receive");
+            }
+            if let Some(msg) = client_doc
+                .doc_mut()
+                .sync()
+                .generate_sync_message(&mut client_sync)
+            {
+                daemon_doc
+                    .receive_sync_message(&mut daemon_sync, msg)
+                    .expect("daemon receive");
+            }
+        }
+
+        let client_outputs = client_doc.read_outputs();
+        assert_eq!(client_outputs.len(), 2);
+        assert_eq!(client_outputs["exec-1"], vec!["h1", "h2"]);
+        assert_eq!(client_outputs["exec-2"], vec!["h3"]);
+    }
+
+    #[test]
+    fn test_fork_and_merge_outputs() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.append_output("exec-1", "h1").unwrap();
+
+        let mut fork = doc.fork();
+        fork.set_actor("runtimed:state:iopub");
+        fork.append_output("exec-1", "h2").unwrap();
+
+        doc.merge(&mut fork).unwrap();
+        assert_eq!(doc.get_outputs("exec-1"), vec!["h1", "h2"]);
+    }
+
+    #[test]
+    fn test_get_outputs_nonexistent() {
+        let doc = RuntimeStateDoc::new();
+        assert!(doc.get_outputs("nope").is_empty());
     }
 }

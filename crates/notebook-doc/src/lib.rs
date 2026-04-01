@@ -51,7 +51,10 @@ use std::collections::HashMap;
 ///
 /// - **1** — Original schema: `cells` is an ordered `List` of `Map`.
 /// - **2** — Fractional indexing: `cells` is a `Map` keyed by cell ID, each cell has a `position` field.
-pub const SCHEMA_VERSION: u64 = 2;
+/// - **3** — Outputs moved to RuntimeStateDoc: cell outputs are no longer stored in the notebook
+///   doc. Existing outputs are extracted during migration so the caller can create synthetic
+///   execution entries in RuntimeStateDoc.
+pub const SCHEMA_VERSION: u64 = 3;
 
 use automerge::sync;
 use automerge::sync::SyncDoc;
@@ -692,6 +695,55 @@ impl NotebookDoc {
         Ok(())
     }
 
+    /// Migrate from schema v2 to v3: outputs moved to RuntimeStateDoc.
+    ///
+    /// This migration just bumps the schema version. Cell outputs are
+    /// **not** deleted from the doc (Automerge tombstones would bloat it).
+    /// Instead, `read_cell()` simply ignores the outputs field, and
+    /// the caller uses [`extract_cell_outputs()`] to create synthetic
+    /// execution entries in RuntimeStateDoc before calling this.
+    pub fn migrate_v2_to_v3(&mut self) -> Result<(), AutomergeError> {
+        if self.schema_version().unwrap_or(0) >= 3 {
+            return Ok(());
+        }
+        self.doc
+            .put(automerge::ROOT, "schema_version", SCHEMA_VERSION)?;
+        #[cfg(feature = "persistence")]
+        info!("[notebook-doc] Migrated schema v2 → v3 (outputs moved to RuntimeStateDoc)");
+        Ok(())
+    }
+
+    /// Extract cell outputs from the notebook doc for migration.
+    ///
+    /// Returns `(cell_id, outputs)` pairs for every cell that has outputs.
+    /// Used when loading a pre-v3 doc from `.automerge` persistence — the
+    /// caller creates synthetic execution entries in RuntimeStateDoc.
+    pub fn extract_cell_outputs(&self) -> Vec<(String, Vec<String>)> {
+        let Some(cells_id) = self.cells_map_id() else {
+            return Vec::new();
+        };
+        let mut results = Vec::new();
+        for cell_id in self.doc.keys(&cells_id) {
+            let Some(cell_obj) = self.cell_obj_id(&cells_id, &cell_id) else {
+                continue;
+            };
+            let Some(list_id) = self.list_id(&cell_obj, "outputs") else {
+                continue;
+            };
+            let len = self.doc.length(&list_id);
+            if len == 0 {
+                continue;
+            }
+            let outputs: Vec<String> = (0..len)
+                .filter_map(|i| read_str(&self.doc, &list_id, i))
+                .collect();
+            if !outputs.is_empty() {
+                results.push((cell_id, outputs));
+            }
+        }
+        results
+    }
+
     /// Read a cell snapshot from an object at a given index in a List container.
     /// Used by migration to read cells from the old v1 List schema.
     fn read_cell_from_obj(&self, cells_id: &ObjId, index: usize) -> Option<CellSnapshot> {
@@ -818,13 +870,26 @@ impl NotebookDoc {
                                 "[notebook-doc] Migrating schema v{} → v{} at {:?} for {}",
                                 version, SCHEMA_VERSION, path, notebook_id
                             );
-                            if let Err(e) = loaded.migrate_v1_to_v2() {
-                                warn!(
-                                    "[notebook-doc] Migration failed for {}: {}. Creating fresh doc.",
-                                    notebook_id, e
-                                );
-                                // Fall through to create a fresh doc below
-                            } else {
+                            let mut ok = true;
+                            if version < 2 {
+                                if let Err(e) = loaded.migrate_v1_to_v2() {
+                                    warn!(
+                                        "[notebook-doc] v1→v2 migration failed for {}: {}. Creating fresh doc.",
+                                        notebook_id, e
+                                    );
+                                    ok = false;
+                                }
+                            }
+                            if ok && version < 3 {
+                                if let Err(e) = loaded.migrate_v2_to_v3() {
+                                    warn!(
+                                        "[notebook-doc] v2→v3 migration failed for {}: {}. Creating fresh doc.",
+                                        notebook_id, e
+                                    );
+                                    ok = false;
+                                }
+                            }
+                            if ok {
                                 info!("[notebook-doc] Migration complete for {}", notebook_id);
                                 if let Some(label) = actor_label {
                                     loaded.set_actor(label);
@@ -1035,20 +1100,6 @@ impl NotebookDoc {
         read_str(&self.doc, &cell_obj, "cell_type")
     }
 
-    /// Get a cell's outputs as a Vec of JSON strings (O(1) lookup).
-    ///
-    /// Each element is a JSON-encoded Jupyter output object (or manifest hash).
-    pub fn get_cell_outputs(&self, cell_id: &str) -> Option<Vec<String>> {
-        let cell_obj = self.cell_obj_for(cell_id)?;
-        let list_id = self.list_id(&cell_obj, "outputs")?;
-        let len = self.doc.length(&list_id);
-        Some(
-            (0..len)
-                .map(|i| read_str(&self.doc, &list_id, i).unwrap_or_default())
-                .collect(),
-        )
-    }
-
     /// Get a cell's execution count (O(1) lookup).
     pub fn get_cell_execution_count(&self, cell_id: &str) -> Option<String> {
         let cell_obj = self.cell_obj_for(cell_id)?;
@@ -1111,7 +1162,6 @@ impl NotebookDoc {
         self.doc.put(&cell_map, "position", position_str.as_str())?;
         self.doc.put_object(&cell_map, "source", ObjType::Text)?;
         self.doc.put(&cell_map, "execution_count", "null")?;
-        self.doc.put_object(&cell_map, "outputs", ObjType::List)?;
         self.doc.put_object(&cell_map, "metadata", ObjType::Map)?;
         self.doc
             .put_object(&cell_map, "resolved_assets", ObjType::Map)?;
@@ -1137,14 +1187,12 @@ impl NotebookDoc {
     ///     prev_position = Some(position);
     /// }
     /// ```
-    #[allow(clippy::too_many_arguments)]
     pub fn add_cell_full(
         &mut self,
         cell_id: &str,
         cell_type: &str,
         position: &str,
         source: &str,
-        outputs: &[String],
         execution_count: &str,
         metadata: &serde_json::Value,
     ) -> Result<(), AutomergeError> {
@@ -1169,11 +1217,6 @@ impl NotebookDoc {
 
         self.doc
             .put(&cell_map, "execution_count", execution_count)?;
-
-        let outputs_id = self.doc.put_object(&cell_map, "outputs", ObjType::List)?;
-        for (i, output) in outputs.iter().enumerate() {
-            self.doc.insert(&outputs_id, i, output.as_str())?;
-        }
 
         // Store metadata as native Automerge map
         let meta_map = self.doc.put_object(&cell_map, "metadata", ObjType::Map)?;
@@ -1339,281 +1382,6 @@ impl NotebookDoc {
 
         let len = self.doc.length(&source_id);
         self.doc.splice_text(&source_id, len, 0, text)?;
-        Ok(true)
-    }
-
-    // ── Output management ───────────────────────────────────────────
-
-    /// Replace all outputs for a cell.
-    pub fn set_outputs(
-        &mut self,
-        cell_id: &str,
-        outputs: &[String],
-    ) -> Result<bool, AutomergeError> {
-        let cells_id = match self.cells_map_id() {
-            Some(id) => id,
-            None => return Ok(false),
-        };
-        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
-            Some(o) => o,
-            None => return Ok(false),
-        };
-
-        // Delete existing outputs and create fresh list
-        let _ = self.doc.delete(&cell_obj, "outputs");
-        let list_id = self.doc.put_object(&cell_obj, "outputs", ObjType::List)?;
-        for (i, output) in outputs.iter().enumerate() {
-            self.doc.insert(&list_id, i, output.as_str())?;
-        }
-        Ok(true)
-    }
-
-    /// Append a single output to a cell's output list.
-    pub fn append_output(&mut self, cell_id: &str, output: &str) -> Result<bool, AutomergeError> {
-        let cells_id = match self.cells_map_id() {
-            Some(id) => id,
-            None => return Ok(false),
-        };
-        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
-            Some(o) => o,
-            None => return Ok(false),
-        };
-        let outputs_id = match self.list_id(&cell_obj, "outputs") {
-            Some(id) => id,
-            None => return Ok(false),
-        };
-
-        let len = self.doc.length(&outputs_id);
-        self.doc.insert(&outputs_id, len, output)?;
-        Ok(true)
-    }
-
-    /// Update or insert a stream output for a cell.
-    ///
-    /// If `known_state` is provided, validates that the output at the cached index
-    /// still has the expected manifest hash. If validation passes, updates in place.
-    /// If validation fails (hash mismatch, index out of bounds, or no state), appends
-    /// a new output.
-    ///
-    /// This validation protects against:
-    /// - External clear operations (another peer, frontend-initiated)
-    /// - Individual output deletion
-    /// - CRDT modifications between stream messages
-    ///
-    /// Returns (updated: bool, output_index: usize) where updated is true if an
-    /// existing output was updated, false if a new output was appended.
-    pub fn upsert_stream_output(
-        &mut self,
-        cell_id: &str,
-        _stream_name: &str,
-        output_ref: &str,
-        known_state: Option<&StreamOutputState>,
-    ) -> Result<(bool, usize), AutomergeError> {
-        let cells_id = match self.cells_map_id() {
-            Some(id) => id,
-            None => return Ok((false, 0)),
-        };
-        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
-            Some(o) => o,
-            None => return Ok((false, 0)),
-        };
-        let outputs_id = match self.list_id(&cell_obj, "outputs") {
-            Some(id) => id,
-            None => return Ok((false, 0)),
-        };
-
-        let output_count = self.doc.length(&outputs_id);
-
-        // Validate cached state if provided
-        // Only update in-place if:
-        // 1. Index is valid and points to the last output (nothing appended after it)
-        // 2. Hash matches what we last wrote
-        // This ensures interleaved stdout/stderr don't corrupt ordering.
-        if let Some(state) = known_state {
-            // Must be the last output - if something was appended after (e.g., stderr
-            // between two stdout messages), we should append instead of updating
-            if state.index + 1 == output_count {
-                // Read what's currently at that index
-                if let Ok(Some((value, _))) = self.doc.get(&outputs_id, state.index) {
-                    if let Ok(current_hash) = value.into_string() {
-                        if current_hash == state.manifest_hash {
-                            // ✓ Validated! Safe to update in place
-                            self.doc.put(&outputs_id, state.index, output_ref)?;
-                            return Ok((true, state.index));
-                        }
-                    }
-                }
-            }
-            // Validation failed - fall through to append
-        }
-
-        // No valid state, append new output
-        self.doc.insert(&outputs_id, output_count, output_ref)?;
-        Ok((false, output_count))
-    }
-
-    /// Update an output by display_id across all cells.
-    ///
-    /// This is used for `update_display_data` messages which mutate an existing
-    /// output in place (e.g., progress bars). The display_id may appear in any
-    /// cell's outputs.
-    ///
-    /// Returns true if an output was found and updated.
-    pub fn update_output_by_display_id(
-        &mut self,
-        display_id: &str,
-        new_data: &serde_json::Value,
-        new_metadata: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<bool, AutomergeError> {
-        let cells_id = match self.cells_map_id() {
-            Some(id) => id,
-            None => return Ok(false),
-        };
-
-        // Iterate over all cell keys in the map
-        let cell_ids: Vec<String> = self.doc.keys(&cells_id).collect();
-        for cell_id in cell_ids {
-            let cell_obj = match self.cell_obj_id(&cells_id, &cell_id) {
-                Some(o) => o,
-                None => continue,
-            };
-            let outputs_id = match self.list_id(&cell_obj, "outputs") {
-                Some(id) => id,
-                None => continue,
-            };
-
-            let output_count = self.doc.length(&outputs_id);
-            for output_idx in 0..output_count {
-                // Get output string and parse as JSON
-                let output_str: Option<String> = self
-                    .doc
-                    .get(&outputs_id, output_idx)
-                    .ok()
-                    .flatten()
-                    .and_then(|(v, _)| v.into_string().ok());
-
-                let output_str = match output_str {
-                    Some(s) => s,
-                    None => continue,
-                };
-
-                // Parse and check display_id
-                let mut output_json: serde_json::Value = match serde_json::from_str(&output_str) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-
-                let matches = output_json
-                    .get("transient")
-                    .and_then(|t| t.get("display_id"))
-                    .and_then(|d| d.as_str())
-                    == Some(display_id);
-
-                if matches {
-                    // Update data and metadata in place
-                    output_json["data"] = new_data.clone();
-                    output_json["metadata"] = serde_json::Value::Object(new_metadata.clone());
-
-                    // Write back
-                    let updated_str = output_json.to_string();
-                    self.doc.put(&outputs_id, output_idx, updated_str)?;
-                    return Ok(true);
-                }
-            }
-        }
-
-        Ok(false)
-    }
-
-    /// Clear all outputs from a cell.
-    pub fn clear_outputs(&mut self, cell_id: &str) -> Result<bool, AutomergeError> {
-        self.set_outputs(cell_id, &[])
-    }
-
-    /// Clear outputs and execution counts from every code cell.
-    /// Returns the IDs of cells that were cleared.
-    pub fn clear_all_outputs(&mut self) -> Result<Vec<String>, AutomergeError> {
-        let cell_ids = self.get_cell_ids();
-        let mut cleared = Vec::new();
-        for cell_id in &cell_ids {
-            if self.get_cell_type(cell_id).as_deref() == Some("code") {
-                self.clear_outputs(cell_id)?;
-                self.set_execution_count(cell_id, "null")?;
-                cleared.push(cell_id.clone());
-            }
-        }
-        Ok(cleared)
-    }
-
-    /// Get all outputs from all cells.
-    ///
-    /// Returns a list of (cell_id, output_index, output_string).
-    /// Used by manifest-aware UpdateDisplayData handling.
-    pub fn get_all_outputs(&self) -> Vec<(String, usize, String)> {
-        let mut results = Vec::new();
-        let cells_id = match self.cells_map_id() {
-            Some(id) => id,
-            None => return results,
-        };
-
-        // Iterate over all cell keys in the map
-        for cell_id in self.doc.keys(&cells_id) {
-            let cell_obj = match self.cell_obj_id(&cells_id, &cell_id) {
-                Some(o) => o,
-                None => continue,
-            };
-
-            let outputs_id = match self.list_id(&cell_obj, "outputs") {
-                Some(id) => id,
-                None => continue,
-            };
-
-            let output_count = self.doc.length(&outputs_id);
-            for output_idx in 0..output_count {
-                let output_str: Option<String> = self
-                    .doc
-                    .get(&outputs_id, output_idx)
-                    .ok()
-                    .flatten()
-                    .and_then(|(v, _)| v.into_string().ok());
-
-                if let Some(s) = output_str {
-                    results.push((cell_id.clone(), output_idx, s));
-                }
-            }
-        }
-
-        results
-    }
-
-    /// Replace an output by cell_id and index.
-    ///
-    /// Used by manifest-aware UpdateDisplayData handling.
-    pub fn replace_output(
-        &mut self,
-        cell_id: &str,
-        output_idx: usize,
-        new_output: &str,
-    ) -> Result<bool, AutomergeError> {
-        let cells_id = match self.cells_map_id() {
-            Some(id) => id,
-            None => return Ok(false),
-        };
-        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
-            Some(o) => o,
-            None => return Ok(false),
-        };
-        let outputs_id = match self.list_id(&cell_obj, "outputs") {
-            Some(id) => id,
-            None => return Ok(false),
-        };
-
-        // Check that output_idx is valid
-        if output_idx >= self.doc.length(&outputs_id) {
-            return Ok(false);
-        }
-
-        self.doc.put(&outputs_id, output_idx, new_output)?;
         Ok(true)
     }
 
@@ -2124,16 +1892,9 @@ impl NotebookDoc {
             .and_then(|text_id| self.doc.text(&text_id).ok())
             .unwrap_or_default();
 
-        // Read outputs list
-        let outputs = match self.list_id(cell_obj, "outputs") {
-            Some(list_id) => {
-                let len = self.doc.length(&list_id);
-                (0..len)
-                    .map(|i| read_str(&self.doc, &list_id, i).unwrap_or_default())
-                    .collect()
-            }
-            None => vec![],
-        };
+        // Outputs live in RuntimeStateDoc, not in the notebook doc.
+        // DocHandle and WASM populate CellSnapshot.outputs from RuntimeStateDoc.
+        let outputs = vec![];
 
         // Read metadata (native Automerge map with legacy string fallback)
         let metadata = read_cell_metadata(&self.doc, cell_obj);
@@ -2682,49 +2443,6 @@ mod tests {
     }
 
     #[test]
-    fn test_set_outputs() {
-        let mut doc = NotebookDoc::new("nb1");
-        doc.add_cell(0, "cell-1", "code").unwrap();
-
-        let outputs = vec![
-            r#"{"output_type":"stream","name":"stdout","text":"hello\n"}"#.to_string(),
-            r#"{"output_type":"execute_result","data":{"text/plain":"42"}}"#.to_string(),
-        ];
-        doc.set_outputs("cell-1", &outputs).unwrap();
-
-        let cell = doc.get_cell("cell-1").unwrap();
-        assert_eq!(cell.outputs, outputs);
-    }
-
-    #[test]
-    fn test_append_output() {
-        let mut doc = NotebookDoc::new("nb1");
-        doc.add_cell(0, "cell-1", "code").unwrap();
-
-        doc.append_output("cell-1", r#"{"output_type":"stream"}"#)
-            .unwrap();
-        doc.append_output("cell-1", r#"{"output_type":"display_data"}"#)
-            .unwrap();
-
-        let cell = doc.get_cell("cell-1").unwrap();
-        assert_eq!(cell.outputs.len(), 2);
-        assert!(cell.outputs[0].contains("stream"));
-        assert!(cell.outputs[1].contains("display_data"));
-    }
-
-    #[test]
-    fn test_clear_outputs() {
-        let mut doc = NotebookDoc::new("nb1");
-        doc.add_cell(0, "cell-1", "code").unwrap();
-        doc.append_output("cell-1", "output1").unwrap();
-        doc.append_output("cell-1", "output2").unwrap();
-
-        doc.clear_outputs("cell-1").unwrap();
-        let cell = doc.get_cell("cell-1").unwrap();
-        assert!(cell.outputs.is_empty());
-    }
-
-    #[test]
     fn test_set_execution_count() {
         let mut doc = NotebookDoc::new("nb1");
         doc.add_cell(0, "cell-1", "code").unwrap();
@@ -2759,8 +2477,6 @@ mod tests {
         doc.add_cell(0, "cell-1", "code").unwrap();
         doc.update_source("cell-1", "x = 42").unwrap();
         doc.set_execution_count("cell-1", "1").unwrap();
-        doc.append_output("cell-1", r#"{"output_type":"execute_result"}"#)
-            .unwrap();
         doc.add_cell(1, "cell-2", "markdown").unwrap();
         doc.update_source("cell-2", "# Hello").unwrap();
 
@@ -2773,7 +2489,6 @@ mod tests {
         assert_eq!(cells[0].id, "cell-1");
         assert_eq!(cells[0].source, "x = 42");
         assert_eq!(cells[0].execution_count, "1");
-        assert_eq!(cells[0].outputs.len(), 1);
         assert_eq!(cells[1].id, "cell-2");
         assert_eq!(cells[1].source, "# Hello");
     }
@@ -2838,9 +2553,6 @@ mod tests {
         server.add_cell(0, "cell-1", "code").unwrap();
         server.update_source("cell-1", "import numpy").unwrap();
         server.set_execution_count("cell-1", "1").unwrap();
-        server
-            .append_output("cell-1", r#"{"output_type":"stream"}"#)
-            .unwrap();
 
         // Client starts with an empty doc (like a new window joining)
         let mut client = NotebookDoc {
@@ -2867,7 +2579,6 @@ mod tests {
         assert_eq!(cells[0].id, "cell-1");
         assert_eq!(cells[0].source, "import numpy");
         assert_eq!(cells[0].execution_count, "1");
-        assert_eq!(cells[0].outputs.len(), 1);
     }
 
     #[test]
@@ -2976,60 +2687,6 @@ mod tests {
         }
     }
 
-    /// Tests output sync from daemon to client AFTER initial sync.
-    /// This is the exact flow that broke in #617.
-    #[test]
-    fn test_output_sync_from_daemon_to_client() {
-        // Daemon creates notebook with a cell
-        let mut daemon = NotebookDoc::new("output-sync-test");
-        daemon.add_cell(0, "cell-1", "code").unwrap();
-        daemon.update_source("cell-1", "print('hello')").unwrap();
-
-        // Client starts empty and syncs
-        let mut client = NotebookDoc {
-            doc: AutoCommit::new(),
-        };
-        let mut daemon_state = sync::State::new();
-        let mut client_state = sync::State::new();
-
-        sync_docs(
-            &mut daemon,
-            &mut daemon_state,
-            &mut client,
-            &mut client_state,
-            10,
-        );
-
-        // Verify initial sync worked
-        assert_eq!(client.cell_count(), 1);
-        let cell = client.get_cell("cell-1").unwrap();
-        assert!(cell.outputs.is_empty());
-
-        // Daemon appends output (simulating kernel execution)
-        daemon
-            .append_output(
-                "cell-1",
-                r#"{"output_type":"stream","name":"stdout","text":"hello\n"}"#,
-            )
-            .unwrap();
-        daemon.set_execution_count("cell-1", "1").unwrap();
-
-        // Sync again - this is where #617 failed
-        sync_docs(
-            &mut daemon,
-            &mut daemon_state,
-            &mut client,
-            &mut client_state,
-            10,
-        );
-
-        // Client should see the output
-        let cell = client.get_cell("cell-1").unwrap();
-        assert_eq!(cell.outputs.len(), 1);
-        assert!(cell.outputs[0].contains("stdout"));
-        assert_eq!(cell.execution_count, "1");
-    }
-
     /// Tests execution count sync propagates correctly.
     #[test]
     fn test_execution_count_sync() {
@@ -3075,101 +2732,6 @@ mod tests {
         assert_eq!(client.get_cell("cell-1").unwrap().execution_count, "43");
     }
 
-    /// Tests clear_outputs syncs correctly.
-    #[test]
-    fn test_clear_outputs_sync() {
-        let mut daemon = NotebookDoc::new("clear-outputs-test");
-        daemon.add_cell(0, "cell-1", "code").unwrap();
-        daemon.append_output("cell-1", "output1").unwrap();
-        daemon.append_output("cell-1", "output2").unwrap();
-
-        let mut client = NotebookDoc {
-            doc: AutoCommit::new(),
-        };
-        let mut daemon_state = sync::State::new();
-        let mut client_state = sync::State::new();
-
-        sync_docs(
-            &mut daemon,
-            &mut daemon_state,
-            &mut client,
-            &mut client_state,
-            10,
-        );
-        assert_eq!(client.get_cell("cell-1").unwrap().outputs.len(), 2);
-
-        // Daemon clears outputs
-        daemon.clear_outputs("cell-1").unwrap();
-        sync_docs(
-            &mut daemon,
-            &mut daemon_state,
-            &mut client,
-            &mut client_state,
-            10,
-        );
-
-        assert!(client.get_cell("cell-1").unwrap().outputs.is_empty());
-    }
-
-    /// Tests bidirectional sync: client adds cell, daemon writes output.
-    #[test]
-    fn test_bidirectional_sync_client_adds_daemon_outputs() {
-        let mut daemon = NotebookDoc::new("bidirectional-test");
-        let mut client = NotebookDoc {
-            doc: AutoCommit::new(),
-        };
-        let mut daemon_state = sync::State::new();
-        let mut client_state = sync::State::new();
-
-        // Initial sync
-        sync_docs(
-            &mut daemon,
-            &mut daemon_state,
-            &mut client,
-            &mut client_state,
-            10,
-        );
-
-        // Client adds a cell with source code
-        client.add_cell(0, "user-cell", "code").unwrap();
-        client.update_source("user-cell", "x = 1 + 1").unwrap();
-
-        // Sync - daemon should see the cell
-        sync_docs(
-            &mut daemon,
-            &mut daemon_state,
-            &mut client,
-            &mut client_state,
-            10,
-        );
-        assert_eq!(daemon.cell_count(), 1);
-        assert_eq!(daemon.get_cell("user-cell").unwrap().source, "x = 1 + 1");
-
-        // Daemon executes and writes output
-        daemon
-            .append_output(
-                "user-cell",
-                r#"{"output_type":"execute_result","data":{"text/plain":"2"}}"#,
-            )
-            .unwrap();
-        daemon.set_execution_count("user-cell", "1").unwrap();
-
-        // Sync back - client should see the output
-        sync_docs(
-            &mut daemon,
-            &mut daemon_state,
-            &mut client,
-            &mut client_state,
-            10,
-        );
-
-        let cell = client.get_cell("user-cell").unwrap();
-        assert_eq!(cell.source, "x = 1 + 1"); // Still has its source
-        assert_eq!(cell.outputs.len(), 1);
-        assert!(cell.outputs[0].contains("execute_result"));
-        assert_eq!(cell.execution_count, "1");
-    }
-
     /// Tests three-peer sync: daemon + two clients.
     #[test]
     fn test_three_peer_sync() {
@@ -3201,12 +2763,9 @@ mod tests {
             10,
         );
 
-        // Daemon adds a cell with output
+        // Daemon adds a cell
         daemon.add_cell(0, "daemon-cell", "code").unwrap();
         daemon.update_source("daemon-cell", "print(42)").unwrap();
-        daemon
-            .append_output("daemon-cell", r#"{"text":"42"}"#)
-            .unwrap();
 
         // Sync both clients
         sync_docs(
@@ -3231,7 +2790,6 @@ mod tests {
         assert_eq!(cells2.len(), 1);
         assert_eq!(cells1[0].id, cells2[0].id);
         assert_eq!(cells1[0].source, cells2[0].source);
-        assert_eq!(cells1[0].outputs, cells2[0].outputs);
     }
 
     /// Tests empty-to-full bootstrap: fresh client receives daemon's first sync.
@@ -3245,9 +2803,6 @@ mod tests {
             .update_source("cell-1", "import numpy as np")
             .unwrap();
         daemon.set_execution_count("cell-1", "1").unwrap();
-        daemon
-            .append_output("cell-1", r#"{"output_type":"stream"}"#)
-            .unwrap();
         daemon.add_cell(1, "cell-2", "markdown").unwrap();
         daemon.update_source("cell-2", "# Analysis").unwrap();
         daemon.set_metadata("custom_key", "custom_value").unwrap();
@@ -3279,7 +2834,6 @@ mod tests {
         assert_eq!(cells[0].id, "cell-1");
         assert_eq!(cells[0].source, "import numpy as np");
         assert_eq!(cells[0].execution_count, "1");
-        assert_eq!(cells[0].outputs.len(), 1);
 
         assert_eq!(cells[1].id, "cell-2");
         assert_eq!(cells[1].source, "# Analysis");
@@ -3298,7 +2852,6 @@ mod tests {
             "code",
             "80", // position
             "print('hello')",
-            &["hash1".to_string(), "hash2".to_string()],
             "42",
             &serde_json::json!({"tags": ["test"]}),
         )
@@ -3311,7 +2864,6 @@ mod tests {
         assert_eq!(cell.position, "80");
         assert_eq!(cell.source, "print('hello')");
         assert_eq!(cell.execution_count, "42");
-        assert_eq!(cell.outputs, vec!["hash1", "hash2"]);
         assert_eq!(cell.tags(), vec!["test"]);
     }
 
@@ -3323,7 +2875,6 @@ mod tests {
             "code",
             "80", // position
             "",
-            &[],
             "null",
             &serde_json::json!({}),
         )
@@ -3332,7 +2883,6 @@ mod tests {
         let cell = doc.get_cell("cell-es").unwrap();
         assert_eq!(cell.source, "");
         assert_eq!(cell.execution_count, "null");
-        assert!(cell.outputs.is_empty());
         assert_eq!(cell.metadata, serde_json::json!({}));
     }
 
@@ -3352,7 +2902,6 @@ mod tests {
             "code",
             &pos_a.to_string(),
             "first",
-            &[],
             "null",
             &serde_json::json!({}),
         )
@@ -3362,7 +2911,6 @@ mod tests {
             "code",
             &pos_b.to_string(),
             "second",
-            &[],
             "null",
             &serde_json::json!({}),
         )
@@ -3372,7 +2920,6 @@ mod tests {
             "code",
             &pos_c.to_string(),
             "third",
-            &[],
             "null",
             &serde_json::json!({}),
         )
@@ -3502,7 +3049,6 @@ mod tests {
             "code",
             "80", // position
             "print('test')",
-            &[],
             "null",
             &serde_json::json!({
                 "jupyter": {"source_hidden": true},
@@ -3654,7 +3200,6 @@ mod tests {
         let mut doc = NotebookDoc::new("nb-move");
         doc.add_cell(0, "a", "code").unwrap();
         doc.update_source("a", "original source").unwrap();
-        doc.set_outputs("a", &["output1".to_string()]).unwrap();
         doc.set_execution_count("a", "42").unwrap();
 
         doc.add_cell(1, "b", "code").unwrap();
@@ -3665,7 +3210,6 @@ mod tests {
         // Verify content preserved
         let cell = doc.get_cell("a").unwrap();
         assert_eq!(cell.source, "original source");
-        assert_eq!(cell.outputs, vec!["output1"]);
         assert_eq!(cell.execution_count, "42");
     }
 
@@ -3870,8 +3414,8 @@ mod tests {
         let cells = doc.get_cells();
         assert_eq!(cells.len(), 1);
         assert_eq!(cells[0].execution_count, "5");
-        assert_eq!(cells[0].outputs.len(), 1);
-        assert!(cells[0].outputs[0].contains("stream"));
+        // outputs are no longer read from the notebook doc (always vec![])
+        assert!(cells[0].outputs.is_empty());
     }
 
     #[test]
@@ -4075,7 +3619,7 @@ mod tests {
             "count": 0,
             "nullable": null
         });
-        doc.add_cell_full("cell1", "code", "80", "x = 1", &[], "null", &meta)
+        doc.add_cell_full("cell1", "code", "80", "x = 1", "null", &meta)
             .unwrap();
 
         let cell = doc.get_cell("cell1").unwrap();
@@ -4124,7 +3668,7 @@ mod tests {
             "jupyter": {"source_hidden": true},
             "tags": ["from-doc"]
         });
-        doc.add_cell_full("cell1", "code", "80", "x = 1", &[], "null", &meta)
+        doc.add_cell_full("cell1", "code", "80", "x = 1", "null", &meta)
             .unwrap();
 
         // Use the free function (as sync client would)
@@ -4393,9 +3937,6 @@ mod tests {
             Some("null".to_string())
         );
 
-        // Verify outputs default to empty vec
-        assert_eq!(doc.get_cell_outputs("cell-b"), Some(vec![]));
-
         // Verify metadata default to empty object
         assert_eq!(doc.get_cell_metadata("cell-a"), Some(serde_json::json!({})));
 
@@ -4406,7 +3947,6 @@ mod tests {
         // Verify nonexistent cell returns None for all accessors
         assert_eq!(doc.get_cell_source("nonexistent"), None);
         assert_eq!(doc.get_cell_type("nonexistent"), None);
-        assert_eq!(doc.get_cell_outputs("nonexistent"), None);
         assert_eq!(doc.get_cell_execution_count("nonexistent"), None);
         assert_eq!(doc.get_cell_metadata("nonexistent"), None);
         assert_eq!(doc.get_cell_position("nonexistent"), None);
@@ -4481,102 +4021,5 @@ mod tests {
 
         let fp_after = doc.get_metadata_fingerprint().unwrap();
         assert_eq!(fp_before, fp_after);
-    }
-
-    #[test]
-    fn test_stream_upsert_fork_merge_with_concurrent_clear() {
-        // Verifies that when a fork performs upsert_stream_output and the main
-        // doc concurrently clears outputs, merge composes correctly. The fork's
-        // index is the correct one to cache — if a concurrent clear invalidates
-        // it, the next stream chunk safely falls back to append.
-        let mut doc = NotebookDoc::new("test");
-        doc.add_cell(0, "cell-1", "code").unwrap();
-
-        // Append an initial stream output so there's something to upsert
-        let initial_hash = "sha256:aaa";
-        doc.append_output("cell-1", initial_hash).unwrap();
-        assert_eq!(doc.get_cell_outputs("cell-1").unwrap().len(), 1);
-
-        let known_state = StreamOutputState {
-            index: 0,
-            manifest_hash: initial_hash.to_string(),
-        };
-
-        // Fork before the "async work"
-        let mut fork = doc.fork();
-        fork.set_actor("runtimed:kernel");
-
-        // Upsert on the fork (updates in place since known_state matches)
-        let new_hash = "sha256:bbb";
-        let (updated, fork_index) = fork
-            .upsert_stream_output("cell-1", "stdout", new_hash, Some(&known_state))
-            .unwrap();
-        assert!(updated, "should update in place on fork");
-        assert_eq!(fork_index, 0, "fork index is where the upsert wrote");
-
-        // Concurrent mutation on main doc: clear all outputs
-        doc.clear_outputs("cell-1").unwrap();
-        assert_eq!(doc.get_cell_outputs("cell-1").unwrap().len(), 0);
-
-        // Merge fork back — CRDT composes the clear with the upsert
-        doc.merge(&mut fork).unwrap();
-
-        // After merge: the fork did a `put` (in-place update) on an element
-        // that the main doc deleted. Automerge's semantics: a put on a
-        // deleted element is lost — the concurrent clear wins.
-        let outputs = doc.get_cell_outputs("cell-1").unwrap();
-        assert_eq!(
-            outputs.len(),
-            0,
-            "concurrent clear wins over fork's in-place put"
-        );
-
-        // The cached fork_index (0) is now stale, but that's safe:
-        // the next upsert_stream_output call will see output_count=0,
-        // validation will fail (index 0 >= output_count 0), and it
-        // will fall back to appending a fresh entry.
-        assert_eq!(fork_index, 0, "fork index is stale but harmless");
-    }
-
-    #[test]
-    fn test_stream_upsert_fork_merge_append_case() {
-        // Verifies that fork+merge works for the append case (no known state)
-        // and that the fork's index is correct for terminal state caching.
-        let mut doc = NotebookDoc::new("test");
-        doc.add_cell(0, "cell-1", "code").unwrap();
-
-        // Fork before the "async work"
-        let mut fork = doc.fork();
-        fork.set_actor("runtimed:kernel");
-
-        // Upsert with no known state — this appends
-        let hash = "sha256:ccc";
-        let (updated, fork_index) = fork
-            .upsert_stream_output("cell-1", "stdout", hash, None)
-            .unwrap();
-        assert!(!updated, "should append, not update");
-        assert_eq!(fork_index, 0, "fork appended at position 0");
-
-        // Concurrently append a different output on main doc
-        doc.append_output("cell-1", "sha256:other").unwrap();
-
-        // Merge
-        doc.merge(&mut fork).unwrap();
-
-        // Both outputs should be present
-        let outputs = doc.get_cell_outputs("cell-1").unwrap();
-        assert_eq!(
-            outputs.len(),
-            2,
-            "both concurrent appends should survive merge"
-        );
-
-        // The fork's index (0) is correct for caching — it points to the
-        // fork's output entry. Using len()-1 would be wrong here since
-        // the fork's output may not be the last entry after merge.
-        assert!(
-            outputs.contains(&hash.to_string()),
-            "fork's appended output should be in merged doc"
-        );
     }
 }

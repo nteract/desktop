@@ -46,6 +46,8 @@ export interface FrameEvent {
   payload?: unknown;
   /** RuntimeState from RuntimeStateSyncApplied. */
   state?: unknown;
+  /** Cell IDs whose outputs changed in RuntimeStateDoc (from WASM-side diff). */
+  output_changed_cells?: string[];
 }
 
 // ── SyncableHandle ───────────────────────────────────────────────────

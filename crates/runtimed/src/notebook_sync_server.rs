@@ -968,7 +968,7 @@ impl NotebookRoom {
         // For saved notebooks (file paths), .ipynb is the source of truth, so
         // delete stale persisted docs and start fresh (daemon loads from disk).
         let runtimed_actor = "runtimed";
-        let doc = if is_untitled_notebook(notebook_id) && persist_path.exists() {
+        let mut doc = if is_untitled_notebook(notebook_id) && persist_path.exists() {
             info!(
                 "[notebook-sync] Loading persisted doc for untitled notebook: {:?}",
                 persist_path
@@ -1005,6 +1005,28 @@ impl NotebookRoom {
         let (presence_tx, _) = broadcast::channel(64);
 
         let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
+
+        // Migrate outputs from notebook doc to RuntimeStateDoc for pre-v3 untitled notebooks.
+        // .ipynb files already create synthetic execution_ids on load; this handles
+        // persisted .automerge files that have outputs in the old cell.outputs location.
+        if is_untitled_notebook(notebook_id) {
+            let cell_outputs = doc.extract_cell_outputs();
+            if !cell_outputs.is_empty() {
+                let mut sd = state_doc.blocking_write();
+                for (cell_id, outputs) in &cell_outputs {
+                    let synthetic_eid = uuid::Uuid::new_v4().to_string();
+                    let _ = sd.set_outputs(&synthetic_eid, outputs);
+                    sd.create_execution(&synthetic_eid, cell_id);
+                    sd.set_execution_done(&synthetic_eid, true);
+                    let _ = doc.set_execution_id(cell_id, Some(&synthetic_eid));
+                }
+                info!(
+                    "[notebook-sync] Migrated outputs for {} cells from notebook doc to RuntimeStateDoc",
+                    cell_outputs.len()
+                );
+            }
+        }
+
         let (state_changed_tx, _) = broadcast::channel(16);
 
         Self {
@@ -3626,11 +3648,12 @@ async fn handle_notebook_request(
             if let Some(ref mut kernel) = *kernel_guard {
                 match kernel.queue_cell(cell_id.clone(), code).await {
                     Ok(execution_id) => {
-                        // Clear outputs and stamp execution_id at queue time
-                        // so clients see immediate feedback via CRDT sync.
+                        // Stamp execution_id at queue time so clients see
+                        // immediate feedback via CRDT sync. Outputs are in
+                        // RuntimeStateDoc keyed by execution_id — the new eid
+                        // starts with an empty output list, so no clear needed.
                         {
                             let mut doc = room.doc.write().await;
-                            let _ = doc.clear_outputs(&cell_id);
                             let _ = doc.set_execution_count(&cell_id, "null");
                             let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
                             let _ = room.changed_tx.send(());
@@ -3691,11 +3714,11 @@ async fn handle_notebook_request(
             if let Some(ref mut kernel) = *kernel_guard {
                 match kernel.queue_cell(cell_id.clone(), source.clone()).await {
                     Ok(execution_id) => {
-                        // Clear outputs and stamp execution_id at queue time
-                        // so clients see immediate feedback via CRDT sync.
+                        // Stamp execution_id at queue time so clients see
+                        // immediate feedback. No output clear needed — new eid
+                        // starts with empty outputs in RuntimeStateDoc.
                         {
                             let mut doc = room.doc.write().await;
-                            let _ = doc.clear_outputs(&cell_id);
                             let _ = doc.set_execution_count(&cell_id, "null");
                             let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
                             let _ = room.changed_tx.send(());
@@ -3754,37 +3777,47 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::ClearOutputs { cell_id } => {
-            // 1. Mutate the Automerge document to remove outputs
+            // Clear outputs by nulling the execution_id pointer on the cell.
+            // Outputs live in RuntimeStateDoc keyed by execution_id — with no
+            // execution_id, the frontend sees no outputs. The old execution's
+            // outputs remain in RuntimeStateDoc until natural trim.
+            let old_eid = {
+                let doc = room.doc.read().await;
+                doc.get_execution_id(&cell_id)
+            };
+
             let persist_bytes = {
                 let mut doc = room.doc.write().await;
-                if let Err(e) = doc.clear_outputs(&cell_id) {
-                    return NotebookResponse::Error {
-                        error: format!("Failed to clear outputs: {}", e),
-                    };
-                }
-                // Also reset execution count and execution_id pointer
                 let _ = doc.set_execution_count(&cell_id, "null");
                 let _ = doc.set_execution_id(&cell_id, None);
                 let bytes = doc.save();
-                // Notify other peers of doc change
                 let _ = room.changed_tx.send(());
                 bytes
             };
 
-            // 2. Send to debounced persistence task
+            // Optionally clean up the old execution's outputs in RuntimeStateDoc
+            if let Some(ref eid) = old_eid {
+                let mut sd = room.state_doc.write().await;
+                let _ = sd.clear_execution_outputs(eid);
+                let _ = room.state_changed_tx.send(());
+            }
+
+            // Send to debounced persistence task
             let _ = room.persist_tx.send(Some(persist_bytes));
 
-            // 3. Broadcast for cross-window UI sync (fast path)
+            // Broadcast for cross-window UI sync (fast path)
             let _ = room
                 .kernel_broadcast_tx
                 .send(NotebookBroadcast::OutputsCleared {
                     cell_id: cell_id.clone(),
                 });
 
-            // 4. Update kernel's internal tracking if kernel exists
-            let kernel_guard = room.kernel.lock().await;
-            if let Some(ref kernel) = *kernel_guard {
-                kernel.clear_outputs(&cell_id).await;
+            // Update kernel's internal tracking if kernel exists
+            if let Some(ref eid) = old_eid {
+                let kernel_guard = room.kernel.lock().await;
+                if let Some(ref kernel) = *kernel_guard {
+                    kernel.clear_outputs(eid).await;
+                }
             }
 
             NotebookResponse::OutputsCleared { cell_id }
@@ -3915,12 +3948,13 @@ async fn handle_notebook_request(
                     }
                 }
 
-                // Bulk-clear outputs and stamp execution_ids in one
-                // CRDT transaction so clients see all cells cleared at once.
+                // Bulk-stamp execution_ids in one CRDT transaction so
+                // clients see all cells updated at once. No output clear
+                // needed — each new execution_id starts with empty outputs
+                // in RuntimeStateDoc.
                 {
                     let mut doc = room.doc.write().await;
                     for entry in &queued {
-                        let _ = doc.clear_outputs(&entry.cell_id);
                         let _ = doc.set_execution_count(&entry.cell_id, "null");
                         let _ = doc.set_execution_id(&entry.cell_id, Some(&entry.execution_id));
                     }
@@ -4585,17 +4619,41 @@ async fn save_notebook_to_disk(
         }
     };
 
-    // Read cells, metadata, and heads from the Automerge doc.
+    // Read cells, metadata, heads, and per-cell execution_ids from the doc.
     // Heads are captured NOW (at snapshot time) so last_save_heads
     // matches what we serialize to disk, not what the doc looks like
     // after the async file write completes.
-    let (cells, metadata_snapshot, snapshot_heads) = {
+    let (cells, metadata_snapshot, snapshot_heads, cell_execution_ids) = {
         let mut doc = room.doc.write().await;
         let cells = doc.get_cells();
         let metadata_snapshot = doc.get_metadata_snapshot();
         let heads = doc.get_heads();
-        (cells, metadata_snapshot, heads)
+        // Collect execution_id for each cell (for output lookup in state doc)
+        let eids: HashMap<String, Option<String>> = cells
+            .iter()
+            .map(|c| (c.id.clone(), doc.get_execution_id(&c.id)))
+            .collect();
+        (cells, metadata_snapshot, heads, eids)
     };
+
+    // Read outputs from RuntimeStateDoc keyed by execution_id.
+    // Lock ordering: doc first (released above), then state_doc.
+    let cell_outputs: HashMap<String, Vec<String>> = {
+        let sd = room.state_doc.read().await;
+        cell_execution_ids
+            .iter()
+            .filter_map(|(cell_id, eid)| {
+                let eid = eid.as_ref()?;
+                let outputs = sd.get_outputs(eid);
+                if outputs.is_empty() {
+                    None
+                } else {
+                    Some((cell_id.clone(), outputs))
+                }
+            })
+            .collect()
+    };
+
     let nbformat_attachments = room.nbformat_attachments.read().await.clone();
 
     // Reconstruct cells as JSON
@@ -4629,11 +4687,13 @@ async fn save_notebook_to_disk(
         });
 
         if cell.cell_type == "code" {
-            // Resolve outputs (may be manifest hashes or raw JSON)
+            // Resolve outputs from RuntimeStateDoc (keyed by execution_id)
             let mut resolved_outputs = Vec::new();
-            for output_str in &cell.outputs {
-                let output_value = resolve_cell_output(output_str, &room.blob_store).await;
-                resolved_outputs.push(output_value);
+            if let Some(output_hashes) = cell_outputs.get(&cell.id) {
+                for output_str in output_hashes {
+                    let output_value = resolve_cell_output(output_str, &room.blob_store).await;
+                    resolved_outputs.push(output_value);
+                }
             }
             cell_json["outputs"] = serde_json::Value::Array(resolved_outputs);
 
@@ -5679,20 +5739,39 @@ where
             batch.push((idx, cell, output_refs, resolved_assets));
         }
 
+        // Store outputs in RuntimeStateDoc with synthetic execution_ids.
+        // Collect (cell_id, synthetic_eid) pairs for linking below.
+        let mut cell_eids: HashMap<String, String> = HashMap::new();
+        {
+            let mut sd = room.state_doc.write().await;
+            for (_idx, cell, output_refs, _resolved_assets) in &batch {
+                if !output_refs.is_empty() {
+                    let synthetic_eid = uuid::Uuid::new_v4().to_string();
+                    let _ = sd.set_outputs(&synthetic_eid, output_refs);
+                    sd.create_execution(&synthetic_eid, &cell.id);
+                    sd.set_execution_done(&synthetic_eid, true);
+                    cell_eids.insert(cell.id.clone(), synthetic_eid);
+                }
+            }
+        }
+
         // Add batch to Automerge doc and generate sync message (inside lock)
         let encoded = {
             let mut doc = room.doc.write().await;
-            for (_idx, cell, output_refs, resolved_assets) in &batch {
+            for (_idx, cell, _output_refs, resolved_assets) in &batch {
                 doc.add_cell_full(
                     &cell.id,
                     &cell.cell_type,
                     &cell.position,
                     &cell.source,
-                    output_refs,
                     &cell.execution_count,
                     &cell.metadata,
                 )
                 .map_err(|e| format!("Failed to add cell {}: {}", cell.id, e))?;
+                // Link cell to its synthetic execution_id
+                if let Some(eid) = cell_eids.get(&cell.id) {
+                    let _ = doc.set_execution_id(&cell.id, Some(eid));
+                }
                 doc.set_cell_resolved_assets(&cell.id, resolved_assets)
                     .map_err(|e| format!("Failed to set resolved assets for {}: {}", cell.id, e))?;
             }
@@ -5718,6 +5797,9 @@ where
 
         // Notify other peers in the room
         let _ = room.changed_tx.send(());
+        if !cell_eids.is_empty() {
+            let _ = room.state_changed_tx.send(());
+        }
 
         // Drain incoming sync replies to prevent deadlock
         drain_incoming_frames(reader, room, peer_state).await;
@@ -5780,6 +5862,17 @@ pub async fn load_notebook_from_disk(
     path: &std::path::Path,
     blob_store: &BlobStore,
 ) -> Result<usize, String> {
+    load_notebook_from_disk_with_state_doc(doc, None, path, blob_store).await
+}
+
+/// Load a notebook from disk, populating both the notebook doc and optionally
+/// the RuntimeStateDoc with outputs keyed by synthetic execution_ids.
+pub async fn load_notebook_from_disk_with_state_doc(
+    doc: &mut NotebookDoc,
+    mut state_doc: Option<&mut RuntimeStateDoc>,
+    path: &std::path::Path,
+    blob_store: &BlobStore,
+) -> Result<usize, String> {
     // Read the file
     let content = tokio::fs::read_to_string(path)
         .await
@@ -5802,8 +5895,19 @@ pub async fn load_notebook_from_disk(
             .map_err(|e| format!("Failed to update source: {}", e))?;
         if !cell.outputs.is_empty() {
             let output_refs = outputs_to_manifest_refs(&cell.outputs, blob_store).await;
-            doc.set_outputs(&cell.id, &output_refs)
-                .map_err(|e| format!("Failed to set outputs: {}", e))?;
+            // Store outputs in RuntimeStateDoc keyed by a synthetic execution_id.
+            // The cell's execution_id pointer links it to the outputs.
+            let synthetic_eid = uuid::Uuid::new_v4().to_string();
+            if let Some(ref mut sd) = state_doc {
+                sd.set_outputs(&synthetic_eid, &output_refs)
+                    .map_err(|e| format!("Failed to set outputs in state doc: {}", e))?;
+                // Create a "done" execution entry so the frontend knows this
+                // execution is complete (loaded from disk).
+                sd.create_execution(&synthetic_eid, &cell.id);
+                sd.set_execution_done(&synthetic_eid, true);
+            }
+            doc.set_execution_id(&cell.id, Some(&synthetic_eid))
+                .map_err(|e| format!("Failed to set execution_id: {}", e))?;
         }
         doc.set_execution_count(&cell.id, &cell.execution_count)
             .map_err(|e| format!("Failed to set execution count: {}", e))?;
@@ -6074,20 +6178,32 @@ async fn apply_ipynb_changes(
             {
                 let _ = fork.update_source(&ext_cell.id, &ext_cell.source);
 
-                // For existing cells with running kernel: preserve current outputs/execution_count
-                // For new cells: always use external values (they don't have in-progress state)
+                // For existing cells with running kernel: preserve current execution_id
+                // (outputs live in RuntimeStateDoc, keyed by execution_id)
+                // For new cells: store external outputs in RuntimeStateDoc with synthetic eid
                 if has_running_kernel {
                     if let Some(current) = current_map.get(ext_cell.id.as_str()) {
-                        // Existing cell - preserve in-progress state
-                        let _ = fork.set_outputs(&ext_cell.id, &current.outputs);
+                        // Existing cell - preserve in-progress state (execution_id stays)
                         let _ = fork.set_execution_count(&ext_cell.id, &current.execution_count);
+                        // Preserve the current execution_id so outputs remain linked
+                        if let Some(eid) = doc.get_execution_id(&ext_cell.id) {
+                            let _ = fork.set_execution_id(&ext_cell.id, Some(&eid));
+                        }
                     } else {
-                        // New cell - use external values
+                        // New cell - store external outputs in state doc
                         let ext_outputs = converted_outputs
                             .get(ext_cell.id.as_str())
                             .map(|v| v.as_slice())
                             .unwrap_or(&[]);
-                        let _ = fork.set_outputs(&ext_cell.id, ext_outputs);
+                        if !ext_outputs.is_empty() {
+                            let synthetic_eid = uuid::Uuid::new_v4().to_string();
+                            let mut sd = room.state_doc.write().await;
+                            let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
+                            sd.create_execution(&synthetic_eid, &ext_cell.id);
+                            sd.set_execution_done(&synthetic_eid, true);
+                            let _ = fork.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
+                            let _ = room.state_changed_tx.send(());
+                        }
                         let _ = fork.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
                     }
                 } else {
@@ -6095,7 +6211,15 @@ async fn apply_ipynb_changes(
                         .get(ext_cell.id.as_str())
                         .map(|v| v.as_slice())
                         .unwrap_or(&[]);
-                    let _ = fork.set_outputs(&ext_cell.id, ext_outputs);
+                    if !ext_outputs.is_empty() {
+                        let synthetic_eid = uuid::Uuid::new_v4().to_string();
+                        let mut sd = room.state_doc.write().await;
+                        let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
+                        sd.create_execution(&synthetic_eid, &ext_cell.id);
+                        sd.set_execution_done(&synthetic_eid, true);
+                        let _ = fork.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
+                        let _ = room.state_changed_tx.send(());
+                    }
                     let _ = fork.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
                 }
                 let ext_assets = converted_assets
@@ -6207,12 +6331,30 @@ async fn apply_ipynb_changes(
                     .get(ext_cell.id.as_str())
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]);
-                if current_cell.outputs != ext_outputs {
+                // Compare external outputs against what's in RuntimeStateDoc
+                let current_eid = doc.get_execution_id(&ext_cell.id);
+                let current_outputs: Vec<String> = if let Some(ref eid) = current_eid {
+                    let sd = room.state_doc.read().await;
+                    sd.get_outputs(eid)
+                } else {
+                    Vec::new()
+                };
+                if current_outputs.as_slice() != ext_outputs {
                     debug!(
                         "[notebook-watch] Updating outputs for cell: {}",
                         ext_cell.id
                     );
-                    if let Ok(true) = doc.set_outputs(&ext_cell.id, ext_outputs) {
+                    if !ext_outputs.is_empty() {
+                        let synthetic_eid = uuid::Uuid::new_v4().to_string();
+                        let mut sd = room.state_doc.write().await;
+                        let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
+                        sd.create_execution(&synthetic_eid, &ext_cell.id);
+                        sd.set_execution_done(&synthetic_eid, true);
+                        let _ = doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
+                        let _ = room.state_changed_tx.send(());
+                        changed = true;
+                    } else if current_eid.is_some() {
+                        let _ = doc.set_execution_id(&ext_cell.id, None);
                         changed = true;
                     }
                 }
@@ -6256,7 +6398,15 @@ async fn apply_ipynb_changes(
                     .get(ext_cell.id.as_str())
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]);
-                let _ = doc.set_outputs(&ext_cell.id, ext_outputs);
+                if !ext_outputs.is_empty() {
+                    let synthetic_eid = uuid::Uuid::new_v4().to_string();
+                    let mut sd = room.state_doc.write().await;
+                    let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
+                    sd.create_execution(&synthetic_eid, &ext_cell.id);
+                    sd.set_execution_done(&synthetic_eid, true);
+                    let _ = doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
+                    let _ = room.state_changed_tx.send(());
+                }
                 let _ = doc.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
                 let ext_assets = converted_assets
                     .get(ext_cell.id.as_str())
@@ -7079,15 +7229,21 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let (room, notebook_path) = test_room_with_path(&tmp, "outputs.ipynb");
 
-        // Add a cell with a raw output
+        // Add a cell with a raw output stored in RuntimeStateDoc
+        let eid = "test-exec-1";
         {
             let mut doc = room.doc.write().await;
             doc.add_cell(0, "cell1", "code").unwrap();
             doc.update_source("cell1", "print('hello')").unwrap();
-            // Add raw JSON output (stream type)
-            let output = r#"{"output_type": "stream", "name": "stdout", "text": ["hello\n"]}"#;
-            doc.set_outputs("cell1", &[output.to_string()]).unwrap();
             doc.set_execution_count("cell1", "1").unwrap();
+            doc.set_execution_id("cell1", Some(eid)).unwrap();
+        }
+        {
+            let mut sd = room.state_doc.write().await;
+            let output = r#"{"output_type": "stream", "name": "stdout", "text": ["hello\n"]}"#;
+            sd.set_outputs(eid, &[output.to_string()]).unwrap();
+            sd.create_execution(eid, "cell1");
+            sd.set_execution_done(eid, true);
         }
 
         save_notebook_to_disk(&room, None).await.unwrap();
@@ -7319,27 +7475,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_ipynb_changes_preserves_outputs_when_kernel_running() {
+    async fn test_apply_ipynb_changes_preserves_execution_count_when_kernel_running() {
         let tmp = tempfile::TempDir::new().unwrap();
         let (room, _) = test_room_with_path(&tmp, "test.ipynb");
 
-        // Add cells with outputs
+        // Add cell with execution count (outputs live in RuntimeStateDoc now)
         {
             let mut doc = room.doc.write().await;
             doc.add_cell(0, "cell-1", "code").unwrap();
-            doc.set_outputs("cell-1", &[r#"{"output_type":"stream"}"#.to_string()])
-                .unwrap();
             doc.set_execution_count("cell-1", "10").unwrap();
         }
 
-        // Apply external changes (with different outputs) while kernel is "running"
+        // Apply external changes while kernel is "running"
         let external_cells = vec![CellSnapshot {
             id: "cell-1".to_string(),
             cell_type: "code".to_string(),
             position: "80".to_string(),
             source: "new source".to_string(),
             execution_count: "5".to_string(),
-            outputs: vec![r#"{"output_type":"error"}"#.to_string()],
+            outputs: vec![],
             metadata: serde_json::json!({}),
             resolved_assets: std::collections::HashMap::new(),
         }];
@@ -7353,8 +7507,7 @@ mod tests {
         };
         // Source should be updated
         assert_eq!(cells[0].source, "new source");
-        // But outputs and execution_count should be preserved
-        assert_eq!(cells[0].outputs, vec![r#"{"output_type":"stream"}"#]);
+        // But execution_count should be preserved
         assert_eq!(cells[0].execution_count, "10");
     }
 
@@ -7404,14 +7557,23 @@ mod tests {
         };
         assert_eq!(cells.len(), 2);
 
-        // New cell should have external outputs and execution_count
+        // New cell should have external outputs in RuntimeStateDoc
         let new_cell = cells.iter().find(|c| c.id == "new-cell").unwrap();
         assert_eq!(new_cell.source, "print('new')");
         assert_eq!(new_cell.execution_count, "42");
-        // Outputs are now stored as manifest hashes (64-char hex) in the blob store,
-        // not as raw JSON strings.
-        assert_eq!(new_cell.outputs.len(), 1);
-        let hash = &new_cell.outputs[0];
+
+        // Outputs are in RuntimeStateDoc keyed by synthetic execution_id
+        let eid = {
+            let doc = room.doc.read().await;
+            doc.get_execution_id("new-cell")
+                .expect("new-cell should have execution_id")
+        };
+        let outputs = {
+            let sd = room.state_doc.read().await;
+            sd.get_outputs(&eid)
+        };
+        assert_eq!(outputs.len(), 1);
+        let hash = &outputs[0];
         assert_eq!(hash.len(), 64, "Output should be a 64-char manifest hash");
         assert!(
             hash.chars().all(|c| c.is_ascii_hexdigit()),
@@ -7621,36 +7783,54 @@ mod tests {
 
         let notebook_id = ipynb_path.to_string_lossy().to_string();
         let mut doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
+        let mut state_doc = RuntimeStateDoc::new();
 
-        let count = load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store)
-            .await
-            .unwrap();
+        let count = load_notebook_from_disk_with_state_doc(
+            &mut doc,
+            Some(&mut state_doc),
+            &ipynb_path,
+            &blob_store,
+        )
+        .await
+        .unwrap();
         assert_eq!(count, 3);
 
         let cells = doc.get_cells();
         assert_eq!(cells.len(), 3);
 
-        // Every output should be a 64-char hex manifest hash, not raw JSON
+        // Each code cell with outputs should have an execution_id pointing to state_doc
         for cell in &cells {
-            for output_ref in &cell.outputs {
-                assert_eq!(
-                    output_ref.len(),
-                    64,
-                    "Cell {} output should be a 64-char manifest hash, got: {}",
-                    cell.id,
-                    &output_ref[..output_ref.len().min(80)]
-                );
+            if let Some(eid) = doc.get_execution_id(&cell.id) {
+                let outputs = state_doc.get_outputs(&eid);
                 assert!(
-                    output_ref.chars().all(|c| c.is_ascii_hexdigit()),
-                    "Cell {} output should be hex, got: {}",
-                    cell.id,
-                    output_ref
+                    !outputs.is_empty(),
+                    "Cell {} should have outputs in state doc",
+                    cell.id
                 );
+                for output_ref in &outputs {
+                    assert_eq!(
+                        output_ref.len(),
+                        64,
+                        "Cell {} output should be a 64-char manifest hash, got: {}",
+                        cell.id,
+                        &output_ref[..output_ref.len().min(80)]
+                    );
+                    assert!(
+                        output_ref.chars().all(|c| c.is_ascii_hexdigit()),
+                        "Cell {} output should be hex, got: {}",
+                        cell.id,
+                        output_ref
+                    );
+                }
             }
         }
 
         // Resolve cell-1's execute_result and verify round-trip
-        let hash = &cells[0].outputs[0];
+        let eid1 = doc
+            .get_execution_id("cell-1")
+            .expect("cell-1 should have execution_id");
+        let outputs1 = state_doc.get_outputs(&eid1);
+        let hash = &outputs1[0];
         let manifest_bytes = blob_store.get(hash).await.unwrap().unwrap();
         let manifest_json = String::from_utf8(manifest_bytes).unwrap();
         let resolved = crate::output_store::resolve_manifest(&manifest_json, &blob_store)
@@ -7661,7 +7841,11 @@ mod tests {
         assert_eq!(resolved["execution_count"], 1);
 
         // Resolve cell-2's display_data with the large image
-        let hash = &cells[1].outputs[0];
+        let eid2 = doc
+            .get_execution_id("cell-2")
+            .expect("cell-2 should have execution_id");
+        let outputs2 = state_doc.get_outputs(&eid2);
+        let hash = &outputs2[0];
         let manifest_bytes = blob_store.get(hash).await.unwrap().unwrap();
         let manifest_json = String::from_utf8(manifest_bytes).unwrap();
         // The manifest should contain a blob ref for the large image, not inline
@@ -7680,7 +7864,11 @@ mod tests {
         assert_eq!(resolved["data"]["image/png"], large_image);
 
         // Resolve cell-3's stream output
-        let hash = &cells[2].outputs[0];
+        let eid3 = doc
+            .get_execution_id("cell-3")
+            .expect("cell-3 should have execution_id");
+        let outputs3 = state_doc.get_outputs(&eid3);
+        let hash = &outputs3[0];
         let manifest_bytes = blob_store.get(hash).await.unwrap().unwrap();
         let manifest_json = String::from_utf8(manifest_bytes).unwrap();
         let resolved = crate::output_store::resolve_manifest(&manifest_json, &blob_store)
@@ -8211,13 +8399,12 @@ mod tests {
 
             // add_cell_full phase
             let t_add = std::time::Instant::now();
-            for (_idx, cell, output_refs) in &batch {
+            for (_idx, cell, _output_refs) in &batch {
                 doc.add_cell_full(
                     &cell.id,
                     &cell.cell_type,
                     &cell.position,
                     &cell.source,
-                    output_refs,
                     &cell.execution_count,
                     &cell.metadata,
                 )

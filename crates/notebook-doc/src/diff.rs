@@ -126,6 +126,9 @@ impl ChangedFields {
             "metadata" => self.metadata = true,
             "position" => self.position = true,
             "resolved_assets" => self.resolved_assets = true,
+            // execution_id change means the cell points to a different execution's
+            // outputs in RuntimeStateDoc — trigger output re-materialization
+            "execution_id" => self.outputs = true,
             "id" => { /* Cell ID field — not a meaningful change */ }
             _ => return false,
         }
@@ -581,27 +584,6 @@ mod tests {
     }
 
     #[test]
-    fn test_output_change_detected() {
-        let mut doc = NotebookDoc::new("nb1");
-        doc.add_cell(0, "cell-1", "code").unwrap();
-        let before = doc.doc_mut().get_heads();
-
-        doc.append_output(
-            "cell-1",
-            r#"{"output_type":"stream","name":"stdout","text":"hi"}"#,
-        )
-        .unwrap();
-        let after = doc.doc_mut().get_heads();
-
-        let changeset = diff_cells(doc.doc_mut(), &before, &after);
-        assert_eq!(changeset.changed.len(), 1);
-        assert_eq!(changeset.changed[0].cell_id, "cell-1");
-        assert!(changeset.changed[0].fields.outputs);
-        assert!(!changeset.changed[0].fields.source);
-        assert!(!changeset.is_source_only());
-    }
-
-    #[test]
     fn test_execution_count_detected() {
         let mut doc = NotebookDoc::new("nb1");
         doc.add_cell(0, "cell-1", "code").unwrap();
@@ -676,15 +658,12 @@ mod tests {
 
         doc.update_source("cell-1", "x = 1").unwrap();
         let _ = doc.set_execution_count("cell-1", "1");
-        doc.append_output("cell-1", r#"{"output_type":"execute_result"}"#)
-            .unwrap();
         let after = doc.doc_mut().get_heads();
 
         let changeset = diff_cells(doc.doc_mut(), &before, &after);
         assert_eq!(changeset.changed.len(), 1);
         let cell = &changeset.changed[0];
         assert!(cell.fields.source);
-        assert!(cell.fields.outputs);
         assert!(cell.fields.execution_count);
         assert!(!cell.fields.metadata);
     }
@@ -767,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_output_and_execution_count() {
+    fn test_sync_execution_count() {
         let mut daemon = NotebookDoc::new("nb1");
         daemon.add_cell(0, "cell-1", "code").unwrap();
         daemon.update_source("cell-1", "print('hello')").unwrap();
@@ -777,14 +756,8 @@ mod tests {
 
         let before = client.doc_mut().get_heads();
 
-        // Daemon writes execution results.
+        // Daemon writes execution count.
         let _ = daemon.set_execution_count("cell-1", "1");
-        daemon
-            .append_output(
-                "cell-1",
-                r#"{"output_type":"stream","name":"stdout","text":"hello\n"}"#,
-            )
-            .unwrap();
         sync_docs(&mut daemon, &mut client);
 
         let after = client.doc_mut().get_heads();
@@ -792,7 +765,6 @@ mod tests {
 
         assert_eq!(changeset.changed.len(), 1);
         let cell = &changeset.changed[0];
-        assert!(cell.fields.outputs);
         assert!(cell.fields.execution_count);
         assert!(!cell.fields.source);
     }
@@ -968,22 +940,6 @@ mod tests {
         assert!(json.contains("\"outputs\":true"));
         assert!(!json.contains("metadata"));
         assert!(!json.contains("position"));
-    }
-
-    #[test]
-    fn test_clear_outputs_detected() {
-        let mut doc = NotebookDoc::new("nb1");
-        doc.add_cell(0, "cell-1", "code").unwrap();
-        doc.append_output("cell-1", r#"{"output_type":"stream"}"#)
-            .unwrap();
-        let before = doc.doc_mut().get_heads();
-
-        doc.clear_outputs("cell-1").unwrap();
-        let after = doc.doc_mut().get_heads();
-
-        let changeset = diff_cells(doc.doc_mut(), &before, &after);
-        assert_eq!(changeset.changed.len(), 1);
-        assert!(changeset.changed[0].fields.outputs);
     }
 
     #[test]

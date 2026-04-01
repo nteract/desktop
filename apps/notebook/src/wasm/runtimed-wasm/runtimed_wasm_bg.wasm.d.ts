@@ -16,6 +16,7 @@ export const notebookhandle_new: (a: number, b: number) => number;
 export const notebookhandle_create_bootstrap: (a: number, b: number) => number;
 export const notebookhandle_create_empty: () => number;
 export const notebookhandle_load: (a: number, b: number, c: number) => void;
+export const notebookhandle_load_state_doc: (a: number, b: number, c: number, d: number) => void;
 export const notebookhandle_get_actor_id: (a: number, b: number) => void;
 export const notebookhandle_set_actor: (a: number, b: number, c: number) => void;
 export const notebookhandle_contributing_actors: (a: number, b: number) => void;
@@ -36,8 +37,6 @@ export const notebookhandle_move_cell: (a: number, b: number, c: number, d: numb
 export const notebookhandle_delete_cell: (a: number, b: number, c: number, d: number) => void;
 export const notebookhandle_update_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const notebookhandle_splice_source: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
-export const notebookhandle_clear_outputs: (a: number, b: number, c: number, d: number) => void;
-export const notebookhandle_clear_all_outputs: (a: number, b: number) => void;
 export const notebookhandle_set_execution_count: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const notebookhandle_append_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const notebookhandle_get_metadata: (a: number, b: number, c: number, d: number) => void;

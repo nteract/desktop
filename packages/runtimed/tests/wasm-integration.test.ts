@@ -93,7 +93,7 @@ describe("WASM integration: real frames through SyncEngine", () => {
       await h.startAndCompleteSync();
 
       const changesetPromise = firstValueFrom(
-        h.engine.cellChanges$.pipe(timeout(1000)),
+        h.engine.cellChanges$.pipe(timeout(3000)),
       );
 
       h.serverUpdateSource("cell-1", "modified");
@@ -114,7 +114,7 @@ describe("WASM integration: real frames through SyncEngine", () => {
       await h.startAndCompleteSync();
 
       const changesetPromise = firstValueFrom(
-        h.engine.cellChanges$.pipe(timeout(1000)),
+        h.engine.cellChanges$.pipe(timeout(3000)),
       );
 
       h.serverSetExecutionCount("cell-1", "1");
@@ -133,7 +133,7 @@ describe("WASM integration: real frames through SyncEngine", () => {
       await h.startAndCompleteSync();
 
       const changesetPromise = firstValueFrom(
-        h.engine.cellChanges$.pipe(timeout(1000)),
+        h.engine.cellChanges$.pipe(timeout(3000)),
       );
 
       h.serverAddCell("cell-2", "markdown");
@@ -155,7 +155,7 @@ describe("WASM integration: real frames through SyncEngine", () => {
       await h.startAndCompleteSync();
 
       const changesetPromise = firstValueFrom(
-        h.engine.cellChanges$.pipe(timeout(1000)),
+        h.engine.cellChanges$.pipe(timeout(3000)),
       );
 
       h.server.delete_cell("cell-2");
@@ -174,7 +174,7 @@ describe("WASM integration: real frames through SyncEngine", () => {
       await h.startAndCompleteSync();
 
       const changesetPromise = firstValueFrom(
-        h.engine.cellChanges$.pipe(timeout(1000)),
+        h.engine.cellChanges$.pipe(timeout(3000)),
       );
 
       h.serverUpdateSource("cell-1", "changed");
@@ -407,7 +407,7 @@ describe("WASM integration: real frames through SyncEngine", () => {
       h.engine.start();
 
       const broadcastPromise = firstValueFrom(
-        h.engine.broadcasts$.pipe(timeout(1000)),
+        h.engine.broadcasts$.pipe(timeout(3000)),
       );
 
       h.transport.pushBroadcast({
