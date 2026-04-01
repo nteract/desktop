@@ -81,16 +81,6 @@ pub async fn create_cell(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let mut session = server.session.write().await;
-    let session = match session.as_mut() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
-    };
-
     let source = arg_str(request, "source").unwrap_or("");
     let cell_type = arg_str(request, "cell_type").unwrap_or("code");
     let index = request
@@ -111,30 +101,47 @@ pub async fn create_cell(
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
 
-    let handle = &session.handle;
-    let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
-
-    // Determine after_cell_id based on index
-    let after_cell_id = if let Some(idx) = index {
-        let cell_ids = handle.get_cell_ids();
-        if idx <= 0 {
-            None // Insert at beginning
-        } else {
-            let idx = (idx as usize).min(cell_ids.len());
-            if idx > 0 {
-                Some(cell_ids[idx - 1].clone())
-            } else {
-                None
+    // Clone handle and resubscribe broadcast_rx, then drop the session lock
+    // so other tools (interrupt_kernel, etc.) aren't blocked during execution.
+    let (handle, mut broadcast_rx, cell_id) = {
+        let session = server.session.read().await;
+        let session = match session.as_ref() {
+            Some(s) => s,
+            None => {
+                return tool_error(
+                    "No active notebook session. Call join_notebook or open_notebook first.",
+                )
             }
-        }
-    } else {
-        // Append at end
-        handle.last_cell_id()
-    };
+        };
 
-    handle
-        .add_cell_with_source(&cell_id, cell_type, after_cell_id.as_deref(), source)
-        .map_err(|e| McpError::internal_error(format!("Failed to create cell: {e}"), None))?;
+        let handle = session.handle.clone();
+        let broadcast_rx = session.broadcast_rx.resubscribe();
+        let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
+
+        // Determine after_cell_id based on index
+        let after_cell_id = if let Some(idx) = index {
+            let cell_ids = handle.get_cell_ids();
+            if idx <= 0 {
+                None // Insert at beginning
+            } else {
+                let idx = (idx as usize).min(cell_ids.len());
+                if idx > 0 {
+                    Some(cell_ids[idx - 1].clone())
+                } else {
+                    None
+                }
+            }
+        } else {
+            // Append at end
+            handle.last_cell_id()
+        };
+
+        handle
+            .add_cell_with_source(&cell_id, cell_type, after_cell_id.as_deref(), source)
+            .map_err(|e| McpError::internal_error(format!("Failed to create cell: {e}"), None))?;
+
+        (handle, broadcast_rx, cell_id)
+    };
 
     // Sync so the daemon (and peers) know about the new cell before we send presence
     let _ = handle.confirm_sync().await;
@@ -142,12 +149,12 @@ pub async fn create_cell(
     // Cursor at end of source (shows "finished typing")
     let peer_label = server.get_peer_label().await;
     let (end_line, end_col) = crate::presence::offset_to_line_col(source, source.len());
-    crate::presence::emit_cursor(handle, &cell_id, end_line, end_col, &peer_label).await;
+    crate::presence::emit_cursor(&handle, &cell_id, end_line, end_col, &peer_label).await;
 
     if and_run && cell_type == "code" {
         let result = execution::execute_and_wait(
-            handle,
-            &mut session.broadcast_rx,
+            &handle,
+            &mut broadcast_rx,
             &cell_id,
             Duration::from_secs_f64(timeout_secs),
             &server.blob_base_url,
@@ -155,7 +162,7 @@ pub async fn create_cell(
         )
         .await;
 
-        return build_execution_result(&result, handle, server).await;
+        return build_execution_result(&result, &handle, server).await;
     }
 
     tool_success(&format!("Created cell: {cell_id}"))
@@ -168,23 +175,6 @@ pub async fn set_cell(
 ) -> Result<CallToolResult, McpError> {
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
-
-    let mut session = server.session.write().await;
-    let session = match session.as_mut() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
-    };
-
-    let handle = &session.handle;
-
-    // Verify cell exists
-    if handle.get_cell(cell_id).is_none() {
-        return tool_error(&format!("Cell not found: {cell_id}"));
-    }
 
     let source = arg_str(request, "source");
     let cell_type = arg_str(request, "cell_type");
@@ -200,6 +190,25 @@ pub async fn set_cell(
         .and_then(|a| a.get("timeout_secs"))
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
+
+    // Clone handle and resubscribe broadcast_rx, then drop session lock
+    let (handle, broadcast_rx) = {
+        let session = server.session.read().await;
+        let session = match session.as_ref() {
+            Some(s) => s,
+            None => {
+                return tool_error(
+                    "No active notebook session. Call join_notebook or open_notebook first.",
+                )
+            }
+        };
+        (session.handle.clone(), session.broadcast_rx.resubscribe())
+    };
+
+    // Verify cell exists
+    if handle.get_cell(cell_id).is_none() {
+        return tool_error(&format!("Cell not found: {cell_id}"));
+    }
 
     if source.is_none() && cell_type.is_none() {
         return tool_success(&format!(
@@ -218,7 +227,7 @@ pub async fn set_cell(
         // Cursor at end of new source
         let peer_label = server.get_peer_label().await;
         let (end_line, end_col) = crate::presence::offset_to_line_col(src, src.len());
-        crate::presence::emit_cursor(handle, cell_id, end_line, end_col, &peer_label).await;
+        crate::presence::emit_cursor(&handle, cell_id, end_line, end_col, &peer_label).await;
     }
     if let Some(ct) = cell_type {
         handle
@@ -228,9 +237,10 @@ pub async fn set_cell(
 
     let current_type = handle.get_cell_type(cell_id).unwrap_or_default();
     if and_run && current_type == "code" {
+        let mut broadcast_rx = broadcast_rx;
         let result = execution::execute_and_wait(
-            handle,
-            &mut session.broadcast_rx,
+            &handle,
+            &mut broadcast_rx,
             cell_id,
             Duration::from_secs_f64(timeout_secs),
             &server.blob_base_url,
@@ -238,7 +248,7 @@ pub async fn set_cell(
         )
         .await;
 
-        return build_execution_result(&result, handle, server).await;
+        return build_execution_result(&result, &handle, server).await;
     }
 
     tool_success(&format!("Cell \"{cell_id}\" updated"))

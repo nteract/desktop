@@ -82,16 +82,14 @@ pub async fn execute_and_wait(
         match tokio::time::timeout(remaining, broadcast_rx.recv()).await {
             Ok(Some(broadcast)) => match &broadcast {
                 NotebookBroadcast::ExecutionDone {
-                    cell_id: done_cell_id,
+                    execution_id: done_eid,
                     ..
-                } if done_cell_id == cell_id => {
-                    // Check RuntimeState for the result
+                } if execution_id.as_deref() == Some(done_eid) => {
+                    // Matched by execution_id — check RuntimeState for the result
                     if let Ok(state) = handle.get_runtime_state() {
-                        if let Some(eid) = &execution_id {
-                            if let Some(entry) = state.executions.get(eid) {
-                                final_status = entry.status.clone();
-                                success = entry.success.unwrap_or(false);
-                            }
+                        if let Some(entry) = state.executions.get(done_eid) {
+                            final_status = entry.status.clone();
+                            success = entry.success.unwrap_or(false);
                         }
                     }
                     // If we didn't get status from RuntimeState, infer from outputs
@@ -99,6 +97,15 @@ pub async fn execute_and_wait(
                         final_status = "idle".to_string();
                         success = true;
                     }
+                    break;
+                }
+                // Fallback: match by cell_id when we don't have an execution_id
+                NotebookBroadcast::ExecutionDone {
+                    cell_id: done_cell_id,
+                    ..
+                } if execution_id.is_none() && done_cell_id == cell_id => {
+                    final_status = "idle".to_string();
+                    success = true;
                     break;
                 }
                 _ => {
