@@ -503,6 +503,104 @@ export function useDaemonKernel({
     };
   }, []);
 
+  // ── Sync comms from RuntimeStateDoc → WidgetStore ─────────────────
+  //
+  // When RuntimeStateDoc.comms changes (via Automerge sync), drive the
+  // WidgetStore by synthesizing comm_open / comm_msg / comm_close events.
+  // This is the Phase B path — comms flow from the CRDT to the UI.
+  // CommSync broadcasts still arrive as a fallback but this effect ensures
+  // late-joining windows get widget state from the CRDT immediately.
+  const prevCommsRef = useRef<Record<string, { state: string }>>({});
+  useEffect(() => {
+    const { onCommMessage } = callbacksRef.current;
+    if (!onCommMessage) return;
+
+    const docComms = runtimeState.comms ?? {};
+    const prevComms = prevCommsRef.current;
+
+    // New or updated comms
+    for (const [commId, entry] of Object.entries(docComms)) {
+      const prev = prevComms[commId];
+      if (!prev) {
+        // New comm — synthesize comm_open
+        let parsedState: Record<string, unknown>;
+        try {
+          parsedState = JSON.parse(entry.state);
+        } catch {
+          continue;
+        }
+        const msg: JupyterMessage = {
+          header: {
+            msg_id: crypto.randomUUID(),
+            msg_type: "comm_open",
+            session: "",
+            username: "kernel",
+            date: new Date().toISOString(),
+            version: "5.3",
+          },
+          metadata: {},
+          content: {
+            comm_id: commId,
+            target_name: entry.target_name,
+            data: { state: parsedState, buffer_paths: [] },
+          },
+          buffers: [],
+        };
+        onCommMessage(msg);
+      } else if (prev.state !== entry.state) {
+        // State changed — synthesize comm_msg update
+        let parsedState: Record<string, unknown>;
+        try {
+          parsedState = JSON.parse(entry.state);
+        } catch {
+          continue;
+        }
+        const msg: JupyterMessage = {
+          header: {
+            msg_id: crypto.randomUUID(),
+            msg_type: "comm_msg",
+            session: "",
+            username: "kernel",
+            date: new Date().toISOString(),
+            version: "5.3",
+          },
+          metadata: {},
+          content: {
+            comm_id: commId,
+            data: { method: "update", state: parsedState, buffer_paths: [] },
+          },
+          buffers: [],
+        };
+        onCommMessage(msg);
+      }
+    }
+
+    // Removed comms — synthesize comm_close
+    for (const commId of Object.keys(prevComms)) {
+      if (!docComms[commId]) {
+        const msg: JupyterMessage = {
+          header: {
+            msg_id: crypto.randomUUID(),
+            msg_type: "comm_close",
+            session: "",
+            username: "kernel",
+            date: new Date().toISOString(),
+            version: "5.3",
+          },
+          metadata: {},
+          content: { comm_id: commId },
+          buffers: [],
+        };
+        onCommMessage(msg);
+      }
+    }
+
+    // Update prev snapshot
+    prevCommsRef.current = Object.fromEntries(
+      Object.entries(docComms).map(([id, e]) => [id, { state: e.state }]),
+    );
+  }, [runtimeState.comms]);
+
   // ── Actions ───────────────────────────────────────────────────────
 
   /** Launch a kernel via the daemon */

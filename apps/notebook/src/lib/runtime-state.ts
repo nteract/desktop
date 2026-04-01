@@ -9,6 +9,7 @@ import { useSyncExternalStore } from "react";
 
 // Re-export all types from the package so existing imports work.
 export type {
+  CommDocEntry,
   EnvState,
   ExecutionState,
   ExecutionTransition,

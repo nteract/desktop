@@ -46,6 +46,19 @@ export interface ExecutionState {
   outputs?: string[];
 }
 
+/** Snapshot of a comm channel from RuntimeStateDoc. */
+export interface CommDocEntry {
+  target_name: string;
+  model_module: string;
+  model_name: string;
+  /** JSON-encoded widget state. */
+  state: string;
+  /** Output manifest hashes (OutputModel widgets only). */
+  outputs: string[];
+  /** Insertion order for dependency-correct replay. */
+  seq: number;
+}
+
 /** A detected status transition for a single execution. */
 export interface ExecutionTransition {
   execution_id: string;
@@ -61,6 +74,7 @@ export interface RuntimeState {
   trust: TrustState;
   last_saved: string | null;
   executions: Record<string, ExecutionState>;
+  comms: Record<string, CommDocEntry>;
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────
@@ -90,6 +104,7 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
   },
   last_saved: null,
   executions: {},
+  comms: {},
 };
 
 // ── Utilities ────────────────────────────────────────────────────────
