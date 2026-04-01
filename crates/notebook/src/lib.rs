@@ -2387,7 +2387,7 @@ async fn send_comm_via_daemon(
         .and_then(|h| h.get("msg_type"))
         .and_then(|t| t.as_str())
         .unwrap_or("unknown");
-    info!(
+    debug!(
         "[daemon-kernel] send_comm_via_daemon: msg_type={}",
         msg_type
     );
