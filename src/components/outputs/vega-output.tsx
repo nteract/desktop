@@ -7,25 +7,42 @@ interface VegaOutputProps {
 }
 
 function vegaEmbedOptions(isDark: boolean) {
+  const textColor = isDark ? "#ccc" : "#333";
+  const gridColor = isDark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.1)";
+  const domainColor = isDark ? "#666" : "#888";
+
   return {
     actions: false,
     renderer: "svg" as const,
-    theme: isDark ? ("dark" as const) : undefined,
+    // Don't use theme: "dark" — it sets its own opaque background.
+    // Instead, apply dark-mode colors manually via config overrides.
     config: {
       background: "transparent",
-      ...(isDark
+      axis: {
+        domainColor,
+        gridColor,
+        tickColor: domainColor,
+        labelColor: textColor,
+        titleColor: textColor,
+      },
+      legend: {
+        labelColor: textColor,
+        titleColor: textColor,
+      },
+      title: { color: textColor },
+      style: {
+        "guide-label": { fill: textColor },
+        "guide-title": { fill: textColor },
+      },
+      range: isDark
         ? {
-            axis: {
-              domainColor: "#666",
-              gridColor: "#333",
-              tickColor: "#666",
-              labelColor: "#ccc",
-              titleColor: "#ccc",
-            },
-            legend: { labelColor: "#ccc", titleColor: "#ccc" },
-            title: { color: "#ccc" },
+            category: [
+              "#4c78a8", "#f58518", "#e45756", "#72b7b2",
+              "#54a24b", "#eeca3b", "#b279a2", "#ff9da6",
+              "#9d755d", "#bab0ac",
+            ],
           }
-        : {}),
+        : undefined,
     },
   };
 }

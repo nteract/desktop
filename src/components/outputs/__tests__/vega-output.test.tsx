@@ -69,25 +69,25 @@ describe("VegaOutput", () => {
     expect(mockFinalize).toHaveBeenCalled();
   });
 
-  it("applies dark theme when document has dark class", () => {
+  it("applies dark theme colors when document has dark class", () => {
     document.documentElement.classList.add("dark");
     render(<VegaOutput data={sampleVegaLiteSpec} />);
 
     const [, , opts] = mockVegaEmbed.mock.calls[0];
-    expect(opts.theme).toBe("dark");
     expect(opts.config.background).toBe("transparent");
     expect(opts.config.axis.labelColor).toBe("#ccc");
+    expect(opts.config.legend.labelColor).toBe("#ccc");
 
     document.documentElement.classList.remove("dark");
   });
 
-  it("uses light theme by default", () => {
+  it("applies light theme colors by default", () => {
     document.documentElement.classList.remove("dark");
     render(<VegaOutput data={sampleVegaLiteSpec} />);
 
     const [, , opts] = mockVegaEmbed.mock.calls[0];
-    expect(opts.theme).toBeUndefined();
-    expect(opts.config.axis).toBeUndefined();
+    expect(opts.config.background).toBe("transparent");
+    expect(opts.config.axis.labelColor).toBe("#333");
   });
 
   it("works with a Vega spec (not just Vega-Lite)", () => {
