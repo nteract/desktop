@@ -797,14 +797,16 @@ async fn test_streaming_load_via_open_notebook() {
     assert_eq!(cells[6].source, "import os");
 
     // Wait for RuntimeStateDoc sync — outputs live there now, and the
-    // synthetic execution entries may arrive after the notebook doc cells.
+    // synthetic execution entries arrive via separate sync frames after
+    // the notebook doc cells. RuntimeStateDoc sync doesn't trigger the
+    // snapshot watch channel, so we must poll.
     let start = std::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(5) {
+    while start.elapsed() < Duration::from_secs(10) {
+        sleep(Duration::from_millis(100)).await;
         cells = handle.get_cells();
         if !cells.is_empty() && !cells[0].outputs.is_empty() {
             break;
         }
-        sleep(Duration::from_millis(50)).await;
     }
 
     // Verify outputs are manifest hashes (64-char hex), not raw JSON
