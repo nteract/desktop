@@ -37,17 +37,17 @@ describe("PlotlyOutput", () => {
     layout: { title: "Test" },
   };
 
-  it("calls Plotly.newPlot with data, layout, and config", () => {
+  it("calls Plotly.newPlot with figure object including data, layout, and config", () => {
     render(<PlotlyOutput data={sampleData} />);
 
     expect(mockPlotly.newPlot).toHaveBeenCalledTimes(1);
-    const [el, data, layout, config] = mockPlotly.newPlot.mock.calls[0];
+    const [el, figure] = mockPlotly.newPlot.mock.calls[0];
     expect(el).toBeInstanceOf(HTMLDivElement);
-    expect(data).toEqual(sampleData.data);
-    expect(layout.title).toBe("Test");
-    expect(layout.autosize).toBe(true);
-    expect(config.responsive).toBe(true);
-    expect(config.displaylogo).toBe(false);
+    expect(figure.data).toEqual(sampleData.data);
+    expect(figure.layout.title).toBe("Test");
+    expect(figure.layout.autosize).toBe(true);
+    expect(figure.config.responsive).toBe(true);
+    expect(figure.config.displaylogo).toBe(false);
   });
 
   it("renders nothing when data is empty", () => {
@@ -79,10 +79,10 @@ describe("PlotlyOutput", () => {
     document.documentElement.classList.add("dark");
     render(<PlotlyOutput data={sampleData} />);
 
-    const [, , layout] = mockPlotly.newPlot.mock.calls[0];
-    expect(layout.plot_bgcolor).toBe("rgba(30, 30, 30, 1)");
-    expect(layout.font.color).toBe("rgba(200, 200, 200, 1)");
-    expect(layout.paper_bgcolor).toBe("transparent");
+    const [, figure] = mockPlotly.newPlot.mock.calls[0];
+    expect(figure.layout.plot_bgcolor).toBe("rgba(30, 30, 30, 1)");
+    expect(figure.layout.font.color).toBe("rgba(200, 200, 200, 1)");
+    expect(figure.layout.paper_bgcolor).toBe("transparent");
 
     document.documentElement.classList.remove("dark");
   });
@@ -91,9 +91,9 @@ describe("PlotlyOutput", () => {
     document.documentElement.classList.remove("dark");
     render(<PlotlyOutput data={sampleData} />);
 
-    const [, , layout] = mockPlotly.newPlot.mock.calls[0];
-    expect(layout.plot_bgcolor).toBe("rgba(255, 255, 255, 1)");
-    expect(layout.font.color).toBe("rgba(68, 68, 68, 1)");
+    const [, figure] = mockPlotly.newPlot.mock.calls[0];
+    expect(figure.layout.plot_bgcolor).toBe("rgba(255, 255, 255, 1)");
+    expect(figure.layout.font.color).toBe("rgba(68, 68, 68, 1)");
   });
 
   it("merges user config with defaults", () => {
@@ -103,11 +103,22 @@ describe("PlotlyOutput", () => {
     };
     render(<PlotlyOutput data={dataWithConfig} />);
 
-    const [, , , config] = mockPlotly.newPlot.mock.calls[0];
+    const [, figure] = mockPlotly.newPlot.mock.calls[0];
     // User config overrides defaults
-    expect(config.scrollZoom).toBe(true);
-    expect(config.displaylogo).toBe(true);
+    expect(figure.config.scrollZoom).toBe(true);
+    expect(figure.config.displaylogo).toBe(true);
     // Default is preserved
-    expect(config.responsive).toBe(true);
+    expect(figure.config.responsive).toBe(true);
+  });
+
+  it("passes animation frames to Plotly.newPlot", () => {
+    const animatedData = {
+      ...sampleData,
+      frames: [{ data: [{ y: [7, 8, 9] }], name: "frame1" }],
+    };
+    render(<PlotlyOutput data={animatedData} />);
+
+    const [, figure] = mockPlotly.newPlot.mock.calls[0];
+    expect(figure.frames).toEqual(animatedData.frames);
   });
 });

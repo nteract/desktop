@@ -30,6 +30,7 @@ interface PlotlyData {
   data: unknown[];
   layout?: Record<string, unknown>;
   config?: Record<string, unknown>;
+  frames?: unknown[];
 }
 
 interface PlotlyOutputProps {
@@ -69,7 +70,9 @@ export function PlotlyOutput({ data, className }: PlotlyOutputProps) {
       ...data.config,
     };
 
-    Plotly.newPlot(el, data.data, layout, config);
+    // Use the object form of newPlot so that animation frames are included.
+    // The 4-arg form (el, data, layout, config) drops the frames key.
+    Plotly.newPlot(el, { data: data.data, layout, config, frames: data.frames });
 
     const resizeObserver = new ResizeObserver(() => {
       Plotly.Plots.resize(el);

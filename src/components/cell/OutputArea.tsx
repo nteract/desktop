@@ -299,6 +299,7 @@ export function OutputArea({
   const bridgeRef = useRef<CommBridgeManager | null>(null);
   const inDomOutputRef = useRef<HTMLDivElement>(null);
   const injectedLibsRef = useRef(new Set<string>());
+  const renderGenRef = useRef(0);
   const searchQueryRef = useRef(searchQuery);
   searchQueryRef.current = searchQuery;
 
@@ -351,6 +352,10 @@ export function OutputArea({
   const handleFrameReady = useCallback(async () => {
     if (!frameRef.current) return;
 
+    // Bump generation so any in-flight async handleFrameReady from a
+    // previous outputs snapshot will bail out after it awaits.
+    const gen = ++renderGenRef.current;
+
     // Set up comm bridge if we have widgets and widget context
     if (shouldUseBridge && widgetContext && !bridgeRef.current) {
       bridgeRef.current = new CommBridgeManager({
@@ -368,8 +373,9 @@ export function OutputArea({
 
     // Inject any heavy libraries required by the outputs (e.g. plotly.js).
     // Must happen before clear+render so the eval messages arrive first.
-    // The idempotent guard inside the iframe prevents double-loading even if
-    // injectedLibsRef is stale (e.g. after iframe recreation).
+    // Clear the tracking set on each call — a new or reloaded iframe won't
+    // have the previously-injected globals, so we must re-inject.
+    injectedLibsRef.current.clear();
     const neededLibs = getRequiredLibraries(
       outputs,
       (data) => selectMimeType(data, priority),
@@ -380,6 +386,9 @@ export function OutputArea({
         neededLibs,
         injectedLibsRef.current,
       );
+      // Stale check: if outputs changed while we were loading the library,
+      // bail — a newer handleFrameReady call is already in flight.
+      if (gen !== renderGenRef.current) return;
     }
 
     // Clear existing content
