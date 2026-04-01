@@ -2,7 +2,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { IsolationTest } from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import {
@@ -323,11 +330,22 @@ function AppContent() {
   // These are module-level setters, not React state — they feed
   // useSyncExternalStore hooks in cell components so renderCell
   // doesn't need these as dependencies.
-  storeSetFocusedCellId(focusedCellId);
-  storeSetExecutingCellIds(executingCellIds);
-  storeSetQueuedCellIds(queuedCellIds);
-  storeSetSearchQuery(globalFind.query);
-  storeSetSearchCurrentMatch(globalFind.currentMatch);
+  // Wrapped in useLayoutEffect to avoid triggering subscriber re-renders
+  // during this component's render (React forbids cross-component setState
+  // during render).
+  useLayoutEffect(() => {
+    storeSetFocusedCellId(focusedCellId);
+    storeSetExecutingCellIds(executingCellIds);
+    storeSetQueuedCellIds(queuedCellIds);
+    storeSetSearchQuery(globalFind.query);
+    storeSetSearchCurrentMatch(globalFind.currentMatch);
+  }, [
+    focusedCellId,
+    executingCellIds,
+    queuedCellIds,
+    globalFind.query,
+    globalFind.currentMatch,
+  ]);
 
   // When kernel is running and we know the env source, use it to determine panel type.
   // This handles: both-deps (backend picks based on preference), pixi (auto-detected, no metadata).
