@@ -951,12 +951,7 @@ impl NotebookHandle {
     /// Writes directly to `comms/{comm_id}/state/{key}` as a native
     /// Automerge value. Call `flush_runtime_state_sync()` after mutations
     /// to propagate changes to the daemon.
-    pub fn set_comm_state_property(
-        &mut self,
-        comm_id: &str,
-        key: &str,
-        value_json: &str,
-    ) -> bool {
+    pub fn set_comm_state_property(&mut self, comm_id: &str, key: &str, value_json: &str) -> bool {
         let value: serde_json::Value = match serde_json::from_str(value_json) {
             Ok(v) => v,
             Err(_) => return false,
