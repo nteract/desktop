@@ -217,6 +217,7 @@ pub async fn join_notebook(
 
             let session = NotebookSession {
                 handle: result.handle,
+                broadcast_rx: result.broadcast_rx,
                 notebook_id,
             };
             *server.session.write().await = Some(session);
@@ -277,6 +278,7 @@ pub async fn open_notebook(
 
             let session = NotebookSession {
                 handle: result.handle,
+                broadcast_rx: result.broadcast_rx,
                 notebook_id,
             };
             *server.session.write().await = Some(session);
@@ -328,6 +330,7 @@ pub async fn create_notebook(
 
             let session = NotebookSession {
                 handle: result.handle,
+                broadcast_rx: result.broadcast_rx,
                 notebook_id: notebook_id.clone(),
             };
             *server.session.write().await = Some(session);

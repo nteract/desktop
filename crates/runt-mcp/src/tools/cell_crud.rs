@@ -81,8 +81,8 @@ pub async fn create_cell(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
+    let mut session = server.session.write().await;
+    let session = match session.as_mut() {
         Some(s) => s,
         None => {
             return tool_error(
@@ -147,6 +147,7 @@ pub async fn create_cell(
     if and_run && cell_type == "code" {
         let result = execution::execute_and_wait(
             handle,
+            &mut session.broadcast_rx,
             &cell_id,
             Duration::from_secs_f64(timeout_secs),
             &server.blob_base_url,
@@ -168,8 +169,8 @@ pub async fn set_cell(
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
+    let mut session = server.session.write().await;
+    let session = match session.as_mut() {
         Some(s) => s,
         None => {
             return tool_error(
@@ -229,6 +230,7 @@ pub async fn set_cell(
     if and_run && current_type == "code" {
         let result = execution::execute_and_wait(
             handle,
+            &mut session.broadcast_rx,
             cell_id,
             Duration::from_secs_f64(timeout_secs),
             &server.blob_base_url,

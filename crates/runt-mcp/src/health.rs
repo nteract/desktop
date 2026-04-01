@@ -241,6 +241,7 @@ async fn auto_rejoin_session(
 
             let new_session = NotebookSession {
                 handle: result.handle,
+                broadcast_rx: result.broadcast_rx,
                 notebook_id: notebook_id.clone(),
             };
             *session.write().await = Some(new_session);

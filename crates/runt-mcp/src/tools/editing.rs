@@ -84,8 +84,8 @@ pub async fn replace_match(
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
 
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
+    let mut session = server.session.write().await;
+    let session = match session.as_mut() {
         Some(s) => s,
         None => {
             return tool_error(
@@ -131,6 +131,7 @@ pub async fn replace_match(
     if and_run {
         let result = execution::execute_and_wait(
             handle,
+            &mut session.broadcast_rx,
             cell_id,
             Duration::from_secs_f64(timeout_secs),
             &server.blob_base_url,
@@ -171,8 +172,8 @@ pub async fn replace_regex(
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
 
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
+    let mut session = server.session.write().await;
+    let session = match session.as_mut() {
         Some(s) => s,
         None => {
             return tool_error(
@@ -218,6 +219,7 @@ pub async fn replace_regex(
     if and_run {
         let result = execution::execute_and_wait(
             handle,
+            &mut session.broadcast_rx,
             cell_id,
             Duration::from_secs_f64(timeout_secs),
             &server.blob_base_url,
