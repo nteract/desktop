@@ -85,22 +85,41 @@ async fn store_widget_buffers(
         };
 
         // Navigate to the parent in the state dict and replace with sentinel.
-        // Use a pointer-based approach to avoid nested mutable borrows.
+        // Handles both object keys (strings) and array indices (integers).
         if let Some(last_key) = path.last() {
             let parent_path = &path[..path.len() - 1];
             let parent = parent_path
                 .iter()
-                .try_fold(&mut modified, |v, key| v.get_mut(key));
+                .try_fold(&mut modified, |v, key| json_get_mut(v, key));
             if let Some(parent) = parent {
+                let sentinel = serde_json::json!({"$blob": hash});
                 if let Some(obj) = parent.as_object_mut() {
-                    obj.insert(last_key.clone(), serde_json::json!({"$blob": hash}));
+                    obj.insert(last_key.clone(), sentinel);
                     used_paths.push(path.clone());
+                } else if let Some(arr) = parent.as_array_mut() {
+                    if let Ok(idx) = last_key.parse::<usize>() {
+                        if idx < arr.len() {
+                            arr[idx] = sentinel;
+                            used_paths.push(path.clone());
+                        }
+                    }
                 }
             }
         }
     }
 
     (modified, used_paths)
+}
+
+/// Navigate into a JSON value by key (object) or index (array).
+fn json_get_mut<'a>(v: &'a mut serde_json::Value, key: &str) -> Option<&'a mut serde_json::Value> {
+    match v {
+        serde_json::Value::Object(map) => map.get_mut(key),
+        serde_json::Value::Array(arr) => {
+            key.parse::<usize>().ok().and_then(|idx| arr.get_mut(idx))
+        }
+        _ => None,
+    }
 }
 
 /// Extract buffer_paths from a Jupyter comm data payload.
@@ -113,7 +132,14 @@ fn extract_buffer_paths(data: &serde_json::Value) -> Vec<Vec<String>> {
                 .filter_map(|path| {
                     path.as_array().map(|p| {
                         p.iter()
-                            .filter_map(|s| s.as_str().map(String::from))
+                            .filter_map(|s| {
+                                // Handle both string and integer path segments
+                                // (ipywidgets uses integers for list indices)
+                                s.as_str()
+                                    .map(|v| v.to_string())
+                                    .or_else(|| s.as_u64().map(|v| v.to_string()))
+                                    .or_else(|| s.as_i64().map(|v| v.to_string()))
+                            })
                             .collect()
                     })
                 })
