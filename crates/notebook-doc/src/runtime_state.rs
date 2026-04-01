@@ -1237,9 +1237,25 @@ impl RuntimeStateDoc {
             })
             .unwrap_or_default();
 
-        // Read outputs map
-        let outputs = self
-            .get_map("outputs")
+        RuntimeState {
+            kernel: kernel_state,
+            queue: queue_state,
+            env: env_state,
+            trust: trust_state,
+            last_saved,
+            executions,
+            outputs: HashMap::new(),
+        }
+    }
+
+    /// Read the outputs map separately from `read_state()`.
+    ///
+    /// Returns `execution_id → [manifest_hash, …]` for all executions that
+    /// have at least one output. This is O(E×O) where E = execution count
+    /// and O = outputs per execution, so callers should avoid calling it on
+    /// every frame — prefer diffing only when the doc actually changed.
+    pub fn read_outputs(&self) -> HashMap<String, Vec<String>> {
+        self.get_map("outputs")
             .map(|outputs_obj| {
                 let mut map = HashMap::new();
                 for exec_id in self.doc.keys(&outputs_obj) {
@@ -1250,17 +1266,7 @@ impl RuntimeStateDoc {
                 }
                 map
             })
-            .unwrap_or_default();
-
-        RuntimeState {
-            kernel: kernel_state,
-            queue: queue_state,
-            env: env_state,
-            trust: trust_state,
-            last_saved,
-            executions,
-            outputs,
-        }
+            .unwrap_or_default()
     }
 
     // ── Automerge sync protocol ─────────────────────────────────────
@@ -1936,16 +1942,20 @@ mod tests {
     }
 
     #[test]
-    fn test_outputs_in_read_state() {
+    fn test_read_outputs() {
         let mut doc = RuntimeStateDoc::new();
         doc.append_output("exec-1", "h1").unwrap();
         doc.append_output("exec-1", "h2").unwrap();
         doc.append_output("exec-2", "h3").unwrap();
 
+        let outputs = doc.read_outputs();
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs["exec-1"], vec!["h1", "h2"]);
+        assert_eq!(outputs["exec-2"], vec!["h3"]);
+
+        // read_state() should NOT include outputs (perf: avoid O(E×O) on every call)
         let state = doc.read_state();
-        assert_eq!(state.outputs.len(), 2);
-        assert_eq!(state.outputs["exec-1"], vec!["h1", "h2"]);
-        assert_eq!(state.outputs["exec-2"], vec!["h3"]);
+        assert!(state.outputs.is_empty());
     }
 
     #[test]
@@ -2012,10 +2022,10 @@ mod tests {
             }
         }
 
-        let client_state = client_doc.read_state();
-        assert_eq!(client_state.outputs.len(), 2);
-        assert_eq!(client_state.outputs["exec-1"], vec!["h1", "h2"]);
-        assert_eq!(client_state.outputs["exec-2"], vec!["h3"]);
+        let client_outputs = client_doc.read_outputs();
+        assert_eq!(client_outputs.len(), 2);
+        assert_eq!(client_outputs["exec-1"], vec!["h1", "h2"]);
+        assert_eq!(client_outputs["exec-2"], vec!["h3"]);
     }
 
     #[test]

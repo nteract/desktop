@@ -1265,14 +1265,15 @@ impl NotebookHandle {
                 };
 
                 // Diff outputs to detect mid-execution output changes.
-                // Compare full hash lists per execution_id — any change
-                // (append, replace, clear) triggers re-materialization.
+                // Read outputs separately from read_state() to avoid the
+                // O(E×O) cost on every frame — only read when doc changed.
                 let output_changed_cells = if changed {
-                    let mut changed_cells = Vec::new();
+                    let current_outputs = self.state_doc.read_outputs();
                     let current_state = state.as_ref().unwrap();
+                    let mut changed_cells = Vec::new();
 
                     // Check for new or changed outputs
-                    for (eid, hashes) in &current_state.outputs {
+                    for (eid, hashes) in &current_outputs {
                         let prev = self.prev_outputs.get(eid);
                         let changed = match prev {
                             None => true,
@@ -1286,7 +1287,7 @@ impl NotebookHandle {
                     }
                     // Check for removed outputs (eid in prev but not in current)
                     for eid in self.prev_outputs.keys() {
-                        if !current_state.outputs.contains_key(eid) {
+                        if !current_outputs.contains_key(eid) {
                             if let Some(exec) = current_state.executions.get(eid) {
                                 changed_cells.push(exec.cell_id.clone());
                             }
@@ -1294,7 +1295,7 @@ impl NotebookHandle {
                     }
 
                     // Update prev snapshot
-                    self.prev_outputs = current_state.outputs.clone();
+                    self.prev_outputs = current_outputs;
 
                     changed_cells
                 } else {
