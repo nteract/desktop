@@ -7,6 +7,10 @@ import {
   type IsolatedFrameHandle,
 } from "@/components/isolated";
 import {
+  getRequiredLibraries,
+  injectLibraries,
+} from "@/components/isolated/iframe-libraries";
+import {
   AnsiErrorOutput,
   AnsiStreamOutput,
 } from "@/components/outputs/ansi-output";
@@ -294,6 +298,7 @@ export function OutputArea({
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const bridgeRef = useRef<CommBridgeManager | null>(null);
   const inDomOutputRef = useRef<HTMLDivElement>(null);
+  const injectedLibsRef = useRef(new Set<string>());
   const searchQueryRef = useRef(searchQuery);
   searchQueryRef.current = searchQuery;
 
@@ -343,7 +348,7 @@ export function OutputArea({
   );
 
   // Callback when frame is ready - set up bridge and render outputs
-  const handleFrameReady = useCallback(() => {
+  const handleFrameReady = useCallback(async () => {
     if (!frameRef.current) return;
 
     // Set up comm bridge if we have widgets and widget context
@@ -360,6 +365,22 @@ export function OutputArea({
     // Ensure theme is in sync before re-rendering (fixes theme drift after cell moves)
     // Use ref to avoid adding darkMode to deps which would cause re-renders on theme toggle
     frameRef.current.setTheme(darkModeRef.current);
+
+    // Inject any heavy libraries required by the outputs (e.g. plotly.js).
+    // Must happen before clear+render so the eval messages arrive first.
+    // The idempotent guard inside the iframe prevents double-loading even if
+    // injectedLibsRef is stale (e.g. after iframe recreation).
+    const neededLibs = getRequiredLibraries(
+      outputs,
+      (data) => selectMimeType(data, priority),
+    );
+    if (neededLibs.length > 0) {
+      await injectLibraries(
+        frameRef.current,
+        neededLibs,
+        injectedLibsRef.current,
+      );
+    }
 
     // Clear existing content
     frameRef.current.clear();

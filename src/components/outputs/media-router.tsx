@@ -283,7 +283,8 @@ export function MediaRouter({
     const needsIsolation =
       mimeType === "text/markdown" ||
       mimeType === "text/html" ||
-      mimeType === "image/svg+xml";
+      mimeType === "image/svg+xml" ||
+      mimeType === "application/vnd.plotly.v1+json";
 
     if (needsIsolation && !isInIframe()) {
       if (process.env.NODE_ENV === "development") {

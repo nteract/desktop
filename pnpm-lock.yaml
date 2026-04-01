@@ -143,6 +143,9 @@ importers:
       lucide-react:
         specifier: ^0.513.0
         version: 0.513.0(react@19.2.4)
+      plotly.js-dist-min:
+        specifier: ^3.4.0
+        version: 3.4.0
       radix-ui:
         specifier: ^1.4.3
         version: 1.4.3(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -4061,6 +4064,9 @@ packages:
   pkce-challenge@5.0.1:
     resolution: {integrity: sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ==}
     engines: {node: '>=16.20.0'}
+
+  plotly.js-dist-min@3.4.0:
+    resolution: {integrity: sha512-eo7xh7oyE9fFoE/wintgmvfOjvTKwCb3wRf9ShQv90du4n+EVkOY7w5qEkmUS9SSkHRnAw8sk/0QI7wEc5U+8Q==}
 
   postcss@8.5.8:
     resolution: {integrity: sha512-OW/rX8O/jXnm82Ey1k44pObPtdblfiuWnrd8X7GJ7emImCOstunGbXUpp7HdBrFQX6rJzn3sPT397Wp5aCwCHg==}
@@ -9168,6 +9174,8 @@ snapshots:
   picomatch@4.0.3: {}
 
   pkce-challenge@5.0.1: {}
+
+  plotly.js-dist-min@3.4.0: {}
 
   postcss@8.5.8:
     dependencies:

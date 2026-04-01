@@ -36,6 +36,7 @@ import { HtmlOutput } from "@/components/outputs/html-output";
 import { ImageOutput } from "@/components/outputs/image-output";
 import { JsonOutput } from "@/components/outputs/json-output";
 import { MarkdownOutput } from "@/components/outputs/markdown-output";
+import { PlotlyOutput } from "@/components/outputs/plotly-output";
 import { SvgOutput } from "@/components/outputs/svg-output";
 import { WidgetView } from "@/components/widgets/widget-view";
 // Import widget support
@@ -306,6 +307,13 @@ function OutputRenderer({ payload }: { payload: RenderPayload }) {
         height={metadata?.height as number | undefined}
       />
     );
+  }
+
+  // Plotly
+  if (mimeType === "application/vnd.plotly.v1+json") {
+    const plotlyData =
+      typeof content === "string" ? JSON.parse(content) : content;
+    return <PlotlyOutput data={plotlyData} />;
   }
 
   // JSON
