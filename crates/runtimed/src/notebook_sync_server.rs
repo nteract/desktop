@@ -4020,16 +4020,39 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::SendComm { message } => {
-            let mut kernel_guard = room.kernel.lock().await;
-            if let Some(ref mut kernel) = *kernel_guard {
-                match kernel.send_comm_message(message).await {
-                    Ok(()) => NotebookResponse::Ok {},
-                    Err(e) => NotebookResponse::Error {
-                        error: format!("Failed to send comm message: {}", e),
-                    },
-                }
+            let is_state_update = message
+                .get("content")
+                .and_then(|c| c.get("data"))
+                .and_then(|d| d.get("method"))
+                .and_then(|m| m.as_str())
+                == Some("update");
+
+            if is_state_update {
+                // Fire-and-forget for widget state updates to avoid blocking the relay pipeline.
+                // Rapid slider drags send many update messages; waiting for the kernel lock
+                // synchronously causes 30s timeouts.
+                let kernel = Arc::clone(&room.kernel);
+                tokio::spawn(async move {
+                    let mut kernel_guard = kernel.lock().await;
+                    if let Some(ref mut k) = *kernel_guard {
+                        if let Err(e) = k.send_comm_message(message).await {
+                            warn!("[comm] Failed to send comm state update: {}", e);
+                        }
+                    }
+                });
+                NotebookResponse::Ok {}
             } else {
-                NotebookResponse::NoKernel {}
+                let mut kernel_guard = room.kernel.lock().await;
+                if let Some(ref mut kernel) = *kernel_guard {
+                    match kernel.send_comm_message(message).await {
+                        Ok(()) => NotebookResponse::Ok {},
+                        Err(e) => NotebookResponse::Error {
+                            error: format!("Failed to send comm message: {}", e),
+                        },
+                    }
+                } else {
+                    NotebookResponse::NoKernel {}
+                }
             }
         }
 
