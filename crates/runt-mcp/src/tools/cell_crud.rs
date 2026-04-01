@@ -7,6 +7,8 @@ use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use notebook_protocol::protocol::NotebookRequest;
+
 use crate::execution;
 use crate::structured;
 use crate::NteractMcp;
@@ -345,16 +347,20 @@ pub async fn clear_outputs(
     let peer_label = server.get_peer_label().await;
     crate::presence::emit_focus(&session.handle, cell_id, &peer_label).await;
 
-    let cleared = session
+    // Send ClearOutputs request to the daemon — outputs live in RuntimeStateDoc,
+    // so the daemon handles clearing the execution_id pointer and outputs.
+    match session
         .handle
-        .clear_outputs(cell_id)
-        .map_err(|e| McpError::internal_error(format!("Failed to clear outputs: {e}"), None))?;
-
-    if cleared {
-        let result = serde_json::json!({ "cell_id": cell_id, "cleared": true });
-        tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
-    } else {
-        tool_error(&format!("Cell not found: {cell_id}"))
+        .send_request(NotebookRequest::ClearOutputs {
+            cell_id: cell_id.to_string(),
+        })
+        .await
+    {
+        Ok(_) => {
+            let result = serde_json::json!({ "cell_id": cell_id, "cleared": true });
+            tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
+        }
+        Err(e) => tool_error(&format!("Failed to clear outputs: {e}")),
     }
 }
 

@@ -1056,23 +1056,25 @@ pub(crate) async fn move_cell(
 
 /// Clear a cell's outputs.
 ///
-/// Writes directly to the Automerge document via DocHandle — no IPC
-/// round-trip through NotebookRequest. The daemon sees the cleared
-/// state via CRDT sync.
+/// Sends a ClearOutputs request to the daemon — outputs live in RuntimeStateDoc,
+/// so the daemon handles clearing the execution_id pointer and outputs.
 pub(crate) async fn clear_outputs(state: &Arc<Mutex<SessionState>>, cell_id: &str) -> PyResult<()> {
-    let st = state.lock().await;
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
+    let handle = {
+        let st = state.lock().await;
+        st.handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?
+            .clone()
+    };
 
-    handle.clear_outputs(cell_id).map_err(to_py_err)?;
     handle
-        .set_execution_count(cell_id, "null")
-        .map_err(to_py_err)?;
+        .send_request(NotebookRequest::ClearOutputs {
+            cell_id: cell_id.to_string(),
+        })
+        .await
+        .map_err(|e| to_py_err(format!("Failed to clear outputs: {e}")))?;
 
     // Emit focus presence — cell-level operation on outputs, not source
-    drop(st);
     emit_focus_presence(state, cell_id).await;
     Ok(())
 }

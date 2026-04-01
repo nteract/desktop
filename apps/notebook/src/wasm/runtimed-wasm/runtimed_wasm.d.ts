@@ -108,18 +108,9 @@ export class NotebookHandle {
      */
     cell_count(): number;
     /**
-     * Clear outputs and execution counts from every code cell in the CRDT.
-     * Returns the IDs of cells that were cleared.
-     */
-    clear_all_outputs(): string[];
-    /**
      * Clear the Conda section entirely.
      */
     clear_conda_section(): void;
-    /**
-     * Clear all outputs from a cell in the CRDT.
-     */
-    clear_outputs(cell_id: string): boolean;
     /**
      * Clear the UV section entirely (deps + requires-python).
      */
@@ -551,8 +542,6 @@ export interface InitOutput {
     readonly notebookhandle_delete_cell: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_update_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_splice_source: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
-    readonly notebookhandle_clear_outputs: (a: number, b: number, c: number, d: number) => void;
-    readonly notebookhandle_clear_all_outputs: (a: number, b: number) => void;
     readonly notebookhandle_set_execution_count: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_append_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly notebookhandle_get_metadata: (a: number, b: number, c: number, d: number) => void;

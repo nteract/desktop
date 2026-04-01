@@ -158,6 +158,43 @@ fn write_scenario_with_broadcasts(
     }
 }
 
+// ── Raw Automerge helpers for writing outputs ──────────────────────
+//
+// NotebookDoc no longer exposes append_output/clear_outputs (outputs live
+// in RuntimeState). Fixtures still need output hashes in the CRDT for
+// frontend sync tests, so we write directly via the Automerge API.
+
+use automerge::{transaction::Transactable, ObjType, ReadDoc};
+
+/// Get or create the `outputs` list on a cell.
+fn ensure_outputs_list(doc: &mut NotebookDoc, cell_id: &str) -> automerge::ObjId {
+    let cells_id = doc.doc().get(automerge::ROOT, "cells").unwrap().unwrap().1;
+    let cell_obj = doc.doc().get(&cells_id, cell_id).unwrap().unwrap().1;
+    match doc.doc().get(&cell_obj, "outputs") {
+        Ok(Some((_val, id))) => id,
+        _ => doc
+            .doc_mut()
+            .put_object(&cell_obj, "outputs", ObjType::List)
+            .unwrap(),
+    }
+}
+
+/// Append a manifest hash to the cell's outputs list.
+fn fixture_append_output(doc: &mut NotebookDoc, cell_id: &str, hash: &str) {
+    let outputs_id = ensure_outputs_list(doc, cell_id);
+    let len = doc.doc().length(&outputs_id);
+    doc.doc_mut().insert(&outputs_id, len, hash).unwrap();
+}
+
+/// Clear all entries from the cell's outputs list.
+fn fixture_clear_outputs(doc: &mut NotebookDoc, cell_id: &str) {
+    let outputs_id = ensure_outputs_list(doc, cell_id);
+    let len = doc.doc().length(&outputs_id);
+    for _ in 0..len {
+        doc.doc_mut().delete(&outputs_id, 0).unwrap();
+    }
+}
+
 // ── Scenarios ────────────────────────────────────────────────────────
 
 #[test]
@@ -170,7 +207,7 @@ fn scenario_output_streaming() {
         .update_source("cell-1", "for i in range(3):\n    print(i)")
         .unwrap();
 
-    daemon.clear_outputs("cell-1").unwrap();
+    fixture_clear_outputs(&mut daemon, "cell-1");
     daemon.set_execution_count("cell-1", "1").unwrap();
 
     // Build real manifests for each streamed line
@@ -183,7 +220,7 @@ fn scenario_output_streaming() {
             text: inline(line),
         };
         let (hash, json) = hash_manifest(&manifest);
-        daemon.append_output("cell-1", &hash).unwrap();
+        fixture_append_output(&mut daemon, "cell-1", &hash);
         output_manifests.push((hash, json));
     }
 
@@ -247,7 +284,7 @@ fn scenario_execution_with_error() {
         traceback: inline(&traceback_json),
     };
     let (hash, manifest_json) = hash_manifest(&manifest);
-    daemon.append_output("cell-1", &hash).unwrap();
+    fixture_append_output(&mut daemon, "cell-1", &hash);
 
     let test_manifest = json!({
         "scenario": "execution_with_error",
@@ -284,10 +321,10 @@ fn scenario_re_execution() {
         text: inline("hello\n"),
     };
     let (first_hash, _) = hash_manifest(&first_manifest);
-    daemon.append_output("cell-1", &first_hash).unwrap();
+    fixture_append_output(&mut daemon, "cell-1", &first_hash);
 
     // Second execution: clear then new output
-    daemon.clear_outputs("cell-1").unwrap();
+    fixture_clear_outputs(&mut daemon, "cell-1");
     daemon.set_execution_count("cell-1", "2").unwrap();
 
     let mut data = BTreeMap::new();
@@ -298,7 +335,7 @@ fn scenario_re_execution() {
         execution_count: Some(2),
     };
     let (second_hash, second_json) = hash_manifest(&second_manifest);
-    daemon.append_output("cell-1", &second_hash).unwrap();
+    fixture_append_output(&mut daemon, "cell-1", &second_hash);
 
     let test_manifest = json!({
         "scenario": "re_execution",
@@ -341,7 +378,7 @@ fn scenario_multi_cell_execution() {
         text: inline("42\n"),
     };
     let (hash, manifest_json) = hash_manifest(&manifest);
-    daemon.append_output("cell-2", &hash).unwrap();
+    fixture_append_output(&mut daemon, "cell-2", &hash);
 
     let test_manifest = json!({
         "scenario": "multi_cell_execution",
@@ -396,7 +433,7 @@ fn scenario_display_data_output() {
         metadata: BTreeMap::new(),
     };
     let (hash, manifest_json) = hash_manifest(&manifest);
-    daemon.append_output("cell-1", &hash).unwrap();
+    fixture_append_output(&mut daemon, "cell-1", &hash);
 
     let test_manifest = json!({
         "scenario": "display_data_output",

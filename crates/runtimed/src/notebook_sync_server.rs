@@ -968,7 +968,7 @@ impl NotebookRoom {
         // For saved notebooks (file paths), .ipynb is the source of truth, so
         // delete stale persisted docs and start fresh (daemon loads from disk).
         let runtimed_actor = "runtimed";
-        let doc = if is_untitled_notebook(notebook_id) && persist_path.exists() {
+        let mut doc = if is_untitled_notebook(notebook_id) && persist_path.exists() {
             info!(
                 "[notebook-sync] Loading persisted doc for untitled notebook: {:?}",
                 persist_path
@@ -1005,6 +1005,28 @@ impl NotebookRoom {
         let (presence_tx, _) = broadcast::channel(64);
 
         let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
+
+        // Migrate outputs from notebook doc to RuntimeStateDoc for pre-v3 untitled notebooks.
+        // .ipynb files already create synthetic execution_ids on load; this handles
+        // persisted .automerge files that have outputs in the old cell.outputs location.
+        if is_untitled_notebook(notebook_id) {
+            let cell_outputs = doc.extract_cell_outputs();
+            if !cell_outputs.is_empty() {
+                let mut sd = state_doc.blocking_write();
+                for (cell_id, outputs) in &cell_outputs {
+                    let synthetic_eid = uuid::Uuid::new_v4().to_string();
+                    let _ = sd.set_outputs(&synthetic_eid, outputs);
+                    sd.create_execution(&synthetic_eid, cell_id);
+                    sd.set_execution_done(&synthetic_eid, true);
+                    let _ = doc.set_execution_id(cell_id, Some(&synthetic_eid));
+                }
+                info!(
+                    "[notebook-sync] Migrated outputs for {} cells from notebook doc to RuntimeStateDoc",
+                    cell_outputs.len()
+                );
+            }
+        }
+
         let (state_changed_tx, _) = broadcast::channel(16);
 
         Self {
@@ -5737,13 +5759,11 @@ where
         let encoded = {
             let mut doc = room.doc.write().await;
             for (_idx, cell, _output_refs, resolved_assets) in &batch {
-                // Pass empty outputs to add_cell_full — outputs live in state doc
                 doc.add_cell_full(
                     &cell.id,
                     &cell.cell_type,
                     &cell.position,
                     &cell.source,
-                    &[],
                     &cell.execution_count,
                     &cell.metadata,
                 )
@@ -7455,27 +7475,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_ipynb_changes_preserves_outputs_when_kernel_running() {
+    async fn test_apply_ipynb_changes_preserves_execution_count_when_kernel_running() {
         let tmp = tempfile::TempDir::new().unwrap();
         let (room, _) = test_room_with_path(&tmp, "test.ipynb");
 
-        // Add cells with outputs
+        // Add cell with execution count (outputs live in RuntimeStateDoc now)
         {
             let mut doc = room.doc.write().await;
             doc.add_cell(0, "cell-1", "code").unwrap();
-            doc.set_outputs("cell-1", &[r#"{"output_type":"stream"}"#.to_string()])
-                .unwrap();
             doc.set_execution_count("cell-1", "10").unwrap();
         }
 
-        // Apply external changes (with different outputs) while kernel is "running"
+        // Apply external changes while kernel is "running"
         let external_cells = vec![CellSnapshot {
             id: "cell-1".to_string(),
             cell_type: "code".to_string(),
             position: "80".to_string(),
             source: "new source".to_string(),
             execution_count: "5".to_string(),
-            outputs: vec![r#"{"output_type":"error"}"#.to_string()],
+            outputs: vec![],
             metadata: serde_json::json!({}),
             resolved_assets: std::collections::HashMap::new(),
         }];
@@ -7489,8 +7507,7 @@ mod tests {
         };
         // Source should be updated
         assert_eq!(cells[0].source, "new source");
-        // But outputs and execution_count should be preserved
-        assert_eq!(cells[0].outputs, vec![r#"{"output_type":"stream"}"#]);
+        // But execution_count should be preserved
         assert_eq!(cells[0].execution_count, "10");
     }
 
@@ -8382,13 +8399,12 @@ mod tests {
 
             // add_cell_full phase
             let t_add = std::time::Instant::now();
-            for (_idx, cell, output_refs) in &batch {
+            for (_idx, cell, _output_refs) in &batch {
                 doc.add_cell_full(
                     &cell.id,
                     &cell.cell_type,
                     &cell.position,
                     &cell.source,
-                    output_refs,
                     &cell.execution_count,
                     &cell.metadata,
                 )
