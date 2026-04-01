@@ -786,6 +786,11 @@ export class NotebookHandle {
      *
      * Each element is a JSON-encoded Jupyter output object (or manifest hash).
      * Returns undefined if the cell doesn't exist.
+     *
+     * Outputs now live in the RuntimeStateDoc keyed by execution_id. This
+     * method reads the cell's `execution_id` from the notebook doc, then
+     * looks up outputs in the state doc — providing a transparent facade
+     * for all existing callers.
      * @param {string} cell_id
      * @returns {any}
      */

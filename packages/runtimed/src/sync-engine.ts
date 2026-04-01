@@ -99,7 +99,6 @@ export class SyncEngine {
   private subscription: Subscription | null = null;
   private awaitingInitialSync = true;
   private prevExecutions: Record<string, ExecutionState> = {};
-  private prevOutputs: Record<string, string[]> = {};
 
   // Internal subjects
   private readonly frameIn$ = new Subject<number[]>();
@@ -451,7 +450,6 @@ export class SyncEngine {
               state.executions,
             );
             this.prevExecutions = state.executions;
-            this.prevOutputs = state.outputs ?? {};
             this._runtimeState$.next(state);
             if (transitions.length > 0) {
               this._executionTransitions$.next(transitions);
@@ -515,28 +513,18 @@ export class SyncEngine {
                 }
               }
 
-              // Diff outputs map to detect mid-execution output changes
-              // (stream chunks, display_data, etc.) that don't trigger
-              // execution lifecycle transitions.
-              const outputsChanged: string[] = [];
-              const outputs = state.outputs ?? {};
-              for (const [eid, hashes] of Object.entries(outputs)) {
-                const prev = this.prevOutputs[eid];
-                if (!prev || prev.length !== hashes.length || prev.some((h, i) => h !== hashes[i])) {
-                  // Find the cell_id for this execution_id
-                  const exec = state.executions[eid];
-                  if (exec?.cell_id) {
-                    outputsChanged.push(exec.cell_id);
-                  }
-                }
-              }
-              this.prevOutputs = outputs;
-
-              if (outputsChanged.length > 0) {
+              // Output changes detected by WASM-side diff of RuntimeStateDoc.
+              // The WASM compares output hash lists before/after sync and
+              // reports cell IDs that need re-materialization.
+              const outputChangedCells: string[] = (e as Record<string, unknown>).output_changed_cells as string[] ?? [];
+              if (outputChangedCells.length > 0) {
                 // Deduplicate against cells already handled by transitions
                 const transitionCells = new Set(transitions.map((t) => t.cell_id));
-                const newOutputCells = outputsChanged.filter((c) => !transitionCells.has(c));
+                const newOutputCells = outputChangedCells.filter((c) => !transitionCells.has(c));
                 if (newOutputCells.length > 0) {
+                  log.debug(
+                    `[sync-engine] output changes for ${newOutputCells.length} cells from RuntimeStateDoc`,
+                  );
                   materialize$.next({
                     changed: newOutputCells.map((cell_id) => ({
                       cell_id,
@@ -837,6 +825,5 @@ export class SyncEngine {
     this.opts.logger.info("[sync-engine] Resetting for bootstrap");
     this.awaitingInitialSync = true;
     this.prevExecutions = {};
-    this.prevOutputs = {};
   }
 }
