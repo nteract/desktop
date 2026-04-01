@@ -304,6 +304,13 @@ export class NotebookHandle {
      */
     static load(bytes: Uint8Array): NotebookHandle;
     /**
+     * Load a RuntimeStateDoc from saved bytes.
+     *
+     * Used by test fixtures to provide pre-populated state doc data
+     * (outputs, executions) alongside the notebook doc.
+     */
+    load_state_doc(bytes: Uint8Array): void;
+    /**
      * Move a cell to a new position (after the specified cell).
      *
      * - `after_cell_id = null` → move to the beginning
@@ -522,6 +529,7 @@ export interface InitOutput {
     readonly notebookhandle_create_bootstrap: (a: number, b: number) => number;
     readonly notebookhandle_create_empty: () => number;
     readonly notebookhandle_load: (a: number, b: number, c: number) => void;
+    readonly notebookhandle_load_state_doc: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_get_actor_id: (a: number, b: number) => void;
     readonly notebookhandle_set_actor: (a: number, b: number, c: number) => void;
     readonly notebookhandle_contributing_actors: (a: number, b: number) => void;

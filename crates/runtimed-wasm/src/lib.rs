@@ -330,6 +330,17 @@ impl NotebookHandle {
         })
     }
 
+    /// Load a RuntimeStateDoc from saved bytes.
+    ///
+    /// Used by test fixtures to provide pre-populated state doc data
+    /// (outputs, executions) alongside the notebook doc.
+    pub fn load_state_doc(&mut self, bytes: &[u8]) -> Result<(), JsError> {
+        let doc = automerge::AutoCommit::load(bytes)
+            .map_err(|e| JsError::new(&format!("load_state_doc failed: {}", e)))?;
+        self.state_doc = RuntimeStateDoc::from_doc(doc);
+        Ok(())
+    }
+
     /// Get the actor identity label for this document.
     pub fn get_actor_id(&self) -> String {
         self.doc.get_actor_id()

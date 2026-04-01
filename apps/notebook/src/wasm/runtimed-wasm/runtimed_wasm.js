@@ -998,6 +998,28 @@ export class NotebookHandle {
         }
     }
     /**
+     * Load a RuntimeStateDoc from saved bytes.
+     *
+     * Used by test fixtures to provide pre-populated state doc data
+     * (outputs, executions) alongside the notebook doc.
+     * @param {Uint8Array} bytes
+     */
+    load_state_doc(bytes) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.notebookhandle_load_state_doc(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Move a cell to a new position (after the specified cell).
      *
      * - `after_cell_id = null` → move to the beginning

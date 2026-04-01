@@ -51,6 +51,12 @@ function loadDocBytes(scenario: string): Uint8Array {
   return new Uint8Array(readFileSync(path));
 }
 
+function loadStateDocBytes(scenario: string): Uint8Array | null {
+  const path = resolve(FIXTURES_DIR, scenario, "state_doc.bin");
+  if (!existsSync(path)) return null;
+  return new Uint8Array(readFileSync(path));
+}
+
 function loadBroadcastFrames(scenario: string): Uint8Array[] {
   const dir = resolve(FIXTURES_DIR, scenario);
   const files = readdirSync(dir)
@@ -107,13 +113,21 @@ class WasmServerHandle implements ServerHandle {
 async function setupFixtureSync(scenario: string) {
   const Handle = await initWasm();
   const docBytes = loadDocBytes(scenario);
+  const stateDocBytes = loadStateDocBytes(scenario);
 
   // Load the daemon-authored doc into a WASM server handle
   const server = Handle.load(docBytes);
+  if (stateDocBytes) {
+    server.load_state_doc(stateDocBytes);
+  }
   const serverAdapter = new WasmServerHandle(server);
 
   // Fresh client — knows nothing, will learn via sync
   const client = Handle.create_bootstrap(`fixture-client-${Date.now()}`);
+  if (stateDocBytes) {
+    // Client also needs the state doc to read outputs via get_cell_outputs
+    client.load_state_doc(stateDocBytes);
+  }
 
   const scheduler = new VirtualTimeScheduler(VirtualAction, Infinity);
   const transport = new DirectTransport(serverAdapter);
@@ -297,9 +311,10 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
       // cell-1: code, executed, no outputs
       expect(h.client.get_cell_type("cell-1")).toBe("code");
       expect(h.client.get_cell_execution_count("cell-1")).toBe("1");
-      expect(
-        (h.client.get_cell_outputs("cell-1") as string[]).length,
-      ).toBe(0);
+      const cell1Outputs = h.client.get_cell_outputs("cell-1") as
+        | string[]
+        | undefined;
+      expect(cell1Outputs ?? []).toHaveLength(0);
 
       // cell-2: code, executed, one output (manifest hash)
       expect(h.client.get_cell_type("cell-2")).toBe("code");

@@ -263,6 +263,13 @@ impl RuntimeStateDoc {
         }
     }
 
+    /// Create a RuntimeStateDoc from a pre-existing Automerge document.
+    ///
+    /// Used by test fixtures and migration paths that have a saved state doc.
+    pub fn from_doc(doc: AutoCommit) -> Self {
+        Self { doc }
+    }
+
     /// Access the underlying Automerge document (read-only).
     pub fn doc(&self) -> &AutoCommit {
         &self.doc
