@@ -155,7 +155,10 @@ pub struct RuntimeState {
     #[serde(default)]
     pub executions: HashMap<String, ExecutionState>,
     /// Cell outputs keyed by execution_id. Each value is a list of manifest hashes.
-    #[serde(default)]
+    /// Skipped during serialization to JS — the outputs map can be large and is
+    /// only needed for Rust-side diffing in the WASM. Consumers read outputs via
+    /// the per-cell `get_cell_outputs()` facade, not from this snapshot.
+    #[serde(default, skip_serializing)]
     pub outputs: HashMap<String, Vec<String>>,
 }
 
