@@ -604,6 +604,8 @@ pub(crate) async fn apply_kernel_died_to_state_doc(
     for entry in &cleared {
         fork.set_execution_done(&entry.execution_id, false);
     }
+    // All widgets become invalid when kernel dies
+    fork.clear_comms();
 
     // Merge fork back
     {

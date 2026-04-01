@@ -473,6 +473,7 @@ impl RoomKernel {
         let room_presence_tx = self.presence_tx.clone();
         let room_state_doc = self.state_doc.clone();
         let room_state_changed_tx = self.state_changed_tx.clone();
+        let room_comm_state = self.comm_state.clone();
 
         tokio::spawn(async move {
             while let Some(cmd) = cmd_rx.recv().await {
@@ -531,6 +532,8 @@ impl RoomKernel {
                                 &room_broadcast_tx,
                             )
                             .await;
+                        // Clear comm state — all widgets become invalid when kernel dies
+                        room_comm_state.clear().await;
                         if let Some(es) = env_source {
                             crate::notebook_sync_server::update_kernel_presence(
                                 &room_presence,
