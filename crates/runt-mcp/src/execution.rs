@@ -73,9 +73,11 @@ pub async fn execute_and_wait(
     // The CRDT is the source of truth — no broadcast dependency.
     let mut final_status = "running".to_string();
     let mut success = false;
+    let mut output_hashes: Vec<String> = Vec::new();
     let deadline = Instant::now() + timeout;
 
     if let Some(ref eid) = execution_id {
+        // Phase 1: Wait for execution to reach terminal status.
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -87,6 +89,7 @@ pub async fn execute_and_wait(
                     if exec.status == "done" || exec.status == "error" {
                         final_status = exec.status.clone();
                         success = exec.success.unwrap_or(false);
+                        output_hashes = exec.outputs.clone();
                         break;
                     }
                 }
@@ -96,13 +99,41 @@ pub async fn execute_and_wait(
             // RuntimeStateDoc frames from the daemon.
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+
+        // Phase 2: If status is terminal but outputs are empty, poll briefly
+        // for output sync to catch up. The daemon writes outputs before
+        // set_execution_done, but they may arrive in separate sync frames.
+        // Cap at 500ms to avoid hanging on genuinely output-free executions.
+        if (final_status == "done" || final_status == "error") && output_hashes.is_empty() {
+            let output_deadline =
+                Instant::now() + Duration::from_millis(500).min(deadline - Instant::now());
+            while Instant::now() < output_deadline {
+                if let Ok(state) = handle.get_runtime_state() {
+                    if let Some(exec) = state.executions.get(eid.as_str()) {
+                        if !exec.outputs.is_empty() {
+                            output_hashes = exec.outputs.clone();
+                            break;
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
     }
 
-    // Step 4: Collect outputs from CRDT
-    let cell = handle.get_cell(cell_id);
+    // Step 4: Collect outputs from CRDT.
+    // Prefer output hashes from RuntimeStateDoc (already synced above).
+    // Fall back to handle.get_cell() which reads via execution_id facade.
     let execution_count = handle.get_cell_execution_count(cell_id);
 
-    let outputs = if let Some(cell_snapshot) = &cell {
+    let outputs = if !output_hashes.is_empty() {
+        output_resolver::resolve_cell_outputs(
+            &output_hashes,
+            blob_base_url,
+            blob_store_path,
+        )
+        .await
+    } else if let Some(cell_snapshot) = handle.get_cell(cell_id) {
         output_resolver::resolve_cell_outputs(
             &cell_snapshot.outputs,
             blob_base_url,
