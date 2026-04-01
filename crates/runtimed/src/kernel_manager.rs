@@ -1377,6 +1377,10 @@ impl RoomKernel {
                                             .await
                                             {
                                                 let mut sd = state_doc_for_iopub.write().await;
+                                                // Honor deferred clear_output(wait=true)
+                                                if pending_clear_widgets.remove(&widget_comm_id) {
+                                                    sd.clear_comm_outputs(&widget_comm_id);
+                                                }
                                                 if sd.append_comm_output(&widget_comm_id, &hash) {
                                                     let _ = state_changed_for_iopub.send(());
                                                 }
@@ -1564,6 +1568,10 @@ impl RoomKernel {
                                             .await
                                             {
                                                 let mut sd = state_doc_for_iopub.write().await;
+                                                // Honor deferred clear_output(wait=true)
+                                                if pending_clear_widgets.remove(&widget_comm_id) {
+                                                    sd.clear_comm_outputs(&widget_comm_id);
+                                                }
                                                 if sd.append_comm_output(&widget_comm_id, &hash) {
                                                     let _ = state_changed_for_iopub.send(());
                                                 }

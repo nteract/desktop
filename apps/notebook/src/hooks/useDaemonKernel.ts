@@ -564,11 +564,38 @@ export function useDaemonKernel({
     const newHashes: Record<string, string> = {};
 
     for (const [commId, entry] of Object.entries(docComms)) {
-      if (entry.model_name !== "OutputModel" || !entry.outputs?.length)
-        continue;
-      const fingerprint = entry.outputs.join(",");
+      if (entry.model_name !== "OutputModel") continue;
+      const fingerprint = (entry.outputs ?? []).join(",");
       newHashes[commId] = fingerprint;
       if (prevHashes[commId] === fingerprint) continue;
+
+      // Handle cleared outputs (empty list)
+      if (!entry.outputs?.length) {
+        const { onCommMessage: cb } = callbacksRef.current;
+        if (cb) {
+          cb({
+            header: {
+              msg_id: crypto.randomUUID(),
+              msg_type: "comm_msg",
+              session: "",
+              username: "kernel",
+              date: new Date().toISOString(),
+              version: "5.3",
+            },
+            metadata: {},
+            content: {
+              comm_id: commId,
+              data: {
+                method: "update",
+                state: { outputs: [] },
+                buffer_paths: [],
+              },
+            },
+            buffers: [],
+          });
+        }
+        continue;
+      }
 
       // Outputs changed — resolve manifest hashes and update WidgetStore
       const outputHashes = [...entry.outputs];
