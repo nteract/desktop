@@ -32,33 +32,67 @@ function emit(subs: Set<() => void>): void {
   for (const cb of subs) cb();
 }
 
-// ── Setters (called from App.tsx render body) ───────────────────────────
+// Subscriber sets that need deferred notification.
+const _pendingEmits = new Set<Set<() => void>>();
+let _emitScheduled = false;
+
+function deferEmit(subs: Set<() => void>): void {
+  _pendingEmits.add(subs);
+  if (!_emitScheduled) {
+    _emitScheduled = true;
+    queueMicrotask(() => {
+      _emitScheduled = false;
+      const batch = [..._pendingEmits];
+      _pendingEmits.clear();
+      for (const s of batch) emit(s);
+    });
+  }
+}
+
+function setsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
+
+// ── Setters ─────────────────────────────────────────────────────────────
+//
+// Two-phase update pattern for compatibility with React's render rules:
+//
+// 1. Assign the variable immediately — so useSyncExternalStore snapshot
+//    functions return the current value during the same render cycle.
+// 2. Defer subscriber notification via queueMicrotask — so React doesn't
+//    see a cross-component setState during render. Subscribers re-render
+//    on the next microtask, which is still before the browser paints.
 
 export function setFocusedCellId(id: string | null): void {
   if (id === _focusedCellId) return;
   _focusedCellId = id;
-  emit(_focusSubscribers);
+  deferEmit(_focusSubscribers);
 }
 
 export function setExecutingCellIds(ids: Set<string>): void {
+  if (setsEqual(_executingCellIds, ids)) return;
   _executingCellIds = ids;
-  emit(_executingSubscribers);
+  deferEmit(_executingSubscribers);
 }
 
 export function setQueuedCellIds(ids: Set<string>): void {
+  if (setsEqual(_queuedCellIds, ids)) return;
   _queuedCellIds = ids;
-  emit(_queuedSubscribers);
+  deferEmit(_queuedSubscribers);
 }
 
 export function setSearchQuery(query: string | undefined): void {
   if (query === _searchQuery) return;
   _searchQuery = query;
-  emit(_searchQuerySubscribers);
+  deferEmit(_searchQuerySubscribers);
 }
 
 export function setSearchCurrentMatch(match: FindMatch | null): void {
+  if (_searchCurrentMatch === match) return;
   _searchCurrentMatch = match;
-  emit(_searchMatchSubscribers);
+  deferEmit(_searchMatchSubscribers);
 }
 
 // ── Snapshot readers (non-reactive) ─────────────────────────────────────
