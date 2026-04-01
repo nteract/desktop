@@ -16,7 +16,7 @@ concurrency:
 jobs:
   update-hashes:
     name: Update Nix hashes
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: write

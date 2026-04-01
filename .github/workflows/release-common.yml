@@ -51,7 +51,7 @@ env:
 jobs:
   compute-version:
     name: Compute Version
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       version: ${{ steps.version.outputs.VERSION }}
       timestamp: ${{ steps.version.outputs.TIMESTAMP }}
@@ -71,7 +71,7 @@ jobs:
 
   build-linux:
     name: Build Linux Executables
-    runs-on: ubuntu-22.04
+    runs-on: blacksmith-4vcpu-ubuntu-2204
     needs: compute-version
     steps:
       - name: Checkout
@@ -389,7 +389,7 @@ jobs:
 
   build-notebook-windows-x64:
     name: Build Windows x64 Notebook
-    runs-on: windows-latest
+    runs-on: blacksmith-4vcpu-windows-2025
     needs: compute-version
     steps:
       - name: Checkout
@@ -527,7 +527,7 @@ jobs:
 
   build-notebook-linux-x64:
     name: Build Linux x64 Notebook
-    runs-on: ubuntu-22.04
+    runs-on: blacksmith-4vcpu-ubuntu-2204
     needs: compute-version
     steps:
       - name: Checkout
@@ -648,7 +648,7 @@ jobs:
 
   build-nteract-package:
     name: Build nteract Package
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: compute-version
     steps:
       - uses: actions/checkout@v6
@@ -695,7 +695,7 @@ jobs:
           - runner: macos-latest
             target: aarch64-apple-darwin
           - runner: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            target: blacksmith-4vcpu-ubuntu-2404
           - runner: windows-latest
             target: x86_64-pc-windows-msvc
     steps:
@@ -770,7 +770,7 @@ jobs:
 
   prerelease:
     name: ${{ inputs.release_title }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write
       id-token: write

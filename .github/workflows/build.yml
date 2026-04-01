@@ -15,7 +15,7 @@ env:
 jobs:
   changes:
     name: Detect source changes
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       source_changed: ${{ steps.filter.outputs.source }}
     steps:
@@ -55,7 +55,7 @@ jobs:
     name: Lint & Format
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
 
@@ -88,7 +88,7 @@ jobs:
     name: Windows (clippy)
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
 
@@ -120,7 +120,7 @@ jobs:
     name: WASM + Deno Tests
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
 
@@ -156,7 +156,7 @@ jobs:
     name: Build shared UI artifacts
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
         with:
@@ -200,7 +200,7 @@ jobs:
     name: JS Tests & Benchmarks
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
         with:
@@ -238,7 +238,7 @@ jobs:
     name: Linux (release artifacts)
     needs: [changes, build-ui]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
 
@@ -330,7 +330,7 @@ jobs:
     name: Clippy & Tests (Linux)
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
 
@@ -463,7 +463,7 @@ jobs:
   # E2E smoke test - verifies basic app functionality
   e2e:
     name: "E2E: ${{ matrix.name }}"
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: [changes, build-linux]
     if: needs.changes.outputs.source_changed == 'true'
     strategy:
@@ -677,7 +677,7 @@ jobs:
   # Python daemon integration tests — builds its own runtimed binary
   runtimed-py-integration:
     name: runtimed-py Integration Tests
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: [changes]
     if: needs.changes.outputs.source_changed == 'true'
     steps:
