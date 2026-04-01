@@ -533,6 +533,9 @@ impl Daemon {
         // Find and reuse existing environments from previous runs
         self.find_existing_environments().await;
 
+        // Seed PoolDoc with initial state (pool sizes, any recovered envs)
+        self.update_pool_doc().await;
+
         // Spawn the warming loops
         let uv_daemon = self.clone();
         tokio::spawn(async move {
