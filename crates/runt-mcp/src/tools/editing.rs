@@ -84,17 +84,20 @@ pub async fn replace_match(
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
 
-    let mut session = server.session.write().await;
-    let session = match session.as_mut() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
+    // Clone handle and resubscribe broadcast_rx, then drop session lock
+    // so other tools (interrupt_kernel, etc.) aren't blocked during execution.
+    let (handle, broadcast_rx) = {
+        let session = server.session.read().await;
+        let session = match session.as_ref() {
+            Some(s) => s,
+            None => {
+                return tool_error(
+                    "No active notebook session. Call join_notebook or open_notebook first.",
+                )
+            }
+        };
+        (session.handle.clone(), session.broadcast_rx.resubscribe())
     };
-
-    let handle = &session.handle;
 
     let source = match handle.get_cell_source(cell_id) {
         Some(s) => s,
@@ -126,19 +129,20 @@ pub async fn replace_match(
     let end_offset = span.start + content.len();
     let (line, col) = crate::presence::offset_to_line_col(&new_source, end_offset);
     let peer_label = server.get_peer_label().await;
-    crate::presence::emit_cursor(handle, cell_id, line, col, &peer_label).await;
+    crate::presence::emit_cursor(&handle, cell_id, line, col, &peer_label).await;
 
     if and_run {
+        let mut broadcast_rx = broadcast_rx;
         let result = execution::execute_and_wait(
-            handle,
-            &mut session.broadcast_rx,
+            &handle,
+            &mut broadcast_rx,
             cell_id,
             Duration::from_secs_f64(timeout_secs),
             &server.blob_base_url,
             &server.blob_store_path,
         )
         .await;
-        return build_execution_result(&result, handle, server).await;
+        return build_execution_result(&result, &handle, server).await;
     }
 
     // Return diff
@@ -172,17 +176,19 @@ pub async fn replace_regex(
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
 
-    let mut session = server.session.write().await;
-    let session = match session.as_mut() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
+    // Clone handle and resubscribe broadcast_rx, then drop session lock
+    let (handle, broadcast_rx) = {
+        let session = server.session.read().await;
+        let session = match session.as_ref() {
+            Some(s) => s,
+            None => {
+                return tool_error(
+                    "No active notebook session. Call join_notebook or open_notebook first.",
+                )
+            }
+        };
+        (session.handle.clone(), session.broadcast_rx.resubscribe())
     };
-
-    let handle = &session.handle;
 
     let source = match handle.get_cell_source(cell_id) {
         Some(s) => s,
@@ -214,19 +220,20 @@ pub async fn replace_regex(
     let end_offset = span.start + content.len();
     let (line, col) = crate::presence::offset_to_line_col(&new_source, end_offset);
     let peer_label = server.get_peer_label().await;
-    crate::presence::emit_cursor(handle, cell_id, line, col, &peer_label).await;
+    crate::presence::emit_cursor(&handle, cell_id, line, col, &peer_label).await;
 
     if and_run {
+        let mut broadcast_rx = broadcast_rx;
         let result = execution::execute_and_wait(
-            handle,
-            &mut session.broadcast_rx,
+            &handle,
+            &mut broadcast_rx,
             cell_id,
             Duration::from_secs_f64(timeout_secs),
             &server.blob_base_url,
             &server.blob_store_path,
         )
         .await;
-        return build_execution_result(&result, handle, server).await;
+        return build_execution_result(&result, &handle, server).await;
     }
 
     // Return diff

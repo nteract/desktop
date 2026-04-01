@@ -38,14 +38,19 @@ pub async fn execute_cell(
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
-    let mut session = server.session.write().await;
-    let session = match session.as_mut() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
+    // Clone handle and resubscribe broadcast_rx, then drop session lock
+    // so other tools (interrupt_kernel, etc.) aren't blocked during execution.
+    let (handle, mut broadcast_rx) = {
+        let session = server.session.read().await;
+        let session = match session.as_ref() {
+            Some(s) => s,
+            None => {
+                return tool_error(
+                    "No active notebook session. Call join_notebook or open_notebook first.",
+                )
+            }
+        };
+        (session.handle.clone(), session.broadcast_rx.resubscribe())
     };
 
     let timeout_secs = request
@@ -55,19 +60,17 @@ pub async fn execute_cell(
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
 
-    let handle = &session.handle;
-
     // Verify cell exists
     if handle.get_cell(cell_id).is_none() {
         return tool_error(&format!("Cell not found: {cell_id}"));
     }
 
     let peer_label = server.get_peer_label().await;
-    crate::presence::emit_focus(handle, cell_id, &peer_label).await;
+    crate::presence::emit_focus(&handle, cell_id, &peer_label).await;
 
     let result = execution::execute_and_wait(
-        handle,
-        &mut session.broadcast_rx,
+        &handle,
+        &mut broadcast_rx,
         cell_id,
         Duration::from_secs_f64(timeout_secs),
         &server.blob_base_url,
