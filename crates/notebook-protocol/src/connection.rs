@@ -68,9 +68,6 @@ pub enum Handshake {
     },
     /// Blob store: write blobs, query port.
     Blob,
-    /// Pool state subscription: receive broadcasts when pool errors occur/clear.
-    /// Read-only channel - server pushes DaemonBroadcast messages to client.
-    PoolStateSubscribe,
 
     /// Open an existing notebook file. Daemon loads from disk, derives notebook_id.
     ///
@@ -239,6 +236,8 @@ pub enum NotebookFrameType {
     Presence = notebook_doc::frame_types::PRESENCE,
     /// RuntimeStateDoc sync message (binary Automerge sync).
     RuntimeStateSync = notebook_doc::frame_types::RUNTIME_STATE_SYNC,
+    /// PoolDoc sync message (binary Automerge sync, global).
+    PoolStateSync = notebook_doc::frame_types::POOL_STATE_SYNC,
 }
 
 impl TryFrom<u8> for NotebookFrameType {
@@ -253,6 +252,7 @@ impl TryFrom<u8> for NotebookFrameType {
             frame_types::BROADCAST => Ok(Self::Broadcast),
             frame_types::PRESENCE => Ok(Self::Presence),
             frame_types::RUNTIME_STATE_SYNC => Ok(Self::RuntimeStateSync),
+            frame_types::POOL_STATE_SYNC => Ok(Self::PoolStateSync),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("unknown notebook frame type: 0x{:02x}", value),

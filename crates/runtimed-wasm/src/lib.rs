@@ -10,6 +10,7 @@ use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::Prop;
 use notebook_doc::diff::{diff_cells, CellChangeset};
+use notebook_doc::pool_state::{PoolDoc, PoolState};
 use notebook_doc::presence;
 use notebook_doc::runtime_state::{RuntimeState, RuntimeStateDoc};
 use notebook_doc::{CellSnapshot, NotebookDoc};
@@ -126,6 +127,25 @@ pub enum FrameEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         reply: Option<Vec<u8>>,
     },
+    /// Pool state document was synced — frontend should update pool state UI.
+    PoolStateSyncApplied {
+        /// True if the pool state document changed.
+        changed: bool,
+        /// The full current pool state snapshot (only when changed).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        state: Option<Box<PoolState>>,
+    },
+    /// Pool state sync error recovered — pool doc rebuilt.
+    PoolStateSyncError {
+        /// True if the pool doc advanced before the error.
+        changed: bool,
+        /// The current pool state snapshot (only when changed).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        state: Option<Box<PoolState>>,
+        /// Fresh sync message generated after recovery.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reply: Option<Vec<u8>>,
+    },
     /// Unknown frame type — frontend can log and ignore.
     Unknown { frame_type: u8 },
 }
@@ -143,6 +163,9 @@ pub struct NotebookHandle {
     /// Runtime state doc — daemon-authoritative, synced read-only.
     state_doc: RuntimeStateDoc,
     state_sync_state: sync::State,
+    /// Pool state doc — daemon-authoritative, global, synced read-only.
+    pool_doc: PoolDoc,
+    pool_sync_state: sync::State,
     /// Cached metadata fingerprint — invalidated on `receive_frame` when
     /// the doc changes and on all local metadata mutation methods.
     /// Avoids re-serializing the metadata snapshot on every
@@ -242,6 +265,8 @@ impl NotebookHandle {
             sync_state: sync::State::new(),
             state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
+            pool_doc: PoolDoc::new_empty(),
+            pool_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
         }
     }
@@ -256,6 +281,8 @@ impl NotebookHandle {
             sync_state: sync::State::new(),
             state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
+            pool_doc: PoolDoc::new_empty(),
+            pool_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
         }
     }
@@ -284,6 +311,8 @@ impl NotebookHandle {
             sync_state: sync::State::new(),
             state_doc: RuntimeStateDoc::new_empty(),
             state_sync_state: sync::State::new(),
+            pool_doc: PoolDoc::new_empty(),
+            pool_sync_state: sync::State::new(),
             metadata_fingerprint_cache: None,
         })
     }
@@ -920,6 +949,34 @@ impl NotebookHandle {
         self.state_sync_state.sent_hashes.clear();
     }
 
+    /// Generate a sync reply for the PoolDoc.
+    pub fn generate_pool_state_sync_reply(&mut self) -> Option<Vec<u8>> {
+        self.pool_doc
+            .generate_sync_message(&mut self.pool_sync_state)
+            .map(|msg| msg.encode())
+    }
+
+    /// Generate an initial PoolDoc sync message.
+    ///
+    /// Call this during bootstrap so the daemon syncs pool state.
+    pub fn flush_pool_state_sync(&mut self) -> Option<Vec<u8>> {
+        self.pool_doc
+            .generate_sync_message(&mut self.pool_sync_state)
+            .map(|msg| msg.encode())
+    }
+
+    /// Roll back pool sync state after a failed delivery.
+    pub fn cancel_last_pool_state_flush(&mut self) {
+        self.pool_sync_state.in_flight = false;
+        self.pool_sync_state.sent_hashes.clear();
+    }
+
+    /// Read the current pool state snapshot from the WASM doc.
+    pub fn get_pool_state(&self) -> JsValue {
+        let state = self.pool_doc.read_state();
+        serialize_to_js(&state).unwrap_or(JsValue::UNDEFINED)
+    }
+
     /// Read the current runtime state snapshot from the WASM doc.
     pub fn get_runtime_state(&self) -> JsValue {
         let state = self.state_doc.read_state();
@@ -930,6 +987,7 @@ impl NotebookHandle {
     pub fn reset_sync_state(&mut self) {
         self.sync_state = sync::State::new();
         self.state_sync_state = sync::State::new();
+        self.pool_sync_state = sync::State::new();
     }
 
     /// Normalize sync state by round-tripping through encode→decode.
@@ -965,6 +1023,20 @@ impl NotebookHandle {
         {
             self.doc = doc;
         }
+    }
+
+    /// Rebuild the PoolDoc via save→load.
+    fn rebuild_pool_doc(&mut self) {
+        let bytes = self.pool_doc.doc_mut().save();
+        if let Ok(doc) = automerge::AutoCommit::load(&bytes) {
+            *self.pool_doc.doc_mut() = doc;
+        }
+    }
+
+    /// Normalize pool sync state via encode→decode round-trip.
+    fn normalize_pool_sync_state(&mut self) {
+        let encoded = self.pool_sync_state.encode();
+        self.pool_sync_state = sync::State::decode(&encoded).unwrap_or_else(|_| sync::State::new());
     }
 
     /// Rebuild the RuntimeStateDoc via save→load.
@@ -1164,6 +1236,52 @@ impl NotebookHandle {
                 };
 
                 events.push(FrameEvent::RuntimeStateSyncApplied { changed, state });
+            }
+            frame_types::POOL_STATE_SYNC => {
+                // Apply daemon's PoolDoc sync message to our local replica.
+                let Ok(msg) = sync::Message::decode(payload) else {
+                    return JsValue::UNDEFINED;
+                };
+                let heads_before = self.pool_doc.doc_mut().get_heads();
+                if self
+                    .pool_doc
+                    .doc_mut()
+                    .sync()
+                    .receive_sync_message(&mut self.pool_sync_state, msg)
+                    .is_err()
+                {
+                    self.rebuild_pool_doc();
+                    self.normalize_pool_sync_state();
+                    let heads_after = self.pool_doc.doc_mut().get_heads();
+                    let changed = heads_before != heads_after;
+                    let state = if changed {
+                        Some(Box::new(self.pool_doc.read_state()))
+                    } else {
+                        None
+                    };
+                    let reply = self
+                        .pool_doc
+                        .doc_mut()
+                        .sync()
+                        .generate_sync_message(&mut self.pool_sync_state)
+                        .map(|msg| msg.encode());
+                    events.push(FrameEvent::PoolStateSyncError {
+                        changed,
+                        state,
+                        reply,
+                    });
+                    return serialize_to_js(&events).unwrap_or(JsValue::UNDEFINED);
+                }
+                let heads_after = self.pool_doc.doc_mut().get_heads();
+                let changed = heads_before != heads_after;
+
+                let state = if changed {
+                    Some(Box::new(self.pool_doc.read_state()))
+                } else {
+                    None
+                };
+
+                events.push(FrameEvent::PoolStateSyncApplied { changed, state });
             }
             _ => {
                 events.push(FrameEvent::Unknown { frame_type });

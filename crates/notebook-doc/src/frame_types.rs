@@ -28,3 +28,9 @@ pub const PRESENCE: u8 = 0x04;
 /// Carries the per-notebook ephemeral runtime state (kernel status, queue, env sync).
 /// Daemon-authoritative — client changes are stripped on receive.
 pub const RUNTIME_STATE_SYNC: u8 = 0x05;
+
+/// PoolDoc sync message (binary Automerge sync).
+/// Carries the global daemon pool state (UV/Conda availability, errors).
+/// Daemon-authoritative — client changes are stripped on receive.
+/// Unlike RuntimeStateSync (per-notebook), this is global (one per daemon).
+pub const POOL_STATE_SYNC: u8 = 0x06;

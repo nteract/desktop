@@ -1584,6 +1584,10 @@ where
     let mut state_changed_rx = room.state_changed_tx.subscribe();
     let mut state_peer_state = sync::State::new();
 
+    // PoolDoc — global daemon pool state (UV/Conda availability, errors).
+    let mut pool_changed_rx = daemon.pool_doc_changed.subscribe();
+    let mut pool_peer_state = sync::State::new();
+
     // Periodic pruning of stale presence peers (e.g. clients that silently dropped).
     let prune_period = std::time::Duration::from_millis(presence::DEFAULT_HEARTBEAT_MS);
     let mut prune_interval = tokio::time::interval(prune_period);
@@ -1633,6 +1637,29 @@ where
     };
     if let Some(encoded) = initial_state_encoded {
         connection::send_typed_frame(writer, NotebookFrameType::RuntimeStateSync, &encoded).await?;
+    }
+
+    // Phase 1.1b: Initial PoolDoc sync — global pool state
+    let initial_pool_encoded = {
+        let mut pool_doc = daemon.pool_doc.write().await;
+        match catch_automerge_panic("initial-pool-sync", || {
+            pool_doc
+                .generate_sync_message(&mut pool_peer_state)
+                .map(|msg| msg.encode())
+        }) {
+            Ok(encoded) => encoded,
+            Err(e) => {
+                warn!("{}", e);
+                pool_doc.rebuild_from_save();
+                pool_peer_state = sync::State::new();
+                pool_doc
+                    .generate_sync_message(&mut pool_peer_state)
+                    .map(|msg| msg.encode())
+            }
+        }
+    };
+    if let Some(encoded) = initial_pool_encoded {
+        connection::send_typed_frame(writer, NotebookFrameType::PoolStateSync, &encoded).await?;
     }
 
     // Phase 1.2: Eagerly send RuntimeState snapshot so the client has
@@ -1969,6 +1996,59 @@ where
                                 }
                             }
 
+                            NotebookFrameType::PoolStateSync => {
+                                // Client's pool sync reply — apply with change stripping
+                                let message = sync::Message::decode(&frame.payload)
+                                    .map_err(|e| anyhow::anyhow!("decode pool sync: {}", e))?;
+                                let reply_encoded = {
+                                    let mut pool_doc = daemon.pool_doc.write().await;
+
+                                    let recv_result = catch_automerge_panic("pool-receive-sync", || {
+                                        pool_doc.receive_sync_message(
+                                            &mut pool_peer_state,
+                                            message,
+                                        )
+                                    });
+                                    match recv_result {
+                                        Ok(Ok(())) => {}
+                                        Ok(Err(e)) => {
+                                            warn!("[notebook-sync] pool receive_sync_message error: {}", e);
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            warn!("{}", e);
+                                            pool_doc.rebuild_from_save();
+                                            pool_peer_state = sync::State::new();
+                                            continue;
+                                        }
+                                    }
+
+                                    match catch_automerge_panic("pool-sync-reply", || {
+                                        pool_doc
+                                            .generate_sync_message(&mut pool_peer_state)
+                                            .map(|msg| msg.encode())
+                                    }) {
+                                        Ok(encoded) => encoded,
+                                        Err(e) => {
+                                            warn!("{}", e);
+                                            pool_doc.rebuild_from_save();
+                                            pool_peer_state = sync::State::new();
+                                            pool_doc
+                                                .generate_sync_message(&mut pool_peer_state)
+                                                .map(|msg| msg.encode())
+                                        }
+                                    }
+                                };
+                                if let Some(encoded) = reply_encoded {
+                                    connection::send_typed_frame(
+                                        writer,
+                                        NotebookFrameType::PoolStateSync,
+                                        &encoded,
+                                    )
+                                    .await?;
+                                }
+                            }
+
                             NotebookFrameType::Response | NotebookFrameType::Broadcast => {
                                 // Clients shouldn't send these
                                 warn!(
@@ -2081,6 +2161,76 @@ where
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         // State change channel closed — room is being evicted
+                        return Ok(());
+                    }
+                }
+            }
+
+            // PoolDoc changed — push update to this client
+            result = pool_changed_rx.recv() => {
+                match result {
+                    Ok(()) => {
+                        let encoded = {
+                            let mut pool_doc = daemon.pool_doc.write().await;
+                            match catch_automerge_panic("pool-broadcast", || {
+                                pool_doc
+                                    .generate_sync_message(&mut pool_peer_state)
+                                    .map(|msg| msg.encode())
+                            }) {
+                                Ok(encoded) => encoded,
+                                Err(e) => {
+                                    warn!("{}", e);
+                                    pool_doc.rebuild_from_save();
+                                    pool_peer_state = sync::State::new();
+                                    pool_doc
+                                        .generate_sync_message(&mut pool_peer_state)
+                                        .map(|msg| msg.encode())
+                                }
+                            }
+                        };
+                        if let Some(encoded) = encoded {
+                            connection::send_typed_frame(
+                                writer,
+                                NotebookFrameType::PoolStateSync,
+                                &encoded,
+                            )
+                            .await?;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        log::debug!(
+                            "[notebook-sync] Peer {} lagged {} pool state updates",
+                            peer_id, n
+                        );
+                        let encoded = {
+                            let mut pool_doc = daemon.pool_doc.write().await;
+                            match catch_automerge_panic("pool-broadcast-lagged", || {
+                                pool_doc
+                                    .generate_sync_message(&mut pool_peer_state)
+                                    .map(|msg| msg.encode())
+                            }) {
+                                Ok(encoded) => encoded,
+                                Err(e) => {
+                                    warn!("{}", e);
+                                    pool_doc.rebuild_from_save();
+                                    pool_peer_state = sync::State::new();
+                                    pool_doc
+                                        .generate_sync_message(&mut pool_peer_state)
+                                        .map(|msg| msg.encode())
+                                }
+                            }
+                        };
+                        if let Some(encoded) = encoded {
+                            connection::send_typed_frame(
+                                writer,
+                                NotebookFrameType::PoolStateSync,
+                                &encoded,
+                            )
+                            .await?;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        // Pool doc channel closed — daemon is shutting down
                         return Ok(());
                     }
                 }

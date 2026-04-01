@@ -90,6 +90,10 @@ export class NotebookHandle {
      */
     cancel_last_flush(): void;
     /**
+     * Roll back pool sync state after a failed delivery.
+     */
+    cancel_last_pool_state_flush(): void;
+    /**
      * Roll back runtime-state sync state after a failed
      * `flush_runtime_state_sync()` delivery.
      *
@@ -177,6 +181,12 @@ export class NotebookHandle {
      */
     flush_local_changes(): Uint8Array | undefined;
     /**
+     * Generate an initial PoolDoc sync message.
+     *
+     * Call this during bootstrap so the daemon syncs pool state.
+     */
+    flush_pool_state_sync(): Uint8Array | undefined;
+    /**
      * Generate an initial RuntimeStateDoc sync message.
      *
      * Call this during bootstrap (alongside `flush_local_changes` for the
@@ -190,6 +200,10 @@ export class NotebookHandle {
      * permanently filtering out the undelivered state data.
      */
     flush_runtime_state_sync(): Uint8Array | undefined;
+    /**
+     * Generate a sync reply for the PoolDoc.
+     */
+    generate_pool_state_sync_reply(): Uint8Array | undefined;
     /**
      * Generate a sync reply for the RuntimeStateDoc.
      * Called immediately after each `RuntimeStateSyncApplied` event
@@ -281,6 +295,10 @@ export class NotebookHandle {
      * Returns undefined if the key doesn't exist.
      */
     get_metadata_value(key: string): any;
+    /**
+     * Read the current pool state snapshot from the WASM doc.
+     */
+    get_pool_state(): any;
     /**
      * Read the current runtime state snapshot from the WASM doc.
      */
@@ -565,6 +583,9 @@ export interface InitOutput {
     readonly notebookhandle_save: (a: number, b: number) => void;
     readonly notebookhandle_flush_runtime_state_sync: (a: number, b: number) => void;
     readonly notebookhandle_cancel_last_runtime_state_flush: (a: number) => void;
+    readonly notebookhandle_flush_pool_state_sync: (a: number, b: number) => void;
+    readonly notebookhandle_cancel_last_pool_state_flush: (a: number) => void;
+    readonly notebookhandle_get_pool_state: (a: number) => number;
     readonly notebookhandle_get_runtime_state: (a: number) => number;
     readonly notebookhandle_reset_sync_state: (a: number) => void;
     readonly notebookhandle_receive_frame: (a: number, b: number, c: number) => number;
@@ -573,6 +594,7 @@ export interface InitOutput {
     readonly encode_focus_presence: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
     readonly encode_clear_channel_presence: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly notebookhandle_generate_runtime_state_sync_reply: (a: number, b: number) => void;
+    readonly notebookhandle_generate_pool_state_sync_reply: (a: number, b: number) => void;
     readonly notebookhandle_create_empty_with_actor: (a: number, b: number) => number;
     readonly __wbindgen_export: (a: number, b: number) => number;
     readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;

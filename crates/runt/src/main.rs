@@ -1387,36 +1387,36 @@ async fn pool_command(command: PoolCommands) -> Result<()> {
             }
         },
         PoolCommands::Status { json } => match client.status().await {
-            Ok(stats) => {
+            Ok(state) => {
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&stats)?);
+                    println!("{}", serde_json::to_string_pretty(&state)?);
                 } else {
                     println!("Pool Daemon Status");
                     println!("==================");
                     println!("UV environments:");
-                    println!("  Available: {}", stats.uv_available);
-                    println!("  Warming:   {}", stats.uv_warming);
-                    if let Some(ref err) = stats.uv_error {
-                        println!("  ERROR:     {}", truncate_error(&err.message, 60));
-                        if let Some(ref pkg) = err.failed_package {
+                    println!("  Available: {}", state.uv.available);
+                    println!("  Warming:   {}", state.uv.warming);
+                    if let Some(ref err) = state.uv.error {
+                        println!("  ERROR:     {}", truncate_error(err, 60));
+                        if let Some(ref pkg) = state.uv.failed_package {
                             println!("  Failed package: {}", pkg);
                         }
                         println!(
                             "  Failures:  {} (retry in {}s)",
-                            err.consecutive_failures, err.retry_in_secs
+                            state.uv.consecutive_failures, state.uv.retry_in_secs
                         );
                     }
                     println!("Conda environments:");
-                    println!("  Available: {}", stats.conda_available);
-                    println!("  Warming:   {}", stats.conda_warming);
-                    if let Some(ref err) = stats.conda_error {
-                        println!("  ERROR:     {}", truncate_error(&err.message, 60));
-                        if let Some(ref pkg) = err.failed_package {
+                    println!("  Available: {}", state.conda.available);
+                    println!("  Warming:   {}", state.conda.warming);
+                    if let Some(ref err) = state.conda.error {
+                        println!("  ERROR:     {}", truncate_error(err, 60));
+                        if let Some(ref pkg) = state.conda.failed_package {
                             println!("  Failed package: {}", pkg);
                         }
                         println!(
                             "  Failures:  {} (retry in {}s)",
-                            err.consecutive_failures, err.retry_in_secs
+                            state.conda.consecutive_failures, state.conda.retry_in_secs
                         );
                     }
                 }
@@ -1661,19 +1661,19 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                     println!("{:<19} {}h {}m", "Uptime:".bold(), hours, mins);
                 }
 
-                if let Some(stats) = &stats {
+                if let Some(state) = &stats {
                     println!();
                     println!("{}", "Pool:".bold());
 
-                    let uv_total = stats.uv_available + stats.uv_warming;
-                    let uv_status = format!("{}/{} ready", stats.uv_available, uv_total);
-                    let uv_colored = if stats.uv_warming > 0 {
+                    let uv_total = state.uv.available + state.uv.warming;
+                    let uv_status = format!("{}/{} ready", state.uv.available, uv_total);
+                    let uv_colored = if state.uv.warming > 0 {
                         uv_status.yellow()
                     } else {
                         uv_status.green()
                     };
-                    let uv_warming_text = if stats.uv_warming > 0 {
-                        format!(" ({} warming)", stats.uv_warming)
+                    let uv_warming_text = if state.uv.warming > 0 {
+                        format!(" ({} warming)", state.uv.warming)
                             .dimmed()
                             .to_string()
                     } else {
@@ -1681,15 +1681,15 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                     };
                     println!("  {:<8} {}{}", "UV:".bold(), uv_colored, uv_warming_text);
 
-                    let conda_total = stats.conda_available + stats.conda_warming;
-                    let conda_status = format!("{}/{} ready", stats.conda_available, conda_total);
-                    let conda_colored = if stats.conda_warming > 0 {
+                    let conda_total = state.conda.available + state.conda.warming;
+                    let conda_status = format!("{}/{} ready", state.conda.available, conda_total);
+                    let conda_colored = if state.conda.warming > 0 {
                         conda_status.yellow()
                     } else {
                         conda_status.green()
                     };
-                    let conda_warming_text = if stats.conda_warming > 0 {
-                        format!(" ({} warming)", stats.conda_warming)
+                    let conda_warming_text = if state.conda.warming > 0 {
+                        format!(" ({} warming)", state.conda.warming)
                             .dimmed()
                             .to_string()
                     } else {

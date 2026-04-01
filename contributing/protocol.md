@@ -91,7 +91,7 @@ The first frame is a JSON `Handshake` message:
 
 The `Handshake` enum uses `#[serde(tag = "channel", rename_all = "snake_case")]`, so the wire format is flat with a `"channel"` discriminator field — not nested. Optional fields like `working_dir` and `initial_metadata` are omitted when `None` (via `skip_serializing_if`).
 
-Other handshake variants include `Pool`, `SettingsSync`, `Blob`, `PoolStateSubscribe`, `OpenNotebook { path }`, and `CreateNotebook { runtime, ... }`. The `OpenNotebook` and `CreateNotebook` variants are the primary paths for opening/creating notebooks from the desktop app, while `NotebookSync` is used by programmatic clients (e.g., Python bindings).
+Other handshake variants include `Pool`, `SettingsSync`, `Blob`, `OpenNotebook { path }`, and `CreateNotebook { runtime, ... }`. The `OpenNotebook` and `CreateNotebook` variants are the primary paths for opening/creating notebooks from the desktop app, while `NotebookSync` is used by programmatic clients (e.g., Python bindings).
 
 The daemon responds with a `NotebookConnectionInfo`:
 

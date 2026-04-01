@@ -99,20 +99,6 @@ fn default_flexible_npm() -> bool {
     true
 }
 
-/// Error information for a pool that is failing to warm.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PoolError {
-    /// Human-readable error message.
-    pub message: String,
-    /// Package that failed to install (if identified).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub failed_package: Option<String>,
-    /// Number of consecutive failures.
-    pub consecutive_failures: u32,
-    /// Seconds until next retry (0 if retry is imminent).
-    pub retry_in_secs: u64,
-}
-
 /// An entry in the execution queue, pairing a cell with its execution.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QueueEntry {

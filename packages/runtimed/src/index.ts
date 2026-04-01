@@ -42,6 +42,13 @@ export {
   diffExecutions,
 } from "./runtime-state";
 
+// Pool state
+export {
+  type PoolState,
+  type RuntimePoolState,
+  DEFAULT_POOL_STATE,
+} from "./pool-state";
+
 // Testing
 export { DirectTransport } from "./direct-transport";
 export type { ServerHandle } from "./direct-transport";

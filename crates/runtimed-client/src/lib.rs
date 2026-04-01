@@ -22,6 +22,7 @@ pub mod output_resolver;
 pub mod resolved_output;
 pub use notebook_doc;
 pub use notebook_doc::metadata as notebook_metadata;
+pub use notebook_doc::pool_state::{PoolState, RuntimePoolState};
 /// Re-export connection types from notebook-protocol.
 ///
 /// The canonical definitions live in `notebook_protocol::connection`.
@@ -80,37 +81,6 @@ pub struct PooledEnv {
     pub env_type: EnvType,
     pub venv_path: PathBuf,
     pub python_path: PathBuf,
-}
-
-/// Pool statistics.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PoolStats {
-    pub uv_available: usize,
-    pub uv_warming: usize,
-    pub uv_target: usize,
-    pub conda_available: usize,
-    pub conda_warming: usize,
-    pub conda_target: usize,
-    /// Error info for UV pool (if warming is failing).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub uv_error: Option<PoolError>,
-    /// Error info for Conda pool (if warming is failing).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub conda_error: Option<PoolError>,
-}
-
-/// Error information for a pool that is failing to warm.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PoolError {
-    /// Human-readable error message.
-    pub message: String,
-    /// Package that failed to install (if identified).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub failed_package: Option<String>,
-    /// Number of consecutive failures.
-    pub consecutive_failures: u32,
-    /// Seconds until next retry (0 if retry is imminent).
-    pub retry_in_secs: u64,
 }
 
 /// Get the default cache directory for environments.

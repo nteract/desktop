@@ -38,6 +38,7 @@ pub mod diff;
 pub mod frame_types;
 pub mod metadata;
 pub mod pep723;
+pub mod pool_state;
 pub mod presence;
 pub mod runtime_state;
 

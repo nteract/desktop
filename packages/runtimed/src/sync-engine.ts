@@ -34,6 +34,7 @@ import {
 
 import { type CellChangeset, mergeChangesets } from "./cell-changeset";
 import type { FrameEvent, SyncableHandle } from "./handle";
+import type { PoolState } from "./pool-state";
 import {
   type ExecutionTransition,
   type RuntimeState,
@@ -126,6 +127,9 @@ export class SyncEngine {
   /** RuntimeState snapshots from the daemon's RuntimeStateDoc. */
   readonly runtimeState$: Observable<RuntimeState>;
 
+  /** PoolState snapshots from the daemon's PoolDoc (global pool state). */
+  readonly poolState$: Observable<PoolState>;
+
   /** Execution lifecycle transitions detected from RuntimeState diffs. */
   readonly executionTransitions$: Observable<ExecutionTransition[]>;
 
@@ -143,6 +147,7 @@ export class SyncEngine {
   private readonly _broadcasts$ = new Subject<unknown>();
   private readonly _presence$ = new Subject<unknown>();
   private readonly _runtimeState$ = new Subject<RuntimeState>();
+  private readonly _poolState$ = new Subject<PoolState>();
   private readonly _executionTransitions$ = new Subject<
     ExecutionTransition[]
   >();
@@ -160,6 +165,7 @@ export class SyncEngine {
     this.broadcasts$ = this._broadcasts$.asObservable();
     this.presence$ = this._presence$.asObservable();
     this.runtimeState$ = this._runtimeState$.asObservable();
+    this.poolState$ = this._poolState$.asObservable();
     this.executionTransitions$ = this._executionTransitions$.asObservable();
     this.initialSyncComplete$ = this._initialSyncComplete$.asObservable();
   }
@@ -539,6 +545,77 @@ export class SyncEngine {
         .subscribe(),
     );
 
+    // ── Sub-pipeline: pool state sync ─────────────────────────────
+
+    sub.add(
+      frameEvents$
+        .pipe(
+          filter((e) => e.type === "pool_state_sync_applied"),
+          concatMap((e) => {
+            if (e.changed && e.state) {
+              const state = e.state as PoolState;
+              this._poolState$.next(state);
+            }
+
+            // Send sync reply so the daemon knows our heads
+            const handle = this.opts.getHandle();
+            if (handle) {
+              try {
+                const reply = handle.generate_pool_state_sync_reply();
+                if (reply) {
+                  return from(
+                    this.opts.transport
+                      .sendFrame(FrameType.POOL_STATE_SYNC, reply)
+                      .catch((err: unknown) =>
+                        log.warn(
+                          "[sync-engine] pool state sync reply failed:",
+                          err,
+                        ),
+                      ),
+                  );
+                }
+              } catch (err) {
+                log.warn(
+                  "[sync-engine] generate_pool_state_sync_reply failed:",
+                  err,
+                );
+              }
+            }
+            return EMPTY;
+          }),
+        )
+        .subscribe(),
+    );
+
+    // Pool state sync error: send recovery reply + publish state
+    sub.add(
+      frameEvents$
+        .pipe(filter((e) => e.type === "pool_state_sync_error"))
+        .subscribe((e) => {
+          log.warn(
+            "[sync-engine] pool_state_sync_error: pool doc rebuilt, sync state normalized",
+          );
+          if (e.reply) {
+            this.opts.transport
+              .sendFrame(
+                FrameType.POOL_STATE_SYNC,
+                new Uint8Array(e.reply),
+              )
+              .catch((err: unknown) => {
+                const handle = this.opts.getHandle();
+                if (handle) handle.cancel_last_pool_state_flush();
+                log.warn(
+                  "[sync-engine] pool state recovery reply send failed:",
+                  err,
+                );
+              });
+          }
+          if (e.changed && e.state) {
+            this._poolState$.next(e.state as PoolState);
+          }
+        }),
+    );
+
     // ── Debounced outbound flush ──────────────────────────────────
 
     sub.add(
@@ -613,6 +690,20 @@ export class SyncEngine {
           );
         });
     }
+
+    // Also flush PoolDoc sync so the daemon sends pool state.
+    const poolMsg = handle.flush_pool_state_sync();
+    if (poolMsg) {
+      this.opts.transport
+        .sendFrame(FrameType.POOL_STATE_SYNC, poolMsg)
+        .catch((e: unknown) => {
+          handle.cancel_last_pool_state_flush();
+          this.opts.logger.warn(
+            "[sync-engine] pool state sync to relay failed:",
+            e,
+          );
+        });
+    }
   }
 
   /**
@@ -663,6 +754,17 @@ export class SyncEngine {
       } catch (e) {
         handle.cancel_last_runtime_state_flush();
         this.opts.logger.warn("[sync-engine] flushAndWait: runtime state sync failed:", e);
+      }
+    }
+
+    // Also flush PoolDoc sync.
+    const poolMsg = handle.flush_pool_state_sync();
+    if (poolMsg) {
+      try {
+        await this.opts.transport.sendFrame(FrameType.POOL_STATE_SYNC, poolMsg);
+      } catch (e) {
+        handle.cancel_last_pool_state_flush();
+        this.opts.logger.warn("[sync-engine] flushAndWait: pool state sync failed:", e);
       }
     }
   }

@@ -34,6 +34,11 @@ import {
   setNotebookHandle,
 } from "../lib/notebook-metadata";
 import {
+  type PoolState,
+  resetPoolState,
+  setPoolState,
+} from "../lib/pool-state";
+import {
   type RuntimeState,
   resetRuntimeState,
   setRuntimeState,
@@ -252,6 +257,11 @@ export function useAutomergeNotebook() {
       setRuntimeState(state as RuntimeState),
     );
 
+    // Pool state → store.
+    const poolStateSub = engine.poolState$.subscribe((state) =>
+      setPoolState(state as PoolState),
+    );
+
     // ── Bootstrap ─────────────────────────────────────────────────
 
     setIsLoading(true);
@@ -271,6 +281,7 @@ export function useAutomergeNotebook() {
           refreshBlobPort();
           resetNotebookCells();
           resetRuntimeState();
+          resetPoolState();
           setIsLoading(true);
           return from(
             bootstrap().catch((err: unknown) => {
@@ -313,6 +324,7 @@ export function useAutomergeNotebook() {
       broadcastsSub.unsubscribe();
       presenceSub.unsubscribe();
       runtimeStateSub.unsubscribe();
+      poolStateSub.unsubscribe();
       lifecycleSub.unsubscribe();
       clearOutputsSub.unsubscribe();
 
@@ -321,6 +333,7 @@ export function useAutomergeNotebook() {
 
       resetNotebookCells();
       resetRuntimeState();
+      resetPoolState();
       setNotebookHandle(null);
       handleRef.current?.free();
       handleRef.current = null;
