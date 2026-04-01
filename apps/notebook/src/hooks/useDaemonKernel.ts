@@ -572,10 +572,20 @@ export function useDaemonKernel({
 
       // Outputs changed — resolve manifest hashes and update WidgetStore
       const outputHashes = [...entry.outputs];
+      const widgetCommId = commId;
       (async () => {
         let blobPort = getBlobPort();
         if (blobPort === null) blobPort = await refreshBlobPort();
-        if (blobPort === null) return;
+        if (blobPort === null) {
+          logger.warn(
+            "[daemon-kernel] No blob port for Output widget CRDT outputs",
+          );
+          return;
+        }
+
+        logger.debug(
+          `[daemon-kernel] Resolving ${outputHashes.length} Output widget outputs for ${widgetCommId.slice(0, 8)}`,
+        );
 
         const resolved = (
           await Promise.all(
@@ -584,6 +594,10 @@ export function useDaemonKernel({
             ),
           )
         ).filter((o): o is JupyterOutput => o !== null);
+
+        logger.debug(
+          `[daemon-kernel] Resolved ${resolved.length}/${outputHashes.length} outputs for ${widgetCommId.slice(0, 8)}`,
+        );
 
         if (resolved.length > 0) {
           const { onCommMessage: cb } = callbacksRef.current;

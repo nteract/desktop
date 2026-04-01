@@ -1055,6 +1055,11 @@ impl RoomKernel {
         let iopub_actor_id = self.kernel_actor_id.clone();
 
         let iopub_task = tokio::spawn(async move {
+            // Track Output widgets with pending clear_output(wait=true).
+            // On the next append_comm_output for these widgets, clear first.
+            let mut pending_clear_widgets: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+
             loop {
                 match iopub.read().await {
                     Ok(message) => {
@@ -1204,6 +1209,10 @@ impl RoomKernel {
                                         .await
                                         {
                                             let mut sd = state_doc_for_iopub.write().await;
+                                            // Honor deferred clear_output(wait=true)
+                                            if pending_clear_widgets.remove(&widget_comm_id) {
+                                                sd.clear_comm_outputs(&widget_comm_id);
+                                            }
                                             if sd.append_comm_output(&widget_comm_id, &hash) {
                                                 let _ = state_changed_for_iopub.send(());
                                             }
@@ -1661,10 +1670,12 @@ impl RoomKernel {
                                     comm_state.get_capture_widget(parent_msg_id).await
                                 {
                                     // Clear captured outputs in CRDT.
-                                    // Only clear immediately when wait=false. For wait=true,
-                                    // the clear is deferred until the next output arrives
-                                    // (the next append_comm_output implicitly replaces).
-                                    if !clear.wait {
+                                    // wait=false: clear immediately.
+                                    // wait=true: defer clear until next output arrives.
+                                    if clear.wait {
+                                        pending_clear_widgets.insert(widget_comm_id);
+                                    } else {
+                                        pending_clear_widgets.remove(&widget_comm_id);
                                         let mut sd = state_doc_for_iopub.write().await;
                                         if sd.clear_comm_outputs(&widget_comm_id) {
                                             let _ = state_changed_for_iopub.send(());
