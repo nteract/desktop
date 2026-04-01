@@ -258,10 +258,15 @@ export const CodeMirrorEditor = forwardRef<
 
       viewRef.current = view;
 
-      if (autoFocus) {
-        // Defer focus to the next frame so the DOM is settled.
-        requestAnimationFrame(() => view.focus());
-      }
+      // Force CM to measure actual line heights on the first frame,
+      // avoiding a quick snap on first keystroke from when
+      // estimated heights differ from measured heights.
+      requestAnimationFrame(() => {
+        view.requestMeasure();
+        if (autoFocus) {
+          view.focus();
+        }
+      });
 
       return () => {
         viewRef.current = null;
