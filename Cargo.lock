@@ -3102,7 +3102,7 @@ dependencies = [
 
 [[package]]
 name = "kernel-env"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
@@ -3127,7 +3127,7 @@ dependencies = [
 
 [[package]]
 name = "kernel-launch"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
@@ -3454,7 +3454,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "mcp-supervisor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dirs 5.0.1",
  "libc",
@@ -3696,7 +3696,7 @@ dependencies = [
 
 [[package]]
 name = "notebook"
-version = "2.0.8"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3736,7 +3736,7 @@ dependencies = [
 
 [[package]]
 name = "notebook-doc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "automerge",
  "ciborium",
@@ -3753,7 +3753,7 @@ dependencies = [
 
 [[package]]
 name = "notebook-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "kernel-env",
@@ -3766,7 +3766,7 @@ dependencies = [
 
 [[package]]
 name = "notebook-sync"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "automerge",
  "log",
@@ -5967,7 +5967,7 @@ dependencies = [
 
 [[package]]
 name = "runt-cli"
-version = "2.0.8"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6000,7 +6000,7 @@ dependencies = [
 
 [[package]]
 name = "runt-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fancy-regex 0.14.0",
  "notebook-doc",
@@ -6020,7 +6020,7 @@ dependencies = [
 
 [[package]]
 name = "runt-trust"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dirs 5.0.1",
  "hex",
@@ -6035,7 +6035,7 @@ dependencies = [
 
 [[package]]
 name = "runt-workspace"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "core-foundation",
  "dirs 5.0.1",
@@ -6045,7 +6045,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed"
-version = "2.0.8"
+version = "2.1.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -6105,7 +6105,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed-client"
-version = "2.0.4"
+version = "2.1.0"
 dependencies = [
  "automerge",
  "base64 0.22.1",
@@ -6130,7 +6130,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed-py"
-version = "2.0.5"
+version = "2.1.0"
 dependencies = [
  "base64 0.22.1",
  "kernel-env",
@@ -6151,7 +6151,7 @@ dependencies = [
 
 [[package]]
 name = "runtimed-wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "automerge",
  "getrandom 0.2.17",
