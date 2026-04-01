@@ -518,8 +518,12 @@ export function useDaemonKernel({
     const docComms = runtimeState.comms ?? {};
     const prevComms = prevCommsRef.current;
 
-    // New or updated comms
-    for (const [commId, entry] of Object.entries(docComms)) {
+    // New or updated comms — sorted by seq for dependency-correct replay
+    // (layout/style models must be created before widgets that reference them)
+    const sortedComms = Object.entries(docComms).sort(
+      ([, a], [, b]) => a.seq - b.seq,
+    );
+    for (const [commId, entry] of sortedComms) {
       const prev = prevComms[commId];
       if (!prev) {
         // New comm — synthesize comm_open
