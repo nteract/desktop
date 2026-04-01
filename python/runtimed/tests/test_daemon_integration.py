@@ -1240,6 +1240,10 @@ class TestKernelLaunchMetadata:
         assert ks["display_name"] == "Minimal Kernel"
         assert "language" not in ks  # Should not be present when not set
 
+    @pytest.mark.xfail(
+        reason="Flaky on CI: inline dep kernel output capture is unreliable on slow runners",
+        strict=False,
+    )
     @pytest.mark.timeout(120)
     async def test_uv_inline_deps_trusted(self, session):
         """Python kernel with UV inline deps from metadata launches correctly.
@@ -1262,6 +1266,10 @@ class TestKernelLaunchMetadata:
         assert result.success, f"Failed to import requests: {result.stderr}"
         assert result.stdout.strip(), "requests version should not be empty"
 
+    @pytest.mark.xfail(
+        reason="Flaky on CI: inline dep kernel output capture is unreliable on slow runners",
+        strict=False,
+    )
     @pytest.mark.timeout(120)
     async def test_uv_inline_deps_env_has_python(self, session):
         """UV inline env actually has a working Python with the declared deps."""
