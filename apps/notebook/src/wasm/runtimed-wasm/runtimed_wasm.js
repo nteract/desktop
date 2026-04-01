@@ -364,6 +364,12 @@ export class NotebookHandle {
         wasm.notebookhandle_cancel_last_flush(this.__wbg_ptr);
     }
     /**
+     * Roll back pool sync state after a failed delivery.
+     */
+    cancel_last_pool_state_flush() {
+        wasm.notebookhandle_cancel_last_pool_state_flush(this.__wbg_ptr);
+    }
+    /**
      * Roll back runtime-state sync state after a failed
      * `flush_runtime_state_sync()` delivery.
      *
@@ -598,6 +604,28 @@ export class NotebookHandle {
         }
     }
     /**
+     * Generate an initial PoolDoc sync message.
+     *
+     * Call this during bootstrap so the daemon syncs pool state.
+     * @returns {Uint8Array | undefined}
+     */
+    flush_pool_state_sync() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.notebookhandle_flush_pool_state_sync(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            let v1;
+            if (r0 !== 0) {
+                v1 = getArrayU8FromWasm0(r0, r1).slice();
+                wasm.__wbindgen_export4(r0, r1 * 1, 1);
+            }
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Generate an initial RuntimeStateDoc sync message.
      *
      * Call this during bootstrap (alongside `flush_local_changes` for the
@@ -615,6 +643,26 @@ export class NotebookHandle {
         try {
             const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
             wasm.notebookhandle_flush_runtime_state_sync(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            let v1;
+            if (r0 !== 0) {
+                v1 = getArrayU8FromWasm0(r0, r1).slice();
+                wasm.__wbindgen_export4(r0, r1 * 1, 1);
+            }
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Generate a sync reply for the PoolDoc.
+     * @returns {Uint8Array | undefined}
+     */
+    generate_pool_state_sync_reply() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.notebookhandle_generate_pool_state_sync_reply(retptr, this.__wbg_ptr);
             var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
             var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
             let v1;
@@ -949,6 +997,14 @@ export class NotebookHandle {
         const ptr0 = passStringToWasm0(key, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.notebookhandle_get_metadata_value(this.__wbg_ptr, ptr0, len0);
+        return takeObject(ret);
+    }
+    /**
+     * Read the current pool state snapshot from the WASM doc.
+     * @returns {any}
+     */
+    get_pool_state() {
+        const ret = wasm.notebookhandle_get_pool_state(this.__wbg_ptr);
         return takeObject(ret);
     }
     /**
