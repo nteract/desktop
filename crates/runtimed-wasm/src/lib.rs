@@ -376,8 +376,20 @@ impl NotebookHandle {
     }
 
     /// Get all cells as a JSON string (for bulk materialization).
+    ///
+    /// Populates each cell's outputs from the RuntimeStateDoc via
+    /// the cell's execution_id, since NotebookDoc.get_cells() returns
+    /// empty outputs (outputs moved to RuntimeStateDoc in #1343).
     pub fn get_cells_json(&self) -> String {
-        let cells = self.doc.get_cells();
+        let mut cells = self.doc.get_cells();
+        for cell in &mut cells {
+            if let Some(eid) = self.doc.get_execution_id(&cell.id) {
+                let outputs = self.state_doc.get_outputs(&eid);
+                if !outputs.is_empty() {
+                    cell.outputs = outputs;
+                }
+            }
+        }
         serde_json::to_string(&cells).unwrap_or_else(|_| "[]".to_string())
     }
 

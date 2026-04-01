@@ -253,6 +253,10 @@ export class NotebookHandle {
     get_cells(): JsCell[];
     /**
      * Get all cells as a JSON string (for bulk materialization).
+     *
+     * Populates each cell's outputs from the RuntimeStateDoc via
+     * the cell's execution_id, since NotebookDoc.get_cells() returns
+     * empty outputs (outputs moved to RuntimeStateDoc in #1343).
      */
     get_cells_json(): string;
     /**
