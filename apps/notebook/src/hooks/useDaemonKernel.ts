@@ -506,81 +506,22 @@ export function useDaemonKernel({
 
   // ── Sync comms from RuntimeStateDoc → WidgetStore ─────────────────
   //
-  // When RuntimeStateDoc.comms changes (via Automerge sync), drive the
-  // WidgetStore by synthesizing comm_open / comm_msg / comm_close events.
-  // This is the Phase B path — comms flow from the CRDT to the UI.
-  // CommSync broadcasts still arrive as a fallback but this effect ensures
-  // late-joining windows get widget state from the CRDT immediately.
-  const prevCommsRef = useRef<Record<string, { stateFingerprint: string }>>({});
+  // Phase B: comms flow from CRDT to WidgetStore. Currently limited to
+  // comm_close cleanup only. comm_open and state updates still flow via
+  // broadcasts + CommSync, which carry real binary buffers. The CRDT
+  // path has blob sentinels that need iframe-side resolution before
+  // comm_open can be delivered from here (Phase D follow-up).
+  //
+  // For now: track comms in the CRDT for cleanup, but don't deliver
+  // comm_open or state updates that would put sentinel objects in the
+  // WidgetStore (which causes DataCloneError on postMessage to iframe).
+  const prevCommsRef = useRef<Record<string, boolean>>({});
   useEffect(() => {
     const { onCommMessage } = callbacksRef.current;
     if (!onCommMessage) return;
 
     const docComms = runtimeState.comms ?? {};
     const prevComms = prevCommsRef.current;
-
-    // New or updated comms — sorted by seq for dependency-correct replay
-    // (layout/style models must be created before widgets that reference them)
-    const sortedComms = Object.entries(docComms).sort(
-      ([, a], [, b]) => a.seq - b.seq,
-    );
-    for (const [commId, entry] of sortedComms) {
-      const prev = prevComms[commId];
-      // State is now a native object from Automerge (no JSON.parse needed).
-      // Compare via JSON.stringify since object references differ on each sync.
-      const stateFingerprint = JSON.stringify(entry.state);
-      if (!prev) {
-        // New comm — synthesize comm_open.
-        // Replace blob sentinels with URLs (synchronous — iframe fetches binary).
-        const { state: urlState, bufferPaths } = replaceSentinelsWithBlobUrls(
-          entry.state as Record<string, unknown>,
-        );
-        const msg: JupyterMessage = {
-          header: {
-            msg_id: crypto.randomUUID(),
-            msg_type: "comm_open",
-            session: "",
-            username: "kernel",
-            date: new Date().toISOString(),
-            version: "5.3",
-          },
-          metadata: {},
-          content: {
-            comm_id: commId,
-            target_name: entry.target_name,
-            data: { state: urlState, buffer_paths: bufferPaths },
-          },
-          buffers: [],
-        };
-        onCommMessage(msg);
-      } else if (prev.stateFingerprint !== stateFingerprint) {
-        // State changed — synthesize comm_msg update.
-        const { state: urlState, bufferPaths } = replaceSentinelsWithBlobUrls(
-          entry.state as Record<string, unknown>,
-        );
-        const msg: JupyterMessage = {
-          header: {
-            msg_id: crypto.randomUUID(),
-            msg_type: "comm_msg",
-            session: "",
-            username: "kernel",
-            date: new Date().toISOString(),
-            version: "5.3",
-          },
-          metadata: {},
-          content: {
-            comm_id: commId,
-            data: {
-              method: "update",
-              state: urlState,
-              buffer_paths: bufferPaths,
-            },
-          },
-          buffers: [],
-        };
-        onCommMessage(msg);
-      }
-    }
 
     // Removed comms — synthesize comm_close
     for (const commId of Object.keys(prevComms)) {
@@ -602,12 +543,9 @@ export function useDaemonKernel({
       }
     }
 
-    // Update prev snapshot
+    // Update tracking
     prevCommsRef.current = Object.fromEntries(
-      Object.entries(docComms).map(([id, e]) => [
-        id,
-        { stateFingerprint: JSON.stringify(e.state) },
-      ]),
+      Object.keys(docComms).map((id) => [id, true]),
     );
   }, [runtimeState.comms]);
 
