@@ -44,8 +44,8 @@ use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
 /// Maximum execution entries retained in the RuntimeStateDoc.
 /// `trim_executions` preserves the latest execution per cell, so the actual
 /// count can exceed this if the notebook has more unique cells than this limit.
-/// Keep this low — each entry adds O(1) to every `read_outputs()` call in the
-/// WASM sync path, and rapid re-execution of the same cell accumulates entries fast.
+/// Keep this low — each entry adds O(1) to every output diff in the WASM sync
+/// path, and rapid re-execution of the same cell accumulates entries fast.
 const MAX_EXECUTION_ENTRIES: usize = 64;
 
 /// Convert a protocol QueueEntry to a RuntimeStateDoc QueueEntry.

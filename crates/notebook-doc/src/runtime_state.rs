@@ -24,14 +24,13 @@
 //!       status: Str         ("queued" | "running" | "done" | "error")
 //!       execution_count: Int|null
 //!       success: Bool|null
+//!       outputs: List[Str]  (manifest hashes)
 //!   env/
 //!     in_sync: bool
 //!     added: List[Str]     (packages in metadata but not in kernel)
 //!     removed: List[Str]   (packages in kernel but not in metadata)
 //!     channels_changed: bool
 //!     deno_changed: bool
-//!   outputs/                Map (keyed by execution_id)
-//!     {execution_id}/       List[Str]  (manifest hashes)
 //!   trust/
 //!     status: Str          ("trusted" | "untrusted" | "signature_invalid" | "no_dependencies")
 //!     needs_approval: bool
@@ -106,6 +105,9 @@ pub struct ExecutionState {
     /// Whether the execution succeeded (set on completion).
     #[serde(default)]
     pub success: Option<bool>,
+    /// Output manifest hashes for this execution.
+    #[serde(default)]
+    pub outputs: Vec<String>,
 }
 
 /// Environment sync state snapshot.
@@ -154,12 +156,6 @@ pub struct RuntimeState {
     /// Execution lifecycle entries keyed by execution_id.
     #[serde(default)]
     pub executions: HashMap<String, ExecutionState>,
-    /// Cell outputs keyed by execution_id. Each value is a list of manifest hashes.
-    /// Skipped during serialization to JS — the outputs map can be large and is
-    /// only needed for Rust-side diffing in the WASM. Consumers read outputs via
-    /// the per-cell `get_cell_outputs()` facade, not from this snapshot.
-    #[serde(default, skip_serializing)]
-    pub outputs: HashMap<String, Vec<String>>,
 }
 
 // ── RuntimeStateDoc ─────────────────────────────────────────────────
@@ -214,10 +210,6 @@ impl RuntimeStateDoc {
         // executions/ — keyed by execution_id, tracks lifecycle
         doc.put_object(&ROOT, "executions", ObjType::Map)
             .expect("scaffold executions");
-
-        // outputs/ — keyed by execution_id, each value is List[Str] of manifest hashes
-        doc.put_object(&ROOT, "outputs", ObjType::Map)
-            .expect("scaffold outputs");
 
         // env/
         let env = doc
@@ -660,6 +652,9 @@ impl RuntimeStateDoc {
         self.doc
             .put(&entry, "success", ScalarValue::Null)
             .expect("put execution.success");
+        self.doc
+            .put_object(&entry, "outputs", ObjType::List)
+            .expect("put execution.outputs");
         true
     }
 
@@ -763,21 +758,25 @@ impl RuntimeStateDoc {
                 _ => None,
             });
 
+        let outputs = self.read_str_list(&entry, "outputs");
+
         Some(ExecutionState {
             cell_id,
             status,
             execution_count,
             success,
+            outputs,
         })
     }
 
     // ── Output storage (keyed by execution_id) ──────────────────────
 
-    /// Get the ObjId for the `outputs/{execution_id}` list, if it exists.
+    /// Get the ObjId for the `executions/{execution_id}/outputs` list, if it exists.
     fn get_output_list(&self, execution_id: &str) -> Option<automerge::ObjId> {
-        let outputs = self.get_map("outputs")?;
+        let executions = self.get_map("executions")?;
+        let (_, entry) = self.doc.get(&executions, execution_id).ok().flatten()?;
         self.doc
-            .get(&outputs, execution_id)
+            .get(&entry, "outputs")
             .ok()
             .flatten()
             .and_then(|(value, id)| match value {
@@ -786,17 +785,25 @@ impl RuntimeStateDoc {
             })
     }
 
-    /// Ensure the `outputs/{execution_id}` list exists, creating it if absent.
+    /// Ensure the `executions/{execution_id}/outputs` list exists, creating it if absent.
     /// Returns the ObjId of the list.
     #[allow(clippy::expect_used)]
     fn ensure_output_list(&mut self, execution_id: &str) -> automerge::ObjId {
-        let outputs = self.get_map("outputs").expect("outputs map must exist");
-        match self.doc.get(&outputs, execution_id).ok().flatten() {
+        let executions = self
+            .get_map("executions")
+            .expect("executions map must exist");
+        let (_, entry) = self
+            .doc
+            .get(&executions, execution_id)
+            .ok()
+            .flatten()
+            .expect("execution entry must exist");
+        match self.doc.get(&entry, "outputs").ok().flatten() {
             Some((Value::Object(ObjType::List), id)) => id,
             _ => self
                 .doc
-                .put_object(&outputs, execution_id, ObjType::List)
-                .expect("create output list for execution_id"),
+                .put_object(&entry, "outputs", ObjType::List)
+                .expect("create outputs list on execution entry"),
         }
     }
 
@@ -825,11 +832,19 @@ impl RuntimeStateDoc {
         execution_id: &str,
         hashes: &[String],
     ) -> Result<bool, AutomergeError> {
-        let outputs = self.get_map("outputs").expect("outputs map must exist");
+        let executions = self
+            .get_map("executions")
+            .expect("executions map must exist");
+        let (_, entry) = self
+            .doc
+            .get(&executions, execution_id)
+            .ok()
+            .flatten()
+            .expect("execution entry must exist");
 
         // Delete existing list and create fresh
-        let _ = self.doc.delete(&outputs, execution_id);
-        let list_id = self.doc.put_object(&outputs, execution_id, ObjType::List)?;
+        let _ = self.doc.delete(&entry, "outputs");
+        let list_id = self.doc.put_object(&entry, "outputs", ObjType::List)?;
         for (i, hash) in hashes.iter().enumerate() {
             self.doc.insert(&list_id, i, hash.as_str())?;
         }
@@ -839,19 +854,15 @@ impl RuntimeStateDoc {
     /// Clear all outputs for an execution.
     #[allow(clippy::expect_used)]
     pub fn clear_execution_outputs(&mut self, execution_id: &str) -> Result<bool, AutomergeError> {
-        let Some(outputs) = self.get_map("outputs") else {
+        let Some(executions) = self.get_map("executions") else {
             return Ok(false);
         };
-        if self
-            .doc
-            .get(&outputs, execution_id)
-            .ok()
-            .flatten()
-            .is_none()
-        {
+        let Some((_, entry)) = self.doc.get(&executions, execution_id).ok().flatten() else {
             return Ok(false);
-        }
-        self.doc.delete(&outputs, execution_id)?;
+        };
+        // Replace with empty list
+        let _ = self.doc.delete(&entry, "outputs");
+        self.doc.put_object(&entry, "outputs", ObjType::List)?;
         Ok(true)
     }
 
@@ -948,26 +959,32 @@ impl RuntimeStateDoc {
     /// Returns `(execution_id, output_index, manifest_hash)` triples.
     /// Used by UpdateDisplayData to find outputs with matching display_id.
     pub fn get_all_outputs(&self) -> Vec<(String, usize, String)> {
-        let Some(outputs) = self.get_map("outputs") else {
+        let Some(executions) = self.get_map("executions") else {
             return Vec::new();
         };
         let mut results = Vec::new();
-        for exec_id in self.doc.keys(&outputs) {
-            if let Some((Value::Object(ObjType::List), list_id)) =
-                self.doc.get(&outputs, &exec_id).ok().flatten()
-            {
-                let len = self.doc.length(&list_id);
-                for i in 0..len {
-                    if let Some(s) = self.doc.get(&list_id, i).ok().flatten().and_then(
-                        |(value, _)| match value {
-                            Value::Scalar(s) => match s.as_ref() {
-                                ScalarValue::Str(s) => Some(s.to_string()),
-                                _ => None,
-                            },
-                            _ => None,
-                        },
-                    ) {
-                        results.push((exec_id.clone(), i, s));
+        for exec_id in self.doc.keys(&executions) {
+            if let Some((_, entry)) = self.doc.get(&executions, &exec_id).ok().flatten() {
+                if let Some((Value::Object(ObjType::List), list_id)) =
+                    self.doc.get(&entry, "outputs").ok().flatten()
+                {
+                    let len = self.doc.length(&list_id);
+                    for i in 0..len {
+                        if let Some(s) =
+                            self.doc
+                                .get(&list_id, i)
+                                .ok()
+                                .flatten()
+                                .and_then(|(value, _)| match value {
+                                    Value::Scalar(s) => match s.as_ref() {
+                                        ScalarValue::Str(s) => Some(s.to_string()),
+                                        _ => None,
+                                    },
+                                    _ => None,
+                                })
+                        {
+                            results.push((exec_id.clone(), i, s));
+                        }
                     }
                 }
             }
@@ -1020,10 +1037,6 @@ impl RuntimeStateDoc {
             let cell_id = &keys[i].1;
             if last_per_cell.get(cell_id.as_str()) == Some(&i) {
                 continue;
-            }
-            // Also clean up corresponding outputs
-            if let Some(outputs) = self.get_map("outputs") {
-                let _ = self.doc.delete(&outputs, exec_id.as_str());
             }
             self.doc
                 .delete(&executions, exec_id.as_str())
@@ -1251,29 +1264,7 @@ impl RuntimeStateDoc {
             trust: trust_state,
             last_saved,
             executions,
-            outputs: HashMap::new(),
         }
-    }
-
-    /// Read the outputs map separately from `read_state()`.
-    ///
-    /// Returns `execution_id → [manifest_hash, …]` for all executions that
-    /// have at least one output. This is O(E×O) where E = execution count
-    /// and O = outputs per execution, so callers should avoid calling it on
-    /// every frame — prefer diffing only when the doc actually changed.
-    pub fn read_outputs(&self) -> HashMap<String, Vec<String>> {
-        self.get_map("outputs")
-            .map(|outputs_obj| {
-                let mut map = HashMap::new();
-                for exec_id in self.doc.keys(&outputs_obj) {
-                    let hashes = self.get_outputs(&exec_id);
-                    if !hashes.is_empty() {
-                        map.insert(exec_id, hashes);
-                    }
-                }
-                map
-            })
-            .unwrap_or_default()
     }
 
     // ── Automerge sync protocol ─────────────────────────────────────
@@ -1837,6 +1828,7 @@ mod tests {
     #[test]
     fn test_append_output() {
         let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
         let idx0 = doc.append_output("exec-1", "hash-a").unwrap();
         assert_eq!(idx0, 0);
         let idx1 = doc.append_output("exec-1", "hash-b").unwrap();
@@ -1848,6 +1840,7 @@ mod tests {
     #[test]
     fn test_set_outputs() {
         let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
         doc.append_output("exec-1", "old-hash").unwrap();
 
         let hashes = vec!["h1".to_string(), "h2".to_string(), "h3".to_string()];
@@ -1859,6 +1852,7 @@ mod tests {
     #[test]
     fn test_clear_execution_outputs() {
         let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
         doc.append_output("exec-1", "hash-a").unwrap();
         doc.append_output("exec-1", "hash-b").unwrap();
 
@@ -1872,6 +1866,7 @@ mod tests {
     #[test]
     fn test_replace_output() {
         let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
         doc.append_output("exec-1", "hash-a").unwrap();
         doc.append_output("exec-1", "hash-b").unwrap();
 
@@ -1887,6 +1882,7 @@ mod tests {
     #[test]
     fn test_upsert_stream_output_append() {
         let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
 
         // No known state → append
         let (updated, idx) = doc
@@ -1900,6 +1896,7 @@ mod tests {
     #[test]
     fn test_upsert_stream_output_update_in_place() {
         let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
         doc.append_output("exec-1", "hash-a").unwrap();
 
         let state = StreamOutputState {
@@ -1917,6 +1914,7 @@ mod tests {
     #[test]
     fn test_upsert_stream_output_hash_mismatch_appends() {
         let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
         doc.append_output("exec-1", "hash-a").unwrap();
 
         let state = StreamOutputState {
@@ -1934,6 +1932,8 @@ mod tests {
     #[test]
     fn test_get_all_outputs() {
         let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
+        doc.create_execution("exec-2", "cell-2");
         doc.append_output("exec-1", "h1").unwrap();
         doc.append_output("exec-1", "h2").unwrap();
         doc.append_output("exec-2", "h3").unwrap();
@@ -1949,20 +1949,17 @@ mod tests {
     }
 
     #[test]
-    fn test_read_outputs() {
+    fn test_inline_outputs_in_execution_state() {
         let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
+        doc.create_execution("exec-2", "cell-2");
         doc.append_output("exec-1", "h1").unwrap();
         doc.append_output("exec-1", "h2").unwrap();
         doc.append_output("exec-2", "h3").unwrap();
 
-        let outputs = doc.read_outputs();
-        assert_eq!(outputs.len(), 2);
-        assert_eq!(outputs["exec-1"], vec!["h1", "h2"]);
-        assert_eq!(outputs["exec-2"], vec!["h3"]);
-
-        // read_state() should NOT include outputs (perf: avoid O(E×O) on every call)
         let state = doc.read_state();
-        assert!(state.outputs.is_empty());
+        assert_eq!(state.executions["exec-1"].outputs, vec!["h1", "h2"]);
+        assert_eq!(state.executions["exec-2"].outputs, vec!["h3"]);
     }
 
     #[test]
@@ -2002,6 +1999,8 @@ mod tests {
     #[test]
     fn test_outputs_sync_between_docs() {
         let mut daemon_doc = RuntimeStateDoc::new();
+        daemon_doc.create_execution("exec-1", "cell-1");
+        daemon_doc.create_execution("exec-2", "cell-2");
         daemon_doc.append_output("exec-1", "h1").unwrap();
         daemon_doc.append_output("exec-1", "h2").unwrap();
         daemon_doc.append_output("exec-2", "h3").unwrap();
@@ -2029,15 +2028,16 @@ mod tests {
             }
         }
 
-        let client_outputs = client_doc.read_outputs();
-        assert_eq!(client_outputs.len(), 2);
-        assert_eq!(client_outputs["exec-1"], vec!["h1", "h2"]);
-        assert_eq!(client_outputs["exec-2"], vec!["h3"]);
+        let client_state = client_doc.read_state();
+        assert_eq!(client_state.executions.len(), 2);
+        assert_eq!(client_state.executions["exec-1"].outputs, vec!["h1", "h2"]);
+        assert_eq!(client_state.executions["exec-2"].outputs, vec!["h3"]);
     }
 
     #[test]
     fn test_fork_and_merge_outputs() {
         let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1");
         doc.append_output("exec-1", "h1").unwrap();
 
         let mut fork = doc.fork();
@@ -2051,6 +2051,7 @@ mod tests {
     #[test]
     fn test_get_outputs_nonexistent() {
         let doc = RuntimeStateDoc::new();
+        // No execution entry → empty outputs
         assert!(doc.get_outputs("nope").is_empty());
     }
 }

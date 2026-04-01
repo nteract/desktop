@@ -43,6 +43,7 @@ export interface ExecutionState {
   status: "queued" | "running" | "done" | "error";
   execution_count: number | null;
   success: boolean | null;
+  outputs?: string[];
 }
 
 /** A detected status transition for a single execution. */
@@ -60,10 +61,6 @@ export interface RuntimeState {
   trust: TrustState;
   last_saved: string | null;
   executions: Record<string, ExecutionState>;
-  /** Cell outputs keyed by execution_id. Not serialized from WASM — outputs
-   *  are diffed Rust-side and delivered via output_changed_cells in the frame event.
-   *  Present only from non-WASM sources (e.g. Python bindings). */
-  outputs?: Record<string, string[]>;
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────
@@ -93,7 +90,6 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
   },
   last_saved: null,
   executions: {},
-  outputs: {},
 };
 
 // ── Utilities ────────────────────────────────────────────────────────
