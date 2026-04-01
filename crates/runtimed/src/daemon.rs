@@ -1629,6 +1629,7 @@ impl Daemon {
                 match env {
                     Some(env) => {
                         debug!("[runtimed] Took {} env: {:?}", env_type, env.venv_path);
+                        self.update_pool_doc().await;
                         // Spawn replenishment
                         let daemon = self.clone();
                         match env_type {
@@ -1681,6 +1682,7 @@ impl Daemon {
                         }
                     }
                 }
+                self.update_pool_doc().await;
                 Response::Returned
             }
 
