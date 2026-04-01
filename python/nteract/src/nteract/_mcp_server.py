@@ -1770,11 +1770,6 @@ def main():
         action="store_true",
         help="Disable the show_notebook tool (headless environments).",
     )
-    parser.add_argument(
-        "--legacy",
-        action="store_true",
-        help="Use the built-in Python MCP server (deprecated) instead of runt mcp.",
-    )
     args = parser.parse_args()
 
     if args.version:
@@ -1785,25 +1780,28 @@ def main():
 
     channel = "nightly" if args.nightly else "stable"
 
-    # Default path: find and exec the Rust MCP server
-    if not args.legacy:
-        binary = _find_runt_binary(channel)
-        if binary:
-            runt_args = [binary, "mcp"]
-            if args.no_show:
-                runt_args.append("--no-show")
-            print(f"Launching {' '.join(runt_args)}", file=sys.stderr)
-            os.execvp(binary, runt_args)
-            # execvp never returns
-        else:
-            binary_name = "runt-nightly" if channel == "nightly" else "runt"
-            print(
-                f"[nteract] {binary_name} not found, falling back to built-in Python MCP server.",
-                file=sys.stderr,
-            )
+    # Find and exec the Rust MCP server (runt mcp)
+    binary = _find_runt_binary(channel)
+    if binary:
+        runt_args = [binary, "mcp"]
+        if args.no_show:
+            runt_args.append("--no-show")
+        print(f"Launching {' '.join(runt_args)}", file=sys.stderr)
+        os.execvp(binary, runt_args)
+        # execvp never returns
 
-    # Legacy / fallback path: run the built-in Python MCP server directly
-    if (args.nightly or args.stable) and not os.environ.get("RUNTIMED_SOCKET_PATH"):
+    binary_name = "runt-nightly" if channel == "nightly" else "runt"
+    print(
+        f"[nteract] Error: {binary_name} not found. "
+        f"Install the nteract desktop app or ensure {binary_name} is on PATH.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+    # The code below is unreachable but kept for reference during the
+    # transition period. The Python MCP server is incompatible with
+    # RuntimeStateDoc-based outputs (#1343) and will be removed entirely.
+    if (args.nightly or args.stable) and not os.environ.get("RUNTIMED_SOCKET_PATH"):  # type: ignore[unreachable]
         os.environ["RUNTIMED_SOCKET_PATH"] = runtimed.socket_path_for_channel(channel)
 
     server = NteractServer(channel=channel, no_show=args.no_show, deprecated=True)
