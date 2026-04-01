@@ -1364,6 +1364,45 @@ export class NotebookHandle {
         }
     }
     /**
+     * Set multiple properties in a comm's state map at once.
+     *
+     * Accepts a JSON object string of key-value pairs to write.
+     * Used by anywidget's `save_changes()` which batches pending mutations.
+     * Call `flush_runtime_state_sync()` after to propagate.
+     * @param {string} comm_id
+     * @param {string} patch_json
+     * @returns {boolean}
+     */
+    set_comm_state_batch(comm_id, patch_json) {
+        const ptr0 = passStringToWasm0(comm_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(patch_json, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.notebookhandle_set_comm_state_batch(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        return ret !== 0;
+    }
+    /**
+     * Set a single property in a comm's state map.
+     *
+     * Writes directly to `comms/{comm_id}/state/{key}` as a native
+     * Automerge value. Call `flush_runtime_state_sync()` after mutations
+     * to propagate changes to the daemon.
+     * @param {string} comm_id
+     * @param {string} key
+     * @param {string} value_json
+     * @returns {boolean}
+     */
+    set_comm_state_property(comm_id, key, value_json) {
+        const ptr0 = passStringToWasm0(comm_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(key, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(value_json, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.notebookhandle_set_comm_state_property(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+        return ret !== 0;
+    }
+    /**
      * Set Conda channels, preserving deps and python.
      * Accepts a JSON array string (e.g. `'["conda-forge","bioconda"]'`).
      * @param {string} channels_json

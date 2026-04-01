@@ -418,6 +418,22 @@ export class NotebookHandle {
      */
     set_cell_tags_value(cell_id: string, tags: any): boolean;
     /**
+     * Set multiple properties in a comm's state map at once.
+     *
+     * Accepts a JSON object string of key-value pairs to write.
+     * Used by anywidget's `save_changes()` which batches pending mutations.
+     * Call `flush_runtime_state_sync()` after to propagate.
+     */
+    set_comm_state_batch(comm_id: string, patch_json: string): boolean;
+    /**
+     * Set a single property in a comm's state map.
+     *
+     * Writes directly to `comms/{comm_id}/state/{key}` as a native
+     * Automerge value. Call `flush_runtime_state_sync()` after mutations
+     * to propagate changes to the daemon.
+     */
+    set_comm_state_property(comm_id: string, key: string, value_json: string): boolean;
+    /**
      * Set Conda channels, preserving deps and python.
      * Accepts a JSON array string (e.g. `'["conda-forge","bioconda"]'`).
      */
@@ -587,6 +603,8 @@ export interface InitOutput {
     readonly notebookhandle_cancel_last_flush: (a: number) => void;
     readonly notebookhandle_receive_sync_message: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_save: (a: number, b: number) => void;
+    readonly notebookhandle_set_comm_state_property: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
+    readonly notebookhandle_set_comm_state_batch: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly notebookhandle_flush_runtime_state_sync: (a: number, b: number) => void;
     readonly notebookhandle_cancel_last_runtime_state_flush: (a: number) => void;
     readonly notebookhandle_flush_pool_state_sync: (a: number, b: number) => void;
