@@ -1,13 +1,14 @@
-//! Execution pipeline: submit cell → poll RuntimeState → collect outputs.
+//! Execution pipeline: submit cell → wait for broadcast → collect outputs.
 //!
 //! This module handles the async execution lifecycle for `execute_cell` and
-//! tools that use `and_run`. It polls the daemon's RuntimeStateDoc to track
-//! execution status and collects outputs from the CRDT once complete.
+//! tools that use `and_run`. It subscribes to daemon broadcasts to detect
+//! execution completion, then collects outputs from the CRDT.
 
 use std::time::{Duration, Instant};
 
-use notebook_protocol::protocol::NotebookRequest;
+use notebook_protocol::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
 use notebook_sync::handle::DocHandle;
+use notebook_sync::BroadcastReceiver;
 use runtimed_client::output_resolver;
 use runtimed_client::resolved_output::Output;
 use tracing::warn;
@@ -29,11 +30,12 @@ pub struct ExecutionResult {
 /// Execute a cell and wait for completion.
 ///
 /// 1. Calls `confirm_sync()` to ensure the daemon has the latest cell source.
-/// 2. Sends `ExecuteCell` request to the daemon.
-/// 3. Polls `RuntimeStateDoc` until the execution completes or times out.
+/// 2. Sends `ExecuteCell` request with a broadcast channel.
+/// 3. Waits for `ExecutionDone` broadcast (or timeout).
 /// 4. Collects and resolves outputs from the CRDT.
 pub async fn execute_and_wait(
     handle: &DocHandle,
+    broadcast_rx: &mut BroadcastReceiver,
     cell_id: &str,
     timeout: Duration,
     blob_base_url: &Option<String>,
@@ -44,65 +46,72 @@ pub async fn execute_and_wait(
         warn!("confirm_sync failed before execution: {e}");
     }
 
-    // Step 2: Submit execution request
+    // Step 2: Submit execution request. Broadcasts (ExecutionStarted,
+    // ExecutionDone, Output) arrive on the session's broadcast_rx.
     let request = NotebookRequest::ExecuteCell {
         cell_id: cell_id.to_string(),
     };
-    if let Err(_e) = handle.send_request(request).await {
-        return ExecutionResult {
-            cell_id: cell_id.to_string(),
-            outputs: Vec::new(),
-            execution_count: None,
-            status: "error".to_string(),
-            success: false,
-        };
-    }
+    let response = handle.send_request(request).await;
 
-    // Step 3: Poll RuntimeStateDoc for completion.
-    //
-    // We track whether we've ever seen the cell in the queue. The
-    // RuntimeStateDoc can lag behind the ExecuteCell request, so the cell
-    // may not appear in the queue on the first poll. Without this guard
-    // we'd immediately declare "done" before execution even starts.
-    let start = Instant::now();
-    let poll_interval = Duration::from_millis(100);
+    // Check if the request itself failed
+    let execution_id = match response {
+        Ok(NotebookResponse::CellQueued { execution_id, .. }) => Some(execution_id),
+        Ok(_) => None,
+        Err(_e) => {
+            return ExecutionResult {
+                cell_id: cell_id.to_string(),
+                outputs: Vec::new(),
+                execution_count: None,
+                status: "error".to_string(),
+                success: false,
+            };
+        }
+    };
+
+    // Step 3: Wait for ExecutionDone broadcast (or timeout).
     let mut final_status = "running".to_string();
     let mut success = false;
-    let mut seen_in_queue = false;
+    let deadline = Instant::now() + timeout;
 
     loop {
-        if start.elapsed() >= timeout {
-            // Timeout — return partial results
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             break;
         }
 
-        tokio::time::sleep(poll_interval).await;
-
-        // Read execution state from RuntimeStateDoc
-        if let Ok(state) = handle.get_runtime_state() {
-            let is_executing = state
-                .queue
-                .executing
-                .as_ref()
-                .is_some_and(|e| e.cell_id == cell_id);
-            let is_queued = state.queue.queued.iter().any(|e| e.cell_id == cell_id);
-
-            if is_executing || is_queued {
-                seen_in_queue = true;
-            }
-
-            if seen_in_queue && !is_executing && !is_queued {
-                // Was in queue, now done — check executions map for the result
-                let exec_entry = state.executions.values().find(|e| e.cell_id == cell_id);
-
-                if let Some(entry) = exec_entry {
-                    final_status = entry.status.clone();
-                    success = entry.success.unwrap_or(false);
-                } else {
-                    // No execution entry — might have completed before we polled
-                    final_status = "idle".to_string();
-                    success = true;
+        match tokio::time::timeout(remaining, broadcast_rx.recv()).await {
+            Ok(Some(broadcast)) => match &broadcast {
+                NotebookBroadcast::ExecutionDone {
+                    cell_id: done_cell_id,
+                    ..
+                } if done_cell_id == cell_id => {
+                    // Check RuntimeState for the result
+                    if let Ok(state) = handle.get_runtime_state() {
+                        if let Some(eid) = &execution_id {
+                            if let Some(entry) = state.executions.get(eid) {
+                                final_status = entry.status.clone();
+                                success = entry.success.unwrap_or(false);
+                            }
+                        }
+                    }
+                    // If we didn't get status from RuntimeState, infer from outputs
+                    if final_status == "running" {
+                        final_status = "idle".to_string();
+                        success = true;
+                    }
+                    break;
                 }
+                _ => {
+                    // Other broadcast — continue waiting
+                }
+            },
+            Ok(None) => {
+                // Broadcast stream ended — connection dropped
+                final_status = "error".to_string();
+                break;
+            }
+            Err(_) => {
+                // Timeout
                 break;
             }
         }
@@ -113,7 +122,6 @@ pub async fn execute_and_wait(
     let execution_count = handle.get_cell_execution_count(cell_id);
 
     let outputs = if let Some(cell_snapshot) = &cell {
-        // Resolve outputs (raw JSON strings from CRDT → resolved Output structs)
         output_resolver::resolve_cell_outputs(
             &cell_snapshot.outputs,
             blob_base_url,
