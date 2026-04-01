@@ -258,11 +258,21 @@ export const CodeMirrorEditor = forwardRef<
 
       viewRef.current = view;
 
-      // Force CM to measure actual line heights on the first frame,
-      // avoiding a quick snap on first keystroke from when
-      // estimated heights differ from measured heights.
+      // Toggling the placeholder forces a decoration change that triggers
+      // updateInner(), rebuilding the line tiles. Without this, the initial
+      // tile DOM renders a few pixels too tall — CM's measure cycle alone
+      // won't call updateInner() when the viewport hasn't changed.
       requestAnimationFrame(() => {
-        view.requestMeasure();
+        if (placeholder) {
+          view.dispatch({
+            effects: placeholderCompartment.current.reconfigure([]),
+          });
+          view.dispatch({
+            effects: placeholderCompartment.current.reconfigure(
+              placeholderExt(placeholder),
+            ),
+          });
+        }
         if (autoFocus) {
           view.focus();
         }
