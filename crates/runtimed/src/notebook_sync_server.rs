@@ -605,6 +605,7 @@ pub(crate) async fn apply_kernel_died_to_state_doc(
     // Apply all mutations on the fork
     fork.set_kernel_status("error");
     fork.set_queue(None, &[]);
+    fork.set_prewarmed_packages(&[]);
     if let Some((_, ref execution_id)) = interrupted {
         fork.set_execution_done(execution_id, false);
     }
@@ -2530,7 +2531,10 @@ fn is_untitled_notebook(notebook_id: &str) -> bool {
 /// Used when an early exit prevents kernel launch after status was set to "starting".
 async fn reset_starting_state(room: &NotebookRoom) {
     let mut sd = room.state_doc.write().await;
-    if sd.set_kernel_status("not_started") {
+    let mut changed = false;
+    changed |= sd.set_kernel_status("not_started");
+    changed |= sd.set_prewarmed_packages(&[]);
+    if changed {
         let _ = room.state_changed_tx.send(());
     }
 }
@@ -3049,7 +3053,10 @@ async fn auto_launch_kernel(
             // Dual-write error to state_doc
             {
                 let mut sd = room.state_doc.write().await;
-                if sd.set_kernel_status("error") {
+                let mut changed = false;
+                changed |= sd.set_kernel_status("error");
+                changed |= sd.set_prewarmed_packages(&[]);
+                if changed {
                     let _ = room.state_changed_tx.send(());
                 }
             }
@@ -3732,7 +3739,10 @@ async fn handle_notebook_request(
                     // Dual-write error to state_doc
                     {
                         let mut sd = room.state_doc.write().await;
-                        if sd.set_kernel_status("error") {
+                        let mut changed = false;
+                        changed |= sd.set_kernel_status("error");
+                        changed |= sd.set_prewarmed_packages(&[]);
+                        if changed {
                             let _ = room.state_changed_tx.send(());
                         }
                     }

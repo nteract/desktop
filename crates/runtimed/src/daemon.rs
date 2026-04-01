@@ -878,6 +878,30 @@ impl Daemon {
             Err(_) => return,
         };
 
+        // Build the known prewarmed package lists so reused envs carry metadata.
+        // These match the packages installed by create_uv_env/create_conda_env.
+        let (uv_prewarmed, conda_prewarmed) = {
+            let settings = self.settings.read().await;
+            let synced = settings.get_all();
+
+            let mut uv_pkgs = vec![
+                "ipykernel".to_string(),
+                "ipywidgets".to_string(),
+                "anywidget".to_string(),
+                "uv".to_string(),
+            ];
+            uv_pkgs.extend(synced.uv.default_packages.clone());
+
+            let mut conda_pkgs = vec![
+                "ipykernel".to_string(),
+                "ipywidgets".to_string(),
+                "anywidget".to_string(),
+            ];
+            conda_pkgs.extend(synced.conda.default_packages.clone());
+
+            (uv_pkgs, conda_pkgs)
+        };
+
         let mut uv_found = 0;
         let mut conda_found = 0;
         let mut orphans: Vec<PathBuf> = Vec::new();
@@ -901,7 +925,7 @@ impl Daemon {
                                 env_type: EnvType::Uv,
                                 venv_path: env_path.clone(),
                                 python_path,
-                                prewarmed_packages: vec![],
+                                prewarmed_packages: uv_prewarmed.clone(),
                             },
                             created_at: Instant::now(),
                         });
@@ -930,7 +954,7 @@ impl Daemon {
                                 env_type: EnvType::Conda,
                                 venv_path: env_path.clone(),
                                 python_path,
-                                prewarmed_packages: vec![],
+                                prewarmed_packages: conda_prewarmed.clone(),
                             },
                             created_at: Instant::now(),
                         });
@@ -2223,6 +2247,13 @@ impl Daemon {
         }
 
         // Build specs: python + ipykernel + ipywidgets + default packages
+        let mut conda_install_packages = vec![
+            "ipykernel".to_string(),
+            "ipywidgets".to_string(),
+            "anywidget".to_string(),
+        ];
+        conda_install_packages.extend(extra_conda_packages.clone());
+
         let match_spec_options = ParseMatchSpecOptions::strict();
         let specs: Vec<MatchSpec> = match (|| -> anyhow::Result<Vec<MatchSpec>> {
             let mut specs = vec![
@@ -2439,7 +2470,7 @@ impl Daemon {
                     env_type: EnvType::Conda,
                     venv_path: env_path.clone(),
                     python_path,
-                    prewarmed_packages: vec![],
+                    prewarmed_packages: conda_install_packages,
                 });
             }
 
