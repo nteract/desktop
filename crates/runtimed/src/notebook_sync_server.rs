@@ -1967,21 +1967,21 @@ where
                             }
 
                             NotebookFrameType::RuntimeStateSync => {
-                                // Client's sync reply — apply with change stripping
-                                // so the daemon knows what state the client has.
+                                // Client sync — accept changes (frontend may write
+                                // to comms/*/state/* for widget state updates).
                                 let message = sync::Message::decode(&frame.payload)
                                     .map_err(|e| anyhow::anyhow!("decode state sync: {}", e))?;
                                 let reply_encoded = {
                                     let mut state_doc = room.state_doc.write().await;
 
                                     let recv_result = catch_automerge_panic("state-receive-sync", || {
-                                        state_doc.receive_sync_message(
+                                        state_doc.receive_sync_message_with_changes(
                                             &mut state_peer_state,
                                             message,
                                         )
                                     });
-                                    match recv_result {
-                                        Ok(Ok(())) => {}
+                                    let had_changes = match recv_result {
+                                        Ok(Ok(changed)) => changed,
                                         Ok(Err(e)) => {
                                             warn!("[notebook-sync] state receive_sync_message error: {}", e);
                                             continue;
@@ -1992,6 +1992,12 @@ where
                                             state_peer_state = sync::State::new();
                                             continue;
                                         }
+                                    };
+
+                                    // If client sent changes, notify all peers
+                                    // so they get the updated state.
+                                    if had_changes {
+                                        let _ = room.state_changed_tx.send(());
                                     }
 
                                     match catch_automerge_panic("state-sync-reply", || {

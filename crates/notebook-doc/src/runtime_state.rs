@@ -1549,6 +1549,25 @@ impl RuntimeStateDoc {
         self.doc.sync().receive_sync_message(peer_state, filtered)?;
         Ok(())
     }
+
+    /// Receive a sync message accepting client writes.
+    ///
+    /// Unlike `receive_sync_message()` which strips client changes, this
+    /// accepts the full message including any mutations the client made
+    /// (e.g., widget state updates written to `comms/*/state/*`).
+    ///
+    /// Returns `true` if the document heads changed (i.e., client sent
+    /// new changes, not just a handshake).
+    pub fn receive_sync_message_with_changes(
+        &mut self,
+        peer_state: &mut sync::State,
+        message: sync::Message,
+    ) -> Result<bool, AutomergeError> {
+        let heads_before = self.doc.get_heads();
+        self.doc.sync().receive_sync_message(peer_state, message)?;
+        let heads_after = self.doc.get_heads();
+        Ok(heads_before != heads_after)
+    }
 }
 
 // ── Output diff utility ─────────────────────────────────────────────
