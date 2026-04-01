@@ -28,3 +28,6 @@ TODO=to do
 demuxing=/diːmˈʌksɪŋ/
 demultiplexing=/diːmˈʌltɪplɛksɪŋ/
 Jupyter=jupiter
+ipynb=notebook file
+.ipynb=dot notebook file
+IPYNB=notebook file
