@@ -131,8 +131,15 @@ export class CommBridgeManager {
     };
 
     if (this.isWidgetReady) {
-      this.frame.send(msg);
-      this.sentModels.add(commId);
+      try {
+        this.frame.send(msg);
+        this.sentModels.add(commId);
+      } catch (e) {
+        console.warn(
+          `[CommBridge] Skipping non-cloneable comm_open for ${commId}:`,
+          e,
+        );
+      }
     } else {
       this.messageBuffer.push(msg);
     }
@@ -233,7 +240,26 @@ export class CommBridgeManager {
       try {
         this.frame.send(syncMsg);
       } catch (e) {
-        console.error("[CommBridge] Error sending comm_sync:", e);
+        // Batch send failed (likely a non-cloneable value in one model).
+        // Fall back to sending models individually so one bad model
+        // doesn't prevent all widgets from loading.
+        console.warn(
+          `[CommBridge] Batch comm_sync failed, sending ${modelArray.length} models individually:`,
+          e,
+        );
+        for (const model of modelArray) {
+          try {
+            this.frame.send({
+              type: "comm_sync",
+              payload: { models: [model] },
+            } as CommSyncMessage);
+          } catch (perModelError) {
+            console.warn(
+              `[CommBridge] Skipping non-cloneable model ${model.commId}:`,
+              perModelError,
+            );
+          }
+        }
       }
     }
 
