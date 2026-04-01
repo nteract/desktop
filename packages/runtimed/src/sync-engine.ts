@@ -516,7 +516,7 @@ export class SyncEngine {
               // Output changes detected by WASM-side diff of RuntimeStateDoc.
               // The WASM compares output hash lists before/after sync and
               // reports cell IDs that need re-materialization.
-              const outputChangedCells: string[] = (e as Record<string, unknown>).output_changed_cells as string[] ?? [];
+              const outputChangedCells: string[] = e.output_changed_cells ?? [];
               if (outputChangedCells.length > 0) {
                 // Deduplicate against cells already handled by transitions
                 const transitionCells = new Set(transitions.map((t) => t.cell_id));

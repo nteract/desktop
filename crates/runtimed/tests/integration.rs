@@ -796,6 +796,17 @@ async fn test_streaming_load_via_open_notebook() {
     assert_eq!(cells[3].source, "print('hello')");
     assert_eq!(cells[6].source, "import os");
 
+    // Wait for RuntimeStateDoc sync — outputs live there now, and the
+    // synthetic execution entries may arrive after the notebook doc cells.
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(5) {
+        cells = handle.get_cells();
+        if !cells.is_empty() && !cells[0].outputs.is_empty() {
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+
     // Verify outputs are manifest hashes (64-char hex), not raw JSON
     assert_eq!(cells[0].outputs.len(), 1, "c1 should have 1 output");
     let hash = &cells[0].outputs[0];
