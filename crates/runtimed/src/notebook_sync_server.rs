@@ -1967,21 +1967,31 @@ where
                             }
 
                             NotebookFrameType::RuntimeStateSync => {
-                                // Client's sync reply — apply with change stripping
-                                // so the daemon knows what state the client has.
+                                // Client sync — accept changes (frontend may write
+                                // to comms/*/state/* for widget state updates).
                                 let message = sync::Message::decode(&frame.payload)
                                     .map_err(|e| anyhow::anyhow!("decode state sync: {}", e))?;
                                 let reply_encoded = {
                                     let mut state_doc = room.state_doc.write().await;
 
+                                    // Snapshot comms before applying client changes
+                                    // so we can diff and forward to the kernel.
+                                    let comms_before: HashMap<String, serde_json::Value> = if !message.changes.is_empty() {
+                                        state_doc.read_state().comms.into_iter()
+                                            .map(|(id, e)| (id, e.state))
+                                            .collect()
+                                    } else {
+                                        HashMap::new()
+                                    };
+
                                     let recv_result = catch_automerge_panic("state-receive-sync", || {
-                                        state_doc.receive_sync_message(
+                                        state_doc.receive_sync_message_with_changes(
                                             &mut state_peer_state,
                                             message,
                                         )
                                     });
-                                    match recv_result {
-                                        Ok(Ok(())) => {}
+                                    let had_changes = match recv_result {
+                                        Ok(Ok(changed)) => changed,
                                         Ok(Err(e)) => {
                                             warn!("[notebook-sync] state receive_sync_message error: {}", e);
                                             continue;
@@ -1991,6 +2001,61 @@ where
                                             state_doc.rebuild_from_save();
                                             state_peer_state = sync::State::new();
                                             continue;
+                                        }
+                                    };
+
+                                    // If client sent changes, notify all peers
+                                    // and forward comm state changes to the kernel.
+                                    if had_changes {
+                                        let _ = room.state_changed_tx.send(());
+
+                                        // Diff comms and forward to kernel
+                                        let comms_after = state_doc.read_state().comms;
+                                        let mut comm_deltas: Vec<(String, serde_json::Value)> = Vec::new();
+                                        for (comm_id, entry) in &comms_after {
+                                            let before = comms_before.get(comm_id);
+                                            if before != Some(&entry.state) {
+                                                comm_deltas.push((comm_id.clone(), entry.state.clone()));
+                                            }
+                                        }
+                                        if !comm_deltas.is_empty() {
+                                            let kernel = room.kernel.clone();
+                                            tokio::spawn(async move {
+                                                let mut guard = kernel.lock().await;
+                                                if let Some(ref mut k) = *guard {
+                                                    for (comm_id, state) in comm_deltas {
+                                                        let msg_id = format!("crdt-fwd-{:x}", std::time::SystemTime::now()
+                                                            .duration_since(std::time::UNIX_EPOCH)
+                                                            .unwrap_or_default()
+                                                            .as_nanos());
+                                                        let msg = serde_json::json!({
+                                                            "header": {
+                                                                "msg_id": msg_id,
+                                                                "msg_type": "comm_msg",
+                                                                "session": "",
+                                                                "username": "frontend",
+                                                                "date": "",
+                                                                "version": "5.3"
+                                                            },
+                                                            "parent_header": null,
+                                                            "metadata": {},
+                                                            "content": {
+                                                                "comm_id": comm_id,
+                                                                "data": {
+                                                                    "method": "update",
+                                                                    "state": state,
+                                                                    "buffer_paths": []
+                                                                }
+                                                            },
+                                                            "buffers": [],
+                                                            "channel": "shell"
+                                                        });
+                                                        if let Err(e) = k.send_comm_message(msg).await {
+                                                            warn!("[notebook-sync] Failed to forward comm state to kernel: {}", e);
+                                                        }
+                                                    }
+                                                }
+                                            });
                                         }
                                     }
 

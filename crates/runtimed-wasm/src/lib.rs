@@ -946,6 +946,41 @@ impl NotebookHandle {
         self.doc.save()
     }
 
+    /// Set a single property in a comm's state map.
+    ///
+    /// Writes directly to `comms/{comm_id}/state/{key}` as a native
+    /// Automerge value. Call `flush_runtime_state_sync()` after mutations
+    /// to propagate changes to the daemon.
+    pub fn set_comm_state_property(&mut self, comm_id: &str, key: &str, value_json: &str) -> bool {
+        let value: serde_json::Value = match serde_json::from_str(value_json) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        self.state_doc.set_comm_state_property(comm_id, key, &value)
+    }
+
+    /// Set multiple properties in a comm's state map at once.
+    ///
+    /// Accepts a JSON object string of key-value pairs to write.
+    /// Used by anywidget's `save_changes()` which batches pending mutations.
+    /// Call `flush_runtime_state_sync()` after to propagate.
+    pub fn set_comm_state_batch(&mut self, comm_id: &str, patch_json: &str) -> bool {
+        let patch: serde_json::Value = match serde_json::from_str(patch_json) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let Some(obj) = patch.as_object() else {
+            return false;
+        };
+        let mut any_written = false;
+        for (key, value) in obj {
+            if self.state_doc.set_comm_state_property(comm_id, key, value) {
+                any_written = true;
+            }
+        }
+        any_written
+    }
+
     /// Generate a sync reply for the RuntimeStateDoc.
     /// Called immediately after each `RuntimeStateSyncApplied` event
     /// so the daemon knows which state the client has received.

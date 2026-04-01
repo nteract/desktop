@@ -510,7 +510,7 @@ export function useDaemonKernel({
   // This is the Phase B path — comms flow from the CRDT to the UI.
   // CommSync broadcasts still arrive as a fallback but this effect ensures
   // late-joining windows get widget state from the CRDT immediately.
-  const prevCommsRef = useRef<Record<string, { state: string }>>({});
+  const prevCommsRef = useRef<Record<string, { stateFingerprint: string }>>({});
   useEffect(() => {
     const { onCommMessage } = callbacksRef.current;
     if (!onCommMessage) return;
@@ -525,14 +525,11 @@ export function useDaemonKernel({
     );
     for (const [commId, entry] of sortedComms) {
       const prev = prevComms[commId];
+      // State is now a native object from Automerge (no JSON.parse needed).
+      // Compare via JSON.stringify since object references differ on each sync.
+      const stateFingerprint = JSON.stringify(entry.state);
       if (!prev) {
         // New comm — synthesize comm_open
-        let parsedState: Record<string, unknown>;
-        try {
-          parsedState = JSON.parse(entry.state);
-        } catch {
-          continue;
-        }
         const msg: JupyterMessage = {
           header: {
             msg_id: crypto.randomUUID(),
@@ -546,19 +543,13 @@ export function useDaemonKernel({
           content: {
             comm_id: commId,
             target_name: entry.target_name,
-            data: { state: parsedState, buffer_paths: [] },
+            data: { state: entry.state, buffer_paths: [] },
           },
           buffers: [],
         };
         onCommMessage(msg);
-      } else if (prev.state !== entry.state) {
+      } else if (prev.stateFingerprint !== stateFingerprint) {
         // State changed — synthesize comm_msg update
-        let parsedState: Record<string, unknown>;
-        try {
-          parsedState = JSON.parse(entry.state);
-        } catch {
-          continue;
-        }
         const msg: JupyterMessage = {
           header: {
             msg_id: crypto.randomUUID(),
@@ -571,7 +562,7 @@ export function useDaemonKernel({
           metadata: {},
           content: {
             comm_id: commId,
-            data: { method: "update", state: parsedState, buffer_paths: [] },
+            data: { method: "update", state: entry.state, buffer_paths: [] },
           },
           buffers: [],
         };
@@ -601,7 +592,10 @@ export function useDaemonKernel({
 
     // Update prev snapshot
     prevCommsRef.current = Object.fromEntries(
-      Object.entries(docComms).map(([id, e]) => [id, { state: e.state }]),
+      Object.entries(docComms).map(([id, e]) => [
+        id,
+        { stateFingerprint: JSON.stringify(e.state) },
+      ]),
     );
   }, [runtimeState.comms]);
 

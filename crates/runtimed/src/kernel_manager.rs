@@ -1595,12 +1595,10 @@ impl RoomKernel {
                                     )
                                     .await;
 
-                                // Dual-write to RuntimeStateDoc
+                                // Dual-write to RuntimeStateDoc (native Automerge map)
                                 {
                                     let empty_obj = serde_json::json!({});
                                     let state = data.get("state").unwrap_or(&empty_obj);
-                                    let state_json =
-                                        serde_json::to_string(state).unwrap_or_default();
                                     let model_module = state
                                         .get("_model_module")
                                         .and_then(|v| v.as_str())
@@ -1616,7 +1614,7 @@ impl RoomKernel {
                                         &open.target_name,
                                         model_module,
                                         model_name,
-                                        &state_json,
+                                        state,
                                         seq,
                                     );
                                     let _ = state_changed_for_iopub.send(());

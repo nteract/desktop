@@ -51,8 +51,8 @@ export interface CommDocEntry {
   target_name: string;
   model_module: string;
   model_name: string;
-  /** JSON-encoded widget state. */
-  state: string;
+  /** Widget state as a native object (stored as native Automerge map). */
+  state: Record<string, unknown>;
   /** Output manifest hashes (OutputModel widgets only). */
   outputs: string[];
   /** Insertion order for dependency-correct replay. */
