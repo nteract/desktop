@@ -1517,6 +1517,43 @@ impl RuntimeStateDoc {
     }
 }
 
+// ── Output diff utility ─────────────────────────────────────────────
+
+/// Diff execution outputs between a previous snapshot and the current state.
+///
+/// Returns `(changed_cell_ids, new_snapshot)` where:
+/// - `changed_cell_ids` lists cells whose outputs changed
+/// - `new_snapshot` is the updated prev_execution_outputs for the next diff
+///
+/// Used by the WASM handle to detect mid-execution output changes
+/// (stream append, display update, error) without re-materializing
+/// all cells.
+pub fn diff_execution_outputs(
+    prev: &HashMap<String, Vec<String>>,
+    current_executions: &HashMap<String, ExecutionState>,
+) -> (Vec<String>, HashMap<String, Vec<String>>) {
+    let mut changed_cells = Vec::new();
+
+    for (eid, exec) in current_executions {
+        let outputs_changed = match prev.get(eid) {
+            None => !exec.outputs.is_empty(),
+            Some(prev_outputs) => prev_outputs != &exec.outputs,
+        };
+        if outputs_changed {
+            changed_cells.push(exec.cell_id.clone());
+        }
+    }
+
+    // Keep ALL executions (even with empty outputs) so the next diff
+    // correctly detects transitions from [] → [hash].
+    let new_snapshot: HashMap<String, Vec<String>> = current_executions
+        .iter()
+        .map(|(eid, e)| (eid.clone(), e.outputs.clone()))
+        .collect();
+
+    (changed_cells, new_snapshot)
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2410,5 +2447,139 @@ mod tests {
     fn test_new_doc_has_empty_comms() {
         let doc = RuntimeStateDoc::new();
         assert!(doc.read_state().comms.is_empty());
+    }
+
+    // ── Output diff tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_diff_new_output_detected() {
+        let prev = HashMap::new();
+        let mut execs = HashMap::new();
+        execs.insert(
+            "exec-1".to_string(),
+            ExecutionState {
+                cell_id: "cell-1".to_string(),
+                status: "done".to_string(),
+                execution_count: Some(1),
+                success: Some(true),
+                outputs: vec!["hash1".to_string()],
+            },
+        );
+        let (changed, _) = diff_execution_outputs(&prev, &execs);
+        assert_eq!(changed, vec!["cell-1"]);
+    }
+
+    #[test]
+    fn test_diff_empty_to_empty_no_change() {
+        let prev = HashMap::new();
+        let mut execs = HashMap::new();
+        execs.insert(
+            "exec-1".to_string(),
+            ExecutionState {
+                cell_id: "cell-1".to_string(),
+                status: "running".to_string(),
+                execution_count: None,
+                success: None,
+                outputs: vec![],
+            },
+        );
+        let (changed, _) = diff_execution_outputs(&prev, &execs);
+        assert!(changed.is_empty());
+    }
+
+    #[test]
+    fn test_diff_output_cleared_detected() {
+        let mut prev = HashMap::new();
+        prev.insert("exec-1".to_string(), vec!["hash1".to_string()]);
+        let mut execs = HashMap::new();
+        execs.insert(
+            "exec-1".to_string(),
+            ExecutionState {
+                cell_id: "cell-1".to_string(),
+                status: "done".to_string(),
+                execution_count: Some(1),
+                success: Some(true),
+                outputs: vec![],
+            },
+        );
+        let (changed, _) = diff_execution_outputs(&prev, &execs);
+        assert_eq!(changed, vec!["cell-1"]);
+    }
+
+    /// The critical edge case: after outputs are cleared, the snapshot
+    /// must retain the empty outputs so the NEXT diff comparing
+    /// [] vs ["new_hash"] correctly detects the change.
+    #[test]
+    fn test_diff_re_execution_output_after_clear() {
+        // Stage 1: execution has output
+        let prev = HashMap::new();
+        let mut execs = HashMap::new();
+        execs.insert(
+            "exec-1".to_string(),
+            ExecutionState {
+                cell_id: "cell-1".to_string(),
+                status: "done".to_string(),
+                execution_count: Some(1),
+                success: Some(true),
+                outputs: vec!["hash1".to_string()],
+            },
+        );
+        let (changed, snapshot) = diff_execution_outputs(&prev, &execs);
+        assert_eq!(changed, vec!["cell-1"]);
+
+        // Stage 2: outputs cleared (pre-execute)
+        execs.get_mut("exec-1").unwrap().outputs = vec![];
+        let (changed, snapshot) = diff_execution_outputs(&snapshot, &execs);
+        assert_eq!(changed, vec!["cell-1"], "clear should be detected");
+
+        // Stage 3: new execution with empty outputs (just created)
+        execs.insert(
+            "exec-2".to_string(),
+            ExecutionState {
+                cell_id: "cell-1".to_string(),
+                status: "running".to_string(),
+                execution_count: None,
+                success: None,
+                outputs: vec![],
+            },
+        );
+        let (changed, snapshot) = diff_execution_outputs(&snapshot, &execs);
+        assert!(changed.is_empty(), "no output change yet");
+
+        // Stage 4: new output arrives on exec-2
+        execs.get_mut("exec-2").unwrap().outputs = vec!["hash2".to_string()];
+        let (changed, _) = diff_execution_outputs(&snapshot, &execs);
+        assert_eq!(
+            changed,
+            vec!["cell-1"],
+            "new output after clear must be detected"
+        );
+    }
+
+    /// Verify snapshot retains empty outputs (the original bug was
+    /// filtering them out, which broke subsequent diffs).
+    #[test]
+    fn test_diff_snapshot_retains_empty_outputs() {
+        let mut prev = HashMap::new();
+        prev.insert("exec-1".to_string(), vec!["hash1".to_string()]);
+
+        let mut execs = HashMap::new();
+        execs.insert(
+            "exec-1".to_string(),
+            ExecutionState {
+                cell_id: "cell-1".to_string(),
+                status: "done".to_string(),
+                execution_count: Some(1),
+                success: Some(true),
+                outputs: vec![],
+            },
+        );
+
+        let (_, snapshot) = diff_execution_outputs(&prev, &execs);
+        assert!(
+            snapshot.contains_key("exec-1"),
+            "empty outputs must be retained in snapshot"
+        );
+        assert!(snapshot["exec-1"].is_empty());
     }
 }
