@@ -381,8 +381,11 @@ Deno.test("Bug #1067: consumed sync message causes protocol stall", () => {
   // Step 2: Client receives the server's sync message
   const serverMsg1 = server.flush_local_changes();
   assert(serverMsg1 !== undefined, "server should have a sync message");
-  const changed = client.receive_sync_message(serverMsg1);
-  assert(changed, "client doc should have changed");
+  client.receive_sync_message(serverMsg1);
+  // Note: we don't assert `changed` here — bloom filter false positives
+  // can cause the first message to not carry change data. The changed
+  // flag is tested separately (see "load from bytes + incremental sync
+  // with changed flag" test). This test focuses on protocol recovery.
 
   // Step 3: Client generates a reply — like flushSync() does.
   // This ADVANCES client's sync_state.last_sent_heads.
