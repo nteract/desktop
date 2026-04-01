@@ -62,6 +62,15 @@ agents = [
     "claude-agent-sdk>=0.1.0",
 ]
 
+[tool.ty.environment]
+# Workspace members use src-layout; .pth files from editable installs
+# aren't visible to static analysis, so we add the source roots explicitly.
+extra-paths = [
+    "python/runtimed/src",
+    "python/nteract/src",
+    "python/gremlin/src",
+]
+
 [tool.ty.rules]
 # .pyi stubs exist for the native PyO3 module (runtimed.pyi) — keep this strict
 unresolved-import = "error"
