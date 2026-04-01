@@ -1179,8 +1179,6 @@ impl RoomKernel {
                                     comm_state.get_capture_widget(parent_msg_id).await
                                 {
                                     // Route to Output widget via comm_msg with method="custom"
-                                    // The frontend comm router dispatches method="custom" messages
-                                    // to widget handlers, with nested content containing the actual payload
                                     let stream_name = match stream.name {
                                         jupyter_protocol::Stdio::Stdout => "stdout",
                                         jupyter_protocol::Stdio::Stderr => "stderr",
@@ -1190,6 +1188,29 @@ impl RoomKernel {
                                         "name": stream_name,
                                         "text": stream.text
                                     });
+
+                                    // Persist to CRDT via blob store manifest (same as cell outputs)
+                                    if let Ok(manifest_json) = crate::output_store::create_manifest(
+                                        &output,
+                                        &blob_store,
+                                        crate::output_store::DEFAULT_INLINE_THRESHOLD,
+                                    )
+                                    .await
+                                    {
+                                        if let Ok(hash) = crate::output_store::store_manifest(
+                                            &manifest_json,
+                                            &blob_store,
+                                        )
+                                        .await
+                                        {
+                                            let mut sd = state_doc_for_iopub.write().await;
+                                            if sd.append_comm_output(&widget_comm_id, &hash) {
+                                                let _ = state_changed_for_iopub.send(());
+                                            }
+                                        }
+                                    }
+
+                                    // Broadcast for real-time UI
                                     let content = serde_json::json!({
                                         "comm_id": widget_comm_id,
                                         "data": {
@@ -1344,10 +1365,32 @@ impl RoomKernel {
                                 if let Some(widget_comm_id) =
                                     comm_state.get_capture_widget(parent_msg_id).await
                                 {
-                                    // Route to Output widget via comm_msg with method="custom"
                                     if let Some(nbformat_value) =
                                         message_content_to_nbformat(&message.content)
                                     {
+                                        // Persist to CRDT via blob store manifest
+                                        if let Ok(manifest_json) =
+                                            crate::output_store::create_manifest(
+                                                &nbformat_value,
+                                                &blob_store,
+                                                crate::output_store::DEFAULT_INLINE_THRESHOLD,
+                                            )
+                                            .await
+                                        {
+                                            if let Ok(hash) = crate::output_store::store_manifest(
+                                                &manifest_json,
+                                                &blob_store,
+                                            )
+                                            .await
+                                            {
+                                                let mut sd = state_doc_for_iopub.write().await;
+                                                if sd.append_comm_output(&widget_comm_id, &hash) {
+                                                    let _ = state_changed_for_iopub.send(());
+                                                }
+                                            }
+                                        }
+
+                                        // Broadcast for real-time UI
                                         let content = serde_json::json!({
                                             "comm_id": widget_comm_id,
                                             "data": {
@@ -1526,10 +1569,32 @@ impl RoomKernel {
                                 if let Some(widget_comm_id) =
                                     comm_state.get_capture_widget(parent_msg_id).await
                                 {
-                                    // Route error to Output widget via comm_msg with method="custom"
                                     if let Some(nbformat_value) =
                                         message_content_to_nbformat(&message.content)
                                     {
+                                        // Persist to CRDT via blob store manifest
+                                        if let Ok(manifest_json) =
+                                            crate::output_store::create_manifest(
+                                                &nbformat_value,
+                                                &blob_store,
+                                                crate::output_store::DEFAULT_INLINE_THRESHOLD,
+                                            )
+                                            .await
+                                        {
+                                            if let Ok(hash) = crate::output_store::store_manifest(
+                                                &manifest_json,
+                                                &blob_store,
+                                            )
+                                            .await
+                                            {
+                                                let mut sd = state_doc_for_iopub.write().await;
+                                                if sd.append_comm_output(&widget_comm_id, &hash) {
+                                                    let _ = state_changed_for_iopub.send(());
+                                                }
+                                            }
+                                        }
+
+                                        // Broadcast for real-time UI
                                         let content = serde_json::json!({
                                             "comm_id": widget_comm_id,
                                             "data": {
@@ -1645,7 +1710,15 @@ impl RoomKernel {
                                 if let Some(widget_comm_id) =
                                     comm_state.get_capture_widget(parent_msg_id).await
                                 {
-                                    // Route clear_output to Output widget via comm_msg
+                                    // Clear captured outputs in CRDT
+                                    {
+                                        let mut sd = state_doc_for_iopub.write().await;
+                                        if sd.clear_comm_outputs(&widget_comm_id) {
+                                            let _ = state_changed_for_iopub.send(());
+                                        }
+                                    }
+
+                                    // Broadcast for real-time UI
                                     let content = serde_json::json!({
                                         "comm_id": widget_comm_id,
                                         "data": {
