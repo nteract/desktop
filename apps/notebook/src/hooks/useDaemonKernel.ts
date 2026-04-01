@@ -10,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getBlobPort, refreshBlobPort, resetBlobPort } from "../lib/blob-port";
+import { resolveBlobSentinels } from "../lib/blob-sentinel";
 import {
   isKernelStatus,
   KERNEL_STATUS,
@@ -529,44 +530,62 @@ export function useDaemonKernel({
       // Compare via JSON.stringify since object references differ on each sync.
       const stateFingerprint = JSON.stringify(entry.state);
       if (!prev) {
-        // New comm — synthesize comm_open
-        const msg: JupyterMessage = {
-          header: {
-            msg_id: crypto.randomUUID(),
-            msg_type: "comm_open",
-            session: "",
-            username: "kernel",
-            date: new Date().toISOString(),
-            version: "5.3",
+        // New comm — synthesize comm_open.
+        // Resolve blob sentinels async, then deliver the message.
+        const state = entry.state as Record<string, unknown>;
+        const targetName = entry.target_name;
+        resolveBlobSentinels(state).then(
+          ({ resolvedState, buffers, bufferPaths }) => {
+            const { onCommMessage: cb } = callbacksRef.current;
+            if (!cb) return;
+            cb({
+              header: {
+                msg_id: crypto.randomUUID(),
+                msg_type: "comm_open",
+                session: "",
+                username: "kernel",
+                date: new Date().toISOString(),
+                version: "5.3",
+              },
+              metadata: {},
+              content: {
+                comm_id: commId,
+                target_name: targetName,
+                data: { state: resolvedState, buffer_paths: bufferPaths },
+              },
+              buffers,
+            });
           },
-          metadata: {},
-          content: {
-            comm_id: commId,
-            target_name: entry.target_name,
-            data: { state: entry.state, buffer_paths: [] },
-          },
-          buffers: [],
-        };
-        onCommMessage(msg);
+        );
       } else if (prev.stateFingerprint !== stateFingerprint) {
-        // State changed — synthesize comm_msg update
-        const msg: JupyterMessage = {
-          header: {
-            msg_id: crypto.randomUUID(),
-            msg_type: "comm_msg",
-            session: "",
-            username: "kernel",
-            date: new Date().toISOString(),
-            version: "5.3",
+        // State changed — synthesize comm_msg update.
+        const state = entry.state as Record<string, unknown>;
+        resolveBlobSentinels(state).then(
+          ({ resolvedState, buffers, bufferPaths }) => {
+            const { onCommMessage: cb } = callbacksRef.current;
+            if (!cb) return;
+            cb({
+              header: {
+                msg_id: crypto.randomUUID(),
+                msg_type: "comm_msg",
+                session: "",
+                username: "kernel",
+                date: new Date().toISOString(),
+                version: "5.3",
+              },
+              metadata: {},
+              content: {
+                comm_id: commId,
+                data: {
+                  method: "update",
+                  state: resolvedState,
+                  buffer_paths: bufferPaths,
+                },
+              },
+              buffers,
+            });
           },
-          metadata: {},
-          content: {
-            comm_id: commId,
-            data: { method: "update", state: entry.state, buffer_paths: [] },
-          },
-          buffers: [],
-        };
-        onCommMessage(msg);
+        );
       }
     }
 
