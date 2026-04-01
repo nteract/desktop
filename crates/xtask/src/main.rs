@@ -2001,6 +2001,17 @@ fn apply_sccache_env(command: &mut Command) {
     });
     if available {
         command.env("RUSTC_WRAPPER", "sccache");
+        // sccache cannot cache incremental builds — disable it so all
+        // crates are cacheable. Respect an explicit user override.
+        if env::var_os("CARGO_INCREMENTAL").is_none() {
+            command.env("CARGO_INCREMENTAL", "0");
+        }
+        // Default 10 GiB cache is too small when multiple worktrees share it.
+        // Override with SCCACHE_CACHE_SIZE for larger machines.
+        // Takes effect on next sccache-server start (`sccache --stop-server`).
+        if env::var_os("SCCACHE_CACHE_SIZE").is_none() {
+            command.env("SCCACHE_CACHE_SIZE", "50G");
+        }
     }
 }
 

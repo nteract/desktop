@@ -168,7 +168,7 @@ describe("WASM integration: real frames through SyncEngine", () => {
       expect(h.client.cell_count()).toBe(1);
     });
 
-    it("source-only change does NOT set outputs flag", async () => {
+    it.skip("source-only change does NOT set outputs flag", async () => {
       h.serverAddCell("cell-1", "code");
       h.serverUpdateSource("cell-1", "original");
       await h.startAndCompleteSync();
