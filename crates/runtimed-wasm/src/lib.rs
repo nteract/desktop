@@ -344,18 +344,34 @@ impl NotebookHandle {
     }
 
     /// Get all cells as an array of JsCell objects.
+    ///
+    /// Outputs are populated from RuntimeStateDoc when available.
     pub fn get_cells(&self) -> Vec<JsCell> {
         self.doc
             .get_cells()
             .into_iter()
             .enumerate()
-            .map(JsCell::from)
+            .map(|(idx, mut snap)| {
+                if let Some(outputs) = self.get_runtime_outputs_for_cell(&snap.id) {
+                    snap.outputs = outputs;
+                }
+                JsCell::from((idx, snap))
+            })
             .collect()
     }
 
     /// Get all cells as a JSON string (for bulk materialization).
+    ///
+    /// Outputs are populated from RuntimeStateDoc when available, falling
+    /// back to the notebook doc for cells without execution entries.
     pub fn get_cells_json(&self) -> String {
-        let cells = self.doc.get_cells();
+        let mut cells = self.doc.get_cells();
+        // Override outputs from RuntimeStateDoc
+        for cell in &mut cells {
+            if let Some(outputs) = self.get_runtime_outputs_for_cell(&cell.id) {
+                cell.outputs = outputs;
+            }
+        }
         serde_json::to_string(&cells).unwrap_or_else(|_| "[]".to_string())
     }
 
@@ -381,9 +397,15 @@ impl NotebookHandle {
 
     /// Get a cell's outputs as a native JS array of strings.
     ///
-    /// Each element is a JSON-encoded Jupyter output object (or manifest hash).
+    /// Prefers RuntimeStateDoc outputs (from the latest execution for this cell).
+    /// Falls back to the notebook doc if no execution exists in RuntimeStateDoc.
     /// Returns undefined if the cell doesn't exist.
     pub fn get_cell_outputs(&self, cell_id: &str) -> JsValue {
+        // Try RuntimeStateDoc first
+        if let Some(outputs) = self.get_runtime_outputs_for_cell(cell_id) {
+            return serialize_to_js(&outputs).unwrap_or(JsValue::UNDEFINED);
+        }
+        // Fall back to notebook doc
         match self.doc.get_cell_outputs(cell_id) {
             Some(outputs) => serialize_to_js(&outputs).unwrap_or(JsValue::UNDEFINED),
             None => JsValue::UNDEFINED,
@@ -411,13 +433,20 @@ impl NotebookHandle {
     }
 
     /// Get a single cell by ID, or null if not found.
+    ///
+    /// Outputs are populated from RuntimeStateDoc when available.
     pub fn get_cell(&self, cell_id: &str) -> Option<JsCell> {
         let cells = self.doc.get_cells();
         cells
             .into_iter()
             .enumerate()
             .find(|(_, c)| c.id == cell_id)
-            .map(JsCell::from)
+            .map(|(idx, mut snap)| {
+                if let Some(outputs) = self.get_runtime_outputs_for_cell(&snap.id) {
+                    snap.outputs = outputs;
+                }
+                JsCell::from((idx, snap))
+            })
     }
 
     /// Add a new cell at the given index (backward-compatible API).
@@ -981,6 +1010,21 @@ impl NotebookHandle {
     pub fn get_runtime_state(&self) -> JsValue {
         let state = self.state_doc.read_state();
         serialize_to_js(&state).unwrap_or(JsValue::UNDEFINED)
+    }
+
+    /// Get outputs for a cell from RuntimeStateDoc (latest execution).
+    ///
+    /// Finds the most recent execution for the given cell_id by preferring
+    /// the highest execution_count, then falls back to "running" status.
+    /// Returns None if no execution exists for this cell.
+    fn get_runtime_outputs_for_cell(&self, cell_id: &str) -> Option<Vec<String>> {
+        let state = self.state_doc.read_state();
+        state
+            .executions
+            .values()
+            .filter(|e| e.cell_id == cell_id)
+            .max_by_key(|e| e.execution_count)
+            .map(|e| e.outputs.clone())
     }
 
     /// Reset the sync state. Call this when reconnecting to a new daemon session.

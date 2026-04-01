@@ -148,6 +148,19 @@ impl DocHandle {
         Ok(state.state_doc.read_state())
     }
 
+    /// Get outputs for a cell from RuntimeStateDoc (latest execution).
+    ///
+    /// Returns None if no execution exists or if RuntimeState is unavailable.
+    fn get_runtime_outputs_for_cell(&self, cell_id: &str) -> Option<Vec<String>> {
+        let state = self.get_runtime_state().ok()?;
+        state
+            .executions
+            .values()
+            .filter(|e| e.cell_id == cell_id)
+            .max_by_key(|e| e.execution_count)
+            .map(|e| e.outputs.clone())
+    }
+
     // =====================================================================
     // Document mutations — synchronous, direct, no channels
     // =====================================================================
@@ -399,9 +412,21 @@ impl DocHandle {
     }
 
     /// Get a single cell by ID from the latest snapshot.
+    ///
+    /// Outputs are populated from RuntimeStateDoc when available.
     pub fn get_cell(&self, cell_id: &str) -> Option<notebook_doc::CellSnapshot> {
         let snapshot = self.snapshot_rx.borrow();
-        snapshot.cells.iter().find(|c| c.id == cell_id).cloned()
+        snapshot
+            .cells
+            .iter()
+            .find(|c| c.id == cell_id)
+            .cloned()
+            .map(|mut cell| {
+                if let Some(outputs) = self.get_runtime_outputs_for_cell(&cell.id) {
+                    cell.outputs = outputs;
+                }
+                cell
+            })
     }
 
     /// Get the ordered list of cell IDs from the latest snapshot.
@@ -443,7 +468,12 @@ impl DocHandle {
     }
 
     /// Get a single cell's JSON-encoded outputs.
+    ///
+    /// Prefers RuntimeStateDoc outputs over notebook doc.
     pub fn get_cell_outputs(&self, cell_id: &str) -> Option<Vec<String>> {
+        if let Some(outputs) = self.get_runtime_outputs_for_cell(cell_id) {
+            return Some(outputs);
+        }
         let snapshot = self.snapshot_rx.borrow();
         snapshot
             .cells
@@ -641,8 +671,23 @@ impl DocHandle {
     }
 
     /// Get all cells from the latest snapshot.
+    ///
+    /// Outputs are populated from RuntimeStateDoc when available.
     pub fn get_cells(&self) -> Vec<notebook_doc::CellSnapshot> {
-        self.snapshot_rx.borrow().cells.as_ref().clone()
+        let mut cells = self.snapshot_rx.borrow().cells.as_ref().clone();
+        if let Ok(state) = self.get_runtime_state() {
+            for cell in &mut cells {
+                let latest = state
+                    .executions
+                    .values()
+                    .filter(|e| e.cell_id == cell.id)
+                    .max_by_key(|e| e.execution_count);
+                if let Some(entry) = latest {
+                    cell.outputs = entry.outputs.clone();
+                }
+            }
+        }
+        cells
     }
 
     /// Get the typed notebook metadata from the latest snapshot.

@@ -24,6 +24,7 @@
 //!       status: Str         ("queued" | "running" | "done" | "error")
 //!       execution_count: Int|null
 //!       success: Bool|null
+//!       outputs: List[Str]  (manifest hashes — daemon writes during execution)
 //!   env/
 //!     in_sync: bool
 //!     added: List[Str]     (packages in metadata but not in kernel)
@@ -101,6 +102,9 @@ pub struct ExecutionState {
     /// Whether the execution succeeded (set on completion).
     #[serde(default)]
     pub success: Option<bool>,
+    /// Output manifest hashes for this execution.
+    #[serde(default)]
+    pub outputs: Vec<String>,
 }
 
 /// Environment sync state snapshot.
@@ -638,6 +642,9 @@ impl RuntimeStateDoc {
         self.doc
             .put(&entry, "success", ScalarValue::Null)
             .expect("put execution.success");
+        self.doc
+            .put_object(&entry, "outputs", ObjType::List)
+            .expect("scaffold execution.outputs");
         true
     }
 
@@ -741,12 +748,102 @@ impl RuntimeStateDoc {
                 _ => None,
             });
 
+        let outputs = self.read_str_list(&entry, "outputs");
+
         Some(ExecutionState {
             cell_id,
             status,
             execution_count,
             success,
+            outputs,
         })
+    }
+
+    // ── Execution output methods ──────────────────────────────────
+
+    /// Append an output manifest hash to an execution's outputs list.
+    #[allow(clippy::expect_used)]
+    pub fn append_execution_output(&mut self, execution_id: &str, hash: &str) -> bool {
+        let Some(executions) = self.get_map("executions") else {
+            return false;
+        };
+        let Some((_, entry)) = self.doc.get(&executions, execution_id).ok().flatten() else {
+            return false;
+        };
+        let Some((_, outputs)) = self.doc.get(&entry, "outputs").ok().flatten() else {
+            // Scaffold if missing (backward compat with entries created before outputs existed)
+            let outputs = self
+                .doc
+                .put_object(&entry, "outputs", ObjType::List)
+                .expect("scaffold outputs");
+            self.doc.insert(&outputs, 0, hash).expect("insert output");
+            return true;
+        };
+        let len = self.doc.length(&outputs);
+        self.doc.insert(&outputs, len, hash).expect("append output");
+        true
+    }
+
+    /// Upsert an output at a specific index (for stream terminal updates).
+    ///
+    /// If `index` equals the current length, appends. If `index` is within
+    /// bounds, replaces the existing entry.
+    #[allow(clippy::expect_used)]
+    pub fn upsert_execution_output(
+        &mut self,
+        execution_id: &str,
+        index: usize,
+        hash: &str,
+    ) -> bool {
+        let Some(executions) = self.get_map("executions") else {
+            return false;
+        };
+        let Some((_, entry)) = self.doc.get(&executions, execution_id).ok().flatten() else {
+            return false;
+        };
+        let Some((_, outputs)) = self.doc.get(&entry, "outputs").ok().flatten() else {
+            return false;
+        };
+        let len = self.doc.length(&outputs);
+        if index < len {
+            self.doc.put(&outputs, index, hash).expect("upsert output");
+        } else {
+            self.doc.insert(&outputs, len, hash).expect("append output");
+        }
+        true
+    }
+
+    /// Clear all outputs for an execution.
+    #[allow(clippy::expect_used)]
+    pub fn clear_execution_outputs(&mut self, execution_id: &str) -> bool {
+        let Some(executions) = self.get_map("executions") else {
+            return false;
+        };
+        let Some((_, entry)) = self.doc.get(&executions, execution_id).ok().flatten() else {
+            return false;
+        };
+        let Some((_, outputs)) = self.doc.get(&entry, "outputs").ok().flatten() else {
+            return false;
+        };
+        let len = self.doc.length(&outputs);
+        if len == 0 {
+            return false;
+        }
+        for i in (0..len).rev() {
+            self.doc.delete(&outputs, i).expect("delete output");
+        }
+        true
+    }
+
+    /// Read outputs for an execution.
+    pub fn get_execution_outputs(&self, execution_id: &str) -> Vec<String> {
+        let Some(executions) = self.get_map("executions") else {
+            return Vec::new();
+        };
+        let Some((_, entry)) = self.doc.get(&executions, execution_id).ok().flatten() else {
+            return Vec::new();
+        };
+        self.read_str_list(&entry, "outputs")
     }
 
     /// Remove old executions, keeping the most recent `max` entries.

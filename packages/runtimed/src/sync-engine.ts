@@ -99,6 +99,7 @@ export class SyncEngine {
   private subscription: Subscription | null = null;
   private awaitingInitialSync = true;
   private prevExecutions: Record<string, ExecutionState> = {};
+  private prevOutputSnapshots: Map<string, string[]> = new Map();
 
   // Internal subjects
   private readonly frameIn$ = new Subject<number[]>();
@@ -454,6 +455,25 @@ export class SyncEngine {
             if (transitions.length > 0) {
               this._executionTransitions$.next(transitions);
             }
+            // Also diff outputs for the error recovery path
+            const outputChangedCells = this.diffExecutionOutputs(
+              state.executions,
+            );
+            if (outputChangedCells.size > 0) {
+              for (const cellId of outputChangedCells) {
+                materialize$.next({
+                  changed: [
+                    {
+                      cell_id: cellId,
+                      fields: { outputs: true },
+                    },
+                  ],
+                  added: [],
+                  removed: [],
+                  order_changed: false,
+                });
+              }
+            }
           }
         }),
     );
@@ -482,35 +502,49 @@ export class SyncEngine {
               this._runtimeState$.next(state);
               if (transitions.length > 0) {
                 this._executionTransitions$.next(transitions);
+              }
 
-                // Inject synthetic changesets on execution lifecycle transitions
-                // so the materialization pipeline stays in sync with the CRDT.
-                //
-                // "started": the daemon cleared outputs in the CRDT on
-                //   execute_input — re-read from WASM to show empty outputs.
-                // "done"/"error": reconcile the store with the CRDT's final
-                //   state in case earlier materializations were missed.
-                for (const t of transitions) {
-                  if (t.kind === "started") {
-                    log.debug(
-                      `[sync-engine] execution started for ${t.cell_id.slice(0, 8)} — clearing outputs`,
-                    );
-                  } else {
-                    log.debug(
-                      `[sync-engine] execution ${t.kind} for ${t.cell_id.slice(0, 8)} — reconciling outputs`,
-                    );
-                  }
+              // Diff execution outputs to detect incremental output changes.
+              // This covers both lifecycle transitions (started clears outputs,
+              // done/error reconciles) and mid-execution output arrival.
+              const outputChangedCells = this.diffExecutionOutputs(
+                state.executions,
+              );
+              if (outputChangedCells.size > 0) {
+                for (const cellId of outputChangedCells) {
+                  log.debug(
+                    `[sync-engine] outputs changed for ${cellId.slice(0, 8)}`,
+                  );
                   materialize$.next({
                     changed: [
                       {
-                        cell_id: t.cell_id,
-                        fields: { outputs: true, execution_count: true },
+                        cell_id: cellId,
+                        fields: { outputs: true },
                       },
                     ],
                     added: [],
                     removed: [],
                     order_changed: false,
                   });
+                }
+              }
+
+              // Also inject execution_count changes on lifecycle transitions
+              if (transitions.length > 0) {
+                for (const t of transitions) {
+                  if (t.kind === "started" && !outputChangedCells.has(t.cell_id)) {
+                    materialize$.next({
+                      changed: [
+                        {
+                          cell_id: t.cell_id,
+                          fields: { execution_count: true },
+                        },
+                      ],
+                      added: [],
+                      removed: [],
+                      order_changed: false,
+                    });
+                  }
                 }
               }
             }
@@ -802,5 +836,48 @@ export class SyncEngine {
     this.opts.logger.info("[sync-engine] Resetting for bootstrap");
     this.awaitingInitialSync = true;
     this.prevExecutions = {};
+    this.prevOutputSnapshots = new Map();
+  }
+
+  // ── Output change detection ──────────────────────────────────────
+
+  /**
+   * Diff execution outputs between previous and current state.
+   *
+   * Returns the set of cell_ids whose outputs changed. Compares
+   * the outputs array (manifest hashes) for each execution_id.
+   */
+  private diffExecutionOutputs(
+    executions: Record<string, ExecutionState>,
+  ): Set<string> {
+    const changedCells = new Set<string>();
+
+    for (const [eid, entry] of Object.entries(executions)) {
+      const prev = this.prevOutputSnapshots.get(eid);
+      const curr = entry.outputs;
+
+      if (!prev) {
+        // New execution — only report if it has outputs
+        if (curr.length > 0) {
+          changedCells.add(entry.cell_id);
+        }
+      } else if (
+        prev.length !== curr.length ||
+        prev.some((h, i) => h !== curr[i])
+      ) {
+        changedCells.add(entry.cell_id);
+      }
+
+      this.prevOutputSnapshots.set(eid, curr);
+    }
+
+    // Clean up removed executions
+    for (const eid of this.prevOutputSnapshots.keys()) {
+      if (!(eid in executions)) {
+        this.prevOutputSnapshots.delete(eid);
+      }
+    }
+
+    return changedCells;
   }
 }

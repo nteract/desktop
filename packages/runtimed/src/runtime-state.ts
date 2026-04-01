@@ -43,6 +43,7 @@ export interface ExecutionState {
   status: "queued" | "running" | "done" | "error";
   execution_count: number | null;
   success: boolean | null;
+  outputs: string[];
 }
 
 /** A detected status transition for a single execution. */

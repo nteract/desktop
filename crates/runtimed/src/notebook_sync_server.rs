@@ -4598,6 +4598,34 @@ async fn save_notebook_to_disk(
     };
     let nbformat_attachments = room.nbformat_attachments.read().await.clone();
 
+    // Read RuntimeStateDoc to get outputs per execution_id.
+    // Build a cell_id → outputs map from the latest execution per cell.
+    let runtime_outputs: HashMap<String, Vec<String>> = {
+        let sd = room.state_doc.read().await;
+        let state = sd.read_state();
+        let mut cell_outputs: HashMap<String, (Option<i64>, Vec<String>)> = HashMap::new();
+        for entry in state.executions.values() {
+            if entry.outputs.is_empty() {
+                continue;
+            }
+            let existing = cell_outputs.get(&entry.cell_id);
+            let should_replace = match existing {
+                None => true,
+                Some((prev_count, _)) => entry.execution_count > *prev_count,
+            };
+            if should_replace {
+                cell_outputs.insert(
+                    entry.cell_id.clone(),
+                    (entry.execution_count, entry.outputs.clone()),
+                );
+            }
+        }
+        cell_outputs
+            .into_iter()
+            .map(|(cid, (_, outputs))| (cid, outputs))
+            .collect()
+    };
+
     // Reconstruct cells as JSON
     // Cell metadata now comes from the CellSnapshot (populated during load)
     let mut nb_cells = Vec::new();
@@ -4629,9 +4657,13 @@ async fn save_notebook_to_disk(
         });
 
         if cell.cell_type == "code" {
-            // Resolve outputs (may be manifest hashes or raw JSON)
+            // Resolve outputs: prefer RuntimeStateDoc, fall back to notebook doc
+            let output_refs = runtime_outputs
+                .get(&cell.id)
+                .cloned()
+                .unwrap_or_else(|| cell.outputs.clone());
             let mut resolved_outputs = Vec::new();
-            for output_str in &cell.outputs {
+            for output_str in &output_refs {
                 let output_value = resolve_cell_output(output_str, &room.blob_store).await;
                 resolved_outputs.push(output_value);
             }
@@ -5696,6 +5728,23 @@ where
                 doc.set_cell_resolved_assets(&cell.id, resolved_assets)
                     .map_err(|e| format!("Failed to set resolved assets for {}: {}", cell.id, e))?;
             }
+            // Also write outputs to RuntimeStateDoc for loaded cells
+            {
+                let mut sd = room.state_doc.write().await;
+                for (_idx, cell, output_refs, _resolved_assets) in &batch {
+                    if !output_refs.is_empty() {
+                        let synthetic_eid = format!("loaded:{}", cell.id);
+                        sd.create_execution(&synthetic_eid, &cell.id);
+                        sd.set_execution_done(&synthetic_eid, true);
+                        if let Ok(count) = cell.execution_count.parse::<i64>() {
+                            sd.set_execution_count(&synthetic_eid, count);
+                        }
+                        for output_ref in output_refs {
+                            sd.append_execution_output(&synthetic_eid, output_ref);
+                        }
+                    }
+                }
+            }
             match catch_automerge_panic("streaming-load-cells", || {
                 doc.generate_sync_message(peer_state).map(|m| m.encode())
             }) {
@@ -5779,6 +5828,7 @@ pub async fn load_notebook_from_disk(
     doc: &mut NotebookDoc,
     path: &std::path::Path,
     blob_store: &BlobStore,
+    mut state_doc: Option<&mut RuntimeStateDoc>,
 ) -> Result<usize, String> {
     // Read the file
     let content = tokio::fs::read_to_string(path)
@@ -5802,6 +5852,20 @@ pub async fn load_notebook_from_disk(
             .map_err(|e| format!("Failed to update source: {}", e))?;
         if !cell.outputs.is_empty() {
             let output_refs = outputs_to_manifest_refs(&cell.outputs, blob_store).await;
+            // Write outputs to RuntimeStateDoc (primary) with a synthetic execution_id
+            if let Some(ref mut sd) = state_doc {
+                let synthetic_eid = format!("loaded:{}", cell.id);
+                sd.create_execution(&synthetic_eid, &cell.id);
+                sd.set_execution_done(&synthetic_eid, true);
+                for output_ref in &output_refs {
+                    sd.append_execution_output(&synthetic_eid, output_ref);
+                }
+                // Parse execution_count if available
+                if let Ok(count) = cell.execution_count.parse::<i64>() {
+                    sd.set_execution_count(&synthetic_eid, count);
+                }
+            }
+            // Also write to notebook doc for backward compatibility during transition
             doc.set_outputs(&cell.id, &output_refs)
                 .map_err(|e| format!("Failed to set outputs: {}", e))?;
         }
@@ -7622,7 +7686,7 @@ mod tests {
         let notebook_id = ipynb_path.to_string_lossy().to_string();
         let mut doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
 
-        let count = load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store)
+        let count = load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store, None)
             .await
             .unwrap();
         assert_eq!(count, 3);
@@ -7725,7 +7789,7 @@ mod tests {
         let notebook_id = ipynb_path.to_string_lossy().to_string();
         let mut doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
 
-        let count = load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store)
+        let count = load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store, None)
             .await
             .unwrap();
         assert_eq!(count, 1);
@@ -7774,7 +7838,7 @@ mod tests {
         let notebook_id = ipynb_path.to_string_lossy().to_string();
         let mut doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
 
-        let count = load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store)
+        let count = load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store, None)
             .await
             .unwrap();
         assert_eq!(count, 1);

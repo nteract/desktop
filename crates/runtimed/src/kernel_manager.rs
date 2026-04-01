@@ -133,73 +133,48 @@ fn is_manifest_hash(s: &str) -> bool {
     s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// Update an output by display_id when outputs are manifest hashes.
+/// Update an output by display_id across all executions in RuntimeStateDoc.
 ///
-/// This function iterates through all cells and outputs in the document,
-/// looking for a manifest with a matching display_id. When found, it creates
-/// a new manifest with updated data and replaces the hash in the document.
-///
-/// Returns true if an output was found and updated, false otherwise.
-async fn update_output_by_display_id_with_manifests(
-    doc: &mut NotebookDoc,
+/// Scans all execution outputs for a matching display_id, creates a new manifest
+/// with updated data, and replaces the hash in RuntimeStateDoc.
+async fn update_display_in_runtime_state(
+    state_doc: &Arc<RwLock<RuntimeStateDoc>>,
     display_id: &str,
     new_data: &serde_json::Value,
     new_metadata: &serde_json::Map<String, serde_json::Value>,
     blob_store: &BlobStore,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-    // Get all outputs from the document
-    let outputs = doc.get_all_outputs();
+    // Read all execution outputs
+    let state = {
+        let sd = state_doc.read().await;
+        sd.read_state()
+    };
 
-    for (cell_id, output_idx, output_str) in outputs {
-        // Check if it's a manifest hash or raw JSON
-        if is_manifest_hash(&output_str) {
-            // Fetch manifest from blob store
-            let manifest_bytes = match blob_store.get(&output_str).await? {
-                Some(bytes) => bytes,
-                None => continue,
-            };
-            let manifest_json = String::from_utf8(manifest_bytes)?;
+    for (eid, entry) in &state.executions {
+        for (idx, output_str) in entry.outputs.iter().enumerate() {
+            if is_manifest_hash(output_str) {
+                let manifest_bytes = match blob_store.get(output_str).await? {
+                    Some(bytes) => bytes,
+                    None => continue,
+                };
+                let manifest_json = String::from_utf8(manifest_bytes)?;
 
-            // Try to update the manifest
-            if let Some(updated_manifest) = output_store::update_manifest_display_data(
-                &manifest_json,
-                display_id,
-                new_data,
-                new_metadata,
-                blob_store,
-                DEFAULT_INLINE_THRESHOLD,
-            )
-            .await?
-            {
-                // Store the updated manifest and get new hash
-                let new_hash = output_store::store_manifest(&updated_manifest, blob_store).await?;
-
-                // Replace the hash in the document
-                doc.replace_output(&cell_id, output_idx, &new_hash)?;
-                return Ok(true);
-            }
-        } else {
-            // Backward compatibility: try parsing as raw JSON
-            let mut output_json: serde_json::Value = match serde_json::from_str(&output_str) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            let matches = output_json
-                .get("transient")
-                .and_then(|t| t.get("display_id"))
-                .and_then(|d| d.as_str())
-                == Some(display_id);
-
-            if matches {
-                // Update data and metadata in place
-                output_json["data"] = new_data.clone();
-                output_json["metadata"] = serde_json::Value::Object(new_metadata.clone());
-
-                // Write back
-                let updated_str = output_json.to_string();
-                doc.replace_output(&cell_id, output_idx, &updated_str)?;
-                return Ok(true);
+                if let Some(updated_manifest) = output_store::update_manifest_display_data(
+                    &manifest_json,
+                    display_id,
+                    new_data,
+                    new_metadata,
+                    blob_store,
+                    DEFAULT_INLINE_THRESHOLD,
+                )
+                .await?
+                {
+                    let new_hash =
+                        output_store::store_manifest(&updated_manifest, blob_store).await?;
+                    let mut sd = state_doc.write().await;
+                    sd.upsert_execution_output(eid, idx, &new_hash);
+                    return Ok(true);
+                }
             }
         }
     }
@@ -945,7 +920,6 @@ impl RoomKernel {
         let stream_terminals = self.stream_terminals.clone();
         let state_doc_for_iopub = self.state_doc.clone();
         let state_changed_for_iopub = self.state_changed_tx.clone();
-        let iopub_actor_id = self.kernel_actor_id.clone();
 
         let iopub_task = tokio::spawn(async move {
             loop {
@@ -1024,20 +998,11 @@ impl RoomKernel {
                                         terminals.clear(cid);
                                     }
 
-                                    // Clear outputs and set execution count in Automerge before
-                                    // notifying clients so UI reads the updated value immediately.
-                                    // Clearing outputs here (when execution truly starts) ensures
-                                    // a single source of truth - both frontend and MCP-triggered
-                                    // executions get outputs cleared authoritatively by the daemon.
+                                    // Set execution count in notebook doc (for display).
+                                    // Outputs are now managed in RuntimeStateDoc, not notebook doc.
                                     let execution_count = input.execution_count.0 as i64;
                                     let persist_bytes = {
                                         let mut doc_guard = doc.write().await;
-                                        if let Err(e) = doc_guard.clear_outputs(cid) {
-                                            warn!(
-                                                "[kernel-manager] Failed to clear outputs in doc for cell {}: {}",
-                                                cid, e
-                                            );
-                                        }
                                         if let Err(e) = doc_guard
                                             .set_execution_count(cid, &execution_count.to_string())
                                         {
@@ -1052,12 +1017,12 @@ impl RoomKernel {
                                     };
                                     let _ = persist_tx.send(Some(persist_bytes));
 
-                                    // Write execution_count to RuntimeStateDoc
+                                    // Clear outputs and set execution_count in RuntimeStateDoc
                                     if let Some(ref eid) = execution_id {
                                         let mut sd = state_doc_for_iopub.write().await;
-                                        if sd.set_execution_count(eid, execution_count) {
-                                            let _ = state_changed_for_iopub.send(());
-                                        }
+                                        sd.clear_execution_outputs(eid);
+                                        sd.set_execution_count(eid, execution_count);
+                                        let _ = state_changed_for_iopub.send(());
                                     }
 
                                     let _ =
@@ -1167,63 +1132,48 @@ impl RoomKernel {
                                         }
                                     };
 
-                                    // Fork before upsert so concurrent edits compose
-                                    // via CRDT merge.
-                                    let mut fork = {
-                                        let mut doc_guard = doc.write().await;
-                                        let mut f = doc_guard.fork();
-                                        f.set_actor(&iopub_actor_id);
-                                        f
-                                    };
-
-                                    let upsert_result = fork.upsert_stream_output(
-                                        cid,
-                                        stream_name,
-                                        &output_ref,
-                                        known_state.as_ref(),
-                                    );
-
-                                    // Use the fork's upsert result for terminal state caching
-                                    // and broadcast. The fork's index is where the upsert
-                                    // actually wrote — using merged len()-1 would be wrong if
-                                    // the updated entry isn't the last output. If a rare
-                                    // concurrent clear invalidates the cached index, the next
-                                    // stream chunk safely falls back to append.
-                                    let (persist_bytes, broadcast_output_index) = {
-                                        let mut doc_guard = doc.write().await;
-                                        doc_guard.merge(&mut fork).ok();
-
-                                        let broadcast_idx = match &upsert_result {
-                                            Ok((updated, output_index)) => {
-                                                let mut terminals = stream_terminals.lock().await;
-                                                terminals.set_output_state(
-                                                    cid,
-                                                    stream_name,
-                                                    StreamOutputState {
-                                                        index: *output_index,
-                                                        manifest_hash: output_ref.clone(),
-                                                    },
-                                                );
-                                                if *updated {
-                                                    Some(*output_index)
-                                                } else {
-                                                    None
-                                                }
-                                            }
-                                            Err(e) => {
-                                                warn!(
-                                                    "[kernel-manager] Failed to upsert stream output: {}",
-                                                    e
-                                                );
-                                                None
-                                            }
+                                    // Write stream output to RuntimeStateDoc.
+                                    // Stream outputs upsert: if the terminal state
+                                    // has a known index, update in place; otherwise append.
+                                    let broadcast_output_index = if let Some(ref eid) = execution_id
+                                    {
+                                        let mut sd = state_doc_for_iopub.write().await;
+                                        let idx = if let Some(ref state) = known_state {
+                                            // Update existing stream output at known index
+                                            sd.upsert_execution_output(
+                                                eid,
+                                                state.index,
+                                                &output_ref,
+                                            );
+                                            Some(state.index)
+                                        } else {
+                                            // Append new output
+                                            sd.append_execution_output(eid, &output_ref);
+                                            None
                                         };
+                                        let _ = state_changed_for_iopub.send(());
 
-                                        let bytes = doc_guard.save();
-                                        let _ = changed_tx.send(());
-                                        (bytes, broadcast_idx)
+                                        // Update terminal state with the output index
+                                        let output_index = idx.unwrap_or_else(|| {
+                                            // Get the new length - 1 for the just-appended output
+                                            let outputs = sd.get_execution_outputs(eid);
+                                            outputs.len().saturating_sub(1)
+                                        });
+                                        {
+                                            let mut terminals = stream_terminals.lock().await;
+                                            terminals.set_output_state(
+                                                cid,
+                                                stream_name,
+                                                StreamOutputState {
+                                                    index: output_index,
+                                                    manifest_hash: output_ref.clone(),
+                                                },
+                                            );
+                                        }
+                                        idx
+                                    } else {
+                                        None
                                     };
-                                    let _ = persist_tx.send(Some(persist_bytes));
 
                                     let _ = broadcast_tx.send(NotebookBroadcast::Output {
                                         cell_id: cid.clone(),
@@ -1324,30 +1274,12 @@ impl RoomKernel {
                                             }
                                         };
 
-                                        // Fork before appending so concurrent edits
-                                        // (e.g. from other iopub messages) compose via CRDT merge.
-                                        let mut fork = {
-                                            let mut doc_guard = doc.write().await;
-                                            let mut f = doc_guard.fork();
-                                            f.set_actor(&iopub_actor_id);
-                                            f
-                                        };
-
-                                        if let Err(e) = fork.append_output(cid, &output_ref) {
-                                            warn!(
-                                                "[kernel-manager] Failed to append output to doc: {}",
-                                                e
-                                            );
+                                        // Write output to RuntimeStateDoc
+                                        if let Some(ref eid) = execution_id {
+                                            let mut sd = state_doc_for_iopub.write().await;
+                                            sd.append_execution_output(eid, &output_ref);
+                                            let _ = state_changed_for_iopub.send(());
                                         }
-
-                                        let persist_bytes = {
-                                            let mut doc_guard = doc.write().await;
-                                            doc_guard.merge(&mut fork).ok();
-                                            let bytes = doc_guard.save();
-                                            let _ = changed_tx.send(());
-                                            bytes
-                                        };
-                                        let _ = persist_tx.send(Some(persist_bytes));
 
                                         let _ = broadcast_tx.send(NotebookBroadcast::Output {
                                             cell_id: cid.clone(),
@@ -1361,63 +1293,50 @@ impl RoomKernel {
                             }
 
                             // UpdateDisplayData mutates an existing output in place (e.g., progress bars).
-                            // Find the output by display_id and update it, rather than appending.
-                            // Supports both manifest hashes and raw JSON (backward compatibility).
+                            // Find the output by display_id across all executions in RuntimeStateDoc
+                            // and update it, rather than appending.
                             JupyterMessageContent::UpdateDisplayData(update) => {
                                 if let Some(ref display_id) = update.transient.display_id {
-                                    // Fork before async blob I/O to avoid holding the doc
-                                    // write lock during potentially slow blob store operations.
-                                    let mut fork = {
-                                        let mut doc_guard = doc.write().await;
-                                        let mut f = doc_guard.fork();
-                                        f.set_actor(&iopub_actor_id);
-                                        f
-                                    };
+                                    let new_data =
+                                        serde_json::to_value(&update.data).unwrap_or_default();
+                                    let new_metadata = &update.metadata;
 
-                                    let updated = update_output_by_display_id_with_manifests(
-                                        &mut fork,
+                                    // Scan all execution outputs in RuntimeStateDoc for the display_id
+                                    let result = update_display_in_runtime_state(
+                                        &state_doc_for_iopub,
                                         display_id,
-                                        &serde_json::to_value(&update.data).unwrap_or_default(),
-                                        &update.metadata,
+                                        &new_data,
+                                        new_metadata,
                                         &blob_store,
                                     )
                                     .await;
 
-                                    let persist_bytes = {
-                                        let mut doc_guard = doc.write().await;
-                                        match updated {
-                                            Ok(true) => {
-                                                doc_guard.merge(&mut fork).ok();
-                                                debug!(
-                                                    "[kernel-manager] Updated display_id={}",
-                                                    display_id
-                                                );
-                                            }
-                                            Ok(false) => {
-                                                error!(
-                                                    "[kernel-manager] No output found for display_id={}",
-                                                    display_id
-                                                );
-                                            }
-                                            Err(e) => {
-                                                error!(
-                                                    "[kernel-manager] Failed to update display: {}",
-                                                    e
-                                                );
-                                            }
+                                    match result {
+                                        Ok(true) => {
+                                            let _ = state_changed_for_iopub.send(());
+                                            debug!(
+                                                "[kernel-manager] Updated display_id={}",
+                                                display_id
+                                            );
                                         }
-                                        let bytes = doc_guard.save();
-                                        let _ = changed_tx.send(());
-                                        bytes
-                                    };
-                                    let _ = persist_tx.send(Some(persist_bytes));
+                                        Ok(false) => {
+                                            error!(
+                                                "[kernel-manager] No output found for display_id={}",
+                                                display_id
+                                            );
+                                        }
+                                        Err(e) => {
+                                            error!(
+                                                "[kernel-manager] Failed to update display: {}",
+                                                e
+                                            );
+                                        }
+                                    }
 
                                     // Broadcast for immediate UI update
-                                    // Frontend will receive via Automerge sync, but broadcast for speed
                                     let _ = broadcast_tx.send(NotebookBroadcast::DisplayUpdate {
                                         display_id: display_id.clone(),
-                                        data: serde_json::to_value(&update.data)
-                                            .unwrap_or_default(),
+                                        data: new_data,
                                         metadata: update.metadata.clone(),
                                     });
                                 }
@@ -1501,30 +1420,12 @@ impl RoomKernel {
                                             }
                                         };
 
-                                        // Fork before appending so concurrent edits
-                                        // compose via CRDT merge.
-                                        let mut fork = {
-                                            let mut doc_guard = doc.write().await;
-                                            let mut f = doc_guard.fork();
-                                            f.set_actor(&iopub_actor_id);
-                                            f
-                                        };
-
-                                        if let Err(e) = fork.append_output(cid, &output_ref) {
-                                            warn!(
-                                                "[kernel-manager] Failed to append error output to doc: {}",
-                                                e
-                                            );
+                                        // Write error output to RuntimeStateDoc
+                                        if let Some(ref eid) = execution_id {
+                                            let mut sd = state_doc_for_iopub.write().await;
+                                            sd.append_execution_output(eid, &output_ref);
+                                            let _ = state_changed_for_iopub.send(());
                                         }
-
-                                        let persist_bytes = {
-                                            let mut doc_guard = doc.write().await;
-                                            doc_guard.merge(&mut fork).ok();
-                                            let bytes = doc_guard.save();
-                                            let _ = changed_tx.send(());
-                                            bytes
-                                        };
-                                        let _ = persist_tx.send(Some(persist_bytes));
 
                                         let _ = broadcast_tx.send(NotebookBroadcast::Output {
                                             cell_id: cid.clone(),

@@ -910,14 +910,19 @@ pub struct PyExecutionState {
     pub execution_count: Option<i64>,
     /// Whether the execution succeeded (set on completion).
     pub success: Option<bool>,
+    /// Output manifest hashes for this execution.
+    pub outputs: Vec<String>,
 }
 
 #[pymethods]
 impl PyExecutionState {
     fn __repr__(&self) -> String {
         format!(
-            "ExecutionState(cell_id={}, status={}, success={:?})",
-            self.cell_id, self.status, self.success
+            "ExecutionState(cell_id={}, status={}, success={:?}, outputs={})",
+            self.cell_id,
+            self.status,
+            self.success,
+            self.outputs.len()
         )
     }
 
@@ -1012,6 +1017,7 @@ impl From<notebook_doc::runtime_state::RuntimeState> for PyRuntimeState {
                             status: es.status,
                             execution_count: es.execution_count,
                             success: es.success,
+                            outputs: es.outputs,
                         },
                     )
                 })

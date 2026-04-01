@@ -216,6 +216,8 @@ export class NotebookHandle {
     get_actor_id(): string;
     /**
      * Get a single cell by ID, or null if not found.
+     *
+     * Outputs are populated from RuntimeStateDoc when available.
      */
     get_cell(cell_id: string): JsCell | undefined;
     /**
@@ -235,7 +237,8 @@ export class NotebookHandle {
     /**
      * Get a cell's outputs as a native JS array of strings.
      *
-     * Each element is a JSON-encoded Jupyter output object (or manifest hash).
+     * Prefers RuntimeStateDoc outputs (from the latest execution for this cell).
+     * Falls back to the notebook doc if no execution exists in RuntimeStateDoc.
      * Returns undefined if the cell doesn't exist.
      */
     get_cell_outputs(cell_id: string): any;
@@ -253,10 +256,15 @@ export class NotebookHandle {
     get_cell_type(cell_id: string): string | undefined;
     /**
      * Get all cells as an array of JsCell objects.
+     *
+     * Outputs are populated from RuntimeStateDoc when available.
      */
     get_cells(): JsCell[];
     /**
      * Get all cells as a JSON string (for bulk materialization).
+     *
+     * Outputs are populated from RuntimeStateDoc when available, falling
+     * back to the notebook doc for cells without execution entries.
      */
     get_cells_json(): string;
     /**
