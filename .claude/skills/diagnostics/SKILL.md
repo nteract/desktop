@@ -59,13 +59,19 @@ env -i HOME=$HOME /usr/local/bin/runt-nightly daemon logs -f
 | `doctor.json` | Health checks — binary, plist, launchd, socket |
 | `system-info.json` | OS version, architecture, channel |
 
-## Extracting and Reading
+## Reading the Archive
+
+Read files directly from the tarball without extracting — this avoids writing to `/tmp` (which requires user approval in sandboxed agents):
 
 ```bash
-mkdir -p /tmp/diag && tar xzf <archive>.tar.gz -C /tmp/diag
+tar xzf <archive>.tar.gz -O doctor.json
+tar xzf <archive>.tar.gz -O daemon-status.json
+tar xzf <archive>.tar.gz -O system-info.json
+tar xzf <archive>.tar.gz -O runtimed.log | grep -i 'upgrade\|error\|panic'
+tar xzf <archive>.tar.gz -O notebook.log | grep -i 'upgrade\|error\|warn'
 ```
 
-Then read the files from `/tmp/diag/`.
+Use `tar -O` (stdout) to pipe individual files into grep or read them directly. The archive is written to the current working directory, so no path gymnastics needed.
 
 ## What to Look For
 
