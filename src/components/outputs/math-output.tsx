@@ -1,5 +1,5 @@
 import katex from "katex";
-import { useMemo } from "react";
+import { useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 
 import "katex/dist/katex.min.css";
@@ -23,7 +23,6 @@ function parseLatex(raw: string): { latex: string; displayMode: boolean } {
   if (trimmed.startsWith("$") && trimmed.endsWith("$")) {
     return { latex: trimmed.slice(1, -1).trim(), displayMode: true };
   }
-  // \begin{...} environments and bare LaTeX — display mode
   return { latex: trimmed, displayMode: true };
 }
 
@@ -34,33 +33,17 @@ function parseLatex(raw: string): { latex: string; displayMode: boolean } {
  * KaTeX output is safe static HTML — no iframe isolation needed.
  */
 export function MathOutput({ content, className }: MathOutputProps) {
-  const html = useMemo(() => {
-    if (!content.trim()) return null;
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!ref.current || !content.trim()) return;
     const { latex, displayMode } = parseLatex(content);
-    try {
-      return katex.renderToString(latex, {
-        displayMode,
-        throwOnError: false,
-        trust: true,
-      });
-    } catch {
-      return null;
-    }
+    katex.render(latex, ref.current, {
+      displayMode,
+      throwOnError: false,
+      trust: true,
+    });
   }, [content]);
 
-  if (!html) {
-    return (
-      <pre className={cn("whitespace-pre-wrap text-sm", className)}>
-        {content}
-      </pre>
-    );
-  }
-
-  return (
-    <div
-      data-slot="math-output"
-      className={cn("py-1", className)}
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
+  return <div data-slot="math-output" className={cn("py-1", className)} ref={ref} />;
 }
