@@ -1160,6 +1160,47 @@ pub type NotebookRooms = Arc<Mutex<HashMap<String, Arc<NotebookRoom>>>>;
 /// local file.
 ///
 /// For .ipynb files, a file watcher is spawned to detect external changes.
+/// Find an existing room whose `notebook_path` matches the given canonical path.
+///
+/// Handles the case where an ephemeral (UUID-keyed) room has been saved to
+/// a file path but not yet re-keyed in the rooms map. Without this, a second
+/// peer opening the same file path would create a duplicate room, leading to
+/// a re-key collision.
+///
+/// Uses `try_read()` on `notebook_path` to avoid blocking — if a room's path
+/// lock is contended (rare), that room is skipped and will be caught by the
+/// re-key collision handler instead.
+pub fn find_room_by_notebook_path(
+    rooms: &HashMap<String, Arc<NotebookRoom>>,
+    canonical_path: &str,
+) -> Option<Arc<NotebookRoom>> {
+    // Fast path: direct key match (room already keyed by path)
+    if let Some(room) = rooms.get(canonical_path) {
+        return Some(room.clone());
+    }
+
+    // Scan UUID-keyed rooms for a matching notebook_path.
+    // This catches rooms that have been saved (notebook_path updated) but
+    // not yet re-keyed in the map.
+    let canonical = PathBuf::from(canonical_path);
+    for (key, room) in rooms {
+        if !is_untitled_notebook(key) {
+            continue;
+        }
+        if let Ok(guard) = room.notebook_path.try_read() {
+            if *guard == canonical {
+                info!(
+                    "[notebook-sync] Found ephemeral room {} with matching path {}",
+                    key, canonical_path
+                );
+                return Some(room.clone());
+            }
+        }
+    }
+
+    None
+}
+
 pub fn get_or_create_room(
     rooms: &mut HashMap<String, Arc<NotebookRoom>>,
     notebook_id: &str,
@@ -3123,27 +3164,56 @@ async fn rekey_ephemeral_room(
             let is_same_room = existing
                 .is_some_and(|r| Arc::ptr_eq(r, rooms_guard.get(old_notebook_id).unwrap_or(r)));
             if !is_same_room {
-                warn!(
-                    "[notebook-sync] Re-key collision: evicting interloper room at {}",
+                info!(
+                    "[notebook-sync] Re-key collision at {} — migrating interloper peers to winning room",
                     canonical
                 );
-                // Remove the interloper — the ephemeral room has the real content.
+                // Remove the interloper from the map. Its peers still hold an
+                // Arc and their loops are alive, so we can notify them.
                 let interloper = rooms_guard.remove(&canonical);
-                // Clean up interloper resources in background
                 if let Some(interloper) = interloper {
-                    tokio::spawn(async move {
-                        if let Some(mut kernel) = interloper.kernel.lock().await.take() {
-                            if let Err(e) = kernel.shutdown().await {
-                                warn!(
-                                    "[notebook-sync] Failed to shut down interloper kernel: {}",
-                                    e
+                    // Merge the interloper's doc into the winning room so no
+                    // edits are lost (the interloper may have loaded from disk
+                    // or received edits from its peers).
+                    {
+                        let mut winning_doc = room.doc.write().await;
+                        let mut interloper_doc = interloper.doc.write().await;
+                        winning_doc.merge(&mut interloper_doc).ok();
+                    }
+
+                    // Migrate kernel: if the interloper has a running kernel
+                    // and the winning room doesn't, transfer it.
+                    {
+                        let mut interloper_kernel = interloper.kernel.lock().await;
+                        if interloper_kernel.is_some() {
+                            let mut winning_kernel = room.kernel.lock().await;
+                            if winning_kernel.is_none() {
+                                info!(
+                                    "[notebook-sync] Migrating kernel from interloper to winning room"
                                 );
+                                *winning_kernel = interloper_kernel.take();
+                            } else {
+                                // Both have kernels — shut down the interloper's
+                                if let Some(mut k) = interloper_kernel.take() {
+                                    let _ = k.shutdown().await;
+                                }
                             }
                         }
-                        if let Some(tx) = interloper.watcher_shutdown_tx.lock().await.take() {
-                            let _ = tx.send(());
-                        }
-                    });
+                    }
+
+                    // Notify the interloper's peers to reconnect with the
+                    // canonical path. The frontend handles RoomRenamed by
+                    // updating its notebook_id and reconnecting.
+                    let _ = interloper
+                        .kernel_broadcast_tx
+                        .send(NotebookBroadcast::RoomRenamed {
+                            new_notebook_id: canonical.clone(),
+                        });
+
+                    // Stop the interloper's file watcher
+                    if let Some(tx) = interloper.watcher_shutdown_tx.lock().await.take() {
+                        let _ = tx.send(());
+                    }
                 }
                 // Fall through to normal rekey below
             }

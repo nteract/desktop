@@ -1279,16 +1279,24 @@ impl Daemon {
                 .to_string()
         };
 
-        // Get or create room for this notebook
+        // Get or create room for this notebook.
+        // First check if an existing room (including UUID-keyed ephemeral rooms)
+        // already owns this path — prevents duplicate rooms and re-key collisions.
         let docs_dir = self.config.notebook_docs_dir.clone();
         let room = {
             let mut rooms = self.notebook_rooms.lock().await;
-            crate::notebook_sync_server::get_or_create_room(
-                &mut rooms,
-                &notebook_id,
-                &docs_dir,
-                self.blob_store.clone(),
-            )
+            if let Some(existing) =
+                crate::notebook_sync_server::find_room_by_notebook_path(&rooms, &notebook_id)
+            {
+                existing
+            } else {
+                crate::notebook_sync_server::get_or_create_room(
+                    &mut rooms,
+                    &notebook_id,
+                    &docs_dir,
+                    self.blob_store.clone(),
+                )
+            }
         };
 
         // Get settings for sync and auto-launch (needed for both new and existing notebooks)
