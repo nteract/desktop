@@ -1055,6 +1055,11 @@ impl RoomKernel {
         let iopub_actor_id = self.kernel_actor_id.clone();
 
         let iopub_task = tokio::spawn(async move {
+            // Track Output widgets with pending clear_output(wait=true).
+            // On the next append_comm_output for these widgets, clear first.
+            let mut pending_clear_widgets: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+
             loop {
                 match iopub.read().await {
                     Ok(message) => {
@@ -1179,8 +1184,6 @@ impl RoomKernel {
                                     comm_state.get_capture_widget(parent_msg_id).await
                                 {
                                     // Route to Output widget via comm_msg with method="custom"
-                                    // The frontend comm router dispatches method="custom" messages
-                                    // to widget handlers, with nested content containing the actual payload
                                     let stream_name = match stream.name {
                                         jupyter_protocol::Stdio::Stdout => "stdout",
                                         jupyter_protocol::Stdio::Stderr => "stderr",
@@ -1190,6 +1193,34 @@ impl RoomKernel {
                                         "name": stream_name,
                                         "text": stream.text
                                     });
+
+                                    // Persist to CRDT via blob store manifest (same as cell outputs)
+                                    if let Ok(manifest_json) = crate::output_store::create_manifest(
+                                        &output,
+                                        &blob_store,
+                                        crate::output_store::DEFAULT_INLINE_THRESHOLD,
+                                    )
+                                    .await
+                                    {
+                                        if let Ok(hash) = crate::output_store::store_manifest(
+                                            &manifest_json,
+                                            &blob_store,
+                                        )
+                                        .await
+                                        {
+                                            let mut sd = state_doc_for_iopub.write().await;
+                                            // Honor deferred clear_output(wait=true)
+                                            if pending_clear_widgets.remove(&widget_comm_id) {
+                                                sd.clear_comm_outputs(&widget_comm_id);
+                                            }
+                                            if sd.append_comm_output(&widget_comm_id, &hash) {
+                                                let _ = state_changed_for_iopub.send(());
+                                            }
+                                        }
+                                    }
+
+                                    // Broadcast for real-time UI (frontend accumulates
+                                    // and echoes back to kernel for out.outputs sync)
                                     let content = serde_json::json!({
                                         "comm_id": widget_comm_id,
                                         "data": {
@@ -1344,10 +1375,35 @@ impl RoomKernel {
                                 if let Some(widget_comm_id) =
                                     comm_state.get_capture_widget(parent_msg_id).await
                                 {
-                                    // Route to Output widget via comm_msg with method="custom"
                                     if let Some(nbformat_value) =
                                         message_content_to_nbformat(&message.content)
                                     {
+                                        // Persist to CRDT via blob store manifest
+                                        if let Ok(manifest_json) =
+                                            crate::output_store::create_manifest(
+                                                &nbformat_value,
+                                                &blob_store,
+                                                crate::output_store::DEFAULT_INLINE_THRESHOLD,
+                                            )
+                                            .await
+                                        {
+                                            if let Ok(hash) = crate::output_store::store_manifest(
+                                                &manifest_json,
+                                                &blob_store,
+                                            )
+                                            .await
+                                            {
+                                                let mut sd = state_doc_for_iopub.write().await;
+                                                // Honor deferred clear_output(wait=true)
+                                                if pending_clear_widgets.remove(&widget_comm_id) {
+                                                    sd.clear_comm_outputs(&widget_comm_id);
+                                                }
+                                                if sd.append_comm_output(&widget_comm_id, &hash) {
+                                                    let _ = state_changed_for_iopub.send(());
+                                                }
+                                            }
+                                        }
+                                        // Broadcast for real-time UI + kernel echo
                                         let content = serde_json::json!({
                                             "comm_id": widget_comm_id,
                                             "data": {
@@ -1526,10 +1582,35 @@ impl RoomKernel {
                                 if let Some(widget_comm_id) =
                                     comm_state.get_capture_widget(parent_msg_id).await
                                 {
-                                    // Route error to Output widget via comm_msg with method="custom"
                                     if let Some(nbformat_value) =
                                         message_content_to_nbformat(&message.content)
                                     {
+                                        // Persist to CRDT via blob store manifest
+                                        if let Ok(manifest_json) =
+                                            crate::output_store::create_manifest(
+                                                &nbformat_value,
+                                                &blob_store,
+                                                crate::output_store::DEFAULT_INLINE_THRESHOLD,
+                                            )
+                                            .await
+                                        {
+                                            if let Ok(hash) = crate::output_store::store_manifest(
+                                                &manifest_json,
+                                                &blob_store,
+                                            )
+                                            .await
+                                            {
+                                                let mut sd = state_doc_for_iopub.write().await;
+                                                // Honor deferred clear_output(wait=true)
+                                                if pending_clear_widgets.remove(&widget_comm_id) {
+                                                    sd.clear_comm_outputs(&widget_comm_id);
+                                                }
+                                                if sd.append_comm_output(&widget_comm_id, &hash) {
+                                                    let _ = state_changed_for_iopub.send(());
+                                                }
+                                            }
+                                        }
+                                        // Broadcast for real-time UI + kernel echo
                                         let content = serde_json::json!({
                                             "comm_id": widget_comm_id,
                                             "data": {
@@ -1645,7 +1726,19 @@ impl RoomKernel {
                                 if let Some(widget_comm_id) =
                                     comm_state.get_capture_widget(parent_msg_id).await
                                 {
-                                    // Route clear_output to Output widget via comm_msg
+                                    // Clear captured outputs in CRDT.
+                                    // wait=false: clear immediately.
+                                    // wait=true: defer clear until next output arrives.
+                                    if clear.wait {
+                                        pending_clear_widgets.insert(widget_comm_id.clone());
+                                    } else {
+                                        pending_clear_widgets.remove(&widget_comm_id);
+                                        let mut sd = state_doc_for_iopub.write().await;
+                                        if sd.clear_comm_outputs(&widget_comm_id) {
+                                            let _ = state_changed_for_iopub.send(());
+                                        }
+                                    }
+                                    // Broadcast for real-time UI + kernel echo
                                     let content = serde_json::json!({
                                         "comm_id": widget_comm_id,
                                         "data": {
