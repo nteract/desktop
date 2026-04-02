@@ -2292,11 +2292,7 @@ async fn doctor_command(
                 None
             };
             let bundled_ver = find_bundled_runtimed().and_then(|p| get_binary_version(&p));
-            let cli_ver = format!(
-                "{}+{}",
-                env!("CARGO_PKG_VERSION"),
-                env!("GIT_COMMIT")
-            );
+            let cli_ver = format!("{}+{}", env!("CARGO_PKG_VERSION"), env!("GIT_COMMIT"));
 
             // Build detail string showing all available versions
             let mut parts = Vec::new();
