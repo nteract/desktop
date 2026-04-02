@@ -128,6 +128,7 @@ const POPULAR_PACKAGES: &[&str] = &[
     "torch",
     "keras",
     "opencv-python",
+    "opencv-contrib-python",
     "selenium",
     "scrapy",
     "django",
@@ -178,7 +179,6 @@ const POPULAR_PACKAGES: &[&str] = &[
     "msgpack",
     "cloudpickle",
     "dill",
-    "joblib",
     "transformers",
     "tokenizers",
     "huggingface-hub",
@@ -198,6 +198,109 @@ const POPULAR_PACKAGES: &[&str] = &[
     "zarr",
     "numba",
     "cython",
+    // Scientific computing & math
+    "sympy",
+    "mpmath",
+    "astropy",
+    "biopython",
+    "statsmodels",
+    "h5py",
+    "netcdf4",
+    "scikit-image",
+    // Data visualization
+    "seaborn",
+    "plotly",
+    "bokeh",
+    "graphviz",
+    // Data engineering
+    "polars",
+    "duckdb",
+    "sqlparse",
+    "alembic",
+    "peewee",
+    "dataset",
+    // NLP & text processing
+    "spacy",
+    "nltk",
+    "gensim",
+    "regex",
+    // Build tools & linters
+    "poetry",
+    "ruff",
+    "pre-commit",
+    "tox",
+    "nox",
+    "bandit",
+    "hatch",
+    "flit",
+    "maturin",
+    "pdm",
+    "pycodestyle",
+    "autopep8",
+    "pyflakes",
+    "yapf",
+    "rope",
+    // Web frameworks & networking
+    "twisted",
+    "tornado",
+    "sanic",
+    "falcon",
+    "bottle",
+    "websockets",
+    "uvloop",
+    "httptools",
+    "grpcio-tools",
+    // Async
+    "trio",
+    // Cloud & orchestration
+    "ansible",
+    "fabric",
+    "invoke",
+    "prefect",
+    "dagster",
+    "luigi",
+    "airflow",
+    // Serialization & validation
+    "marshmallow",
+    "pydantic-core",
+    "cattrs",
+    "toml",
+    "tomli-w",
+    // Utilities
+    "arrow",
+    "pendulum",
+    "chardet",
+    "tenacity",
+    "loguru",
+    "structlog",
+    "watchdog",
+    "tabulate",
+    "fire",
+    "more-itertools",
+    "toolz",
+    "boltons",
+    "colorlog",
+    "jedi",
+    "pika",
+    // Type checking & IDE
+    "pyright",
+    "beartype",
+    // GUI frameworks
+    "pyqt5",
+    "pyside6",
+    "kivy",
+    "pygame",
+    // Image & media
+    "imageio",
+    "librosa",
+    // Documentation
+    "sphinx",
+    "mkdocs",
+    // Messaging
+    "kombu",
+    "dramatiq",
+    // Network analysis
+    "scapy",
 ];
 
 /// Extract package name from a dependency specifier.
@@ -314,6 +417,39 @@ mod tests {
     fn test_anywidget_not_flagged() {
         // anywidget is a real package, not a typosquat of ipywidgets
         assert!(check_typosquat("anywidget").is_none());
+    }
+
+    #[test]
+    fn test_known_false_positive_pairs() {
+        // These are all legitimate packages that are close in edit distance
+        // to other popular packages — they must NOT be flagged.
+        assert!(check_typosquat("sympy").is_none()); // vs numpy/scipy/mypy
+        assert!(check_typosquat("scapy").is_none()); // vs scipy/scrapy
+        assert!(check_typosquat("spacy").is_none()); // vs scipy
+        assert!(check_typosquat("cattrs").is_none()); // vs attrs
+        assert!(check_typosquat("toml").is_none()); // vs tomli
+        assert!(check_typosquat("h5py").is_none()); // vs mypy
+        assert!(check_typosquat("dataset").is_none()); // vs datasets
+        assert!(check_typosquat("arrow").is_none()); // vs pyarrow
+        assert!(check_typosquat("airflow").is_none()); // vs pillow/mlflow
+        assert!(check_typosquat("biopython").is_none()); // vs ipython
+        assert!(check_typosquat("astropy").is_none()); // vs scrapy
+        assert!(check_typosquat("pyright").is_none()); // vs pylint
+        assert!(check_typosquat("pygame").is_none()); // vs pyyaml
+        assert!(check_typosquat("pika").is_none()); // vs pip
+        assert!(check_typosquat("jedi").is_none()); // vs redis
+        assert!(check_typosquat("rope").is_none()); // vs nose
+        assert!(check_typosquat("boltons").is_none()); // vs boto3/boto
+    }
+
+    #[test]
+    fn test_typosquats_of_new_entries() {
+        // Typosquats of newly added packages should still be detected
+        let warning = check_typosquat("symppy").expect("should detect typosquat of sympy");
+        assert_eq!(warning.similar_to, "sympy");
+
+        let warning = check_typosquat("polrs").expect("should detect typosquat of polars");
+        assert_eq!(warning.similar_to, "polars");
     }
 
     #[test]
