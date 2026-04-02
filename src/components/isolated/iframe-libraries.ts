@@ -10,7 +10,7 @@
  * is guaranteed to be available when the output component mounts.
  */
 
-import type { JupyterOutput } from "@/components/cell/OutputArea";
+import type { JupyterOutput } from "@/components/cell/jupyter-output";
 import type { IsolatedFrameHandle } from "@/components/isolated/isolated-frame";
 import { isVegaMimeType } from "@/components/outputs/vega-mime";
 
