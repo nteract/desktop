@@ -21,6 +21,9 @@ const SvgOutput = lazy(() =>
 const JsonOutput = lazy(() =>
   import("./json-output").then((m) => ({ default: m.JsonOutput })),
 );
+const MathOutput = lazy(() =>
+  import("./math-output").then((m) => ({ default: m.MathOutput })),
+);
 
 /**
  * Check if the current window is inside an iframe
@@ -57,9 +60,10 @@ export const DEFAULT_PRIORITY = [
   "application/vnd.vega.v5.json",
   "application/vnd.vega.v4+json",
   "application/geo+json",
-  // HTML and markdown
+  // HTML, markdown, and LaTeX
   "text/html",
   "text/markdown",
+  "text/latex",
   // Images
   "image/svg+xml",
   "image/png",
@@ -307,6 +311,11 @@ export function MediaRouter({
     // Text/Markdown (only renders when in iframe)
     if (mimeType === "text/markdown") {
       return <MarkdownOutput content={String(content)} className={className} />;
+    }
+
+    // LaTeX math (KaTeX, rendered in-DOM — safe static HTML)
+    if (mimeType === "text/latex") {
+      return <MathOutput content={String(content)} className={className} />;
     }
 
     // HTML (only renders when in iframe)
