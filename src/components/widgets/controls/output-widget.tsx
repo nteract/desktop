@@ -21,6 +21,8 @@ import {
   AnsiStreamOutput,
 } from "@/components/outputs/ansi-output";
 import { MediaRouter } from "@/components/outputs/media-router";
+import { ErrorBoundary } from "@/lib/error-boundary";
+import { OutputErrorFallback } from "@/lib/output-error-fallback";
 import { cn } from "@/lib/utils";
 import type { WidgetComponentProps } from "../widget-registry";
 import {
@@ -43,6 +45,48 @@ function isJupyterOutput(value: unknown): value is JupyterOutput {
     output.output_type === "stream" ||
     output.output_type === "error"
   );
+}
+
+/**
+ * Render a single Jupyter output by type.
+ * Mirrors the in-DOM path from OutputArea but without isolation
+ * (the Output widget already runs inside an iframe).
+ */
+function renderWidgetOutput(output: JupyterOutput) {
+  switch (output.output_type) {
+    case "execute_result":
+    case "display_data":
+      return (
+        <MediaRouter
+          data={output.data}
+          metadata={
+            output.metadata as Record<
+              string,
+              Record<string, unknown> | undefined
+            >
+          }
+        />
+      );
+    case "stream":
+      return (
+        <AnsiStreamOutput
+          text={
+            Array.isArray(output.text) ? output.text.join("") : output.text
+          }
+          streamName={output.name}
+        />
+      );
+    case "error":
+      return (
+        <AnsiErrorOutput
+          ename={output.ename}
+          evalue={output.evalue}
+          traceback={output.traceback}
+        />
+      );
+    default:
+      return null;
+  }
 }
 
 export function OutputWidget({ modelId, className }: WidgetComponentProps) {
@@ -123,47 +167,28 @@ export function OutputWidget({ modelId, className }: WidgetComponentProps) {
       data-widget-id={modelId}
       data-widget-type="Output"
     >
-      {renderedOutputs.map((output, index) => {
-        switch (output.output_type) {
-          case "execute_result":
-          case "display_data":
-            return (
-              <MediaRouter
-                key={`output-${index}`}
-                data={output.data}
-                metadata={
-                  output.metadata as Record<
-                    string,
-                    Record<string, unknown> | undefined
-                  >
-                }
-              />
+      {renderedOutputs.map((output, index) => (
+        <ErrorBoundary
+          key={`output-${index}`}
+          resetKeys={[JSON.stringify(output)]}
+          fallback={(error, reset) => (
+            <OutputErrorFallback
+              error={error}
+              outputIndex={index}
+              onRetry={reset}
+            />
+          )}
+          onError={(error, errorInfo) => {
+            console.error(
+              `[OutputWidget] Error rendering output ${index}:`,
+              error,
+              errorInfo.componentStack,
             );
-          case "stream":
-            return (
-              <AnsiStreamOutput
-                key={`output-${index}`}
-                text={
-                  Array.isArray(output.text)
-                    ? output.text.join("")
-                    : output.text
-                }
-                streamName={output.name}
-              />
-            );
-          case "error":
-            return (
-              <AnsiErrorOutput
-                key={`output-${index}`}
-                ename={output.ename}
-                evalue={output.evalue}
-                traceback={output.traceback}
-              />
-            );
-          default:
-            return null;
-        }
-      })}
+          }}
+        >
+          {renderWidgetOutput(output)}
+        </ErrorBoundary>
+      ))}
     </div>
   );
 }
