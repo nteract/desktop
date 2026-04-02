@@ -36,6 +36,7 @@ import { HtmlOutput } from "@/components/outputs/html-output";
 import { ImageOutput } from "@/components/outputs/image-output";
 import { JsonOutput } from "@/components/outputs/json-output";
 import { MarkdownOutput } from "@/components/outputs/markdown-output";
+import { GeoJsonOutput } from "@/components/outputs/geojson-output";
 import { PlotlyOutput } from "@/components/outputs/plotly-output";
 import { VegaOutput } from "@/components/outputs/vega-output";
 import { isVegaMimeType } from "@/components/outputs/vega-mime";
@@ -316,6 +317,13 @@ function OutputRenderer({ payload }: { payload: RenderPayload }) {
     const plotlyData =
       typeof content === "string" ? JSON.parse(content) : content;
     return <PlotlyOutput data={plotlyData} />;
+  }
+
+  // GeoJSON
+  if (mimeType === "application/geo+json") {
+    const geojsonData =
+      typeof content === "string" ? JSON.parse(content) : content;
+    return <GeoJsonOutput data={geojsonData} />;
   }
 
   // Vega / Vega-Lite (any version, both +json and .json suffixes)
