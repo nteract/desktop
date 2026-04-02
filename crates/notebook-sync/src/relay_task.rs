@@ -210,30 +210,14 @@ async fn send_request_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                 "[relay] Request timed out after {}s: {:?}",
                 timeout_secs, request
             );
-            // Drain stale response frames to prevent request-response desync.
-            // The daemon may send a belated Response after the relay gives up;
-            // consuming it here keeps the socket stream clean for the next request.
-            let drain_deadline = tokio::time::Instant::now() + Duration::from_millis(200);
-            loop {
-                let remaining =
-                    drain_deadline.saturating_duration_since(tokio::time::Instant::now());
-                if remaining.is_zero() {
-                    break;
-                }
-                match tokio::time::timeout(remaining, connection::recv_typed_frame(reader)).await {
-                    Ok(Ok(Some(frame))) => {
-                        if frame.frame_type == NotebookFrameType::Response {
-                            warn!(
-                                "[relay] Drained stale response ({} bytes) after timeout",
-                                frame.payload.len()
-                            );
-                        } else {
-                            pipe_frame(frame_tx, &frame);
-                        }
-                    }
-                    _ => break, // Timeout, EOF, or error — done draining
-                }
-            }
+            // NOTE: We intentionally do NOT drain stale response frames here.
+            // `recv_typed_frame` uses `read_exact` internally, which is not
+            // cancellation-safe — wrapping it in `tokio::time::timeout` could
+            // cancel mid-frame and corrupt the stream. The relay timeout (7s)
+            // exceeds the daemon's kernel-level timeout (5s), so the daemon
+            // always responds before the relay gives up. Any stale Response
+            // frames that reach the select loop are harmlessly discarded by
+            // `pipe_frame`.
             Err(SyncError::Timeout)
         }
     }
