@@ -660,21 +660,27 @@ impl RoomKernel {
                     }
                     QueueCommand::ExecutionCountSet {
                         cell_id,
-                        execution_id: _,
+                        execution_id,
                         execution_count,
                     } => {
+                        // Guard against stale writes: only update if the cell's
+                        // current execution_id matches. A ClearOutputs or new
+                        // execution may have already moved the cell forward.
                         let mut doc_guard = doc.write().await;
-                        if let Err(e) =
-                            doc_guard.set_execution_count(&cell_id, &execution_count.to_string())
-                        {
-                            warn!(
-                                "[notebook-sync] Failed to set execution_count in doc: {}",
-                                e
-                            );
+                        let current_eid = doc_guard.get_execution_id(&cell_id);
+                        if current_eid.as_deref() == Some(&execution_id) {
+                            if let Err(e) = doc_guard
+                                .set_execution_count(&cell_id, &execution_count.to_string())
+                            {
+                                warn!(
+                                    "[notebook-sync] Failed to set execution_count in doc: {}",
+                                    e
+                                );
+                            }
+                            let bytes = doc_guard.save();
+                            let _ = changed_tx.send(());
+                            let _ = persist_tx.send(Some(bytes));
                         }
-                        let bytes = doc_guard.save();
-                        let _ = changed_tx.send(());
-                        let _ = persist_tx.send(Some(bytes));
                     }
                 }
             }
@@ -1373,7 +1379,7 @@ impl RoomKernel {
                                     // and broadcast. The fork's index is where the upsert
                                     // actually wrote — using merged len()-1 would be wrong if
                                     // the updated entry isn't the last output.
-                                    let broadcast_output_index = {
+                                    let merge_ok = {
                                         let mut sd = state_doc_for_iopub.write().await;
                                         if let Err(e) =
                                             crate::notebook_sync_server::catch_automerge_panic(
@@ -1383,9 +1389,14 @@ impl RoomKernel {
                                         {
                                             warn!("{}", e);
                                             sd.rebuild_from_save();
+                                            false
+                                        } else {
+                                            true
                                         }
+                                    };
 
-                                        let broadcast_idx = match &upsert_result {
+                                    if merge_ok {
+                                        let broadcast_output_index = match &upsert_result {
                                             Ok((updated, output_index)) => {
                                                 let mut terminals = stream_terminals.lock().await;
                                                 terminals.set_output_state(
@@ -1412,16 +1423,14 @@ impl RoomKernel {
                                         };
 
                                         let _ = state_changed_for_iopub.send(());
-                                        broadcast_idx
-                                    };
-
-                                    let _ = broadcast_tx.send(NotebookBroadcast::Output {
-                                        cell_id: cid.clone(),
-                                        execution_id: eid,
-                                        output_type: "stream".to_string(),
-                                        output_json: output_ref,
-                                        output_index: broadcast_output_index,
-                                    });
+                                        let _ = broadcast_tx.send(NotebookBroadcast::Output {
+                                            cell_id: cid.clone(),
+                                            execution_id: eid,
+                                            output_type: "stream".to_string(),
+                                            output_json: output_ref,
+                                            output_index: broadcast_output_index,
+                                        });
+                                    }
                                 }
                             }
 
@@ -1571,7 +1580,7 @@ impl RoomKernel {
                                             );
                                         }
 
-                                        {
+                                        let merge_ok = {
                                             let mut sd = state_doc_for_iopub.write().await;
                                             if let Err(e) =
                                                 crate::notebook_sync_server::catch_automerge_panic(
@@ -1581,17 +1590,22 @@ impl RoomKernel {
                                             {
                                                 warn!("{}", e);
                                                 sd.rebuild_from_save();
+                                                false
+                                            } else {
+                                                let _ = state_changed_for_iopub.send(());
+                                                true
                                             }
-                                            let _ = state_changed_for_iopub.send(());
-                                        }
+                                        };
 
-                                        let _ = broadcast_tx.send(NotebookBroadcast::Output {
-                                            cell_id: cid.clone(),
-                                            execution_id: eid,
-                                            output_type: output_type.to_string(),
-                                            output_json: output_ref,
-                                            output_index: None,
-                                        });
+                                        if merge_ok {
+                                            let _ = broadcast_tx.send(NotebookBroadcast::Output {
+                                                cell_id: cid.clone(),
+                                                execution_id: eid,
+                                                output_type: output_type.to_string(),
+                                                output_json: output_ref,
+                                                output_index: None,
+                                            });
+                                        }
                                     }
                                 }
                             }
@@ -1619,7 +1633,7 @@ impl RoomKernel {
                                     )
                                     .await;
 
-                                    {
+                                    let merge_ok = {
                                         let mut sd = state_doc_for_iopub.write().await;
                                         match updated {
                                             Ok(true) => {
@@ -1629,35 +1643,42 @@ impl RoomKernel {
                                                 ) {
                                                     warn!("{}", e);
                                                     sd.rebuild_from_save();
+                                                    false
+                                                } else {
+                                                    debug!(
+                                                        "[kernel-manager] Updated display_id={}",
+                                                        display_id
+                                                    );
+                                                    true
                                                 }
-                                                debug!(
-                                                    "[kernel-manager] Updated display_id={}",
-                                                    display_id
-                                                );
                                             }
                                             Ok(false) => {
                                                 error!(
                                                     "[kernel-manager] No output found for display_id={}",
                                                     display_id
                                                 );
+                                                false
                                             }
                                             Err(e) => {
                                                 error!(
                                                     "[kernel-manager] Failed to update display: {}",
                                                     e
                                                 );
+                                                false
                                             }
                                         }
-                                        let _ = state_changed_for_iopub.send(());
-                                    }
+                                    };
 
-                                    // Broadcast for immediate UI update
-                                    let _ = broadcast_tx.send(NotebookBroadcast::DisplayUpdate {
-                                        display_id: display_id.clone(),
-                                        data: serde_json::to_value(&update.data)
-                                            .unwrap_or_default(),
-                                        metadata: update.metadata.clone(),
-                                    });
+                                    if merge_ok {
+                                        let _ = state_changed_for_iopub.send(());
+                                        let _ =
+                                            broadcast_tx.send(NotebookBroadcast::DisplayUpdate {
+                                                display_id: display_id.clone(),
+                                                data: serde_json::to_value(&update.data)
+                                                    .unwrap_or_default(),
+                                                metadata: update.metadata.clone(),
+                                            });
+                                    }
                                 }
                             }
 
@@ -1795,7 +1816,7 @@ impl RoomKernel {
                                             );
                                         }
 
-                                        {
+                                        let merge_ok = {
                                             let mut sd = state_doc_for_iopub.write().await;
                                             if let Err(e) =
                                                 crate::notebook_sync_server::catch_automerge_panic(
@@ -1805,17 +1826,22 @@ impl RoomKernel {
                                             {
                                                 warn!("{}", e);
                                                 sd.rebuild_from_save();
+                                                false
+                                            } else {
+                                                let _ = state_changed_for_iopub.send(());
+                                                true
                                             }
-                                            let _ = state_changed_for_iopub.send(());
-                                        }
+                                        };
 
-                                        let _ = broadcast_tx.send(NotebookBroadcast::Output {
-                                            cell_id: cid.clone(),
-                                            execution_id: eid.clone(),
-                                            output_type: "error".to_string(),
-                                            output_json: output_ref,
-                                            output_index: None,
-                                        });
+                                        if merge_ok {
+                                            let _ = broadcast_tx.send(NotebookBroadcast::Output {
+                                                cell_id: cid.clone(),
+                                                execution_id: eid.clone(),
+                                                output_type: "error".to_string(),
+                                                output_json: output_ref,
+                                                output_index: None,
+                                            });
+                                        }
                                     }
 
                                     // Signal cell error for stop-on-error
@@ -2187,7 +2213,7 @@ impl RoomKernel {
                                                 );
                                             }
 
-                                            {
+                                            let merge_ok = {
                                                 let mut sd = shell_state_doc.write().await;
                                                 if let Err(e) = crate::notebook_sync_server::catch_automerge_panic(
                                                     "shell-output-merge",
@@ -2195,22 +2221,27 @@ impl RoomKernel {
                                                 ) {
                                                     warn!("{}", e);
                                                     sd.rebuild_from_save();
+                                                    false
+                                                } else {
+                                                    let _ = shell_state_changed_tx.send(());
+                                                    true
                                                 }
-                                                let _ = shell_state_changed_tx.send(());
-                                            }
+                                            };
 
-                                            // Broadcast to all windows
-                                            let _ = shell_broadcast_tx.send(
-                                                NotebookBroadcast::Output {
-                                                    cell_id: cid.clone(),
-                                                    execution_id: execution_id
-                                                        .clone()
-                                                        .unwrap_or_default(),
-                                                    output_type: "display_data".to_string(),
-                                                    output_json: output_ref,
-                                                    output_index: None,
-                                                },
-                                            );
+                                            if merge_ok {
+                                                // Broadcast to all windows
+                                                let _ = shell_broadcast_tx.send(
+                                                    NotebookBroadcast::Output {
+                                                        cell_id: cid.clone(),
+                                                        execution_id: execution_id
+                                                            .clone()
+                                                            .unwrap_or_default(),
+                                                        output_type: "display_data".to_string(),
+                                                        output_json: output_ref,
+                                                        output_index: None,
+                                                    },
+                                                );
+                                            }
                                         }
                                     }
                                 }
