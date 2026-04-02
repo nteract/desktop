@@ -343,10 +343,10 @@ pub async fn clear_outputs(
         }
     };
 
-    // If cell_ids provided and non-empty, clear those; otherwise clear all.
+    // If cell_ids provided, clear those (empty list = no-op); otherwise clear all.
     let cell_ids: Vec<String> = match explicit_ids {
-        Some(ids) if !ids.is_empty() => ids,
-        _ => session.handle.get_cell_ids(),
+        Some(ids) => ids,
+        None => session.handle.get_cell_ids(),
     };
 
     let peer_label = server.get_peer_label().await;
