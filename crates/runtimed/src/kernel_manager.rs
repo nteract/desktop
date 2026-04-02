@@ -452,6 +452,12 @@ pub enum QueueCommand {
     /// The kernel process died (iopub connection lost).
     /// Unblocks the execution queue and notifies the frontend.
     KernelDied,
+    /// Send a comm_msg(update) to the kernel via the shell channel.
+    /// Used by the IOPub task to sync Output widget captured outputs back.
+    SendCommUpdate {
+        comm_id: String,
+        state: serde_json::Value,
+    },
 }
 
 /// Prepend a directory to the PATH environment variable.
@@ -612,6 +618,17 @@ impl RoomKernel {
                             &room_state_changed_tx,
                         )
                         .await;
+                    }
+                    QueueCommand::SendCommUpdate { comm_id, state } => {
+                        let mut guard = kernel_arc.lock().await;
+                        if let Some(ref mut k) = *guard {
+                            if let Err(e) = k.send_comm_update(&comm_id, state).await {
+                                warn!(
+                                    "[notebook-sync] Failed to send comm update to kernel: {}",
+                                    e
+                                );
+                            }
+                        }
                     }
                     QueueCommand::KernelDied => {
                         warn!("[notebook-sync] Kernel died, unblocking execution queue");
@@ -1214,11 +1231,49 @@ impl RoomKernel {
                                             if sd.append_comm_output(&widget_comm_id, &hash) {
                                                 let _ = state_changed_for_iopub.send(());
                                             }
+
+                                            // Read the full outputs list and sync to kernel
+                                            if let Some(entry) = sd.get_comm(&widget_comm_id) {
+                                                let output_hashes = entry.outputs.clone();
+                                                drop(sd); // Release lock before async work
+
+                                                // Resolve manifest hashes to nbformat JSON
+                                                let mut resolved_outputs = Vec::new();
+                                                for h in &output_hashes {
+                                                    if let Ok(Some(manifest_bytes)) =
+                                                        blob_store.get(h).await
+                                                    {
+                                                        if let Ok(manifest_str) =
+                                                            String::from_utf8(manifest_bytes)
+                                                        {
+                                                            if let Ok(resolved) =
+                                                                output_store::resolve_manifest(
+                                                                    &manifest_str,
+                                                                    &blob_store,
+                                                                )
+                                                                .await
+                                                            {
+                                                                resolved_outputs.push(resolved);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                // Send comm_msg(update, state: {outputs}) to kernel
+                                                let _ = iopub_cmd_tx
+                                                    .send(QueueCommand::SendCommUpdate {
+                                                        comm_id: widget_comm_id.clone(),
+                                                        state: serde_json::json!({
+                                                            "outputs": resolved_outputs,
+                                                        }),
+                                                    })
+                                                    .await;
+                                            }
                                         }
                                     }
 
-                                    // Broadcast for real-time UI (frontend accumulates
-                                    // and echoes back to kernel for out.outputs sync)
+                                    // Broadcast for real-time UI — the frontend still needs
+                                    // to display captured outputs in the Output widget.
                                     let content = serde_json::json!({
                                         "comm_id": widget_comm_id,
                                         "data": {
@@ -1399,9 +1454,37 @@ impl RoomKernel {
                                                 if sd.append_comm_output(&widget_comm_id, &hash) {
                                                     let _ = state_changed_for_iopub.send(());
                                                 }
+
+                                                // Read full outputs and sync to kernel
+                                                if let Some(entry) = sd.get_comm(&widget_comm_id) {
+                                                    let output_hashes = entry.outputs.clone();
+                                                    drop(sd);
+                                                    let mut resolved_outputs = Vec::new();
+                                                    for h in &output_hashes {
+                                                        if let Ok(Some(mb)) =
+                                                            blob_store.get(h).await
+                                                        {
+                                                            if let Ok(ms) = String::from_utf8(mb) {
+                                                                if let Ok(r) =
+                                                                    output_store::resolve_manifest(
+                                                                        &ms,
+                                                                        &blob_store,
+                                                                    )
+                                                                    .await
+                                                                {
+                                                                    resolved_outputs.push(r);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    let _ = iopub_cmd_tx.send(QueueCommand::SendCommUpdate {
+                                                        comm_id: widget_comm_id.clone(),
+                                                        state: serde_json::json!({ "outputs": resolved_outputs }),
+                                                    }).await;
+                                                }
                                             }
                                         }
-                                        // Broadcast for real-time UI + kernel echo
+                                        // Broadcast for real-time UI
                                         let content = serde_json::json!({
                                             "comm_id": widget_comm_id,
                                             "data": {
@@ -1606,9 +1689,37 @@ impl RoomKernel {
                                                 if sd.append_comm_output(&widget_comm_id, &hash) {
                                                     let _ = state_changed_for_iopub.send(());
                                                 }
+
+                                                // Read full outputs and sync to kernel
+                                                if let Some(entry) = sd.get_comm(&widget_comm_id) {
+                                                    let output_hashes = entry.outputs.clone();
+                                                    drop(sd);
+                                                    let mut resolved_outputs = Vec::new();
+                                                    for h in &output_hashes {
+                                                        if let Ok(Some(mb)) =
+                                                            blob_store.get(h).await
+                                                        {
+                                                            if let Ok(ms) = String::from_utf8(mb) {
+                                                                if let Ok(r) =
+                                                                    output_store::resolve_manifest(
+                                                                        &ms,
+                                                                        &blob_store,
+                                                                    )
+                                                                    .await
+                                                                {
+                                                                    resolved_outputs.push(r);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    let _ = iopub_cmd_tx.send(QueueCommand::SendCommUpdate {
+                                                        comm_id: widget_comm_id.clone(),
+                                                        state: serde_json::json!({ "outputs": resolved_outputs }),
+                                                    }).await;
+                                                }
                                             }
                                         }
-                                        // Broadcast for real-time UI + kernel echo
+                                        // Broadcast for real-time UI
                                         let content = serde_json::json!({
                                             "comm_id": widget_comm_id,
                                             "data": {
@@ -2454,6 +2565,39 @@ impl RoomKernel {
             msg_id, cell.cell_id, cell.execution_id
         );
 
+        Ok(())
+    }
+
+    /// Send a comm_msg(update) to the kernel via the shell channel.
+    ///
+    /// Used to sync Output widget captured outputs directly to the kernel
+    /// without a frontend round-trip.
+    pub async fn send_comm_update(
+        &mut self,
+        comm_id: &str,
+        state: serde_json::Value,
+    ) -> Result<()> {
+        let shell = self
+            .shell_writer
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("shell_writer not available"))?;
+
+        let comm_msg = jupyter_protocol::CommMsg {
+            comm_id: jupyter_protocol::CommId(comm_id.to_string()),
+            data: {
+                let mut map = serde_json::Map::new();
+                map.insert("method".to_string(), serde_json::json!("update"));
+                map.insert("state".to_string(), state);
+                map.insert("buffer_paths".to_string(), serde_json::json!([]));
+                map
+            },
+        };
+        let message: jupyter_protocol::JupyterMessage = comm_msg.into();
+        shell.send(message).await?;
+        debug!(
+            "[kernel-manager] Sent comm_msg(update) to kernel: comm_id={}",
+            comm_id
+        );
         Ok(())
     }
 
