@@ -3168,8 +3168,8 @@ async fn rekey_ephemeral_room(
                     "[notebook-sync] Re-key collision at {} — migrating interloper peers to winning room",
                     canonical
                 );
-                // Remove the interloper from the map. Its peers still hold an
-                // Arc and their loops are alive, so we can notify them.
+                // Remove the interloper from the map and clean up in the
+                // background to minimize time holding the rooms lock.
                 let interloper = rooms_guard.remove(&canonical);
                 if let Some(interloper) = interloper {
                     // Merge the interloper's doc into the winning room so no
@@ -3180,40 +3180,39 @@ async fn rekey_ephemeral_room(
                         let mut interloper_doc = interloper.doc.write().await;
                         winning_doc.merge(&mut interloper_doc).ok();
                     }
+                    // Signal winning room peers to sync the merged content.
+                    let _ = room.changed_tx.send(());
 
-                    // Migrate kernel: if the interloper has a running kernel
-                    // and the winning room doesn't, transfer it.
-                    {
-                        let mut interloper_kernel = interloper.kernel.lock().await;
-                        if interloper_kernel.is_some() {
-                            let mut winning_kernel = room.kernel.lock().await;
-                            if winning_kernel.is_none() {
-                                info!(
-                                    "[notebook-sync] Migrating kernel from interloper to winning room"
+                    // Shut down the interloper's kernel and file watcher in
+                    // the background. Kernel migration is not safe because
+                    // RoomKernel holds references to its original room's
+                    // doc/channels — moving the struct doesn't rewire them.
+                    // The winning room will launch its own kernel when needed.
+                    let canonical_for_task = canonical.clone();
+                    tokio::spawn(async move {
+                        // Notify interloper peers about the rename so they
+                        // can update their notebook_id. Note: current
+                        // frontend/Python clients don't fully reconnect on
+                        // this signal yet, but it prevents stale IDs on
+                        // manual reconnect.
+                        let _ =
+                            interloper
+                                .kernel_broadcast_tx
+                                .send(NotebookBroadcast::RoomRenamed {
+                                    new_notebook_id: canonical_for_task,
+                                });
+                        if let Some(mut kernel) = interloper.kernel.lock().await.take() {
+                            if let Err(e) = kernel.shutdown().await {
+                                warn!(
+                                    "[notebook-sync] Failed to shut down interloper kernel: {}",
+                                    e
                                 );
-                                *winning_kernel = interloper_kernel.take();
-                            } else {
-                                // Both have kernels — shut down the interloper's
-                                if let Some(mut k) = interloper_kernel.take() {
-                                    let _ = k.shutdown().await;
-                                }
                             }
                         }
-                    }
-
-                    // Notify the interloper's peers to reconnect with the
-                    // canonical path. The frontend handles RoomRenamed by
-                    // updating its notebook_id and reconnecting.
-                    let _ = interloper
-                        .kernel_broadcast_tx
-                        .send(NotebookBroadcast::RoomRenamed {
-                            new_notebook_id: canonical.clone(),
-                        });
-
-                    // Stop the interloper's file watcher
-                    if let Some(tx) = interloper.watcher_shutdown_tx.lock().await.take() {
-                        let _ = tx.send(());
-                    }
+                        if let Some(tx) = interloper.watcher_shutdown_tx.lock().await.take() {
+                            let _ = tx.send(());
+                        }
+                    });
                 }
                 // Fall through to normal rekey below
             }
