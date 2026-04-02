@@ -29,27 +29,9 @@ import { cn } from "@/lib/utils";
 const handleIframeError = (err: { message: string; stack?: string }) =>
   console.error("[OutputArea] iframe error:", err);
 
-/**
- * Jupyter output types based on the nbformat spec.
- */
-export type JupyterOutput =
-  | {
-      output_type: "execute_result" | "display_data";
-      data: Record<string, unknown>;
-      metadata?: Record<string, unknown>;
-      execution_count?: number | null;
-    }
-  | {
-      output_type: "stream";
-      name: "stdout" | "stderr";
-      text: string | string[];
-    }
-  | {
-      output_type: "error";
-      ename: string;
-      evalue: string;
-      traceback: string[];
-    };
+import type { JupyterOutput } from "./jupyter-output";
+// Re-export so existing imports continue to work.
+export type { JupyterOutput } from "./jupyter-output";
 
 interface OutputAreaProps {
   /**
