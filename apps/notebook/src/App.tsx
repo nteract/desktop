@@ -217,13 +217,9 @@ function AppContent() {
     hasDependencies: hasUvDependencies,
     isUvConfigured,
     loading: depsLoading,
-    syncedWhileRunning,
-    needsKernelRestart,
     addDependency,
     removeDependency,
     clearAllDependencies: clearAllUvDeps,
-    syncState,
-    syncNow,
     pyprojectInfo,
     pyprojectDeps,
     importFromPyproject,
@@ -235,10 +231,6 @@ function AppContent() {
     hasDependencies: hasCondaDependencies,
     isCondaConfigured,
     loading: condaDepsLoading,
-    syncing: condaSyncing,
-    syncState: condaSyncState,
-    syncedWhileRunning: condaSyncedWhileRunning,
-    needsKernelRestart: condaNeedsKernelRestart,
     addDependency: addCondaDependency,
     removeDependency: removeCondaDependency,
     clearAllDependencies: clearAllCondaDeps,
@@ -246,7 +238,6 @@ function AppContent() {
     setPython: setCondaPython,
     environmentYmlInfo,
     environmentYmlDeps,
-    syncNow: syncCondaNow,
     pixiInfo,
     importFromPixi,
   } = useCondaDependencies();
@@ -405,8 +396,7 @@ function AppContent() {
   }, [envSyncState, progressError, progressReset]);
 
   // Derive sync state from daemon's envSyncState for inline environments
-  // This overrides the disabled syncState from useDependencies/useCondaDependencies
-  // Also shows for prewarmed kernels when user adds inline deps (prewarmed→inline drift)
+  // Also shows for prewarmed kernels when user adds inline deps (prewarmed->inline drift)
   const uvDerivedSyncState: EnvSyncState | null = useMemo(() => {
     // Show for uv:inline or uv:prewarmed (when user adds deps to prewarmed kernel)
     const isUvEnv =
@@ -1182,15 +1172,12 @@ function AppContent() {
               channels={condaDependencies?.channels ?? []}
               python={condaDependencies?.python ?? null}
               loading={condaDepsLoading}
-              syncing={condaSyncing}
-              syncState={condaDerivedSyncState ?? condaSyncState}
-              syncedWhileRunning={condaSyncedWhileRunning}
-              needsKernelRestart={condaNeedsKernelRestart}
+              syncState={condaDerivedSyncState}
               onAdd={addCondaDependency}
               onRemove={removeCondaDependency}
               onSetChannels={setCondaChannels}
               onSetPython={setCondaPython}
-              onSyncNow={condaDerivedSyncState ? handleSyncDeps : syncCondaNow}
+              onSyncNow={handleSyncDeps}
               onRetryLaunch={tryStartKernel}
               envProgress={envProgress.envType === "conda" ? envProgress : null}
               onResetProgress={envProgress.reset}
@@ -1208,12 +1195,10 @@ function AppContent() {
               dependencies={dependencies?.dependencies ?? []}
               requiresPython={dependencies?.requires_python ?? null}
               loading={depsLoading}
-              syncedWhileRunning={syncedWhileRunning}
-              needsKernelRestart={needsKernelRestart}
               onAdd={addDependency}
               onRemove={removeDependency}
-              syncState={uvDerivedSyncState ?? syncState}
-              onSyncNow={uvDerivedSyncState ? handleSyncDeps : syncNow}
+              syncState={uvDerivedSyncState}
+              onSyncNow={handleSyncDeps}
               pyprojectInfo={pyprojectInfo}
               pyprojectDeps={pyprojectDeps}
               onImportFromPyproject={importFromPyproject}
