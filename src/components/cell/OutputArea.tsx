@@ -121,6 +121,7 @@ const ISOLATED_MIME_TYPES = new Set([
   "image/svg+xml",
   "application/vnd.jupyter.widget-view+json",
   "application/vnd.plotly.v1+json",
+  "application/geo+json",
 ]);
 
 /**
