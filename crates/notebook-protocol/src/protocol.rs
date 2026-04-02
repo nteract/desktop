@@ -9,38 +9,6 @@ use serde::{Deserialize, Serialize};
 
 // ── Data structs referenced by protocol enums ───────────────────────────────
 
-/// A snapshot of a comm channel's state.
-///
-/// Stored in the daemon and sent to newly connected clients so they can
-/// reconstruct widget models that were created before they connected.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CommSnapshot {
-    /// The comm_id (unique identifier for this comm channel).
-    pub comm_id: String,
-
-    /// Target name (e.g., "jupyter.widget", "jupyter.widget.version").
-    pub target_name: String,
-
-    /// Current state snapshot (merged from all updates).
-    /// For widgets, this contains the full model state.
-    pub state: serde_json::Value,
-
-    /// Model module (e.g., "@jupyter-widgets/controls", "anywidget").
-    /// Extracted from `_model_module` in state for convenience.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_module: Option<String>,
-
-    /// Model name (e.g., "IntSliderModel", "AnyModel").
-    /// Extracted from `_model_name` in state for convenience.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_name: Option<String>,
-
-    /// Binary buffers associated with this comm (e.g., for images, arrays).
-    /// Stored inline for simplicity; large buffers could be moved to blob store.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub buffers: Vec<Vec<u8>>,
-}
-
 /// Environment configuration captured at kernel launch time.
 /// Used to detect when notebook metadata has drifted from the running kernel.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -501,13 +469,6 @@ pub enum NotebookBroadcast {
         /// Binary buffers (base64-encoded when serialized to JSON)
         #[serde(default)]
         buffers: Vec<Vec<u8>>,
-    },
-
-    /// Initial comm state sync sent to newly connected clients.
-    /// Contains all active comm channels so new windows can reconstruct widgets.
-    CommSync {
-        /// All active comm snapshots
-        comms: Vec<CommSnapshot>,
     },
 
     /// Environment progress update during kernel launch.

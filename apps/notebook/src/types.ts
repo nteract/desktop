@@ -142,16 +142,6 @@ export interface EnvironmentYmlInfo {
 // Daemon Broadcast Types (Phase 8: Daemon-owned kernel execution)
 // =============================================================================
 
-/** Snapshot of a comm channel's state for multi-window sync */
-export interface CommSnapshot {
-  comm_id: string;
-  target_name: string;
-  state: Record<string, unknown>;
-  model_module?: string;
-  model_name?: string;
-  buffers?: number[][];
-}
-
 /** Broadcast events from daemon for kernel operations */
 export type DaemonBroadcast =
   | {
@@ -201,10 +191,6 @@ export type DaemonBroadcast =
       msg_type: string; // "comm_open" | "comm_msg" | "comm_close"
       content: Record<string, unknown>;
       buffers: number[][]; // Binary buffers as byte arrays
-    }
-  | {
-      event: "comm_sync";
-      comms: CommSnapshot[]; // All active comms for widget reconstruction
     }
   | ({
       event: "env_progress";

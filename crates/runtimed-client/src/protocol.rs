@@ -14,7 +14,7 @@ use crate::{EnvType, PoolState, PooledEnv};
 
 // Re-export all notebook protocol types from the shared crate.
 pub use notebook_protocol::protocol::{
-    CommSnapshot, CompletionItem, DenoLaunchedConfig, EnvSyncDiff, HistoryEntry, LaunchedEnvConfig,
+    CompletionItem, DenoLaunchedConfig, EnvSyncDiff, HistoryEntry, LaunchedEnvConfig,
     NotebookBroadcast, NotebookRequest, NotebookResponse, QueueEntry,
 };
 
@@ -518,31 +518,5 @@ mod tests {
         let json = serde_json::to_string(&broadcast).unwrap();
         assert!(json.contains("kernel_status"));
         assert!(json.contains("busy"));
-    }
-
-    #[test]
-    fn test_notebook_broadcast_comm_sync() {
-        let comm = CommSnapshot {
-            comm_id: "widget-1".into(),
-            target_name: "jupyter.widget".into(),
-            state: serde_json::json!({"value": 50}),
-            model_module: Some("@jupyter-widgets/controls".into()),
-            model_name: Some("IntSliderModel".into()),
-            buffers: vec![],
-        };
-        let broadcast = NotebookBroadcast::CommSync { comms: vec![comm] };
-        let json = serde_json::to_string(&broadcast).unwrap();
-        assert!(json.contains("comm_sync"));
-        assert!(json.contains("widget-1"));
-        assert!(json.contains("jupyter.widget"));
-
-        let parsed: NotebookBroadcast = serde_json::from_str(&json).unwrap();
-        match parsed {
-            NotebookBroadcast::CommSync { comms } => {
-                assert_eq!(comms.len(), 1);
-                assert_eq!(comms[0].comm_id, "widget-1");
-            }
-            _ => panic!("unexpected broadcast type"),
-        }
     }
 }

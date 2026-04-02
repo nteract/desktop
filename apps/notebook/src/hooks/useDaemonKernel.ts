@@ -20,6 +20,7 @@ import { logger } from "../lib/logger";
 import { resolveOutput } from "../lib/materialize-cells";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
 import {
+  type CommDocEntry,
   diffExecutions,
   type ExecutionState,
   type QueueEntry,
@@ -360,32 +361,10 @@ export function useDaemonKernel({
         }
 
         case "comm": {
-          // Comm message from kernel (for widgets).
-          // State contains {"$blob": "hash"} sentinels for binary buffers —
-          // the daemon stores them in the blob store and never sends raw bytes.
-          // We resolve sentinels to blob HTTP URLs before passing to widgets.
+          // Custom comm messages only (buttons, model.send()).
+          // State updates and lifecycle (open/close) flow through CRDT.
           const { onCommMessage } = callbacksRef.current;
           if (onCommMessage) {
-            const content = broadcast.content as Record<string, unknown>;
-            const data = content.data as Record<string, unknown> | undefined;
-            const rawState = data?.state as Record<string, unknown> | undefined;
-
-            // Resolve blob sentinels in state (comm_open and comm_msg update)
-            let resolvedContent = broadcast.content;
-            if (rawState && broadcast.msg_type !== "comm_close") {
-              const { state: resolvedState, bufferPaths } =
-                replaceSentinelsWithBlobUrls(rawState);
-              // Rebuild content.data.state with resolved URLs
-              resolvedContent = {
-                ...content,
-                data: {
-                  ...data,
-                  state: resolvedState,
-                  buffer_paths: bufferPaths,
-                },
-              };
-            }
-
             const msg: JupyterMessage = {
               header: {
                 msg_id: crypto.randomUUID(),
@@ -396,9 +375,7 @@ export function useDaemonKernel({
                 version: "5.3",
               },
               metadata: {},
-              content: resolvedContent,
-              // State updates have blob sentinels (no buffers needed).
-              // Custom comm_msg may still carry raw binary buffers.
+              content: broadcast.content,
               buffers: broadcast.buffers?.length
                 ? broadcast.buffers.map(
                     (arr: number[]) => new Uint8Array(arr).buffer,
@@ -406,71 +383,6 @@ export function useDaemonKernel({
                 : [],
             };
             onCommMessage(msg);
-          }
-          break;
-        }
-
-        case "comm_sync": {
-          // Initial comm state sync from daemon for multi-window widget reconstruction.
-          // Replay all comms as comm_open messages to the widget store.
-          // Must await blob port — CRDT state contains {"$blob": "hash"} sentinels
-          // that need resolution to HTTP URLs before the widget framework sees them.
-          const { onCommMessage } = callbacksRef.current;
-          if (onCommMessage && broadcast.comms) {
-            const comms = broadcast.comms;
-            const replayComms = async () => {
-              let port = getBlobPort();
-              if (!port) {
-                port = await refreshBlobPort();
-              }
-              if (!port) {
-                logger.error(
-                  "[daemon-kernel] Blob port unavailable, cannot replay comm_sync",
-                );
-                return;
-              }
-              if (cancelled) return;
-
-              logger.debug(
-                `[daemon-kernel] comm_sync: replaying ${comms.length} comms`,
-              );
-              const { onCommMessage: handler } = callbacksRef.current;
-              if (!handler) return;
-
-              for (const comm of comms) {
-                const { state: resolvedState, bufferPaths } =
-                  replaceSentinelsWithBlobUrls(
-                    comm.state as Record<string, unknown>,
-                  );
-
-                const msg: JupyterMessage = {
-                  header: {
-                    msg_id: crypto.randomUUID(),
-                    msg_type: "comm_open",
-                    session: "",
-                    username: "kernel",
-                    date: new Date().toISOString(),
-                    version: "5.3",
-                  },
-                  metadata: {},
-                  content: {
-                    comm_id: comm.comm_id,
-                    target_name: comm.target_name,
-                    data: {
-                      state: resolvedState,
-                      buffer_paths: bufferPaths,
-                    },
-                  },
-                  buffers: [],
-                };
-                handler(msg);
-              }
-            };
-            replayComms();
-          } else if (!onCommMessage) {
-            logger.debug(
-              "[daemon-kernel] comm_sync received but onCommMessage not set",
-            );
           }
           break;
         }
@@ -557,22 +469,102 @@ export function useDaemonKernel({
 
   // ── Sync comms from RuntimeStateDoc → WidgetStore ─────────────────
   //
-  // Phase B: comms flow from CRDT to WidgetStore. Currently limited to
-  // comm_close cleanup only. comm_open and state updates still flow via
-  // broadcasts + CommSync, which carry real binary buffers. The CRDT
-  // path has blob sentinels that need iframe-side resolution before
-  // comm_open can be delivered from here (Phase D follow-up).
-  //
-  // For now: track comms in the CRDT for cleanup, but don't deliver
-  // comm_open or state updates that would put sentinel objects in the
-  // WidgetStore (which causes DataCloneError on postMessage to iframe).
-  const prevCommsRef = useRef<Record<string, boolean>>({});
+  // Full lifecycle: the CRDT is the source of truth for widget state.
+  // Detect new comms (comm_open), state changes (comm_msg update),
+  // and removed comms (comm_close) by diffing against previous state.
+  // Blob sentinels in state are resolved to HTTP URLs before delivery.
+  // New comms are sorted by seq for correct widget dependency order.
+  const prevCommsRef = useRef<Record<string, CommDocEntry>>({});
+  const prevCommsJsonRef = useRef<Record<string, string>>({});
   useEffect(() => {
     const { onCommMessage } = callbacksRef.current;
     if (!onCommMessage) return;
 
     const docComms = runtimeState.comms ?? {};
     const prevComms = prevCommsRef.current;
+    const prevJson = prevCommsJsonRef.current;
+    const nextComms: Record<string, CommDocEntry> = {};
+    const nextJson: Record<string, string> = {};
+
+    // Blob port is needed to resolve {"$blob":"hash"} sentinels in state.
+    // Without it, comm_open and state updates would deliver unresolved sentinels
+    // which cause DataCloneError in the widget iframe. Skip delivery and leave
+    // those comms out of prevCommsRef so the next effect run retries them.
+    const hasBlobPort = getBlobPort() !== null;
+
+    // New comms — synthesize comm_open (sorted by seq for dependency order)
+    const newEntries = Object.entries(docComms)
+      .filter(([commId]) => !(commId in prevComms))
+      .sort(([, a], [, b]) => (a.seq ?? 0) - (b.seq ?? 0));
+
+    for (const [commId, entry] of newEntries) {
+      if (!hasBlobPort) continue; // Retry on next CRDT update once port is ready
+      const { state: resolvedState, bufferPaths } =
+        replaceSentinelsWithBlobUrls(entry.state as Record<string, unknown>);
+      const msg: JupyterMessage = {
+        header: {
+          msg_id: crypto.randomUUID(),
+          msg_type: "comm_open",
+          session: "",
+          username: "kernel",
+          date: new Date().toISOString(),
+          version: "5.3",
+        },
+        metadata: {},
+        content: {
+          comm_id: commId,
+          target_name: entry.target_name,
+          data: {
+            state: {
+              ...resolvedState,
+              _model_module: entry.model_module || undefined,
+              _model_name: entry.model_name || undefined,
+            },
+            buffer_paths: bufferPaths,
+          },
+        },
+        buffers: [],
+      };
+      onCommMessage(msg);
+      nextComms[commId] = entry;
+      nextJson[commId] = JSON.stringify(entry.state);
+    }
+
+    // State changes — synthesize comm_msg(update)
+    for (const [commId, entry] of Object.entries(docComms)) {
+      const stateStr = JSON.stringify(entry.state);
+      if (commId in prevComms) {
+        nextComms[commId] = entry;
+        nextJson[commId] = stateStr;
+        if (prevJson[commId] !== stateStr) {
+          const { state: resolvedState, bufferPaths } =
+            replaceSentinelsWithBlobUrls(
+              entry.state as Record<string, unknown>,
+            );
+          const msg: JupyterMessage = {
+            header: {
+              msg_id: crypto.randomUUID(),
+              msg_type: "comm_msg",
+              session: "",
+              username: "kernel",
+              date: new Date().toISOString(),
+              version: "5.3",
+            },
+            metadata: {},
+            content: {
+              comm_id: commId,
+              data: {
+                method: "update",
+                state: resolvedState,
+                buffer_paths: bufferPaths,
+              },
+            },
+            buffers: [],
+          };
+          onCommMessage(msg);
+        }
+      }
+    }
 
     // Removed comms — synthesize comm_close
     for (const commId of Object.keys(prevComms)) {
@@ -594,10 +586,10 @@ export function useDaemonKernel({
       }
     }
 
-    // Update tracking
-    prevCommsRef.current = Object.fromEntries(
-      Object.keys(docComms).map((id) => [id, true]),
-    );
+    // Only track comms that were successfully delivered.
+    // Comms skipped due to missing blob port will be retried on next update.
+    prevCommsRef.current = nextComms;
+    prevCommsJsonRef.current = nextJson;
   }, [runtimeState.comms]);
 
   // ── Resolve Output widget captured outputs from CRDT ────────────

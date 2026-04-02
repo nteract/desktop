@@ -1345,6 +1345,54 @@ impl RuntimeStateDoc {
         true
     }
 
+    /// Merge a state delta into a comm's state map, skipping no-op writes.
+    ///
+    /// For each key in `delta` (must be a JSON object), reads the current
+    /// value from `comms/{comm_id}/state/{key}` and only writes if it
+    /// differs. This suppresses echo-generated CRDT changes when the
+    /// frontend writes a value → kernel echoes the same value back.
+    ///
+    /// Returns `true` if any property was actually changed.
+    #[allow(clippy::expect_used)]
+    pub fn merge_comm_state_delta(&mut self, comm_id: &str, delta: &serde_json::Value) -> bool {
+        let Some(obj) = delta.as_object() else {
+            return false;
+        };
+        let Some(comms) = self.get_map("comms") else {
+            return false;
+        };
+        let Some((_, entry)) = self.doc.get(&comms, comm_id).ok().flatten() else {
+            return false;
+        };
+        let Some((Value::Object(ObjType::Map), state_id)) =
+            self.doc.get(&entry, "state").ok().flatten()
+        else {
+            return false;
+        };
+
+        let mut any_changed = false;
+        for (key, new_value) in obj {
+            // For scalars, compare before writing to avoid no-op CRDT ops.
+            // Objects/arrays are written unconditionally (rare in widget deltas).
+            let should_write = match new_value {
+                serde_json::Value::Null
+                | serde_json::Value::Bool(_)
+                | serde_json::Value::Number(_)
+                | serde_json::Value::String(_) => {
+                    let current = crate::read_json_value(&self.doc, &state_id, key.as_str());
+                    current.as_ref() != Some(new_value)
+                }
+                _ => true,
+            };
+            if should_write {
+                crate::put_json_at_key(&mut self.doc, &state_id, key, new_value)
+                    .expect("put comm.state.key");
+                any_changed = true;
+            }
+        }
+        any_changed
+    }
+
     /// Set or clear the capture_msg_id for an Output widget.
     ///
     /// When `msg_id` is non-empty, kernel outputs with matching
@@ -2794,5 +2842,50 @@ mod tests {
             "empty outputs must be retained in snapshot"
         );
         assert!(snapshot["exec-1"].is_empty());
+    }
+
+    #[test]
+    fn test_merge_comm_state_delta_skips_same_value() {
+        let mut doc = RuntimeStateDoc::new();
+        let state = serde_json::json!({"value": 42, "label": "hello"});
+        doc.put_comm("w1", "jupyter.widget", "", "", &state, 0);
+
+        // Same values → no change
+        let delta = serde_json::json!({"value": 42, "label": "hello"});
+        assert!(!doc.merge_comm_state_delta("w1", &delta));
+    }
+
+    #[test]
+    fn test_merge_comm_state_delta_writes_changed_value() {
+        let mut doc = RuntimeStateDoc::new();
+        let state = serde_json::json!({"value": 42, "label": "hello"});
+        doc.put_comm("w1", "jupyter.widget", "", "", &state, 0);
+
+        // Different value → change
+        let delta = serde_json::json!({"value": 99});
+        assert!(doc.merge_comm_state_delta("w1", &delta));
+        let updated = doc.read_state();
+        let w1 = &updated.comms["w1"];
+        assert_eq!(w1.state["value"], 99);
+        // Unchanged key preserved
+        assert_eq!(w1.state["label"], "hello");
+    }
+
+    #[test]
+    fn test_merge_comm_state_delta_nonexistent_comm() {
+        let mut doc = RuntimeStateDoc::new();
+        let delta = serde_json::json!({"value": 1});
+        assert!(!doc.merge_comm_state_delta("nonexistent", &delta));
+    }
+
+    #[test]
+    fn test_merge_comm_state_delta_writes_objects_unconditionally() {
+        let mut doc = RuntimeStateDoc::new();
+        let state = serde_json::json!({"nested": {"a": 1}});
+        doc.put_comm("w1", "jupyter.widget", "", "", &state, 0);
+
+        // Object values are always written (no deep comparison)
+        let delta = serde_json::json!({"nested": {"a": 1}});
+        assert!(doc.merge_comm_state_delta("w1", &delta));
     }
 }

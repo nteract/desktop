@@ -382,6 +382,10 @@ pub struct RoomKernel {
     process_watcher_task: Option<tokio::task::JoinHandle<()>>,
     /// Handle to the heartbeat monitor task (detects unresponsive kernel)
     heartbeat_task: Option<tokio::task::JoinHandle<()>>,
+    /// Channel for coalesced comm state writes (IOPub → coalesce task).
+    comm_coalesce_tx: Option<mpsc::UnboundedSender<(String, serde_json::Value)>>,
+    /// Handle to the coalescing task for comm state CRDT writes.
+    comm_coalesce_task: Option<tokio::task::JoinHandle<()>>,
     /// Shell writer for sending execute requests
     shell_writer: Option<runtimelib::DealerSendConnection>,
     /// Process group ID for cleanup (Unix only)
@@ -528,6 +532,8 @@ impl RoomKernel {
             shell_reader_task: None,
             process_watcher_task: None,
             heartbeat_task: None,
+            comm_coalesce_tx: None,
+            comm_coalesce_task: None,
             shell_writer: None,
             #[cfg(unix)]
             process_group_id: None,
@@ -1062,6 +1068,11 @@ impl RoomKernel {
         let state_doc_for_iopub = self.state_doc.clone();
         let state_changed_for_iopub = self.state_changed_tx.clone();
         let iopub_actor_id = self.kernel_actor_id.clone();
+
+        // Create coalescing channel early so the IOPub task can capture the sender.
+        // The coalescing task itself is spawned later (after the IOPub task).
+        let (coalesce_tx, coalesce_rx) = mpsc::unbounded_channel::<(String, serde_json::Value)>();
+        let comm_coalesce_tx = Some(coalesce_tx.clone());
 
         let iopub_task = tokio::spawn(async move {
             // Track Output widgets with pending clear_output(wait=true).
@@ -1870,10 +1881,6 @@ impl RoomKernel {
 
                             // Comm messages for widgets (ipywidgets protocol)
                             JupyterMessageContent::CommOpen(open) => {
-                                // Serialize the content to JSON
-                                let content =
-                                    serde_json::to_value(&message.content).unwrap_or_default();
-
                                 // Extract buffers (Vec<Bytes> -> Vec<Vec<u8>>)
                                 let buffers: Vec<Vec<u8>> =
                                     message.buffers.iter().map(|b| b.to_vec()).collect();
@@ -1938,25 +1945,8 @@ impl RoomKernel {
                                     let _ = state_changed_for_iopub.send(());
                                 }
 
-                                // Broadcast with sentinel state — no raw buffers.
-                                // Frontend resolves sentinels to blob HTTP URLs.
-                                let broadcast_content = {
-                                    let mut c = content.clone();
-                                    if let Some(obj) = c.get_mut("data") {
-                                        if let Some(obj) = obj.as_object_mut() {
-                                            obj.insert(
-                                                "state".to_string(),
-                                                state_with_blobs.clone(),
-                                            );
-                                        }
-                                    }
-                                    c
-                                };
-                                let _ = broadcast_tx.send(NotebookBroadcast::Comm {
-                                    msg_type: message.header.msg_type.clone(),
-                                    content: broadcast_content,
-                                    buffers: vec![],
-                                });
+                                // No broadcast — frontend receives comm_open via
+                                // CRDT sync of RuntimeStateDoc comms map.
                             }
 
                             JupyterMessageContent::CommMsg(msg) => {
@@ -2005,79 +1995,56 @@ impl RoomKernel {
                                             let _ = state_changed_for_iopub.send(());
                                         }
 
-                                        // Note: we intentionally do NOT dual-write the full
-                                        // state to RuntimeStateDoc on every comm_msg update.
-                                        // High-frequency widgets (sliders) generate dozens
-                                        // of updates per second, and each CRDT write +
-                                        // sync notification overwhelms the pipeline.
-                                        // The CRDT has the initial state from comm_open,
-                                        // and real-time updates flow via broadcasts.
+                                        // Send state delta to coalescing writer for
+                                        // batched CRDT updates (16ms window).
+                                        // Binary buffers get blob-sentinel treatment
+                                        // so the CRDT stores hashes, not raw bytes.
+                                        let coalesce_delta = if !buffers.is_empty() {
+                                            let buffer_paths = extract_buffer_paths(&data);
+                                            let (state_with_blobs, _) = store_widget_buffers(
+                                                state_delta,
+                                                &buffer_paths,
+                                                &buffers,
+                                                &blob_store,
+                                            )
+                                            .await;
+                                            state_with_blobs
+                                        } else {
+                                            state_delta.clone()
+                                        };
+                                        if let Some(ref tx) = comm_coalesce_tx {
+                                            let _ =
+                                                tx.send((msg.comm_id.0.clone(), coalesce_delta));
+                                        }
                                     }
                                 }
 
-                                // For state updates with binary buffers, store as blob sentinels
-                                // (same pattern as comm_open — avoids DataCloneError).
-                                // For non-state comm_msg (custom messages), preserve raw buffers
-                                // so widgets that depend on binary custom payloads still work.
-                                let (broadcast_content, broadcast_buffers) = if !buffers.is_empty()
-                                    && method == Some("update")
-                                {
-                                    let buffer_paths = extract_buffer_paths(&data);
-                                    if let Some(state_delta) = data.get("state") {
-                                        let (state_with_blobs, _) = store_widget_buffers(
-                                            state_delta,
-                                            &buffer_paths,
-                                            &buffers,
-                                            &blob_store,
-                                        )
-                                        .await;
-                                        let mut c = content.clone();
-                                        if let Some(obj) = c.get_mut("data") {
-                                            if let Some(obj) = obj.as_object_mut() {
-                                                obj.insert("state".to_string(), state_with_blobs);
-                                            }
-                                        }
-                                        (c, vec![])
-                                    } else {
-                                        (content.clone(), buffers.clone())
-                                    }
-                                } else {
-                                    (content.clone(), buffers.clone())
-                                };
-
-                                let _ = broadcast_tx.send(NotebookBroadcast::Comm {
-                                    msg_type: message.header.msg_type.clone(),
-                                    content: broadcast_content,
-                                    buffers: broadcast_buffers,
-                                });
+                                // State updates flow through the CRDT (coalescing writer).
+                                // Custom messages (buttons, model.send()) still need broadcast
+                                // since they are ephemeral events, not persistent state.
+                                if method != Some("update") {
+                                    let _ = broadcast_tx.send(NotebookBroadcast::Comm {
+                                        msg_type: message.header.msg_type.clone(),
+                                        content: content.clone(),
+                                        buffers: buffers.clone(),
+                                    });
+                                }
                             }
 
                             JupyterMessageContent::CommClose(close) => {
-                                debug!(
-                                    "[kernel-manager] Broadcasting comm_close: comm_id={}",
-                                    close.comm_id.0
-                                );
-
-                                // Serialize the content to JSON
-                                let content =
-                                    serde_json::to_value(&message.content).unwrap_or_default();
+                                debug!("[kernel-manager] comm_close: comm_id={}", close.comm_id.0);
 
                                 // Remove from capture cache
                                 capture_cache.retain(|_, cid| cid != &close.comm_id.0);
 
-                                // Dual-write removal to RuntimeStateDoc
+                                // Remove from RuntimeStateDoc — frontend detects
+                                // removal via CRDT watcher and synthesizes comm_close.
                                 {
                                     let mut sd = state_doc_for_iopub.write().await;
                                     if sd.remove_comm(&close.comm_id.0) {
                                         let _ = state_changed_for_iopub.send(());
                                     }
                                 }
-
-                                let _ = broadcast_tx.send(NotebookBroadcast::Comm {
-                                    msg_type: message.header.msg_type.clone(),
-                                    content,
-                                    buffers: vec![],
-                                });
                             }
 
                             _ => {
@@ -2404,12 +2371,65 @@ impl RoomKernel {
             }
         });
 
+        // Spawn coalesced comm state writer — batches comm_msg(update) deltas
+        // into periodic CRDT writes (16ms window) to keep RuntimeStateDoc current
+        // without overwhelming the sync pipeline during rapid slider drags.
+        // Channel was created earlier (before IOPub task) so both tasks share it.
+        let mut coalesce_rx = coalesce_rx;
+        let coalesce_state_doc = self.state_doc.clone();
+        let coalesce_state_changed = self.state_changed_tx.clone();
+        let comm_coalesce_task = tokio::spawn(async move {
+            let mut pending: HashMap<String, serde_json::Value> = HashMap::new();
+            let mut timer = tokio::time::interval(std::time::Duration::from_millis(16));
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                tokio::select! {
+                    msg = coalesce_rx.recv() => {
+                        match msg {
+                            Some((comm_id, delta)) => {
+                                // Merge delta into pending accumulator (last-write-wins per key)
+                                let entry = pending.entry(comm_id)
+                                    .or_insert_with(|| serde_json::json!({}));
+                                if let (Some(existing), Some(new)) =
+                                    (entry.as_object_mut(), delta.as_object())
+                                {
+                                    for (k, v) in new {
+                                        existing.insert(k.clone(), v.clone());
+                                    }
+                                }
+                            }
+                            None => break, // Channel closed, kernel shutting down
+                        }
+                    }
+                    _ = timer.tick() => {
+                        if pending.is_empty() {
+                            continue;
+                        }
+                        let batch = std::mem::take(&mut pending);
+                        let mut sd = coalesce_state_doc.write().await;
+                        let mut any_changed = false;
+                        for (comm_id, delta) in &batch {
+                            if sd.merge_comm_state_delta(comm_id, delta) {
+                                any_changed = true;
+                            }
+                        }
+                        if any_changed {
+                            let _ = coalesce_state_changed.send(());
+                        }
+                    }
+                }
+            }
+        });
+
         // Store state (process_watcher_task already stored immediately after spawn)
         self.connection_info = Some(connection_info);
         self.connection_file = Some(connection_file_path);
         self.iopub_task = Some(iopub_task);
         self.shell_reader_task = Some(shell_reader_task);
         self.heartbeat_task = Some(heartbeat_task);
+        self.comm_coalesce_tx = Some(coalesce_tx);
+        self.comm_coalesce_task = Some(comm_coalesce_task);
         self.shell_writer = Some(shell_writer);
         self.status = KernelStatus::Idle;
 
@@ -2992,6 +3012,11 @@ impl RoomKernel {
         if let Some(task) = self.heartbeat_task.take() {
             task.abort();
         }
+        // Drop sender first so the coalescing task exits, then abort
+        self.comm_coalesce_tx.take();
+        if let Some(task) = self.comm_coalesce_task.take() {
+            task.abort();
+        }
 
         // Try graceful shutdown via shell
         if let Some(mut shell) = self.shell_writer.take() {
@@ -3061,6 +3086,10 @@ impl Drop for RoomKernel {
             task.abort();
         }
         if let Some(task) = self.heartbeat_task.take() {
+            task.abort();
+        }
+        self.comm_coalesce_tx.take();
+        if let Some(task) = self.comm_coalesce_task.take() {
             task.abort();
         }
 
