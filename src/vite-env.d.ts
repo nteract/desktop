@@ -18,6 +18,16 @@ declare module "vega-embed-raw" {
   export default content;
 }
 
+// Leaflet JS and CSS loaded as raw strings via vegaRawPlugin (see vite.config.ts).
+declare module "leaflet-js-raw" {
+  const content: string;
+  export default content;
+}
+declare module "leaflet-css-raw" {
+  const content: string;
+  export default content;
+}
+
 // lezer-toml type declaration (package doesn't properly export types)
 declare module "lezer-toml" {
   import type { LRParser } from "@lezer/lr";

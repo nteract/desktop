@@ -22,6 +22,8 @@ function vegaRawPlugin(nodeModulesDir: string): Plugin {
       nodeModulesDir,
       "vega-embed/build/vega-embed.min.js",
     ),
+    "leaflet-js-raw": path.join(nodeModulesDir, "leaflet/dist/leaflet.js"),
+    "leaflet-css-raw": path.join(nodeModulesDir, "leaflet/dist/leaflet.css"),
   };
   return {
     name: "vega-raw-resolve",

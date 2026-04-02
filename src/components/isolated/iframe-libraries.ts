@@ -20,6 +20,7 @@ import { isVegaMimeType } from "@/components/outputs/vega-mime";
  */
 const MIME_LIBRARIES: Record<string, string> = {
   "application/vnd.plotly.v1+json": "plotly",
+  "application/geo+json": "leaflet",
 };
 
 function libraryForMime(mime: string): string | undefined {
@@ -58,6 +59,15 @@ function loadLibraryCode(name: string): Promise<string> {
           import("vega-embed-raw"),
         ]);
         return `${vegaMod.default}\n${vegaLiteMod.default}\n${vegaEmbedMod.default}`;
+      }
+      case "leaflet": {
+        // Load Leaflet JS and CSS. Inject CSS via a <style> tag before the JS runs.
+        const [leafletJs, leafletCss] = await Promise.all([
+          import("leaflet-js-raw"),
+          import("leaflet-css-raw"),
+        ]);
+        const cssInjection = `(function(){var s=document.createElement('style');s.textContent=${JSON.stringify(leafletCss.default)};document.head.appendChild(s);})();`;
+        return `${cssInjection}\n${leafletJs.default}`;
       }
       default:
         throw new Error(`Unknown iframe library: ${name}`);
