@@ -15,12 +15,12 @@ The repo-local `bin/runt` wrapper is first in `$PATH` — it runs `./target/debu
 
 **Nightly channel** (system-installed nteract Nightly.app):
 ```bash
-env -i PATH="$PATH" HOME="$HOME" runt-nightly diagnostics
+env -i HOME=$HOME /usr/local/bin/runt-nightly diagnostics
 ```
 
 **Stable channel** (system-installed nteract.app):
 ```bash
-env -i PATH="$PATH" HOME="$HOME" runt diagnostics
+env -i HOME=$HOME /usr/local/bin/runt diagnostics
 ```
 
 **Dev daemon** (per-worktree, no `env -i` needed):
@@ -36,15 +36,15 @@ Same `env -i` pattern applies to any system daemon command:
 
 ```bash
 # Check system daemon status
-env -i PATH="$PATH" HOME="$HOME" runt-nightly daemon status
-env -i PATH="$PATH" HOME="$HOME" runt daemon status
+env -i HOME=$HOME /usr/local/bin/runt-nightly daemon status
+env -i HOME=$HOME /usr/local/bin/runt daemon status
 
 # List notebooks on system daemon
-env -i PATH="$PATH" HOME="$HOME" runt-nightly notebooks
-env -i PATH="$PATH" HOME="$HOME" runt ps
+env -i HOME=$HOME /usr/local/bin/runt-nightly notebooks
+env -i HOME=$HOME /usr/local/bin/runt ps
 
 # Tail system daemon logs
-env -i PATH="$PATH" HOME="$HOME" runt-nightly daemon logs -f
+env -i HOME=$HOME /usr/local/bin/runt-nightly daemon logs -f
 ```
 
 ## Archive Contents

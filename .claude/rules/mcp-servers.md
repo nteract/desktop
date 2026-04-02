@@ -33,12 +33,12 @@ When running CLI commands against system-installed daemons from a dev environmen
 
 ```bash
 # Nightly system daemon
-env -i PATH="$PATH" HOME="$HOME" /usr/local/bin/runt-nightly diagnostics
-env -i PATH="$PATH" HOME="$HOME" /usr/local/bin/runt-nightly daemon status
+env -i HOME=$HOME /usr/local/bin/runt-nightly diagnostics
+env -i HOME=$HOME /usr/local/bin/runt-nightly daemon status
 
 # Stable system daemon
-env -i PATH="$PATH" HOME="$HOME" /usr/local/bin/runt diagnostics
-env -i PATH="$PATH" HOME="$HOME" /usr/local/bin/runt daemon status
+env -i HOME=$HOME /usr/local/bin/runt diagnostics
+env -i HOME=$HOME /usr/local/bin/runt daemon status
 ```
 
 For the dev daemon, use `./target/debug/runt` directly (no `env -i` needed — dev env vars are correct).
