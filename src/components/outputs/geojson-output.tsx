@@ -26,7 +26,6 @@ export function GeoJsonOutput({ data, className }: GeoJsonOutputProps) {
 
     // Create the map
     const map = L.map(el, {
-      // Disable zoom animation for snappier feel in a notebook cell
       zoomAnimation: true,
     });
 
