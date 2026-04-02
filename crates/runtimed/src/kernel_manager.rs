@@ -371,8 +371,8 @@ pub struct RoomKernel {
     connection_file: Option<PathBuf>,
     /// Session ID for Jupyter protocol
     session_id: String,
-    /// Automerge actor ID for kernel writes to NotebookDoc (e.g. "rt:kernel:a1b2c3d4").
-    /// Set on forks before mutating so output writes carry kernel provenance.
+    /// Automerge actor ID for kernel writes (e.g. "rt:kernel:a1b2c3d4").
+    /// Set on RuntimeStateDoc forks before mutating so output writes carry kernel provenance.
     kernel_actor_id: String,
     /// Handle to the iopub listener task
     iopub_task: Option<tokio::task::JoinHandle<()>>,
@@ -411,12 +411,6 @@ pub struct RoomKernel {
     cmd_tx: Option<mpsc::Sender<QueueCommand>>,
     /// Command receiver for queue state updates (polled by sync server)
     cmd_rx: Option<mpsc::Receiver<QueueCommand>>,
-    /// Automerge document for persisting outputs
-    doc: Arc<RwLock<NotebookDoc>>,
-    /// Channel to send doc bytes to debounced persistence task (watch keeps latest)
-    persist_tx: watch::Sender<Option<Vec<u8>>>,
-    /// Channel to notify peers of document changes
-    changed_tx: broadcast::Sender<()>,
     /// Blob store for output manifests
     blob_store: Arc<BlobStore>,
     /// Monotonic counter for comm insertion order (written to RuntimeStateDoc).
@@ -461,6 +455,13 @@ pub enum QueueCommand {
     SendCommUpdate {
         comm_id: String,
         state: serde_json::Value,
+    },
+    /// The kernel reported an execution count (from execute_input).
+    /// The coordinator writes it to NotebookDoc for persistence.
+    ExecutionCountSet {
+        cell_id: String,
+        execution_id: String,
+        execution_count: i64,
     },
 }
 
@@ -508,9 +509,6 @@ impl RoomKernel {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         broadcast_tx: broadcast::Sender<NotebookBroadcast>,
-        doc: Arc<RwLock<NotebookDoc>>,
-        persist_tx: watch::Sender<Option<Vec<u8>>>,
-        changed_tx: broadcast::Sender<()>,
         blob_store: Arc<BlobStore>,
         state_doc: Arc<RwLock<RuntimeStateDoc>>,
         state_changed_tx: broadcast::Sender<()>,
@@ -545,9 +543,6 @@ impl RoomKernel {
             broadcast_tx,
             cmd_tx: None,
             cmd_rx: None,
-            doc,
-            persist_tx,
-            changed_tx,
             blob_store,
             comm_seq: Arc::new(AtomicU64::new(0)),
             pending_history: Arc::new(StdMutex::new(HashMap::new())),
@@ -567,7 +562,13 @@ impl RoomKernel {
     ///
     /// Must be called after `launch()`. The `kernel_arc` is needed because the
     /// spawned task locks it to call `execution_done()` and friends.
-    pub fn start_command_loop(&mut self, kernel_arc: Arc<tokio::sync::Mutex<Option<RoomKernel>>>) {
+    pub fn start_command_loop(
+        &mut self,
+        kernel_arc: Arc<tokio::sync::Mutex<Option<RoomKernel>>>,
+        doc: Arc<RwLock<NotebookDoc>>,
+        persist_tx: watch::Sender<Option<Vec<u8>>>,
+        changed_tx: broadcast::Sender<()>,
+    ) {
         let Some(mut cmd_rx) = self.cmd_rx.take() else {
             return;
         };
@@ -656,6 +657,24 @@ impl RoomKernel {
                             )
                             .await;
                         }
+                    }
+                    QueueCommand::ExecutionCountSet {
+                        cell_id,
+                        execution_id: _,
+                        execution_count,
+                    } => {
+                        let mut doc_guard = doc.write().await;
+                        if let Err(e) =
+                            doc_guard.set_execution_count(&cell_id, &execution_count.to_string())
+                        {
+                            warn!(
+                                "[notebook-sync] Failed to set execution_count in doc: {}",
+                                e
+                            );
+                        }
+                        let bytes = doc_guard.save();
+                        let _ = changed_tx.send(());
+                        let _ = persist_tx.send(Some(bytes));
                     }
                 }
             }
@@ -1059,9 +1078,6 @@ impl RoomKernel {
         let broadcast_tx = self.broadcast_tx.clone();
         let cell_id_map = self.cell_id_map.clone();
         let iopub_cmd_tx = cmd_tx.clone();
-        let doc = self.doc.clone();
-        let persist_tx = self.persist_tx.clone();
-        let changed_tx = self.changed_tx.clone();
         let blob_store = self.blob_store.clone();
         let comm_seq = self.comm_seq.clone();
         let stream_terminals = self.stream_terminals.clone();
@@ -1156,37 +1172,26 @@ impl RoomKernel {
 
                             JupyterMessageContent::ExecuteInput(input) => {
                                 if let Some(ref cid) = cell_id {
-                                    // No need to clear terminal state here — each execution_id
-                                    // gets its own fresh terminal emulator, and the new execution_id
-                                    // won't have any terminal state yet.
-
-                                    // Set execution count in the notebook doc (cell metadata).
-                                    // Outputs no longer live in the notebook doc — they're in
-                                    // RuntimeStateDoc keyed by execution_id, so no clear needed.
                                     let execution_count = input.execution_count.0 as i64;
-                                    let persist_bytes = {
-                                        let mut doc_guard = doc.write().await;
-                                        if let Err(e) = doc_guard
-                                            .set_execution_count(cid, &execution_count.to_string())
-                                        {
-                                            warn!(
-                                                "[kernel-manager] Failed to set execution_count in doc: {}",
-                                                e
-                                            );
-                                        }
-                                        let bytes = doc_guard.save();
-                                        let _ = changed_tx.send(());
-                                        bytes
-                                    };
-                                    let _ = persist_tx.send(Some(persist_bytes));
 
-                                    // Write execution_count to RuntimeStateDoc
+                                    // Write execution_count to RuntimeStateDoc (source of truth)
                                     if let Some(ref eid) = execution_id {
                                         let mut sd = state_doc_for_iopub.write().await;
                                         if sd.set_execution_count(eid, execution_count) {
                                             let _ = state_changed_for_iopub.send(());
                                         }
                                     }
+
+                                    // Tell the coordinator to persist execution_count in
+                                    // NotebookDoc (for .ipynb export). The kernel no longer
+                                    // writes to NotebookDoc directly.
+                                    let _ = iopub_cmd_tx
+                                        .send(QueueCommand::ExecutionCountSet {
+                                            cell_id: cid.clone(),
+                                            execution_id: execution_id.clone().unwrap_or_default(),
+                                            execution_count,
+                                        })
+                                        .await;
 
                                     let _ =
                                         broadcast_tx.send(NotebookBroadcast::ExecutionStarted {
@@ -1370,7 +1375,15 @@ impl RoomKernel {
                                     // the updated entry isn't the last output.
                                     let broadcast_output_index = {
                                         let mut sd = state_doc_for_iopub.write().await;
-                                        sd.merge(&mut fork).ok();
+                                        if let Err(e) =
+                                            crate::notebook_sync_server::catch_automerge_panic(
+                                                "iopub-stream-output-merge",
+                                                || sd.merge(&mut fork),
+                                            )
+                                        {
+                                            warn!("{}", e);
+                                            sd.rebuild_from_save();
+                                        }
 
                                         let broadcast_idx = match &upsert_result {
                                             Ok((updated, output_index)) => {
@@ -1560,7 +1573,15 @@ impl RoomKernel {
 
                                         {
                                             let mut sd = state_doc_for_iopub.write().await;
-                                            sd.merge(&mut fork).ok();
+                                            if let Err(e) =
+                                                crate::notebook_sync_server::catch_automerge_panic(
+                                                    "iopub-output-merge",
+                                                    || sd.merge(&mut fork),
+                                                )
+                                            {
+                                                warn!("{}", e);
+                                                sd.rebuild_from_save();
+                                            }
                                             let _ = state_changed_for_iopub.send(());
                                         }
 
@@ -1602,7 +1623,13 @@ impl RoomKernel {
                                         let mut sd = state_doc_for_iopub.write().await;
                                         match updated {
                                             Ok(true) => {
-                                                sd.merge(&mut fork).ok();
+                                                if let Err(e) = crate::notebook_sync_server::catch_automerge_panic(
+                                                    "iopub-display-update-merge",
+                                                    || sd.merge(&mut fork),
+                                                ) {
+                                                    warn!("{}", e);
+                                                    sd.rebuild_from_save();
+                                                }
                                                 debug!(
                                                     "[kernel-manager] Updated display_id={}",
                                                     display_id
@@ -1770,7 +1797,15 @@ impl RoomKernel {
 
                                         {
                                             let mut sd = state_doc_for_iopub.write().await;
-                                            sd.merge(&mut fork).ok();
+                                            if let Err(e) =
+                                                crate::notebook_sync_server::catch_automerge_panic(
+                                                    "iopub-error-output-merge",
+                                                    || sd.merge(&mut fork),
+                                                )
+                                            {
+                                                warn!("{}", e);
+                                                sd.rebuild_from_save();
+                                            }
                                             let _ = state_changed_for_iopub.send(());
                                         }
 
@@ -2071,8 +2106,6 @@ impl RoomKernel {
         let shell_cell_id_map = self.cell_id_map.clone();
         let shell_pending_history = self.pending_history.clone();
         let shell_pending_completions = self.pending_completions.clone();
-        // Additional resources for handling page payloads (IPython ? and ?? help)
-        let _shell_doc = self.doc.clone();
         let shell_state_doc = self.state_doc.clone();
         let shell_state_changed_tx = self.state_changed_tx.clone();
         let shell_blob_store = self.blob_store.clone();
@@ -2156,7 +2189,13 @@ impl RoomKernel {
 
                                             {
                                                 let mut sd = shell_state_doc.write().await;
-                                                sd.merge(&mut fork).ok();
+                                                if let Err(e) = crate::notebook_sync_server::catch_automerge_panic(
+                                                    "shell-output-merge",
+                                                    || sd.merge(&mut fork),
+                                                ) {
+                                                    warn!("{}", e);
+                                                    sd.rebuild_from_save();
+                                                }
                                                 let _ = shell_state_changed_tx.send(());
                                             }
 
@@ -3090,9 +3129,6 @@ mod tests {
     fn test_room_kernel_new() {
         let tmp = tempfile::TempDir::new().unwrap();
         let (tx, _rx) = broadcast::channel(16);
-        let (changed_tx, _changed_rx) = broadcast::channel(16);
-        let (persist_tx, _persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
-        let doc = Arc::new(RwLock::new(NotebookDoc::new("test-notebook")));
         let blob_store = Arc::new(BlobStore::new(tmp.path().join("blobs")));
         let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
         let (state_changed_tx, _state_changed_rx) = broadcast::channel(16);
@@ -3100,9 +3136,6 @@ mod tests {
         let (presence_tx, _presence_rx) = broadcast::channel(16);
         let kernel = RoomKernel::new(
             tx,
-            doc,
-            persist_tx,
-            changed_tx,
             blob_store,
             state_doc,
             state_changed_tx,

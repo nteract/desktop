@@ -2635,9 +2635,6 @@ async fn auto_launch_kernel(
     // Create new kernel
     let mut kernel = RoomKernel::new(
         room.kernel_broadcast_tx.clone(),
-        room.doc.clone(),
-        room.persist_tx.clone(),
-        room.changed_tx.clone(),
         room.blob_store.clone(),
         room.state_doc.clone(),
         room.state_changed_tx.clone(),
@@ -3028,7 +3025,12 @@ async fn auto_launch_kernel(
             let es = kernel.env_source().to_string();
 
             // Take the command receiver and spawn a task to process execution events
-            kernel.start_command_loop(room.kernel.clone());
+            kernel.start_command_loop(
+                room.kernel.clone(),
+                room.doc.clone(),
+                room.persist_tx.clone(),
+                room.changed_tx.clone(),
+            );
 
             *kernel_guard = Some(kernel);
 
@@ -3331,9 +3333,6 @@ async fn handle_notebook_request(
             // Create new kernel
             let mut kernel = RoomKernel::new(
                 room.kernel_broadcast_tx.clone(),
-                room.doc.clone(),
-                room.persist_tx.clone(),
-                room.changed_tx.clone(),
                 room.blob_store.clone(),
                 room.state_doc.clone(),
                 room.state_changed_tx.clone(),
@@ -3757,7 +3756,12 @@ async fn handle_notebook_request(
                     let es = kernel.env_source().to_string();
 
                     // Take the command receiver and spawn a task to process execution events
-                    kernel.start_command_loop(room.kernel.clone());
+                    kernel.start_command_loop(
+                        room.kernel.clone(),
+                        room.doc.clone(),
+                        room.persist_tx.clone(),
+                        room.changed_tx.clone(),
+                    );
 
                     *kernel_guard = Some(kernel);
                     // Drop the kernel lock before awaiting the presence update
