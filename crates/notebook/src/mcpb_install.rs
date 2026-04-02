@@ -79,7 +79,7 @@ pub fn install_mcpb(app: &tauri::AppHandle) -> Result<PathBuf, String> {
             { "name": "set_cell", "description": "Update a cell's source and/or type" },
             { "name": "delete_cell", "description": "Delete a cell" },
             { "name": "move_cell", "description": "Move a cell to a new position" },
-            { "name": "clear_outputs", "description": "Clear a cell's outputs" },
+            { "name": "clear_outputs", "description": "Clear cell outputs by cell_ids, or all outputs if omitted" },
             { "name": "execute_cell", "description": "Execute a cell and return results" },
             { "name": "run_all_cells", "description": "Queue all code cells for execution" },
             { "name": "interrupt_kernel", "description": "Interrupt the currently executing cell" },

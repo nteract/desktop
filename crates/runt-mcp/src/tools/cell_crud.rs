@@ -74,8 +74,8 @@ pub struct MoveCellParams {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ClearOutputsParams {
-    /// The cell ID to clear outputs for.
-    pub cell_id: String,
+    /// Cell IDs to clear outputs for. If omitted or empty, clears outputs for ALL cells (destructive).
+    pub cell_ids: Option<Vec<String>>,
 }
 
 /// Create a new cell, optionally executing it.
@@ -327,8 +327,11 @@ pub async fn clear_outputs(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let cell_id = arg_str(request, "cell_id")
-        .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
+    let explicit_ids: Option<Vec<String>> = request
+        .arguments
+        .as_ref()
+        .and_then(|a| a.get("cell_ids"))
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
 
     let session = server.session.read().await;
     let session = match session.as_ref() {
@@ -340,24 +343,42 @@ pub async fn clear_outputs(
         }
     };
 
-    let peer_label = server.get_peer_label().await;
-    crate::presence::emit_focus(&session.handle, cell_id, &peer_label).await;
+    // If cell_ids provided and non-empty, clear those; otherwise clear all.
+    let cell_ids: Vec<String> = match explicit_ids {
+        Some(ids) if !ids.is_empty() => ids,
+        _ => session.handle.get_cell_ids(),
+    };
 
-    // Send ClearOutputs request to the daemon — outputs live in RuntimeStateDoc,
-    // so the daemon handles clearing the execution_id pointer and outputs.
-    match session
-        .handle
-        .send_request(NotebookRequest::ClearOutputs {
-            cell_id: cell_id.to_string(),
-        })
-        .await
-    {
-        Ok(_) => {
-            let result = serde_json::json!({ "cell_id": cell_id, "cleared": true });
-            tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
+    let peer_label = server.get_peer_label().await;
+    let mut cleared = Vec::new();
+    let mut failed = Vec::new();
+
+    for id in &cell_ids {
+        crate::presence::emit_focus(&session.handle, id, &peer_label).await;
+
+        match session
+            .handle
+            .send_request(NotebookRequest::ClearOutputs {
+                cell_id: id.clone(),
+            })
+            .await
+        {
+            Ok(_) => cleared.push(id.as_str()),
+            Err(e) => failed.push(format!("{id}: {e}")),
         }
-        Err(e) => tool_error(&format!("Failed to clear outputs: {e}")),
     }
+
+    if !failed.is_empty() {
+        return tool_error(&format!(
+            "Cleared {}/{} cells. Failures: {}",
+            cleared.len(),
+            cell_ids.len(),
+            failed.join(", ")
+        ));
+    }
+
+    let result = serde_json::json!({ "cleared": cleared.len() });
+    tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }
 
 /// Build a CallToolResult from an ExecutionResult, including structured content.

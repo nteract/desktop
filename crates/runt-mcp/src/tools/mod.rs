@@ -153,7 +153,7 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "clear_outputs",
-            "Clear a cell's outputs.",
+            "Clear cell outputs. Pass cell_ids to clear specific cells, or omit to clear ALL outputs (destructive).",
             schema_for::<cell_crud::ClearOutputsParams>(),
         )
         .annotate(
