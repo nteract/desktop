@@ -327,11 +327,15 @@ pub async fn clear_outputs(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let explicit_ids: Option<Vec<String>> = request
-        .arguments
-        .as_ref()
-        .and_then(|a| a.get("cell_ids"))
-        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    // Parse cell_ids; reject malformed values instead of falling back to clear-all.
+    let explicit_ids: Option<Vec<String>> =
+        match request.arguments.as_ref().and_then(|a| a.get("cell_ids")) {
+            Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| {
+                let msg = format!("cell_ids must be an array of strings: {e}");
+                McpError::invalid_params(msg, None)
+            })?),
+            None => None,
+        };
 
     let session = server.session.read().await;
     let session = match session.as_ref() {
@@ -348,6 +352,19 @@ pub async fn clear_outputs(
         Some(ids) => ids,
         None => session.handle.get_cell_ids(),
     };
+
+    // Validate that all requested cell IDs exist in the notebook.
+    if !cell_ids.is_empty() {
+        let all_ids = session.handle.get_cell_ids();
+        let unknown: Vec<&str> = cell_ids
+            .iter()
+            .filter(|id| !all_ids.contains(id))
+            .map(|s| s.as_str())
+            .collect();
+        if !unknown.is_empty() {
+            return tool_error(&format!("Unknown cell IDs: {}", unknown.join(", ")));
+        }
+    }
 
     let peer_label = server.get_peer_label().await;
     let mut cleared = Vec::new();
