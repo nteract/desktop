@@ -38,7 +38,7 @@ use tokio::sync::{broadcast, oneshot, watch, Mutex, RwLock};
 use notify_debouncer_mini::DebounceEventResult;
 
 use crate::blob_store::BlobStore;
-use crate::comm_state::CommState;
+use crate::comm_state::{CommSnapshot, CommState};
 use crate::connection::{self, NotebookFrameType};
 use crate::kernel_manager::{DenoLaunchedConfig, LaunchedEnvConfig, RoomKernel};
 use crate::markdown_assets::resolve_markdown_assets;
@@ -1710,12 +1710,39 @@ where
     }
 
     // Phase 1.5: Send comm state sync for widget reconstruction
-    // New clients need active comm channels to render widgets created before they connected
+    // New clients need active comm channels to render widgets created before they connected.
+    // Reads from RuntimeStateDoc (CRDT) instead of CommState. Binary buffers are stored
+    // as {"$blob": "hash"} sentinels in state — the frontend resolves them to blob URLs.
     {
-        let comms = room.comm_state.get_all().await;
-        if !comms.is_empty() {
+        let sd = room.state_doc.read().await;
+        let crdt_state = sd.read_state();
+        if !crdt_state.comms.is_empty() {
+            // Sort by seq (insertion order) for correct widget dependency replay
+            let mut entries: Vec<_> = crdt_state.comms.into_iter().collect();
+            entries.sort_by_key(|(_, e)| e.seq);
+
+            let comms: Vec<CommSnapshot> = entries
+                .into_iter()
+                .map(|(comm_id, entry)| CommSnapshot {
+                    comm_id,
+                    target_name: entry.target_name,
+                    state: entry.state,
+                    model_module: if entry.model_module.is_empty() {
+                        None
+                    } else {
+                        Some(entry.model_module)
+                    },
+                    model_name: if entry.model_name.is_empty() {
+                        None
+                    } else {
+                        Some(entry.model_name)
+                    },
+                    buffers: vec![],
+                })
+                .collect();
+
             info!(
-                "[notebook-sync] Sending comm_sync with {} active comms",
+                "[notebook-sync] Sending comm_sync with {} active comms (from CRDT)",
                 comms.len()
             );
             connection::send_typed_json_frame(

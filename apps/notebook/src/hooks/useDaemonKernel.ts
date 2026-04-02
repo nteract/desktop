@@ -10,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getBlobPort, refreshBlobPort, resetBlobPort } from "../lib/blob-port";
+import { replaceSentinelsWithBlobUrls } from "../lib/blob-sentinel";
 import {
   isKernelStatus,
   KERNEL_STATUS,
@@ -389,6 +390,14 @@ export function useDaemonKernel({
               `[daemon-kernel] comm_sync: replaying ${broadcast.comms.length} comms`,
             );
             for (const comm of broadcast.comms) {
+              // Resolve {"$blob": "hash"} sentinels in state to blob HTTP URLs.
+              // The CRDT stores binary buffers as blob sentinels; the frontend
+              // fetches them directly from the blob server via GET /blob/{hash}.
+              const { state: resolvedState, bufferPaths } =
+                replaceSentinelsWithBlobUrls(
+                  comm.state as Record<string, unknown>,
+                );
+
               // Synthesize a comm_open message for each active comm
               const msg: JupyterMessage = {
                 header: {
@@ -404,14 +413,11 @@ export function useDaemonKernel({
                   comm_id: comm.comm_id,
                   target_name: comm.target_name,
                   data: {
-                    state: comm.state,
-                    buffer_paths: [],
+                    state: resolvedState,
+                    buffer_paths: bufferPaths,
                   },
                 },
-                // Convert buffers if present
-                buffers: comm.buffers
-                  ? comm.buffers.map((arr) => new Uint8Array(arr).buffer)
-                  : [],
+                buffers: [],
               };
               onCommMessage(msg);
             }
