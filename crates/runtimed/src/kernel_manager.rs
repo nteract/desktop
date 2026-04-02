@@ -1785,20 +1785,24 @@ impl RoomKernel {
                                     )
                                     .await;
 
-                                // Dual-write to RuntimeStateDoc (native Automerge map).
-                                // If the message has binary buffers, store them in the blob
-                                // store and replace with {"$blob": "<hash>"} sentinels.
+                                // Store binary buffers in blob store, replacing them with
+                                // {"$blob": "<hash>"} sentinels. The sentinel-carrying state
+                                // is used for both the CRDT write and the broadcast — raw
+                                // buffers are never sent to the frontend (avoids DataCloneError
+                                // when postMessage-ing to the widget iframe).
+                                let empty_obj = serde_json::json!({});
+                                let state = data.get("state").unwrap_or(&empty_obj);
+                                let buffer_paths = extract_buffer_paths(&data);
+                                let (state_with_blobs, _used_paths) = store_widget_buffers(
+                                    state,
+                                    &buffer_paths,
+                                    &buffers,
+                                    &blob_store,
+                                )
+                                .await;
+
+                                // Write to RuntimeStateDoc (native Automerge map)
                                 {
-                                    let empty_obj = serde_json::json!({});
-                                    let state = data.get("state").unwrap_or(&empty_obj);
-                                    let buffer_paths = extract_buffer_paths(&data);
-                                    let (state_with_blobs, _used_paths) = store_widget_buffers(
-                                        state,
-                                        &buffer_paths,
-                                        &buffers,
-                                        &blob_store,
-                                    )
-                                    .await;
                                     let model_module = state_with_blobs
                                         .get("_model_module")
                                         .and_then(|v| v.as_str())
@@ -1820,10 +1824,24 @@ impl RoomKernel {
                                     let _ = state_changed_for_iopub.send(());
                                 }
 
+                                // Broadcast with sentinel state — no raw buffers.
+                                // Frontend resolves sentinels to blob HTTP URLs.
+                                let broadcast_content = {
+                                    let mut c = content.clone();
+                                    if let Some(obj) = c.get_mut("data") {
+                                        if let Some(obj) = obj.as_object_mut() {
+                                            obj.insert(
+                                                "state".to_string(),
+                                                state_with_blobs.clone(),
+                                            );
+                                        }
+                                    }
+                                    c
+                                };
                                 let _ = broadcast_tx.send(NotebookBroadcast::Comm {
                                     msg_type: message.header.msg_type.clone(),
-                                    content,
-                                    buffers,
+                                    content: broadcast_content,
+                                    buffers: vec![],
                                 });
                             }
 
@@ -1858,10 +1876,37 @@ impl RoomKernel {
                                     }
                                 }
 
+                                // Store any binary buffers as blob sentinels for the broadcast
+                                // (same pattern as comm_open — avoids DataCloneError).
+                                let (broadcast_content, broadcast_buffers) = if !buffers.is_empty()
+                                {
+                                    let buffer_paths = extract_buffer_paths(&data);
+                                    if let Some(state_delta) = data.get("state") {
+                                        let (state_with_blobs, _) = store_widget_buffers(
+                                            state_delta,
+                                            &buffer_paths,
+                                            &buffers,
+                                            &blob_store,
+                                        )
+                                        .await;
+                                        let mut c = content.clone();
+                                        if let Some(obj) = c.get_mut("data") {
+                                            if let Some(obj) = obj.as_object_mut() {
+                                                obj.insert("state".to_string(), state_with_blobs);
+                                            }
+                                        }
+                                        (c, vec![])
+                                    } else {
+                                        (content.clone(), vec![])
+                                    }
+                                } else {
+                                    (content.clone(), vec![])
+                                };
+
                                 let _ = broadcast_tx.send(NotebookBroadcast::Comm {
                                     msg_type: message.header.msg_type.clone(),
-                                    content,
-                                    buffers,
+                                    content: broadcast_content,
+                                    buffers: broadcast_buffers,
                                 });
                             }
 

@@ -360,10 +360,32 @@ export function useDaemonKernel({
         }
 
         case "comm": {
-          // Comm message from kernel (for widgets)
+          // Comm message from kernel (for widgets).
+          // State contains {"$blob": "hash"} sentinels for binary buffers —
+          // the daemon stores them in the blob store and never sends raw bytes.
+          // We resolve sentinels to blob HTTP URLs before passing to widgets.
           const { onCommMessage } = callbacksRef.current;
           if (onCommMessage) {
-            // Convert daemon broadcast to JupyterMessage format expected by widget store
+            const content = broadcast.content as Record<string, unknown>;
+            const data = content.data as Record<string, unknown> | undefined;
+            const rawState = data?.state as Record<string, unknown> | undefined;
+
+            // Resolve blob sentinels in state (comm_open and comm_msg update)
+            let resolvedContent = broadcast.content;
+            if (rawState && broadcast.msg_type !== "comm_close") {
+              const { state: resolvedState, bufferPaths } =
+                replaceSentinelsWithBlobUrls(rawState);
+              // Rebuild content.data.state with resolved URLs
+              resolvedContent = {
+                ...content,
+                data: {
+                  ...data,
+                  state: resolvedState,
+                  buffer_paths: bufferPaths,
+                },
+              };
+            }
+
             const msg: JupyterMessage = {
               header: {
                 msg_id: crypto.randomUUID(),
@@ -374,11 +396,8 @@ export function useDaemonKernel({
                 version: "5.3",
               },
               metadata: {},
-              content: broadcast.content,
-              // Convert number[][] back to ArrayBuffer[] for widgets
-              buffers: broadcast.buffers.map(
-                (arr) => new Uint8Array(arr).buffer,
-              ),
+              content: resolvedContent,
+              buffers: [],
             };
             onCommMessage(msg);
           }
