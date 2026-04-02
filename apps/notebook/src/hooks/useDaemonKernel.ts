@@ -397,7 +397,13 @@ export function useDaemonKernel({
               },
               metadata: {},
               content: resolvedContent,
-              buffers: [],
+              // State updates have blob sentinels (no buffers needed).
+              // Custom comm_msg may still carry raw binary buffers.
+              buffers: broadcast.buffers?.length
+                ? broadcast.buffers.map(
+                    (arr: number[]) => new Uint8Array(arr).buffer,
+                  )
+                : [],
             };
             onCommMessage(msg);
           }

@@ -1872,8 +1872,16 @@ impl RoomKernel {
                                             // Remove old capture for this comm_id
                                             capture_cache.retain(|_, cid| cid != &msg.comm_id.0);
 
-                                            // Set new capture if non-empty
+                                            // Set new capture if non-empty (single-depth only)
                                             if !new_msg_id.is_empty() {
+                                                if let Some(existing) =
+                                                    capture_cache.get(new_msg_id)
+                                                {
+                                                    warn!(
+                                                        "[comm_msg] Nested capture: {} overrides {} for msg_id={}",
+                                                        msg.comm_id.0, existing, new_msg_id
+                                                    );
+                                                }
                                                 capture_cache.insert(
                                                     new_msg_id.to_string(),
                                                     msg.comm_id.0.clone(),
@@ -1896,9 +1904,12 @@ impl RoomKernel {
                                     }
                                 }
 
-                                // Store any binary buffers as blob sentinels for the broadcast
+                                // For state updates with binary buffers, store as blob sentinels
                                 // (same pattern as comm_open — avoids DataCloneError).
+                                // For non-state comm_msg (custom messages), preserve raw buffers
+                                // so widgets that depend on binary custom payloads still work.
                                 let (broadcast_content, broadcast_buffers) = if !buffers.is_empty()
+                                    && method == Some("update")
                                 {
                                     let buffer_paths = extract_buffer_paths(&data);
                                     if let Some(state_delta) = data.get("state") {
@@ -1917,10 +1928,10 @@ impl RoomKernel {
                                         }
                                         (c, vec![])
                                     } else {
-                                        (content.clone(), vec![])
+                                        (content.clone(), buffers.clone())
                                     }
                                 } else {
-                                    (content.clone(), vec![])
+                                    (content.clone(), buffers.clone())
                                 };
 
                                 let _ = broadcast_tx.send(NotebookBroadcast::Comm {
