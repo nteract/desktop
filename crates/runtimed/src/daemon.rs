@@ -1147,6 +1147,12 @@ impl Daemon {
                 self.handle_create_notebook(stream, runtime, working_dir, notebook_id)
                     .await
             }
+            Handshake::RuntimeAgent { .. } => {
+                // Runtime agent handshake is for agent subprocesses, not daemon
+                // socket connections. Reject it here.
+                warn!("[runtimed] Received RuntimeAgent handshake on daemon socket — rejecting");
+                Ok(())
+            }
         }
     }
 

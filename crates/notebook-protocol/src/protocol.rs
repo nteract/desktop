@@ -515,3 +515,112 @@ pub enum NotebookBroadcast {
         state: notebook_doc::runtime_state::RuntimeState,
     },
 }
+
+// ── Agent protocol types ───────────────────────────────────────────────────
+//
+// These types define the coordinator↔agent wire contract for process-isolated
+// runtime agents (#1333). The agent subprocess communicates over stdin/stdout
+// using the same framed protocol (frame types 0x01/0x02/0x03 for JSON,
+// 0x05 for RuntimeStateDoc sync).
+
+/// Requests from coordinator to runtime agent (frame type 0x01).
+///
+/// The coordinator mediates between frontend requests and the agent.
+/// Environment preparation happens in the coordinator; the agent receives
+/// a ready-to-launch configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
+pub enum AgentRequest {
+    /// Launch a kernel with the given configuration.
+    /// Environment is already prepared by the coordinator.
+    LaunchKernel {
+        kernel_type: String,
+        env_source: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notebook_path: Option<String>,
+        launched_config: LaunchedEnvConfig,
+        /// Environment variables to set for the kernel process.
+        #[serde(default)]
+        env_vars: std::collections::HashMap<String, String>,
+    },
+
+    /// Execute a cell. The coordinator reads source from NotebookDoc
+    /// and passes it here — the agent has no NotebookDoc access.
+    ExecuteCell {
+        cell_id: String,
+        code: String,
+        execution_id: String,
+    },
+
+    /// Interrupt the currently executing cell.
+    InterruptExecution,
+
+    /// Shutdown the kernel and exit the agent process.
+    ShutdownKernel,
+
+    /// Send a comm message to the kernel (widget interactions).
+    SendComm { message: serde_json::Value },
+
+    /// Request code completions from the kernel.
+    Complete { code: String, cursor_pos: usize },
+
+    /// Search the kernel's input history.
+    GetHistory {
+        pattern: Option<String>,
+        n: i32,
+        unique: bool,
+    },
+}
+
+/// Responses from runtime agent to coordinator (frame type 0x02).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum AgentResponse {
+    /// Kernel launched successfully.
+    KernelLaunched { env_source: String },
+
+    /// Cell queued for execution.
+    CellQueued {
+        cell_id: String,
+        execution_id: String,
+    },
+
+    /// Code completion result.
+    CompletionResult {
+        items: Vec<CompletionItem>,
+        cursor_start: usize,
+        cursor_end: usize,
+    },
+
+    /// History search result.
+    HistoryResult { entries: Vec<HistoryEntry> },
+
+    /// Generic success.
+    Ok,
+
+    /// Error response.
+    Error { error: String },
+}
+
+/// Notifications from agent to coordinator (frame type 0x03).
+///
+/// These are sent proactively by the agent when events occur that the
+/// coordinator needs to act on. Most kernel state changes flow via
+/// RuntimeStateDoc sync (frame 0x05) — these cover the exceptions
+/// where the coordinator must write to NotebookDoc or update presence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum AgentNotification {
+    /// The kernel reported an execution count. The coordinator writes
+    /// this to NotebookDoc for .ipynb persistence.
+    ExecutionCountSet {
+        cell_id: String,
+        execution_id: String,
+        execution_count: i64,
+    },
+
+    /// The kernel process died unexpectedly. The coordinator updates
+    /// presence and cleans up the agent handle.
+    KernelDied,
+}

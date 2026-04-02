@@ -78,6 +78,19 @@ pub enum Handshake {
         path: String,
     },
 
+    /// Runtime agent handshake. Sent by the coordinator to a spawned agent
+    /// subprocess on its stdin. The agent reads this, bootstraps its
+    /// RuntimeStateDoc, and begins processing kernel requests.
+    RuntimeAgent {
+        /// Notebook room to attach to.
+        notebook_id: String,
+        /// Unique agent identifier (e.g., "rt:agent:a1b2c3d4").
+        agent_id: String,
+        /// Filesystem path to the shared blob store root
+        /// (e.g., "~/.cache/runt/blobs/").
+        blob_root: String,
+    },
+
     /// Create a new untitled notebook. Daemon creates empty room, generates env_id.
     ///
     /// The daemon returns `NotebookConnectionInfo` before starting sync.
