@@ -123,6 +123,7 @@ jobs:
           VERSION="${{ needs.compute-version.outputs.version }}"
           echo "Setting version to: ${VERSION}"
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
+          sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runtimed/Cargo.toml
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
@@ -194,6 +195,7 @@ jobs:
           VERSION="${{ needs.compute-version.outputs.version }}"
           echo "Setting version to: ${VERSION}"
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
+          sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runtimed/Cargo.toml
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
@@ -308,6 +310,7 @@ jobs:
           sed -i '' "s/\"identifier\": \"[^\"]*\"/\"identifier\": \"${BUNDLE_ID}\"/" crates/notebook/tauri.conf.json
           sed -i '' "s#https://github.com/nteract/desktop/releases/download/stable-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
+          sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runtimed/Cargo.toml
 
       - name: Generate Icons
         run: |
@@ -597,6 +600,7 @@ jobs:
           sed -i "s/\"identifier\": \"[^\"]*\"/\"identifier\": \"${BUNDLE_ID}\"/" crates/notebook/tauri.conf.json
           sed -i "s#https://github.com/nteract/desktop/releases/download/stable-latest/latest.json#https://github.com/nteract/desktop/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
+          sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runtimed/Cargo.toml
 
       - name: Generate Icons
         run: |

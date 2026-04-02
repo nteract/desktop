@@ -1188,7 +1188,16 @@ async fn run_upgrade(
         return Err(e);
     }
 
-    // Step 5: Signal ready
+    // Step 5: Re-install CLI if it was previously installed (ensures Windows
+    // copies and Unix symlinks point at the new app bundle).
+    if cli_install::is_cli_installed() {
+        match cli_install::install_cli(&app) {
+            Ok(()) => log::info!("[upgrade] CLI re-installed successfully"),
+            Err(e) => log::warn!("[upgrade] CLI re-install failed (non-fatal): {}", e),
+        }
+    }
+
+    // Step 6: Signal ready
     app.emit("upgrade:progress", UpgradeProgress::Ready)
         .map_err(|e| e.to_string())?;
 

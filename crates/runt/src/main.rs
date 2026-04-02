@@ -2292,9 +2292,15 @@ async fn doctor_command(
                 None
             };
             let bundled_ver = find_bundled_runtimed().and_then(|p| get_binary_version(&p));
+            let cli_ver = format!(
+                "{}+{}",
+                env!("CARGO_PKG_VERSION"),
+                env!("GIT_COMMIT")
+            );
 
             // Build detail string showing all available versions
             let mut parts = Vec::new();
+            parts.push(format!("cli={}", cli_ver));
             if let Some(ref v) = installed_ver {
                 parts.push(format!("installed={}", v));
             }
@@ -2314,8 +2320,10 @@ async fn doctor_command(
                         .as_ref()
                         .map(|b| b == run && b == inst)
                         .unwrap_or(true);
+                    // CLI must also match the running daemon
+                    let cli_match = cli_ver == *run;
 
-                    if installed_match && bundled_match {
+                    if installed_match && bundled_match && cli_match {
                         CheckResult {
                             path: String::new(),
                             status: "ok".to_string(),
