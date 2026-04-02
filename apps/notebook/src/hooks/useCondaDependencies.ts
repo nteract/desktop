@@ -50,14 +50,6 @@ export type CondaSyncState =
 
 export function useCondaDependencies() {
   const [loading, setLoading] = useState(false);
-  // Track if deps were synced to a running kernel (user may need to restart for some changes)
-  const [syncedWhileRunning, setSyncedWhileRunning] = useState(false);
-  // Track if user added deps but kernel isn't conda-managed (needs restart)
-  const [needsKernelRestart, setNeedsKernelRestart] = useState(false);
-  // Sync state for "Sync Now" button
-  const [syncState, setSyncState] = useState<CondaSyncState | null>(null);
-  // Whether a sync is in progress (separate from loading so input stays enabled)
-  const [syncing, setSyncing] = useState(false);
   // pixi.toml detection
   const [pixiInfo, setPixiInfo] = useState<PixiInfo | null>(null);
 
@@ -115,37 +107,6 @@ export function useCondaDependencies() {
     }
   }, []);
 
-  // Check sync state between declared deps and the running kernel
-  // NOTE: Hot-sync functionality was removed with local kernel mode.
-  // In daemon mode, the kernel restarts with new deps. Sync state is always null.
-  const checkSyncState = useCallback(async () => {
-    // Sync state not available in daemon mode - always null
-    setSyncState(null);
-  }, []);
-
-  // Try to sync deps to running kernel
-  // NOTE: Hot-sync to a running kernel was removed with local kernel mode.
-  // In daemon mode, users need to restart the kernel to pick up new deps.
-  const syncToKernel = useCallback(async (): Promise<boolean> => {
-    // Hot-sync not available in daemon mode - kernel restart required
-    logger.info(
-      "[conda] Hot-sync not available in daemon mode, restart kernel to apply changes",
-    );
-    setNeedsKernelRestart(true);
-    return false;
-  }, []);
-
-  // Explicit sync function for "Sync Now" button — does NOT block the input
-  const syncNow = useCallback(async (): Promise<boolean> => {
-    setSyncing(true);
-    try {
-      const synced = await syncToKernel();
-      return synced;
-    } finally {
-      setSyncing(false);
-    }
-  }, [syncToKernel]);
-
   const addDependency = useCallback(
     async (pkg: string) => {
       if (!pkg.trim()) return;
@@ -153,14 +114,13 @@ export function useCondaDependencies() {
       try {
         await addCondaDepWasm(pkg.trim());
         await resignTrust();
-        await checkSyncState();
       } catch (e) {
         logger.error("Failed to add conda dependency:", e);
       } finally {
         setLoading(false);
       }
     },
-    [resignTrust, checkSyncState],
+    [resignTrust],
   );
 
   const removeDependency = useCallback(
@@ -169,14 +129,13 @@ export function useCondaDependencies() {
       try {
         await removeCondaDepWasm(pkg);
         await resignTrust();
-        await checkSyncState();
       } catch (e) {
         logger.error("Failed to remove conda dependency:", e);
       } finally {
         setLoading(false);
       }
     },
-    [resignTrust, checkSyncState],
+    [resignTrust],
   );
 
   // Remove the entire conda dependency section from notebook metadata
@@ -191,13 +150,6 @@ export function useCondaDependencies() {
       setLoading(false);
     }
   }, [resignTrust]);
-
-  // Clear the synced notice (e.g., when kernel restarts)
-  const clearSyncNotice = useCallback(() => {
-    setSyncedWhileRunning(false);
-    setNeedsKernelRestart(false);
-    setSyncState(null);
-  }, []);
 
   const setChannels = useCallback(
     async (channels: string[]) => {
@@ -253,19 +205,13 @@ export function useCondaDependencies() {
     hasDependencies,
     isCondaConfigured,
     loading,
-    syncing,
-    syncState,
-    syncedWhileRunning,
-    needsKernelRestart,
     pixiInfo,
     addDependency,
     removeDependency,
     clearAllDependencies,
     setChannels,
     setPython,
-    syncNow,
     importFromPixi,
-    clearSyncNotice,
     // environment.yml support
     environmentYmlInfo,
     environmentYmlDeps,
