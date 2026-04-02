@@ -1219,6 +1219,23 @@ impl RoomKernel {
                                         }
                                     }
 
+                                    // Broadcast for real-time UI (frontend accumulates
+                                    // and echoes back to kernel for out.outputs sync)
+                                    let content = serde_json::json!({
+                                        "comm_id": widget_comm_id,
+                                        "data": {
+                                            "method": "custom",
+                                            "content": {
+                                                "method": "output",
+                                                "output": output
+                                            }
+                                        }
+                                    });
+                                    let _ = broadcast_tx.send(NotebookBroadcast::Comm {
+                                        msg_type: "comm_msg".to_string(),
+                                        content,
+                                        buffers: vec![],
+                                    });
                                     continue; // Skip normal cell output handling
                                 }
 
@@ -1386,6 +1403,22 @@ impl RoomKernel {
                                                 }
                                             }
                                         }
+                                        // Broadcast for real-time UI + kernel echo
+                                        let content = serde_json::json!({
+                                            "comm_id": widget_comm_id,
+                                            "data": {
+                                                "method": "custom",
+                                                "content": {
+                                                    "method": "output",
+                                                    "output": nbformat_value
+                                                }
+                                            }
+                                        });
+                                        let _ = broadcast_tx.send(NotebookBroadcast::Comm {
+                                            msg_type: "comm_msg".to_string(),
+                                            content,
+                                            buffers: vec![],
+                                        });
                                     }
                                     continue; // Skip normal cell output handling
                                 }
@@ -1577,6 +1610,22 @@ impl RoomKernel {
                                                 }
                                             }
                                         }
+                                        // Broadcast for real-time UI + kernel echo
+                                        let content = serde_json::json!({
+                                            "comm_id": widget_comm_id,
+                                            "data": {
+                                                "method": "custom",
+                                                "content": {
+                                                    "method": "output",
+                                                    "output": nbformat_value
+                                                }
+                                            }
+                                        });
+                                        let _ = broadcast_tx.send(NotebookBroadcast::Comm {
+                                            msg_type: "comm_msg".to_string(),
+                                            content,
+                                            buffers: vec![],
+                                        });
                                     }
                                     continue; // Skip normal cell output handling
                                 }
@@ -1681,7 +1730,7 @@ impl RoomKernel {
                                     // wait=false: clear immediately.
                                     // wait=true: defer clear until next output arrives.
                                     if clear.wait {
-                                        pending_clear_widgets.insert(widget_comm_id);
+                                        pending_clear_widgets.insert(widget_comm_id.clone());
                                     } else {
                                         pending_clear_widgets.remove(&widget_comm_id);
                                         let mut sd = state_doc_for_iopub.write().await;
@@ -1689,6 +1738,22 @@ impl RoomKernel {
                                             let _ = state_changed_for_iopub.send(());
                                         }
                                     }
+                                    // Broadcast for real-time UI + kernel echo
+                                    let content = serde_json::json!({
+                                        "comm_id": widget_comm_id,
+                                        "data": {
+                                            "method": "custom",
+                                            "content": {
+                                                "method": "clear_output",
+                                                "wait": clear.wait
+                                            }
+                                        }
+                                    });
+                                    let _ = broadcast_tx.send(NotebookBroadcast::Comm {
+                                        msg_type: "comm_msg".to_string(),
+                                        content,
+                                        buffers: vec![],
+                                    });
                                 }
                                 // Note: We don't skip cell output clearing here because
                                 // clear_output for non-captured outputs should still work normally
