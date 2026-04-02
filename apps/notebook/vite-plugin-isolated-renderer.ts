@@ -81,6 +81,8 @@ export function isolatedRendererPlugin(
               "vega-raw": path.join(nodeModules, "vega/build/vega.min.js"),
               "vega-lite-raw": path.join(nodeModules, "vega-lite/build/vega-lite.min.js"),
               "vega-embed-raw": path.join(nodeModules, "vega-embed/build/vega-embed.min.js"),
+              "leaflet-js-raw": path.join(nodeModules, "leaflet/dist/leaflet.js"),
+              "leaflet-css-raw": path.join(nodeModules, "leaflet/dist/leaflet.css"),
             };
             const filePath = mapping[source];
             if (filePath) return `${filePath}?raw`;
