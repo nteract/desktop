@@ -382,45 +382,62 @@ export function useDaemonKernel({
         }
 
         case "comm_sync": {
-          // Initial comm state sync from daemon for multi-window widget reconstruction
-          // Replay all comms as comm_open messages to the widget store
+          // Initial comm state sync from daemon for multi-window widget reconstruction.
+          // Replay all comms as comm_open messages to the widget store.
+          // Must await blob port — CRDT state contains {"$blob": "hash"} sentinels
+          // that need resolution to HTTP URLs before the widget framework sees them.
           const { onCommMessage } = callbacksRef.current;
           if (onCommMessage && broadcast.comms) {
-            logger.debug(
-              `[daemon-kernel] comm_sync: replaying ${broadcast.comms.length} comms`,
-            );
-            for (const comm of broadcast.comms) {
-              // Resolve {"$blob": "hash"} sentinels in state to blob HTTP URLs.
-              // The CRDT stores binary buffers as blob sentinels; the frontend
-              // fetches them directly from the blob server via GET /blob/{hash}.
-              const { state: resolvedState, bufferPaths } =
-                replaceSentinelsWithBlobUrls(
-                  comm.state as Record<string, unknown>,
+            const comms = broadcast.comms;
+            const replayComms = async () => {
+              let port = getBlobPort();
+              if (!port) {
+                port = await refreshBlobPort();
+              }
+              if (!port) {
+                logger.error(
+                  "[daemon-kernel] Blob port unavailable, cannot replay comm_sync",
                 );
+                return;
+              }
+              if (cancelled) return;
 
-              // Synthesize a comm_open message for each active comm
-              const msg: JupyterMessage = {
-                header: {
-                  msg_id: crypto.randomUUID(),
-                  msg_type: "comm_open",
-                  session: "",
-                  username: "kernel",
-                  date: new Date().toISOString(),
-                  version: "5.3",
-                },
-                metadata: {},
-                content: {
-                  comm_id: comm.comm_id,
-                  target_name: comm.target_name,
-                  data: {
-                    state: resolvedState,
-                    buffer_paths: bufferPaths,
+              logger.debug(
+                `[daemon-kernel] comm_sync: replaying ${comms.length} comms`,
+              );
+              const { onCommMessage: handler } = callbacksRef.current;
+              if (!handler) return;
+
+              for (const comm of comms) {
+                const { state: resolvedState, bufferPaths } =
+                  replaceSentinelsWithBlobUrls(
+                    comm.state as Record<string, unknown>,
+                  );
+
+                const msg: JupyterMessage = {
+                  header: {
+                    msg_id: crypto.randomUUID(),
+                    msg_type: "comm_open",
+                    session: "",
+                    username: "kernel",
+                    date: new Date().toISOString(),
+                    version: "5.3",
                   },
-                },
-                buffers: [],
-              };
-              onCommMessage(msg);
-            }
+                  metadata: {},
+                  content: {
+                    comm_id: comm.comm_id,
+                    target_name: comm.target_name,
+                    data: {
+                      state: resolvedState,
+                      buffer_paths: bufferPaths,
+                    },
+                  },
+                  buffers: [],
+                };
+                handler(msg);
+              }
+            };
+            replayComms();
           } else if (!onCommMessage) {
             logger.debug(
               "[daemon-kernel] comm_sync received but onCommMessage not set",
