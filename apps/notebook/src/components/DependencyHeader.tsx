@@ -18,8 +18,6 @@ interface DependencyHeaderProps {
   dependencies: string[];
   requiresPython: string | null;
   loading: boolean;
-  syncedWhileRunning: boolean;
-  needsKernelRestart: boolean;
   onAdd: (pkg: string) => Promise<void>;
   onRemove: (pkg: string) => Promise<void>;
   // Environment sync state
@@ -42,8 +40,6 @@ export function DependencyHeader({
   dependencies,
   requiresPython,
   loading,
-  syncedWhileRunning,
-  needsKernelRestart,
   onAdd,
   onRemove,
   syncState,
@@ -92,29 +88,6 @@ export function DependencyHeader({
           <div className="mb-3 flex items-center gap-2 rounded bg-emerald-500/10 px-2 py-1.5 text-xs text-emerald-700 dark:text-emerald-400">
             <Check className="h-3.5 w-3.5 shrink-0" />
             <span>Environment synced — dependencies are ready to use</span>
-          </div>
-        )}
-
-        {/* Sync notice */}
-        {syncedWhileRunning && (
-          <div className="mb-3 flex items-start gap-2 rounded bg-muted/80 px-2 py-1.5 text-xs text-muted-foreground">
-            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-            <span>
-              Dependencies synced to environment. New packages can be imported
-              now. Re-initialize the environment if you updated existing
-              packages.
-            </span>
-          </div>
-        )}
-
-        {/* Kernel restart needed notice */}
-        {needsKernelRestart && (
-          <div className="mb-3 flex items-start gap-2 rounded bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
-            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-            <span>
-              Re-initialize the environment to use these dependencies. The
-              current kernel wasn&apos;t started with dependency management.
-            </span>
           </div>
         )}
 
