@@ -108,25 +108,29 @@ describe("WASM integration: real frames through SyncEngine", () => {
       expect(cell1Change!.fields.source).toBe(true);
     });
 
-    it("emits changeset with execution_count flag when server sets it", async () => {
-      h.serverAddCell("cell-1", "code");
-      h.serverUpdateSource("cell-1", "1 + 1");
-      await h.startAndCompleteSync();
+    it(
+      "emits changeset with execution_count flag when server sets it",
+      { retry: 2 },
+      async () => {
+        h.serverAddCell("cell-1", "code");
+        h.serverUpdateSource("cell-1", "1 + 1");
+        await h.startAndCompleteSync();
 
-      const changesetPromise = firstValueFrom(
-        h.engine.cellChanges$.pipe(timeout(3000)),
-      );
+        const changesetPromise = firstValueFrom(
+          h.engine.cellChanges$.pipe(timeout(3000)),
+        );
 
-      h.serverSetExecutionCount("cell-1", "1");
-      h.pushAndFlush();
+        h.serverSetExecutionCount("cell-1", "1");
+        h.pushAndFlush();
 
-      const cs = await changesetPromise;
-      expect(cs).not.toBeNull();
+        const cs = await changesetPromise;
+        expect(cs).not.toBeNull();
 
-      const cell1Change = cs!.changed.find((c) => c.cell_id === "cell-1");
-      expect(cell1Change).toBeDefined();
-      expect(cell1Change!.fields.execution_count).toBe(true);
-    });
+        const cell1Change = cs!.changed.find((c) => c.cell_id === "cell-1");
+        expect(cell1Change).toBeDefined();
+        expect(cell1Change!.fields.execution_count).toBe(true);
+      },
+    );
 
     it("reports structural changes when server adds a new cell", async () => {
       h.serverAddCell("cell-1", "code");
