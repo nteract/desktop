@@ -48,12 +48,6 @@ export interface PyProjectInfo {
 
 export function useDependencies() {
   const [loading, setLoading] = useState(false);
-  // Track if deps were synced to a running kernel (user may need to restart for some changes)
-  const [syncedWhileRunning, setSyncedWhileRunning] = useState(false);
-  // Track if user added deps but kernel isn't uv-managed (needs restart)
-  const [needsKernelRestart, setNeedsKernelRestart] = useState(false);
-  // Environment sync state (dirty detection)
-  const [syncState, setSyncState] = useState<EnvSyncState | null>(null);
 
   // pyproject.toml state
   const [pyprojectInfo, setPyprojectInfo] = useState<PyProjectInfo | null>(
@@ -62,14 +56,6 @@ export function useDependencies() {
   const [pyprojectDeps, setPyprojectDeps] = useState<PyProjectDeps | null>(
     null,
   );
-
-  // Check sync state between declared deps and running kernel
-  // NOTE: Hot-sync functionality was removed with local kernel mode.
-  // In daemon mode, the kernel restarts with new deps. Sync state is always null.
-  const checkSyncState = useCallback(async () => {
-    // Sync state not available in daemon mode - always null
-    setSyncState(null);
-  }, []);
 
   // Detect pyproject on mount
   useEffect(() => {
@@ -97,33 +83,6 @@ export function useDependencies() {
     }
   }, []);
 
-  // Try to sync deps to running kernel
-  // NOTE: Hot-sync to a running kernel was removed with local kernel mode.
-  // In daemon mode, users need to restart the kernel to pick up new deps.
-  const syncToKernel = useCallback(async (): Promise<boolean> => {
-    // Hot-sync not available in daemon mode - kernel restart required
-    logger.info(
-      "[deps] Hot-sync not available in daemon mode, restart kernel to apply changes",
-    );
-    setNeedsKernelRestart(true);
-    return false;
-  }, []);
-
-  // Explicit sync function for "Sync Now" button
-  const syncNow = useCallback(async (): Promise<boolean> => {
-    setLoading(true);
-    try {
-      const synced = await syncToKernel();
-      if (synced) {
-        // Refresh sync state after successful sync
-        await checkSyncState();
-      }
-      return synced;
-    } finally {
-      setLoading(false);
-    }
-  }, [syncToKernel, checkSyncState]);
-
   const addDependency = useCallback(
     async (pkg: string) => {
       if (!pkg.trim()) return;
@@ -131,14 +90,13 @@ export function useDependencies() {
       try {
         await addUvDependency(pkg.trim());
         await resignTrust();
-        await checkSyncState();
       } catch (e) {
         logger.error("Failed to add dependency:", e);
       } finally {
         setLoading(false);
       }
     },
-    [resignTrust, checkSyncState],
+    [resignTrust],
   );
 
   const removeDependency = useCallback(
@@ -147,14 +105,13 @@ export function useDependencies() {
       try {
         await removeUvDependency(pkg);
         await resignTrust();
-        await checkSyncState();
       } catch (e) {
         logger.error("Failed to remove dependency:", e);
       } finally {
         setLoading(false);
       }
     },
-    [resignTrust, checkSyncState],
+    [resignTrust],
   );
 
   // Remove the entire uv dependency section from notebook metadata
@@ -169,12 +126,6 @@ export function useDependencies() {
       setLoading(false);
     }
   }, [resignTrust]);
-
-  // Clear the synced notice (e.g., when kernel restarts)
-  const clearSyncNotice = useCallback(() => {
-    setSyncedWhileRunning(false);
-    setNeedsKernelRestart(false);
-  }, []);
 
   const setRequiresPython = useCallback(
     async (version: string | null) => {
@@ -262,19 +213,12 @@ export function useDependencies() {
     hasDependencies,
     isUvConfigured,
     loading,
-    syncedWhileRunning,
-    needsKernelRestart,
 
     addDependency,
     removeDependency,
     clearAllDependencies,
     setRequiresPython,
     setPrerelease,
-    clearSyncNotice,
-    // Environment sync state
-    syncState,
-    syncNow,
-    checkSyncState,
     // pyproject.toml support
     pyprojectInfo,
     pyprojectDeps,
