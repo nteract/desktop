@@ -1060,6 +1060,12 @@ impl RoomKernel {
             let mut pending_clear_widgets: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
 
+            // Capture routing cache: msg_id → comm_id.
+            // Output widgets set capture_msg_id in the CRDT; this cache
+            // provides O(1) lookup on the hot IOPub path without async CRDT reads.
+            let mut capture_cache: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+
             loop {
                 match iopub.read().await {
                     Ok(message) => {
@@ -1181,7 +1187,7 @@ impl RoomKernel {
                                     .map(|h| h.msg_id.as_str())
                                     .unwrap_or("");
                                 if let Some(widget_comm_id) =
-                                    comm_state.get_capture_widget(parent_msg_id).await
+                                    capture_cache.get(parent_msg_id).cloned()
                                 {
                                     // Route to Output widget via comm_msg with method="custom"
                                     let stream_name = match stream.name {
@@ -1373,7 +1379,7 @@ impl RoomKernel {
                                     .map(|h| h.msg_id.as_str())
                                     .unwrap_or("");
                                 if let Some(widget_comm_id) =
-                                    comm_state.get_capture_widget(parent_msg_id).await
+                                    capture_cache.get(parent_msg_id).cloned()
                                 {
                                     if let Some(nbformat_value) =
                                         message_content_to_nbformat(&message.content)
@@ -1580,7 +1586,7 @@ impl RoomKernel {
                                     .map(|h| h.msg_id.as_str())
                                     .unwrap_or("");
                                 if let Some(widget_comm_id) =
-                                    comm_state.get_capture_widget(parent_msg_id).await
+                                    capture_cache.get(parent_msg_id).cloned()
                                 {
                                     if let Some(nbformat_value) =
                                         message_content_to_nbformat(&message.content)
@@ -1724,7 +1730,7 @@ impl RoomKernel {
                                     .map(|h| h.msg_id.as_str())
                                     .unwrap_or("");
                                 if let Some(widget_comm_id) =
-                                    comm_state.get_capture_widget(parent_msg_id).await
+                                    capture_cache.get(parent_msg_id).cloned()
                                 {
                                     // Clear captured outputs in CRDT.
                                     // wait=false: clear immediately.
@@ -1821,6 +1827,20 @@ impl RoomKernel {
                                         &state_with_blobs,
                                         seq,
                                     );
+
+                                    // If this is an OutputModel with msg_id set, register capture
+                                    if model_name == "OutputModel" {
+                                        if let Some(msg_id) = state_with_blobs
+                                            .get("msg_id")
+                                            .and_then(|v| v.as_str())
+                                            .filter(|s| !s.is_empty())
+                                        {
+                                            sd.set_comm_capture_msg_id(&open.comm_id.0, msg_id);
+                                            capture_cache
+                                                .insert(msg_id.to_string(), open.comm_id.0.clone());
+                                        }
+                                    }
+
                                     let _ = state_changed_for_iopub.send(());
                                 }
 
@@ -1864,15 +1884,36 @@ impl RoomKernel {
                                         comm_state
                                             .on_comm_update(&msg.comm_id.0, state_delta)
                                             .await;
-                                        // Note: we intentionally do NOT dual-write to
-                                        // RuntimeStateDoc on every comm_msg update.
+
+                                        // If this update changes msg_id on an Output widget,
+                                        // update capture routing in CRDT + cache.
+                                        if let Some(new_msg_id) =
+                                            state_delta.get("msg_id").and_then(|v| v.as_str())
+                                        {
+                                            // Remove old capture for this comm_id
+                                            capture_cache.retain(|_, cid| cid != &msg.comm_id.0);
+
+                                            // Set new capture if non-empty
+                                            if !new_msg_id.is_empty() {
+                                                capture_cache.insert(
+                                                    new_msg_id.to_string(),
+                                                    msg.comm_id.0.clone(),
+                                                );
+                                            }
+
+                                            // Write to CRDT
+                                            let mut sd = state_doc_for_iopub.write().await;
+                                            sd.set_comm_capture_msg_id(&msg.comm_id.0, new_msg_id);
+                                            let _ = state_changed_for_iopub.send(());
+                                        }
+
+                                        // Note: we intentionally do NOT dual-write the full
+                                        // state to RuntimeStateDoc on every comm_msg update.
                                         // High-frequency widgets (sliders) generate dozens
                                         // of updates per second, and each CRDT write +
                                         // sync notification overwhelms the pipeline.
-                                        // Phase D will add coalesced writes (16ms window).
-                                        // For now, the CRDT has the initial state from
-                                        // comm_open, and real-time updates flow via
-                                        // broadcasts.
+                                        // The CRDT has the initial state from comm_open,
+                                        // and real-time updates flow via broadcasts.
                                     }
                                 }
 
@@ -1920,8 +1961,9 @@ impl RoomKernel {
                                 let content =
                                     serde_json::to_value(&message.content).unwrap_or_default();
 
-                                // Remove from comm state
+                                // Remove from comm state and capture cache
                                 comm_state.on_comm_close(&close.comm_id.0).await;
+                                capture_cache.retain(|_, cid| cid != &close.comm_id.0);
 
                                 // Dual-write removal to RuntimeStateDoc
                                 {

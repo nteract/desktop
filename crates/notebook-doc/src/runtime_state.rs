@@ -42,6 +42,7 @@
 //!       state: Str         (JSON-encoded widget state)
 //!       outputs: List[Str] (manifest hashes, OutputModel only)
 //!       seq: Int           (insertion order)
+//!       capture_msg_id: Str (Output widget capture routing, "" if not capturing)
 //!   last_saved: Str|null   (ISO timestamp of last save)
 //! ```
 
@@ -178,6 +179,11 @@ pub struct CommDocEntry {
     /// Insertion order for dependency-correct replay.
     #[serde(default)]
     pub seq: u64,
+    /// The msg_id this Output widget is capturing (empty = not capturing).
+    /// When set, kernel outputs with matching parent_header.msg_id are routed
+    /// to this widget instead of cell outputs.
+    #[serde(default)]
+    pub capture_msg_id: String,
 }
 
 fn default_empty_state() -> serde_json::Value {
@@ -1291,6 +1297,9 @@ impl RuntimeStateDoc {
         self.doc
             .put_object(&entry, "outputs", ObjType::List)
             .expect("put comm.outputs");
+        self.doc
+            .put(&entry, "capture_msg_id", "")
+            .expect("put comm.capture_msg_id");
     }
 
     /// Replace the full state for an existing comm.
@@ -1334,6 +1343,45 @@ impl RuntimeStateDoc {
         };
         crate::put_json_at_key(&mut self.doc, &state_id, key, value).expect("put comm.state.key");
         true
+    }
+
+    /// Set or clear the capture_msg_id for an Output widget.
+    ///
+    /// When `msg_id` is non-empty, kernel outputs with matching
+    /// `parent_header.msg_id` will be routed to this widget.
+    /// Returns `false` if the comm doesn't exist.
+    #[allow(clippy::expect_used)]
+    pub fn set_comm_capture_msg_id(&mut self, comm_id: &str, msg_id: &str) -> bool {
+        let Some(comms) = self.get_map("comms") else {
+            return false;
+        };
+        let Some((_, entry)) = self.doc.get(&comms, comm_id).ok().flatten() else {
+            return false;
+        };
+        self.doc
+            .put(&entry, "capture_msg_id", msg_id)
+            .expect("put comm.capture_msg_id");
+        true
+    }
+
+    /// Find the comm_id that is capturing outputs for a given msg_id.
+    ///
+    /// Scans all comms for a matching `capture_msg_id`. Single-depth only:
+    /// returns the first match (most recently written wins via CRDT LWW).
+    pub fn get_capture_widget(&self, msg_id: &str) -> Option<String> {
+        if msg_id.is_empty() {
+            return None;
+        }
+        let comms = self.get_map("comms")?;
+        for comm_id in self.doc.keys(&comms) {
+            if let Some((_, entry)) = self.doc.get(&comms, &comm_id).ok().flatten() {
+                let capture = self.read_str(&entry, "capture_msg_id");
+                if capture == msg_id {
+                    return Some(comm_id);
+                }
+            }
+        }
+        None
     }
 
     /// Remove a comm entry (used on `comm_close`).
@@ -1383,6 +1431,7 @@ impl RuntimeStateDoc {
             state,
             outputs: self.read_str_list(&entry, "outputs"),
             seq: self.read_i64(&entry, "seq") as u64,
+            capture_msg_id: self.read_str(&entry, "capture_msg_id"),
         })
     }
 
