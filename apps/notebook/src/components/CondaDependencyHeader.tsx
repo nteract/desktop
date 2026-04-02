@@ -23,10 +23,7 @@ interface CondaDependencyHeaderProps {
   channels: string[];
   python: string | null;
   loading: boolean;
-  syncing: boolean;
   syncState: CondaSyncState | null;
-  syncedWhileRunning: boolean;
-  needsKernelRestart: boolean;
   onAdd: (pkg: string) => Promise<void>;
   onRemove: (pkg: string) => Promise<void>;
   onSetChannels: (channels: string[]) => Promise<void>;
@@ -54,10 +51,7 @@ export function CondaDependencyHeader({
   channels,
   python,
   loading,
-  syncing,
   syncState,
-  syncedWhileRunning,
-  needsKernelRestart,
   onAdd,
   onRemove,
   onSetChannels,
@@ -189,7 +183,7 @@ export function CondaDependencyHeader({
               <div className="flex items-center gap-1 shrink-0">
                 <button
                   type="button"
-                  disabled={syncing || loading}
+                  disabled={loading}
                   onClick={() => {
                     onResetProgress?.();
                     (onRetryLaunch ?? onSyncNow)();
@@ -220,29 +214,6 @@ export function CondaDependencyHeader({
           <div className="mb-3 flex items-center gap-2 rounded bg-emerald-500/10 px-2 py-1.5 text-xs text-emerald-700 dark:text-emerald-400">
             <Check className="h-3.5 w-3.5 shrink-0" />
             <span>Environment synced — dependencies are ready to use</span>
-          </div>
-        )}
-
-        {/* Sync notice */}
-        {syncedWhileRunning && (
-          <div className="mb-3 flex items-start gap-2 rounded bg-muted/80 px-2 py-1.5 text-xs text-muted-foreground">
-            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-            <span>
-              Dependencies synced to environment. New packages can be imported
-              now. Re-initialize the environment if you updated existing
-              packages.
-            </span>
-          </div>
-        )}
-
-        {/* Kernel restart needed notice */}
-        {needsKernelRestart && (
-          <div className="mb-3 flex items-start gap-2 rounded bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
-            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-            <span>
-              Re-initialize the environment to use these dependencies. Conda
-              environments need a fresh environment after changes.
-            </span>
           </div>
         )}
 
@@ -298,7 +269,7 @@ export function CondaDependencyHeader({
         )}
 
         {/* Environment drift notice - kernel restart needed */}
-        {syncState?.status === "dirty" && !needsKernelRestart && (
+        {syncState?.status === "dirty" && (
           <div className="mb-3 flex items-center justify-between rounded bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
             <div className="flex items-center gap-2">
               <Info className="h-3.5 w-3.5 shrink-0" />
@@ -309,12 +280,12 @@ export function CondaDependencyHeader({
             <button
               type="button"
               onClick={onSyncNow}
-              disabled={syncing}
+              disabled={loading}
               data-testid="deps-restart-button"
               className="flex items-center gap-1 rounded bg-amber-600 px-2 py-0.5 text-white text-xs font-medium hover:bg-amber-700 transition-colors disabled:opacity-50"
             >
               <RefreshCw
-                className={`h-3 w-3 ${syncing ? "animate-spin" : ""}`}
+                className={`h-3 w-3 ${loading ? "animate-spin" : ""}`}
               />
               Re-initialize
             </button>
