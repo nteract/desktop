@@ -32,7 +32,6 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch, RwLock};
 use uuid::Uuid;
 
 use crate::blob_store::BlobStore;
-use crate::comm_state::CommState;
 use crate::notebook_doc::NotebookDoc;
 use crate::output_store::{self, DEFAULT_INLINE_THRESHOLD};
 use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast, QueueEntry};
@@ -416,9 +415,7 @@ pub struct RoomKernel {
     changed_tx: broadcast::Sender<()>,
     /// Blob store for output manifests
     blob_store: Arc<BlobStore>,
-    /// Comm state for widget synchronization across windows
-    comm_state: Arc<CommState>,
-    /// Monotonic counter for comm insertion order (dual-write to RuntimeStateDoc).
+    /// Monotonic counter for comm insertion order (written to RuntimeStateDoc).
     comm_seq: Arc<AtomicU64>,
     /// Pending history requests: msg_id → response channel
     pending_history: Arc<StdMutex<HashMap<String, oneshot::Sender<Vec<HistoryEntry>>>>>,
@@ -505,7 +502,6 @@ impl RoomKernel {
         persist_tx: watch::Sender<Option<Vec<u8>>>,
         changed_tx: broadcast::Sender<()>,
         blob_store: Arc<BlobStore>,
-        comm_state: Arc<CommState>,
         state_doc: Arc<RwLock<RuntimeStateDoc>>,
         state_changed_tx: broadcast::Sender<()>,
         presence: Arc<RwLock<PresenceState>>,
@@ -541,7 +537,6 @@ impl RoomKernel {
             persist_tx,
             changed_tx,
             blob_store,
-            comm_state,
             comm_seq: Arc::new(AtomicU64::new(0)),
             pending_history: Arc::new(StdMutex::new(HashMap::new())),
             pending_completions: Arc::new(StdMutex::new(HashMap::new())),
@@ -570,7 +565,6 @@ impl RoomKernel {
         let room_presence_tx = self.presence_tx.clone();
         let room_state_doc = self.state_doc.clone();
         let room_state_changed_tx = self.state_changed_tx.clone();
-        let room_comm_state = self.comm_state.clone();
 
         tokio::spawn(async move {
             while let Some(cmd) = cmd_rx.recv().await {
@@ -629,8 +623,7 @@ impl RoomKernel {
                                 &room_broadcast_tx,
                             )
                             .await;
-                        // Clear comm state — all widgets become invalid when kernel dies
-                        room_comm_state.clear().await;
+                        // CRDT comms are already cleared by apply_kernel_died_to_state_doc
                         if let Some(es) = env_source {
                             crate::notebook_sync_server::update_kernel_presence(
                                 &room_presence,
@@ -1047,7 +1040,6 @@ impl RoomKernel {
         let persist_tx = self.persist_tx.clone();
         let changed_tx = self.changed_tx.clone();
         let blob_store = self.blob_store.clone();
-        let comm_state = self.comm_state.clone();
         let comm_seq = self.comm_seq.clone();
         let stream_terminals = self.stream_terminals.clone();
         let state_doc_for_iopub = self.state_doc.clone();
@@ -1782,15 +1774,6 @@ impl RoomKernel {
                                     "[comm_open] comm_id={} target={}",
                                     open.comm_id.0, open.target_name
                                 );
-                                comm_state
-                                    .on_comm_open(
-                                        &open.comm_id.0,
-                                        &open.target_name,
-                                        &data,
-                                        buffers.clone(),
-                                    )
-                                    .await;
-
                                 // Store binary buffers in blob store, replacing them with
                                 // {"$blob": "<hash>"} sentinels. The sentinel-carrying state
                                 // is used for both the CRDT write and the broadcast — raw
@@ -1881,10 +1864,6 @@ impl RoomKernel {
                                 debug!("[comm_msg] comm_id={} method={:?}", msg.comm_id.0, method);
                                 if method == Some("update") {
                                     if let Some(state_delta) = data.get("state") {
-                                        comm_state
-                                            .on_comm_update(&msg.comm_id.0, state_delta)
-                                            .await;
-
                                         // If this update changes msg_id on an Output widget,
                                         // update capture routing in CRDT + cache.
                                         if let Some(new_msg_id) =
@@ -1961,8 +1940,7 @@ impl RoomKernel {
                                 let content =
                                     serde_json::to_value(&message.content).unwrap_or_default();
 
-                                // Remove from comm state and capture cache
-                                comm_state.on_comm_close(&close.comm_id.0).await;
+                                // Remove from capture cache
                                 capture_cache.retain(|_, cid| cid != &close.comm_id.0);
 
                                 // Dual-write removal to RuntimeStateDoc
@@ -2980,7 +2958,6 @@ mod tests {
         let (persist_tx, _persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
         let doc = Arc::new(RwLock::new(NotebookDoc::new("test-notebook")));
         let blob_store = Arc::new(BlobStore::new(tmp.path().join("blobs")));
-        let comm_state = Arc::new(CommState::new());
         let state_doc = Arc::new(RwLock::new(RuntimeStateDoc::new()));
         let (state_changed_tx, _state_changed_rx) = broadcast::channel(16);
         let presence = Arc::new(RwLock::new(PresenceState::new()));
@@ -2991,7 +2968,6 @@ mod tests {
             persist_tx,
             changed_tx,
             blob_store,
-            comm_state,
             state_doc,
             state_changed_tx,
             presence,

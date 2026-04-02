@@ -20,7 +20,6 @@ pub use runtimed_client::*;
 
 pub mod blob_server;
 pub mod blob_store;
-pub mod comm_state;
 pub mod daemon;
 pub mod inline_env;
 pub mod kernel_manager;

@@ -38,14 +38,13 @@ use tokio::sync::{broadcast, oneshot, watch, Mutex, RwLock};
 use notify_debouncer_mini::DebounceEventResult;
 
 use crate::blob_store::BlobStore;
-use crate::comm_state::{CommSnapshot, CommState};
 use crate::connection::{self, NotebookFrameType};
 use crate::kernel_manager::{DenoLaunchedConfig, LaunchedEnvConfig, RoomKernel};
 use crate::markdown_assets::resolve_markdown_assets;
 use crate::notebook_doc::{notebook_doc_filename, CellSnapshot, NotebookDoc};
 use crate::notebook_metadata::NotebookMetadataSnapshot;
 use crate::protocol::{
-    EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse, QueueEntry,
+    CommSnapshot, EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse, QueueEntry,
 };
 use notebook_doc::presence::{self, PresenceState};
 use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
@@ -844,9 +843,6 @@ pub struct NotebookRoom {
     /// If set, the room won't be evicted for 30 seconds to allow client reconnect.
     pub auto_launch_at: Arc<RwLock<Option<std::time::Instant>>>,
     /// Comm channel state for widgets.
-    /// Stores active comms so new windows can sync widget models.
-    /// Arc-wrapped so it can be shared with the kernel's iopub task.
-    pub comm_state: Arc<CommState>,
     /// Whether a streaming load is in progress for this room.
     /// Prevents two connections from both attempting to load from disk.
     pub is_loading: AtomicBool,
@@ -1056,7 +1052,7 @@ impl NotebookRoom {
             nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
             working_dir: Arc::new(RwLock::new(None)),
             auto_launch_at: Arc::new(RwLock::new(None)),
-            comm_state: Arc::new(CommState::new()),
+
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
             last_save_heads: Arc::new(RwLock::new(Vec::new())),
@@ -1119,7 +1115,7 @@ impl NotebookRoom {
             nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
             working_dir: Arc::new(RwLock::new(None)),
             auto_launch_at: Arc::new(RwLock::new(None)),
-            comm_state: Arc::new(CommState::new()),
+
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
             last_save_heads: Arc::new(RwLock::new(Vec::new())),
@@ -2628,7 +2624,7 @@ async fn auto_launch_kernel(
     }
 
     // Clear any stale comm state from a previous kernel (in case it crashed)
-    room.comm_state.clear().await;
+
     {
         let mut sd = room.state_doc.write().await;
         if sd.clear_comms() {
@@ -2643,7 +2639,6 @@ async fn auto_launch_kernel(
         room.persist_tx.clone(),
         room.changed_tx.clone(),
         room.blob_store.clone(),
-        room.comm_state.clone(),
         room.state_doc.clone(),
         room.state_changed_tx.clone(),
         room.presence.clone(),
@@ -3284,7 +3279,7 @@ async fn handle_notebook_request(
             }
 
             // Clear any stale comm state from a previous kernel (in case it crashed)
-            room.comm_state.clear().await;
+
             {
                 let mut sd = room.state_doc.write().await;
                 if sd.clear_comms() {
@@ -3312,7 +3307,6 @@ async fn handle_notebook_request(
                 room.persist_tx.clone(),
                 room.changed_tx.clone(),
                 room.blob_store.clone(),
-                room.comm_state.clone(),
                 room.state_doc.clone(),
                 room.state_changed_tx.clone(),
                 room.presence.clone(),
@@ -3982,8 +3976,7 @@ async fn handle_notebook_request(
                 match kernel.shutdown().await {
                     Ok(()) => {
                         *kernel_guard = None;
-                        // Clear comm state - all widgets become invalid when kernel shuts down
-                        room.comm_state.clear().await;
+                        // Clear widget state — all comms become invalid when kernel shuts down
                         {
                             let mut sd = room.state_doc.write().await;
                             if sd.clear_comms() {
@@ -7245,7 +7238,7 @@ mod tests {
             nbformat_attachments: Arc::new(RwLock::new(HashMap::new())),
             working_dir: Arc::new(RwLock::new(None)),
             auto_launch_at: Arc::new(RwLock::new(None)),
-            comm_state: Arc::new(crate::comm_state::CommState::new()),
+
             is_loading: AtomicBool::new(false),
             last_self_write: Arc::new(AtomicU64::new(0)),
             last_save_heads: Arc::new(RwLock::new(Vec::new())),
