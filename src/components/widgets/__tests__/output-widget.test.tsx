@@ -23,7 +23,7 @@ describe("OutputWidget", () => {
     }
   });
 
-  it("renders output messages received via custom comm messages", async () => {
+  it("renders outputs from widget store state", async () => {
     const store = createWidgetStore();
     store.createModel("output-1", {
       _model_name: "OutputModel",
@@ -48,26 +48,35 @@ describe("OutputWidget", () => {
 
     await act(async () => {});
 
+    // Simulate daemon writing resolved outputs to widget state
+    // (via CRDT watcher → WidgetStore updateModel)
     act(() => {
-      store.emitCustomMessage("output-1", {
-        method: "output",
-        output: {
-          output_type: "stream",
-          name: "stdout",
-          text: "Clicked!",
-        },
+      store.updateModel("output-1", {
+        outputs: [
+          {
+            output_type: "stream",
+            name: "stdout",
+            text: "Clicked!",
+          },
+        ],
       });
     });
 
     expect(await screen.findByText("Clicked!")).toBeInTheDocument();
   });
 
-  it("supports clear_output(wait=true) semantics", async () => {
+  it("clears outputs when state is updated with empty array", async () => {
     const store = createWidgetStore();
     store.createModel("output-1", {
       _model_name: "OutputModel",
       _model_module: "@jupyter-widgets/output",
-      outputs: [],
+      outputs: [
+        {
+          output_type: "stream",
+          name: "stdout",
+          text: "First",
+        },
+      ],
     });
 
     render(
@@ -85,32 +94,13 @@ describe("OutputWidget", () => {
       </WidgetStoreContext.Provider>,
     );
 
-    await act(async () => {});
+    expect(await screen.findByText("First")).toBeInTheDocument();
 
+    // Simulate clear_output via state update (CRDT path)
     act(() => {
-      store.emitCustomMessage("output-1", {
-        method: "output",
-        output: {
-          output_type: "stream",
-          name: "stdout",
-          text: "First",
-        },
-      });
-      store.emitCustomMessage("output-1", {
-        method: "clear_output",
-        wait: true,
-      });
-      store.emitCustomMessage("output-1", {
-        method: "output",
-        output: {
-          output_type: "stream",
-          name: "stdout",
-          text: "Second",
-        },
-      });
+      store.updateModel("output-1", { outputs: [] });
     });
 
-    expect(await screen.findByText("Second")).toBeInTheDocument();
     expect(screen.queryByText("First")).not.toBeInTheDocument();
   });
 });

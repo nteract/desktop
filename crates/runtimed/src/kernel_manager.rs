@@ -1283,23 +1283,8 @@ impl RoomKernel {
                                         }
                                     }
 
-                                    // Broadcast for real-time UI — the frontend still needs
-                                    // to display captured outputs in the Output widget.
-                                    let content = serde_json::json!({
-                                        "comm_id": widget_comm_id,
-                                        "data": {
-                                            "method": "custom",
-                                            "content": {
-                                                "method": "output",
-                                                "output": output
-                                            }
-                                        }
-                                    });
-                                    let _ = broadcast_tx.send(NotebookBroadcast::Comm {
-                                        msg_type: "comm_msg".to_string(),
-                                        content,
-                                        buffers: vec![],
-                                    });
+                                    // No broadcast needed — frontend reads from CRDT
+                                    // comms[widget_id].outputs[] via the comms watcher.
                                     continue; // Skip normal cell output handling
                                 }
 
@@ -1495,22 +1480,7 @@ impl RoomKernel {
                                                 }
                                             }
                                         }
-                                        // Broadcast for real-time UI
-                                        let content = serde_json::json!({
-                                            "comm_id": widget_comm_id,
-                                            "data": {
-                                                "method": "custom",
-                                                "content": {
-                                                    "method": "output",
-                                                    "output": nbformat_value
-                                                }
-                                            }
-                                        });
-                                        let _ = broadcast_tx.send(NotebookBroadcast::Comm {
-                                            msg_type: "comm_msg".to_string(),
-                                            content,
-                                            buffers: vec![],
-                                        });
+                                        // No broadcast — frontend reads from CRDT.
                                     }
                                     continue; // Skip normal cell output handling
                                 }
@@ -1730,22 +1700,7 @@ impl RoomKernel {
                                                 }
                                             }
                                         }
-                                        // Broadcast for real-time UI
-                                        let content = serde_json::json!({
-                                            "comm_id": widget_comm_id,
-                                            "data": {
-                                                "method": "custom",
-                                                "content": {
-                                                    "method": "output",
-                                                    "output": nbformat_value
-                                                }
-                                            }
-                                        });
-                                        let _ = broadcast_tx.send(NotebookBroadcast::Comm {
-                                            msg_type: "comm_msg".to_string(),
-                                            content,
-                                            buffers: vec![],
-                                        });
+                                        // No broadcast — frontend reads from CRDT.
                                     }
                                     continue; // Skip normal cell output handling
                                 }
@@ -1857,23 +1812,20 @@ impl RoomKernel {
                                         if sd.clear_comm_outputs(&widget_comm_id) {
                                             let _ = state_changed_for_iopub.send(());
                                         }
+                                        drop(sd);
+                                        // Sync empty outputs to kernel
+                                        let _ = iopub_cmd_tx
+                                            .send(QueueCommand::SendCommUpdate {
+                                                comm_id: widget_comm_id.clone(),
+                                                state: serde_json::json!({
+                                                    "outputs": [],
+                                                }),
+                                            })
+                                            .await;
                                     }
-                                    // Broadcast for real-time UI + kernel echo
-                                    let content = serde_json::json!({
-                                        "comm_id": widget_comm_id,
-                                        "data": {
-                                            "method": "custom",
-                                            "content": {
-                                                "method": "clear_output",
-                                                "wait": clear.wait
-                                            }
-                                        }
-                                    });
-                                    let _ = broadcast_tx.send(NotebookBroadcast::Comm {
-                                        msg_type: "comm_msg".to_string(),
-                                        content,
-                                        buffers: vec![],
-                                    });
+                                    // No broadcast — CRDT clear_comm_outputs handles
+                                    // frontend update. For wait=true, outputs are
+                                    // cleared on next append_comm_output.
                                 }
                                 // Note: We don't skip cell output clearing here because
                                 // clear_output for non-captured outputs should still work normally

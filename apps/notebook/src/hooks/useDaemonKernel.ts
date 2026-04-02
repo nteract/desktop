@@ -17,7 +17,6 @@ import {
   type KernelStatus,
 } from "../lib/kernel-status";
 import { logger } from "../lib/logger";
-import { resolveOutput } from "../lib/materialize-cells";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
 import {
   type CommDocEntry,
@@ -89,7 +88,6 @@ export function useDaemonKernel({
   const runtimeState = useRuntimeState();
 
   // Cache for resolved output manifests (shared with Output widget CRDT path)
-  const outputCacheRef = useRef(new Map<string, JupyterOutput>());
 
   // Derive kernel info from the doc
   const kernelInfo = useMemo(
@@ -590,111 +588,6 @@ export function useDaemonKernel({
     // Comms skipped due to missing blob port will be retried on next update.
     prevCommsRef.current = nextComms;
     prevCommsJsonRef.current = nextJson;
-  }, [runtimeState.comms]);
-
-  // ── Resolve Output widget captured outputs from CRDT ────────────
-  //
-  // OutputModel widgets store captured outputs as manifest hashes in
-  // comms[widget_id].outputs[]. Resolve these to JupyterOutput objects
-  // and push into the WidgetStore so the Output widget component renders them.
-  const prevOutputHashesRef = useRef<Record<string, string>>({});
-  useEffect(() => {
-    const docComms = runtimeState.comms ?? {};
-    const prevHashes = prevOutputHashesRef.current;
-    const newHashes: Record<string, string> = {};
-
-    for (const [commId, entry] of Object.entries(docComms)) {
-      if (entry.model_name !== "OutputModel") continue;
-      const fingerprint = (entry.outputs ?? []).join(",");
-      newHashes[commId] = fingerprint;
-      if (prevHashes[commId] === fingerprint) continue;
-
-      // Handle cleared outputs (empty list)
-      if (!entry.outputs?.length) {
-        const { onCommMessage: cb } = callbacksRef.current;
-        if (cb) {
-          cb({
-            header: {
-              msg_id: crypto.randomUUID(),
-              msg_type: "comm_msg",
-              session: "",
-              username: "kernel",
-              date: new Date().toISOString(),
-              version: "5.3",
-            },
-            metadata: {},
-            content: {
-              comm_id: commId,
-              data: {
-                method: "update",
-                state: { outputs: [] },
-                buffer_paths: [],
-              },
-            },
-            buffers: [],
-          });
-        }
-        continue;
-      }
-
-      // Outputs changed — resolve manifest hashes and update WidgetStore
-      const outputHashes = [...entry.outputs];
-      const widgetCommId = commId;
-      (async () => {
-        let blobPort = getBlobPort();
-        if (blobPort === null) blobPort = await refreshBlobPort();
-        if (blobPort === null) {
-          logger.warn(
-            "[daemon-kernel] No blob port for Output widget CRDT outputs",
-          );
-          return;
-        }
-
-        logger.debug(
-          `[daemon-kernel] Resolving ${outputHashes.length} Output widget outputs for ${widgetCommId.slice(0, 8)}`,
-        );
-
-        const resolved = (
-          await Promise.all(
-            outputHashes.map((hash) =>
-              resolveOutput(hash, blobPort, outputCacheRef.current),
-            ),
-          )
-        ).filter((o): o is JupyterOutput => o !== null);
-
-        logger.debug(
-          `[daemon-kernel] Resolved ${resolved.length}/${outputHashes.length} outputs for ${widgetCommId.slice(0, 8)}`,
-        );
-
-        if (resolved.length > 0) {
-          const { onCommMessage: cb } = callbacksRef.current;
-          if (!cb) return;
-          // Update the widget's outputs via a state update message
-          cb({
-            header: {
-              msg_id: crypto.randomUUID(),
-              msg_type: "comm_msg",
-              session: "",
-              username: "kernel",
-              date: new Date().toISOString(),
-              version: "5.3",
-            },
-            metadata: {},
-            content: {
-              comm_id: commId,
-              data: {
-                method: "update",
-                state: { outputs: resolved },
-                buffer_paths: [],
-              },
-            },
-            buffers: [],
-          });
-        }
-      })();
-    }
-
-    prevOutputHashesRef.current = newHashes;
   }, [runtimeState.comms]);
 
   // ── Actions ───────────────────────────────────────────────────────
