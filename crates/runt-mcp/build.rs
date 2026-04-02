@@ -4,6 +4,9 @@
 //! The real asset is built by `apps/mcp-app/build-html.js` (via `cargo xtask
 //! build` or `pnpm build` in `apps/mcp-app`). This build script only creates
 //! a minimal placeholder when the file is missing.
+//!
+//! **Release builds refuse the placeholder** — shipping a stub instead of the
+//! real output renderer would be a silent regression.
 
 use std::path::Path;
 
@@ -13,7 +16,15 @@ fn main() {
     // Re-run if the file is created or deleted externally.
     println!("cargo:rerun-if-changed=assets/_output.html");
 
+    let is_release = std::env::var("PROFILE").unwrap_or_default() == "release";
+
     if !asset.exists() {
+        if is_release {
+            panic!(
+                "assets/_output.html is missing — cannot build runt-mcp in release mode \
+                 without the real output renderer. Run `cargo xtask build` first."
+            );
+        }
         std::fs::create_dir_all("assets").ok();
         std::fs::write(
             asset,
