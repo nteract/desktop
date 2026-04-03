@@ -514,3 +514,112 @@ async fn handle_queue_command(command: QueueCommand, ctx: &AgentContext) -> anyh
 
     Ok(())
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use notebook_protocol::connection::{
+        recv_frame, recv_preamble, send_json_frame, send_preamble, send_typed_frame,
+        NotebookFrameType,
+    };
+    use tokio::io::duplex;
+
+    /// Test that the agent reads the handshake and responds with preamble.
+    #[tokio::test]
+    async fn test_agent_handshake() {
+        let (coordinator_stream, agent_stream) = duplex(8192);
+        let (agent_reader, agent_writer) = tokio::io::split(agent_stream);
+        let (mut coord_reader, mut coord_writer) = tokio::io::split(coordinator_stream);
+
+        let agent_task = tokio::spawn(async move { run_agent(agent_reader, agent_writer).await });
+
+        // Coordinator sends preamble + handshake
+        send_preamble(&mut coord_writer).await.unwrap();
+        send_json_frame(
+            &mut coord_writer,
+            &Handshake::RuntimeAgent {
+                notebook_id: "test-notebook".to_string(),
+                agent_id: "rt:agent:test".to_string(),
+                blob_root: "/tmp/test-blobs".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        // Agent should respond with preamble
+        recv_preamble(&mut coord_reader).await.unwrap();
+
+        // Agent is now in its main loop — abort it
+        agent_task.abort();
+    }
+
+    /// Test that the agent rejects non-RuntimeAgent handshakes.
+    #[tokio::test]
+    async fn test_agent_rejects_wrong_handshake() {
+        let (coordinator_stream, agent_stream) = duplex(8192);
+        let (agent_reader, agent_writer) = tokio::io::split(agent_stream);
+        let (mut _coord_reader, mut coord_writer) = tokio::io::split(coordinator_stream);
+
+        let agent_task = tokio::spawn(async move { run_agent(agent_reader, agent_writer).await });
+
+        // Send wrong handshake type
+        send_preamble(&mut coord_writer).await.unwrap();
+        send_json_frame(&mut coord_writer, &Handshake::Pool)
+            .await
+            .unwrap();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), agent_task)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            result.is_err(),
+            "Agent should reject non-RuntimeAgent handshake"
+        );
+    }
+
+    /// Test that the agent responds to a ShutdownKernel request (no kernel running → Ok).
+    #[tokio::test]
+    async fn test_agent_shutdown_request() {
+        let (coordinator_stream, agent_stream) = duplex(8192);
+        let (agent_reader, agent_writer) = tokio::io::split(agent_stream);
+        let (mut coord_reader, mut coord_writer) = tokio::io::split(coordinator_stream);
+
+        let agent_task = tokio::spawn(async move { run_agent(agent_reader, agent_writer).await });
+
+        // Handshake
+        send_preamble(&mut coord_writer).await.unwrap();
+        send_json_frame(
+            &mut coord_writer,
+            &Handshake::RuntimeAgent {
+                notebook_id: "test-notebook".to_string(),
+                agent_id: "rt:agent:test".to_string(),
+                blob_root: "/tmp/test-blobs".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        recv_preamble(&mut coord_reader).await.unwrap();
+
+        // Send ShutdownKernel request
+        let request = AgentRequest::ShutdownKernel;
+        let json = serde_json::to_vec(&request).unwrap();
+        send_typed_frame(&mut coord_writer, NotebookFrameType::Request, &json)
+            .await
+            .unwrap();
+
+        // Read response
+        let response_frame = recv_frame(&mut coord_reader).await.unwrap().unwrap();
+        assert_eq!(response_frame[0], 0x02, "Should be a Response frame");
+        let response: AgentResponse = serde_json::from_slice(&response_frame[1..]).unwrap();
+        assert!(
+            matches!(response, AgentResponse::Ok),
+            "ShutdownKernel with no kernel should return Ok"
+        );
+
+        // Clean up
+        agent_task.abort();
+    }
+}
