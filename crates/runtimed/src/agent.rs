@@ -98,11 +98,10 @@ where
 
     // ── 2. Bootstrap RuntimeStateDoc ────────────────────────────────────────
 
-    let mut state_doc = RuntimeStateDoc::new();
+    // Start with an empty doc (no scaffolding) to avoid DuplicateSeqNumber
+    // conflicts when syncing with the coordinator. All state arrives via sync.
+    let mut state_doc = RuntimeStateDoc::new_empty();
     state_doc.set_actor(&agent_id);
-
-    // TODO: Initial sync — read RuntimeStateSync frames from coordinator
-    // until convergence. For now, start with empty doc.
 
     let state_doc = Arc::new(RwLock::new(state_doc));
     let (state_changed_tx, mut state_changed_rx) = broadcast::channel::<()>(64);
