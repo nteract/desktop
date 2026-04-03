@@ -10,11 +10,11 @@ import {
   getRequiredLibraries,
   injectLibraries,
 } from "@/components/isolated/iframe-libraries";
-import { isVegaMimeType } from "@/components/outputs/vega-mime";
 import {
   AnsiErrorOutput,
   AnsiStreamOutput,
 } from "@/components/outputs/ansi-output";
+import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
 import {
   DEFAULT_PRIORITY,
   MediaRouter,
@@ -112,19 +112,6 @@ function normalizeText(text: string | string[]): string {
 }
 
 /**
- * MIME types that require iframe isolation for security.
- * These types can contain executable scripts or interactive content.
- */
-const ISOLATED_MIME_TYPES = new Set([
-  "text/html",
-  "text/markdown",
-  "image/svg+xml",
-  "application/vnd.jupyter.widget-view+json",
-  "application/vnd.plotly.v1+json",
-  "application/geo+json",
-]);
-
-/**
  * Select the best MIME type from available data based on priority.
  */
 function selectMimeType(
@@ -143,6 +130,7 @@ function selectMimeType(
 
 /**
  * Check if a single output needs iframe isolation.
+ * Uses the safe-list: anything not explicitly safe defaults to isolation.
  */
 function outputNeedsIsolation(
   output: JupyterOutput,
@@ -153,9 +141,7 @@ function outputNeedsIsolation(
     output.output_type === "display_data"
   ) {
     const mimeType = selectMimeType(output.data, priority);
-    return mimeType
-      ? ISOLATED_MIME_TYPES.has(mimeType) || isVegaMimeType(mimeType)
-      : false;
+    return mimeType ? !isSafeForMainDom(mimeType) : false;
   }
   // stream and error outputs don't need isolation
   return false;

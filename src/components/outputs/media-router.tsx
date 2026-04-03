@@ -1,5 +1,5 @@
 import { lazy, type ReactNode, Suspense } from "react";
-import { isVegaMimeType } from "@/components/outputs/vega-mime";
+import { isSafeForMainDom } from "./safe-mime-types";
 import { useMediaContext } from "./media-provider";
 
 // Lazy load built-in output components for better bundle splitting
@@ -23,6 +23,20 @@ const JsonOutput = lazy(() =>
 );
 const MathOutput = lazy(() =>
   import("./math-output").then((m) => ({ default: m.MathOutput })),
+);
+const AudioOutput = lazy(() =>
+  import("./audio-output").then((m) => ({ default: m.AudioOutput })),
+);
+const VideoOutput = lazy(() =>
+  import("./video-output").then((m) => ({ default: m.VideoOutput })),
+);
+const PdfOutput = lazy(() =>
+  import("./pdf-output").then((m) => ({ default: m.PdfOutput })),
+);
+const JavaScriptOutput = lazy(() =>
+  import("./javascript-output").then((m) => ({
+    default: m.JavaScriptOutput,
+  })),
 );
 
 /**
@@ -60,16 +74,29 @@ export const DEFAULT_PRIORITY = [
   "application/vnd.vega.v5.json",
   "application/vnd.vega.v4+json",
   "application/geo+json",
-  // HTML, markdown, and LaTeX
+  // HTML, PDF, markdown, and LaTeX
   "text/html",
+  "application/pdf",
   "text/markdown",
   "text/latex",
+  "application/javascript",
   // Images
   "image/svg+xml",
   "image/png",
   "image/jpeg",
   "image/gif",
   "image/webp",
+  "image/bmp",
+  // Audio
+  "audio/wav",
+  "audio/mpeg",
+  "audio/ogg",
+  "audio/flac",
+  "audio/webm",
+  // Video
+  "video/mp4",
+  "video/webm",
+  "video/ogg",
   // Structured data
   "application/json",
   // Plain text (fallback)
@@ -288,15 +315,9 @@ export function MediaRouter({
   }
 
   const renderBuiltIn = () => {
-    // ISOLATION GUARD: These MIME types require iframe isolation for security.
-    // If we're already in an iframe, we can render them safely.
-    // If we're in the main DOM, block rendering and warn in development.
-    const needsIsolation =
-      mimeType === "text/markdown" ||
-      mimeType === "text/html" ||
-      mimeType === "image/svg+xml" ||
-      mimeType === "application/vnd.plotly.v1+json" ||
-      isVegaMimeType(mimeType);
+    // ISOLATION GUARD: Only types in the safe-list can render in the main DOM.
+    // Everything else requires iframe isolation for security.
+    const needsIsolation = !isSafeForMainDom(mimeType);
 
     if (needsIsolation && !isInIframe()) {
       if (process.env.NODE_ENV === "development") {
@@ -330,19 +351,50 @@ export function MediaRouter({
 
     // Images (not SVG)
     if (mimeType.startsWith("image/")) {
-      const imageType = mimeType as
-        | "image/png"
-        | "image/jpeg"
-        | "image/gif"
-        | "image/webp";
       return (
         <ImageOutput
           data={String(content)}
-          mediaType={imageType}
+          mediaType={mimeType}
           width={mimeMetadata.width as number | undefined}
           height={mimeMetadata.height as number | undefined}
           className={className}
         />
+      );
+    }
+
+    // Audio
+    if (mimeType.startsWith("audio/")) {
+      return (
+        <AudioOutput
+          data={String(content)}
+          mediaType={mimeType}
+          className={className}
+        />
+      );
+    }
+
+    // Video
+    if (mimeType.startsWith("video/")) {
+      return (
+        <VideoOutput
+          data={String(content)}
+          mediaType={mimeType}
+          width={mimeMetadata.width as number | undefined}
+          height={mimeMetadata.height as number | undefined}
+          className={className}
+        />
+      );
+    }
+
+    // PDF
+    if (mimeType === "application/pdf") {
+      return <PdfOutput data={String(content)} className={className} />;
+    }
+
+    // JavaScript (only in iframe)
+    if (mimeType === "application/javascript") {
+      return (
+        <JavaScriptOutput code={String(content)} className={className} />
       );
     }
 

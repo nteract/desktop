@@ -32,13 +32,17 @@ import {
   AnsiOutput,
   AnsiStreamOutput,
 } from "@/components/outputs/ansi-output";
+import { AudioOutput } from "@/components/outputs/audio-output";
 import { HtmlOutput } from "@/components/outputs/html-output";
 import { ImageOutput } from "@/components/outputs/image-output";
+import { JavaScriptOutput } from "@/components/outputs/javascript-output";
 import { JsonOutput } from "@/components/outputs/json-output";
 import { MarkdownOutput } from "@/components/outputs/markdown-output";
 import { GeoJsonOutput } from "@/components/outputs/geojson-output";
+import { PdfOutput } from "@/components/outputs/pdf-output";
 import { PlotlyOutput } from "@/components/outputs/plotly-output";
 import { VegaOutput } from "@/components/outputs/vega-output";
+import { VideoOutput } from "@/components/outputs/video-output";
 import { isVegaMimeType } from "@/components/outputs/vega-mime";
 import { SvgOutput } from "@/components/outputs/svg-output";
 import { WidgetView } from "@/components/widgets/widget-view";
@@ -298,18 +302,43 @@ function OutputRenderer({ payload }: { payload: RenderPayload }) {
     return <SvgOutput data={String(content)} />;
   }
 
-  // Images (PNG, JPEG, GIF, WebP)
+  // Images (PNG, JPEG, GIF, WebP, BMP, etc.)
   if (mimeType.startsWith("image/")) {
     return (
       <ImageOutput
         data={String(content)}
-        mediaType={
-          mimeType as "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-        }
+        mediaType={mimeType}
         width={metadata?.width as number | undefined}
         height={metadata?.height as number | undefined}
       />
     );
+  }
+
+  // Audio
+  if (mimeType.startsWith("audio/")) {
+    return <AudioOutput data={String(content)} mediaType={mimeType} />;
+  }
+
+  // Video
+  if (mimeType.startsWith("video/")) {
+    return (
+      <VideoOutput
+        data={String(content)}
+        mediaType={mimeType}
+        width={metadata?.width as number | undefined}
+        height={metadata?.height as number | undefined}
+      />
+    );
+  }
+
+  // PDF
+  if (mimeType === "application/pdf") {
+    return <PdfOutput data={String(content)} />;
+  }
+
+  // JavaScript
+  if (mimeType === "application/javascript") {
+    return <JavaScriptOutput code={String(content)} />;
   }
 
   // Plotly

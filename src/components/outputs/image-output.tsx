@@ -8,7 +8,7 @@ interface ImageOutputProps {
   /**
    * The media type of the image
    */
-  mediaType?: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+  mediaType?: string;
   /**
    * Alt text for accessibility
    */
@@ -31,7 +31,7 @@ interface ImageOutputProps {
  * ImageOutput component for rendering images in notebook outputs
  *
  * Handles base64-encoded image data from Jupyter kernels as well as
- * regular image URLs. Supports PNG, JPEG, GIF, and WebP formats.
+ * regular image URLs. Supports any browser-renderable image format.
  */
 export function ImageOutput({
   data,

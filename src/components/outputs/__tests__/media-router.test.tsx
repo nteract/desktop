@@ -360,30 +360,38 @@ describe("MediaRouter component", () => {
       expect(screen.getByText("No displayable output")).toBeInTheDocument();
     });
 
-    it("renders unknown types as plain text (fallback)", async () => {
+    it("blocks unknown types in main DOM (requires iframe isolation)", async () => {
       render(
         <MediaProvider>
           <MediaRouter data={{ "application/octet-stream": "binary data" }} />
         </MediaProvider>,
       );
-      // Falls back to AnsiOutput which renders as text
+      // Unknown types need iframe isolation — render empty in main DOM
       await waitFor(() => {
-        expect(screen.getByText("binary data")).toBeInTheDocument();
+        const container = screen.getByText((_content, element) => {
+          return element?.getAttribute("data-mime-type") === "application/octet-stream";
+        });
+        expect(container).toBeInTheDocument();
       });
+      expect(screen.queryByText("binary data")).not.toBeInTheDocument();
     });
   });
 
   describe("unknown text/* MIME types", () => {
-    it("renders unknown text/* type with a MIME type label", async () => {
+    it("blocks unknown text/* types in main DOM (requires iframe isolation)", async () => {
       render(
         <MediaProvider>
           <MediaRouter data={{ "text/snazzy": "hello from custom type" }} />
         </MediaProvider>,
       );
+      // Unknown text/* types need iframe isolation — render empty in main DOM
       await waitFor(() => {
-        expect(screen.getByText("hello from custom type")).toBeInTheDocument();
-        expect(screen.getByText("text/snazzy")).toBeInTheDocument();
+        const container = screen.getByText((_content, element) => {
+          return element?.getAttribute("data-mime-type") === "text/snazzy";
+        });
+        expect(container).toBeInTheDocument();
       });
+      expect(screen.queryByText("hello from custom type")).not.toBeInTheDocument();
     });
 
     it("does NOT show a MIME type label for text/plain", async () => {
