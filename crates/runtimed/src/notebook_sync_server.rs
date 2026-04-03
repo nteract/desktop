@@ -3042,6 +3042,14 @@ async fn auto_launch_kernel(
     if is_agent_mode_enabled() {
         info!("[notebook-sync] Agent mode: spawning agent subprocess for auto-launch");
 
+        // Replace the room's RuntimeStateDoc with an empty one.
+        // The agent owns the RuntimeStateDoc — it creates a scaffolded doc
+        // and syncs it to us. We start empty to avoid DuplicateSeqNumber.
+        {
+            let mut sd = room.state_doc.write().await;
+            *sd = RuntimeStateDoc::new_empty();
+        }
+
         let nb_id = notebook_id.to_string();
         let agent_id = format!("rt:agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
 
@@ -3855,6 +3863,12 @@ async fn handle_notebook_request(
             // Override: RUNT_AGENT_MODE=1 to force on, RUNT_AGENT_MODE=0 to force off.
             if is_agent_mode_enabled() {
                 info!("[notebook-sync] RUNT_AGENT_MODE=1: spawning agent subprocess");
+
+                // Replace state_doc with empty — agent owns it
+                {
+                    let mut sd = room.state_doc.write().await;
+                    *sd = RuntimeStateDoc::new_empty();
+                }
 
                 let notebook_id = room.notebook_path.read().await.display().to_string();
                 let agent_id = format!("rt:agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
