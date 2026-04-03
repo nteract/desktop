@@ -32,7 +32,21 @@ import {
   timer,
 } from "rxjs";
 
+import {
+  type CommBroadcast,
+  type DisplayUpdateBroadcast,
+  type KernelErrorBroadcast,
+  type OutputBroadcast,
+  type OutputsClearedBroadcast,
+  isCommBroadcast,
+  isDisplayUpdateBroadcast,
+  isKernelErrorBroadcast,
+  isOutputBroadcast,
+  isOutputsClearedBroadcast,
+  isRuntimeStateSnapshotBroadcast,
+} from "./broadcast-types";
 import { type CellChangeset, mergeChangesets } from "./cell-changeset";
+import { type KernelStatus, kernelStatus$ as deriveKernelStatus$ } from "./derived-state";
 import type { FrameEvent, SyncableHandle } from "./handle";
 import type { PoolState } from "./pool-state";
 import {
@@ -134,6 +148,31 @@ export class SyncEngine {
   readonly executionTransitions$: Observable<ExecutionTransition[]>;
 
   /**
+   * Throttled kernel status derived from RuntimeState.
+   *
+   * Applies a 60ms busy throttle to filter sub-60ms busy→idle blips
+   * from tab completions. All other statuses pass through immediately.
+   */
+  readonly kernelStatus$: Observable<KernelStatus>;
+
+  // ── Typed broadcast observables ──────────────────────────────────
+
+  /** Output produced for a cell (includes manifest hash for blob resolution). */
+  readonly outputBroadcasts$: Observable<OutputBroadcast>;
+
+  /** Display data update by display_id. */
+  readonly displayUpdates$: Observable<DisplayUpdateBroadcast>;
+
+  /** Outputs cleared for a cell (from another window/peer). */
+  readonly outputsCleared$: Observable<OutputsClearedBroadcast>;
+
+  /** Custom comm messages (buttons, model.send()). */
+  readonly commBroadcasts$: Observable<CommBroadcast>;
+
+  /** Detailed kernel error message. */
+  readonly kernelErrors$: Observable<KernelErrorBroadcast>;
+
+  /**
    * Fires each time the initial sync handshake completes (daemon has
    * sent document content). Emits once per bootstrap cycle — after
    * `resetForBootstrap()`, the next `changed:true` frame triggers
@@ -168,6 +207,14 @@ export class SyncEngine {
     this.poolState$ = this._poolState$.asObservable();
     this.executionTransitions$ = this._executionTransitions$.asObservable();
     this.initialSyncComplete$ = this._initialSyncComplete$.asObservable();
+    this.kernelStatus$ = deriveKernelStatus$(this.runtimeState$);
+
+    // Typed broadcast sub-observables (derived from broadcasts$)
+    this.outputBroadcasts$ = this.broadcasts$.pipe(filter(isOutputBroadcast));
+    this.displayUpdates$ = this.broadcasts$.pipe(filter(isDisplayUpdateBroadcast));
+    this.outputsCleared$ = this.broadcasts$.pipe(filter(isOutputsClearedBroadcast));
+    this.commBroadcasts$ = this.broadcasts$.pipe(filter(isCommBroadcast));
+    this.kernelErrors$ = this.broadcasts$.pipe(filter(isKernelErrorBroadcast));
   }
 
   // ── Lifecycle ────────────────────────────────────────────────────
@@ -374,6 +421,19 @@ export class SyncEngine {
       frameEvents$
         .pipe(filter((e) => e.type === "presence" && e.payload != null))
         .subscribe((e) => this._presence$.next(e.payload)),
+    );
+
+    // ── Sub-pipeline: runtime_state_snapshot broadcast ─────────────
+    //
+    // Eager snapshot from connection setup — apply immediately so the
+    // client has kernel status before the Automerge sync handshake completes.
+
+    sub.add(
+      this.broadcasts$
+        .pipe(filter(isRuntimeStateSnapshotBroadcast))
+        .subscribe((snapshot) => {
+          this._runtimeState$.next(snapshot.state);
+        }),
     );
 
     // ── Sub-pipeline: sync error recovery ──────────────────────────

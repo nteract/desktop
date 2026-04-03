@@ -64,6 +64,18 @@ export interface NotebookTransport {
    */
   onFrame(callback: FrameListener): () => void;
 
+  /**
+   * Send a typed request to the daemon and await its response.
+   *
+   * The request is a `NotebookRequest` discriminated union. The
+   * transport is responsible for encoding, delivery, and correlation.
+   *
+   * - TauriTransport: maps to Tauri `invoke()` commands
+   * - WebSocketTransport: serializes as frame type 0x01 with correlation ID
+   * - DirectTransport: delegates to a configurable handler
+   */
+  sendRequest(request: unknown): Promise<unknown>;
+
   /** Whether the transport is currently connected. */
   readonly connected: boolean;
 

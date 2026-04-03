@@ -1,17 +1,12 @@
-export const KERNEL_STATUS = {
-  NOT_STARTED: "not_started",
-  STARTING: "starting",
-  IDLE: "idle",
-  BUSY: "busy",
-  ERROR: "error",
-  SHUTDOWN: "shutdown",
-} as const;
+/**
+ * Kernel status types and UI labels.
+ *
+ * Core types re-exported from runtimed; UI-specific labels live here.
+ */
 
-export type KernelStatus = (typeof KERNEL_STATUS)[keyof typeof KERNEL_STATUS];
+export { isKernelStatus, KERNEL_STATUS, type KernelStatus } from "runtimed";
 
-const KERNEL_STATUS_SET: ReadonlySet<KernelStatus> = new Set(
-  Object.values(KERNEL_STATUS),
-);
+import { KERNEL_STATUS, type KernelStatus } from "runtimed";
 
 export const KERNEL_STATUS_LABELS: Record<KernelStatus, string> = {
   [KERNEL_STATUS.NOT_STARTED]: "initializing",
@@ -21,10 +16,6 @@ export const KERNEL_STATUS_LABELS: Record<KernelStatus, string> = {
   [KERNEL_STATUS.ERROR]: "error",
   [KERNEL_STATUS.SHUTDOWN]: "shutdown",
 };
-
-export function isKernelStatus(value: string): value is KernelStatus {
-  return KERNEL_STATUS_SET.has(value as KernelStatus);
-}
 
 const STARTING_PHASE_LABELS: Record<string, string> = {
   resolving: "resolving environment",

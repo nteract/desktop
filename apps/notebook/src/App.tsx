@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { NotebookClient } from "runtimed";
 import { IsolationTest } from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
@@ -61,6 +62,7 @@ import { KERNEL_STATUS } from "./lib/kernel-status";
 import { logger } from "./lib/logger";
 import { getNotebookCellsSnapshot } from "./lib/notebook-cells";
 import { useDetectRuntime } from "./lib/notebook-metadata";
+import { TauriTransport } from "./lib/tauri-transport";
 import { startWindowFocusHandler } from "./lib/window-focus";
 import type { JupyterMessage } from "./types";
 
@@ -269,7 +271,12 @@ function AppContent() {
     [handleWidgetMessage],
   );
 
-  // Clear page payload for a cell (e.g., when dismissed or re-executed)
+  // NotebookClient for sending kernel commands via transport
+  const notebookClient = useMemo(
+    () => new NotebookClient({ transport: new TauriTransport() }),
+    [],
+  );
+
   // Daemon-owned kernel execution
   const {
     kernelStatus,
@@ -286,6 +293,7 @@ function AppContent() {
     runAllCells: daemonRunAllCells,
     sendCommMessage,
   } = useDaemonKernel({
+    client: notebookClient,
     onExecutionCount: handleExecutionCount,
     onExecutionDone: handleExecutionDone,
     onUpdateDisplayData: updateOutputByDisplayId,
