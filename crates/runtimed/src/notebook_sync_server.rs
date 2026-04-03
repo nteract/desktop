@@ -81,12 +81,14 @@ pub(crate) fn catch_automerge_panic<T>(label: &str, f: impl FnOnce() -> T) -> Re
     }
 }
 
-/// Check if agent mode is enabled for kernel execution.
+/// Check if agent mode is enabled on the daemon.
 ///
-/// Requires explicit opt-in via `RUNT_AGENT_MODE=1`.
-/// Agent mode is experimental and not yet enabled by default.
-fn is_agent_mode_enabled() -> bool {
-    std::env::var("RUNT_AGENT_MODE").as_deref() == Ok("1")
+/// Reads the daemon's in-memory flag, which is initialized from
+/// `RUNT_AGENT_MODE=1` and can be toggled at runtime via the pool IPC.
+fn is_agent_mode_enabled(daemon: &crate::daemon::Daemon) -> bool {
+    daemon
+        .agent_mode
+        .load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Trust state for a notebook room.
@@ -3033,7 +3035,7 @@ async fn auto_launch_kernel(
     let prewarmed_packages = launched_config.prewarmed_packages.clone();
 
     // Agent mode: spawn subprocess instead of local kernel
-    if is_agent_mode_enabled() {
+    if is_agent_mode_enabled(&daemon) {
         info!("[notebook-sync] Agent mode: spawning agent subprocess for auto-launch");
 
         let nb_id = notebook_id.to_string();
@@ -3836,7 +3838,7 @@ async fn handle_notebook_request(
             // Check if agent mode is enabled.
             // Default: ON in dev mode (RUNTIMED_DEV=1), OFF in production.
             // Override: RUNT_AGENT_MODE=1 to force on, RUNT_AGENT_MODE=0 to force off.
-            if is_agent_mode_enabled() {
+            if is_agent_mode_enabled(&daemon) {
                 info!("[notebook-sync] RUNT_AGENT_MODE=1: spawning agent subprocess");
 
                 let notebook_id = room.notebook_path.read().await.display().to_string();
