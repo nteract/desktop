@@ -3664,7 +3664,11 @@ fn correct_window_scale(window: &tauri::WebviewWindow, saved_scale_factor: Optio
 ///
 /// For untitled notebooks, the current working directory is captured at startup
 /// for project file detection (pyproject.toml, pixi.toml, environment.yaml).
-pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::Result<()> {
+pub fn run(
+    notebook_path: Option<PathBuf>,
+    runtime: Option<Runtime>,
+    notebook_id: Option<String>,
+) -> anyhow::Result<()> {
     // Initialize logging via tauri-plugin-log — unified backend for both Rust
     // log::* macros and frontend JS log calls. Writes to notebook.log, stderr,
     // and forwards to webview console.
@@ -3764,8 +3768,9 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
     // Use provided runtime or fall back to user's default from settings
     let runtime = runtime.unwrap_or(app_settings.default_runtime);
 
-    // Try to restore session if no notebook path provided and not onboarding
-    let restored_session = if notebook_path.is_none() && !needs_onboarding {
+    // Try to restore session if no notebook path/id provided and not onboarding
+    let restored_session = if notebook_path.is_none() && notebook_id.is_none() && !needs_onboarding
+    {
         session::load_session()
     } else {
         None
@@ -3799,6 +3804,18 @@ pub fn run(notebook_path: Option<PathBuf>, runtime: Option<Runtime>) -> anyhow::
             label: format!("notebook-{}", &hash[..8]),
             title,
             mode: OpenMode::Open { path: path.clone() },
+            saved_scale_factor: None,
+        }]
+    } else if let Some(ref id) = notebook_id {
+        // CLI --notebook-id: join an existing untitled notebook by UUID
+        vec![StartupWindow {
+            label: format!("notebook-{}", &id[..8.min(id.len())]),
+            title: "Untitled.ipynb".to_string(),
+            mode: OpenMode::Create {
+                runtime: runtime.to_string(),
+                working_dir: working_dir.clone(),
+                notebook_id: Some(id.clone()),
+            },
             saved_scale_factor: None,
         }]
     } else if let Some(ref session) = restored_session {

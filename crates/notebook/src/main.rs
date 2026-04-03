@@ -11,12 +11,16 @@ struct Args {
     /// Runtime for new notebooks (python, deno). Falls back to user settings if not specified.
     #[arg(long, short)]
     runtime: Option<Runtime>,
+
+    /// Join an existing untitled notebook by its daemon ID (UUID)
+    #[arg(long)]
+    notebook_id: Option<String>,
 }
 
 fn main() {
     let args = Args::parse();
 
-    if let Err(e) = notebook::run(args.path.clone(), args.runtime) {
+    if let Err(e) = notebook::run(args.path.clone(), args.runtime, args.notebook_id.clone()) {
         // Show native error dialog before exiting
         let title = "Cannot Open Notebook";
         let message = match &args.path {

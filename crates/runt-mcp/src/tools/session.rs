@@ -494,20 +494,17 @@ pub async fn show_notebook(
         ));
     }
 
-    // Validate it's a file-backed notebook (absolute path)
-    if !std::path::Path::new(&target).is_absolute() {
-        return tool_error(&format!(
-            "Notebook '{}' is an untitled notebook (not saved to disk). \
-             Use save_notebook(path) first, then call show_notebook().",
-            target
-        ));
-    }
-
     // Launch the app using the binary's build channel.
     // NOTE: If RUNTIMED_SOCKET_PATH points at a different channel's daemon,
     // this may open the wrong app. That's a known dev-only edge case.
-    runt_workspace::open_notebook_app(Some(std::path::Path::new(&target)), &[])
-        .map_err(|e| McpError::internal_error(format!("Failed to open app: {e}"), None))?;
+    let is_file_backed = std::path::Path::new(&target).is_absolute();
+    if is_file_backed {
+        runt_workspace::open_notebook_app(Some(std::path::Path::new(&target)), &[])
+            .map_err(|e| McpError::internal_error(format!("Failed to open app: {e}"), None))?;
+    } else {
+        runt_workspace::open_notebook_app(None, &["--notebook-id", &target])
+            .map_err(|e| McpError::internal_error(format!("Failed to open app: {e}"), None))?;
+    }
 
     let result = serde_json::json!({ "notebook_id": target, "opened": true });
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
