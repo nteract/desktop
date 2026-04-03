@@ -3067,14 +3067,10 @@ async fn auto_launch_kernel(
                     Ok(notebook_protocol::protocol::AgentResponse::KernelLaunched {
                         env_source: es,
                     }) => {
-                        // Replace coordinator's state_doc with empty to avoid
-                        // DuplicateSeqNumber when syncing with the agent.
-                        // The agent owns the scaffolded doc; we start fresh.
-                        {
-                            let mut sd = room.state_doc.write().await;
-                            *sd = RuntimeStateDoc::new_empty();
-                            sd.set_actor("coordinator:state");
-                        }
+                        // No state_doc replacement needed — the agent bootstrapped
+                        // FROM the coordinator's doc (like frontend NotebookDoc).
+                        // The coordinator keeps its scaffolded doc; the agent
+                        // writes with a different actor. No DuplicateSeqNumber.
 
                         let mut agent_guard = room.agent_handle.lock().await;
                         *agent_guard = Some(agent);
@@ -3879,12 +3875,6 @@ async fn handle_notebook_request(
                             }) => {
                                 // Agent launched — replace state_doc with empty
                                 // to avoid DuplicateSeqNumber with agent's doc.
-                                {
-                                    let mut sd = room.state_doc.write().await;
-                                    *sd = RuntimeStateDoc::new_empty();
-                                    sd.set_actor("coordinator:state");
-                                }
-
                                 let mut agent_guard = room.agent_handle.lock().await;
                                 *agent_guard = Some(agent);
                                 drop(kernel_guard);
