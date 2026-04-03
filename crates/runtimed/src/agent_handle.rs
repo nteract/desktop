@@ -101,12 +101,16 @@ impl AgentHandle {
             }
 
             // Send our full state back to the agent
+            let mut sync_count = 0;
             while let Some(reply) = sd.generate_sync_message(&mut sync_state) {
                 let encoded = reply.encode();
+                info!("[agent-handle] Sending sync reply ({} bytes)", encoded.len());
                 let mut w = writer.lock().await;
                 send_typed_frame(&mut *w, NotebookFrameType::RuntimeStateSync, &encoded)
                     .await?;
+                sync_count += 1;
             }
+            info!("[agent-handle] Sent {} sync messages to agent", sync_count);
 
             // Read agent's confirmation (it now has our schema)
             match tokio::time::timeout(
