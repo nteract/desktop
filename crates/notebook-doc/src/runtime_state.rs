@@ -296,6 +296,77 @@ impl RuntimeStateDoc {
         Self { doc }
     }
 
+    /// Create a new `RuntimeStateDoc` with scaffolding and a custom actor.
+    ///
+    /// Used by the runtime agent to create its own doc with a unique actor
+    /// that won't conflict with the coordinator's `"runtimed:state"` actor.
+    /// The schema is identical — all scaffolding ops use the custom actor.
+    #[allow(clippy::expect_used)]
+    pub fn new_with_actor(actor_label: &str) -> Self {
+        let mut doc = AutoCommit::new();
+        doc.set_actor(ActorId::from(actor_label.as_bytes()));
+
+        // Identical scaffolding as new(), but with a different actor
+        let kernel = doc
+            .put_object(&ROOT, "kernel", ObjType::Map)
+            .expect("scaffold kernel");
+        doc.put(&kernel, "status", "not_started")
+            .expect("scaffold kernel.status");
+        doc.put(&kernel, "name", "").expect("scaffold kernel.name");
+        doc.put(&kernel, "language", "")
+            .expect("scaffold kernel.language");
+        doc.put(&kernel, "env_source", "")
+            .expect("scaffold kernel.env_source");
+        doc.put(&kernel, "starting_phase", "")
+            .expect("scaffold kernel.starting_phase");
+
+        let queue = doc
+            .put_object(&ROOT, "queue", ObjType::Map)
+            .expect("scaffold queue");
+        doc.put(&queue, "executing", automerge::ScalarValue::Null)
+            .expect("scaffold queue.executing");
+        doc.put(
+            &queue,
+            "executing_execution_id",
+            automerge::ScalarValue::Null,
+        )
+        .expect("scaffold queue.executing_execution_id");
+        doc.put_object(&queue, "queued", ObjType::List)
+            .expect("scaffold queue.queued");
+        doc.put_object(&queue, "queued_execution_ids", ObjType::List)
+            .expect("scaffold queue.queued_execution_ids");
+
+        doc.put_object(&ROOT, "executions", ObjType::Map)
+            .expect("scaffold executions");
+
+        let env = doc
+            .put_object(&ROOT, "env", ObjType::Map)
+            .expect("scaffold env");
+        doc.put(&env, "in_sync", true)
+            .expect("scaffold env.in_sync");
+        doc.put_object(&env, "added", ObjType::List)
+            .expect("scaffold env.added");
+        doc.put_object(&env, "removed", ObjType::List)
+            .expect("scaffold env.removed");
+        doc.put_object(&env, "prewarmed_packages", ObjType::List)
+            .expect("scaffold env.prewarmed_packages");
+
+        let trust = doc
+            .put_object(&ROOT, "trust", ObjType::Map)
+            .expect("scaffold trust");
+        doc.put(&trust, "status", "untrusted")
+            .expect("scaffold trust.status");
+        doc.put(&trust, "needs_approval", false)
+            .expect("scaffold trust.needs_approval");
+
+        doc.put_object(&ROOT, "comms", ObjType::Map)
+            .expect("scaffold comms");
+        doc.put(&ROOT, "last_saved", automerge::ScalarValue::Null)
+            .expect("scaffold last_saved");
+
+        Self { doc }
+    }
+
     /// Create an empty `RuntimeStateDoc` for read-only clients.
     ///
     /// The document starts empty with a random actor ID. All state
