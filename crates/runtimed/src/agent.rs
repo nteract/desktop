@@ -603,12 +603,8 @@ mod tests {
         .unwrap();
         recv_preamble(&mut coord_reader).await.unwrap();
 
-        // Read and skip the initial RuntimeStateSync frame
-        let sync_frame = recv_frame(&mut coord_reader).await.unwrap().unwrap();
-        assert_eq!(
-            sync_frame[0], 0x05,
-            "First frame should be RuntimeStateSync"
-        );
+        // Agent uses new_with_actor — no bootstrap sync needed.
+        // It goes straight to the main loop after preamble exchange.
 
         // Send ShutdownKernel request
         let request = AgentRequest::ShutdownKernel;
