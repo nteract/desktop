@@ -3065,14 +3065,6 @@ async fn auto_launch_kernel(
                     Ok(notebook_protocol::protocol::AgentResponse::KernelLaunched {
                         env_source: es,
                     }) => {
-                        // Agent launched successfully — the agent owns RuntimeStateDoc.
-                        // Replace coordinator's copy with empty so agent's sync populates it.
-                        // This is safe now because we know the agent is alive and will sync.
-                        {
-                            let mut sd = room.state_doc.write().await;
-                            *sd = RuntimeStateDoc::new_empty();
-                        }
-
                         let mut agent_guard = room.agent_handle.lock().await;
                         *agent_guard = Some(agent);
                         drop(kernel_guard);

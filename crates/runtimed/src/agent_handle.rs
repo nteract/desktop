@@ -118,6 +118,9 @@ impl AgentHandle {
             let mut agent_sync_state = automerge::sync::State::new();
             let mut pending_reply: Option<oneshot::Sender<AgentResponse>> = None;
 
+            // Subscribe to coordinator state changes for reverse sync
+            let mut state_changed_rx = state_changed_clone.subscribe();
+
             // Also wait on the child process
             let mut child_wait = Box::pin(child.wait());
 
@@ -185,6 +188,26 @@ impl AgentHandle {
                                 pending_reply = Some(reply_tx);
                             }
                             None => break,
+                        }
+                    }
+
+                    // Forward coordinator RuntimeStateDoc changes to agent
+                    _ = state_changed_rx.recv() => {
+                        // Drain buffered notifications
+                        while state_changed_rx.try_recv().is_ok() {}
+
+                        let mut sd = state_doc_clone.write().await;
+                        if let Some(msg) = sd.generate_sync_message(&mut agent_sync_state) {
+                            let encoded = msg.encode();
+                            let mut w = writer_clone.lock().await;
+                            if let Err(e) = send_typed_frame(
+                                &mut *w,
+                                NotebookFrameType::RuntimeStateSync,
+                                &encoded,
+                            ).await {
+                                warn!("[agent-handle] Failed to send reverse sync: {}", e);
+                                break;
+                            }
                         }
                     }
 
