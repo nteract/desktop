@@ -169,6 +169,46 @@ struct DaemonRestartInProgress(Arc<AtomicBool>);
 /// This allows the frontend to check status on mount (in case events were missed).
 struct DaemonStatusState(Arc<Mutex<Option<runtimed::client::DaemonProgress>>>);
 
+/// Per-window sync readiness gate.
+///
+/// The Tauri relay task buffers daemon frames in the mpsc channel and waits
+/// for the frontend to signal readiness before emitting `notebook:frame` events.
+/// This prevents frame loss when the JS `SyncEngine` hasn't subscribed yet
+/// (race between relay start and `engine.start()` + `webview.listen()`).
+///
+/// On the first connection the relay blocks until the JS calls `notify_sync_ready`.
+/// On reconnection the flag is already `true`, so frames flow immediately.
+#[derive(Clone, Default)]
+struct SyncReadyState {
+    senders: Arc<Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>>,
+}
+
+impl SyncReadyState {
+    /// Mark a window's relay as ready to emit frames.
+    fn set_ready(&self, label: &str) {
+        if let Ok(senders) = self.senders.lock() {
+            if let Some(tx) = senders.get(label) {
+                let _ = tx.send(true);
+            }
+        }
+    }
+
+    /// Get a receiver for the readiness flag, creating the entry if needed.
+    ///
+    /// The receiver starts at the sender's current value: `false` on first
+    /// connection, `true` on reconnection (since the JS listener persists).
+    fn subscribe(&self, label: &str) -> tokio::sync::watch::Receiver<bool> {
+        let mut senders = match self.senders.lock() {
+            Ok(s) => s,
+            Err(e) => e.into_inner(),
+        };
+        let tx = senders
+            .entry(label.to_string())
+            .or_insert_with(|| tokio::sync::watch::channel(false).0);
+        tx.subscribe()
+    }
+}
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -664,7 +704,45 @@ async fn setup_sync_receivers(
     let notebook_sync_for_disconnect = notebook_sync.clone();
     let notebook_id_for_relay = notebook_id.clone();
     let sync_generation_for_cleanup = sync_generation.clone();
+
+    // Subscribe to the per-window readiness gate. On the first connection this
+    // starts at `false` (relay waits until JS calls `notify_sync_ready`). On
+    // reconnection the flag is already `true` so the relay proceeds immediately.
+    let mut ready_rx = window
+        .app_handle()
+        .state::<SyncReadyState>()
+        .subscribe(window.label());
+
     tokio::spawn(async move {
+        // Wait for the frontend SyncEngine to signal readiness. Daemon frames
+        // buffer in `raw_frame_rx` during this wait — the mpsc channel is
+        // unbounded, so nothing is lost.
+        if !*ready_rx.borrow() {
+            info!(
+                "[notebook-sync] Waiting for frontend ready before emitting frames (gen {})",
+                current_generation,
+            );
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                ready_rx.wait_for(|&ready| ready),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {
+                    info!(
+                        "[notebook-sync] Frontend signaled ready (gen {})",
+                        current_generation,
+                    );
+                }
+                _ => {
+                    warn!(
+                        "[notebook-sync] Frontend ready timeout after 30s (gen {}) — proceeding anyway",
+                        current_generation,
+                    );
+                }
+            }
+        }
+
         while let Some(frame_bytes) = raw_frame_rx.recv().await {
             // Stop forwarding if a newer connection has replaced this one.
             // Without this check, frames from the old room can interleave
@@ -2694,6 +2772,23 @@ async fn reconnect_to_daemon(
     }
 }
 
+/// Signal that the frontend SyncEngine is ready to receive frames.
+///
+/// The Tauri frame relay buffers daemon frames until this is called,
+/// preventing frame loss when the relay starts emitting before the
+/// JS `SyncEngine` has subscribed to `notebook:frame` events.
+///
+/// Called once after `engine.start()` in `useAutomergeNotebook`. On
+/// reconnection the flag persists, so the new relay proceeds immediately.
+#[tauri::command]
+fn notify_sync_ready(window: tauri::Window, sync_ready: tauri::State<'_, SyncReadyState>) {
+    info!(
+        "[notebook-sync] Frontend sync ready for '{}'",
+        window.label()
+    );
+    sync_ready.set_ready(window.label());
+}
+
 /// Send a typed frame to the daemon.
 ///
 /// The first byte is the frame type, the rest is the payload.
@@ -4010,6 +4105,7 @@ pub fn run(
         .manage(reconnect_in_progress)
         .manage(restart_in_progress)
         .manage(daemon_status_state)
+        .manage(SyncReadyState::default())
         .invoke_handler(tauri::generate_handler![
             // Notebook file operations
             has_notebook_path,
@@ -4036,6 +4132,7 @@ pub fn run(
             get_history_via_daemon,
             complete_via_daemon,
             reconnect_to_daemon,
+            notify_sync_ready,
             send_frame,
             // App update support
             begin_upgrade,

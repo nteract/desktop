@@ -195,6 +195,13 @@ export function useAutomergeNotebook() {
     // Start the engine (subscribes to transport frames).
     engine.start();
 
+    // Signal the Rust relay that the JS frame listener is active.
+    // The relay buffers daemon frames until this fires, preventing
+    // frame loss during WASM init (see #1421).
+    invoke("notify_sync_ready").catch((e: unknown) => {
+      logger.warn("[automerge-notebook] Failed to signal sync ready:", e);
+    });
+
     // ── Subscribe to SyncEngine observables ───────────────────────
 
     // Initial sync completion → full materialization.
