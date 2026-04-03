@@ -1896,6 +1896,7 @@ impl Daemon {
         let mut paths = std::collections::HashSet::new();
         let rooms = self.notebook_rooms.lock().await;
         for room in rooms.values() {
+            // Check local kernel
             let kernel_guard = room.kernel.lock().await;
             if let Some(ref kernel) = *kernel_guard {
                 if kernel.is_running() {
@@ -1903,6 +1904,12 @@ impl Daemon {
                         paths.insert(env_path.clone());
                     }
                 }
+            }
+            drop(kernel_guard);
+
+            // Check agent-backed kernel
+            if let Some(ref env_path) = *room.agent_env_path.read().await {
+                paths.insert(env_path.clone());
             }
         }
         paths
