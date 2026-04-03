@@ -83,16 +83,10 @@ pub(crate) fn catch_automerge_panic<T>(label: &str, f: impl FnOnce() -> T) -> Re
 
 /// Check if agent mode is enabled for kernel execution.
 ///
-/// - `RUNT_AGENT_MODE=1` → force ON
-/// - `RUNT_AGENT_MODE=0` → force OFF
-/// - unset + `RUNTIMED_DEV=1` → ON (dev mode default)
-/// - unset + production → OFF
+/// Requires explicit opt-in via `RUNT_AGENT_MODE=1`.
+/// Agent mode is experimental and not yet enabled by default.
 fn is_agent_mode_enabled() -> bool {
-    match std::env::var("RUNT_AGENT_MODE").as_deref() {
-        Ok("1") => true,
-        Ok("0") => false,
-        _ => std::env::var("RUNTIMED_DEV").as_deref() == Ok("1"),
-    }
+    std::env::var("RUNT_AGENT_MODE").as_deref() == Ok("1")
 }
 
 /// Trust state for a notebook room.
