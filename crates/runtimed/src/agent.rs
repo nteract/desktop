@@ -98,63 +98,14 @@ where
 
     // ── 2. Bootstrap RuntimeStateDoc ────────────────────────────────────────
 
-    // The agent bootstraps its RuntimeStateDoc from the coordinator, just like
-    // the frontend bootstraps its NotebookDoc. Start empty, receive the
-    // coordinator's scaffolded schema via sync, then write with our own actor.
-    // This avoids DuplicateSeqNumber — only one doc (coordinator's) creates
-    // the scaffolding with the "runtimed:state" actor.
-    let mut state_doc = RuntimeStateDoc::new_empty();
-    state_doc.set_actor(&agent_id);
+    // The agent creates its own RuntimeStateDoc with scaffolding but a UNIQUE
+    // actor ID. This avoids DuplicateSeqNumber — the coordinator uses
+    // "runtimed:state" as its actor, the agent uses its own agent_id.
+    // Both docs have the same structure but different actors, so sync merges cleanly.
+    let mut state_doc = RuntimeStateDoc::new_with_actor(&agent_id);
 
-    // Automerge sync state for the coordinator peer. Persistent across the
-    // agent's lifetime so incremental sync works correctly.
+    // Automerge sync state for the coordinator peer.
     let mut coordinator_sync_state = automerge::sync::State::new();
-
-    // Bootstrap: send empty sync to coordinator, receive scaffolded schema back.
-    // Same pattern as frontend NotebookDoc bootstrap.
-    {
-        // Send "I'm empty, send me everything"
-        if let Some(msg) = state_doc.generate_sync_message(&mut coordinator_sync_state) {
-            let encoded = msg.encode();
-            info!("[agent] Sending initial sync request ({} bytes)", encoded.len());
-            send_typed_frame(&mut writer, NotebookFrameType::RuntimeStateSync, &encoded).await?;
-        }
-
-        // Receive coordinator's full state
-        info!("[agent] Waiting for coordinator's RuntimeStateDoc...");
-        loop {
-            match recv_frame(&mut reader).await? {
-                Some(data) if !data.is_empty() && data[0] == 0x05 => {
-                    let msg = automerge::sync::Message::decode(&data[1..])?;
-                    state_doc.receive_sync_message_with_changes(
-                        &mut coordinator_sync_state,
-                        msg,
-                    )?;
-
-                    // Send confirmation / request more
-                    if let Some(reply) =
-                        state_doc.generate_sync_message(&mut coordinator_sync_state)
-                    {
-                        let encoded = reply.encode();
-                        send_typed_frame(
-                            &mut writer,
-                            NotebookFrameType::RuntimeStateSync,
-                            &encoded,
-                        )
-                        .await?;
-                    } else {
-                        // Converged — we have the full schema
-                        info!("[agent] RuntimeStateDoc bootstrapped from coordinator");
-                        break;
-                    }
-                }
-                Some(data) if !data.is_empty() => {
-                    debug!("[agent] Ignoring frame 0x{:02x} during bootstrap", data[0]);
-                }
-                _ => anyhow::bail!("EOF during RuntimeStateDoc bootstrap"),
-            }
-        }
-    }
 
     let state_doc = Arc::new(RwLock::new(state_doc));
     let (state_changed_tx, mut state_changed_rx) = broadcast::channel::<()>(64);

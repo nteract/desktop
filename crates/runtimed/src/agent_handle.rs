@@ -76,54 +76,11 @@ impl AgentHandle {
         .await?;
         recv_preamble(&mut reader).await?;
 
-        // Bootstrap RuntimeStateDoc sync — bidirectional exchange.
-        // The agent starts with an empty doc and sends its initial sync
-        // ("I'm empty, send me everything"). We respond with our full
-        // scaffolded state. The agent applies it and confirms convergence.
-        // This is the same pattern the frontend uses for NotebookDoc.
-        info!("[agent-handle] Bootstrapping RuntimeStateDoc sync...");
-        {
-            let mut sd = state_doc.write().await;
-            let mut sync_state = automerge::sync::State::new();
-
-            // Read agent's initial sync (empty heads)
-            match recv_frame(&mut reader).await? {
-                Some(data) if !data.is_empty() && data[0] == 0x05 => {
-                    let msg = automerge::sync::Message::decode(&data[1..])?;
-                    sd.receive_sync_message_with_changes(&mut sync_state, msg)?;
-                }
-                _ => anyhow::bail!("Expected RuntimeStateSync from agent"),
-            }
-
-            // Send our full state back to the agent
-            let mut sync_count = 0;
-            while let Some(reply) = sd.generate_sync_message(&mut sync_state) {
-                let encoded = reply.encode();
-                info!("[agent-handle] Sending sync reply ({} bytes)", encoded.len());
-                send_typed_frame(&mut writer, NotebookFrameType::RuntimeStateSync, &encoded)
-                    .await?;
-                sync_count += 1;
-            }
-            info!("[agent-handle] Sent {} sync messages to agent", sync_count);
-
-            // Read agent's confirmation (it now has our schema)
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                recv_frame(&mut reader),
-            )
-            .await
-            {
-                Ok(Ok(Some(data))) if !data.is_empty() && data[0] == 0x05 => {
-                    let msg = automerge::sync::Message::decode(&data[1..])?;
-                    sd.receive_sync_message_with_changes(&mut sync_state, msg)?;
-                }
-                _ => {
-                    // Agent may converge without a final message — acceptable
-                }
-            }
-
-            info!("[agent-handle] RuntimeStateDoc sync complete");
-        }
+        // Both coordinator and agent have their own scaffolded RuntimeStateDoc
+        // with different actors. No bootstrap sync needed — the reader task
+        // handles bidirectional sync once it starts. The docs will merge
+        // naturally via Automerge CRDT (same structure, different actors).
+        info!("[agent-handle] Agent spawned — sync via reader task");
 
         // Now wrap writer in Arc<Mutex> for shared access with reader task
         let writer = Arc::new(Mutex::new(writer));
