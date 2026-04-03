@@ -1135,8 +1135,15 @@ impl NotebookRoom {
 
     /// Check if this room has an active kernel.
     pub async fn has_kernel(&self) -> bool {
+        // Check local kernel first
         let kernel = self.kernel.lock().await;
-        kernel.as_ref().is_some_and(|k| k.is_running())
+        if kernel.as_ref().is_some_and(|k| k.is_running()) {
+            return true;
+        }
+        drop(kernel);
+        // Check agent handle
+        let agent = self.agent_handle.lock().await;
+        agent.as_ref().is_some_and(|a| a.is_alive())
     }
 
     /// Get kernel info if a kernel is running.
@@ -4246,6 +4253,59 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::RunAllCells {} => {
+            // Agent path — read all cells, send each to agent
+            {
+                let agent_guard = room.agent_handle.lock().await;
+                if let Some(ref agent) = *agent_guard {
+                    let cells = {
+                        let doc = room.doc.read().await;
+                        doc.get_cells()
+                    };
+
+                    let mut queued = Vec::new();
+                    for cell in cells {
+                        if cell.cell_type == "code" {
+                            let execution_id = uuid::Uuid::new_v4().to_string();
+                            match agent
+                                .execute_cell(&cell.id, &cell.source, &execution_id)
+                                .await
+                            {
+                                Ok(notebook_protocol::protocol::AgentResponse::CellQueued {
+                                    cell_id,
+                                    execution_id,
+                                }) => {
+                                    queued.push(QueueEntry {
+                                        cell_id,
+                                        execution_id,
+                                    });
+                                }
+                                Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
+                                    return NotebookResponse::Error {
+                                        error: format!(
+                                            "Agent failed to queue cell {}: {}",
+                                            cell.id, error
+                                        ),
+                                    };
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    // Stamp execution_ids in NotebookDoc
+                    {
+                        let mut doc = room.doc.write().await;
+                        for entry in &queued {
+                            let _ = doc.set_execution_id(&entry.cell_id, Some(&entry.execution_id));
+                        }
+                        let _ = room.changed_tx.send(());
+                    }
+
+                    return NotebookResponse::AllCellsQueued { queued };
+                }
+            }
+
+            // Local kernel path
             let mut kernel_guard = room.kernel.lock().await;
             if let Some(ref mut kernel) = *kernel_guard {
                 // Read all cells from the synced Automerge document
