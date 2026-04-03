@@ -267,7 +267,9 @@ async fn io_loop<R, W>(
     info!("[agent-handle] IO loop started");
     loop {
         tokio::select! {
-            // Read frames from agent stdout
+            biased;
+
+            // Read frames from agent stdout (highest priority)
             frame = recv_frame(&mut reader) => {
                 match frame {
                     Ok(Some(data)) if !data.is_empty() => {
