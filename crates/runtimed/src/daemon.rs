@@ -1879,6 +1879,15 @@ impl Daemon {
                     self.collect_active_env_paths().await.into_iter().collect();
                 Response::ActiveEnvPaths { paths }
             }
+            Request::SetAgentMode { enabled } => {
+                self.agent_mode
+                    .store(enabled, std::sync::atomic::Ordering::Relaxed);
+                info!(
+                    "[runtimed] Agent mode {}",
+                    if enabled { "ENABLED" } else { "DISABLED" }
+                );
+                Response::Ok
+            }
         }
     }
 
