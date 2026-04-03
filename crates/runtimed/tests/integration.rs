@@ -445,7 +445,6 @@ async fn test_notebook_sync_cross_window_propagation() {
     // Client1 adds a cell
     client1.add_cell_after("c1", "code", None).unwrap();
     client1.update_source("c1", "x = 42").unwrap();
-    client1.set_execution_count("c1", "1").unwrap();
 
     // Client2 should receive the changes
     let mut watcher = client2.subscribe();
@@ -467,7 +466,9 @@ async fn test_notebook_sync_cross_window_propagation() {
     assert!(cell.is_some(), "client2 should have cell c1");
     let cell = cell.unwrap();
     assert_eq!(cell.source, "x = 42");
-    assert_eq!(cell.execution_count, "1");
+    // execution_count is now in RuntimeStateDoc, not NotebookDoc.
+    // The cell snapshot shows the default "null" — execution count
+    // is resolved from RuntimeStateDoc at save time and by the frontend.
 
     // Shutdown
     pool_client.shutdown().await.ok();

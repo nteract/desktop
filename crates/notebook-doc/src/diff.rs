@@ -527,6 +527,7 @@ mod tests {
 
     use crate::{NotebookDoc, TextEncoding};
     use automerge::sync;
+    use automerge::transaction::Transactable;
 
     /// Helper: create two docs (daemon + client), sync to convergence,
     /// return the client's heads after sync.
@@ -589,7 +590,11 @@ mod tests {
         doc.add_cell(0, "cell-1", "code").unwrap();
         let before = doc.doc_mut().get_heads();
 
-        let _ = doc.set_execution_count("cell-1", "1");
+        // Write execution_count directly via raw Automerge put (simulating legacy peer)
+        let cell_obj = doc.cell_obj_for("cell-1").unwrap();
+        doc.doc_mut()
+            .put(&cell_obj, "execution_count", "1")
+            .unwrap();
         let after = doc.doc_mut().get_heads();
 
         let changeset = diff_cells(doc.doc_mut(), &before, &after);
@@ -657,7 +662,10 @@ mod tests {
         let before = doc.doc_mut().get_heads();
 
         doc.update_source("cell-1", "x = 1").unwrap();
-        let _ = doc.set_execution_count("cell-1", "1");
+        let cell_obj = doc.cell_obj_for("cell-1").unwrap();
+        doc.doc_mut()
+            .put(&cell_obj, "execution_count", "1")
+            .unwrap();
         let after = doc.doc_mut().get_heads();
 
         let changeset = diff_cells(doc.doc_mut(), &before, &after);
@@ -756,8 +764,12 @@ mod tests {
 
         let before = client.doc_mut().get_heads();
 
-        // Daemon writes execution count.
-        let _ = daemon.set_execution_count("cell-1", "1");
+        // Daemon writes execution count (via raw Automerge put).
+        let cell_obj = daemon.cell_obj_for("cell-1").unwrap();
+        daemon
+            .doc_mut()
+            .put(&cell_obj, "execution_count", "1")
+            .unwrap();
         sync_docs(&mut daemon, &mut client);
 
         let after = client.doc_mut().get_heads();
@@ -797,7 +809,10 @@ mod tests {
         let before = doc.doc_mut().get_heads();
 
         doc.update_source("cell-1", "a").unwrap();
-        let _ = doc.set_execution_count("cell-2", "1");
+        let cell_obj = doc.cell_obj_for("cell-2").unwrap();
+        doc.doc_mut()
+            .put(&cell_obj, "execution_count", "1")
+            .unwrap();
         let after = doc.doc_mut().get_heads();
 
         let changeset = diff_cells(doc.doc_mut(), &before, &after);

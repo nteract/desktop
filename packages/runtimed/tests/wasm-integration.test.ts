@@ -74,13 +74,9 @@ describe("WASM integration: real frames through SyncEngine", () => {
       expect(h.client.get_cell_type("md-cell")).toBe("markdown");
     });
 
-    it("client sees execution count after sync", async () => {
-      h.serverAddCell("cell-1", "code");
-      h.serverSetExecutionCount("cell-1", "5");
-
-      await h.startAndCompleteSync();
-
-      expect(h.client.get_cell_execution_count("cell-1")).toBe("5");
+    it.skip("client sees execution count after sync — execution_count moved to RuntimeStateDoc", async () => {
+      // execution_count is now in RuntimeStateDoc, not NotebookDoc.
+      // The WASM set_execution_count method was removed.
     });
   });
 
@@ -108,29 +104,10 @@ describe("WASM integration: real frames through SyncEngine", () => {
       expect(cell1Change!.fields.source).toBe(true);
     });
 
-    it(
-      "emits changeset with execution_count flag when server sets it",
-      { retry: 2 },
-      async () => {
-        h.serverAddCell("cell-1", "code");
-        h.serverUpdateSource("cell-1", "1 + 1");
-        await h.startAndCompleteSync();
-
-        const changesetPromise = firstValueFrom(
-          h.engine.cellChanges$.pipe(timeout(3000)),
-        );
-
-        h.serverSetExecutionCount("cell-1", "1");
-        h.pushAndFlush();
-
-        const cs = await changesetPromise;
-        expect(cs).not.toBeNull();
-
-        const cell1Change = cs!.changed.find((c) => c.cell_id === "cell-1");
-        expect(cell1Change).toBeDefined();
-        expect(cell1Change!.fields.execution_count).toBe(true);
-      },
-    );
+    // Skipped: execution_count moved to RuntimeStateDoc (#1405).
+    // The changeset pipeline still detects execution_count changes if
+    // written to the CRDT, but the WASM setter was removed.
+    it.skip("emits changeset with execution_count flag when server sets it", async () => {});
 
     it("reports structural changes when server adds a new cell", async () => {
       h.serverAddCell("cell-1", "code");
@@ -297,7 +274,7 @@ describe("WASM integration: real frames through SyncEngine", () => {
         );
         expect(cell1Change).toBeDefined();
         expect(cell1Change!.fields.source).toBe(true);
-        expect(cell1Change!.fields.execution_count).toBe(true);
+        // execution_count no longer written to NotebookDoc (#1405)
       }
 
       sub.unsubscribe();
@@ -693,7 +670,7 @@ describe("WASM integration: real frames through SyncEngine", () => {
     it("client document round-trips through save/load", async () => {
       h.serverAddCell("cell-1", "code");
       h.serverUpdateSource("cell-1", "x = 42");
-      h.serverSetExecutionCount("cell-1", "1");
+      // execution_count no longer set on NotebookDoc (#1405)
       h.serverAddCell("cell-2", "markdown");
       h.serverUpdateSource("cell-2", "# Results");
 
@@ -709,7 +686,6 @@ describe("WASM integration: real frames through SyncEngine", () => {
 
       expect(loaded.cell_count()).toBe(2);
       expect(loaded.get_cell_source("cell-1")).toBe("x = 42");
-      expect(loaded.get_cell_execution_count("cell-1")).toBe("1");
       expect(loaded.get_cell_source("cell-2")).toBe("# Results");
       expect(loaded.get_cell_type("cell-2")).toBe("markdown");
 

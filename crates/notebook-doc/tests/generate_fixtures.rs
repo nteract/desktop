@@ -15,6 +15,7 @@
 //! Run with:
 //!   cargo test -p notebook-doc --test generate_fixtures -- --nocapture
 
+use automerge::transaction::Transactable;
 use notebook_doc::runtime_state::RuntimeStateDoc;
 use notebook_doc::{frame_types, NotebookDoc};
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,16 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
+
+/// Write execution_count directly via raw Automerge put.
+/// `NotebookDoc::set_execution_count` was removed — RuntimeStateDoc is
+/// the source of truth. This helper is only for fixture generation.
+fn set_execution_count_raw(doc: &mut NotebookDoc, cell_id: &str, count: &str) {
+    let cell_obj = doc.cell_obj_for(cell_id).expect("cell not found");
+    doc.doc_mut()
+        .put(&cell_obj, "execution_count", count)
+        .expect("put execution_count");
+}
 
 // ── Manifest types (mirrors runtimed::output_store) ─────────────────
 
@@ -200,7 +211,7 @@ fn scenario_output_streaming() {
         .update_source("cell-1", "for i in range(3):\n    print(i)")
         .unwrap();
 
-    daemon.set_execution_count("cell-1", "1").unwrap();
+    set_execution_count_raw(&mut daemon, "cell-1", "1");
 
     // Build real manifests for each streamed line
     let lines = ["0\n", "1\n", "2\n"];
@@ -274,7 +285,7 @@ fn scenario_execution_with_error() {
     daemon.add_cell(0, "cell-1", "code").unwrap();
     daemon.update_source("cell-1", "1 / 0").unwrap();
 
-    daemon.set_execution_count("cell-1", "1").unwrap();
+    set_execution_count_raw(&mut daemon, "cell-1", "1");
 
     let traceback = vec![
         "\u{001b}[0;31m---------------------------------------------------------------------------\u{001b}[0m",
@@ -327,7 +338,7 @@ fn scenario_re_execution() {
     daemon.update_source("cell-1", "print('hello')").unwrap();
 
     // First execution
-    daemon.set_execution_count("cell-1", "1").unwrap();
+    set_execution_count_raw(&mut daemon, "cell-1", "1");
     let first_manifest = OutputManifest::Stream {
         name: "stdout".to_string(),
         text: inline("hello\n"),
@@ -342,7 +353,7 @@ fn scenario_re_execution() {
     );
 
     // Second execution: new execution_id implicitly replaces the first
-    daemon.set_execution_count("cell-1", "2").unwrap();
+    set_execution_count_raw(&mut daemon, "cell-1", "2");
 
     let mut data = BTreeMap::new();
     data.insert("text/plain".to_string(), inline("42"));
@@ -394,11 +405,11 @@ fn scenario_multi_cell_execution() {
     daemon.update_source("cell-3", "# Results").unwrap();
 
     // Execute cell-1 (no output)
-    daemon.set_execution_count("cell-1", "1").unwrap();
+    set_execution_count_raw(&mut daemon, "cell-1", "1");
     fixture_add_outputs(&mut daemon, &mut state_doc, "cell-1", "exec-001", &[]);
 
     // Execute cell-2 (stream output)
-    daemon.set_execution_count("cell-2", "2").unwrap();
+    set_execution_count_raw(&mut daemon, "cell-2", "2");
     let manifest = OutputManifest::Stream {
         name: "stdout".to_string(),
         text: inline("42\n"),
@@ -448,7 +459,7 @@ fn scenario_display_data_output() {
         )
         .unwrap();
 
-    daemon.set_execution_count("cell-1", "1").unwrap();
+    set_execution_count_raw(&mut daemon, "cell-1", "1");
 
     // display_data with text/plain (inlined) and image/png (would be a blob
     // ref in production, but we use inline here since we don't have a real

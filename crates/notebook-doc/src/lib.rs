@@ -1385,27 +1385,6 @@ impl NotebookDoc {
         Ok(true)
     }
 
-    // ── Execution count ─────────────────────────────────────────────
-
-    /// Set the execution count for a cell. Pass "null" or a number string like "5".
-    pub fn set_execution_count(
-        &mut self,
-        cell_id: &str,
-        count: &str,
-    ) -> Result<bool, AutomergeError> {
-        let cells_id = match self.cells_map_id() {
-            Some(id) => id,
-            None => return Ok(false),
-        };
-        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
-            Some(o) => o,
-            None => return Ok(false),
-        };
-
-        self.doc.put(&cell_obj, "execution_count", count)?;
-        Ok(true)
-    }
-
     /// Set the execution_id pointer on a cell.
     ///
     /// The daemon stamps this at queue time so the frontend (and Python
@@ -1753,8 +1732,8 @@ impl NotebookDoc {
             })
     }
 
-    /// Convenience: look up a cell's ObjId by cell ID (two-step: cells map → cell map).
-    fn cell_obj_for(&self, cell_id: &str) -> Option<ObjId> {
+    /// Look up a cell's ObjId by cell ID (two-step: cells map → cell map).
+    pub fn cell_obj_for(&self, cell_id: &str) -> Option<ObjId> {
         let cells_id = self.cells_map_id()?;
         self.cell_obj_id(&cells_id, cell_id)
     }
@@ -2443,20 +2422,6 @@ mod tests {
     }
 
     #[test]
-    fn test_set_execution_count() {
-        let mut doc = NotebookDoc::new("nb1");
-        doc.add_cell(0, "cell-1", "code").unwrap();
-
-        doc.set_execution_count("cell-1", "42").unwrap();
-        let cell = doc.get_cell("cell-1").unwrap();
-        assert_eq!(cell.execution_count, "42");
-
-        doc.set_execution_count("cell-1", "null").unwrap();
-        let cell = doc.get_cell("cell-1").unwrap();
-        assert_eq!(cell.execution_count, "null");
-    }
-
-    #[test]
     fn test_metadata() {
         let mut doc = NotebookDoc::new("nb1");
         assert_eq!(doc.get_metadata("runtime"), Some("python".to_string()));
@@ -2476,7 +2441,6 @@ mod tests {
         let mut doc = NotebookDoc::new("nb1");
         doc.add_cell(0, "cell-1", "code").unwrap();
         doc.update_source("cell-1", "x = 42").unwrap();
-        doc.set_execution_count("cell-1", "1").unwrap();
         doc.add_cell(1, "cell-2", "markdown").unwrap();
         doc.update_source("cell-2", "# Hello").unwrap();
 
@@ -2488,7 +2452,6 @@ mod tests {
         assert_eq!(cells.len(), 2);
         assert_eq!(cells[0].id, "cell-1");
         assert_eq!(cells[0].source, "x = 42");
-        assert_eq!(cells[0].execution_count, "1");
         assert_eq!(cells[1].id, "cell-2");
         assert_eq!(cells[1].source, "# Hello");
     }
@@ -2552,7 +2515,6 @@ mod tests {
         let mut server = NotebookDoc::new("sync-test");
         server.add_cell(0, "cell-1", "code").unwrap();
         server.update_source("cell-1", "import numpy").unwrap();
-        server.set_execution_count("cell-1", "1").unwrap();
 
         // Client starts with an empty doc (like a new window joining)
         let mut client = NotebookDoc {
@@ -2578,7 +2540,6 @@ mod tests {
         assert_eq!(cells.len(), 1);
         assert_eq!(cells[0].id, "cell-1");
         assert_eq!(cells[0].source, "import numpy");
-        assert_eq!(cells[0].execution_count, "1");
     }
 
     #[test]
@@ -2707,29 +2668,8 @@ mod tests {
             10,
         );
 
-        // Daemon sets execution count
-        daemon.set_execution_count("cell-1", "42").unwrap();
-        sync_docs(
-            &mut daemon,
-            &mut daemon_state,
-            &mut client,
-            &mut client_state,
-            10,
-        );
-
-        assert_eq!(client.get_cell("cell-1").unwrap().execution_count, "42");
-
-        // Daemon updates execution count again
-        daemon.set_execution_count("cell-1", "43").unwrap();
-        sync_docs(
-            &mut daemon,
-            &mut daemon_state,
-            &mut client,
-            &mut client_state,
-            10,
-        );
-
-        assert_eq!(client.get_cell("cell-1").unwrap().execution_count, "43");
+        // execution_count is now in RuntimeStateDoc, not NotebookDoc
+        // The sync test for execution_count is covered by RuntimeStateDoc tests
     }
 
     /// Tests three-peer sync: daemon + two clients.
@@ -2802,7 +2742,6 @@ mod tests {
         daemon
             .update_source("cell-1", "import numpy as np")
             .unwrap();
-        daemon.set_execution_count("cell-1", "1").unwrap();
         daemon.add_cell(1, "cell-2", "markdown").unwrap();
         daemon.update_source("cell-2", "# Analysis").unwrap();
         daemon.set_metadata("custom_key", "custom_value").unwrap();
@@ -2833,7 +2772,6 @@ mod tests {
         let cells = client.get_cells();
         assert_eq!(cells[0].id, "cell-1");
         assert_eq!(cells[0].source, "import numpy as np");
-        assert_eq!(cells[0].execution_count, "1");
 
         assert_eq!(cells[1].id, "cell-2");
         assert_eq!(cells[1].source, "# Analysis");
@@ -3200,7 +3138,6 @@ mod tests {
         let mut doc = NotebookDoc::new("nb-move");
         doc.add_cell(0, "a", "code").unwrap();
         doc.update_source("a", "original source").unwrap();
-        doc.set_execution_count("a", "42").unwrap();
 
         doc.add_cell(1, "b", "code").unwrap();
 
@@ -3210,7 +3147,6 @@ mod tests {
         // Verify content preserved
         let cell = doc.get_cell("a").unwrap();
         assert_eq!(cell.source, "original source");
-        assert_eq!(cell.execution_count, "42");
     }
 
     #[test]

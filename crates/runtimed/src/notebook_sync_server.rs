@@ -3818,7 +3818,6 @@ async fn handle_notebook_request(
                         // starts with an empty output list, so no clear needed.
                         {
                             let mut doc = room.doc.write().await;
-                            let _ = doc.set_execution_count(&cell_id, "null");
                             let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
                             let _ = room.changed_tx.send(());
                         }
@@ -3883,7 +3882,6 @@ async fn handle_notebook_request(
                         // starts with empty outputs in RuntimeStateDoc.
                         {
                             let mut doc = room.doc.write().await;
-                            let _ = doc.set_execution_count(&cell_id, "null");
                             let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
                             let _ = room.changed_tx.send(());
                         }
@@ -3952,7 +3950,6 @@ async fn handle_notebook_request(
 
             let persist_bytes = {
                 let mut doc = room.doc.write().await;
-                let _ = doc.set_execution_count(&cell_id, "null");
                 let _ = doc.set_execution_id(&cell_id, None);
                 let bytes = doc.save();
                 let _ = room.changed_tx.send(());
@@ -4127,7 +4124,6 @@ async fn handle_notebook_request(
                 {
                     let mut doc = room.doc.write().await;
                     for entry in &queued {
-                        let _ = doc.set_execution_count(&entry.cell_id, "null");
                         let _ = doc.set_execution_id(&entry.cell_id, Some(&entry.execution_id));
                     }
                     let _ = room.changed_tx.send(());
@@ -4831,22 +4827,27 @@ async fn save_notebook_to_disk(
         (cells, metadata_snapshot, heads, eids)
     };
 
-    // Read outputs from RuntimeStateDoc keyed by execution_id.
+    // Read outputs and execution_count from RuntimeStateDoc keyed by execution_id.
     // Lock ordering: doc first (released above), then state_doc.
-    let cell_outputs: HashMap<String, Vec<String>> = {
+    let (cell_outputs, cell_execution_counts): (
+        HashMap<String, Vec<String>>,
+        HashMap<String, Option<i64>>,
+    ) = {
         let sd = room.state_doc.read().await;
-        cell_execution_ids
-            .iter()
-            .filter_map(|(cell_id, eid)| {
-                let eid = eid.as_ref()?;
+        let mut outputs_map = HashMap::new();
+        let mut ec_map = HashMap::new();
+        for (cell_id, eid) in &cell_execution_ids {
+            if let Some(eid) = eid.as_ref() {
                 let outputs = sd.get_outputs(eid);
-                if outputs.is_empty() {
-                    None
-                } else {
-                    Some((cell_id.clone(), outputs))
+                if !outputs.is_empty() {
+                    outputs_map.insert(cell_id.clone(), outputs);
                 }
-            })
-            .collect()
+                if let Some(exec) = sd.get_execution(eid) {
+                    ec_map.insert(cell_id.clone(), exec.execution_count);
+                }
+            }
+        }
+        (outputs_map, ec_map)
     };
 
     let nbformat_attachments = room.nbformat_attachments.read().await.clone();
@@ -4892,9 +4893,12 @@ async fn save_notebook_to_disk(
             }
             cell_json["outputs"] = serde_json::Value::Array(resolved_outputs);
 
-            // Parse execution_count
-            let exec_count: serde_json::Value =
-                serde_json::from_str(&cell.execution_count).unwrap_or(serde_json::Value::Null);
+            // Resolve execution_count from RuntimeStateDoc (source of truth)
+            let exec_count: serde_json::Value = cell_execution_counts
+                .get(&cell.id)
+                .and_then(|ec| *ec)
+                .map(|n| serde_json::Value::Number(serde_json::Number::from(n)))
+                .unwrap_or(serde_json::Value::Null);
             cell_json["execution_count"] = exec_count;
         } else if matches!(cell.cell_type.as_str(), "markdown" | "raw") {
             if let Some(attachments) = nbformat_attachments.get(&cell.id) {
@@ -6088,22 +6092,35 @@ pub async fn load_notebook_from_disk_with_state_doc(
             .map_err(|e| format!("Failed to add cell: {}", e))?;
         doc.update_source(&cell.id, &cell.source)
             .map_err(|e| format!("Failed to update source: {}", e))?;
-        if !cell.outputs.is_empty() {
-            let output_refs = outputs_to_manifest_refs(&cell.outputs, blob_store).await;
-            // Store outputs in RuntimeStateDoc keyed by a synthetic execution_id.
-            // The cell's execution_id pointer links it to the outputs.
+        // Parse execution_count from the .ipynb cell snapshot
+        let parsed_ec: Option<i64> = cell.execution_count.parse::<i64>().ok();
+        let has_outputs = !cell.outputs.is_empty();
+        let has_ec = parsed_ec.is_some();
+
+        // Create a synthetic execution entry in RuntimeStateDoc if the cell
+        // has outputs or an execution_count. The execution_id links the cell
+        // to its outputs and execution_count in RuntimeStateDoc.
+        if has_outputs || has_ec {
+            let output_refs = if has_outputs {
+                outputs_to_manifest_refs(&cell.outputs, blob_store).await
+            } else {
+                Vec::new()
+            };
             let synthetic_eid = uuid::Uuid::new_v4().to_string();
             if let Some(ref mut sd) = state_doc {
                 sd.create_execution(&synthetic_eid, &cell.id);
-                sd.set_outputs(&synthetic_eid, &output_refs)
-                    .map_err(|e| format!("Failed to set outputs in state doc: {}", e))?;
+                if has_outputs {
+                    sd.set_outputs(&synthetic_eid, &output_refs)
+                        .map_err(|e| format!("Failed to set outputs in state doc: {}", e))?;
+                }
+                if let Some(ec) = parsed_ec {
+                    sd.set_execution_count(&synthetic_eid, ec);
+                }
                 sd.set_execution_done(&synthetic_eid, true);
             }
             doc.set_execution_id(&cell.id, Some(&synthetic_eid))
                 .map_err(|e| format!("Failed to set execution_id: {}", e))?;
         }
-        doc.set_execution_count(&cell.id, &cell.execution_count)
-            .map_err(|e| format!("Failed to set execution count: {}", e))?;
         if should_resolve_markdown_assets(&cell.cell_type) {
             let resolved_assets = resolve_markdown_assets(
                 &cell.source,
@@ -6375,45 +6392,54 @@ async fn apply_ipynb_changes(
                 // (outputs live in RuntimeStateDoc, keyed by execution_id)
                 // For new cells: store external outputs in RuntimeStateDoc with synthetic eid
                 if has_running_kernel {
-                    if let Some(current) = current_map.get(ext_cell.id.as_str()) {
+                    if let Some(_current) = current_map.get(ext_cell.id.as_str()) {
                         // Existing cell - preserve in-progress state (execution_id stays)
-                        let _ = fork.set_execution_count(&ext_cell.id, &current.execution_count);
-                        // Preserve the current execution_id so outputs remain linked
+                        // execution_count is in RuntimeStateDoc via execution_id
                         if let Some(eid) = doc.get_execution_id(&ext_cell.id) {
                             let _ = fork.set_execution_id(&ext_cell.id, Some(&eid));
                         }
                     } else {
-                        // New cell - store external outputs in state doc
+                        // New cell - store external outputs and execution_count in state doc
                         let ext_outputs = converted_outputs
                             .get(ext_cell.id.as_str())
                             .map(|v| v.as_slice())
                             .unwrap_or(&[]);
-                        if !ext_outputs.is_empty() {
+                        let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
+                        if !ext_outputs.is_empty() || parsed_ec.is_some() {
                             let synthetic_eid = uuid::Uuid::new_v4().to_string();
                             let mut sd = room.state_doc.write().await;
                             sd.create_execution(&synthetic_eid, &ext_cell.id);
-                            let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
+                            if !ext_outputs.is_empty() {
+                                let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
+                            }
+                            if let Some(ec) = parsed_ec {
+                                sd.set_execution_count(&synthetic_eid, ec);
+                            }
                             sd.set_execution_done(&synthetic_eid, true);
                             let _ = fork.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
                             let _ = room.state_changed_tx.send(());
                         }
-                        let _ = fork.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
                     }
                 } else {
                     let ext_outputs = converted_outputs
                         .get(ext_cell.id.as_str())
                         .map(|v| v.as_slice())
                         .unwrap_or(&[]);
-                    if !ext_outputs.is_empty() {
+                    let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
+                    if !ext_outputs.is_empty() || parsed_ec.is_some() {
                         let synthetic_eid = uuid::Uuid::new_v4().to_string();
                         let mut sd = room.state_doc.write().await;
                         sd.create_execution(&synthetic_eid, &ext_cell.id);
-                        let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
+                        if !ext_outputs.is_empty() {
+                            let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
+                        }
+                        if let Some(ec) = parsed_ec {
+                            sd.set_execution_count(&synthetic_eid, ec);
+                        }
                         sd.set_execution_done(&synthetic_eid, true);
                         let _ = fork.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
                         let _ = room.state_changed_tx.send(());
                     }
-                    let _ = fork.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
                 }
                 let ext_assets = converted_assets
                     .get(ext_cell.id.as_str())
@@ -6524,43 +6550,44 @@ async fn apply_ipynb_changes(
                     .get(ext_cell.id.as_str())
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]);
-                // Compare external outputs against what's in RuntimeStateDoc
+                let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
+
+                // Compare external outputs and execution_count against RuntimeStateDoc
                 let current_eid = doc.get_execution_id(&ext_cell.id);
-                let current_outputs: Vec<String> = if let Some(ref eid) = current_eid {
-                    let sd = room.state_doc.read().await;
-                    sd.get_outputs(eid)
-                } else {
-                    Vec::new()
-                };
-                if current_outputs.as_slice() != ext_outputs {
-                    debug!(
-                        "[notebook-watch] Updating outputs for cell: {}",
-                        ext_cell.id
-                    );
-                    if !ext_outputs.is_empty() {
+                let (current_outputs, current_ec): (Vec<String>, Option<i64>) =
+                    if let Some(ref eid) = current_eid {
+                        let sd = room.state_doc.read().await;
+                        let outputs = sd.get_outputs(eid);
+                        let ec = sd.get_execution(eid).and_then(|e| e.execution_count);
+                        (outputs, ec)
+                    } else {
+                        (Vec::new(), None)
+                    };
+
+                let outputs_changed = current_outputs.as_slice() != ext_outputs;
+                let ec_changed = current_ec != parsed_ec;
+
+                if outputs_changed || ec_changed {
+                    if !ext_outputs.is_empty() || parsed_ec.is_some() {
+                        debug!(
+                            "[notebook-watch] Updating outputs/execution_count for cell: {}",
+                            ext_cell.id
+                        );
                         let synthetic_eid = uuid::Uuid::new_v4().to_string();
                         let mut sd = room.state_doc.write().await;
                         sd.create_execution(&synthetic_eid, &ext_cell.id);
-                        let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
+                        if !ext_outputs.is_empty() {
+                            let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
+                        }
+                        if let Some(ec) = parsed_ec {
+                            sd.set_execution_count(&synthetic_eid, ec);
+                        }
                         sd.set_execution_done(&synthetic_eid, true);
                         let _ = doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
                         let _ = room.state_changed_tx.send(());
                         changed = true;
                     } else if current_eid.is_some() {
                         let _ = doc.set_execution_id(&ext_cell.id, None);
-                        changed = true;
-                    }
-                }
-
-                if current_cell.execution_count != ext_cell.execution_count {
-                    debug!(
-                        "[notebook-watch] Updating execution_count for cell: {} ({} -> {})",
-                        ext_cell.id, current_cell.execution_count, ext_cell.execution_count
-                    );
-                    if doc
-                        .set_execution_count(&ext_cell.id, &ext_cell.execution_count)
-                        .is_ok()
-                    {
                         changed = true;
                     }
                 }
@@ -6591,16 +6618,21 @@ async fn apply_ipynb_changes(
                     .get(ext_cell.id.as_str())
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]);
-                if !ext_outputs.is_empty() {
+                let parsed_ec: Option<i64> = ext_cell.execution_count.parse().ok();
+                if !ext_outputs.is_empty() || parsed_ec.is_some() {
                     let synthetic_eid = uuid::Uuid::new_v4().to_string();
                     let mut sd = room.state_doc.write().await;
                     sd.create_execution(&synthetic_eid, &ext_cell.id);
-                    let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
+                    if !ext_outputs.is_empty() {
+                        let _ = sd.set_outputs(&synthetic_eid, ext_outputs);
+                    }
+                    if let Some(ec) = parsed_ec {
+                        sd.set_execution_count(&synthetic_eid, ec);
+                    }
                     sd.set_execution_done(&synthetic_eid, true);
                     let _ = doc.set_execution_id(&ext_cell.id, Some(&synthetic_eid));
                     let _ = room.state_changed_tx.send(());
                 }
-                let _ = doc.set_execution_count(&ext_cell.id, &ext_cell.execution_count);
                 let ext_assets = converted_assets
                     .get(ext_cell.id.as_str())
                     .unwrap_or(&empty_assets);
@@ -7428,13 +7460,13 @@ mod tests {
             let mut doc = room.doc.write().await;
             doc.add_cell(0, "cell1", "code").unwrap();
             doc.update_source("cell1", "print('hello')").unwrap();
-            doc.set_execution_count("cell1", "1").unwrap();
             doc.set_execution_id("cell1", Some(eid)).unwrap();
         }
         {
             let mut sd = room.state_doc.write().await;
             let output = r#"{"output_type": "stream", "name": "stdout", "text": ["hello\n"]}"#;
             sd.create_execution(eid, "cell1");
+            sd.set_execution_count(eid, 1);
             sd.set_outputs(eid, &[output.to_string()]).unwrap();
             sd.set_execution_done(eid, true);
         }
@@ -7642,7 +7674,6 @@ mod tests {
         {
             let mut doc = room.doc.write().await;
             doc.add_cell(0, "cell-1", "code").unwrap();
-            doc.set_execution_count("cell-1", "null").unwrap();
         }
 
         // Apply external changes with execution_count
@@ -7660,11 +7691,14 @@ mod tests {
         let changed = apply_ipynb_changes(&room, &external_cells, &HashMap::new(), false).await;
         assert!(changed, "Should detect execution_count change");
 
-        let cells = {
-            let doc = room.doc.read().await;
-            doc.get_cells()
-        };
-        assert_eq!(cells[0].execution_count, "42");
+        // execution_count is now in RuntimeStateDoc via synthetic execution_id
+        let doc = room.doc.read().await;
+        let eid = doc.get_execution_id("cell-1");
+        drop(doc);
+        assert!(eid.is_some(), "Should have execution_id set");
+        let sd = room.state_doc.read().await;
+        let exec = sd.get_execution(eid.as_ref().unwrap());
+        assert_eq!(exec.unwrap().execution_count, Some(42));
     }
 
     #[tokio::test]
@@ -7672,11 +7706,18 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let (room, _) = test_room_with_path(&tmp, "test.ipynb");
 
-        // Add cell with execution count (outputs live in RuntimeStateDoc now)
+        // Add cell with execution_count in RuntimeStateDoc via synthetic eid
+        let eid = "existing-exec-1";
         {
             let mut doc = room.doc.write().await;
             doc.add_cell(0, "cell-1", "code").unwrap();
-            doc.set_execution_count("cell-1", "10").unwrap();
+            doc.set_execution_id("cell-1", Some(eid)).unwrap();
+        }
+        {
+            let mut sd = room.state_doc.write().await;
+            sd.create_execution(eid, "cell-1");
+            sd.set_execution_count(eid, 10);
+            sd.set_execution_done(eid, true);
         }
 
         // Apply external changes while kernel is "running"
@@ -7700,8 +7741,10 @@ mod tests {
         };
         // Source should be updated
         assert_eq!(cells[0].source, "new source");
-        // But execution_count should be preserved
-        assert_eq!(cells[0].execution_count, "10");
+        // execution_count should be preserved in RuntimeStateDoc (kernel running)
+        let sd = room.state_doc.read().await;
+        let exec = sd.get_execution(eid);
+        assert_eq!(exec.unwrap().execution_count, Some(10));
     }
 
     #[tokio::test]
@@ -7750,21 +7793,21 @@ mod tests {
         };
         assert_eq!(cells.len(), 2);
 
-        // New cell should have external outputs in RuntimeStateDoc
+        // New cell should have external outputs and execution_count in RuntimeStateDoc
         let new_cell = cells.iter().find(|c| c.id == "new-cell").unwrap();
         assert_eq!(new_cell.source, "print('new')");
-        assert_eq!(new_cell.execution_count, "42");
 
-        // Outputs are in RuntimeStateDoc keyed by synthetic execution_id
+        // Outputs and execution_count are in RuntimeStateDoc keyed by synthetic execution_id
         let eid = {
             let doc = room.doc.read().await;
             doc.get_execution_id("new-cell")
                 .expect("new-cell should have execution_id")
         };
-        let outputs = {
-            let sd = room.state_doc.read().await;
-            sd.get_outputs(&eid)
-        };
+        let sd = room.state_doc.read().await;
+        let exec = sd.get_execution(&eid);
+        assert_eq!(exec.unwrap().execution_count, Some(42));
+        let outputs = sd.get_outputs(&eid);
+        drop(sd);
         assert_eq!(outputs.len(), 1);
         let hash = &outputs[0];
         assert_eq!(hash.len(), 64, "Output should be a 64-char manifest hash");
