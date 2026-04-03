@@ -81,6 +81,20 @@ pub(crate) fn catch_automerge_panic<T>(label: &str, f: impl FnOnce() -> T) -> Re
     }
 }
 
+/// Check if agent mode is enabled for kernel execution.
+///
+/// - `RUNT_AGENT_MODE=1` → force ON
+/// - `RUNT_AGENT_MODE=0` → force OFF
+/// - unset + `RUNTIMED_DEV=1` → ON (dev mode default)
+/// - unset + production → OFF
+fn is_agent_mode_enabled() -> bool {
+    match std::env::var("RUNT_AGENT_MODE").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => std::env::var("RUNTIMED_DEV").as_deref() == Ok("1"),
+    }
+}
+
 /// Trust state for a notebook room.
 /// Tracks whether the notebook's dependencies are trusted for auto-launch.
 #[derive(Debug, Clone)]
@@ -3024,6 +3038,87 @@ async fn auto_launch_kernel(
     // Save prewarmed packages before launched_config is moved into kernel.launch()
     let prewarmed_packages = launched_config.prewarmed_packages.clone();
 
+    // Agent mode: spawn subprocess instead of local kernel
+    if is_agent_mode_enabled() {
+        info!("[notebook-sync] Agent mode: spawning agent subprocess for auto-launch");
+
+        let nb_id = notebook_id.to_string();
+        let agent_id = format!("rt:agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
+
+        match crate::agent_handle::AgentHandle::spawn(
+            nb_id,
+            agent_id,
+            room.blob_store.root().to_path_buf(),
+            room.state_doc.clone(),
+            room.state_changed_tx.clone(),
+            room.kernel_broadcast_tx.clone(),
+        )
+        .await
+        {
+            Ok(agent) => {
+                // Send LaunchKernel to the agent
+                match agent
+                    .launch_kernel(
+                        kernel_type,
+                        &env_source,
+                        notebook_path_opt
+                            .as_deref()
+                            .map(|p| p.to_str().unwrap_or("")),
+                        launched_config.clone(),
+                    )
+                    .await
+                {
+                    Ok(notebook_protocol::protocol::AgentResponse::KernelLaunched {
+                        env_source: es,
+                    }) => {
+                        let mut agent_guard = room.agent_handle.lock().await;
+                        *agent_guard = Some(agent);
+                        drop(kernel_guard);
+                        drop(agent_guard);
+
+                        publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es)
+                            .await;
+
+                        {
+                            let mut sd = room.state_doc.write().await;
+                            let mut changed = false;
+                            changed |= sd.set_kernel_status("idle");
+                            changed |= sd.set_kernel_info(kernel_type, kernel_type, &es);
+                            changed |= sd.set_prewarmed_packages(&prewarmed_packages);
+                            if changed {
+                                let _ = room.state_changed_tx.send(());
+                            }
+                        }
+
+                        info!(
+                            "[notebook-sync] Auto-launch via agent succeeded: {} kernel with {} environment",
+                            kernel_type, es
+                        );
+                        return;
+                    }
+                    Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
+                        warn!(
+                            "[notebook-sync] Agent kernel launch failed: {} — falling back to local",
+                            error
+                        );
+                        // Fall through to local launch below
+                    }
+                    _ => {
+                        warn!("[notebook-sync] Unexpected agent response — falling back to local");
+                        // Fall through to local launch below
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "[notebook-sync] Failed to spawn agent: {} — falling back to local kernel",
+                    e
+                );
+                // Fall through to local launch below
+            }
+        }
+    }
+
     match kernel
         .launch(
             kernel_type,
@@ -3755,8 +3850,10 @@ async fn handle_notebook_request(
                 }
             }
 
-            // Check if agent mode is enabled
-            if std::env::var("RUNT_AGENT_MODE").as_deref() == Ok("1") {
+            // Check if agent mode is enabled.
+            // Default: ON in dev mode (RUNTIMED_DEV=1), OFF in production.
+            // Override: RUNT_AGENT_MODE=1 to force on, RUNT_AGENT_MODE=0 to force off.
+            if is_agent_mode_enabled() {
                 info!("[notebook-sync] RUNT_AGENT_MODE=1: spawning agent subprocess");
 
                 let notebook_id = room.notebook_path.read().await.display().to_string();
