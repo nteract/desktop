@@ -17,6 +17,7 @@ import {
   type KernelStatus,
 } from "../lib/kernel-status";
 import { logger } from "../lib/logger";
+import { isManifestHash } from "../lib/manifest-resolution";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
 import {
   type CommDocEntry,
@@ -35,7 +36,6 @@ import type {
   JupyterOutput,
 } from "../types";
 import { resolveOutputString } from "./useManifestResolver";
-import { isManifestHash } from "../lib/manifest-resolution";
 
 /**
  * If an OutputModel's `state.outputs` contains manifest hash strings, resolve
