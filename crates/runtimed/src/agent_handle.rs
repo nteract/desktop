@@ -104,19 +104,11 @@ impl AgentHandle {
         // Wait for agent's preamble response
         notebook_protocol::connection::recv_preamble(&mut reader).await?;
 
-        // Send initial RuntimeStateDoc sync to bootstrap the agent
-        {
-            let mut sd = state_doc.write().await;
-            let mut sync_state = automerge::sync::State::new();
-            // Generate sync messages until convergence
-            while let Some(msg) = sd.generate_sync_message(&mut sync_state) {
-                let encoded = msg.encode();
-                send_typed_frame(&mut writer, NotebookFrameType::RuntimeStateSync, &encoded)
-                    .await?;
-            }
-        }
-
-        info!("[agent-handle] Agent spawned and bootstrapped");
+        // Initial RuntimeStateDoc sync happens via the IO loop:
+        // 1. Agent sends initial sync message (empty heads → "send me everything")
+        // 2. IO task reads it, applies to coordinator's doc, generates reply
+        // 3. Agent receives reply, converges
+        info!("[agent-handle] Agent spawned, sync bootstrap via IO loop");
 
         // Set up channels
         let (request_tx, request_rx) = mpsc::channel(32);

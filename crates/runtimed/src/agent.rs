@@ -103,11 +103,19 @@ where
     let mut state_doc = RuntimeStateDoc::new_empty();
     state_doc.set_actor(&agent_id);
 
-    // Bootstrap: read initial sync frames from coordinator until convergence.
-    // The coordinator sends RuntimeStateSync (0x05) frames after the handshake.
+    // Bootstrap: sync RuntimeStateDoc with the coordinator.
+    // The agent starts empty. It sends its initial sync message (empty heads),
+    // the coordinator responds with its full state, and they converge.
     // We need the schema (kernel map, queue map, etc.) before set_kernel_status()
     // and friends can be called — they panic on missing maps.
     let mut coordinator_sync_state = automerge::sync::State::new();
+
+    // Send initial sync message to coordinator ("I'm empty, send me everything")
+    if let Some(msg) = state_doc.generate_sync_message(&mut coordinator_sync_state) {
+        let encoded = msg.encode();
+        send_typed_frame(&mut writer, NotebookFrameType::RuntimeStateSync, &encoded).await?;
+    }
+
     info!("[agent] Waiting for initial RuntimeStateDoc sync...");
     let mut bootstrap_frames = 0;
     loop {
@@ -138,9 +146,8 @@ where
                 }
             }
             Some(data) if !data.is_empty() => {
-                // Non-sync frame during bootstrap — could be the LaunchKernel
-                // request arriving before sync completes. Buffer it? For now,
-                // keep reading until we get sync frames.
+                // Non-sync frame during bootstrap (e.g., LaunchKernel arriving
+                // before sync completes). Can't handle yet — schema not ready.
                 debug!(
                     "[agent] Ignoring frame type 0x{:02x} during bootstrap",
                     data[0]
