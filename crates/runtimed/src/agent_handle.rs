@@ -9,14 +9,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
-use log::{debug, info, warn};
+use log::{info, warn};
 use notebook_doc::runtime_state::RuntimeStateDoc;
 use notebook_protocol::connection::{
     recv_frame, recv_preamble, send_json_frame, send_preamble, send_typed_frame, Handshake,
     NotebookFrameType,
 };
-use notebook_protocol::protocol::{AgentNotification, AgentRequest, AgentResponse, LaunchedEnvConfig};
-use tokio::io::AsyncWriteExt;
+use notebook_protocol::protocol::{
+    AgentNotification, AgentRequest, AgentResponse, LaunchedEnvConfig,
+};
 use tokio::process::ChildStdin;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 
@@ -24,9 +25,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 pub struct AgentHandle {
     /// Writer to agent's stdin (protected by mutex for concurrent access)
     writer: Arc<Mutex<ChildStdin>>,
-    /// Channel for receiving responses from the reader task
-    response_rx: mpsc::Receiver<AgentResponse>,
-    /// Channel for sending response requests to the reader task
+    /// Channel for requesting a response from the reader task
     response_request_tx: mpsc::Sender<oneshot::Sender<AgentResponse>>,
     alive: Arc<AtomicBool>,
 }
@@ -105,7 +104,7 @@ impl AgentHandle {
         let alive = Arc::new(AtomicBool::new(true));
         let (response_request_tx, mut response_request_rx) =
             mpsc::channel::<oneshot::Sender<AgentResponse>>(8);
-        let (response_tx, response_rx) = mpsc::channel::<AgentResponse>(8);
+        // No unsolicited response channel needed — all responses go through oneshot
 
         // Spawn reader task — reads ALL frames from agent stdout.
         // This task owns `reader` and never gives it up. Frames are routed
@@ -140,7 +139,7 @@ impl AgentHandle {
                                             if let Some(reply) = pending_reply.take() {
                                                 let _ = reply.send(response);
                                             } else {
-                                                let _ = response_tx.send(response).await;
+                                                warn!("[agent-handle] Response with no pending request");
                                             }
                                         }
                                     }
@@ -204,7 +203,6 @@ impl AgentHandle {
 
         Ok(Self {
             writer,
-            response_rx,
             response_request_tx,
             alive,
         })
