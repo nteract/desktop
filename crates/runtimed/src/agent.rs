@@ -302,8 +302,10 @@ async fn handle_agent_request(request: AgentRequest, ctx: &AgentContext) -> Agen
 
             // Reconstruct PooledEnv from launched_config paths if available.
             let pooled_env = launched_config.venv_path.as_ref().and_then(|venv| {
-                launched_config.python_path.as_ref().map(|python| {
-                    runtimed_client::PooledEnv {
+                launched_config
+                    .python_path
+                    .as_ref()
+                    .map(|python| runtimed_client::PooledEnv {
                         env_type: if env_source.starts_with("conda") {
                             runtimed_client::EnvType::Conda
                         } else {
@@ -312,14 +314,19 @@ async fn handle_agent_request(request: AgentRequest, ctx: &AgentContext) -> Agen
                         venv_path: venv.clone(),
                         python_path: python.clone(),
                         prewarmed_packages: launched_config.prewarmed_packages.clone(),
-                    }
-                })
+                    })
             });
 
             let nb_path = notebook_path.as_deref().map(std::path::Path::new);
 
             match k
-                .launch(&kernel_type, &env_source, nb_path, pooled_env, launched_config)
+                .launch(
+                    &kernel_type,
+                    &env_source,
+                    nb_path,
+                    pooled_env,
+                    launched_config,
+                )
                 .await
             {
                 Ok(()) => {

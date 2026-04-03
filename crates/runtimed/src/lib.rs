@@ -19,6 +19,7 @@ pub use runtimed_client::*;
 // ============================================================================
 
 pub mod agent;
+pub mod agent_handle;
 pub mod blob_server;
 pub mod blob_store;
 pub mod daemon;
