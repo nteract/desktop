@@ -81,24 +81,50 @@ impl AgentHandle {
         }
         recv_preamble(&mut reader).await?;
 
-        // Read the agent's initial RuntimeStateDoc sync
-        info!("[agent-handle] Waiting for agent's initial sync...");
-        match recv_frame(&mut reader).await? {
-            Some(data) if !data.is_empty() && data[0] == 0x05 => {
-                let payload = &data[1..];
-                let msg = automerge::sync::Message::decode(payload)?;
-                let mut sd = state_doc.write().await;
-                let mut sync_state = automerge::sync::State::new();
-                sd.receive_sync_message_with_changes(&mut sync_state, msg)?;
-                let _ = state_changed_tx.send(());
-                info!(
-                    "[agent-handle] Applied initial RuntimeStateDoc sync ({} bytes)",
-                    data.len()
-                );
+        // Bootstrap RuntimeStateDoc sync — bidirectional exchange.
+        // The agent starts with an empty doc and sends its initial sync
+        // ("I'm empty, send me everything"). We respond with our full
+        // scaffolded state. The agent applies it and confirms convergence.
+        // This is the same pattern the frontend uses for NotebookDoc.
+        info!("[agent-handle] Bootstrapping RuntimeStateDoc sync...");
+        {
+            let mut sd = state_doc.write().await;
+            let mut sync_state = automerge::sync::State::new();
+
+            // Read agent's initial sync (empty heads)
+            match recv_frame(&mut reader).await? {
+                Some(data) if !data.is_empty() && data[0] == 0x05 => {
+                    let msg = automerge::sync::Message::decode(&data[1..])?;
+                    sd.receive_sync_message_with_changes(&mut sync_state, msg)?;
+                }
+                _ => anyhow::bail!("Expected RuntimeStateSync from agent"),
             }
-            _ => {
-                anyhow::bail!("Expected RuntimeStateSync from agent");
+
+            // Send our full state back to the agent
+            while let Some(reply) = sd.generate_sync_message(&mut sync_state) {
+                let encoded = reply.encode();
+                let mut w = writer.lock().await;
+                send_typed_frame(&mut *w, NotebookFrameType::RuntimeStateSync, &encoded)
+                    .await?;
             }
+
+            // Read agent's confirmation (it now has our schema)
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                recv_frame(&mut reader),
+            )
+            .await
+            {
+                Ok(Ok(Some(data))) if !data.is_empty() && data[0] == 0x05 => {
+                    let msg = automerge::sync::Message::decode(&data[1..])?;
+                    sd.receive_sync_message_with_changes(&mut sync_state, msg)?;
+                }
+                _ => {
+                    // Agent may converge without a final message — acceptable
+                }
+            }
+
+            info!("[agent-handle] RuntimeStateDoc sync complete");
         }
 
         let alive = Arc::new(AtomicBool::new(true));
