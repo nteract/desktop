@@ -103,6 +103,55 @@ where
     let mut state_doc = RuntimeStateDoc::new_empty();
     state_doc.set_actor(&agent_id);
 
+    // Bootstrap: read initial sync frames from coordinator until convergence.
+    // The coordinator sends RuntimeStateSync (0x05) frames after the handshake.
+    // We need the schema (kernel map, queue map, etc.) before set_kernel_status()
+    // and friends can be called — they panic on missing maps.
+    let mut coordinator_sync_state = automerge::sync::State::new();
+    info!("[agent] Waiting for initial RuntimeStateDoc sync...");
+    let mut bootstrap_frames = 0;
+    loop {
+        match recv_frame(&mut reader).await? {
+            Some(data) if !data.is_empty() && data[0] == 0x05 => {
+                let msg = automerge::sync::Message::decode(&data[1..])?;
+                state_doc.receive_sync_message_with_changes(&mut coordinator_sync_state, msg)?;
+                bootstrap_frames += 1;
+
+                // Send sync reply — convergence requires round-trips
+                if let Some(reply) =
+                    state_doc.generate_sync_message(&mut coordinator_sync_state)
+                {
+                    let encoded = reply.encode();
+                    send_typed_frame(
+                        &mut writer,
+                        NotebookFrameType::RuntimeStateSync,
+                        &encoded,
+                    )
+                    .await?;
+                } else {
+                    // No more sync needed — we've converged
+                    info!(
+                        "[agent] RuntimeStateDoc bootstrapped ({} frames)",
+                        bootstrap_frames
+                    );
+                    break;
+                }
+            }
+            Some(data) if !data.is_empty() => {
+                // Non-sync frame during bootstrap — could be the LaunchKernel
+                // request arriving before sync completes. Buffer it? For now,
+                // keep reading until we get sync frames.
+                debug!(
+                    "[agent] Ignoring frame type 0x{:02x} during bootstrap",
+                    data[0]
+                );
+            }
+            _ => {
+                anyhow::bail!("EOF during RuntimeStateDoc bootstrap");
+            }
+        }
+    }
+
     let state_doc = Arc::new(RwLock::new(state_doc));
     let (state_changed_tx, mut state_changed_rx) = broadcast::channel::<()>(64);
 
