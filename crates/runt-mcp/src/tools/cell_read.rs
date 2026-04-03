@@ -72,7 +72,11 @@ pub async fn get_cell(
 
     // If the cell has been executed but outputs haven't synced yet,
     // force a sync round-trip to process pending RuntimeStateSync frames.
-    if cell.outputs.is_empty() && !cell.execution_count.is_empty() && cell.execution_count != "0" {
+    if cell.outputs.is_empty()
+        && !cell.execution_count.is_empty()
+        && cell.execution_count != "0"
+        && cell.execution_count != "null"
+    {
         let _ = handle.confirm_sync().await;
         if let Some(c) = handle.get_cell(cell_id) {
             cell = c;
