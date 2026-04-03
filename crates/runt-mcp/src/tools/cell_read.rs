@@ -65,10 +65,19 @@ pub async fn get_cell(
 
     // No presence on read — get_cell is read-only, shouldn't move the cursor.
 
-    let cell = match handle.get_cell(cell_id) {
+    let mut cell = match handle.get_cell(cell_id) {
         Some(c) => c,
         None => return tool_error(&format!("Cell not found: {cell_id}")),
     };
+
+    // If the cell has been executed but outputs haven't synced yet,
+    // force a sync round-trip to process pending RuntimeStateSync frames.
+    if cell.outputs.is_empty() && !cell.execution_count.is_empty() && cell.execution_count != "0" {
+        let _ = handle.confirm_sync().await;
+        if let Some(c) = handle.get_cell(cell_id) {
+            cell = c;
+        }
+    }
 
     // Resolve outputs
     let outputs = output_resolver::resolve_cell_outputs(

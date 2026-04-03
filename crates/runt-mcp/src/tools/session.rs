@@ -205,6 +205,11 @@ pub async fn join_notebook(
     {
         Ok(result) => {
             let handle = &result.handle;
+
+            // Ensure initial sync converges — this processes any pending
+            // RuntimeStateSync frames so outputs are available immediately.
+            let _ = handle.confirm_sync().await;
+
             let runtime_info = collect_runtime_info(handle).await;
             let deps = get_dependencies(handle);
             let cells_summary = format_cell_summaries(handle);
@@ -266,6 +271,11 @@ pub async fn open_notebook(
         Ok(result) => {
             let handle = &result.handle;
             let notebook_id = handle.notebook_id().to_string();
+
+            // Ensure initial sync converges — this processes any pending
+            // RuntimeStateSync frames so outputs are available immediately.
+            let _ = handle.confirm_sync().await;
+
             let runtime_info = collect_runtime_info(handle).await;
             let deps = get_dependencies(handle);
             let cells_summary = format_cell_summaries(handle);
