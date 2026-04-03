@@ -385,14 +385,6 @@ export function useDaemonKernel({
         case "env_progress":
           break;
 
-        // State broadcasts — redundant with RuntimeStateDoc
-        case "execution_started":
-        case "execution_done":
-        case "kernel_status":
-        case "queue_changed":
-        case "env_sync_state":
-          break;
-
         case "runtime_state_snapshot": {
           setRuntimeState(broadcast.state as RuntimeState);
           break;
