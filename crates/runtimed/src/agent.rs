@@ -112,6 +112,21 @@ where
     // agent's lifetime so incremental sync works correctly.
     let mut coordinator_sync_state = automerge::sync::State::new();
 
+    // Send initial sync to coordinator immediately so it gets the schema.
+    // This MUST happen before the main loop — the coordinator waits for it
+    // during spawn() before sending LaunchKernel.
+    {
+        let mut sd = state_doc.write().await;
+        if let Some(msg) = sd.generate_sync_message(&mut coordinator_sync_state) {
+            let encoded = msg.encode();
+            info!(
+                "[agent] Sending initial RuntimeStateSync ({} bytes)",
+                encoded.len()
+            );
+            send_typed_frame(&mut writer, NotebookFrameType::RuntimeStateSync, &encoded).await?;
+        }
+    }
+
     // ── 3. Create local infrastructure ──────────────────────────────────────
 
     let blob_store = Arc::new(BlobStore::new(std::path::PathBuf::from(&blob_root)));
