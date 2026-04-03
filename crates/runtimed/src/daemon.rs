@@ -1884,7 +1884,7 @@ impl Daemon {
                     .store(enabled, std::sync::atomic::Ordering::Relaxed);
                 // Persist to settings doc so it survives daemon restarts
                 {
-                    let mut settings = self.settings.blocking_write();
+                    let mut settings = self.settings.write().await;
                     settings.put_bool("agent_mode", enabled);
                     let _ = settings.save_to_file(&crate::default_settings_doc_path());
                 }
