@@ -398,6 +398,12 @@ fn open_notebook_installed_for(
         #[cfg(target_os = "macos")]
         let spawn_result = {
             let mut cmd = Command::new("open");
+            // When there's no file path but we have CLI args (e.g. --notebook-id),
+            // force a new instance with -n. Without this, macOS `open` activates
+            // the running app and silently drops everything after --args.
+            if path.is_none() && !extra_args.is_empty() {
+                cmd.arg("-n");
+            }
             cmd.arg("-a").arg(app_name);
             cmd.args(macos_open_args(path, extra_args));
             cmd.spawn()
