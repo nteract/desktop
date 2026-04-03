@@ -354,7 +354,7 @@ impl RuntimeStateDoc {
         let trust = doc
             .put_object(&ROOT, "trust", ObjType::Map)
             .expect("scaffold trust");
-        doc.put(&trust, "status", "untrusted")
+        doc.put(&trust, "status", "no_dependencies")
             .expect("scaffold trust.status");
         doc.put(&trust, "needs_approval", false)
             .expect("scaffold trust.needs_approval");
