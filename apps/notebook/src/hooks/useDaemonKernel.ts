@@ -45,7 +45,12 @@ import { isManifestHash } from "../lib/manifest-resolution";
  *
  * Only triggers for OutputModel widgets (`_model_name === "OutputModel"`).
  * Other widgets may have an `outputs` field with different semantics.
+ *
+ * Uses a generation counter per comm_id to discard stale async completions
+ * when a newer CRDT update arrives before the old fetch finishes.
  */
+const _outputResolveGen = new Map<string, number>();
+
 function resolveCommOutputHashes(
   commId: string,
   state: Record<string, unknown>,
@@ -57,7 +62,11 @@ function resolveCommOutputHashes(
   if (state._model_name !== "OutputModel") return;
 
   const outputs = state.outputs;
-  if (!Array.isArray(outputs) || outputs.length === 0) return;
+  if (!Array.isArray(outputs) || outputs.length === 0) {
+    // Bump generation so any in-flight fetch is discarded
+    _outputResolveGen.set(commId, (_outputResolveGen.get(commId) ?? 0) + 1);
+    return;
+  }
 
   // Verify all entries are manifest hashes (64-char hex strings).
   // If not, this is unexpected — log and skip.
@@ -78,10 +87,18 @@ function resolveCommOutputHashes(
   const blobPort = getBlobPort();
   if (blobPort === null) return; // Will retry on next CRDT update
 
+  // Bump generation — any older in-flight fetch will check and bail
+  const gen = (_outputResolveGen.get(commId) ?? 0) + 1;
+  _outputResolveGen.set(commId, gen);
+
   void (async () => {
     const resolved = await Promise.all(
       (outputs as string[]).map((h) => resolveOutputString(h, blobPort)),
     );
+
+    // Discard if a newer CRDT update superseded us
+    if (_outputResolveGen.get(commId) !== gen) return;
+
     const resolvedOutputs = resolved.filter(
       (o): o is JupyterOutput => o !== null,
     );
