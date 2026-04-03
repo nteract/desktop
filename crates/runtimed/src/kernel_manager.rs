@@ -657,6 +657,14 @@ impl RoomKernel {
         });
     }
 
+    /// Take the QueueCommand receiver from the kernel.
+    ///
+    /// Used by the agent subprocess to handle commands in its own select loop
+    /// instead of calling `start_command_loop()`. Returns `None` if already taken.
+    pub fn take_cmd_rx(&mut self) -> Option<mpsc::Receiver<QueueCommand>> {
+        self.cmd_rx.take()
+    }
+
     /// Get the kernel type.
     pub fn kernel_type(&self) -> &str {
         &self.kernel_type

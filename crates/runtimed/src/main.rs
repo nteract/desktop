@@ -102,6 +102,10 @@ enum Commands {
     /// [DEPRECATED] Use 'runt daemon flush' instead
     #[command(hide = true)]
     FlushPool,
+
+    /// Run as a runtime agent subprocess (internal, used by coordinator)
+    #[command(hide = true)]
+    Agent,
 }
 
 /// Get a log path that works even when HOME is not set.
@@ -330,6 +334,16 @@ async fn main() -> anyhow::Result<()> {
                 cli_command_name()
             );
             flush_pool().await
+        }
+        Some(Commands::Agent) => {
+            // Agent mode: communicate over stdin/stdout using framed protocol.
+            // Logs go to stderr only.
+            runtimed::agent::run_agent(tokio::io::stdin(), tokio::io::stdout())
+                .await
+                .map_err(|e| {
+                    eprintln!("[agent] Fatal: {}", e);
+                    e
+                })
         }
     }
 }

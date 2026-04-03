@@ -18,6 +18,7 @@ pub use runtimed_client::*;
 // Server-only modules (not in runtimed-client)
 // ============================================================================
 
+pub mod agent;
 pub mod blob_server;
 pub mod blob_store;
 pub mod daemon;
