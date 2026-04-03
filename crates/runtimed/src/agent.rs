@@ -344,11 +344,16 @@ async fn handle_agent_request(request: AgentRequest, ctx: &AgentContext) -> Agen
         AgentRequest::ExecuteCell {
             cell_id,
             code,
-            execution_id: _,
+            execution_id,
         } => {
             let mut guard = ctx.kernel.lock().await;
             if let Some(ref mut k) = *guard {
-                match k.queue_cell(cell_id.clone(), code).await {
+                // Use the coordinator's execution_id to keep NotebookDoc
+                // and RuntimeStateDoc in sync.
+                match k
+                    .queue_cell_with_id(cell_id.clone(), code, execution_id)
+                    .await
+                {
                     Ok(eid) => AgentResponse::CellQueued {
                         cell_id,
                         execution_id: eid,
@@ -473,11 +478,15 @@ async fn handle_queue_command(command: QueueCommand, ctx: &AgentContext) -> anyh
                 "[agent] CellError: cell={} execution={}",
                 cell_id, execution_id
             );
-            // Stop-on-error: clear remaining queue in RuntimeStateDoc
+            // Stop-on-error: clear remaining queue and mark cleared executions as failed
             let mut guard = ctx.kernel.lock().await;
             if let Some(ref mut k) = *guard {
-                k.clear_queue();
+                let cleared = k.clear_queue();
                 let mut sd = ctx.state_doc.write().await;
+                // Mark each cleared execution as error so callers aren't stuck waiting
+                for entry in &cleared {
+                    sd.set_execution_done(&entry.execution_id, false);
+                }
                 sd.set_queue(None, &[]);
                 let _ = ctx.state_changed_tx.send(());
             }

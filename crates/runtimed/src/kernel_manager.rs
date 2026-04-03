@@ -2494,12 +2494,36 @@ impl RoomKernel {
         Ok(())
     }
 
+    /// Queue a cell for execution with a pre-assigned execution_id.
+    ///
+    /// Used by the agent subprocess where the coordinator already generated
+    /// and stamped the execution_id on the cell in NotebookDoc.
+    pub async fn queue_cell_with_id(
+        &mut self,
+        cell_id: String,
+        code: String,
+        execution_id: String,
+    ) -> Result<String> {
+        self.queue_cell_inner(cell_id, code, Some(execution_id))
+            .await
+    }
+
     /// Queue a cell for execution.
     ///
     /// Idempotent: if the cell is already executing or queued, returns the
     /// existing `execution_id` instead of generating a new one.
     /// Returns the `execution_id` for this execution.
     pub async fn queue_cell(&mut self, cell_id: String, code: String) -> Result<String> {
+        self.queue_cell_inner(cell_id, code, None).await
+    }
+
+    /// Internal queue implementation. If `execution_id` is None, generates a new one.
+    async fn queue_cell_inner(
+        &mut self,
+        cell_id: String,
+        code: String,
+        execution_id: Option<String>,
+    ) -> Result<String> {
         // Idempotent: return existing execution_id if already executing or queued
         if let Some((ref cid, ref eid)) = self.executing {
             if cid == &cell_id {
@@ -2518,7 +2542,7 @@ impl RoomKernel {
             return Ok(existing.execution_id.clone());
         }
 
-        let execution_id = Uuid::new_v4().to_string();
+        let execution_id = execution_id.unwrap_or_else(|| Uuid::new_v4().to_string());
         info!(
             "[kernel-manager] Queuing cell: {} (execution_id={})",
             cell_id, execution_id

@@ -356,8 +356,15 @@ async fn io_loop<R, W>(
                 }
             }
 
-            // Send requests to agent stdin
-            request = request_rx.recv() => {
+            // Send requests to agent stdin (only when no pending reply)
+            request = async {
+                if pending_reply.is_some() {
+                    // Block until the current request is answered
+                    std::future::pending::<Option<(AgentRequest, oneshot::Sender<AgentResponse>)>>().await
+                } else {
+                    request_rx.recv().await
+                }
+            } => {
                 match request {
                     Some((req, reply)) => {
                         let json = match serde_json::to_vec(&req) {
