@@ -185,10 +185,22 @@ struct SyncReadyState {
 
 impl SyncReadyState {
     /// Mark a window's relay as ready to emit frames.
+    ///
+    /// If the relay hasn't subscribed yet (JS signaled before the Rust
+    /// connection finished), creates the entry pre-seeded to `true` so
+    /// the later `subscribe()` picks it up immediately.
     fn set_ready(&self, label: &str) {
-        if let Ok(senders) = self.senders.lock() {
-            if let Some(tx) = senders.get(label) {
+        let mut senders = match self.senders.lock() {
+            Ok(s) => s,
+            Err(e) => e.into_inner(),
+        };
+        match senders.get(label) {
+            Some(tx) => {
                 let _ = tx.send(true);
+            }
+            None => {
+                // Pre-seed: JS signaled before the relay subscribed.
+                senders.insert(label.to_string(), tokio::sync::watch::channel(true).0);
             }
         }
     }
