@@ -612,14 +612,6 @@ pub enum AgentResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum AgentNotification {
-    /// The kernel reported an execution count. The coordinator writes
-    /// this to NotebookDoc for .ipynb persistence.
-    ExecutionCountSet {
-        cell_id: String,
-        execution_id: String,
-        execution_count: i64,
-    },
-
     /// The kernel process died unexpectedly. The coordinator updates
     /// presence and cleans up the agent handle.
     KernelDied,

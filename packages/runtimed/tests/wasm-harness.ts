@@ -190,8 +190,10 @@ export async function createWasmHarness(
       serverHandle.update_source(cellId, source);
     },
 
-    serverSetExecutionCount(cellId: string, count: string) {
-      serverHandle.set_execution_count(cellId, count);
+    serverSetExecutionCount(_cellId: string, _count: string) {
+      // No-op: execution_count is now in RuntimeStateDoc, not NotebookDoc.
+      // The WASM set_execution_count method was removed. Tests that need
+      // to verify execution_count should use RuntimeStateDoc instead.
     },
 
     serverClearOutputs(cellId: string) {

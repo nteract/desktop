@@ -456,13 +456,6 @@ pub enum QueueCommand {
         comm_id: String,
         state: serde_json::Value,
     },
-    /// The kernel reported an execution count (from execute_input).
-    /// The coordinator writes it to NotebookDoc for persistence.
-    ExecutionCountSet {
-        cell_id: String,
-        execution_id: String,
-        execution_count: i64,
-    },
 }
 
 /// Prepend a directory to the PATH environment variable.
@@ -565,9 +558,9 @@ impl RoomKernel {
     pub fn start_command_loop(
         &mut self,
         kernel_arc: Arc<tokio::sync::Mutex<Option<RoomKernel>>>,
-        doc: Arc<RwLock<NotebookDoc>>,
-        persist_tx: watch::Sender<Option<Vec<u8>>>,
-        changed_tx: broadcast::Sender<()>,
+        _doc: Arc<RwLock<NotebookDoc>>,
+        _persist_tx: watch::Sender<Option<Vec<u8>>>,
+        _changed_tx: broadcast::Sender<()>,
     ) {
         let Some(mut cmd_rx) = self.cmd_rx.take() else {
             return;
@@ -656,30 +649,6 @@ impl RoomKernel {
                                 &es,
                             )
                             .await;
-                        }
-                    }
-                    QueueCommand::ExecutionCountSet {
-                        cell_id,
-                        execution_id,
-                        execution_count,
-                    } => {
-                        // Guard against stale writes: only update if the cell's
-                        // current execution_id matches. A ClearOutputs or new
-                        // execution may have already moved the cell forward.
-                        let mut doc_guard = doc.write().await;
-                        let current_eid = doc_guard.get_execution_id(&cell_id);
-                        if current_eid.as_deref() == Some(&execution_id) {
-                            if let Err(e) = doc_guard
-                                .set_execution_count(&cell_id, &execution_count.to_string())
-                            {
-                                warn!(
-                                    "[notebook-sync] Failed to set execution_count in doc: {}",
-                                    e
-                                );
-                            }
-                            let bytes = doc_guard.save();
-                            let _ = changed_tx.send(());
-                            let _ = persist_tx.send(Some(bytes));
                         }
                     }
                 }
@@ -1180,24 +1149,14 @@ impl RoomKernel {
                                 if let Some(ref cid) = cell_id {
                                     let execution_count = input.execution_count.0 as i64;
 
-                                    // Write execution_count to RuntimeStateDoc (source of truth)
+                                    // Write execution_count to RuntimeStateDoc (sole source of truth).
+                                    // The save path resolves execution_count from here.
                                     if let Some(ref eid) = execution_id {
                                         let mut sd = state_doc_for_iopub.write().await;
                                         if sd.set_execution_count(eid, execution_count) {
                                             let _ = state_changed_for_iopub.send(());
                                         }
                                     }
-
-                                    // Tell the coordinator to persist execution_count in
-                                    // NotebookDoc (for .ipynb export). The kernel no longer
-                                    // writes to NotebookDoc directly.
-                                    let _ = iopub_cmd_tx
-                                        .send(QueueCommand::ExecutionCountSet {
-                                            cell_id: cid.clone(),
-                                            execution_id: execution_id.clone().unwrap_or_default(),
-                                            execution_count,
-                                        })
-                                        .await;
 
                                     let _ =
                                         broadcast_tx.send(NotebookBroadcast::ExecutionStarted {

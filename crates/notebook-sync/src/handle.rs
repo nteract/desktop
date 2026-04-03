@@ -498,11 +498,6 @@ impl DocHandle {
             .map(|c| c.position.clone())
     }
 
-    /// Set a cell's execution count.
-    pub fn set_execution_count(&self, cell_id: &str, count: &str) -> Result<bool, SyncError> {
-        self.with_notebook_doc(|doc| doc.set_execution_count(cell_id, count))
-    }
-
     // =====================================================================
     // Async operations — need socket I/O via the sync task
     // =====================================================================

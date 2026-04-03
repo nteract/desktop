@@ -124,6 +124,7 @@ pub async fn execute_and_wait(
     // Step 4: Collect outputs from CRDT.
     // Prefer output hashes from RuntimeStateDoc (already synced above).
     // Fall back to handle.get_cell() which reads via execution_id facade.
+
     let execution_count = handle.get_cell_execution_count(cell_id);
 
     let outputs = if !output_hashes.is_empty() {

@@ -545,13 +545,6 @@ impl NotebookHandle {
             .map_err(|e| JsError::new(&format!("splice_source failed: {}", e)))
     }
 
-    /// Set the execution count for a cell. Pass "null" or a number string like "5".
-    pub fn set_execution_count(&mut self, cell_id: &str, count: &str) -> Result<bool, JsError> {
-        self.doc
-            .set_execution_count(cell_id, count)
-            .map_err(|e| JsError::new(&format!("set_execution_count failed: {}", e)))
-    }
-
     /// Append text to a cell's source (optimized for streaming, no diff).
     pub fn append_source(&mut self, cell_id: &str, text: &str) -> Result<bool, JsError> {
         self.doc
