@@ -81,10 +81,10 @@ pub(crate) fn catch_automerge_panic<T>(label: &str, f: impl FnOnce() -> T) -> Re
     }
 }
 
-/// Check if agent mode is enabled on the daemon.
+/// Check if agent mode is enabled.
 ///
-/// Reads the daemon's in-memory flag, which is initialized from
-/// `RUNT_AGENT_MODE=1` and can be toggled at runtime via the pool IPC.
+/// Reads from the daemon's in-memory flag, which is initialized from
+/// the persisted settings doc and toggled via `runt agent enable/disable`.
 fn is_agent_mode_enabled(daemon: &crate::daemon::Daemon) -> bool {
     daemon.agent_mode.load(std::sync::atomic::Ordering::Relaxed)
 }

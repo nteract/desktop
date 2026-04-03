@@ -178,6 +178,12 @@ pub struct SyncedSettings {
     /// When false, the app shows the onboarding screen on startup.
     #[serde(default)]
     pub onboarding_completed: bool,
+
+    /// Run kernels in agent subprocesses (process isolation).
+    /// When true, each notebook's kernel runs in a separate `runtimed agent`
+    /// process. When false, kernels run in-process (default).
+    #[serde(default)]
+    pub agent_mode: bool,
 }
 
 impl Default for SyncedSettings {
@@ -190,6 +196,7 @@ impl Default for SyncedSettings {
             conda: CondaDefaults::default(),
             keep_alive_secs: DEFAULT_KEEP_ALIVE_SECS,
             onboarding_completed: false,
+            agent_mode: false,
         }
     }
 }
@@ -248,6 +255,8 @@ impl SettingsDoc {
         );
         // Store onboarding_completed as boolean
         let _ = doc.put(automerge::ROOT, "onboarding_completed", false);
+        // Store agent_mode as boolean
+        let _ = doc.put(automerge::ROOT, "agent_mode", false);
 
         // Nested uv map with empty package list
         if let Ok(uv_id) = doc.put_object(automerge::ROOT, "uv", ObjType::Map) {
@@ -343,6 +352,10 @@ impl SettingsDoc {
         // onboarding_completed: boolean
         if let Some(completed) = json.get("onboarding_completed").and_then(|v| v.as_bool()) {
             settings.put_bool("onboarding_completed", completed);
+        }
+        // agent_mode: boolean
+        if let Some(agent) = json.get("agent_mode").and_then(|v| v.as_bool()) {
+            settings.put_bool("agent_mode", agent);
         }
 
         let uv_packages = Self::extract_packages_from_json(json, "uv");
@@ -714,6 +727,7 @@ impl SettingsDoc {
                 // Check if this is an existing user by looking for other settings
                 self.get("theme").is_some() || self.get("default_runtime").is_some()
             }),
+            agent_mode: self.get_bool("agent_mode").unwrap_or(false),
         }
     }
 
@@ -794,6 +808,19 @@ impl SettingsDoc {
                     current, completed
                 );
                 self.put_bool("onboarding_completed", completed);
+                changed = true;
+            }
+        }
+
+        // agent_mode: boolean
+        if let Some(agent) = json.get("agent_mode").and_then(|v| v.as_bool()) {
+            let current = self.get_bool("agent_mode");
+            if current != Some(agent) {
+                info!(
+                    "[settings] apply_json_changes: agent_mode changed {:?} -> {}",
+                    current, agent
+                );
+                self.put_bool("agent_mode", agent);
                 changed = true;
             }
         }
@@ -1453,5 +1480,40 @@ mod tests {
 
         // Missing key is not the same as null
         assert!(!doc.is_null("keep_alive_secs"));
+    }
+
+    #[test]
+    fn test_agent_mode_default_off() {
+        let doc = SettingsDoc::new();
+        let settings = doc.get_all();
+        assert!(!settings.agent_mode, "agent_mode should default to false");
+    }
+
+    #[test]
+    fn test_agent_mode_toggle_persists() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+
+        // Create settings, enable agent mode, save
+        let mut doc = SettingsDoc::new();
+        assert!(!doc.get_all().agent_mode);
+        doc.put_bool("agent_mode", true);
+        doc.save_to_file(tmp.path()).unwrap();
+
+        // Load from disk — should still be enabled
+        let loaded = SettingsDoc::load_or_create(tmp.path(), None);
+        assert!(loaded.get_all().agent_mode, "agent_mode should persist");
+    }
+
+    #[test]
+    fn test_agent_mode_json_migration() {
+        let json: serde_json::Value = serde_json::json!({
+            "agent_mode": true,
+            "default_runtime": "python"
+        });
+        let doc = SettingsDoc::from_json(&json);
+        assert!(
+            doc.get_all().agent_mode,
+            "agent_mode should migrate from JSON"
+        );
     }
 }

@@ -388,12 +388,16 @@ async fn run_daemon(
     info!("  Blob store: {:?}", config.blob_store_dir);
     info!("  UV pool size: {}", config.uv_pool_size);
     info!("  Conda pool size: {}", config.conda_pool_size);
-    if std::env::var("RUNT_AGENT_MODE").as_deref() == Ok("1") {
-        info!("  Agent mode: ENABLED (kernels run in subprocess)");
-    }
+    // Agent mode status is logged after daemon initialization
+    // (reads from persisted settings)
 
     let daemon = match Daemon::new(config) {
-        Ok(d) => d,
+        Ok(d) => {
+            if d.agent_mode.load(std::sync::atomic::Ordering::Relaxed) {
+                info!("  Agent mode: ENABLED (kernels run in subprocess)");
+            }
+            d
+        }
         Err(e) => {
             // Another daemon is already running — this is expected during
             // launchd double-start races, NOT a crash. Exit 0 so launchd's

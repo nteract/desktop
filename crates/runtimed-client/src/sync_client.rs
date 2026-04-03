@@ -441,6 +441,7 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         // assume they're upgrading from before onboarding was added → treat as completed
         onboarding_completed: get_bool("onboarding_completed")
             .unwrap_or_else(|| get_str("theme").is_some() || get_str("default_runtime").is_some()),
+        agent_mode: get_bool("agent_mode").unwrap_or(false),
     }
 }
 

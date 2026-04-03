@@ -402,8 +402,8 @@ impl Daemon {
 
         let blob_store = Arc::new(BlobStore::new(config.blob_store_dir.clone()));
 
-        // Initialize agent mode from env var
-        let agent_mode = std::env::var("RUNT_AGENT_MODE").as_deref() == Ok("1");
+        // Initialize agent mode from persisted settings
+        let agent_mode = settings.get_all().agent_mode;
 
         Ok(Arc::new(Self {
             uv_pool: Mutex::new(Pool::new(config.uv_pool_size, config.max_age_secs)),
@@ -1882,6 +1882,12 @@ impl Daemon {
             Request::SetAgentMode { enabled } => {
                 self.agent_mode
                     .store(enabled, std::sync::atomic::Ordering::Relaxed);
+                // Persist to settings doc so it survives daemon restarts
+                {
+                    let mut settings = self.settings.blocking_write();
+                    settings.put_bool("agent_mode", enabled);
+                    let _ = settings.save_to_file(&crate::default_settings_doc_path());
+                }
                 info!(
                     "[runtimed] Agent mode {}",
                     if enabled { "ENABLED" } else { "DISABLED" }

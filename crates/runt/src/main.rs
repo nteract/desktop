@@ -583,12 +583,14 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
                 println!("Agent mode disabled — new kernels will run in-process");
             }
             AgentCommands::Status => {
-                // Check env var (can't query daemon for current state yet)
-                let env_enabled = std::env::var("RUNT_AGENT_MODE").as_deref() == Ok("1");
+                // Read from settings doc (persisted)
+                let settings_path = runtimed::default_settings_doc_path();
+                let settings =
+                    runtimed::settings_doc::SettingsDoc::load_or_create(&settings_path, None);
+                let enabled = settings.get_all().agent_mode;
                 println!(
-                    "Agent mode: {} (env RUNT_AGENT_MODE={})",
-                    if env_enabled { "enabled" } else { "disabled" },
-                    if env_enabled { "1" } else { "unset" }
+                    "Agent mode: {}",
+                    if enabled { "enabled" } else { "disabled" }
                 );
             }
         },
