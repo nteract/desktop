@@ -3036,14 +3036,6 @@ async fn auto_launch_kernel(
     if is_agent_mode_enabled() {
         info!("[notebook-sync] Agent mode: spawning agent subprocess for auto-launch");
 
-        // Replace the room's RuntimeStateDoc with an empty one.
-        // The agent owns the RuntimeStateDoc — it creates a scaffolded doc
-        // and syncs it to us. We start empty to avoid DuplicateSeqNumber.
-        {
-            let mut sd = room.state_doc.write().await;
-            *sd = RuntimeStateDoc::new_empty();
-        }
-
         let nb_id = notebook_id.to_string();
         let agent_id = format!("rt:agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
 
@@ -3073,6 +3065,14 @@ async fn auto_launch_kernel(
                     Ok(notebook_protocol::protocol::AgentResponse::KernelLaunched {
                         env_source: es,
                     }) => {
+                        // Agent launched successfully — the agent owns RuntimeStateDoc.
+                        // Replace coordinator's copy with empty so agent's sync populates it.
+                        // This is safe now because we know the agent is alive and will sync.
+                        {
+                            let mut sd = room.state_doc.write().await;
+                            *sd = RuntimeStateDoc::new_empty();
+                        }
+
                         let mut agent_guard = room.agent_handle.lock().await;
                         *agent_guard = Some(agent);
                         drop(kernel_guard);
@@ -3080,17 +3080,6 @@ async fn auto_launch_kernel(
 
                         publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es)
                             .await;
-
-                        {
-                            let mut sd = room.state_doc.write().await;
-                            let mut changed = false;
-                            changed |= sd.set_kernel_status("idle");
-                            changed |= sd.set_kernel_info(kernel_type, kernel_type, &es);
-                            changed |= sd.set_prewarmed_packages(&prewarmed_packages);
-                            if changed {
-                                let _ = room.state_changed_tx.send(());
-                            }
-                        }
 
                         info!(
                             "[notebook-sync] Auto-launch via agent succeeded: {} kernel with {} environment",
@@ -3858,12 +3847,6 @@ async fn handle_notebook_request(
             if is_agent_mode_enabled() {
                 info!("[notebook-sync] RUNT_AGENT_MODE=1: spawning agent subprocess");
 
-                // Replace state_doc with empty — agent owns it
-                {
-                    let mut sd = room.state_doc.write().await;
-                    *sd = RuntimeStateDoc::new_empty();
-                }
-
                 let notebook_id = room.notebook_path.read().await.display().to_string();
                 let agent_id = format!("rt:agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
 
@@ -3891,6 +3874,13 @@ async fn handle_notebook_request(
                             Ok(notebook_protocol::protocol::AgentResponse::KernelLaunched {
                                 env_source: es,
                             }) => {
+                                // Agent launched — replace state_doc with empty
+                                // so agent's sync populates it cleanly.
+                                {
+                                    let mut sd = room.state_doc.write().await;
+                                    *sd = RuntimeStateDoc::new_empty();
+                                }
+
                                 let mut agent_guard = room.agent_handle.lock().await;
                                 *agent_guard = Some(agent);
                                 drop(kernel_guard);
