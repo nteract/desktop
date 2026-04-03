@@ -238,6 +238,9 @@ enum Commands {
         /// Do not register the show_notebook tool (for headless environments)
         #[arg(long)]
         no_show: bool,
+        /// Explicit daemon socket path (bypasses RUNTIMED_DEV socket resolution)
+        #[arg(long)]
+        socket: Option<PathBuf>,
     },
 
     /// Manage cached Python environments
@@ -613,7 +616,12 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
             daemon_command(DaemonCommands::Logs { follow, lines }).await?
         }
         Some(Commands::Diagnostics { output }) => diagnostics_command(output).await?,
-        Some(Commands::Mcp { no_show }) => run_mcp_server(no_show).await?,
+        Some(Commands::Mcp { no_show, socket }) => {
+            if let Some(socket) = socket {
+                std::env::set_var("RUNTIMED_SOCKET_PATH", socket);
+            }
+            run_mcp_server(no_show).await?
+        }
         Some(Commands::Env { command }) => env_command(command).await?,
 
         // Development commands (requires RUNTIMED_DEV=1)
