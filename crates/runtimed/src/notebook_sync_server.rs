@@ -3063,7 +3063,7 @@ async fn auto_launch_kernel(
         )
         .await
         {
-            Ok(agent) => {
+            Ok(mut agent) => {
                 // Send LaunchKernel to the agent
                 match agent
                     .launch_kernel(
@@ -3883,7 +3883,7 @@ async fn handle_notebook_request(
                 )
                 .await
                 {
-                    Ok(agent) => {
+                    Ok(mut agent) => {
                         // Send LaunchKernel to the agent
                         match agent
                             .launch_kernel(
@@ -4095,8 +4095,8 @@ async fn handle_notebook_request(
 
             // Check for agent-backed kernel first
             {
-                let agent_guard = room.agent_handle.lock().await;
-                if let Some(ref agent) = *agent_guard {
+                let mut agent_guard = room.agent_handle.lock().await;
+                if let Some(ref mut agent) = *agent_guard {
                     let execution_id = uuid::Uuid::new_v4().to_string();
                     // Stamp execution_id on the cell before sending to agent
                     {
@@ -4245,8 +4245,8 @@ async fn handle_notebook_request(
         NotebookRequest::InterruptExecution {} => {
             // Agent path
             {
-                let agent_guard = room.agent_handle.lock().await;
-                if let Some(ref agent) = *agent_guard {
+                let mut agent_guard = room.agent_handle.lock().await;
+                if let Some(ref mut agent) = *agent_guard {
                     return match agent.interrupt().await {
                         Ok(_) => NotebookResponse::InterruptSent {},
                         Err(e) => NotebookResponse::Error {
@@ -4366,8 +4366,8 @@ async fn handle_notebook_request(
         NotebookRequest::RunAllCells {} => {
             // Agent path — read all cells, send each to agent
             {
-                let agent_guard = room.agent_handle.lock().await;
-                if let Some(ref agent) = *agent_guard {
+                let mut agent_guard = room.agent_handle.lock().await;
+                if let Some(ref mut agent) = *agent_guard {
                     let cells = {
                         let doc = room.doc.read().await;
                         doc.get_cells()
@@ -4506,8 +4506,8 @@ async fn handle_notebook_request(
         NotebookRequest::SendComm { message } => {
             // Agent path
             {
-                let agent_guard = room.agent_handle.lock().await;
-                if let Some(ref agent) = *agent_guard {
+                let mut agent_guard = room.agent_handle.lock().await;
+                if let Some(ref mut agent) = *agent_guard {
                     return match agent.send_comm(message).await {
                         Ok(_) => NotebookResponse::Ok {},
                         Err(e) => NotebookResponse::Error {
@@ -4556,8 +4556,8 @@ async fn handle_notebook_request(
         NotebookRequest::GetHistory { pattern, n, unique } => {
             // Agent path
             {
-                let agent_guard = room.agent_handle.lock().await;
-                if let Some(ref agent) = *agent_guard {
+                let mut agent_guard = room.agent_handle.lock().await;
+                if let Some(ref mut agent) = *agent_guard {
                     return match agent.get_history(pattern.as_deref(), n, unique).await {
                         Ok(notebook_protocol::protocol::AgentResponse::HistoryResult {
                             entries,
@@ -4591,8 +4591,8 @@ async fn handle_notebook_request(
         NotebookRequest::Complete { code, cursor_pos } => {
             // Agent path
             {
-                let agent_guard = room.agent_handle.lock().await;
-                if let Some(ref agent) = *agent_guard {
+                let mut agent_guard = room.agent_handle.lock().await;
+                if let Some(ref mut agent) = *agent_guard {
                     return match agent.complete(&code, cursor_pos).await {
                         Ok(notebook_protocol::protocol::AgentResponse::CompletionResult {
                             items,
