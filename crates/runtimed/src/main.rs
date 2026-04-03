@@ -388,6 +388,9 @@ async fn run_daemon(
     info!("  Blob store: {:?}", config.blob_store_dir);
     info!("  UV pool size: {}", config.uv_pool_size);
     info!("  Conda pool size: {}", config.conda_pool_size);
+    if std::env::var("RUNT_AGENT_MODE").as_deref() == Ok("1") {
+        info!("  Agent mode: ENABLED (kernels run in subprocess)");
+    }
 
     let daemon = match Daemon::new(config) {
         Ok(d) => d,
