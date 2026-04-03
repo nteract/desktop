@@ -86,8 +86,8 @@ impl AgentHandle {
             .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to capture agent stdout"))?;
 
-        let mut writer = BufWriter::new(child_stdin);
-        let mut reader = BufReader::new(child_stdout);
+        let mut writer = child_stdin;
+        let mut reader = child_stdout;
 
         // Send preamble + handshake
         send_preamble(&mut writer).await?;
