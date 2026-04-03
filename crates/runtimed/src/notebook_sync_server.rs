@@ -878,6 +878,11 @@ pub struct NotebookRoom {
     /// Notification channel for RuntimeStateDoc changes.
     /// Peer sync loops subscribe to push RuntimeStateSync frames.
     pub state_changed_tx: broadcast::Sender<()>,
+    /// Optional agent handle for process-isolated kernel execution.
+    /// When set, kernel requests are routed to the agent subprocess
+    /// instead of the local `RoomKernel`. Set by `LaunchKernel` when
+    /// `RUNT_AGENT_MODE=1`.
+    pub agent_handle: Arc<Mutex<Option<crate::agent_handle::AgentHandle>>>,
 }
 
 /// Maximum number of snapshots to keep per notebook hash.
@@ -1060,6 +1065,7 @@ impl NotebookRoom {
             watcher_shutdown_tx: Mutex::new(None),
             state_doc,
             state_changed_tx,
+            agent_handle: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -1123,6 +1129,7 @@ impl NotebookRoom {
             watcher_shutdown_tx: Mutex::new(None),
             state_doc,
             state_changed_tx,
+            agent_handle: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -3869,7 +3876,41 @@ async fn handle_notebook_request(
                 };
             }
 
-            // Queue the user's source immediately — no formatter delay.
+            // Check for agent-backed kernel first
+            {
+                let agent_guard = room.agent_handle.lock().await;
+                if let Some(ref agent) = *agent_guard {
+                    let execution_id = uuid::Uuid::new_v4().to_string();
+                    // Stamp execution_id on the cell before sending to agent
+                    {
+                        let mut doc = room.doc.write().await;
+                        let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
+                        let _ = room.changed_tx.send(());
+                    }
+                    return match agent.execute_cell(&cell_id, &source, &execution_id).await {
+                        Ok(resp) => match resp {
+                            notebook_protocol::protocol::AgentResponse::CellQueued {
+                                cell_id,
+                                execution_id,
+                            } => NotebookResponse::CellQueued {
+                                cell_id,
+                                execution_id,
+                            },
+                            notebook_protocol::protocol::AgentResponse::Error { error } => {
+                                NotebookResponse::Error { error }
+                            }
+                            _ => NotebookResponse::Error {
+                                error: "Unexpected agent response".to_string(),
+                            },
+                        },
+                        Err(e) => NotebookResponse::Error {
+                            error: format!("Agent error: {}", e),
+                        },
+                    };
+                }
+            }
+
+            // Local kernel path: queue the user's source immediately — no formatter delay.
             // Formatting is applied afterward via fork+merge (see below).
             // This is safe because ruff/deno fmt are semantic no-ops:
             // the formatted code produces identical outputs.
@@ -3985,6 +4026,19 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::InterruptExecution {} => {
+            // Agent path
+            {
+                let agent_guard = room.agent_handle.lock().await;
+                if let Some(ref agent) = *agent_guard {
+                    return match agent.interrupt().await {
+                        Ok(_) => NotebookResponse::InterruptSent {},
+                        Err(e) => NotebookResponse::Error {
+                            error: format!("Agent interrupt error: {}", e),
+                        },
+                    };
+                }
+            }
+            // Local kernel path
             let mut kernel_guard = room.kernel.lock().await;
             if let Some(ref mut kernel) = *kernel_guard {
                 match kernel.interrupt().await {
@@ -3999,6 +4053,16 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::ShutdownKernel {} => {
+            // Agent path
+            {
+                let mut agent_guard = room.agent_handle.lock().await;
+                if let Some(ref mut agent) = *agent_guard {
+                    agent.shutdown().await;
+                    *agent_guard = None;
+                    return NotebookResponse::KernelShuttingDown {};
+                }
+            }
+            // Local kernel path
             let mut kernel_guard = room.kernel.lock().await;
             if let Some(ref mut kernel) = *kernel_guard {
                 let env_source = kernel.env_source().to_string();
@@ -4170,6 +4234,19 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::SendComm { message } => {
+            // Agent path
+            {
+                let agent_guard = room.agent_handle.lock().await;
+                if let Some(ref agent) = *agent_guard {
+                    return match agent.send_comm(message).await {
+                        Ok(_) => NotebookResponse::Ok {},
+                        Err(e) => NotebookResponse::Error {
+                            error: format!("Agent comm error: {}", e),
+                        },
+                    };
+                }
+            }
+            // Local kernel path
             let is_state_update = message
                 .get("content")
                 .and_then(|c| c.get("data"))
@@ -4207,6 +4284,27 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::GetHistory { pattern, n, unique } => {
+            // Agent path
+            {
+                let agent_guard = room.agent_handle.lock().await;
+                if let Some(ref agent) = *agent_guard {
+                    return match agent.get_history(pattern.as_deref(), n, unique).await {
+                        Ok(notebook_protocol::protocol::AgentResponse::HistoryResult {
+                            entries,
+                        }) => NotebookResponse::HistoryResult { entries },
+                        Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
+                            NotebookResponse::Error { error }
+                        }
+                        Ok(_) => NotebookResponse::Error {
+                            error: "Unexpected agent response".to_string(),
+                        },
+                        Err(e) => NotebookResponse::Error {
+                            error: format!("Agent error: {}", e),
+                        },
+                    };
+                }
+            }
+            // Local kernel path
             let mut kernel_guard = room.kernel.lock().await;
             if let Some(ref mut kernel) = *kernel_guard {
                 match kernel.get_history(pattern, n, unique).await {
@@ -4221,6 +4319,33 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::Complete { code, cursor_pos } => {
+            // Agent path
+            {
+                let agent_guard = room.agent_handle.lock().await;
+                if let Some(ref agent) = *agent_guard {
+                    return match agent.complete(&code, cursor_pos).await {
+                        Ok(notebook_protocol::protocol::AgentResponse::CompletionResult {
+                            items,
+                            cursor_start,
+                            cursor_end,
+                        }) => NotebookResponse::CompletionResult {
+                            items,
+                            cursor_start,
+                            cursor_end,
+                        },
+                        Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
+                            NotebookResponse::Error { error }
+                        }
+                        Ok(_) => NotebookResponse::Error {
+                            error: "Unexpected agent response".to_string(),
+                        },
+                        Err(e) => NotebookResponse::Error {
+                            error: format!("Agent error: {}", e),
+                        },
+                    };
+                }
+            }
+            // Local kernel path
             let mut kernel_guard = room.kernel.lock().await;
             if let Some(ref mut kernel) = *kernel_guard {
                 match kernel.complete(code, cursor_pos).await {
@@ -7310,6 +7435,7 @@ mod tests {
             watcher_shutdown_tx: Mutex::new(None),
             state_doc,
             state_changed_tx,
+            agent_handle: Arc::new(Mutex::new(None)),
         };
 
         (room, notebook_path)
