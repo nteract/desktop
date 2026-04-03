@@ -588,6 +588,7 @@ fn cmd_build(rust_only: bool) {
     require_tauri();
     if !rust_only {
         require_pnpm();
+        ensure_pnpm_install();
     }
 
     // Phase 0: Build the MCP widget HTML before any Rust compilation.
