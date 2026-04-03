@@ -81,6 +81,14 @@ pub(crate) fn catch_automerge_panic<T>(label: &str, f: impl FnOnce() -> T) -> Re
     }
 }
 
+/// Check if agent mode is enabled on the daemon.
+///
+/// Reads the daemon's in-memory flag, which is initialized from
+/// `RUNT_AGENT_MODE=1` and can be toggled at runtime via the pool IPC.
+fn is_agent_mode_enabled(daemon: &crate::daemon::Daemon) -> bool {
+    daemon.agent_mode.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Trust state for a notebook room.
 /// Tracks whether the notebook's dependencies are trusted for auto-launch.
 #[derive(Debug, Clone)]
@@ -883,6 +891,8 @@ pub struct NotebookRoom {
     /// instead of the local `RoomKernel`. Set by `LaunchKernel` when
     /// `RUNT_AGENT_MODE=1`.
     pub agent_handle: Arc<Mutex<Option<crate::agent_handle::AgentHandle>>>,
+    /// Environment path used by an agent-backed kernel, for GC protection.
+    pub agent_env_path: Arc<RwLock<Option<PathBuf>>>,
 }
 
 /// Maximum number of snapshots to keep per notebook hash.
@@ -1066,6 +1076,7 @@ impl NotebookRoom {
             state_doc,
             state_changed_tx,
             agent_handle: Arc::new(Mutex::new(None)),
+            agent_env_path: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -1130,29 +1141,54 @@ impl NotebookRoom {
             state_doc,
             state_changed_tx,
             agent_handle: Arc::new(Mutex::new(None)),
+            agent_env_path: Arc::new(RwLock::new(None)),
         }
     }
 
     /// Check if this room has an active kernel.
     pub async fn has_kernel(&self) -> bool {
+        // Check local kernel first
         let kernel = self.kernel.lock().await;
-        kernel.as_ref().is_some_and(|k| k.is_running())
+        if kernel.as_ref().is_some_and(|k| k.is_running()) {
+            return true;
+        }
+        drop(kernel);
+        // Check agent handle
+        let agent = self.agent_handle.lock().await;
+        agent.as_ref().is_some_and(|a| a.is_alive())
     }
 
-    /// Get kernel info if a kernel is running.
+    /// Get kernel info if a kernel is running (local or agent-backed).
+    ///
+    /// For agent-backed kernels, reads from RuntimeStateDoc (source of truth).
     pub async fn kernel_info(&self) -> Option<(String, String, String)> {
+        // Check local kernel first
         let kernel = self.kernel.lock().await;
-        kernel.as_ref().and_then(|k| {
+        if let Some(k) = kernel.as_ref() {
             if k.is_running() {
-                Some((
+                return Some((
                     k.kernel_type().to_string(),
                     k.env_source().to_string(),
                     k.status().to_string(),
-                ))
-            } else {
-                None
+                ));
             }
-        })
+        }
+        drop(kernel);
+
+        // Check agent — read from RuntimeStateDoc
+        let agent = self.agent_handle.lock().await;
+        if agent.as_ref().is_some_and(|a| a.is_alive()) {
+            let sd = self.state_doc.read().await;
+            let state = sd.read_state();
+            if state.kernel.status != "not_started" && !state.kernel.status.is_empty() {
+                return Some((
+                    state.kernel.name.clone(),
+                    state.kernel.env_source.clone(),
+                    state.kernel.status.clone(),
+                ));
+            }
+        }
+        None
     }
 }
 
@@ -3017,6 +3053,87 @@ async fn auto_launch_kernel(
     // Save prewarmed packages before launched_config is moved into kernel.launch()
     let prewarmed_packages = launched_config.prewarmed_packages.clone();
 
+    // Agent mode: spawn subprocess instead of local kernel
+    if is_agent_mode_enabled(&daemon) {
+        info!("[notebook-sync] Agent mode: spawning agent subprocess for auto-launch");
+
+        let nb_id = notebook_id.to_string();
+        let agent_id = format!("rt:agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
+
+        match crate::agent_handle::AgentHandle::spawn(
+            nb_id,
+            agent_id,
+            room.blob_store.root().to_path_buf(),
+            room.state_doc.clone(),
+            room.state_changed_tx.clone(),
+            room.kernel_broadcast_tx.clone(),
+        )
+        .await
+        {
+            Ok(mut agent) => {
+                // Send LaunchKernel to the agent
+                match agent
+                    .launch_kernel(
+                        kernel_type,
+                        &env_source,
+                        notebook_path_opt
+                            .as_deref()
+                            .map(|p| p.to_str().unwrap_or("")),
+                        launched_config.clone(),
+                    )
+                    .await
+                {
+                    Ok(notebook_protocol::protocol::AgentResponse::KernelLaunched {
+                        env_source: es,
+                    }) => {
+                        // No state_doc replacement needed — the agent bootstrapped
+                        // FROM the coordinator's doc (like frontend NotebookDoc).
+                        // The coordinator keeps its scaffolded doc; the agent
+                        // writes with a different actor. No DuplicateSeqNumber.
+
+                        let mut agent_guard = room.agent_handle.lock().await;
+                        *agent_guard = Some(agent);
+                        drop(kernel_guard);
+                        drop(agent_guard);
+
+                        // Store env path for GC protection
+                        if let Some(ref env) = pooled_env {
+                            let mut ep = room.agent_env_path.write().await;
+                            *ep = Some(env.venv_path.clone());
+                        }
+
+                        publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es)
+                            .await;
+
+                        info!(
+                            "[notebook-sync] Auto-launch via agent succeeded: {} kernel with {} environment",
+                            kernel_type, es
+                        );
+                        return;
+                    }
+                    Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
+                        warn!(
+                            "[notebook-sync] Agent kernel launch failed: {} — falling back to local",
+                            error
+                        );
+                        // Fall through to local launch below
+                    }
+                    _ => {
+                        warn!("[notebook-sync] Unexpected agent response — falling back to local");
+                        // Fall through to local launch below
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "[notebook-sync] Failed to spawn agent: {} — falling back to local kernel",
+                    e
+                );
+                // Fall through to local launch below
+            }
+        }
+    }
+
     match kernel
         .launch(
             kernel_type,
@@ -3748,6 +3865,109 @@ async fn handle_notebook_request(
                 }
             }
 
+            // Check if agent mode is enabled.
+            // Default: ON in dev mode (RUNTIMED_DEV=1), OFF in production.
+            // Override: RUNT_AGENT_MODE=1 to force on, RUNT_AGENT_MODE=0 to force off.
+            if is_agent_mode_enabled(&daemon) {
+                info!("[notebook-sync] RUNT_AGENT_MODE=1: spawning agent subprocess");
+
+                let notebook_id = room.notebook_path.read().await.display().to_string();
+                let agent_id = format!("rt:agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
+
+                match crate::agent_handle::AgentHandle::spawn(
+                    notebook_id,
+                    agent_id,
+                    room.blob_store.root().to_path_buf(),
+                    room.state_doc.clone(),
+                    room.state_changed_tx.clone(),
+                    room.kernel_broadcast_tx.clone(),
+                )
+                .await
+                {
+                    Ok(mut agent) => {
+                        // Send LaunchKernel to the agent
+                        match agent
+                            .launch_kernel(
+                                &resolved_kernel_type,
+                                &resolved_env_source,
+                                notebook_path.as_deref().map(|p| p.to_str().unwrap_or("")),
+                                launched_config.clone(),
+                            )
+                            .await
+                        {
+                            Ok(notebook_protocol::protocol::AgentResponse::KernelLaunched {
+                                env_source: es,
+                            }) => {
+                                // Agent launched — replace state_doc with empty
+                                // to avoid DuplicateSeqNumber with agent's doc.
+                                let mut agent_guard = room.agent_handle.lock().await;
+                                *agent_guard = Some(agent);
+                                drop(kernel_guard);
+                                drop(agent_guard);
+
+                                publish_kernel_state_presence(
+                                    room,
+                                    presence::KernelStatus::Idle,
+                                    &es,
+                                )
+                                .await;
+
+                                // Write kernel status + info + prewarmed packages
+                                // to RuntimeStateDoc (mirrors the local launch path)
+                                {
+                                    let mut sd = room.state_doc.write().await;
+                                    let mut changed = false;
+                                    changed |= sd.set_kernel_status("idle");
+                                    changed |= sd.set_kernel_info(
+                                        &resolved_kernel_type,
+                                        &resolved_kernel_type,
+                                        &es,
+                                    );
+                                    changed |= sd.set_prewarmed_packages(
+                                        &launched_config.prewarmed_packages,
+                                    );
+                                    if changed {
+                                        let _ = room.state_changed_tx.send(());
+                                    }
+                                }
+
+                                return NotebookResponse::KernelLaunched {
+                                    kernel_type: resolved_kernel_type,
+                                    env_source: es,
+                                    launched_config,
+                                };
+                            }
+                            Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
+                                reset_starting_state(room).await;
+                                return NotebookResponse::Error {
+                                    error: format!("Agent kernel launch failed: {}", error),
+                                };
+                            }
+                            Ok(_) => {
+                                reset_starting_state(room).await;
+                                return NotebookResponse::Error {
+                                    error: "Unexpected agent response".to_string(),
+                                };
+                            }
+                            Err(e) => {
+                                reset_starting_state(room).await;
+                                return NotebookResponse::Error {
+                                    error: format!("Agent communication error: {}", e),
+                                };
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "[notebook-sync] Failed to spawn agent: {} — falling back to local kernel",
+                            e
+                        );
+                        // Fall through to local kernel.launch() below
+                    }
+                }
+            }
+
+            // Local kernel path
             match kernel
                 .launch(
                     &resolved_kernel_type,
@@ -3878,8 +4098,8 @@ async fn handle_notebook_request(
 
             // Check for agent-backed kernel first
             {
-                let agent_guard = room.agent_handle.lock().await;
-                if let Some(ref agent) = *agent_guard {
+                let mut agent_guard = room.agent_handle.lock().await;
+                if let Some(ref mut agent) = *agent_guard {
                     let execution_id = uuid::Uuid::new_v4().to_string();
                     // Stamp execution_id on the cell before sending to agent
                     {
@@ -4028,8 +4248,8 @@ async fn handle_notebook_request(
         NotebookRequest::InterruptExecution {} => {
             // Agent path
             {
-                let agent_guard = room.agent_handle.lock().await;
-                if let Some(ref agent) = *agent_guard {
+                let mut agent_guard = room.agent_handle.lock().await;
+                if let Some(ref mut agent) = *agent_guard {
                     return match agent.interrupt().await {
                         Ok(_) => NotebookResponse::InterruptSent {},
                         Err(e) => NotebookResponse::Error {
@@ -4107,20 +4327,35 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::GetKernelInfo {} => {
+            // Try local kernel first, then RuntimeStateDoc (covers agent mode)
             let kernel_guard = room.kernel.lock().await;
             if let Some(ref kernel) = *kernel_guard {
                 if kernel.is_running() {
-                    NotebookResponse::KernelInfo {
+                    return NotebookResponse::KernelInfo {
                         kernel_type: Some(kernel.kernel_type().to_string()),
                         env_source: Some(kernel.env_source().to_string()),
                         status: kernel.status().to_string(),
-                    }
-                } else {
-                    NotebookResponse::KernelInfo {
-                        kernel_type: None,
-                        env_source: None,
-                        status: "not_started".to_string(),
-                    }
+                    };
+                }
+            }
+            drop(kernel_guard);
+
+            // Read from RuntimeStateDoc (works for both local and agent-backed kernels)
+            let sd = room.state_doc.read().await;
+            let state = sd.read_state();
+            if state.kernel.status != "not_started" && !state.kernel.status.is_empty() {
+                NotebookResponse::KernelInfo {
+                    kernel_type: if state.kernel.name.is_empty() {
+                        None
+                    } else {
+                        Some(state.kernel.name)
+                    },
+                    env_source: if state.kernel.env_source.is_empty() {
+                        None
+                    } else {
+                        Some(state.kernel.env_source)
+                    },
+                    status: state.kernel.status,
                 }
             } else {
                 NotebookResponse::KernelInfo {
@@ -4132,21 +4367,90 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::GetQueueState {} => {
+            // Try local kernel first
             let kernel_guard = room.kernel.lock().await;
             if let Some(ref kernel) = *kernel_guard {
-                NotebookResponse::QueueState {
+                return NotebookResponse::QueueState {
                     executing: kernel.executing_entry(),
                     queued: kernel.queued_cells(),
-                }
-            } else {
-                NotebookResponse::QueueState {
-                    executing: None,
-                    queued: vec![],
-                }
+                };
+            }
+            drop(kernel_guard);
+
+            // Read from RuntimeStateDoc (works for agent-backed kernels)
+            let sd = room.state_doc.read().await;
+            let state = sd.read_state();
+            NotebookResponse::QueueState {
+                executing: state.queue.executing.map(|e| QueueEntry {
+                    cell_id: e.cell_id,
+                    execution_id: e.execution_id,
+                }),
+                queued: state
+                    .queue
+                    .queued
+                    .into_iter()
+                    .map(|e| QueueEntry {
+                        cell_id: e.cell_id,
+                        execution_id: e.execution_id,
+                    })
+                    .collect(),
             }
         }
 
         NotebookRequest::RunAllCells {} => {
+            // Agent path — read all cells, send each to agent
+            {
+                let mut agent_guard = room.agent_handle.lock().await;
+                if let Some(ref mut agent) = *agent_guard {
+                    let cells = {
+                        let doc = room.doc.read().await;
+                        doc.get_cells()
+                    };
+
+                    let mut queued = Vec::new();
+                    for cell in cells {
+                        if cell.cell_type == "code" {
+                            let execution_id = uuid::Uuid::new_v4().to_string();
+                            match agent
+                                .execute_cell(&cell.id, &cell.source, &execution_id)
+                                .await
+                            {
+                                Ok(notebook_protocol::protocol::AgentResponse::CellQueued {
+                                    cell_id,
+                                    execution_id,
+                                }) => {
+                                    queued.push(QueueEntry {
+                                        cell_id,
+                                        execution_id,
+                                    });
+                                }
+                                Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
+                                    return NotebookResponse::Error {
+                                        error: format!(
+                                            "Agent failed to queue cell {}: {}",
+                                            cell.id, error
+                                        ),
+                                    };
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    // Stamp execution_ids in NotebookDoc
+                    {
+                        let mut doc = room.doc.write().await;
+                        for entry in &queued {
+                            let _ = doc.set_execution_id(&entry.cell_id, Some(&entry.execution_id));
+                        }
+                        let _ = room.changed_tx.send(());
+                    }
+
+                    return NotebookResponse::AllCellsQueued { queued };
+                }
+            }
+
+            // Local kernel path
             let mut kernel_guard = room.kernel.lock().await;
             if let Some(ref mut kernel) = *kernel_guard {
                 // Read all cells from the synced Automerge document
@@ -4236,8 +4540,8 @@ async fn handle_notebook_request(
         NotebookRequest::SendComm { message } => {
             // Agent path
             {
-                let agent_guard = room.agent_handle.lock().await;
-                if let Some(ref agent) = *agent_guard {
+                let mut agent_guard = room.agent_handle.lock().await;
+                if let Some(ref mut agent) = *agent_guard {
                     return match agent.send_comm(message).await {
                         Ok(_) => NotebookResponse::Ok {},
                         Err(e) => NotebookResponse::Error {
@@ -4286,8 +4590,8 @@ async fn handle_notebook_request(
         NotebookRequest::GetHistory { pattern, n, unique } => {
             // Agent path
             {
-                let agent_guard = room.agent_handle.lock().await;
-                if let Some(ref agent) = *agent_guard {
+                let mut agent_guard = room.agent_handle.lock().await;
+                if let Some(ref mut agent) = *agent_guard {
                     return match agent.get_history(pattern.as_deref(), n, unique).await {
                         Ok(notebook_protocol::protocol::AgentResponse::HistoryResult {
                             entries,
@@ -4321,8 +4625,8 @@ async fn handle_notebook_request(
         NotebookRequest::Complete { code, cursor_pos } => {
             // Agent path
             {
-                let agent_guard = room.agent_handle.lock().await;
-                if let Some(ref agent) = *agent_guard {
+                let mut agent_guard = room.agent_handle.lock().await;
+                if let Some(ref mut agent) = *agent_guard {
                     return match agent.complete(&code, cursor_pos).await {
                         Ok(notebook_protocol::protocol::AgentResponse::CompletionResult {
                             items,
@@ -7436,6 +7740,7 @@ mod tests {
             state_doc,
             state_changed_tx,
             agent_handle: Arc::new(Mutex::new(None)),
+            agent_env_path: Arc::new(RwLock::new(None)),
         };
 
         (room, notebook_path)

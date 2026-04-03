@@ -337,13 +337,29 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Agent) => {
             // Agent mode: communicate over stdin/stdout using framed protocol.
-            // Logs go to stderr only.
-            runtimed::agent::run_agent(tokio::io::stdin(), tokio::io::stdout())
-                .await
-                .map_err(|e| {
-                    eprintln!("[agent] Fatal: {}", e);
-                    e
-                })
+            #[cfg(unix)]
+            {
+                // Use tokio::fs::File from raw fd to avoid tokio::io::stdout()
+                // buffering issues that prevent frames from being read by the parent.
+                use std::os::unix::io::FromRawFd;
+                let stdin = unsafe { tokio::fs::File::from_raw_fd(0) };
+                let stdout = unsafe { tokio::fs::File::from_raw_fd(1) };
+                runtimed::agent::run_agent(stdin, stdout)
+                    .await
+                    .map_err(|e| {
+                        eprintln!("[agent] Fatal: {}", e);
+                        e
+                    })
+            }
+            #[cfg(not(unix))]
+            {
+                runtimed::agent::run_agent(tokio::io::stdin(), tokio::io::stdout())
+                    .await
+                    .map_err(|e| {
+                        eprintln!("[agent] Fatal: {}", e);
+                        e
+                    })
+            }
         }
     }
 }
@@ -372,6 +388,9 @@ async fn run_daemon(
     info!("  Blob store: {:?}", config.blob_store_dir);
     info!("  UV pool size: {}", config.uv_pool_size);
     info!("  Conda pool size: {}", config.conda_pool_size);
+    if std::env::var("RUNT_AGENT_MODE").as_deref() == Ok("1") {
+        info!("  Agent mode: ENABLED (kernels run in subprocess)");
+    }
 
     let daemon = match Daemon::new(config) {
         Ok(d) => d,

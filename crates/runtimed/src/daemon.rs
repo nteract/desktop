@@ -347,6 +347,9 @@ pub struct Daemon {
     uv_pool: Mutex<Pool>,
     conda_pool: Mutex<Pool>,
     shutdown: Arc<Mutex<bool>>,
+    /// Runtime feature flag: kernel execution via agent subprocess.
+    /// Toggled via `runt agent enable` / `runt agent disable`.
+    pub agent_mode: Arc<std::sync::atomic::AtomicBool>,
     /// Notifier to wake up accept loops on shutdown.
     shutdown_notify: Arc<Notify>,
     /// Singleton lock - kept alive while daemon is running.
@@ -399,6 +402,9 @@ impl Daemon {
 
         let blob_store = Arc::new(BlobStore::new(config.blob_store_dir.clone()));
 
+        // Initialize agent mode from env var
+        let agent_mode = std::env::var("RUNT_AGENT_MODE").as_deref() == Ok("1");
+
         Ok(Arc::new(Self {
             uv_pool: Mutex::new(Pool::new(config.uv_pool_size, config.max_age_secs)),
             conda_pool: Mutex::new(Pool::new(config.conda_pool_size, config.max_age_secs)),
@@ -413,6 +419,7 @@ impl Daemon {
             blob_store,
             blob_port: Mutex::new(None),
             notebook_rooms: Arc::new(Mutex::new(HashMap::new())),
+            agent_mode: Arc::new(std::sync::atomic::AtomicBool::new(agent_mode)),
         }))
     }
 
@@ -1872,6 +1879,15 @@ impl Daemon {
                     self.collect_active_env_paths().await.into_iter().collect();
                 Response::ActiveEnvPaths { paths }
             }
+            Request::SetAgentMode { enabled } => {
+                self.agent_mode
+                    .store(enabled, std::sync::atomic::Ordering::Relaxed);
+                info!(
+                    "[runtimed] Agent mode {}",
+                    if enabled { "ENABLED" } else { "DISABLED" }
+                );
+                Response::Ok
+            }
         }
     }
 
@@ -1880,6 +1896,7 @@ impl Daemon {
         let mut paths = std::collections::HashSet::new();
         let rooms = self.notebook_rooms.lock().await;
         for room in rooms.values() {
+            // Check local kernel
             let kernel_guard = room.kernel.lock().await;
             if let Some(ref kernel) = *kernel_guard {
                 if kernel.is_running() {
@@ -1887,6 +1904,12 @@ impl Daemon {
                         paths.insert(env_path.clone());
                     }
                 }
+            }
+            drop(kernel_guard);
+
+            // Check agent-backed kernel
+            if let Some(ref env_path) = *room.agent_env_path.read().await {
+                paths.insert(env_path.clone());
             }
         }
         paths

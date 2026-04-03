@@ -98,18 +98,17 @@ where
 
     // ── 2. Bootstrap RuntimeStateDoc ────────────────────────────────────────
 
-    let mut state_doc = RuntimeStateDoc::new();
-    state_doc.set_actor(&agent_id);
+    // The agent creates its own RuntimeStateDoc with scaffolding but a UNIQUE
+    // actor ID. This avoids DuplicateSeqNumber — the coordinator uses
+    // "runtimed:state" as its actor, the agent uses its own agent_id.
+    // Both docs have the same structure but different actors, so sync merges cleanly.
+    let state_doc = RuntimeStateDoc::new_with_actor(&agent_id);
 
-    // TODO: Initial sync — read RuntimeStateSync frames from coordinator
-    // until convergence. For now, start with empty doc.
+    // Automerge sync state for the coordinator peer.
+    let mut coordinator_sync_state = automerge::sync::State::new();
 
     let state_doc = Arc::new(RwLock::new(state_doc));
     let (state_changed_tx, mut state_changed_rx) = broadcast::channel::<()>(64);
-
-    // Automerge sync state for the coordinator peer. Persistent across the
-    // agent's lifetime so incremental sync works correctly.
-    let mut coordinator_sync_state = automerge::sync::State::new();
 
     // ── 3. Create local infrastructure ──────────────────────────────────────
 
@@ -199,6 +198,7 @@ where
                 let mut sd = ctx.state_doc.write().await;
                 if let Some(msg) = sd.generate_sync_message(&mut coordinator_sync_state) {
                     let encoded = msg.encode();
+                    info!("[agent] Sending RuntimeStateSync frame ({} bytes)", encoded.len());
                     if let Err(e) = send_typed_frame(
                         &mut writer,
                         NotebookFrameType::RuntimeStateSync,
@@ -602,6 +602,9 @@ mod tests {
         .await
         .unwrap();
         recv_preamble(&mut coord_reader).await.unwrap();
+
+        // Agent uses new_with_actor — no bootstrap sync needed.
+        // It goes straight to the main loop after preamble exchange.
 
         // Send ShutdownKernel request
         let request = AgentRequest::ShutdownKernel;
