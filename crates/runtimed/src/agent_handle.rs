@@ -54,7 +54,7 @@ impl AgentHandle {
             .kill_on_drop(true)
             .spawn()?;
 
-        let writer = child
+        let mut writer = child
             .stdin
             .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to capture agent stdin"))?;
@@ -63,22 +63,17 @@ impl AgentHandle {
             .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to capture agent stdout"))?;
 
-        let writer = Arc::new(Mutex::new(writer));
-
-        // Preamble + handshake exchange
-        {
-            let mut w = writer.lock().await;
-            send_preamble(&mut *w).await?;
-            send_json_frame(
-                &mut *w,
-                &Handshake::RuntimeAgent {
-                    notebook_id,
-                    agent_id,
-                    blob_root: blob_root.to_string_lossy().to_string(),
-                },
-            )
-            .await?;
-        }
+        // Preamble + handshake exchange (before wrapping writer in Arc<Mutex>)
+        send_preamble(&mut writer).await?;
+        send_json_frame(
+            &mut writer,
+            &Handshake::RuntimeAgent {
+                notebook_id,
+                agent_id,
+                blob_root: blob_root.to_string_lossy().to_string(),
+            },
+        )
+        .await?;
         recv_preamble(&mut reader).await?;
 
         // Bootstrap RuntimeStateDoc sync — bidirectional exchange.
@@ -105,8 +100,7 @@ impl AgentHandle {
             while let Some(reply) = sd.generate_sync_message(&mut sync_state) {
                 let encoded = reply.encode();
                 info!("[agent-handle] Sending sync reply ({} bytes)", encoded.len());
-                let mut w = writer.lock().await;
-                send_typed_frame(&mut *w, NotebookFrameType::RuntimeStateSync, &encoded)
+                send_typed_frame(&mut writer, NotebookFrameType::RuntimeStateSync, &encoded)
                     .await?;
                 sync_count += 1;
             }
@@ -130,6 +124,9 @@ impl AgentHandle {
 
             info!("[agent-handle] RuntimeStateDoc sync complete");
         }
+
+        // Now wrap writer in Arc<Mutex> for shared access with reader task
+        let writer = Arc::new(Mutex::new(writer));
 
         let alive = Arc::new(AtomicBool::new(true));
         let (response_request_tx, mut response_request_rx) =
