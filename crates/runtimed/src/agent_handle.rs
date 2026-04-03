@@ -293,12 +293,14 @@ async fn io_loop<R, W>(
 
                             // RuntimeStateSync (0x05)
                             0x05 => {
+                                debug!("[agent-handle] Received RuntimeStateSync ({} bytes)", payload.len());
                                 if let Ok(msg) = automerge::sync::Message::decode(payload) {
                                     let mut sd = state_doc.write().await;
                                     if let Ok(changed) = sd.receive_sync_message_with_changes(
                                         &mut agent_sync_state, msg,
                                     ) {
                                         if changed {
+                                            debug!("[agent-handle] RuntimeStateDoc changed, notifying peers");
                                             let _ = state_changed_tx.send(());
                                         }
                                     }
