@@ -3748,6 +3748,89 @@ async fn handle_notebook_request(
                 }
             }
 
+            // Check if agent mode is enabled
+            if std::env::var("RUNT_AGENT_MODE").as_deref() == Ok("1") {
+                info!("[notebook-sync] RUNT_AGENT_MODE=1: spawning agent subprocess");
+
+                let notebook_id = room.notebook_path.read().await.display().to_string();
+                let agent_id = format!("rt:agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
+
+                match crate::agent_handle::AgentHandle::spawn(
+                    notebook_id,
+                    agent_id,
+                    room.blob_store.root().to_path_buf(),
+                    room.state_doc.clone(),
+                    room.state_changed_tx.clone(),
+                    room.kernel_broadcast_tx.clone(),
+                )
+                .await
+                {
+                    Ok(agent) => {
+                        // Send LaunchKernel to the agent
+                        match agent
+                            .launch_kernel(
+                                &resolved_kernel_type,
+                                &resolved_env_source,
+                                notebook_path.as_deref().map(|p| p.to_str().unwrap_or("")),
+                                launched_config.clone(),
+                            )
+                            .await
+                        {
+                            Ok(notebook_protocol::protocol::AgentResponse::KernelLaunched {
+                                env_source: es,
+                            }) => {
+                                let mut agent_guard = room.agent_handle.lock().await;
+                                *agent_guard = Some(agent);
+                                drop(kernel_guard);
+                                drop(agent_guard);
+
+                                publish_kernel_state_presence(
+                                    room,
+                                    presence::KernelStatus::Idle,
+                                    &es,
+                                )
+                                .await;
+
+                                return NotebookResponse::KernelLaunched {
+                                    kernel_type: resolved_kernel_type,
+                                    env_source: es,
+                                    launched_config,
+                                };
+                            }
+                            Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
+                                reset_starting_state(room).await;
+                                return NotebookResponse::Error {
+                                    error: format!("Agent kernel launch failed: {}", error),
+                                };
+                            }
+                            Ok(_) => {
+                                reset_starting_state(room).await;
+                                return NotebookResponse::Error {
+                                    error: "Unexpected agent response".to_string(),
+                                };
+                            }
+                            Err(e) => {
+                                reset_starting_state(room).await;
+                                return NotebookResponse::Error {
+                                    error: format!("Agent communication error: {}", e),
+                                };
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "[notebook-sync] Failed to spawn agent, falling back to local: {}",
+                            e
+                        );
+                        reset_starting_state(room).await;
+                        return NotebookResponse::Error {
+                            error: format!("Failed to spawn agent: {}", e),
+                        };
+                    }
+                }
+            }
+
+            // Local kernel path
             match kernel
                 .launch(
                     &resolved_kernel_type,

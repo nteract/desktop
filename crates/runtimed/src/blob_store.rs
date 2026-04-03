@@ -15,7 +15,7 @@
 //! directory and renamed into place, so readers never see partial writes.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,11 @@ impl BlobStore {
     /// The directory is created lazily on first `put()`.
     pub fn new(root: PathBuf) -> Self {
         Self { root }
+    }
+
+    /// Get the root directory of this blob store.
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     /// Store `data` with the given `media_type`.
