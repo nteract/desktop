@@ -264,6 +264,7 @@ async fn io_loop<R, W>(
     // Subscribe to state_doc changes for reverse sync (coordinator → agent)
     let mut state_changed_rx = state_changed_tx.subscribe();
 
+    info!("[agent-handle] IO loop started");
     loop {
         tokio::select! {
             // Read frames from agent stdout
