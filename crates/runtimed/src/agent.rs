@@ -200,6 +200,7 @@ where
                 let mut sd = ctx.state_doc.write().await;
                 if let Some(msg) = sd.generate_sync_message(&mut coordinator_sync_state) {
                     let encoded = msg.encode();
+                    info!("[agent] Sending RuntimeStateSync frame ({} bytes)", encoded.len());
                     if let Err(e) = send_typed_frame(
                         &mut writer,
                         NotebookFrameType::RuntimeStateSync,
