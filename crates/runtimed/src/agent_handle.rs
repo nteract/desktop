@@ -28,7 +28,6 @@ use tokio::sync::{broadcast, RwLock};
 pub struct AgentHandle {
     reader: ChildStdout,
     writer: ChildStdin,
-    child: Child,
     alive: Arc<AtomicBool>,
     state_doc: Arc<RwLock<RuntimeStateDoc>>,
     state_changed_tx: broadcast::Sender<()>,
@@ -113,11 +112,22 @@ impl AgentHandle {
 
         info!("[agent-handle] Agent spawned — RuntimeStateDoc bootstrapped");
 
+        let alive = Arc::new(AtomicBool::new(true));
+
+        // Spawn a task to wait on the child process. This is required for
+        // tokio's ChildStdout I/O driver to pump data — without it,
+        // recv_frame blocks forever because the runtime doesn't poll the child.
+        let alive_clone = alive.clone();
+        tokio::spawn(async move {
+            let _ = child.wait().await;
+            alive_clone.store(false, Ordering::Relaxed);
+            info!("[agent-handle] Agent process exited");
+        });
+
         Ok(Self {
             reader,
             writer,
-            child,
-            alive: Arc::new(AtomicBool::new(true)),
+            alive,
             state_doc,
             state_changed_tx,
             agent_sync_state: automerge::sync::State::new(),
@@ -292,7 +302,7 @@ impl AgentHandle {
         if self.is_alive() {
             let _ = self.shutdown_kernel().await;
         }
-        let _ = self.child.kill().await;
+        // Child process is managed by the wait task (kill_on_drop handles cleanup)
         self.alive.store(false, Ordering::Relaxed);
     }
 }
