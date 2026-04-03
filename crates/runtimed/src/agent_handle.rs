@@ -83,21 +83,35 @@ impl AgentHandle {
         .await?;
         recv_preamble(&mut reader).await?;
 
-        // Test: can we read a frame right after preamble?
-        info!("[agent-handle] Testing recv_frame in spawn()...");
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            recv_frame(&mut reader),
-        ).await {
-            Ok(Ok(Some(data))) => {
-                info!("[agent-handle] Got frame in spawn: type=0x{:02x} ({} bytes)",
-                    data.first().copied().unwrap_or(0), data.len());
+        // Read the agent's initial RuntimeStateDoc sync frame.
+        // The agent sends this immediately after preamble — it contains the
+        // full scaffolded schema. We apply it to the coordinator's state_doc.
+        info!("[agent-handle] Waiting for agent's initial sync...");
+        match recv_frame(&mut reader).await? {
+            Some(data) if !data.is_empty() && data[0] == 0x05 => {
+                let payload = &data[1..];
+                let msg = automerge::sync::Message::decode(payload)?;
+                let mut sd = state_doc.write().await;
+                let mut sync_state = automerge::sync::State::new();
+                sd.receive_sync_message_with_changes(&mut sync_state, msg)?;
+                let _ = state_changed_tx.send(());
+                info!(
+                    "[agent-handle] Applied agent's initial RuntimeStateDoc sync ({} bytes)",
+                    data.len()
+                );
             }
-            Ok(Ok(None)) => info!("[agent-handle] EOF in spawn recv_frame"),
-            Ok(Err(e)) => info!("[agent-handle] Error in spawn recv_frame: {}", e),
-            Err(_) => info!("[agent-handle] Timeout in spawn recv_frame (5s)"),
+            Some(data) => {
+                warn!(
+                    "[agent-handle] Expected RuntimeStateSync (0x05), got 0x{:02x}",
+                    data.first().copied().unwrap_or(0)
+                );
+            }
+            None => {
+                anyhow::bail!("Agent EOF before initial sync");
+            }
         }
-        info!("[agent-handle] Agent spawned — RuntimeStateDoc owned by agent");
+
+        info!("[agent-handle] Agent spawned — RuntimeStateDoc bootstrapped");
 
         Ok(Self {
             reader,
