@@ -620,6 +620,13 @@ mod tests {
         .unwrap();
         recv_preamble(&mut coord_reader).await.unwrap();
 
+        // Read and skip the initial RuntimeStateSync frame
+        let sync_frame = recv_frame(&mut coord_reader).await.unwrap().unwrap();
+        assert_eq!(
+            sync_frame[0], 0x05,
+            "First frame should be RuntimeStateSync"
+        );
+
         // Send ShutdownKernel request
         let request = AgentRequest::ShutdownKernel;
         let json = serde_json::to_vec(&request).unwrap();
