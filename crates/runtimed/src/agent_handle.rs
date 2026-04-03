@@ -264,7 +264,29 @@ async fn io_loop<R, W>(
     // Subscribe to state_doc changes for reverse sync (coordinator → agent)
     let mut state_changed_rx = state_changed_tx.subscribe();
 
-    info!("[agent-handle] IO loop started");
+    info!("[agent-handle] IO loop started, reading first frame...");
+    // Try reading the first frame OUTSIDE the select to verify stdout works
+    match recv_frame(&mut reader).await {
+        Ok(Some(first_frame)) => {
+            info!(
+                "[agent-handle] First frame from agent: type=0x{:02x} ({} bytes)",
+                first_frame.first().copied().unwrap_or(0),
+                first_frame.len()
+            );
+        }
+        Ok(None) => {
+            info!("[agent-handle] Agent stdout EOF on first read");
+            alive.store(false, Ordering::Relaxed);
+            return;
+        }
+        Err(e) => {
+            warn!("[agent-handle] Error reading first frame: {}", e);
+            alive.store(false, Ordering::Relaxed);
+            return;
+        }
+    }
+
+    info!("[agent-handle] Entering main IO loop");
     loop {
         tokio::select! {
             biased;
