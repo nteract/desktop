@@ -70,6 +70,13 @@ export class DirectTransport implements NotebookTransport {
    */
   simulateFailure = false;
 
+  /**
+   * Handler for `sendRequest` calls. Set this to provide test responses.
+   * Defaults to returning `{ result: "ok" }` for all requests.
+   */
+  requestHandler: (request: unknown) => Promise<unknown> = () =>
+    Promise.resolve({ result: "ok" });
+
   constructor(server: ServerHandle) {
     this.server = server;
   }
@@ -104,6 +111,13 @@ export class DirectTransport implements NotebookTransport {
     return () => {
       this.subscribers.delete(callback);
     };
+  }
+
+  async sendRequest(request: unknown): Promise<unknown> {
+    if (!this._connected) {
+      throw new Error("DirectTransport: not connected");
+    }
+    return this.requestHandler(request);
   }
 
   disconnect(): void {

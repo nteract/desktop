@@ -50,6 +50,57 @@ export {
   DEFAULT_POOL_STATE,
 } from "./pool-state";
 
+// Broadcast types
+export {
+  type CommBroadcast,
+  type DisplayUpdateBroadcast,
+  isCommBroadcast,
+  isDisplayUpdateBroadcast,
+  isKernelErrorBroadcast,
+  isOutputBroadcast,
+  isOutputsClearedBroadcast,
+  isRuntimeStateSnapshotBroadcast,
+  type KernelErrorBroadcast,
+  type KnownBroadcast,
+  type OutputBroadcast,
+  type OutputsClearedBroadcast,
+  type RuntimeStateSnapshotBroadcast,
+} from "./broadcast-types";
+
+// Comm diffing
+export {
+  type CommDiffResult,
+  type CommDiffState,
+  detectOutputManifestHashes,
+  diffComms,
+  isManifestHash,
+  type OutputManifestHashes,
+} from "./comm-diff";
+
+// Derived state
+export {
+  type DaemonQueueState,
+  deriveEnvSyncState,
+  deriveKernelInfo,
+  deriveQueueState,
+  type EnvSyncDiff,
+  type EnvSyncState,
+  isKernelStatus,
+  KERNEL_STATUS,
+  kernelStatus$,
+  type KernelInfo,
+  type KernelStatus,
+  throttleBusyStatus,
+} from "./derived-state";
+
+// Notebook client
+export { NotebookClient, type NotebookClientOptions } from "./notebook-client";
+export type {
+  CommRequestMessage,
+  NotebookRequest,
+  NotebookResponse,
+} from "./request-types";
+
 // Testing
 export { DirectTransport } from "./direct-transport";
 export type { ServerHandle } from "./direct-transport";

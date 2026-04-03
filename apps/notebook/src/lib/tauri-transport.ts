@@ -8,7 +8,11 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import type { FrameListener, NotebookTransport } from "runtimed";
+import type {
+  FrameListener,
+  NotebookRequest,
+  NotebookTransport,
+} from "runtimed";
 
 export class TauriTransport implements NotebookTransport {
   private _connected = true;
@@ -59,6 +63,36 @@ export class TauriTransport implements NotebookTransport {
 
     this.unlisteners.push(unlisten);
     return unlisten;
+  }
+
+  async sendRequest(request: unknown): Promise<unknown> {
+    const req = request as NotebookRequest;
+    switch (req.type) {
+      case "launch_kernel":
+        return invoke("launch_kernel_via_daemon", {
+          kernelType: req.kernel_type,
+          envSource: req.env_source,
+          notebookPath: req.notebook_path,
+        });
+      case "execute_cell":
+        return invoke("execute_cell_via_daemon", { cellId: req.cell_id });
+      case "clear_outputs":
+        return invoke("clear_outputs_via_daemon", { cellId: req.cell_id });
+      case "interrupt":
+        return invoke("interrupt_via_daemon");
+      case "shutdown_kernel":
+        return invoke("shutdown_kernel_via_daemon");
+      case "sync_environment":
+        return invoke("sync_environment_via_daemon");
+      case "run_all_cells":
+        return invoke("run_all_cells_via_daemon");
+      case "send_comm":
+        return invoke("send_comm_via_daemon", { message: req.message });
+      default:
+        throw new Error(
+          `TauriTransport: unknown request type: ${(req as { type: string }).type}`,
+        );
+    }
   }
 
   disconnect(): void {
