@@ -35,6 +35,80 @@ import type {
   JupyterOutput,
 } from "../types";
 import { resolveOutputString } from "./useManifestResolver";
+import { isManifestHash } from "../lib/manifest-resolution";
+
+/**
+ * If an OutputModel's `state.outputs` contains manifest hash strings, resolve
+ * them asynchronously to JupyterOutput objects and deliver a follow-up
+ * comm_msg(update) with the resolved outputs. This mirrors how cell outputs
+ * are resolved from the CRDT.
+ *
+ * Only triggers for OutputModel widgets (`_model_name === "OutputModel"`).
+ * Other widgets may have an `outputs` field with different semantics.
+ */
+function resolveCommOutputHashes(
+  commId: string,
+  state: Record<string, unknown>,
+  callbacksRef: {
+    readonly current: { onCommMessage?: (msg: JupyterMessage) => void };
+  },
+): void {
+  // Only resolve for OutputModel widgets
+  if (state._model_name !== "OutputModel") return;
+
+  const outputs = state.outputs;
+  if (!Array.isArray(outputs) || outputs.length === 0) return;
+
+  // Verify all entries are manifest hashes (64-char hex strings).
+  // If not, this is unexpected — log and skip.
+  const allHashes = outputs.every(
+    (o) => typeof o === "string" && isManifestHash(o),
+  );
+  if (!allHashes) {
+    if (outputs.some((o) => typeof o !== "string")) {
+      // Already resolved objects — skip silently
+      return;
+    }
+    logger.warn(
+      `[comm-sync] OutputModel ${commId}: state.outputs contains unexpected format, skipping resolution`,
+    );
+    return;
+  }
+
+  const blobPort = getBlobPort();
+  if (blobPort === null) return; // Will retry on next CRDT update
+
+  void (async () => {
+    const resolved = await Promise.all(
+      (outputs as string[]).map((h) => resolveOutputString(h, blobPort)),
+    );
+    const resolvedOutputs = resolved.filter(
+      (o): o is JupyterOutput => o !== null,
+    );
+    const cb = callbacksRef.current?.onCommMessage;
+    if (cb) {
+      cb({
+        header: {
+          msg_id: crypto.randomUUID(),
+          msg_type: "comm_msg",
+          session: "",
+          username: "kernel",
+          date: new Date().toISOString(),
+          version: "5.3",
+        },
+        metadata: {},
+        content: {
+          comm_id: commId,
+          data: {
+            method: "update",
+            state: { outputs: resolvedOutputs },
+          },
+        },
+        buffers: [],
+      });
+    }
+  })();
+}
 
 /** Kernel status from daemon */
 export type DaemonKernelStatus = KernelStatus;
@@ -526,6 +600,11 @@ export function useDaemonKernel({
       onCommMessage(msg);
       nextComms[commId] = entry;
       nextJson[commId] = JSON.stringify(entry.state);
+
+      // Resolve Output widget manifest hashes in state.outputs to JupyterOutput objects.
+      // The daemon writes manifest hashes (same format as execution outputs);
+      // we resolve them here so the iframe receives ready-to-render outputs.
+      resolveCommOutputHashes(commId, entry.state, callbacksRef);
     }
 
     // State changes — synthesize comm_msg(update)
@@ -560,6 +639,9 @@ export function useDaemonKernel({
             buffers: [],
           };
           onCommMessage(msg);
+
+          // Resolve Output widget manifest hashes in state.outputs
+          resolveCommOutputHashes(commId, entry.state, callbacksRef);
         }
       }
     }

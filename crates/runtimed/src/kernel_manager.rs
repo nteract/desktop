@@ -1257,6 +1257,24 @@ impl RoomKernel {
                                             // Read the full outputs list and sync to kernel
                                             if let Some(entry) = sd.get_comm(&widget_comm_id) {
                                                 let output_hashes = entry.outputs.clone();
+
+                                                // Write manifest hashes to state.outputs so the
+                                                // frontend CRDT watcher picks them up (it diffs
+                                                // entry.state, not entry.outputs).
+                                                let hashes_json = serde_json::Value::Array(
+                                                    output_hashes
+                                                        .iter()
+                                                        .map(|h| {
+                                                            serde_json::Value::String(h.clone())
+                                                        })
+                                                        .collect(),
+                                                );
+                                                sd.set_comm_state_property(
+                                                    &widget_comm_id,
+                                                    "outputs",
+                                                    &hashes_json,
+                                                );
+
                                                 drop(sd); // Release lock before async work
 
                                                 // Resolve manifest hashes to nbformat JSON
@@ -1294,8 +1312,7 @@ impl RoomKernel {
                                         }
                                     }
 
-                                    // No broadcast needed — frontend reads from CRDT
-                                    // comms[widget_id].outputs[] via the comms watcher.
+                                    // Frontend reads from CRDT state.outputs via the comms watcher.
                                     continue; // Skip normal cell output handling
                                 }
 
@@ -1434,7 +1451,7 @@ impl RoomKernel {
                                 }
                             }
 
-                            // DisplayData and ExecuteResult are appended normally
+                            // DisplayData and ExecuteResult are appended normally.
                             JupyterMessageContent::DisplayData(_)
                             | JupyterMessageContent::ExecuteResult(_) => {
                                 // Check if this output should go to an Output widget
@@ -1476,6 +1493,22 @@ impl RoomKernel {
                                                 // Read full outputs and sync to kernel
                                                 if let Some(entry) = sd.get_comm(&widget_comm_id) {
                                                     let output_hashes = entry.outputs.clone();
+
+                                                    // Write manifest hashes to state.outputs for frontend
+                                                    let hashes_json = serde_json::Value::Array(
+                                                        output_hashes
+                                                            .iter()
+                                                            .map(|h| {
+                                                                serde_json::Value::String(h.clone())
+                                                            })
+                                                            .collect(),
+                                                    );
+                                                    sd.set_comm_state_property(
+                                                        &widget_comm_id,
+                                                        "outputs",
+                                                        &hashes_json,
+                                                    );
+
                                                     drop(sd);
                                                     let mut resolved_outputs = Vec::new();
                                                     for h in &output_hashes {
@@ -1502,7 +1535,7 @@ impl RoomKernel {
                                                 }
                                             }
                                         }
-                                        // No broadcast — frontend reads from CRDT.
+                                        // Frontend reads from CRDT state.outputs.
                                     }
                                     continue; // Skip normal cell output handling
                                 }
@@ -1722,6 +1755,22 @@ impl RoomKernel {
                                                 // Read full outputs and sync to kernel
                                                 if let Some(entry) = sd.get_comm(&widget_comm_id) {
                                                     let output_hashes = entry.outputs.clone();
+
+                                                    // Write manifest hashes to state.outputs for frontend
+                                                    let hashes_json = serde_json::Value::Array(
+                                                        output_hashes
+                                                            .iter()
+                                                            .map(|h| {
+                                                                serde_json::Value::String(h.clone())
+                                                            })
+                                                            .collect(),
+                                                    );
+                                                    sd.set_comm_state_property(
+                                                        &widget_comm_id,
+                                                        "outputs",
+                                                        &hashes_json,
+                                                    );
+
                                                     drop(sd);
                                                     let mut resolved_outputs = Vec::new();
                                                     for h in &output_hashes {
@@ -1748,7 +1797,7 @@ impl RoomKernel {
                                                 }
                                             }
                                         }
-                                        // No broadcast — frontend reads from CRDT.
+                                        // Frontend reads from CRDT state.outputs.
                                     }
                                     continue; // Skip normal cell output handling
                                 }
@@ -1873,6 +1922,12 @@ impl RoomKernel {
                                         if sd.clear_comm_outputs(&widget_comm_id) {
                                             let _ = state_changed_for_iopub.send(());
                                         }
+                                        // Clear state.outputs for frontend
+                                        sd.set_comm_state_property(
+                                            &widget_comm_id,
+                                            "outputs",
+                                            &serde_json::json!([]),
+                                        );
                                         drop(sd);
                                         // Sync empty outputs to kernel
                                         let _ = iopub_cmd_tx
