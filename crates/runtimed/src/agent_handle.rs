@@ -104,11 +104,58 @@ impl AgentHandle {
         // Wait for agent's preamble response
         notebook_protocol::connection::recv_preamble(&mut reader).await?;
 
-        // Initial RuntimeStateDoc sync happens via the IO loop:
-        // 1. Agent sends initial sync message (empty heads → "send me everything")
-        // 2. IO task reads it, applies to coordinator's doc, generates reply
-        // 3. Agent receives reply, converges
-        info!("[agent-handle] Agent spawned, sync bootstrap via IO loop");
+        // Bootstrap RuntimeStateDoc sync before starting IO loop.
+        // The agent sends its initial sync message (empty heads → "send me everything"),
+        // we respond with the full doc state, and the agent converges.
+        // This MUST happen before the IO task starts, otherwise the LaunchKernel
+        // request can race with the sync bootstrap.
+        {
+            let mut sd = state_doc.write().await;
+            let mut sync_state = automerge::sync::State::new();
+
+            // Read the agent's initial sync message
+            loop {
+                match recv_frame(&mut reader).await? {
+                    Some(data) if !data.is_empty() && data[0] == 0x05 => {
+                        let msg = automerge::sync::Message::decode(&data[1..])?;
+                        sd.receive_sync_message_with_changes(&mut sync_state, msg)?;
+
+                        // Generate reply with our full state
+                        while let Some(reply) = sd.generate_sync_message(&mut sync_state) {
+                            let encoded = reply.encode();
+                            send_typed_frame(
+                                &mut writer,
+                                NotebookFrameType::RuntimeStateSync,
+                                &encoded,
+                            )
+                            .await?;
+                        }
+                        break;
+                    }
+                    Some(_) => continue, // ignore non-sync frames during bootstrap
+                    None => anyhow::bail!("Agent EOF during sync bootstrap"),
+                }
+            }
+
+            // Read agent's sync reply (convergence confirmation)
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                recv_frame(&mut reader),
+            )
+            .await
+            {
+                Ok(Ok(Some(data))) if !data.is_empty() && data[0] == 0x05 => {
+                    let msg = automerge::sync::Message::decode(&data[1..])?;
+                    sd.receive_sync_message_with_changes(&mut sync_state, msg)?;
+                }
+                _ => {
+                    // Agent may have converged without a final reply — that's ok
+                    debug!("[agent-handle] No final sync reply from agent (may have converged)");
+                }
+            }
+        }
+
+        info!("[agent-handle] Agent spawned and RuntimeStateDoc synced");
 
         // Set up channels
         let (request_tx, request_rx) = mpsc::channel(32);
