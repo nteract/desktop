@@ -102,7 +102,7 @@ where
     // actor ID. This avoids DuplicateSeqNumber — the coordinator uses
     // "runtimed:state" as its actor, the agent uses its own agent_id.
     // Both docs have the same structure but different actors, so sync merges cleanly.
-    let mut state_doc = RuntimeStateDoc::new_with_actor(&agent_id);
+    let state_doc = RuntimeStateDoc::new_with_actor(&agent_id);
 
     // Automerge sync state for the coordinator peer.
     let mut coordinator_sync_state = automerge::sync::State::new();
