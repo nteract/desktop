@@ -2438,19 +2438,29 @@ where
             result = kernel_broadcast_rx.recv() => {
                 match result {
                     Ok(broadcast) => {
-                        // For ExecutionDone, sync the Automerge doc to this peer
-                        // BEFORE forwarding the signal. This ensures the peer's
-                        // local doc has all cell outputs when it processes the
-                        // ExecutionDone event. Without this, there's a race where
-                        // the broadcast arrives before the sync frames carrying
-                        // the outputs, causing clients to read empty outputs.
-                        if matches!(&broadcast, NotebookBroadcast::ExecutionDone { .. }) {
-                            send_doc_sync(
-                                room,
-                                &mut peer_state,
-                                writer,
-                            )
-                            .await?;
+                        // Drop broadcasts that are redundant with RuntimeStateDoc
+                        // (synced via frame 0x05). The daemon still emits these
+                        // internally (e.g. ExecutionDone drives the command loop),
+                        // but peers no longer need them — RuntimeStateDoc is the
+                        // single source of truth for kernel status, queue, execution
+                        // lifecycle, and env sync state.
+                        if matches!(
+                            &broadcast,
+                            NotebookBroadcast::KernelStatus { .. }
+                                | NotebookBroadcast::ExecutionStarted { .. }
+                                | NotebookBroadcast::ExecutionDone { .. }
+                                | NotebookBroadcast::QueueChanged { .. }
+                                | NotebookBroadcast::EnvSyncState { .. }
+                        ) {
+                            // ExecutionDone previously triggered a doc sync flush
+                            // to ensure outputs arrived before the signal. Now that
+                            // the broadcast is dropped, the sync still happens via
+                            // the RuntimeStateDoc update path — the daemon writes
+                            // execution status to the RuntimeStateDoc *after*
+                            // writing outputs to the notebook doc, so the
+                            // frame-0x05 sync message is the new "outputs ready"
+                            // signal for peers.
+                            continue;
                         }
 
                         connection::send_typed_json_frame(
