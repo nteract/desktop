@@ -3791,6 +3791,25 @@ async fn handle_notebook_request(
                                 )
                                 .await;
 
+                                // Write kernel status + info + prewarmed packages
+                                // to RuntimeStateDoc (mirrors the local launch path)
+                                {
+                                    let mut sd = room.state_doc.write().await;
+                                    let mut changed = false;
+                                    changed |= sd.set_kernel_status("idle");
+                                    changed |= sd.set_kernel_info(
+                                        &resolved_kernel_type,
+                                        &resolved_kernel_type,
+                                        &es,
+                                    );
+                                    changed |= sd.set_prewarmed_packages(
+                                        &launched_config.prewarmed_packages,
+                                    );
+                                    if changed {
+                                        let _ = room.state_changed_tx.send(());
+                                    }
+                                }
+
                                 return NotebookResponse::KernelLaunched {
                                     kernel_type: resolved_kernel_type,
                                     env_source: es,
@@ -3819,13 +3838,10 @@ async fn handle_notebook_request(
                     }
                     Err(e) => {
                         warn!(
-                            "[notebook-sync] Failed to spawn agent, falling back to local: {}",
+                            "[notebook-sync] Failed to spawn agent: {} — falling back to local kernel",
                             e
                         );
-                        reset_starting_state(room).await;
-                        return NotebookResponse::Error {
-                            error: format!("Failed to spawn agent: {}", e),
-                        };
+                        // Fall through to local kernel.launch() below
                     }
                 }
             }
