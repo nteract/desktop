@@ -83,6 +83,20 @@ impl AgentHandle {
         .await?;
         recv_preamble(&mut reader).await?;
 
+        // Test: can we read a frame right after preamble?
+        info!("[agent-handle] Testing recv_frame in spawn()...");
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            recv_frame(&mut reader),
+        ).await {
+            Ok(Ok(Some(data))) => {
+                info!("[agent-handle] Got frame in spawn: type=0x{:02x} ({} bytes)",
+                    data.first().copied().unwrap_or(0), data.len());
+            }
+            Ok(Ok(None)) => info!("[agent-handle] EOF in spawn recv_frame"),
+            Ok(Err(e)) => info!("[agent-handle] Error in spawn recv_frame: {}", e),
+            Err(_) => info!("[agent-handle] Timeout in spawn recv_frame (5s)"),
+        }
         info!("[agent-handle] Agent spawned — RuntimeStateDoc owned by agent");
 
         Ok(Self {
