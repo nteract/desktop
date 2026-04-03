@@ -337,8 +337,12 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Agent) => {
             // Agent mode: communicate over stdin/stdout using framed protocol.
-            // Logs go to stderr only.
-            runtimed::agent::run_agent(tokio::io::stdin(), tokio::io::stdout())
+            // Use tokio::fs::File from raw fd to avoid tokio::io::stdout()
+            // buffering issues that prevent frames from being read by the parent.
+            use std::os::unix::io::FromRawFd;
+            let stdin = unsafe { tokio::fs::File::from_raw_fd(0) };
+            let stdout = unsafe { tokio::fs::File::from_raw_fd(1) };
+            runtimed::agent::run_agent(stdin, stdout)
                 .await
                 .map_err(|e| {
                     eprintln!("[agent] Fatal: {}", e);
