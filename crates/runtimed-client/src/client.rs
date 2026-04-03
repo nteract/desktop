@@ -262,13 +262,13 @@ impl PoolClient {
 
     /// Enable or disable agent mode on the running daemon.
     pub async fn set_agent_mode(&self, enabled: bool) -> Result<(), ClientError> {
-        let response = self
-            .send_request(Request::SetAgentMode { enabled })
-            .await?;
+        let response = self.send_request(Request::SetAgentMode { enabled }).await?;
         match response {
             Response::Ok => Ok(()),
             Response::Error { message } => Err(ClientError::DaemonError(message)),
-            _ => Err(ClientError::ProtocolError("Unexpected response".to_string())),
+            _ => Err(ClientError::ProtocolError(
+                "Unexpected response".to_string(),
+            )),
         }
     }
 
