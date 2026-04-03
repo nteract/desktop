@@ -25,6 +25,7 @@ import {
   from,
   mergeMap,
   Observable,
+  ReplaySubject,
   share,
   Subject,
   Subscription,
@@ -238,8 +239,11 @@ export class SyncEngine {
     });
     sub.add(() => unlisten());
 
-    // Subject for the sync retry timer
-    const retrySync$ = new Subject<void>();
+    // ReplaySubject(1) so the initial .next() replays to late subscribers.
+    // A plain Subject would lose the emission since the retry subscriber
+    // is wired up after this point — leaving the retry timer permanently
+    // unarmed when no sync frames arrive (see #1417).
+    const retrySync$ = new ReplaySubject<void>(1);
     sub.add(() => retrySync$.complete());
 
     // Arm the retry timer immediately
