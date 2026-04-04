@@ -681,7 +681,7 @@ pub fn format_widget_summary(
         }
 
         // Text inputs
-        "Text" | "Password" | "Textarea" | "Combobox" => {
+        "Text" | "Textarea" | "Combobox" => {
             let val = entry
                 .state
                 .get("value")
@@ -690,6 +690,12 @@ pub fn format_widget_summary(
             let preview = truncate_str(val, 40);
             format!("{name} {short_id}\u{2026}: {preview:?}")
         }
+
+        // SECURITY: Password widget values must never be included in summaries.
+        // These summaries are sent to LLM/MCP consumers as text/llm+plain, so
+        // exposing the raw value would leak secrets to any downstream agent or
+        // tool that reads cell outputs.
+        "Password" => format!("Password {short_id}\u{2026}: ****"),
 
         // Boolean/toggle
         "Checkbox" | "Valid" | "ToggleButton" => {
@@ -801,15 +807,32 @@ fn resolve_children(state: &Value, comms: &HashMap<String, CommDocEntry>) -> Str
                 .strip_suffix("Model")
                 .unwrap_or(&entry.model_name);
             let short_id = &cid[..6.min(cid.len())];
-            let val = entry
-                .state
-                .get("value")
-                .map(|v| format!(": {}", format_json_compact(v)))
-                .unwrap_or_default();
+            // SECURITY: Never include the value of Password widgets in child
+            // summaries. These flow to LLM/MCP consumers as text/llm+plain
+            // and would leak secrets to downstream agents or tools.
+            let val = if is_secret_widget(&entry.model_name) {
+                String::new()
+            } else {
+                entry
+                    .state
+                    .get("value")
+                    .map(|v| format!(": {}", format_json_compact(v)))
+                    .unwrap_or_default()
+            };
             Some(format!("{name} {short_id}\u{2026}{val}"))
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Returns true for widget types whose values must never appear in summaries.
+///
+/// Password widgets store their raw plaintext value in state. Exposing it in
+/// text/llm+plain would leak secrets to any LLM/MCP consumer that reads cell
+/// outputs. This check is used both in the direct Password summary branch and
+/// in container child resolution to ensure secrets are never surfaced.
+fn is_secret_widget(model_name: &str) -> bool {
+    model_name == "PasswordModel"
 }
 
 /// Get a display string for a state key.
