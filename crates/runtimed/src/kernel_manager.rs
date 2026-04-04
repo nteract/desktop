@@ -3,15 +3,11 @@
 // The shell_writer unwrap at line 1713 is guarded by an early-return check at line 1681.
 #![allow(clippy::unwrap_used)]
 
-//! Daemon-owned kernel management for notebook rooms.
+//! Kernel management for runtime agent subprocesses.
 //!
-//! Each notebook room can have one kernel. The daemon owns the kernel lifecycle
-//! and execution queue, broadcasting outputs to all connected peers.
-//!
-//! This replaces the notebook app's local kernel management for Phase 8:
-//! - Execute requests flow through the daemon
-//! - Daemon tracks msg_id → cell_id perfectly
-//! - Outputs broadcast to all windows showing the same notebook
+//! Each agent subprocess owns one kernel. The agent manages the kernel lifecycle
+//! and execution queue, writing outputs to RuntimeStateDoc which syncs to all
+//! connected peers via Automerge.
 
 use std::collections::{HashMap, VecDeque};
 use std::net::Ipv4Addr;

@@ -147,16 +147,7 @@ pub enum NotebookRequest {
         notebook_path: Option<String>,
     },
 
-    /// Queue a cell for execution.
-    /// Daemon adds to queue and executes when previous cells complete.
-    #[deprecated(
-        since = "0.1.0",
-        note = "Use ExecuteCell instead - reads source from synced document"
-    )]
-    QueueCell { cell_id: String, code: String },
-
     /// Execute a cell by reading its source from the automerge doc.
-    /// This is the preferred method - ensures execution matches synced document state.
     ExecuteCell { cell_id: String },
 
     /// Clear outputs for a cell (before re-execution).
@@ -603,18 +594,4 @@ pub enum AgentResponse {
 
     /// Error response.
     Error { error: String },
-}
-
-/// Notifications from agent to coordinator (frame type 0x03).
-///
-/// These are sent proactively by the agent when events occur that the
-/// coordinator needs to act on. Most kernel state changes flow via
-/// RuntimeStateDoc sync (frame 0x05) — these cover the exceptions
-/// where the coordinator must write to NotebookDoc or update presence.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
-pub enum AgentNotification {
-    /// The kernel process died unexpectedly. The coordinator updates
-    /// presence and cleans up the agent handle.
-    KernelDied,
 }

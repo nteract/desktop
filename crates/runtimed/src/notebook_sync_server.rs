@@ -820,10 +820,8 @@ pub struct NotebookRoom {
     /// Notification channel for RuntimeStateDoc changes.
     /// Peer sync loops subscribe to push RuntimeStateSync frames.
     pub state_changed_tx: broadcast::Sender<()>,
-    /// Optional agent handle for process-isolated kernel execution.
-    /// When set, kernel requests are routed to the agent subprocess
-    /// instead of the local `RoomKernel`. Set by `LaunchKernel` when
-    /// agent mode is enabled.
+    /// Handle to the agent subprocess that owns this notebook's kernel.
+    /// Set by `LaunchKernel` or `auto_launch_kernel` when the agent is spawned.
     pub agent_handle: Arc<Mutex<Option<crate::agent_handle::AgentHandle>>>,
     /// Environment path used by an agent-backed kernel, for GC protection.
     pub agent_env_path: Arc<RwLock<Option<PathBuf>>>,
@@ -4192,11 +4190,6 @@ async fn handle_notebook_request(
                 }
             }
         }
-
-        #[allow(deprecated)]
-        NotebookRequest::QueueCell { .. } => NotebookResponse::Error {
-            error: "QueueCell is deprecated — use ExecuteCell instead".to_string(),
-        },
 
         NotebookRequest::ExecuteCell { cell_id } => {
             // Read cell source FIRST (before kernel lock) to avoid holding

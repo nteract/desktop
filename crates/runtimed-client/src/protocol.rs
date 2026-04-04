@@ -406,27 +406,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn test_notebook_request_queue_cell() {
-        let req = NotebookRequest::QueueCell {
-            cell_id: "abc-123".into(),
-            code: "print('hello')".into(),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("queue_cell"));
-        assert!(json.contains("abc-123"));
-
-        let parsed: NotebookRequest = serde_json::from_str(&json).unwrap();
-        match parsed {
-            NotebookRequest::QueueCell { cell_id, code } => {
-                assert_eq!(cell_id, "abc-123");
-                assert_eq!(code, "print('hello')");
-            }
-            _ => panic!("unexpected request type"),
-        }
-    }
-
-    #[test]
     fn test_notebook_request_execute_cell() {
         let req = NotebookRequest::ExecuteCell {
             cell_id: "cell-456".into(),
