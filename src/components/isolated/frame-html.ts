@@ -593,6 +593,14 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
         }
       });
 
+      // --- Clear selection on blur ---
+      // When focus leaves this iframe (user clicked elsewhere), clear
+      // any text selection so it doesn't visually persist.
+      window.addEventListener('blur', function() {
+        var sel = window.getSelection();
+        if (sel) sel.removeAllRanges();
+      });
+
       // --- Error Handler ---
       window.addEventListener('error', function(e) {
         sendError(e.error || new Error(e.message));
