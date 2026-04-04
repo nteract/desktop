@@ -27,6 +27,10 @@ pub const DENO_TARGET_VERSION: &str = "2.7.1";
 /// Target UV version for GitHub download.
 pub const UV_TARGET_VERSION: &str = "0.10.8";
 
+/// Target pixi version for rattler bootstrap.
+/// Pinned to ensure stable `pixi info --json` and `pixi shell-hook --json` output.
+pub const PIXI_TARGET_VERSION: &str = "0.63";
+
 /// Minimum acceptable Deno major version for system deno.
 /// If system deno is below this version, we download a newer one.
 pub const DENO_MIN_MAJOR_VERSION: u32 = 2;
@@ -838,9 +842,12 @@ pub async fn get_pixi_path() -> Result<PathBuf> {
                 }
             }
 
-            // 2. Bootstrap via rattler from conda-forge
-            info!("Bootstrapping pixi via rattler from conda-forge...");
-            match bootstrap_tool("pixi", None).await {
+            // 2. Bootstrap via rattler from conda-forge (pinned version)
+            info!(
+                "Bootstrapping pixi {} via rattler from conda-forge...",
+                PIXI_TARGET_VERSION
+            );
+            match bootstrap_tool("pixi", Some(PIXI_TARGET_VERSION)).await {
                 Ok(tool) => Arc::new(Ok(tool.binary_path)),
                 Err(e) => Arc::new(Err(e.to_string())),
             }
