@@ -548,8 +548,21 @@ pub enum AgentRequest {
     /// Interrupt the currently executing cell.
     InterruptExecution,
 
-    /// Shutdown the kernel and exit the agent process.
+    /// Shutdown the kernel. The agent process stays alive for potential restart.
     ShutdownKernel,
+
+    /// Restart the kernel: shut down the current kernel, create a new one,
+    /// re-launch. Same agent process, same socket connection. The coordinator
+    /// sends this instead of spawning a new agent when one is already connected.
+    RestartKernel {
+        kernel_type: String,
+        env_source: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notebook_path: Option<String>,
+        launched_config: LaunchedEnvConfig,
+        #[serde(default)]
+        env_vars: std::collections::HashMap<String, String>,
+    },
 
     /// Send a comm message to the kernel (widget interactions).
     SendComm { message: serde_json::Value },
@@ -571,6 +584,9 @@ pub enum AgentRequest {
 pub enum AgentResponse {
     /// Kernel launched successfully.
     KernelLaunched { env_source: String },
+
+    /// Kernel restarted successfully (same agent, new kernel).
+    KernelRestarted { env_source: String },
 
     /// Code completion result.
     CompletionResult {

@@ -70,6 +70,10 @@ pub struct KernelState {
     pub language: String,
     #[serde(default)]
     pub env_source: String,
+    /// ID of the agent subprocess that owns this kernel (e.g., "rt:agent:a1b2c3d4").
+    /// Used for provenance — identifying which agent is running and detecting stale agents.
+    #[serde(default)]
+    pub agent_id: String,
 }
 
 impl Default for KernelState {
@@ -80,6 +84,7 @@ impl Default for KernelState {
             name: String::new(),
             language: String::new(),
             env_source: String::new(),
+            agent_id: String::new(),
         }
     }
 }
@@ -248,6 +253,8 @@ impl RuntimeStateDoc {
             .expect("scaffold kernel.language");
         doc.put(&kernel, "env_source", "")
             .expect("scaffold kernel.env_source");
+        doc.put(&kernel, "agent_id", "")
+            .expect("scaffold kernel.agent_id");
         doc.put(&kernel, "starting_phase", "")
             .expect("scaffold kernel.starting_phase");
 
@@ -326,6 +333,8 @@ impl RuntimeStateDoc {
             .expect("scaffold kernel.language");
         doc.put(&kernel, "env_source", "")
             .expect("scaffold kernel.env_source");
+        doc.put(&kernel, "agent_id", "")
+            .expect("scaffold kernel.agent_id");
         doc.put(&kernel, "starting_phase", "")
             .expect("scaffold kernel.starting_phase");
 
@@ -670,6 +679,20 @@ impl RuntimeStateDoc {
         self.doc
             .put(&kernel, "env_source", env_source)
             .expect("put kernel.env_source");
+        true
+    }
+
+    /// Set the agent ID that owns this kernel. Returns `true` if mutated.
+    #[allow(clippy::expect_used)]
+    pub fn set_agent_id(&mut self, agent_id: &str) -> bool {
+        let kernel = self.get_map("kernel").expect("kernel map must exist");
+        let current = self.read_str(&kernel, "agent_id");
+        if current == agent_id {
+            return false;
+        }
+        self.doc
+            .put(&kernel, "agent_id", agent_id)
+            .expect("put kernel.agent_id");
         true
     }
 
@@ -1717,6 +1740,7 @@ impl RuntimeStateDoc {
                 name: self.read_str(k, "name"),
                 language: self.read_str(k, "language"),
                 env_source: self.read_str(k, "env_source"),
+                agent_id: self.read_str(k, "agent_id"),
             })
             .unwrap_or_default();
 

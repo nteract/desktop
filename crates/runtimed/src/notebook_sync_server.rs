@@ -841,6 +841,9 @@ pub struct NotebookRoom {
     /// The coordinator bumps this for each ExecuteCell and stamps the seq
     /// on the execution entry. The agent sorts by seq to determine order.
     pub next_queue_seq: Arc<std::sync::atomic::AtomicU64>,
+    /// The agent_id of the currently expected agent. Used by the sync handler
+    /// to validate connections and prevent stale cleanup from clobbering state.
+    pub current_agent_id: Arc<RwLock<Option<String>>>,
 }
 
 /// Maximum number of snapshots to keep per notebook hash.
@@ -1031,6 +1034,7 @@ impl NotebookRoom {
                 Arc::new(tx)
             },
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            current_agent_id: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -1102,6 +1106,7 @@ impl NotebookRoom {
                 Arc::new(tx)
             },
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            current_agent_id: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -1259,6 +1264,20 @@ pub async fn handle_agent_sync_connection<R, W>(
         notebook_id, agent_id
     );
 
+    // Validate provenance — reject stale agents
+    {
+        let expected = room.current_agent_id.read().await;
+        if let Some(ref expected_id) = *expected {
+            if *expected_id != agent_id {
+                warn!(
+                    "[notebook-sync] Rejecting stale agent {} (expected {})",
+                    agent_id, expected_id
+                );
+                return;
+            }
+        }
+    }
+
     // ── 1. Initial NotebookDoc sync ──────────────────────────────────
     let mut doc_sync_state = automerge::sync::State::new();
     {
@@ -1303,7 +1322,11 @@ pub async fn handle_agent_sync_connection<R, W>(
         *tx_guard = Some(agent_tx);
     }
 
-    // ── 4. Signal that the agent is connected ────────────────────────
+    // ── 4. Set provenance + signal connected ──────────────────────────
+    {
+        let mut id = room.current_agent_id.write().await;
+        *id = Some(agent_id.clone());
+    }
     let _ = room.agent_connected_tx.send(true);
     info!("[notebook-sync] Agent connected and ready: {}", agent_id);
 
@@ -1444,12 +1467,21 @@ pub async fn handle_agent_sync_connection<R, W>(
         }
     }
 
-    // Cleanup: clear the request channel and reset connected signal
+    // Cleanup: only clear state if we're still the current agent.
+    // A stale agent disconnecting after a new one connected must not
+    // clobber the new agent's channel.
     {
-        let mut tx_guard = room.agent_request_tx.lock().await;
-        *tx_guard = None;
+        let expected = room.current_agent_id.read().await;
+        let is_current = expected.as_deref() == Some(&agent_id);
+        if is_current {
+            let mut tx_guard = room.agent_request_tx.lock().await;
+            *tx_guard = None;
+            let _ = room.agent_connected_tx.send(false);
+            // Clear agent_handle so LaunchKernel spawns a new agent
+            let mut guard = room.agent_handle.lock().await;
+            *guard = None;
+        }
     }
-    let _ = room.agent_connected_tx.send(false);
     info!("[notebook-sync] Agent sync connection closed: {}", agent_id);
 }
 
@@ -3181,10 +3213,12 @@ async fn auto_launch_kernel(
         .await
         {
             Ok(agent) => {
-                // Store handle and wait for agent to connect back via socket
+                // Store handle and set provenance
                 {
                     let mut agent_guard = room.agent_handle.lock().await;
                     *agent_guard = Some(agent);
+                    let mut id = room.current_agent_id.write().await;
+                    *id = Some(agent_id.clone());
                 }
 
                 // Wait for agent to establish its sync connection
@@ -3240,6 +3274,7 @@ async fn auto_launch_kernel(
                             let mut changed = false;
                             changed |= sd.set_kernel_status("idle");
                             changed |= sd.set_kernel_info(kernel_type, kernel_type, &es);
+                            changed |= sd.set_agent_id(&agent_id);
                             if changed {
                                 let _ = room.state_changed_tx.send(());
                             }
@@ -3908,9 +3943,76 @@ async fn handle_notebook_request(
                 }
             }
 
+            // If agent is already connected, restart kernel in-place
+            // (handles the shutdown → launch sequence without subprocess respawn)
+            {
+                let has_agent = room.agent_request_tx.lock().await.is_some();
+                if has_agent {
+                    info!("[notebook-sync] Agent connected — sending RestartKernel");
+                    let restart_request =
+                        notebook_protocol::protocol::AgentRequest::RestartKernel {
+                            kernel_type: resolved_kernel_type.clone(),
+                            env_source: resolved_env_source.clone(),
+                            notebook_path: notebook_path
+                                .as_deref()
+                                .map(|p| p.to_str().unwrap_or("").to_string()),
+                            launched_config: launched_config.clone(),
+                            env_vars: Default::default(),
+                        };
+                    match send_agent_request(room, restart_request).await {
+                        Ok(notebook_protocol::protocol::AgentResponse::KernelRestarted {
+                            env_source: es,
+                        }) => {
+                            publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es)
+                                .await;
+                            {
+                                let mut sd = room.state_doc.write().await;
+                                let mut changed = false;
+                                changed |= sd.set_kernel_status("idle");
+                                changed |= sd.set_kernel_info(
+                                    &resolved_kernel_type,
+                                    &resolved_kernel_type,
+                                    &es,
+                                );
+                                changed |=
+                                    sd.set_prewarmed_packages(&launched_config.prewarmed_packages);
+                                // agent_id doesn't change on restart — same agent
+                                if changed {
+                                    let _ = room.state_changed_tx.send(());
+                                }
+                            }
+                            return NotebookResponse::KernelLaunched {
+                                kernel_type: resolved_kernel_type,
+                                env_source: es,
+                                launched_config,
+                            };
+                        }
+                        Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
+                            reset_starting_state(room).await;
+                            return NotebookResponse::Error {
+                                error: format!("Agent restart failed: {}", error),
+                            };
+                        }
+                        Ok(_) => {
+                            reset_starting_state(room).await;
+                            return NotebookResponse::Error {
+                                error: "Unexpected agent response to RestartKernel".to_string(),
+                            };
+                        }
+                        Err(e) => {
+                            warn!(
+                                "[notebook-sync] RestartKernel RPC failed: {} — spawning new agent",
+                                e
+                            );
+                            // Fall through to spawn new agent below
+                        }
+                    }
+                }
+            }
+
             // Spawn agent subprocess for kernel execution
             {
-                info!("[notebook-sync] Agent mode: spawning agent subprocess");
+                info!("[notebook-sync] Spawning agent subprocess");
 
                 let notebook_id = room.notebook_path.read().await.display().to_string();
                 let agent_id = format!("rt:agent:{}", &uuid::Uuid::new_v4().to_string()[..8]);
@@ -3988,6 +4090,9 @@ async fn handle_notebook_request(
                                     changed |= sd.set_prewarmed_packages(
                                         &launched_config.prewarmed_packages,
                                     );
+                                    if let Some(ref aid) = *room.current_agent_id.read().await {
+                                        changed |= sd.set_agent_id(aid);
+                                    }
                                     if changed {
                                         let _ = room.state_changed_tx.send(());
                                     }
@@ -4076,6 +4181,16 @@ async fn handle_notebook_request(
             {
                 let has_agent = room.agent_request_tx.lock().await.is_some();
                 if has_agent {
+                    // Check if kernel is shut down — return NoKernel instead
+                    // of silently queuing into a dead kernel
+                    {
+                        let sd = room.state_doc.read().await;
+                        let status = sd.read_state().kernel.status;
+                        if status == "shutdown" || status == "error" {
+                            return NotebookResponse::NoKernel {};
+                        }
+                    }
+
                     // Idempotency: if the cell already has a queued execution,
                     // return the existing execution_id instead of creating a new one.
                     {
@@ -4208,7 +4323,9 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::ShutdownKernel {} => {
-            // Agent path: send shutdown RPC, then clear handle
+            // Send shutdown RPC but keep the agent alive — the agent stays
+            // connected for potential RestartKernel. The kernel process dies
+            // but the agent subprocess and socket connection remain.
             let has_agent = room.agent_request_tx.lock().await.is_some();
             if has_agent {
                 let _ = send_agent_request(
@@ -4216,12 +4333,21 @@ async fn handle_notebook_request(
                     notebook_protocol::protocol::AgentRequest::ShutdownKernel,
                 )
                 .await;
-                // Clear both handle and request channel so subsequent
-                // ExecuteCell/Complete/etc. fall through to NoKernel
-                let mut guard = room.agent_handle.lock().await;
-                *guard = None;
-                let mut tx_guard = room.agent_request_tx.lock().await;
-                *tx_guard = None;
+                // Keep agent alive (agent_handle + agent_request_tx stay set)
+                // so LaunchKernel can send RestartKernel. ExecuteCell/RunAllCells
+                // check kernel.status from RuntimeStateDoc and return NoKernel
+                // when status is "shutdown".
+                //
+                // Update RuntimeStateDoc to reflect shutdown
+                {
+                    let mut sd = room.state_doc.write().await;
+                    let mut changed = false;
+                    changed |= sd.set_kernel_status("shutdown");
+                    changed |= sd.set_queue(None, &[]);
+                    if changed {
+                        let _ = room.state_changed_tx.send(());
+                    }
+                }
                 NotebookResponse::KernelShuttingDown {}
             } else {
                 NotebookResponse::NoKernel {}
@@ -4281,6 +4407,15 @@ async fn handle_notebook_request(
             {
                 let has_agent = room.agent_request_tx.lock().await.is_some();
                 if has_agent {
+                    // Check if kernel is shut down
+                    {
+                        let sd = room.state_doc.read().await;
+                        let status = sd.read_state().kernel.status;
+                        if status == "shutdown" || status == "error" {
+                            return NotebookResponse::NoKernel {};
+                        }
+                    }
+
                     let cells = {
                         let doc = room.doc.read().await;
                         doc.get_cells()
@@ -7270,6 +7405,7 @@ mod tests {
                 Arc::new(tx)
             },
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            current_agent_id: Arc::new(RwLock::new(None)),
         };
 
         (room, notebook_path)

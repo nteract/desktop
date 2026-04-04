@@ -54,6 +54,7 @@ struct AgentContext {
     broadcast_tx: broadcast::Sender<notebook_protocol::protocol::NotebookBroadcast>,
     presence: Arc<RwLock<PresenceState>>,
     presence_tx: broadcast::Sender<(String, Vec<u8>)>,
+    seen_execution_ids: Arc<tokio::sync::Mutex<HashSet<String>>>,
 }
 
 /// Run the runtime agent, connecting to the daemon socket as a peer.
@@ -130,10 +131,10 @@ pub async fn run_agent(
         broadcast_tx,
         presence,
         presence_tx,
+        seen_execution_ids: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
     };
 
     let mut cmd_rx: Option<tokio::sync::mpsc::Receiver<QueueCommand>> = None;
-    let mut seen_execution_ids: HashSet<String> = HashSet::new();
 
     info!("[agent] Infrastructure ready, entering main loop");
 
@@ -151,8 +152,8 @@ pub async fn run_agent(
                                 if let Ok(request) = serde_json::from_slice::<AgentRequest>(&typed_frame.payload) {
                                     let response = handle_agent_request(request, &ctx).await;
 
-                                    // After launch, take cmd_rx from kernel
-                                    if matches!(response, AgentResponse::KernelLaunched { .. }) {
+                                    // After launch/restart, take cmd_rx from kernel
+                                    if matches!(response, AgentResponse::KernelLaunched { .. } | AgentResponse::KernelRestarted { .. }) {
                                         let mut guard = ctx.kernel.lock().await;
                                         if let Some(ref mut k) = *guard {
                                             cmd_rx = k.take_cmd_rx();
@@ -179,8 +180,9 @@ pub async fn run_agent(
                                             let queued = sd.get_queued_executions();
                                             drop(sd); // release write lock before queuing
 
+                                            let mut seen = ctx.seen_execution_ids.lock().await;
                                             for (eid, exec) in queued {
-                                                if seen_execution_ids.insert(eid.clone()) {
+                                                if seen.insert(eid.clone()) {
                                                     if let Some(ref source) = exec.source {
                                                         let mut guard = ctx.kernel.lock().await;
                                                         if let Some(ref mut k) = *guard {
@@ -355,6 +357,82 @@ async fn handle_agent_request(request: AgentRequest, ctx: &AgentContext) -> Agen
                 }
                 Err(e) => AgentResponse::Error {
                     error: format!("Failed to launch kernel: {}", e),
+                },
+            }
+        }
+
+        AgentRequest::RestartKernel {
+            kernel_type,
+            env_source,
+            notebook_path,
+            launched_config,
+            env_vars: _,
+        } => {
+            info!(
+                "[agent] RestartKernel: type={} source={}",
+                kernel_type, env_source
+            );
+
+            // Shut down existing kernel
+            {
+                let mut guard = ctx.kernel.lock().await;
+                if let Some(ref mut k) = *guard {
+                    k.shutdown().await.ok();
+                }
+                *guard = None;
+            }
+
+            // Clear seen execution IDs so new RunAllCells entries are picked up
+            {
+                let mut seen = ctx.seen_execution_ids.lock().await;
+                seen.clear();
+            }
+
+            let mut k = RoomKernel::new(
+                ctx.broadcast_tx.clone(),
+                ctx.blob_store.clone(),
+                ctx.state_doc.clone(),
+                ctx.state_changed_tx.clone(),
+                ctx.presence.clone(),
+                ctx.presence_tx.clone(),
+            );
+
+            let pooled_env = launched_config.venv_path.as_ref().and_then(|venv| {
+                launched_config
+                    .python_path
+                    .as_ref()
+                    .map(|python| runtimed_client::PooledEnv {
+                        env_type: if env_source.starts_with("conda") {
+                            runtimed_client::EnvType::Conda
+                        } else {
+                            runtimed_client::EnvType::Uv
+                        },
+                        venv_path: venv.clone(),
+                        python_path: python.clone(),
+                        prewarmed_packages: launched_config.prewarmed_packages.clone(),
+                    })
+            });
+
+            let nb_path = notebook_path.as_deref().map(std::path::Path::new);
+
+            match k
+                .launch(
+                    &kernel_type,
+                    &env_source,
+                    nb_path,
+                    pooled_env,
+                    launched_config,
+                )
+                .await
+            {
+                Ok(()) => {
+                    let es = k.env_source().to_string();
+                    let mut guard = ctx.kernel.lock().await;
+                    *guard = Some(k);
+                    AgentResponse::KernelRestarted { env_source: es }
+                }
+                Err(e) => AgentResponse::Error {
+                    error: format!("Failed to restart kernel: {}", e),
                 },
             }
         }
