@@ -3284,7 +3284,10 @@ async fn auto_launch_kernel(
             let has_ipykernel = match kernel_launch::tools::pixi_info(&detected.path).await {
                 Ok(info) => info.has_ipykernel(),
                 Err(e) => {
-                    warn!("[notebook-sync] pixi info failed, falling back to line scan: {}", e);
+                    warn!(
+                        "[notebook-sync] pixi info failed, falling back to line scan: {}",
+                        e
+                    );
                     crate::project_file::pixi_toml_has_ipykernel(&detected.path)
                 }
             };

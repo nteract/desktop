@@ -897,31 +897,91 @@ impl RoomKernel {
                         cmd
                     }
                     "pixi:toml" => {
-                        // Use `pixi run` in the project directory
-                        let pixi_path = kernel_launch::tools::get_pixi_path().await?;
-                        info!(
-                            "[kernel-manager] Starting Python kernel with pixi run (env_source: {})",
-                            env_source
-                        );
-                        let mut cmd = tokio::process::Command::new(&pixi_path);
-                        cmd.args([
-                            "run",
-                            "python",
-                            "-Xfrozen_modules=off",
-                            "-m",
-                            "ipykernel_launcher",
-                            "-f",
-                        ]);
-                        cmd.arg(&connection_file_path);
-                        cmd.stdout(Stdio::null());
-                        cmd.stderr(Stdio::piped());
-                        // Set working dir so pixi discovers pixi.toml
-                        if let Some(nb_path) = notebook_path {
-                            if let Some(parent) = nb_path.parent() {
-                                cmd.current_dir(parent);
+                        // Use pixi shell-hook to get activation env vars, then
+                        // launch Python directly (faster, cleaner signal handling).
+                        // Falls back to `pixi run` if shell-hook fails.
+                        let manifest_path = notebook_path.and_then(|p| {
+                            crate::project_file::detect_project_file(p)
+                                .filter(|d| {
+                                    d.kind == crate::project_file::ProjectFileKind::PixiToml
+                                })
+                                .map(|d| d.path)
+                        });
+
+                        if let Some(ref manifest) = manifest_path {
+                            match kernel_launch::tools::pixi_shell_hook(manifest, None).await {
+                                Ok(env_vars) => {
+                                    // Direct launch: use Python from the pixi prefix
+                                    let python = env_vars
+                                        .get("CONDA_PREFIX")
+                                        .map(|p| {
+                                            std::path::PathBuf::from(p).join("bin").join("python")
+                                        })
+                                        .unwrap_or_else(|| std::path::PathBuf::from("python"));
+                                    info!(
+                                        "[kernel-manager] Starting Python kernel via pixi shell-hook ({})",
+                                        python.display()
+                                    );
+                                    let mut cmd = tokio::process::Command::new(&python);
+                                    cmd.envs(&env_vars);
+                                    cmd.args([
+                                        "-Xfrozen_modules=off",
+                                        "-m",
+                                        "ipykernel_launcher",
+                                        "-f",
+                                    ]);
+                                    cmd.arg(&connection_file_path);
+                                    cmd.stdout(Stdio::null());
+                                    cmd.stderr(Stdio::piped());
+                                    cmd
+                                }
+                                Err(e) => {
+                                    // Fallback: use pixi run (env may not be installed yet)
+                                    warn!(
+                                        "[kernel-manager] pixi shell-hook failed ({}), falling back to pixi run",
+                                        e
+                                    );
+                                    let pixi_path = kernel_launch::tools::get_pixi_path().await?;
+                                    let mut cmd = tokio::process::Command::new(&pixi_path);
+                                    cmd.args([
+                                        "run",
+                                        "python",
+                                        "-Xfrozen_modules=off",
+                                        "-m",
+                                        "ipykernel_launcher",
+                                        "-f",
+                                    ]);
+                                    cmd.arg(&connection_file_path);
+                                    cmd.stdout(Stdio::null());
+                                    cmd.stderr(Stdio::piped());
+                                    if let Some(parent) = manifest.parent() {
+                                        cmd.current_dir(parent);
+                                    }
+                                    cmd
+                                }
                             }
+                        } else {
+                            // No manifest found — fall back to pixi run
+                            let pixi_path = kernel_launch::tools::get_pixi_path().await?;
+                            let mut cmd = tokio::process::Command::new(&pixi_path);
+                            cmd.args([
+                                "run",
+                                "python",
+                                "-Xfrozen_modules=off",
+                                "-m",
+                                "ipykernel_launcher",
+                                "-f",
+                            ]);
+                            cmd.arg(&connection_file_path);
+                            cmd.stdout(Stdio::null());
+                            cmd.stderr(Stdio::piped());
+                            if let Some(nb_path) = notebook_path {
+                                if let Some(parent) = nb_path.parent() {
+                                    cmd.current_dir(parent);
+                                }
+                            }
+                            cmd
                         }
-                        cmd
                     }
                     "pixi:inline" | "pixi:prewarmed" => {
                         // Use pixi exec with -w flags. For pixi:inline, includes
