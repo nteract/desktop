@@ -915,7 +915,12 @@ impl RoomKernel {
                                     let python = env_vars
                                         .get("CONDA_PREFIX")
                                         .map(|p| {
-                                            std::path::PathBuf::from(p).join("bin").join("python")
+                                            let prefix = std::path::PathBuf::from(p);
+                                            if cfg!(windows) {
+                                                prefix.join("python.exe")
+                                            } else {
+                                                prefix.join("bin").join("python")
+                                            }
                                         })
                                         .unwrap_or_else(|| std::path::PathBuf::from("python"));
                                     info!(
