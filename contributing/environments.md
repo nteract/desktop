@@ -194,7 +194,7 @@ sequenceDiagram
             DM-->>DM: env_source = "uv:pyproject"
         else pixi.toml found
             PF-->>DM: DetectedProjectFile{PixiToml}
-            DM-->>DM: env_source = "conda:pixi"
+            DM-->>DM: env_source = "pixi:toml"
         else environment.yml found
             PF-->>DM: DetectedProjectFile{EnvironmentYml}
             DM-->>DM: env_source = "conda:env_yml"
@@ -478,7 +478,7 @@ Three UI components manage dependencies for different runtimes:
 
 The kernel lifecycle is managed by `useDaemonKernel.ts`, which:
 - Listens for `notebook:broadcast` events (re-emitted by `useAutomergeNotebook` after WASM frame demux)
-- Captures the `env_source` string (e.g. `"uv:pyproject"`, `"conda:pixi"`) from `KernelLaunched` responses
+- Captures the `env_source` string (e.g. `"uv:pyproject"`, `"pixi:toml"`) from `KernelLaunched` responses
 - Tracks kernel status and execution queue
 - Provides `launchKernel()`, `executeCell()`, `syncEnvironment()` methods
 - Runs auto-launch detection on notebook open

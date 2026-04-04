@@ -211,12 +211,12 @@ describe("NotebookToolbar", () => {
       expect(toggle.dataset.envManager).toBe("conda");
     });
 
-    it("shows pixi badge for conda:pixi envSource", () => {
+    it("shows pixi badge for pixi:toml envSource", () => {
       render(
         <NotebookToolbar
           {...baseProps}
           runtime="python"
-          envSource="conda:pixi:/some/env"
+          envSource="pixi:toml"
           kernelStatus={KERNEL_STATUS.IDLE}
         />,
       );

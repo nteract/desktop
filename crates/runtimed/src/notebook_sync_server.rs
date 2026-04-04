@@ -235,7 +235,7 @@ fn build_launched_config(
             }
         }
         _ => {
-            // All other Python env sources (conda:pixi, conda:env_yml, etc.)
+            // All other Python env sources (conda:env_yml, etc.)
             // use pooled environments — store paths so the agent can reconstruct.
             config.venv_path = venv_path;
             config.python_path = python_path;
@@ -3033,6 +3033,7 @@ async fn auto_launch_kernel(
                 || env_source == "uv:inline"
                 || env_source == "uv:pep723"
                 || env_source == "conda:inline"
+                || env_source == "pixi:toml"
             {
                 info!(
                     "[notebook-sync] Auto-launch: {} prepares its own env, no pool env needed",
@@ -3091,6 +3092,7 @@ async fn auto_launch_kernel(
                     || env_source == "uv:inline"
                     || env_source == "uv:pep723"
                     || env_source == "conda:inline"
+                    || env_source == "pixi:toml"
                 {
                     info!(
                         "[notebook-sync] Auto-launch: {} prepares its own env, no pool env needed",
@@ -3901,7 +3903,7 @@ async fn handle_notebook_request(
                             };
                         }
                     },
-                    "uv:pyproject" | "uv:inline" | "uv:pep723" | "conda:inline" => {
+                    "uv:pyproject" | "uv:inline" | "uv:pep723" | "conda:inline" | "pixi:toml" => {
                         // These sources prepare their own environments, no pooled env needed
                         info!(
                             "[notebook-sync] LaunchKernel: {} prepares its own env, no pool env",

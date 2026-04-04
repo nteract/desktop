@@ -1514,10 +1514,10 @@ class TestProjectFileDetection:
         assert result.success, f"Failed to import httpx from pyproject env: {result.stderr}"
 
     async def test_pixi_auto_detection(self, session, isolated_fixtures):
-        """notebook_path near pixi.toml auto-detects conda:pixi.
+        """notebook_path near pixi.toml auto-detects pixi:toml.
 
-        The conda:pixi env_source is detected, and a pooled conda env
-        is used to launch the kernel.
+        The pixi:toml env_source is detected and the kernel launches
+        via pixi run.
         """
         notebook_path = str(isolated_fixtures / "pixi-project" / "6-pixi.ipynb")
 
@@ -1529,13 +1529,13 @@ class TestProjectFileDetection:
             session,
             kernel_type="python",
             env_source="auto",
-            expected_env_source="conda:pixi",
+            expected_env_source="pixi:toml",
             notebook_path=notebook_path,
             retries=8,
             delay=2.0,
         )
 
-        assert await session.env_source() == "conda:pixi"
+        assert await session.env_source() == "pixi:toml"
 
         # Kernel should be functional
         result = await session.execute_cell(

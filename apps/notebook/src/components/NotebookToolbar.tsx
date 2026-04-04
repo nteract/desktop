@@ -126,7 +126,7 @@ export function NotebookToolbar({
       ? envSource &&
         (kernelStatus === KERNEL_STATUS.IDLE ||
           kernelStatus === KERNEL_STATUS.BUSY)
-        ? envSource.startsWith("conda:pixi")
+        ? envSource.startsWith("pixi:")
           ? "pixi"
           : envSource.startsWith("conda")
             ? "conda"

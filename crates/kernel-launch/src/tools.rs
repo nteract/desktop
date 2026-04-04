@@ -817,6 +817,42 @@ pub async fn get_uv_path() -> Result<PathBuf> {
     }
 }
 
+/// Global cache for the pixi binary path.
+static PIXI_PATH: OnceCell<Arc<Result<PathBuf, String>>> = OnceCell::const_new();
+
+/// Get the path to the pixi binary, checking system PATH first then bootstrapping.
+///
+/// Results are cached for subsequent calls.
+pub async fn get_pixi_path() -> Result<PathBuf> {
+    let result = PIXI_PATH
+        .get_or_init(|| async {
+            // 1. Check for system pixi on PATH
+            if let Ok(output) = tokio::process::Command::new("pixi")
+                .arg("--version")
+                .output()
+                .await
+            {
+                if output.status.success() {
+                    info!("Using system pixi");
+                    return Arc::new(Ok(PathBuf::from("pixi")));
+                }
+            }
+
+            // 2. Bootstrap via rattler from conda-forge
+            info!("Bootstrapping pixi via rattler from conda-forge...");
+            match bootstrap_tool("pixi", None).await {
+                Ok(tool) => Arc::new(Ok(tool.binary_path)),
+                Err(e) => Arc::new(Err(e.to_string())),
+            }
+        })
+        .await;
+
+    match result.as_ref() {
+        Ok(path) => Ok(path.clone()),
+        Err(e) => Err(anyhow!("{}", e)),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

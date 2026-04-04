@@ -896,6 +896,33 @@ impl RoomKernel {
                         cmd.stderr(Stdio::piped());
                         cmd
                     }
+                    "pixi:toml" => {
+                        // Use `pixi run` in the project directory
+                        let pixi_path = kernel_launch::tools::get_pixi_path().await?;
+                        info!(
+                            "[kernel-manager] Starting Python kernel with pixi run (env_source: {})",
+                            env_source
+                        );
+                        let mut cmd = tokio::process::Command::new(&pixi_path);
+                        cmd.args([
+                            "run",
+                            "python",
+                            "-Xfrozen_modules=off",
+                            "-m",
+                            "ipykernel_launcher",
+                            "-f",
+                        ]);
+                        cmd.arg(&connection_file_path);
+                        cmd.stdout(Stdio::null());
+                        cmd.stderr(Stdio::piped());
+                        // Set working dir so pixi discovers pixi.toml
+                        if let Some(nb_path) = notebook_path {
+                            if let Some(parent) = nb_path.parent() {
+                                cmd.current_dir(parent);
+                            }
+                        }
+                        cmd
+                    }
                     _ => {
                         // Prewarmed - use pooled environment
                         let pooled_env = env.ok_or_else(|| {

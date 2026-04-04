@@ -29,7 +29,7 @@ impl DetectedProjectFile {
     pub fn to_env_source(&self) -> &'static str {
         match self.kind {
             ProjectFileKind::PyprojectToml => "uv:pyproject",
-            ProjectFileKind::PixiToml => "conda:pixi",
+            ProjectFileKind::PixiToml => "pixi:toml",
             ProjectFileKind::EnvironmentYml => "conda:env_yml",
         }
     }
@@ -135,7 +135,7 @@ mod tests {
         assert!(found.is_some());
         let found = found.unwrap();
         assert_eq!(found.kind, ProjectFileKind::PixiToml);
-        assert_eq!(found.to_env_source(), "conda:pixi");
+        assert_eq!(found.to_env_source(), "pixi:toml");
     }
 
     #[test]
