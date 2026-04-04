@@ -368,8 +368,6 @@ function NotebookViewContent({
 }: NotebookViewProps) {
   const presence = usePresenceContext();
   const containerRef = useRef<HTMLDivElement>(null);
-  // Track whether focus change was keyboard-driven (should scroll) or mouse-driven (already visible)
-  const focusSourceRef = useRef<"mouse" | "keyboard">("keyboard");
 
   // Read transient UI state from the store instead of props
   const focusedCellId = useFocusedCellId();
@@ -524,22 +522,6 @@ function NotebookViewContent({
     }
   }, [searchCurrentMatch]);
 
-  useEffect(() => {
-    if (!focusedCellId) return;
-    // Only scroll for keyboard-driven focus changes (arrows, shift-enter).
-    // Mouse clicks don't need scrolling — the cell is already visible.
-    if (focusSourceRef.current !== "keyboard") {
-      focusSourceRef.current = "keyboard"; // reset for next time
-      return;
-    }
-    const cellEl = containerRef.current?.querySelector(
-      `[data-cell-id="${CSS.escape(focusedCellId)}"]`,
-    );
-    if (cellEl) {
-      cellEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    }
-  }, [focusedCellId]);
-
   // ── Auto-seed first cell for empty notebooks ───────────────────────
   // For new notebooks the daemon creates zero cells. Once sync completes
   // (isLoading becomes false), we create the first code cell locally via
@@ -576,7 +558,6 @@ function NotebookViewContent({
         logger.debug(
           `[cell-nav] onFocusPrevious called: cell=${cell.id.slice(0, 8)} index=${index} cellIds=${cellIdsRef.current.map((id) => id.slice(0, 8)).join(",")}`,
         );
-        focusSourceRef.current = "keyboard";
         let prevIndex = index - 1;
         while (
           prevIndex >= 0 &&
@@ -601,7 +582,6 @@ function NotebookViewContent({
         logger.debug(
           `[cell-nav] onFocusNext called: cell=${cell.id.slice(0, 8)} index=${index} cellIds=${cellIdsRef.current.map((id) => id.slice(0, 8)).join(",")}`,
         );
-        focusSourceRef.current = "keyboard";
         let nextIndex = index + 1;
         while (
           nextIndex < cellIdsRef.current.length &&
@@ -685,7 +665,6 @@ function NotebookViewContent({
                 : undefined
             }
             onFocus={() => {
-              focusSourceRef.current = "mouse";
               onFocusCell(cell.id);
               presence?.setFocus(cell.id);
             }}
@@ -741,7 +720,6 @@ function NotebookViewContent({
             key={cell.id}
             cell={cell}
             onFocus={() => {
-              focusSourceRef.current = "mouse";
               onFocusCell(cell.id);
               presence?.setFocus(cell.id);
             }}
@@ -763,7 +741,6 @@ function NotebookViewContent({
           key={cell.id}
           cell={cell}
           onFocus={() => {
-            focusSourceRef.current = "mouse";
             onFocusCell(cell.id);
             presence?.setFocus(cell.id);
           }}
