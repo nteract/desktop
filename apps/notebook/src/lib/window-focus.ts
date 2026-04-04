@@ -81,15 +81,12 @@ function handleWindowBlur(): void {
     savedSelection = { anchor: sel.anchor, head: sel.head };
     logger.debug("[window-focus] Saved selection on blur", savedSelection);
   }
-
-  logger.info("[window-focus] Window lost focus");
 }
 
 function handleWindowFocus(): void {
   if (windowFocused) return; // already focused (dedup)
   windowFocused = true;
 
-  logger.info("[window-focus] Window gained focus");
   restoreEditorFocus();
 }
 
