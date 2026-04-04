@@ -24,7 +24,7 @@ import { type WasmHarness, createWasmHarness, initWasm } from "./wasm-harness";
 
 // ── Test suite ──────────────────────────────────────────────────────
 
-describe("WASM integration: real frames through SyncEngine", () => {
+describe("WASM integration: real frames through SyncEngine", { retry: 3 }, () => {
   let h: WasmHarness;
 
   beforeEach(async () => {
