@@ -5,7 +5,8 @@
 use serde_json::Value;
 
 use crate::stats::{
-    compute_stats, detect_trend, extract_numbers, extract_title, fmt_num, format_inline_pairs,
+    compute_stats, detect_trend, extract_numbers, extract_numbers_positional, extract_title,
+    fmt_num,
 };
 
 /// Summarize a Plotly spec into an LLM-friendly text representation.
@@ -181,18 +182,30 @@ fn summarize_bar(trace: &Value) -> String {
         _ => return "no data".to_string(),
     };
 
-    let labels: Vec<&str> = labels_arr.iter().filter_map(|v| v.as_str()).collect();
-    let values = extract_numbers(values_arr);
+    // Use positional extraction to maintain index alignment with labels
+    let values_pos = extract_numbers_positional(values_arr);
 
-    if labels.is_empty() || values.is_empty() {
+    // Pair labels with values, skipping entries where either is missing
+    let pairs: Vec<(&str, f64)> = labels_arr
+        .iter()
+        .zip(values_pos.iter())
+        .filter_map(|(label, value)| Some((label.as_str()?, (*value)?)))
+        .collect();
+
+    if pairs.is_empty() {
         return format!("n={}", labels_arr.len().max(values_arr.len()));
     }
 
-    let n = labels.len().min(values.len());
+    let n = pairs.len();
     if n <= 20 {
-        format!("{{ {} }}", format_inline_pairs(&labels[..n], &values[..n]))
+        let formatted: Vec<String> = pairs
+            .iter()
+            .map(|(l, v)| format!("{}: {}", l, fmt_num(*v)))
+            .collect();
+        format!("{{ {} }}", formatted.join(", "))
     } else {
-        let stats = compute_stats(&values);
+        let values_only: Vec<f64> = pairs.iter().map(|(_, v)| *v).collect();
+        let stats = compute_stats(&values_only);
         match stats {
             Some(s) => format!(
                 "n={}; range=[{}, {}], mean={}",
@@ -216,20 +229,26 @@ fn summarize_pie(trace: &Value) -> String {
         _ => return "no data".to_string(),
     };
 
-    let labels: Vec<&str> = labels_arr.iter().filter_map(|v| v.as_str()).collect();
-    let values = extract_numbers(values_arr);
+    // Use positional extraction to maintain index alignment with labels
+    let values_pos = extract_numbers_positional(values_arr);
 
-    if labels.is_empty() || values.is_empty() {
+    // Pair labels with values, skipping entries where either is missing
+    let pairs: Vec<(&str, f64)> = labels_arr
+        .iter()
+        .zip(values_pos.iter())
+        .filter_map(|(label, value)| Some((label.as_str()?, (*value)?)))
+        .collect();
+
+    if pairs.is_empty() {
         return format!("n={}", labels_arr.len().max(values_arr.len()));
     }
 
-    let total: f64 = values.iter().sum();
-    let n = labels.len().min(values.len());
+    let total: f64 = pairs.iter().map(|(_, v)| v).sum();
+    let n = pairs.len();
 
     if n <= 15 && total > 0.0 {
-        let parts: Vec<String> = labels[..n]
+        let parts: Vec<String> = pairs
             .iter()
-            .zip(values[..n].iter())
             .map(|(l, v)| {
                 let pct = v / total * 100.0;
                 format!("{}: {} ({:.0}%)", l, fmt_num(*v), pct)
@@ -241,35 +260,74 @@ fn summarize_pie(trace: &Value) -> String {
     }
 }
 
+/// Classify the x-axis of a scatter trace.
+enum XAxis<'a> {
+    /// String labels (dates, categories)
+    Strings(&'a [Value]),
+    /// Numeric values
+    Numeric(&'a [Value]),
+    /// No x-axis provided
+    None,
+}
+
 /// Summarize a scatter/line trace.
+///
+/// Handles both numeric and string x-axes (e.g., dates like "2024-01").
 fn summarize_scatter(trace: &Value) -> String {
-    let x_arr = match trace.get("x").and_then(|v| v.as_array()) {
-        Some(arr) => arr,
-        None => return "no data".to_string(),
-    };
     let y_arr = match trace.get("y").and_then(|v| v.as_array()) {
         Some(arr) => arr,
         None => return "no data".to_string(),
     };
 
-    let x_vals = extract_numbers(x_arr);
     let y_vals = extract_numbers(y_arr);
-    let n = x_vals.len().min(y_vals.len());
+    if y_vals.is_empty() {
+        return "no data".to_string();
+    }
+
+    let x_axis = match trace.get("x").and_then(|v| v.as_array()) {
+        Some(arr) if arr.first().is_some_and(|v| v.is_string()) => XAxis::Strings(arr),
+        Some(arr) => XAxis::Numeric(arr),
+        None => XAxis::None,
+    };
+
+    let n = match &x_axis {
+        XAxis::Strings(x) | XAxis::Numeric(x) => x.len().min(y_vals.len()),
+        XAxis::None => y_vals.len(),
+    };
 
     if n == 0 {
         return "no data".to_string();
     }
 
     if n <= 15 {
-        // Inline all points
-        let pairs: Vec<String> = x_vals[..n]
-            .iter()
-            .zip(y_vals[..n].iter())
-            .map(|(x, y)| format!("({}, {})", fmt_num(*x), fmt_num(*y)))
-            .collect();
+        let pairs: Vec<String> = match &x_axis {
+            XAxis::Strings(x) => x
+                .iter()
+                .zip(y_vals.iter())
+                .take(n)
+                .map(|(x, y)| {
+                    let label = x.as_str().unwrap_or("?");
+                    format!("({}, {})", label, fmt_num(*y))
+                })
+                .collect(),
+            XAxis::Numeric(x) => {
+                let x_vals = extract_numbers(x);
+                x_vals
+                    .iter()
+                    .zip(y_vals.iter())
+                    .take(n)
+                    .map(|(x, y)| format!("({}, {})", fmt_num(*x), fmt_num(*y)))
+                    .collect()
+            }
+            XAxis::None => y_vals
+                .iter()
+                .take(n)
+                .enumerate()
+                .map(|(i, y)| format!("({}, {})", i, fmt_num(*y)))
+                .collect(),
+        };
         format!("n={}: {}", n, pairs.join(", "))
     } else {
-        // Stats + trend + endpoints
         let y_stats = compute_stats(&y_vals);
         let trend = detect_trend(&y_vals);
         let first_y = y_vals.first().copied().unwrap_or(0.0);
@@ -280,10 +338,20 @@ fn summarize_scatter(trace: &Value) -> String {
             0.0
         };
 
+        let x_context = match &x_axis {
+            XAxis::Strings(x) => {
+                let first_x = x.first().and_then(|v| v.as_str()).unwrap_or("?");
+                let last_x = x.last().and_then(|v| v.as_str()).unwrap_or("?");
+                format!("; x: {}..{}", first_x, last_x)
+            }
+            _ => String::new(),
+        };
+
         match y_stats {
             Some(s) => format!(
-                "n={}; y: range=[{}, {}], mean={}; trend: {}; first={}, last={} ({:+.1}%)",
+                "n={}{}; y: range=[{}, {}], mean={}; trend: {}; first={}, last={} ({:+.1}%)",
                 n,
+                x_context,
                 fmt_num(s.min),
                 fmt_num(s.max),
                 fmt_num(s.mean),
@@ -654,5 +722,117 @@ mod tests {
         });
         let result = summarize(&spec);
         assert!(result.contains("Axes: x=Time, y=Value"));
+    }
+
+    // Regression: string x-axis (dates) should not produce "no data"
+    #[test]
+    fn test_scatter_string_x_axis() {
+        let spec = json!({
+            "data": [{
+                "type": "scatter",
+                "mode": "lines",
+                "x": ["2024-01", "2024-02", "2024-03"],
+                "y": [10, 20, 30]
+            }],
+            "layout": {"title": "Monthly"}
+        });
+        let result = summarize(&spec);
+        assert!(
+            result.contains("(line)"),
+            "should classify as line: {}",
+            result
+        );
+        assert!(
+            !result.contains("no data"),
+            "string x should not be 'no data': {}",
+            result
+        );
+        assert!(
+            result.contains("2024-01"),
+            "should include date labels: {}",
+            result
+        );
+        assert!(result.contains("30"), "should include y values: {}", result);
+    }
+
+    // Regression: large time-series with string x-axis should show stats + x range
+    #[test]
+    fn test_scatter_string_x_axis_large() {
+        let x: Vec<String> = (0..50).map(|i| format!("2024-W{:02}", i + 1)).collect();
+        let y: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let spec = json!({
+            "data": [{"type": "scatter", "mode": "lines", "x": x, "y": y}],
+            "layout": {"title": "Weekly"}
+        });
+        let result = summarize(&spec);
+        assert!(!result.contains("no data"), "should have data: {}", result);
+        assert!(result.contains("n=50"), "should show count: {}", result);
+        assert!(
+            result.contains("trend: increasing"),
+            "should detect trend: {}",
+            result
+        );
+        assert!(
+            result.contains("2024-W01"),
+            "should show first x label: {}",
+            result
+        );
+        assert!(
+            result.contains("2024-W50"),
+            "should show last x label: {}",
+            result
+        );
+    }
+
+    // Regression: null values in bar chart should not misalign labels
+    #[test]
+    fn test_bar_with_nulls() {
+        let spec = json!({
+            "data": [{
+                "type": "bar",
+                "x": ["A", "B", "C"],
+                "y": [1, null, 3]
+            }],
+            "layout": {"title": "Sparse"}
+        });
+        let result = summarize(&spec);
+        // B should be skipped entirely, not assigned C's value
+        assert!(result.contains("A: 1"), "should have A=1: {}", result);
+        assert!(result.contains("C: 3"), "should have C=3: {}", result);
+        assert!(
+            !result.contains("B: 3"),
+            "B should not get C's value: {}",
+            result
+        );
+        assert!(!result.contains("B: 1"), "B should not appear: {}", result);
+    }
+
+    // Regression: null values in pie chart should not misalign labels
+    #[test]
+    fn test_pie_with_nulls() {
+        let spec = json!({
+            "data": [{
+                "type": "pie",
+                "labels": ["Alpha", "Beta", "Gamma"],
+                "values": [10, null, 30]
+            }],
+            "layout": {"title": "Sparse Pie"}
+        });
+        let result = summarize(&spec);
+        assert!(
+            result.contains("Alpha: 10"),
+            "should have Alpha=10: {}",
+            result
+        );
+        assert!(
+            result.contains("Gamma: 30"),
+            "should have Gamma=30: {}",
+            result
+        );
+        assert!(
+            !result.contains("Beta: 30"),
+            "Beta should not get Gamma's value: {}",
+            result
+        );
     }
 }

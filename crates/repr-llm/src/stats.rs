@@ -19,6 +19,16 @@ pub fn extract_numbers(arr: &[Value]) -> Vec<f64> {
         .collect()
 }
 
+/// Extract f64 values preserving position — returns `None` for nulls/non-numeric entries.
+///
+/// Use this instead of `extract_numbers` when you need to maintain index alignment
+/// with a parallel array (e.g., labels and values).
+pub fn extract_numbers_positional(arr: &[Value]) -> Vec<Option<f64>> {
+    arr.iter()
+        .map(|v| v.as_f64().filter(|f| f.is_finite()))
+        .collect()
+}
+
 /// Compute basic descriptive statistics for a numeric slice.
 pub fn compute_stats(values: &[f64]) -> Option<NumericStats> {
     if values.is_empty() {
@@ -124,16 +134,6 @@ pub fn fmt_num(v: f64) -> String {
 /// Extract a title from a JSON value that can be either a string or `{"text": "..."}`.
 pub fn extract_title(v: &Value) -> Option<&str> {
     v.as_str().or_else(|| v.get("text")?.as_str())
-}
-
-/// Format a list of string values as a compact inline representation.
-pub fn format_inline_pairs(labels: &[&str], values: &[f64]) -> String {
-    labels
-        .iter()
-        .zip(values.iter())
-        .map(|(l, v)| format!("{}: {}", l, fmt_num(*v)))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 #[cfg(test)]
