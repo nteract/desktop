@@ -196,6 +196,39 @@ fn get_inline_conda_channels(snapshot: &NotebookMetadataSnapshot) -> Vec<String>
     vec!["conda-forge".to_string()]
 }
 
+/// Extract dependency entries from a pixi.toml or pyproject.toml with [tool.pixi].
+///
+/// Section-aware: only collects `key = value` lines from `[dependencies]`,
+/// `[pypi-dependencies]`, `[tool.pixi.dependencies]`, `[tool.pixi.pypi-dependencies]`.
+/// Stores the full line (trimmed) so version constraint changes are detected.
+fn extract_pixi_toml_deps(content: &str) -> Vec<String> {
+    let dep_sections = [
+        "[dependencies]",
+        "[pypi-dependencies]",
+        "[tool.pixi.dependencies]",
+        "[tool.pixi.pypi-dependencies]",
+    ];
+    let mut in_dep_section = false;
+    let mut deps = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_dep_section = dep_sections.iter().any(|s| trimmed.eq_ignore_ascii_case(s));
+            continue;
+        }
+        if in_dep_section
+            && !trimmed.is_empty()
+            && !trimmed.starts_with('#')
+            && trimmed.contains('=')
+        {
+            deps.push(trimmed.to_string());
+        }
+    }
+    deps.sort();
+    deps
+}
+
 /// Build a LaunchedEnvConfig from the current metadata snapshot.
 /// This captures what configuration was used at kernel launch time.
 #[allow(clippy::too_many_arguments)]
@@ -245,32 +278,13 @@ fn build_launched_config(
         }
         "pixi:toml" => {
             // Store pixi.toml deps baseline for drift detection.
-            // Read the pixi.toml (or pyproject.toml with [tool.pixi]) and
-            // extract all dependency names for later comparison.
+            // Parse section-aware: only collect entries from [dependencies],
+            // [pypi-dependencies], [tool.pixi.dependencies], [tool.pixi.pypi-dependencies].
             if let Some(nb_path) = notebook_path {
                 if let Some(detected) = crate::project_file::detect_project_file(nb_path) {
                     if detected.kind == crate::project_file::ProjectFileKind::PixiToml {
                         if let Ok(content) = std::fs::read_to_string(&detected.path) {
-                            let mut deps: Vec<String> = content
-                                .lines()
-                                .filter(|line| {
-                                    let t = line.trim();
-                                    !t.is_empty()
-                                        && !t.starts_with('#')
-                                        && !t.starts_with('[')
-                                        && t.contains('=')
-                                        && !t.starts_with("name")
-                                        && !t.starts_with("version")
-                                        && !t.starts_with("channels")
-                                        && !t.starts_with("platforms")
-                                })
-                                .filter_map(|line| {
-                                    line.split('=').next().map(|n| n.trim().to_string())
-                                })
-                                .filter(|n| !n.is_empty())
-                                .collect();
-                            deps.sort();
-                            deps.dedup();
+                            let deps = extract_pixi_toml_deps(&content);
                             config.pixi_toml_deps = Some(deps);
                             config.pixi_toml_path = Some(detected.path);
                         }
@@ -414,33 +428,27 @@ fn compute_env_sync_diff(
     if let Some(ref launched_toml_deps) = launched.pixi_toml_deps {
         if let Some(ref toml_path) = launched.pixi_toml_path {
             if let Ok(content) = std::fs::read_to_string(toml_path) {
-                let mut current_deps: Vec<String> = content
-                    .lines()
-                    .filter(|line| {
-                        let t = line.trim();
-                        !t.is_empty()
-                            && !t.starts_with('#')
-                            && !t.starts_with('[')
-                            && t.contains('=')
-                            && !t.starts_with("name")
-                            && !t.starts_with("version")
-                            && !t.starts_with("channels")
-                            && !t.starts_with("platforms")
-                    })
-                    .filter_map(|line| line.split('=').next().map(|n| n.trim().to_string()))
-                    .filter(|n| !n.is_empty())
-                    .collect();
-                current_deps.sort();
-                current_deps.dedup();
+                let current_deps = extract_pixi_toml_deps(&content);
 
                 for dep in &current_deps {
                     if !launched_toml_deps.contains(dep) {
-                        added.push(dep.clone());
+                        // Extract just the package name for the UI
+                        let name = dep
+                            .split('=')
+                            .next()
+                            .map(|n| n.trim().to_string())
+                            .unwrap_or_else(|| dep.clone());
+                        added.push(name);
                     }
                 }
                 for dep in launched_toml_deps {
                     if !current_deps.contains(dep) {
-                        removed.push(dep.clone());
+                        let name = dep
+                            .split('=')
+                            .next()
+                            .map(|n| n.trim().to_string())
+                            .unwrap_or_else(|| dep.clone());
+                        removed.push(name);
                     }
                 }
             }

@@ -35,7 +35,7 @@ export function PixiDependencyHeader({
 }: PixiDependencyHeaderProps) {
   const pixiDeps = usePixiDeps();
   const isInlineMode =
-    envSource === "pixi:inline" || envSource === "pixi:prewarmed" || !pixiInfo;
+    envSource === "pixi:inline" || envSource === "pixi:prewarmed";
   const [newDep, setNewDep] = useState("");
   const [loading, setLoading] = useState(false);
 
