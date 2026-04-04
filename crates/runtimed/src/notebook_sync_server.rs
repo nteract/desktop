@@ -198,6 +198,7 @@ fn get_inline_conda_channels(snapshot: &NotebookMetadataSnapshot) -> Vec<String>
 
 /// Build a LaunchedEnvConfig from the current metadata snapshot.
 /// This captures what configuration was used at kernel launch time.
+#[allow(clippy::too_many_arguments)]
 fn build_launched_config(
     kernel_type: &str,
     env_source: &str,

@@ -444,6 +444,19 @@ function AppContent() {
     };
   }, [envSource, envSyncState]);
 
+  const pixiDerivedSyncState: EnvSyncState | null = useMemo(() => {
+    const isPixiEnv = envSource?.startsWith("pixi:");
+    if (!isPixiEnv || !envSyncState) return null;
+    if (envSource === "pixi:prewarmed" && !envSyncState.diff?.added?.length)
+      return null;
+    if (envSyncState.inSync) return { status: "synced" };
+    return {
+      status: "dirty",
+      added: envSyncState.diff?.added ?? [],
+      removed: envSyncState.diff?.removed ?? [],
+    };
+  }, [envSource, envSyncState]);
+
   // Derive sync state for Deno kernels
   const denoDerivedSyncState: {
     status: "synced" | "dirty";
@@ -1202,7 +1215,13 @@ function AppContent() {
             />
           )}
         {dependencyHeaderOpen && runtime === "python" && envType === "pixi" && (
-          <PixiDependencyHeader pixiInfo={pixiInfo} />
+          <PixiDependencyHeader
+            pixiInfo={pixiInfo}
+            envSource={envSource}
+            syncState={pixiDerivedSyncState}
+            onSyncNow={handleSyncDeps}
+            justSynced={justSynced}
+          />
         )}
         {dependencyHeaderOpen &&
           runtime === "python" &&
