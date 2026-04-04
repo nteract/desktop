@@ -45,12 +45,16 @@ export function rawLibPlugin(nodeModulesDir: string): Plugin {
 		name: "raw-lib",
 		resolveId(source) {
 			const filePath = mapping[source];
-			if (filePath) return `${PREFIX}${filePath}`;
+			// Always resolve with a .js suffix so Vite treats the virtual module
+			// as JavaScript — without this, .css paths get routed through Vite's
+			// CSS pipeline which chokes on the `export default` wrapper.
+			if (filePath) return `${PREFIX}${filePath}.js`;
 			return null;
 		},
 		async load(id) {
 			if (!id.startsWith(PREFIX)) return null;
-			const filePath = id.slice(PREFIX.length);
+			// Strip the .js suffix we added in resolveId to recover the real path
+			const filePath = id.slice(PREFIX.length, -".js".length);
 			let content = await fs.readFile(filePath, "utf-8");
 			content = content.replace(SOURCEMAP_JS, "").replace(SOURCEMAP_CSS, "");
 			return `export default ${JSON.stringify(content)};`;
