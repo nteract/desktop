@@ -6,4 +6,4 @@
  * Unknown values are captured in the `Other` variant so they survive
  * serialization round-trips across branches that add new env types.
  */
-export type PythonEnvType = "uv" | "conda" | (string & {});
+export type PythonEnvType = "uv" | "conda" | "pixi" | (string & {});

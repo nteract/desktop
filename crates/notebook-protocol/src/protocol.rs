@@ -25,6 +25,10 @@ pub struct LaunchedEnvConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conda_channels: Option<Vec<String>>,
 
+    /// Pixi inline deps — conda matchspecs (if env_source is "pixi:inline")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pixi_deps: Option<Vec<String>>,
+
     /// Deno config (if kernel_type is "deno")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deno_config: Option<DenoLaunchedConfig>,

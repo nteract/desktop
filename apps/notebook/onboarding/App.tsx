@@ -8,13 +8,14 @@ import { cn } from "@/lib/utils";
 import {
   CondaIcon,
   DenoIcon,
+  PixiIcon,
   PythonIcon,
   UvIcon,
 } from "../src/components/icons";
 import type { DaemonStatus } from "./types";
 
 type Runtime = "python" | "deno";
-type PythonEnv = "uv" | "conda";
+type PythonEnv = "uv" | "conda" | "pixi";
 
 type SetupStep = {
   id: string;
@@ -154,6 +155,12 @@ const BRAND_COLORS = {
     text: "text-green-600 dark:text-green-400",
     ring: "ring-green-500",
     iconBg: "bg-green-500/20",
+  },
+  pixi: {
+    bg: "bg-amber-500/10",
+    text: "text-amber-600 dark:text-amber-400",
+    ring: "ring-amber-500",
+    iconBg: "bg-amber-500/20",
   },
 };
 
@@ -427,7 +434,7 @@ export default function App() {
               <p className="text-muted-foreground">{page2Subtitle}</p>
             </div>
 
-            <div className="flex items-center justify-center gap-6">
+            <div className="flex items-center justify-center gap-4">
               <SelectionCard
                 selected={pythonEnv === "uv"}
                 onClick={() => handlePythonEnvSelect("uv")}
@@ -443,6 +450,14 @@ export default function App() {
                 title="Conda"
                 description="Scientific stack & private channels"
                 colorClass={BRAND_COLORS.conda}
+              />
+              <SelectionCard
+                selected={pythonEnv === "pixi"}
+                onClick={() => handlePythonEnvSelect("pixi")}
+                icon={PixiIcon}
+                title="Pixi"
+                description="Conda + pip unified"
+                colorClass={BRAND_COLORS.pixi}
               />
             </div>
 
