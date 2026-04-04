@@ -117,6 +117,15 @@ pub struct ExecutionState {
     /// Output manifest hashes for this execution.
     #[serde(default)]
     pub outputs: Vec<String>,
+    /// Source code that was executed (audit log).
+    /// Set by the coordinator when creating the execution entry.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Queue sequence number for ordering.
+    /// Monotonic counter owned by the coordinator; the agent sorts
+    /// queued entries by this to determine execution order.
+    #[serde(default)]
+    pub seq: Option<u64>,
 }
 
 /// Environment sync state snapshot.
@@ -800,6 +809,61 @@ impl RuntimeStateDoc {
         true
     }
 
+    /// Create a new execution entry with source code and queue sequence number.
+    ///
+    /// Used by the coordinator to queue executions for the agent. The source is
+    /// stored as an audit log, and `seq` determines execution order. The agent
+    /// discovers new entries via CRDT sync and processes them in `seq` order.
+    pub fn create_execution_with_source(
+        &mut self,
+        execution_id: &str,
+        cell_id: &str,
+        source: &str,
+        seq: u64,
+    ) -> bool {
+        let executions = self
+            .get_map("executions")
+            .expect("executions map must exist");
+
+        // Don't overwrite if it already exists (idempotent)
+        if self
+            .doc
+            .get(&executions, execution_id)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return false;
+        }
+
+        let entry = self
+            .doc
+            .put_object(&executions, execution_id, ObjType::Map)
+            .expect("put execution entry");
+        self.doc
+            .put(&entry, "cell_id", cell_id)
+            .expect("put execution.cell_id");
+        self.doc
+            .put(&entry, "status", "queued")
+            .expect("put execution.status");
+        self.doc
+            .put(&entry, "execution_count", ScalarValue::Null)
+            .expect("put execution.execution_count");
+        self.doc
+            .put(&entry, "success", ScalarValue::Null)
+            .expect("put execution.success");
+        self.doc
+            .put_object(&entry, "outputs", ObjType::List)
+            .expect("put execution.outputs");
+        self.doc
+            .put(&entry, "source", source)
+            .expect("put execution.source");
+        self.doc
+            .put(&entry, "seq", ScalarValue::Uint(seq))
+            .expect("put execution.seq");
+        true
+    }
+
     /// Mark an execution as running.
     ///
     /// The execution_count is not known yet at this point — it arrives later
@@ -902,13 +966,46 @@ impl RuntimeStateDoc {
 
         let outputs = self.read_str_list(&entry, "outputs");
 
+        let source = self.read_opt_str(&entry, "source");
+
+        let seq = self
+            .doc
+            .get(&entry, "seq")
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| match value {
+                Value::Scalar(s) => match s.as_ref() {
+                    ScalarValue::Uint(n) => Some(*n),
+                    ScalarValue::Int(n) => Some(*n as u64),
+                    _ => None,
+                },
+                _ => None,
+            });
+
         Some(ExecutionState {
             cell_id,
             status,
             execution_count,
             success,
             outputs,
+            source,
+            seq,
         })
+    }
+
+    /// Get execution entries with `status == "queued"`, sorted by `seq`.
+    ///
+    /// Used by the agent to discover new work via CRDT sync. Returns
+    /// `(execution_id, ExecutionState)` pairs in execution order.
+    pub fn get_queued_executions(&self) -> Vec<(String, ExecutionState)> {
+        let state = self.read_state();
+        let mut queued: Vec<(String, ExecutionState)> = state
+            .executions
+            .into_iter()
+            .filter(|(_, exec)| exec.status == "queued")
+            .collect();
+        queued.sort_by_key(|(_, exec)| exec.seq.unwrap_or(u64::MAX));
+        queued
     }
 
     // ── Output storage (keyed by execution_id) ──────────────────────
@@ -2100,6 +2197,38 @@ mod tests {
     }
 
     #[test]
+    fn test_create_execution_with_source() {
+        let mut doc = RuntimeStateDoc::new();
+        assert!(doc.create_execution_with_source("exec-1", "cell-1", "x = 42", 0));
+
+        let es = doc.get_execution("exec-1").unwrap();
+        assert_eq!(es.cell_id, "cell-1");
+        assert_eq!(es.status, "queued");
+        assert_eq!(es.source, Some("x = 42".to_string()));
+        assert_eq!(es.seq, Some(0));
+    }
+
+    #[test]
+    fn test_get_queued_executions_sorted_by_seq() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution_with_source("exec-3", "cell-3", "z = 3", 2);
+        doc.create_execution_with_source("exec-1", "cell-1", "x = 1", 0);
+        doc.create_execution_with_source("exec-2", "cell-2", "y = 2", 1);
+
+        let queued = doc.get_queued_executions();
+        assert_eq!(queued.len(), 3);
+        assert_eq!(queued[0].0, "exec-1");
+        assert_eq!(queued[1].0, "exec-2");
+        assert_eq!(queued[2].0, "exec-3");
+
+        // Transition one to running — should no longer appear
+        doc.set_execution_running("exec-1");
+        let queued = doc.get_queued_executions();
+        assert_eq!(queued.len(), 2);
+        assert_eq!(queued[0].0, "exec-2");
+    }
+
+    #[test]
     fn test_create_execution_idempotent() {
         let mut doc = RuntimeStateDoc::new();
         assert!(doc.create_execution("exec-1", "cell-1"));
@@ -2795,6 +2924,8 @@ mod tests {
                 execution_count: Some(1),
                 success: Some(true),
                 outputs: vec!["hash1".to_string()],
+                source: None,
+                seq: None,
             },
         );
         let (changed, _) = diff_execution_outputs(&prev, &execs);
@@ -2813,6 +2944,8 @@ mod tests {
                 execution_count: None,
                 success: None,
                 outputs: vec![],
+                source: None,
+                seq: None,
             },
         );
         let (changed, _) = diff_execution_outputs(&prev, &execs);
@@ -2832,6 +2965,8 @@ mod tests {
                 execution_count: Some(1),
                 success: Some(true),
                 outputs: vec![],
+                source: None,
+                seq: None,
             },
         );
         let (changed, _) = diff_execution_outputs(&prev, &execs);
@@ -2854,6 +2989,8 @@ mod tests {
                 execution_count: Some(1),
                 success: Some(true),
                 outputs: vec!["hash1".to_string()],
+                source: None,
+                seq: None,
             },
         );
         let (changed, snapshot) = diff_execution_outputs(&prev, &execs);
@@ -2873,6 +3010,8 @@ mod tests {
                 execution_count: None,
                 success: None,
                 outputs: vec![],
+                source: None,
+                seq: None,
             },
         );
         let (changed, snapshot) = diff_execution_outputs(&snapshot, &execs);
@@ -2904,6 +3043,8 @@ mod tests {
                 execution_count: Some(1),
                 success: Some(true),
                 outputs: vec![],
+                source: None,
+                seq: None,
             },
         );
 

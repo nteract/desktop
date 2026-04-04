@@ -378,6 +378,11 @@ pub struct DaemonAlreadyRunning {
 }
 
 impl Daemon {
+    /// Get the daemon's Unix socket path.
+    pub fn socket_path(&self) -> &PathBuf {
+        &self.config.socket_path
+    }
+
     /// Create a new daemon with the given configuration.
     ///
     /// Returns an error if another daemon is already running.
@@ -1154,11 +1159,40 @@ impl Daemon {
                 self.handle_create_notebook(stream, runtime, working_dir, notebook_id)
                     .await
             }
-            Handshake::RuntimeAgent { .. } => {
-                // Runtime agent handshake is for agent subprocesses, not daemon
-                // socket connections. Reject it here.
-                warn!("[runtimed] Received RuntimeAgent handshake on daemon socket — rejecting");
-                Ok(())
+            Handshake::RuntimeAgent {
+                notebook_id,
+                agent_id,
+                blob_root: _,
+            } => {
+                info!(
+                    "[runtimed] Agent connecting via socket: notebook={} agent={}",
+                    notebook_id, agent_id
+                );
+                let room = {
+                    let rooms = self.notebook_rooms.lock().await;
+                    rooms.get(&notebook_id).cloned()
+                };
+                match room {
+                    Some(room) => {
+                        let (reader, writer) = tokio::io::split(stream);
+                        crate::notebook_sync_server::handle_agent_sync_connection(
+                            reader,
+                            writer,
+                            room,
+                            notebook_id,
+                            agent_id,
+                        )
+                        .await;
+                        Ok(())
+                    }
+                    None => {
+                        warn!(
+                            "[runtimed] Agent connected to unknown room: {}",
+                            notebook_id
+                        );
+                        Ok(())
+                    }
+                }
             }
         }
     }
