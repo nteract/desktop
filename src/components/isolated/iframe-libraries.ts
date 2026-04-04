@@ -44,7 +44,7 @@ function loadLibraryCode(name: string): Promise<string> {
   const promise = (async (): Promise<string> => {
     switch (name) {
       case "plotly": {
-        const mod = await import("plotly.js-dist-min/plotly.min.js?raw");
+        const mod = await import("plotly-raw");
         return mod.default;
       }
       case "vega": {

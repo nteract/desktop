@@ -3,7 +3,7 @@
 // KaTeX CSS type declaration for side-effect imports
 declare module "katex/dist/katex.min.css";
 
-// Vega UMD builds loaded as raw strings via vegaRawPlugin (see vite.config.ts).
+// Vega UMD builds loaded as raw strings via rawLibPlugin (see vite-plugin-raw-lib.ts).
 // These virtual modules bypass restrictive "exports" fields in vega v6+ packages.
 declare module "vega-raw" {
   const content: string;
@@ -18,7 +18,13 @@ declare module "vega-embed-raw" {
   export default content;
 }
 
-// Leaflet JS and CSS loaded as raw strings via vegaRawPlugin (see vite.config.ts).
+// Plotly loaded as raw string via rawLibPlugin (see vite-plugin-raw-lib.ts).
+declare module "plotly-raw" {
+  const content: string;
+  export default content;
+}
+
+// Leaflet JS and CSS loaded as raw strings via rawLibPlugin (see vite-plugin-raw-lib.ts).
 declare module "leaflet-js-raw" {
   const content: string;
   export default content;
