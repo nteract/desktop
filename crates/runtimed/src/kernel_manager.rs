@@ -3256,4 +3256,142 @@ mod tests {
         // Complex pattern with multiple metacharacters
         assert_eq!(escape_glob_pattern(Some("a*b?c[d]")), "*a[*]b[?]c[[]d[]]*");
     }
+
+    // ── update_output_by_display_id_with_manifests tests ──────────────
+
+    use tempfile::TempDir;
+
+    fn test_blob_store(dir: &TempDir) -> BlobStore {
+        BlobStore::new(dir.path().join("blobs"))
+    }
+
+    /// Helper: create a display_data manifest with a display_id, store it,
+    /// and append the hash to the given execution in the state doc.
+    async fn insert_display_output(
+        state_doc: &mut RuntimeStateDoc,
+        execution_id: &str,
+        display_id: &str,
+        text_content: &str,
+        blob_store: &BlobStore,
+    ) -> String {
+        let nbformat = serde_json::json!({
+            "output_type": "display_data",
+            "data": { "text/plain": text_content },
+            "metadata": {},
+            "transient": { "display_id": display_id }
+        });
+        let manifest_json =
+            output_store::create_manifest(&nbformat, blob_store, DEFAULT_INLINE_THRESHOLD)
+                .await
+                .unwrap();
+        let hash = output_store::store_manifest(&manifest_json, blob_store)
+            .await
+            .unwrap();
+        state_doc.append_output(execution_id, &hash).unwrap();
+        hash
+    }
+
+    /// Verify that a manifest hash in the blob store contains the expected
+    /// text/plain content.
+    async fn read_text_plain(blob_store: &BlobStore, hash: &str) -> String {
+        let bytes = blob_store.get(hash).await.unwrap().unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let inline = &manifest["data"]["text/plain"]["inline"];
+        inline.as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn test_update_display_id_updates_all_matching_outputs() {
+        let dir = TempDir::new().unwrap();
+        let store = test_blob_store(&dir);
+        let mut state_doc = RuntimeStateDoc::new();
+
+        // Two executions, both with the same display_id (simulates re-running a cell)
+        state_doc.create_execution("exec-1", "cell-a");
+        state_doc.create_execution("exec-2", "cell-a");
+        insert_display_output(&mut state_doc, "exec-1", "progress", "old", &store).await;
+        insert_display_output(&mut state_doc, "exec-2", "progress", "old", &store).await;
+
+        let new_data = serde_json::json!({ "text/plain": "updated" });
+        let new_metadata = serde_json::Map::new();
+        let result = update_output_by_display_id_with_manifests(
+            &mut state_doc,
+            "progress",
+            &new_data,
+            &new_metadata,
+            &store,
+        )
+        .await
+        .unwrap();
+
+        assert!(result, "should report that outputs were updated");
+
+        // Both executions' outputs should now contain "updated"
+        let outputs_1 = state_doc.get_outputs("exec-1");
+        let outputs_2 = state_doc.get_outputs("exec-2");
+        assert_eq!(outputs_1.len(), 1);
+        assert_eq!(outputs_2.len(), 1);
+        assert_eq!(read_text_plain(&store, &outputs_1[0]).await, "updated");
+        assert_eq!(read_text_plain(&store, &outputs_2[0]).await, "updated");
+    }
+
+    #[tokio::test]
+    async fn test_update_display_id_no_match_returns_false() {
+        let dir = TempDir::new().unwrap();
+        let store = test_blob_store(&dir);
+        let mut state_doc = RuntimeStateDoc::new();
+
+        state_doc.create_execution("exec-1", "cell-a");
+        insert_display_output(&mut state_doc, "exec-1", "progress", "hello", &store).await;
+
+        let new_data = serde_json::json!({ "text/plain": "updated" });
+        let new_metadata = serde_json::Map::new();
+        let result = update_output_by_display_id_with_manifests(
+            &mut state_doc,
+            "nonexistent-id",
+            &new_data,
+            &new_metadata,
+            &store,
+        )
+        .await
+        .unwrap();
+
+        assert!(!result, "should return false when no display_id matches");
+
+        // Original output unchanged
+        let outputs = state_doc.get_outputs("exec-1");
+        assert_eq!(read_text_plain(&store, &outputs[0]).await, "hello");
+    }
+
+    #[tokio::test]
+    async fn test_update_display_id_only_updates_matching() {
+        let dir = TempDir::new().unwrap();
+        let store = test_blob_store(&dir);
+        let mut state_doc = RuntimeStateDoc::new();
+
+        state_doc.create_execution("exec-1", "cell-a");
+        state_doc.create_execution("exec-2", "cell-b");
+        insert_display_output(&mut state_doc, "exec-1", "progress", "match-me", &store).await;
+        insert_display_output(&mut state_doc, "exec-2", "other-id", "leave-me", &store).await;
+
+        let new_data = serde_json::json!({ "text/plain": "updated" });
+        let new_metadata = serde_json::Map::new();
+        let result = update_output_by_display_id_with_manifests(
+            &mut state_doc,
+            "progress",
+            &new_data,
+            &new_metadata,
+            &store,
+        )
+        .await
+        .unwrap();
+
+        assert!(result);
+
+        // Only the matching output should be updated
+        let outputs_1 = state_doc.get_outputs("exec-1");
+        let outputs_2 = state_doc.get_outputs("exec-2");
+        assert_eq!(read_text_plain(&store, &outputs_1[0]).await, "updated");
+        assert_eq!(read_text_plain(&store, &outputs_2[0]).await, "leave-me");
+    }
 }
