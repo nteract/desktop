@@ -72,7 +72,25 @@ pub async fn run_agent(
 
     // ── 1. Connect to daemon socket ────────────────────────────────────────
 
+    #[cfg(unix)]
     let stream = tokio::net::UnixStream::connect(&socket_path).await?;
+
+    #[cfg(windows)]
+    let stream = {
+        let pipe_name = socket_path.to_string_lossy().to_string();
+        let mut attempts = 0u32;
+        loop {
+            match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name) {
+                Ok(client) => break client,
+                Err(_) if attempts < 10 => {
+                    attempts += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    };
+
     let (mut reader, mut writer) = tokio::io::split(stream);
 
     // Send preamble + RuntimeAgent handshake
