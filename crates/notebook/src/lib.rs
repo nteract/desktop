@@ -4621,35 +4621,40 @@ pub fn run(
                 }
                 crate::menu::MENU_INSTALL_CLI => {
                     let app_handle = app.clone();
-                    match crate::cli_install::install_cli(&app_handle) {
-                        Ok(()) => {
-                            log::info!("[cli_install] CLI installed successfully");
-                            let cli_cmd = runt_workspace::cli_command_name();
-                            let nb_cmd = runt_workspace::cli_notebook_alias_name();
-                            let success_message = format!(
-                                "The '{cli_cmd}' and '{nb_cmd}' commands have been installed to /usr/local/bin.\n\nYou can now use:\n- {cli_cmd} notebook: Open notebook app\n- {nb_cmd}: Shorthand for above"
-                            );
-                            // Show success dialog
-                            tauri::async_runtime::spawn(async move {
+                    tauri::async_runtime::spawn(async move {
+                        let result = tauri::async_runtime::spawn_blocking({
+                            let app_handle = app_handle.clone();
+                            move || crate::cli_install::install_cli(&app_handle)
+                        })
+                        .await;
+
+                        match result {
+                            Ok(Ok(())) => {
+                                log::info!("[cli_install] CLI installed successfully");
+                                let cli_cmd = runt_workspace::cli_command_name();
+                                let nb_cmd = runt_workspace::cli_notebook_alias_name();
+                                let success_message = format!(
+                                    "The '{cli_cmd}' and '{nb_cmd}' commands have been installed to ~/.local/bin.\n\nOpen a new terminal and run: {cli_cmd} --help"
+                                );
                                 let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
                                     .message(success_message)
                                     .title("CLI Installed")
                                     .kind(tauri_plugin_dialog::MessageDialogKind::Info)
                                     .blocking_show();
-                            });
-                        }
-                        Err(e) => {
-                            log::error!("[cli_install] CLI installation failed: {}", e);
-                            // Show error dialog
-                            tauri::async_runtime::spawn(async move {
+                            }
+                            Ok(Err(e)) => {
+                                log::error!("[cli_install] CLI installation failed: {}", e);
                                 let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
                                     .message(format!("Failed to install CLI: {}", e))
                                     .title("Installation Failed")
                                     .kind(tauri_plugin_dialog::MessageDialogKind::Error)
                                     .blocking_show();
-                            });
+                            }
+                            Err(e) => {
+                                log::error!("[cli_install] CLI install task panicked: {}", e);
+                            }
                         }
-                    }
+                    });
                 }
                 crate::menu::MENU_INSTALL_CLAUDE_EXT => {
                     let app_handle = app.clone();

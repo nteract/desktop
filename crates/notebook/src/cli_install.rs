@@ -1,9 +1,10 @@
 //! CLI installation module for symlinking the bundled runt binary to PATH
 //! and creating the channel-specific notebook shorthand wrapper script.
 //!
-//! On Unix systems, we create a symlink so the CLI automatically stays in sync
-//! when the app is updated. On Windows, we copy the binary since symlinks
-//! require admin privileges and have compatibility issues.
+//! On Unix systems, we install to `~/.local/bin` (no admin privileges required)
+//! and create a symlink so the CLI automatically stays in sync when the app
+//! is updated. On Windows, we copy the binary since symlinks require admin
+//! and have compatibility issues.
 
 use runt_workspace::{cli_command_name, cli_notebook_alias_name};
 use std::fs;
@@ -13,19 +14,28 @@ use std::os::unix::fs::symlink;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-#[cfg(target_os = "macos")]
-use std::process::Command;
 use tauri::Manager;
 
-/// The directory where CLI tools are installed
-#[cfg(target_os = "macos")]
-const INSTALL_DIR: &str = "/usr/local/bin";
+/// Legacy install directory — checked for backward compatibility detection only.
+#[cfg(unix)]
+const LEGACY_INSTALL_DIR: &str = "/usr/local/bin";
 
-#[cfg(target_os = "linux")]
-const INSTALL_DIR: &str = "/usr/local/bin";
+/// Get the user-local install directory (`~/.local/bin` on Unix).
+/// This requires no admin privileges and is the modern convention used by
+/// rustup, uv, mise, pipx, and others.
+#[cfg(unix)]
+fn install_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".local")
+        .join("bin")
+}
 
 #[cfg(target_os = "windows")]
-const INSTALL_DIR: &str = ""; // Windows uses different mechanism
+fn install_dir() -> PathBuf {
+    // Windows uses a different mechanism (App Paths registry or user PATH)
+    PathBuf::new()
+}
 
 /// Get the path to the bundled runt binary.
 pub fn get_bundled_runt_path(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -106,47 +116,51 @@ pub fn get_bundled_runt_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     None
 }
 
-/// Check if the CLI is already installed
+/// Check if the CLI is already installed (checks both new and legacy locations).
 pub fn is_cli_installed() -> bool {
-    let cli_path = PathBuf::from(INSTALL_DIR).join(cli_command_name());
-    let nb_path = PathBuf::from(INSTALL_DIR).join(cli_notebook_alias_name());
-    cli_path.exists() && nb_path.exists()
+    let cli_name = cli_command_name();
+    let nb_name = cli_notebook_alias_name();
+
+    let new_dir = install_dir();
+    if new_dir.join(cli_name).exists() && new_dir.join(nb_name).exists() {
+        return true;
+    }
+
+    #[cfg(unix)]
+    {
+        let legacy = PathBuf::from(LEGACY_INSTALL_DIR);
+        if legacy.join(cli_name).exists() && legacy.join(nb_name).exists() {
+            return true;
+        }
+    }
+
+    false
 }
 
-/// Install the CLI to the system PATH
-/// Returns Ok(()) on success, Err with message on failure
+/// Install the CLI to `~/.local/bin` (no admin privileges needed).
+/// Returns Ok(()) on success, Err with message on failure.
 pub fn install_cli(app: &tauri::AppHandle) -> Result<(), String> {
     let bundled_runt = get_bundled_runt_path(app)
         .ok_or_else(|| "Could not find bundled runt binary".to_string())?;
 
-    let install_dir = PathBuf::from(INSTALL_DIR);
-    let runt_dest = install_dir.join(cli_command_name());
-    let nb_dest = install_dir.join(cli_notebook_alias_name());
+    let dir = install_dir();
 
-    // Try direct copy first
-    match try_install_direct(&bundled_runt, &runt_dest, &nb_dest) {
-        Ok(()) => {
-            log::info!("[cli_install] CLI installed successfully via direct copy");
-            return Ok(());
-        }
-        Err(e) => {
-            log::debug!(
-                "[cli_install] Direct install failed: {}, trying with admin privileges",
-                e
-            );
-        }
+    // Ensure ~/.local/bin exists
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create {}: {}", dir.display(), e))?;
+
+    let runt_dest = dir.join(cli_command_name());
+    let nb_dest = dir.join(cli_notebook_alias_name());
+
+    try_install_direct(&bundled_runt, &runt_dest, &nb_dest)?;
+
+    log::info!("[cli_install] CLI installed to {}", dir.display());
+
+    // Ensure the user's shell RC has ~/.local/bin on PATH
+    if let Err(e) = ensure_shell_path(&dir) {
+        log::warn!("[cli_install] Shell PATH integration skipped: {}", e);
     }
 
-    // Fall back to admin privileges
-    #[cfg(target_os = "macos")]
-    {
-        install_with_admin_privileges(&bundled_runt, &runt_dest, &nb_dest)
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err("Permission denied. Please run with administrator privileges.".to_string())
-    }
+    Ok(())
 }
 
 /// Try to install directly without admin privileges
@@ -211,53 +225,73 @@ exec {} notebook "$@"
     Ok(())
 }
 
-/// Install using macOS admin privileges via osascript
-#[cfg(target_os = "macos")]
-fn install_with_admin_privileges(
-    bundled_runt: &std::path::Path,
-    runt_dest: &std::path::Path,
-    nb_dest: &std::path::Path,
-) -> Result<(), String> {
-    // Write nb wrapper to a temp file (no admin needed for temp dir),
-    // reusing create_nb_wrapper to avoid duplicating the script content.
-    let temp_nb =
-        std::env::temp_dir().join(format!("{}-install-script", cli_notebook_alias_name()));
-    create_nb_wrapper(&temp_nb, cli_command_name())?;
+/// Ensure the user's shell RC file has `~/.local/bin` on PATH.
+///
+/// Appends a PATH export to `~/.zshrc`, `~/.bashrc`, or fish config if
+/// `~/.local/bin` isn't already referenced. Idempotent — checks for the
+/// marker comment or an existing `.local/bin` PATH entry before appending.
+fn ensure_shell_path(bin_dir: &std::path::Path) -> Result<(), String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let home = dirs::home_dir().ok_or("could not determine home directory")?;
 
-    // Build shell commands -- create symlink for runt, copy nb wrapper script.
-    // Using symlink ensures the CLI stays in sync when the app updates.
-    // This avoids escaping issues with AppleScript string parsing.
-    let commands = format!(
-        "rm -f '{}' && ln -sf '{}' '{}' && cp '{}' '{}' && chmod 755 '{}'",
-        runt_dest.display(),
-        bundled_runt.display(),
-        runt_dest.display(),
-        temp_nb.display(),
-        nb_dest.display(),
-        nb_dest.display()
-    );
-
-    let script = format!(
-        r#"do shell script "{}" with administrator privileges"#,
-        commands.replace('\\', "\\\\").replace('"', "\\\"")
-    );
-
-    let output = Command::new("osascript")
-        .args(["-e", &script])
-        .output()
-        .map_err(|e| format!("Failed to run osascript: {}", e))?;
-
-    // Clean up temp file regardless of outcome
-    let _ = fs::remove_file(&temp_nb);
-
-    if output.status.success() {
-        Ok(())
+    let (rc_path, snippet) = if shell.ends_with("/fish") {
+        let config = home.join(".config/fish/config.fish");
+        (
+            config,
+            format!(
+                "\n# Added by nteract \u{2013} puts runt CLI on PATH\nfish_add_path {}\n",
+                bin_dir.display()
+            ),
+        )
+    } else if shell.ends_with("/bash") {
+        (
+            home.join(".bashrc"),
+            format!(
+                "\n# Added by nteract \u{2013} puts runt CLI on PATH\nexport PATH=\"{}:$PATH\"\n",
+                bin_dir.display()
+            ),
+        )
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("User canceled") || stderr.contains("(-128)") {
-            Err("Installation cancelled by user.".to_string())
-        } else {
-            Err(format!("Installation failed: {}", stderr))
-        }
+        // Default to zsh (macOS default since Catalina)
+        (
+            home.join(".zshrc"),
+            format!(
+                "\n# Added by nteract \u{2013} puts runt CLI on PATH\nexport PATH=\"{}:$PATH\"\n",
+                bin_dir.display()
+            ),
+        )
+    };
+
+    // Read existing content (file may not exist yet)
+    let existing = fs::read_to_string(&rc_path).unwrap_or_default();
+
+    // Already configured — nothing to do
+    if existing.contains(".local/bin") || existing.contains("Added by nteract") {
+        log::debug!(
+            "[cli_install] Shell RC {} already has ~/.local/bin on PATH",
+            rc_path.display()
+        );
+        return Ok(());
     }
+
+    // Ensure parent directory exists (relevant for fish config)
+    if let Some(parent) = rc_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&rc_path)
+        .map_err(|e| format!("Failed to open {}: {}", rc_path.display(), e))?;
+
+    file.write_all(snippet.as_bytes())
+        .map_err(|e| format!("Failed to write to {}: {}", rc_path.display(), e))?;
+
+    log::info!(
+        "[cli_install] Added ~/.local/bin to PATH in {}",
+        rc_path.display()
+    );
+    Ok(())
 }
