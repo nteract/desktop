@@ -515,6 +515,58 @@ async fn handle_agent_request(request: AgentRequest, ctx: &AgentContext) -> Agen
                 }
             }
         }
+
+        AgentRequest::SyncEnvironment { packages } => {
+            info!("[agent] SyncEnvironment: installing {:?}", packages);
+            let guard = ctx.kernel.lock().await;
+            if let Some(ref kernel) = *guard {
+                let es = kernel.env_source().to_string();
+                if !es.starts_with("uv:") {
+                    return AgentResponse::Error {
+                        error: "Hot-sync only supported for UV environments".to_string(),
+                    };
+                }
+
+                // Get venv and python paths from the kernel's launched config
+                let launched = kernel.launched_config();
+                let venv_path = match &launched.venv_path {
+                    Some(p) => p.clone(),
+                    None => {
+                        return AgentResponse::Error {
+                            error: "No venv path available".to_string(),
+                        };
+                    }
+                };
+                let python_path = match &launched.python_path {
+                    Some(p) => p.clone(),
+                    None => {
+                        return AgentResponse::Error {
+                            error: "No python path available".to_string(),
+                        };
+                    }
+                };
+                drop(guard);
+
+                // Run uv pip install
+                let uv_env = kernel_env::uv::UvEnvironment {
+                    venv_path,
+                    python_path,
+                };
+
+                match kernel_env::uv::sync_dependencies(&uv_env, &packages).await {
+                    Ok(()) => AgentResponse::EnvironmentSynced {
+                        synced_packages: packages,
+                    },
+                    Err(e) => AgentResponse::Error {
+                        error: format!("Failed to install packages: {}", e),
+                    },
+                }
+            } else {
+                AgentResponse::Error {
+                    error: "No kernel running".to_string(),
+                }
+            }
+        }
     }
 }
 

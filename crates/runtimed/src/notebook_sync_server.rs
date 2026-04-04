@@ -43,9 +43,9 @@ use crate::kernel_manager::{DenoLaunchedConfig, LaunchedEnvConfig, RoomKernel};
 use crate::markdown_assets::resolve_markdown_assets;
 use crate::notebook_doc::{notebook_doc_filename, CellSnapshot, NotebookDoc};
 use crate::notebook_metadata::NotebookMetadataSnapshot;
-#[cfg(test)]
-use crate::protocol::EnvSyncDiff;
-use crate::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse, QueueEntry};
+use crate::protocol::{
+    EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse, QueueEntry,
+};
 use notebook_doc::presence::{self, PresenceState};
 use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
 
@@ -267,7 +267,6 @@ fn build_launched_config(
 
 /// Compute the difference between launched config and current metadata.
 /// Returns Some(diff) if there are differences, None if in sync.
-#[cfg(test)]
 fn compute_env_sync_diff(
     launched: &LaunchedEnvConfig,
     current: &NotebookMetadataSnapshot,
@@ -434,15 +433,108 @@ async fn process_markdown_assets(room: &NotebookRoom) {
 /// 1. Kernel launched with inline deps - track drift (additions/removals)
 /// 2. Kernel launched with prewarmed - detect when user adds inline deps (needs restart)
 async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
-    // TODO: Re-implement for agent mode. The agent owns the kernel's
-    // launched_config — the coordinator needs to either:
-    // 1. Store launched_config on the room when the agent launches, or
-    // 2. Read it from RuntimeStateDoc (requires adding launched_config to the schema)
-    //
-    // For now this is a no-op — env sync drift detection is disabled.
-    // The agent still writes env sync state to RuntimeStateDoc directly
-    // during hot-sync operations.
-    let _ = room;
+    // Get current metadata from doc
+    let current_metadata = {
+        let doc = room.doc.read().await;
+        doc.get_metadata_snapshot()
+    };
+
+    let Some(current_metadata) = current_metadata else {
+        return;
+    };
+
+    // Read launched_config from room (set when agent launched/restarted)
+    let launched_guard = room.agent_launched_config.read().await;
+    let Some(ref launched) = *launched_guard else {
+        return;
+    };
+
+    // Check kernel is actually running via RuntimeStateDoc
+    {
+        let sd = room.state_doc.read().await;
+        let status = sd.read_state().kernel.status;
+        if status != "idle" && status != "busy" {
+            return;
+        }
+    }
+
+    // Check if we're tracking inline deps or deno config
+    let is_tracking = launched.uv_deps.is_some()
+        || launched.conda_deps.is_some()
+        || launched.deno_config.is_some();
+
+    if is_tracking {
+        // Kernel launched with inline deps - compute drift
+        let diff = compute_env_sync_diff(launched, &current_metadata);
+        let in_sync = diff.is_none();
+
+        // Write to RuntimeStateDoc
+        {
+            let mut sd = room.state_doc.write().await;
+            let changed = match &diff {
+                Some(d) => sd.set_env_sync(
+                    false,
+                    &d.added,
+                    &d.removed,
+                    d.channels_changed,
+                    d.deno_changed,
+                ),
+                None => sd.set_env_sync(true, &[], &[], false, false),
+            };
+            if changed {
+                let _ = room.state_changed_tx.send(());
+            }
+        }
+
+        let _ = room
+            .kernel_broadcast_tx
+            .send(NotebookBroadcast::EnvSyncState { in_sync, diff });
+    } else {
+        // Kernel launched with prewarmed - check if metadata now has inline deps
+        let current_inline = check_inline_deps(&current_metadata);
+
+        if let Some(ref inline_source) = current_inline {
+            let added = match inline_source.as_str() {
+                "uv:inline" => get_inline_uv_deps(&current_metadata).unwrap_or_default(),
+                "conda:inline" => get_inline_conda_deps(&current_metadata).unwrap_or_default(),
+                _ => vec![],
+            };
+
+            if !added.is_empty() {
+                {
+                    let mut sd = room.state_doc.write().await;
+                    if sd.set_env_sync(false, &added, &[], false, false) {
+                        let _ = room.state_changed_tx.send(());
+                    }
+                }
+                let _ = room
+                    .kernel_broadcast_tx
+                    .send(NotebookBroadcast::EnvSyncState {
+                        in_sync: false,
+                        diff: Some(EnvSyncDiff {
+                            added,
+                            removed: vec![],
+                            channels_changed: false,
+                            deno_changed: false,
+                        }),
+                    });
+            } else {
+                let _ = room
+                    .kernel_broadcast_tx
+                    .send(NotebookBroadcast::EnvSyncState {
+                        in_sync: true,
+                        diff: None,
+                    });
+            }
+        } else {
+            let _ = room
+                .kernel_broadcast_tx
+                .send(NotebookBroadcast::EnvSyncState {
+                    in_sync: true,
+                    diff: None,
+                });
+        }
+    }
 }
 
 /// Handle CellError: clear queue on the kernel, mark executions as errored
@@ -825,6 +917,10 @@ pub struct NotebookRoom {
     pub agent_handle: Arc<Mutex<Option<crate::agent_handle::AgentHandle>>>,
     /// Environment path used by an agent-backed kernel, for GC protection.
     pub agent_env_path: Arc<RwLock<Option<PathBuf>>>,
+    /// The environment config used at kernel launch. Stored so
+    /// check_and_broadcast_sync_state can detect dependency drift
+    /// without accessing the agent's kernel directly.
+    pub agent_launched_config: Arc<RwLock<Option<LaunchedEnvConfig>>>,
     /// Channel for sending RPC requests (LaunchKernel, Interrupt, etc.) to the
     /// agent's sync connection. Set when agent connects via socket, cleared on
     /// agent disconnect.
@@ -1022,6 +1118,7 @@ impl NotebookRoom {
             state_changed_tx,
             agent_handle: Arc::new(Mutex::new(None)),
             agent_env_path: Arc::new(RwLock::new(None)),
+            agent_launched_config: Arc::new(RwLock::new(None)),
             agent_request_tx: Arc::new(Mutex::new(None)),
             agent_connected_tx: {
                 let (tx, _) = tokio::sync::watch::channel(false);
@@ -1093,6 +1190,7 @@ impl NotebookRoom {
             state_changed_tx,
             agent_handle: Arc::new(Mutex::new(None)),
             agent_env_path: Arc::new(RwLock::new(None)),
+            agent_launched_config: Arc::new(RwLock::new(None)),
             agent_request_tx: Arc::new(Mutex::new(None)),
             agent_connected_tx: {
                 let (tx, _) = tokio::sync::watch::channel(false);
@@ -3274,6 +3372,12 @@ async fn auto_launch_kernel(
                             *ep = Some(env.venv_path.clone());
                         }
 
+                        // Store launched config for env sync drift detection
+                        {
+                            let mut lc = room.agent_launched_config.write().await;
+                            *lc = Some(launched_config.clone());
+                        }
+
                         publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es)
                             .await;
 
@@ -3286,6 +3390,14 @@ async fn auto_launch_kernel(
                             changed |= sd.set_kernel_info(kernel_type, kernel_type, &es);
                             changed |= sd.set_agent_id(&agent_id);
                             if changed {
+                                let _ = room.state_changed_tx.send(());
+                            }
+                        }
+
+                        // Fresh kernel is in sync with its launched config
+                        {
+                            let mut sd = room.state_doc.write().await;
+                            if sd.set_env_sync(true, &[], &[], false, false) {
                                 let _ = room.state_changed_tx.send(());
                             }
                         }
@@ -4014,6 +4126,12 @@ async fn handle_notebook_request(
                         Ok(notebook_protocol::protocol::AgentResponse::KernelRestarted {
                             env_source: es,
                         }) => {
+                            // Store launched config for env sync drift detection
+                            {
+                                let mut lc = room.agent_launched_config.write().await;
+                                *lc = Some(launched_config.clone());
+                            }
+
                             publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es)
                                 .await;
                             {
@@ -4032,6 +4150,15 @@ async fn handle_notebook_request(
                                     let _ = room.state_changed_tx.send(());
                                 }
                             }
+
+                            // Fresh kernel is in sync with its launched config
+                            {
+                                let mut sd = room.state_doc.write().await;
+                                if sd.set_env_sync(true, &[], &[], false, false) {
+                                    let _ = room.state_changed_tx.send(());
+                                }
+                            }
+
                             return NotebookResponse::KernelLaunched {
                                 kernel_type: resolved_kernel_type,
                                 env_source: es,
@@ -4126,6 +4253,12 @@ async fn handle_notebook_request(
                             Ok(notebook_protocol::protocol::AgentResponse::KernelLaunched {
                                 env_source: es,
                             }) => {
+                                // Store launched config for env sync drift detection
+                                {
+                                    let mut lc = room.agent_launched_config.write().await;
+                                    *lc = Some(launched_config.clone());
+                                }
+
                                 publish_kernel_state_presence(
                                     room,
                                     presence::KernelStatus::Idle,
@@ -4151,6 +4284,14 @@ async fn handle_notebook_request(
                                         changed |= sd.set_agent_id(aid);
                                     }
                                     if changed {
+                                        let _ = room.state_changed_tx.send(());
+                                    }
+                                }
+
+                                // Fresh kernel is in sync with its launched config
+                                {
+                                    let mut sd = room.state_doc.write().await;
+                                    if sd.set_env_sync(true, &[], &[], false, false) {
                                         let _ = room.state_changed_tx.send(());
                                     }
                                 }
@@ -4708,13 +4849,168 @@ async fn handle_notebook_request(
 ///
 /// Only supported for UV inline dependencies when there are only additions (no removals).
 /// Conda and other env types fall back to restart.
-async fn handle_sync_environment(_room: &NotebookRoom) -> NotebookResponse {
-    // TODO(#1436): Add AgentRequest::SyncEnvironment to the agent protocol
-    // so the coordinator can forward hot-install requests to the agent subprocess.
-    // Currently, env sync requires a kernel restart in agent mode.
-    NotebookResponse::SyncEnvironmentFailed {
-        error: "Environment sync requires kernel restart in agent mode".to_string(),
-        needs_restart: true,
+async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
+    // Read launched config from room
+    let launched = {
+        let guard = room.agent_launched_config.read().await;
+        match &*guard {
+            Some(lc) => lc.clone(),
+            None => {
+                return NotebookResponse::SyncEnvironmentFailed {
+                    error: "No kernel running".to_string(),
+                    needs_restart: false,
+                };
+            }
+        }
+    };
+
+    // Read current metadata from the doc
+    let current_metadata = {
+        let doc = room.doc.read().await;
+        doc.get_metadata_snapshot()
+    };
+
+    let Some(current_metadata) = current_metadata else {
+        return NotebookResponse::SyncEnvironmentComplete {
+            synced_packages: vec![],
+        };
+    };
+
+    // Determine what packages need installing.
+    // For inline-dep kernels, compute_env_sync_diff gives the drift.
+    // For prewarmed kernels, check if the user added new inline deps.
+    let is_tracking = launched.uv_deps.is_some()
+        || launched.conda_deps.is_some()
+        || launched.deno_config.is_some();
+
+    let (packages_to_install, env_type) = if is_tracking {
+        // Kernel launched with inline deps — compute drift
+        let diff = compute_env_sync_diff(&launched, &current_metadata);
+        let Some(diff) = diff else {
+            return NotebookResponse::SyncEnvironmentComplete {
+                synced_packages: vec![],
+            };
+        };
+        if !diff.removed.is_empty() || diff.channels_changed || diff.deno_changed {
+            return NotebookResponse::SyncEnvironmentFailed {
+                error: "Environment changes include removals or config changes that require a kernel restart".to_string(),
+                needs_restart: true,
+            };
+        }
+        let env_type = if launched.uv_deps.is_some() {
+            "uv"
+        } else {
+            return NotebookResponse::SyncEnvironmentFailed {
+                error: "Hot-sync only supported for UV environments".to_string(),
+                needs_restart: true,
+            };
+        };
+        (diff.added, env_type)
+    } else {
+        // Prewarmed kernel — check if user added inline deps
+        let inline = check_inline_deps(&current_metadata);
+        match inline.as_deref() {
+            Some(s) if s.starts_with("uv:") => {
+                let added = get_inline_uv_deps(&current_metadata).unwrap_or_default();
+                if added.is_empty() {
+                    return NotebookResponse::SyncEnvironmentComplete {
+                        synced_packages: vec![],
+                    };
+                }
+                (added, "uv")
+            }
+            _ => {
+                return NotebookResponse::SyncEnvironmentFailed {
+                    error: "Hot-sync only supported for UV environments".to_string(),
+                    needs_restart: true,
+                };
+            }
+        }
+    };
+
+    if packages_to_install.is_empty() {
+        return NotebookResponse::SyncEnvironmentComplete {
+            synced_packages: vec![],
+        };
+    }
+
+    if env_type != "uv" {
+        return NotebookResponse::SyncEnvironmentFailed {
+            error: "Hot-sync only supported for UV environments. Conda and Deno require restart."
+                .to_string(),
+            needs_restart: true,
+        };
+    }
+
+    // Send SyncEnvironment to the agent
+    let sync_request = notebook_protocol::protocol::AgentRequest::SyncEnvironment {
+        packages: packages_to_install.clone(),
+    };
+
+    // Notify frontend that sync is starting
+    let _ = room
+        .kernel_broadcast_tx
+        .send(NotebookBroadcast::EnvSyncState {
+            in_sync: false,
+            diff: Some(EnvSyncDiff {
+                added: packages_to_install.clone(),
+                removed: vec![],
+                channels_changed: false,
+                deno_changed: false,
+            }),
+        });
+
+    match send_agent_request(room, sync_request).await {
+        Ok(notebook_protocol::protocol::AgentResponse::EnvironmentSynced { synced_packages }) => {
+            // Update agent_launched_config to include new packages
+            {
+                let mut lc = room.agent_launched_config.write().await;
+                if let Some(ref mut config) = *lc {
+                    // Promote prewarmed to uv:inline baseline if needed
+                    if config.uv_deps.is_none() {
+                        config.uv_deps = Some(vec![]);
+                    }
+                    if let Some(ref mut deps) = config.uv_deps {
+                        for pkg in &synced_packages {
+                            if !deps.contains(pkg) {
+                                deps.push(pkg.clone());
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Mark as in sync in RuntimeStateDoc
+            {
+                let mut sd = room.state_doc.write().await;
+                if sd.set_env_sync(true, &[], &[], false, false) {
+                    let _ = room.state_changed_tx.send(());
+                }
+            }
+
+            let _ = room
+                .kernel_broadcast_tx
+                .send(NotebookBroadcast::EnvSyncState {
+                    in_sync: true,
+                    diff: None,
+                });
+
+            NotebookResponse::SyncEnvironmentComplete { synced_packages }
+        }
+        Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
+            NotebookResponse::SyncEnvironmentFailed {
+                error,
+                needs_restart: true,
+            }
+        }
+        Ok(_) => NotebookResponse::SyncEnvironmentFailed {
+            error: "Unexpected agent response".to_string(),
+            needs_restart: true,
+        },
+        Err(e) => NotebookResponse::SyncEnvironmentFailed {
+            error: format!("Agent communication error: {}", e),
+            needs_restart: false,
+        },
     }
 }
 
@@ -7450,6 +7746,7 @@ mod tests {
             state_changed_tx,
             agent_handle: Arc::new(Mutex::new(None)),
             agent_env_path: Arc::new(RwLock::new(None)),
+            agent_launched_config: Arc::new(RwLock::new(None)),
             agent_request_tx: Arc::new(Mutex::new(None)),
             agent_connected_tx: {
                 let (tx, _) = tokio::sync::watch::channel(false);

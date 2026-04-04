@@ -567,6 +567,10 @@ pub enum AgentRequest {
         n: i32,
         unique: bool,
     },
+
+    /// Hot-install packages into the running kernel's environment.
+    /// Only supported for UV inline dependencies with additions only.
+    SyncEnvironment { packages: Vec<String> },
 }
 
 /// Responses from runtime agent to coordinator (frame type 0x02).
@@ -591,6 +595,9 @@ pub enum AgentResponse {
 
     /// Generic success.
     Ok,
+
+    /// Packages installed successfully into the running env.
+    EnvironmentSynced { synced_packages: Vec<String> },
 
     /// Error response.
     Error { error: String },
