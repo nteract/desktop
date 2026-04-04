@@ -240,7 +240,15 @@ fn build_launched_config(
                 config.prewarmed_packages = pkgs.to_vec();
             }
         }
-        _ => {}
+        _ => {
+            // All other Python env sources (conda:pixi, conda:env_yml, etc.)
+            // use pooled environments — store paths so the agent can reconstruct.
+            config.venv_path = venv_path;
+            config.python_path = python_path;
+            if let Some(pkgs) = prewarmed_packages {
+                config.prewarmed_packages = pkgs.to_vec();
+            }
+        }
     }
 
     // For Deno kernels, capture the deno config
@@ -4255,6 +4263,21 @@ async fn handle_notebook_request(
             {
                 let has_agent = room.agent_request_tx.lock().await.is_some();
                 if has_agent {
+                    // Idempotency: if the cell already has a queued execution,
+                    // return the existing execution_id instead of creating a new one.
+                    {
+                        let sd = room.state_doc.read().await;
+                        let queued = sd.get_queued_executions();
+                        if let Some((eid, _)) =
+                            queued.iter().find(|(_, exec)| exec.cell_id == cell_id)
+                        {
+                            return NotebookResponse::CellQueued {
+                                cell_id,
+                                execution_id: eid.clone(),
+                            };
+                        }
+                    }
+
                     let execution_id = uuid::Uuid::new_v4().to_string();
                     let seq = room
                         .next_queue_seq
