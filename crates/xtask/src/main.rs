@@ -588,7 +588,6 @@ fn cmd_build(rust_only: bool) {
     require_tauri();
     if !rust_only {
         require_pnpm();
-        ensure_pnpm_install();
     }
 
     // Phase 0: Build the MCP widget HTML before any Rust compilation.
@@ -604,6 +603,16 @@ fn cmd_build(rust_only: bool) {
             build_mcp_widget();
         }
     }
+
+    // Start pnpm install in background — it only needs to finish before
+    // the frontend build in Phase 2, so overlap it with cargo build.
+    let pnpm_handle = if !rust_only {
+        Some(thread::spawn(|| {
+            ensure_pnpm_install();
+        }))
+    } else {
+        None
+    };
 
     // Phase 1: Single cargo invocation for all binaries.
     // Building all packages together ensures workspace feature unification
@@ -629,9 +638,16 @@ fn cmd_build(rust_only: bool) {
     copy_sidecar_binary("runtimed", false);
     copy_sidecar_binary("runt", false);
 
+    // Wait for pnpm install before starting frontend build
+    if let Some(handle) = pnpm_handle {
+        handle.join().unwrap_or_else(|_| {
+            eprintln!("pnpm install panicked");
+            exit(1);
+        });
+    }
+
     // Phase 2: Run independent tasks in parallel.
     // - Python env sync + maturin develop (builds .so for MCP server)
-    // - MCP Apps widget (self-contained HTML bundled into the nteract package)
     // - Frontend build (pnpm/vite, completely independent of Rust)
     let mut handles: Vec<thread::JoinHandle<()>> = Vec::new();
 
@@ -639,8 +655,6 @@ fn cmd_build(rust_only: bool) {
         ensure_python_env();
         ensure_maturin_develop();
     }));
-
-    // Note: build_mcp_widget() already ran in Phase 0 above.
 
     if rust_only {
         let dist_dir = Path::new("apps/notebook/dist");
@@ -1947,16 +1961,65 @@ fn ensure_wasm_resolved() {
 
 /// Build the MCP Apps widget (apps/mcp-app) and copy it into the Python
 /// nteract package so it ships with the PyPI wheel.
-fn build_mcp_widget() {
-    println!("Building MCP Apps widget...");
-    run_cmd("pnpm", &["--filter", "nteract-mcp-app", "install"]);
-    run_cmd("pnpm", &["--filter", "nteract-mcp-app", "run", "build"]);
-    let dest = Path::new("python/nteract/src/nteract/_widget.html");
-    if !dest.exists() {
-        eprintln!("Error: MCP widget build did not produce _widget.html");
-        exit(1);
+fn mcp_widget_needs_rebuild() -> Option<&'static str> {
+    let outputs = [
+        Path::new("crates/runt-mcp/assets/_output.html"),
+        Path::new("python/nteract/src/nteract/_widget.html"),
+    ];
+
+    // If any output is missing, must rebuild
+    let mut oldest_output = None;
+    for output in &outputs {
+        if !output.exists() {
+            return Some("output file missing");
+        }
+        let Some(t) = modified_time(output) else {
+            return Some("could not read output timestamp");
+        };
+        oldest_output = Some(match oldest_output {
+            None => t,
+            Some(prev) => std::cmp::min(prev, t),
+        });
     }
-    println!("MCP Apps widget built successfully");
+    // Safety: we checked all outputs exist above, so oldest_output is always Some
+    let Some(oldest_output) = oldest_output else {
+        return Some("could not determine output timestamps");
+    };
+
+    // Check all source files against the oldest output.
+    // Include pnpm-lock.yaml so transitive dependency updates also trigger a rebuild.
+    let sources = [
+        Path::new("apps/mcp-app/package.json"),
+        Path::new("apps/mcp-app/build-html.js"),
+        Path::new("apps/mcp-app/src/mcp-app.ts"),
+        Path::new("apps/mcp-app/src/style.css"),
+        Path::new("pnpm-lock.yaml"),
+    ];
+    for src in &sources {
+        if let Some(src_time) = modified_time(src) {
+            if src_time > oldest_output {
+                return Some("source files changed");
+            }
+        }
+    }
+
+    None
+}
+
+fn build_mcp_widget() {
+    if let Some(reason) = mcp_widget_needs_rebuild() {
+        println!("Building MCP Apps widget ({reason})...");
+        run_cmd("pnpm", &["--filter", "nteract-mcp-app", "install"]);
+        run_cmd("pnpm", &["--filter", "nteract-mcp-app", "run", "build"]);
+        let dest = Path::new("python/nteract/src/nteract/_widget.html");
+        if !dest.exists() {
+            eprintln!("Error: MCP widget build did not produce _widget.html");
+            exit(1);
+        }
+        println!("MCP Apps widget built successfully");
+    } else {
+        println!("Skipping MCP Apps widget build (outputs are up to date).");
+    }
 }
 
 fn run_frontend_build(debug_bundle: bool) {
