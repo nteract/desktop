@@ -10,7 +10,7 @@ use runtimed_client::output_resolver;
 use crate::formatting;
 use crate::NteractMcp;
 
-use super::{arg_str, tool_error, tool_success};
+use super::{arg_str, require_handle, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -51,17 +51,7 @@ pub async fn get_cell(
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
-    };
-
-    let handle = &session.handle;
+    let handle = require_handle!(server);
 
     // No presence on read — get_cell is read-only, shouldn't move the cursor.
 
@@ -92,7 +82,7 @@ pub async fn get_cell(
     .await;
 
     // Get execution status from RuntimeState
-    let status = get_cell_status(handle, cell_id);
+    let status = get_cell_status(&handle, cell_id);
 
     let header = formatting::format_cell_header(
         &cell.id,
@@ -121,15 +111,7 @@ pub async fn get_all_cells(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
-    };
+    let handle = require_handle!(server);
 
     let format = arg_str(request, "format").unwrap_or("summary");
     let start = request
@@ -157,7 +139,6 @@ pub async fn get_all_cells(
         .and_then(|v| v.as_i64())
         .unwrap_or(60) as usize;
 
-    let handle = &session.handle;
     let cells = handle.get_cells();
     let end = match count {
         Some(c) => (start + c).min(cells.len()),
@@ -166,7 +147,7 @@ pub async fn get_all_cells(
     let slice = &cells[start.min(cells.len())..end.min(cells.len())];
 
     // Build cell status map from RuntimeState
-    let cell_status_map = build_cell_status_map(handle);
+    let cell_status_map = build_cell_status_map(&handle);
 
     match format {
         "json" => {

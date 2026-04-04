@@ -7,25 +7,16 @@ use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 
 use crate::NteractMcp;
 
-use super::{tool_error, tool_success};
+use super::{require_handle, tool_error, tool_success};
 
 /// Interrupt the currently executing cell.
 pub async fn interrupt_kernel(
     server: &NteractMcp,
     _request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
-    };
+    let handle = require_handle!(server);
 
-    match session
-        .handle
+    match handle
         .send_request(NotebookRequest::InterruptExecution {})
         .await
     {
@@ -42,17 +33,17 @@ pub async fn restart_kernel(
     server: &NteractMcp,
     _request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
+    let (handle, notebook_id) = {
+        let guard = server.session.read().await;
+        match guard.as_ref() {
+            Some(s) => (s.handle.clone(), s.notebook_id.clone()),
+            None => {
+                return tool_error(
+                    "No active notebook session. Call join_notebook or open_notebook first.",
+                )
+            }
         }
     };
-
-    let handle = &session.handle;
 
     // Step 1: Shutdown existing kernel
     match handle
@@ -103,8 +94,8 @@ pub async fn restart_kernel(
 
     // Step 3: Launch kernel
 
-    let notebook_path = if session.notebook_id.contains('/') || session.notebook_id.contains('\\') {
-        Some(session.notebook_id.clone())
+    let notebook_path = if notebook_id.contains('/') || notebook_id.contains('\\') {
+        Some(notebook_id)
     } else {
         None
     };

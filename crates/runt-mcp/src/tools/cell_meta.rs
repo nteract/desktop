@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use crate::NteractMcp;
 
-use super::{arg_str, tool_error, tool_success};
+use super::{arg_str, require_handle, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -53,17 +53,7 @@ pub async fn add_cell_tags(
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
-    };
-
-    let handle = &session.handle;
+    let handle = require_handle!(server);
 
     // Get existing tags from cell metadata
     let metadata = match handle.get_cell_metadata(cell_id) {
@@ -113,17 +103,7 @@ pub async fn remove_cell_tags(
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
-    };
-
-    let handle = &session.handle;
+    let handle = require_handle!(server);
 
     let metadata = match handle.get_cell_metadata(cell_id) {
         Some(m) => m,
@@ -165,15 +145,7 @@ pub async fn set_cells_source_hidden(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
-    };
+    let handle = require_handle!(server);
 
     let cell_ids: Vec<String> = request
         .arguments
@@ -189,7 +161,6 @@ pub async fn set_cells_source_hidden(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let handle = &session.handle;
     let mut not_found = Vec::new();
 
     for cell_id in &cell_ids {
@@ -213,15 +184,7 @@ pub async fn set_cells_outputs_hidden(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
-    };
+    let handle = require_handle!(server);
 
     let cell_ids: Vec<String> = request
         .arguments
@@ -237,7 +200,6 @@ pub async fn set_cells_outputs_hidden(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let handle = &session.handle;
     let mut not_found = Vec::new();
 
     for cell_id in &cell_ids {

@@ -393,10 +393,12 @@ pub async fn save_notebook(
 ) -> Result<CallToolResult, McpError> {
     let path = arg_str(request, "path").map(|s| s.to_string());
 
-    // Clone the handle and notebook_id so we can drop the read guard
+    // Need both handle and the mutable notebook_id from the session (not the
+    // handle's immutable connect-time ID) so that post-rekey saves report the
+    // correct notebook_id.
     let (handle, notebook_id) = {
-        let session = server.session.read().await;
-        match session.as_ref() {
+        let guard = server.session.read().await;
+        match guard.as_ref() {
             Some(s) => (s.handle.clone(), s.notebook_id.clone()),
             None => {
                 return tool_error(

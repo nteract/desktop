@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -10,10 +10,9 @@ use serde::Deserialize;
 use notebook_protocol::protocol::NotebookRequest;
 
 use crate::execution;
-use crate::structured;
 use crate::NteractMcp;
 
-use super::{arg_str, tool_error, tool_success};
+use super::{arg_str, require_handle, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -106,17 +105,7 @@ pub async fn create_cell(
     // Clone handle, then drop the session lock so other tools
     // (interrupt_kernel, etc.) aren't blocked during execution.
     let (handle, cell_id) = {
-        let session = server.session.read().await;
-        let session = match session.as_ref() {
-            Some(s) => s,
-            None => {
-                return tool_error(
-                    "No active notebook session. Call join_notebook or open_notebook first.",
-                )
-            }
-        };
-
-        let handle = session.handle.clone();
+        let handle = require_handle!(server);
         let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
 
         // Determine after_cell_id based on index
@@ -162,7 +151,7 @@ pub async fn create_cell(
         )
         .await;
 
-        return build_execution_result(&result, &handle, server).await;
+        return super::build_execution_result(&result, &handle, server).await;
     }
 
     tool_success(&format!("Created cell: {cell_id}"))
@@ -191,19 +180,7 @@ pub async fn set_cell(
         .and_then(|v| v.as_f64())
         .unwrap_or(30.0);
 
-    // Clone handle, then drop session lock
-    let handle = {
-        let session = server.session.read().await;
-        let session = match session.as_ref() {
-            Some(s) => s,
-            None => {
-                return tool_error(
-                    "No active notebook session. Call join_notebook or open_notebook first.",
-                )
-            }
-        };
-        session.handle.clone()
-    };
+    let handle = require_handle!(server);
 
     // Verify cell exists
     if handle.get_cell(cell_id).is_none() {
@@ -246,7 +223,7 @@ pub async fn set_cell(
         )
         .await;
 
-        return build_execution_result(&result, &handle, server).await;
+        return super::build_execution_result(&result, &handle, server).await;
     }
 
     tool_success(&format!("Cell \"{cell_id}\" updated"))
@@ -260,21 +237,12 @@ pub async fn delete_cell(
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
-    };
+    let handle = require_handle!(server);
 
     let peer_label = server.get_peer_label().await;
-    crate::presence::emit_focus(&session.handle, cell_id, &peer_label).await;
+    crate::presence::emit_focus(&handle, cell_id, &peer_label).await;
 
-    let deleted = session
-        .handle
+    let deleted = handle
         .delete_cell(cell_id)
         .map_err(|e| McpError::internal_error(format!("Failed to delete cell: {e}"), None))?;
 
@@ -294,25 +262,16 @@ pub async fn move_cell(
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
-    };
+    let handle = require_handle!(server);
 
     let after_cell_id = arg_str(request, "after_cell_id");
 
-    session
-        .handle
+    handle
         .move_cell(cell_id, after_cell_id)
         .map_err(|e| McpError::internal_error(format!("Failed to move cell: {e}"), None))?;
 
     let peer_label = server.get_peer_label().await;
-    crate::presence::emit_focus(&session.handle, cell_id, &peer_label).await;
+    crate::presence::emit_focus(&handle, cell_id, &peer_label).await;
 
     let result = serde_json::json!({
         "cell_id": cell_id,
@@ -337,25 +296,17 @@ pub async fn clear_outputs(
             None => None,
         };
 
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
-    };
+    let handle = require_handle!(server);
 
     // If cell_ids provided, clear those (empty list = no-op); otherwise clear all.
     let cell_ids: Vec<String> = match explicit_ids {
         Some(ids) => ids,
-        None => session.handle.get_cell_ids(),
+        None => handle.get_cell_ids(),
     };
 
     // Validate that all requested cell IDs exist in the notebook.
     if !cell_ids.is_empty() {
-        let all_ids = session.handle.get_cell_ids();
+        let all_ids = handle.get_cell_ids();
         let unknown: Vec<&str> = cell_ids
             .iter()
             .filter(|id| !all_ids.contains(id))
@@ -371,10 +322,9 @@ pub async fn clear_outputs(
     let mut failed = Vec::new();
 
     for id in &cell_ids {
-        crate::presence::emit_focus(&session.handle, id, &peer_label).await;
+        crate::presence::emit_focus(&handle, id, &peer_label).await;
 
-        match session
-            .handle
+        match handle
             .send_request(NotebookRequest::ClearOutputs {
                 cell_id: id.clone(),
             })
@@ -396,59 +346,4 @@ pub async fn clear_outputs(
 
     let result = serde_json::json!({ "cleared": cleared.len() });
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
-}
-
-/// Build a CallToolResult from an ExecutionResult, including structured content.
-async fn build_execution_result(
-    result: &execution::ExecutionResult,
-    handle: &notebook_sync::handle::DocHandle,
-    server: &NteractMcp,
-) -> Result<CallToolResult, McpError> {
-    let header = crate::formatting::format_cell_header(
-        &result.cell_id,
-        "code",
-        result.execution_count.as_deref(),
-        Some(&result.status),
-    );
-
-    // Multiple Content items: header, then one per output (matches Python)
-    let mut items = vec![Content::text(header)];
-    items.extend(crate::formatting::outputs_to_content_items(&result.outputs));
-
-    // Build structured content for MCP Apps widget using the protocol's
-    // structured_content field instead of a text-based fallback.
-    // Only send structured content when there are outputs to render.
-    // Empty outputs show "No output" in the widget, which is noisy.
-    let cell_snapshot = handle.get_cell(&result.cell_id);
-    let structured_content = if let Some(snap) = cell_snapshot {
-        if snap.outputs.is_empty() {
-            None
-        } else {
-            let outputs = runtimed_client::output_resolver::resolve_cell_outputs(
-                &snap.outputs,
-                &server.blob_base_url,
-                &server.blob_store_path,
-            )
-            .await;
-            let resolved = runtimed_client::resolved_output::ResolvedCell {
-                id: snap.id,
-                cell_type: snap.cell_type,
-                position: snap.position,
-                source: snap.source,
-                execution_count: snap.execution_count.parse().ok(),
-                outputs,
-                metadata_json: serde_json::to_string(&snap.metadata).unwrap_or_default(),
-            };
-            Some(structured::cell_structured_content(
-                &resolved,
-                &result.status,
-            ))
-        }
-    } else {
-        None
-    };
-
-    let mut call_result = CallToolResult::success(items);
-    call_result.structured_content = structured_content;
-    Ok(call_result)
 }

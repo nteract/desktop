@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -10,11 +10,9 @@ use serde::Deserialize;
 use notebook_protocol::protocol::NotebookRequest;
 
 use crate::execution;
-use crate::formatting;
-use crate::structured;
 use crate::NteractMcp;
 
-use super::{arg_str, tool_error, tool_success};
+use super::{arg_str, require_handle, tool_error, tool_success};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -38,20 +36,7 @@ pub async fn execute_cell(
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
-    // Clone handle, then drop session lock so other tools
-    // (interrupt_kernel, etc.) aren't blocked during execution.
-    let handle = {
-        let session = server.session.read().await;
-        let session = match session.as_ref() {
-            Some(s) => s,
-            None => {
-                return tool_error(
-                    "No active notebook session. Call join_notebook or open_notebook first.",
-                )
-            }
-        };
-        session.handle.clone()
-    };
+    let handle = require_handle!(server);
 
     let timeout_secs = request
         .arguments
@@ -77,52 +62,7 @@ pub async fn execute_cell(
     )
     .await;
 
-    // Format as multiple Content items: header, then one per output
-    let header = formatting::format_cell_header(
-        &result.cell_id,
-        "code",
-        result.execution_count.as_deref(),
-        Some(&result.status),
-    );
-
-    let mut items = vec![Content::text(header)];
-    items.extend(formatting::outputs_to_content_items(&result.outputs));
-
-    // Build structured content for MCP Apps widget using the protocol's
-    // structured_content field instead of a text-based fallback.
-    // Only send structured content when there are outputs to render.
-    let cell_snapshot = handle.get_cell(&result.cell_id);
-    let structured_content = if let Some(snap) = cell_snapshot {
-        if snap.outputs.is_empty() {
-            None
-        } else {
-            let outputs = runtimed_client::output_resolver::resolve_cell_outputs(
-                &snap.outputs,
-                &server.blob_base_url,
-                &server.blob_store_path,
-            )
-            .await;
-            let resolved = runtimed_client::resolved_output::ResolvedCell {
-                id: snap.id,
-                cell_type: snap.cell_type,
-                position: snap.position,
-                source: snap.source,
-                execution_count: snap.execution_count.parse().ok(),
-                outputs,
-                metadata_json: serde_json::to_string(&snap.metadata).unwrap_or_default(),
-            };
-            Some(structured::cell_structured_content(
-                &resolved,
-                &result.status,
-            ))
-        }
-    } else {
-        None
-    };
-
-    let mut call_result = CallToolResult::success(items);
-    call_result.structured_content = structured_content;
-    Ok(call_result)
+    super::build_execution_result(&result, &handle, server).await
 }
 
 /// Queue all code cells for execution.
@@ -130,17 +70,7 @@ pub async fn run_all_cells(
     server: &NteractMcp,
     _request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let session = server.session.read().await;
-    let session = match session.as_ref() {
-        Some(s) => s,
-        None => {
-            return tool_error(
-                "No active notebook session. Call join_notebook or open_notebook first.",
-            )
-        }
-    };
-
-    let handle = &session.handle;
+    let handle = require_handle!(server);
 
     // Ensure daemon has latest source
     if let Err(e) = handle.confirm_sync().await {
