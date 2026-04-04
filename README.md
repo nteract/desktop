@@ -117,16 +117,19 @@ nteract/desktop
 │   ├── notebook-doc/      # Shared Automerge document operations (cells, metadata, sync)
 │   ├── notebook-protocol/ # Notebook wire protocol types
 │   ├── notebook-sync/     # Notebook sync layer
-│   ├── tauri-jupyter/     # Shared Tauri/Jupyter utilities
 │   ├── kernel-launch/     # Shared kernel launching API
 │   ├── kernel-env/        # Environment progress reporting
+│   ├── runt-mcp/          # Rust-native MCP server for notebook interaction
 │   ├── runt-trust/        # HMAC trust verification
 │   ├── runt-workspace/    # Workspace detection utilities
+│   ├── runtimed-client/   # Shared client library for daemon communication
+│   ├── repr-llm/          # LLM-friendly text summaries of visualization specs
 │   ├── xtask/             # Build automation tasks
 │   └── mcp-supervisor/    # nteract-dev MCP supervisor for dev workflows
 ├── python/                 # Python packages
 │   ├── runtimed/          # PyPI: runtimed (Python bindings for daemon)
-│   └── nteract/           # PyPI: nteract (MCP server)
+│   ├── nteract/           # PyPI: nteract (MCP server)
+│   └── gremlin/           # Stress-testing agent for nteract notebooks (not published)
 ├── docs/                   # User-facing documentation
 └── contributing/           # Developer guides
 ```
@@ -162,7 +165,7 @@ cargo xtask dev
 | Standalone Vite | `cargo xtask vite` | Multi-window testing (Vite survives window closes) |
 | Attach to Vite | `cargo xtask notebook --attach` | Connect Tauri to already-running Vite |
 | Debug build | `cargo xtask build` | Full debug build (frontend + rust) |
-| E2E debug build | `cargo xtask build-e2e` | Debug build with built-in WebDriver server |
+| E2E debug build | `cargo xtask e2e build` | Debug build with built-in WebDriver server |
 | Rust-only build | `cargo xtask build --rust-only` | Rebuild rust, reuse existing frontend |
 | Run bundled | `cargo xtask run notebook.ipynb` | Run standalone binary |
 | Lint (check) | `cargo xtask lint` | Check formatting and linting across Rust, JS/TS, Python |

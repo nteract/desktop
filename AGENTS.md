@@ -271,7 +271,7 @@ The supervisor watches source directories and auto-restarts the child on changes
 - **No MCP server** → use `cargo xtask run-mcp` to set one up
 - **Dev daemon not running** → nteract-dev starts it automatically via `supervisor_restart(target="daemon")`
 
-## Workspace Crates (16)
+## Workspace Crates (17)
 
 | Crate | Purpose |
 |-------|---------|
@@ -289,6 +289,7 @@ The supervisor watches source directories and auto-restarts the child on changes
 | `runt-workspace` | Per-worktree daemon isolation, socket path management |
 | `kernel-launch` | Kernel launching, tool bootstrapping (deno, uv, ruff via rattler) |
 | `kernel-env` | Python environment management (UV + Conda) with progress reporting |
+| `repr-llm` | LLM-friendly text summaries of visualization specs (`text/llm+plain` synthesis) |
 | `mcp-supervisor` | nteract-dev — MCP supervisor proxy, daemon/vite lifecycle management |
 | `xtask` | Build system orchestration |
 
