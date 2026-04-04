@@ -61,13 +61,15 @@ use crate::runtime::Runtime;
 /// serialization round-trips across branches that add new env types.
 #[derive(Debug, Clone, PartialEq, Eq, Default, TS)]
 #[ts(export)]
-#[ts(type = "\"uv\" | \"conda\" | (string & {})")]
+#[ts(type = "\"uv\" | \"conda\" | \"pixi\" | (string & {})")]
 pub enum PythonEnvType {
     /// Use uv for Python package management (fast, pip-compatible)
     #[default]
     Uv,
     /// Use conda/rattler for Python package management (supports conda packages)
     Conda,
+    /// Use pixi for Python package management (conda + pip unified)
+    Pixi,
     /// An unrecognized env type value, preserved for round-tripping.
     Other(String),
 }
@@ -93,7 +95,7 @@ impl JsonSchema for PythonEnvType {
     fn json_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
             "type": "string",
-            "examples": ["uv", "conda"]
+            "examples": ["uv", "conda", "pixi"]
         })
     }
 }
@@ -103,6 +105,7 @@ impl std::fmt::Display for PythonEnvType {
         match self {
             PythonEnvType::Uv => write!(f, "uv"),
             PythonEnvType::Conda => write!(f, "conda"),
+            PythonEnvType::Pixi => write!(f, "pixi"),
             PythonEnvType::Other(s) => write!(f, "{}", s),
         }
     }
@@ -115,6 +118,7 @@ impl std::str::FromStr for PythonEnvType {
         Ok(match s.to_lowercase().as_str() {
             "uv" => PythonEnvType::Uv,
             "conda" => PythonEnvType::Conda,
+            "pixi" => PythonEnvType::Pixi,
             _ => PythonEnvType::Other(s.to_string()),
         })
     }

@@ -6676,6 +6676,7 @@ fn build_new_notebook_metadata(
                 env_id: Some(env_id.to_string()),
                 uv: None,
                 conda: None,
+                pixi: None,
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
@@ -6684,13 +6685,24 @@ fn build_new_notebook_metadata(
         ),
         _ => {
             // Python (default)
-            let (uv, conda) = match default_python_env {
+            let (uv, conda, pixi) = match default_python_env {
                 crate::settings_doc::PythonEnvType::Conda => (
                     None,
                     Some(CondaInlineMetadata {
                         dependencies: vec![],
                         // Default to conda-forge to match launch logic normalization
                         // (avoids false channel-drift detection)
+                        channels: vec!["conda-forge".to_string()],
+                        python: None,
+                    }),
+                    None,
+                ),
+                crate::settings_doc::PythonEnvType::Pixi => (
+                    None,
+                    None,
+                    Some(notebook_doc::metadata::PixiInlineMetadata {
+                        dependencies: vec![],
+                        pypi_dependencies: vec![],
                         channels: vec!["conda-forge".to_string()],
                         python: None,
                     }),
@@ -6702,6 +6714,7 @@ fn build_new_notebook_metadata(
                         requires_python: None,
                         prerelease: None,
                     }),
+                    None,
                     None,
                 ),
             };
@@ -6721,6 +6734,7 @@ fn build_new_notebook_metadata(
                     env_id: Some(env_id.to_string()),
                     uv,
                     conda,
+                    pixi,
                     deno: None,
                     trust_signature: None,
                     trust_timestamp: None,

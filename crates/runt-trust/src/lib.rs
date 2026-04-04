@@ -125,6 +125,11 @@ fn extract_signable_content(metadata: &HashMap<String, serde_json::Value>) -> St
         signable.insert("conda".to_string(), conda);
     }
 
+    // Extract pixi deps
+    if let Some(pixi) = get_pixi_metadata(metadata) {
+        signable.insert("pixi".to_string(), pixi);
+    }
+
     // Create canonical JSON (sorted keys)
     serde_json::to_string(&serde_json::Value::Object(signable)).unwrap_or_default()
 }
@@ -153,6 +158,16 @@ pub fn get_conda_metadata(
     }
     // Legacy path: metadata.conda
     metadata.get("conda").cloned()
+}
+
+/// Get pixi metadata from runt.pixi
+pub fn get_pixi_metadata(
+    metadata: &HashMap<String, serde_json::Value>,
+) -> Option<serde_json::Value> {
+    metadata
+        .get("runt")
+        .and_then(|runt| runt.get("pixi"))
+        .cloned()
 }
 
 /// Compute HMAC signature over dependency metadata.
@@ -209,6 +224,20 @@ pub fn has_dependencies(metadata: &HashMap<String, serde_json::Value>) -> bool {
     // Check conda dependencies (new path first, then legacy)
     if let Some(conda) = get_conda_metadata(metadata) {
         if let Some(deps) = conda.get("dependencies").and_then(|v| v.as_array()) {
+            if !deps.is_empty() {
+                return true;
+            }
+        }
+    }
+
+    // Check pixi dependencies
+    if let Some(pixi) = get_pixi_metadata(metadata) {
+        if let Some(deps) = pixi.get("dependencies").and_then(|v| v.as_array()) {
+            if !deps.is_empty() {
+                return true;
+            }
+        }
+        if let Some(deps) = pixi.get("pypi_dependencies").and_then(|v| v.as_array()) {
             if !deps.is_empty() {
                 return true;
             }

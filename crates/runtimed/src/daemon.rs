@@ -346,6 +346,7 @@ pub struct Daemon {
     config: DaemonConfig,
     uv_pool: Mutex<Pool>,
     conda_pool: Mutex<Pool>,
+    pixi_pool: Mutex<Pool>,
     shutdown: Arc<Mutex<bool>>,
     /// Notifier to wake up accept loops on shutdown.
     shutdown_notify: Arc<Notify>,
@@ -407,6 +408,7 @@ impl Daemon {
         Ok(Arc::new(Self {
             uv_pool: Mutex::new(Pool::new(config.uv_pool_size, config.max_age_secs)),
             conda_pool: Mutex::new(Pool::new(config.conda_pool_size, config.max_age_secs)),
+            pixi_pool: Mutex::new(Pool::new(0, config.max_age_secs)), // pixi pool size 0 for now — warming implemented in commit 3
             config,
             shutdown: Arc::new(Mutex::new(false)),
             shutdown_notify: Arc::new(Notify::new()),
@@ -1697,6 +1699,22 @@ impl Daemon {
         env
     }
 
+    /// Take a Pixi environment from the pool for kernel launching.
+    ///
+    /// Returns `Some(PooledEnv)` if an environment is available, `None` otherwise.
+    pub async fn take_pixi_env(self: &Arc<Self>) -> Option<PooledEnv> {
+        let (env, stale_paths) = self.pixi_pool.lock().await.take();
+        spawn_env_deletions(stale_paths);
+        if let Some(ref e) = env {
+            info!(
+                "[runtimed] Took Pixi env for kernel launch: {:?}",
+                e.venv_path
+            );
+            // TODO: Spawn pixi pool replenishment
+        }
+        env
+    }
+
     /// Handle a single request.
     async fn handle_request(self: Arc<Self>, request: Request) -> Response {
         match request {
@@ -1704,6 +1722,7 @@ impl Daemon {
                 let (env, stale_paths) = match env_type {
                     EnvType::Uv => self.uv_pool.lock().await.take(),
                     EnvType::Conda => self.conda_pool.lock().await.take(),
+                    EnvType::Pixi => self.pixi_pool.lock().await.take(),
                 };
                 spawn_env_deletions(stale_paths);
 
@@ -1723,6 +1742,10 @@ impl Daemon {
                                 tokio::spawn(async move {
                                     daemon.replenish_conda_env().await;
                                 });
+                            }
+                            EnvType::Pixi => {
+                                // TODO: pixi pool replenishment
+                                debug!("[runtimed] Pixi pool replenishment not yet implemented");
                             }
                         }
                         Response::Env { env }
@@ -1758,6 +1781,18 @@ impl Daemon {
                                 created_at: Instant::now(),
                             });
                             debug!("[runtimed] Returned Conda env: {:?}", env.venv_path);
+                        } else {
+                            tokio::fs::remove_dir_all(&env.venv_path).await.ok();
+                        }
+                    }
+                    EnvType::Pixi => {
+                        let mut pool = self.pixi_pool.lock().await;
+                        if pool.available.len() < pool.target {
+                            pool.available.push_back(PoolEntry {
+                                env: env.clone(),
+                                created_at: Instant::now(),
+                            });
+                            debug!("[runtimed] Returned Pixi env: {:?}", env.venv_path);
                         } else {
                             tokio::fs::remove_dir_all(&env.venv_path).await.ok();
                         }

@@ -64,6 +64,7 @@ pub fn default_log_path() -> PathBuf {
 pub enum EnvType {
     Uv,
     Conda,
+    Pixi,
 }
 
 impl std::fmt::Display for EnvType {
@@ -71,6 +72,7 @@ impl std::fmt::Display for EnvType {
         match self {
             EnvType::Uv => write!(f, "uv"),
             EnvType::Conda => write!(f, "conda"),
+            EnvType::Pixi => write!(f, "pixi"),
         }
     }
 }

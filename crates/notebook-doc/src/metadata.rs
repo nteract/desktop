@@ -41,6 +41,10 @@ pub struct RuntMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conda: Option<CondaInlineMetadata>,
 
+    /// Pixi inline dependency configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pixi: Option<PixiInlineMetadata>,
+
     /// Deno runtime configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deno: Option<DenoMetadata>,
@@ -94,6 +98,30 @@ pub struct CondaInlineMetadata {
     pub channels: Vec<String>,
 
     /// Explicit Python version for the conda environment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub python: Option<String>,
+}
+
+/// Pixi inline dependency metadata (`metadata.runt.pixi`).
+///
+/// Supports both conda and PyPI dependencies, matching pixi's unified model.
+/// Note: `pixi exec -w` currently only supports conda matchspecs; pypi deps
+/// are stored for future use and for display in the dependency panel.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PixiInlineMetadata {
+    /// Conda package matchspecs (e.g. `["numpy", "scipy>=1.0"]`).
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+
+    /// PyPI dependency specifiers (e.g. `["requests>=2.0"]`).
+    #[serde(default)]
+    pub pypi_dependencies: Vec<String>,
+
+    /// Conda channels to search (e.g. `["conda-forge"]`).
+    #[serde(default)]
+    pub channels: Vec<String>,
+
+    /// Explicit Python version constraint.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub python: Option<String>,
 }
@@ -200,6 +228,7 @@ impl NotebookMetadataSnapshot {
                     env_id: None,
                     uv,
                     conda,
+                    pixi: None,
                     deno: None,
                     trust_signature: None,
                     trust_timestamp: None,
@@ -466,6 +495,62 @@ impl NotebookMetadataSnapshot {
             .map(|c| c.dependencies.as_slice())
             .unwrap_or(&[])
     }
+
+    // ── Pixi dependency operations ──────────────────────────────────
+
+    fn pixi_section_or_default(&mut self) -> &mut PixiInlineMetadata {
+        self.runt.pixi.get_or_insert_with(|| PixiInlineMetadata {
+            dependencies: Vec::new(),
+            pypi_dependencies: Vec::new(),
+            channels: vec!["conda-forge".to_string()],
+            python: None,
+        })
+    }
+
+    /// Add a Pixi conda dependency (matchspec). Deduplicates by package name.
+    pub fn add_pixi_dependency(&mut self, pkg: &str) {
+        let pixi = self.pixi_section_or_default();
+        let name = extract_package_name(pkg);
+        pixi.dependencies
+            .retain(|d| extract_package_name(d) != name);
+        pixi.dependencies.push(pkg.to_string());
+    }
+
+    /// Remove a Pixi conda dependency by package name.
+    pub fn remove_pixi_dependency(&mut self, pkg: &str) -> bool {
+        let Some(ref mut pixi) = self.runt.pixi else {
+            return false;
+        };
+        let name = extract_package_name(pkg);
+        let before = pixi.dependencies.len();
+        pixi.dependencies
+            .retain(|d| extract_package_name(d) != name);
+        pixi.dependencies.len() < before
+    }
+
+    /// Clear the Pixi section entirely.
+    pub fn clear_pixi_section(&mut self) {
+        self.runt.pixi = None;
+    }
+
+    /// Set Pixi channels, preserving deps.
+    pub fn set_pixi_channels(&mut self, channels: Vec<String>) {
+        self.pixi_section_or_default().channels = channels;
+    }
+
+    /// Set Pixi python version.
+    pub fn set_pixi_python(&mut self, python: Option<String>) {
+        self.pixi_section_or_default().python = python;
+    }
+
+    /// Get Pixi conda dependencies, or empty slice if no Pixi section.
+    pub fn pixi_dependencies(&self) -> &[String] {
+        self.runt
+            .pixi
+            .as_ref()
+            .map(|p| p.dependencies.as_slice())
+            .unwrap_or(&[])
+    }
 }
 
 impl RuntMetadata {
@@ -480,6 +565,7 @@ impl RuntMetadata {
                 prerelease: None,
             }),
             conda: None,
+            pixi: None,
             deno: None,
             trust_signature: None,
             trust_timestamp: None,
@@ -498,6 +584,27 @@ impl RuntMetadata {
                 channels: vec!["conda-forge".to_string()],
                 python: None,
             }),
+            pixi: None,
+            deno: None,
+            trust_signature: None,
+            trust_timestamp: None,
+            extra: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Create a default RuntMetadata with Pixi configuration.
+    pub fn new_pixi(env_id: String) -> Self {
+        RuntMetadata {
+            schema_version: "1".to_string(),
+            env_id: Some(env_id),
+            uv: None,
+            conda: None,
+            pixi: Some(PixiInlineMetadata {
+                dependencies: Vec::new(),
+                pypi_dependencies: Vec::new(),
+                channels: vec!["conda-forge".to_string()],
+                python: None,
+            }),
             deno: None,
             trust_signature: None,
             trust_timestamp: None,
@@ -512,6 +619,7 @@ impl RuntMetadata {
             env_id: Some(env_id),
             uv: None,
             conda: None,
+            pixi: None,
             deno: Some(DenoMetadata {
                 permissions: Vec::new(),
                 import_map: None,
@@ -534,6 +642,7 @@ impl Default for RuntMetadata {
             env_id: None,
             uv: None,
             conda: None,
+            pixi: None,
             deno: None,
             trust_signature: None,
             trust_timestamp: None,
@@ -618,6 +727,7 @@ mod tests {
                     prerelease: None,
                 }),
                 conda: None,
+                pixi: None,
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
@@ -725,6 +835,7 @@ mod tests {
             env_id: None,
             uv: None,
             conda: None,
+            pixi: None,
             deno: None,
             trust_signature: None,
             trust_timestamp: None,
