@@ -175,11 +175,17 @@ pub async fn get_all_cells(
                 let status = cell_status_map.get(&cell.id).map(String::as_str);
                 let ec: Option<i64> = cell.execution_count.parse().ok();
 
-                // Parse raw output JSON strings from the CRDT into serde_json::Value
-                let output_values: Vec<serde_json::Value> = cell
-                    .outputs
+                // Resolve outputs through the output resolver so that
+                // text/llm+plain is synthesized and viz specs are summarized.
+                let resolved = output_resolver::resolve_cell_outputs(
+                    &cell.outputs,
+                    &server.blob_base_url,
+                    &server.blob_store_path,
+                )
+                .await;
+                let output_texts: Vec<String> = resolved
                     .iter()
-                    .filter_map(|raw| serde_json::from_str(raw).ok())
+                    .filter_map(formatting::format_output_text)
                     .collect();
 
                 // Extract tags from cell metadata
@@ -194,7 +200,7 @@ pub async fn get_all_cells(
                     "cell_type": cell.cell_type,
                     "execution_count": ec,
                     "source": cell.source,
-                    "outputs": output_values,
+                    "outputs": output_texts,
                     "status": status,
                     "tags": tags,
                 }));
