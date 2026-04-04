@@ -3141,6 +3141,8 @@ dependencies = [
  "rattler_virtual_packages",
  "reqwest 0.12.28",
  "reqwest-middleware",
+ "serde",
+ "serde_json",
  "sha2 0.10.9",
  "tar",
  "tempfile",

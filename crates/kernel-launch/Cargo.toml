@@ -19,6 +19,9 @@ zip = { version = "2.2", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"
 
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 # Conda/rattler for tool bootstrapping
 rattler = { version = "0.39", default-features = false, features = ["native-tls"] }
 rattler_cache = { version = "0.6", default-features = false, features = ["native-tls"] }

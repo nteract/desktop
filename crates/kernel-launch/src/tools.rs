@@ -860,6 +860,133 @@ pub async fn get_pixi_path() -> Result<PathBuf> {
     }
 }
 
+// ── Pixi project info via `pixi info --json` ────────────────────────
+
+/// Environment info from `pixi info --json`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct PixiEnvironmentInfo {
+    pub name: String,
+    #[serde(default)]
+    pub features: Vec<String>,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub pypi_dependencies: Vec<String>,
+    #[serde(default)]
+    pub channels: Vec<String>,
+    #[serde(default)]
+    pub prefix: Option<String>,
+}
+
+/// Project info from `pixi info --json`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct PixiProjectInfo {
+    pub name: Option<String>,
+    pub manifest_path: Option<String>,
+    pub version: Option<String>,
+}
+
+/// Parsed result from `pixi info --json`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct PixiInfoResult {
+    pub version: Option<String>,
+    pub project_info: Option<PixiProjectInfo>,
+    #[serde(default)]
+    pub environments_info: Vec<PixiEnvironmentInfo>,
+}
+
+impl PixiInfoResult {
+    /// Check if ipykernel is declared in the default environment's dependencies.
+    pub fn has_ipykernel(&self) -> bool {
+        self.environments_info.iter().any(|env| {
+            env.name == "default"
+                && (env.dependencies.iter().any(|d| d == "ipykernel")
+                    || env.pypi_dependencies.iter().any(|d| d == "ipykernel"))
+        })
+    }
+
+    /// Get the default environment's prefix path.
+    pub fn default_prefix(&self) -> Option<&str> {
+        self.environments_info
+            .iter()
+            .find(|e| e.name == "default")
+            .and_then(|e| e.prefix.as_deref())
+    }
+
+    /// Get all dependency names from the default environment (sorted, for drift detection).
+    pub fn default_deps_snapshot(&self) -> Vec<String> {
+        let Some(env) = self.environments_info.iter().find(|e| e.name == "default") else {
+            return Vec::new();
+        };
+        let mut deps: Vec<String> = env
+            .dependencies
+            .iter()
+            .chain(env.pypi_dependencies.iter())
+            .cloned()
+            .collect();
+        deps.sort();
+        deps
+    }
+}
+
+/// Run `pixi info --json` for a manifest path and parse the result.
+///
+/// The manifest can be either a `pixi.toml` or a `pyproject.toml` with `[tool.pixi]`.
+pub async fn pixi_info(manifest_path: &std::path::Path) -> Result<PixiInfoResult> {
+    let pixi_path = get_pixi_path().await?;
+    let output = tokio::process::Command::new(&pixi_path)
+        .args(["info", "--json", "--manifest-path"])
+        .arg(manifest_path)
+        .output()
+        .await
+        .map_err(|e| anyhow!("failed to run pixi info: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!("pixi info failed: {}", stderr.trim()));
+    }
+
+    let result: PixiInfoResult = serde_json::from_slice(&output.stdout)
+        .map_err(|e| anyhow!("failed to parse pixi info JSON: {}", e))?;
+    Ok(result)
+}
+
+/// Run `pixi shell-hook --json` and return the environment variables.
+///
+/// These env vars can be applied to a `Command` with `cmd.envs()` for
+/// direct Python launch without the `pixi run` wrapper.
+pub async fn pixi_shell_hook(
+    manifest_path: &std::path::Path,
+    environment: Option<&str>,
+) -> Result<std::collections::HashMap<String, String>> {
+    let pixi_path = get_pixi_path().await?;
+    let mut cmd = tokio::process::Command::new(&pixi_path);
+    cmd.args(["shell-hook", "--json", "--manifest-path"]);
+    cmd.arg(manifest_path);
+    if let Some(env_name) = environment {
+        cmd.args(["--environment", env_name]);
+    }
+
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| anyhow!("failed to run pixi shell-hook: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!("pixi shell-hook failed: {}", stderr.trim()));
+    }
+
+    #[derive(serde::Deserialize)]
+    struct ShellHookResult {
+        environment_variables: std::collections::HashMap<String, String>,
+    }
+
+    let result: ShellHookResult = serde_json::from_slice(&output.stdout)
+        .map_err(|e| anyhow!("failed to parse pixi shell-hook JSON: {}", e))?;
+    Ok(result.environment_variables)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

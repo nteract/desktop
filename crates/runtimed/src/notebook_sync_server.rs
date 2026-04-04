@@ -3281,7 +3281,14 @@ async fn auto_launch_kernel(
     // For pixi:toml, verify ipykernel is in pixi.toml before launching
     if env_source == "pixi:toml" {
         if let Some(ref detected) = detected_project_file {
-            if !crate::project_file::pixi_toml_has_ipykernel(&detected.path) {
+            let has_ipykernel = match kernel_launch::tools::pixi_info(&detected.path).await {
+                Ok(info) => info.has_ipykernel(),
+                Err(e) => {
+                    warn!("[notebook-sync] pixi info failed, falling back to line scan: {}", e);
+                    crate::project_file::pixi_toml_has_ipykernel(&detected.path)
+                }
+            };
+            if !has_ipykernel {
                 warn!(
                     "[notebook-sync] pixi.toml at {:?} does not declare ipykernel — cannot launch kernel",
                     detected.path
@@ -4046,7 +4053,11 @@ async fn handle_notebook_request(
                         .map(|d| d.path)
                 });
                 if let Some(ref path) = pixi_path {
-                    if !crate::project_file::pixi_toml_has_ipykernel(path) {
+                    let has_ipykernel = match kernel_launch::tools::pixi_info(path).await {
+                        Ok(info) => info.has_ipykernel(),
+                        Err(_) => crate::project_file::pixi_toml_has_ipykernel(path),
+                    };
+                    if !has_ipykernel {
                         warn!(
                             "[notebook-sync] pixi.toml at {:?} does not declare ipykernel",
                             path
