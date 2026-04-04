@@ -693,6 +693,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
+      - name: Install pixi
+        uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          run-install: false
+
       - name: Build runtimed binary
         run: cargo build --release -p runtimed
 
