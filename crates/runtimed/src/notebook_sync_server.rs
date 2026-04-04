@@ -87,12 +87,6 @@ type AgentRequestSender = tokio::sync::mpsc::Sender<(
     tokio::sync::oneshot::Sender<notebook_protocol::protocol::AgentResponse>,
 )>;
 
-/// Agent mode is now unconditional — all kernels run as agent subprocesses.
-/// Kept as a function to minimize diff; will be removed in cleanup.
-fn is_agent_mode_enabled(_daemon: &crate::daemon::Daemon) -> bool {
-    true
-}
-
 /// Send an RPC request to the agent via its sync connection.
 ///
 /// The agent's sync handler receives the request as a frame 0x01 and sends
@@ -3343,8 +3337,8 @@ async fn auto_launch_kernel(
 
     // (prewarmed_packages no longer needed — agent handles its own launch config)
 
-    // Agent mode: spawn subprocess instead of local kernel
-    if is_agent_mode_enabled(&daemon) {
+    // Spawn agent subprocess for kernel execution
+    {
         info!("[notebook-sync] Agent mode: spawning agent subprocess for auto-launch");
 
         let nb_id = notebook_id.to_string();
@@ -4104,8 +4098,8 @@ async fn handle_notebook_request(
                 }
             }
 
-            // Check if agent mode is enabled.
-            if is_agent_mode_enabled(&daemon) {
+            // Spawn agent subprocess for kernel execution
+            {
                 info!("[notebook-sync] Agent mode: spawning agent subprocess");
 
                 let notebook_id = room.notebook_path.read().await.display().to_string();
@@ -4189,43 +4183,40 @@ async fn handle_notebook_request(
                                     }
                                 }
 
-                                return NotebookResponse::KernelLaunched {
+                                NotebookResponse::KernelLaunched {
                                     kernel_type: resolved_kernel_type,
                                     env_source: es,
                                     launched_config,
-                                };
+                                }
                             }
                             Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
                                 reset_starting_state(room).await;
-                                return NotebookResponse::Error {
+                                NotebookResponse::Error {
                                     error: format!("Agent kernel launch failed: {}", error),
-                                };
+                                }
                             }
                             Ok(_) => {
                                 reset_starting_state(room).await;
-                                return NotebookResponse::Error {
+                                NotebookResponse::Error {
                                     error: "Unexpected agent response".to_string(),
-                                };
+                                }
                             }
                             Err(e) => {
                                 reset_starting_state(room).await;
-                                return NotebookResponse::Error {
+                                NotebookResponse::Error {
                                     error: format!("Agent communication error: {}", e),
-                                };
+                                }
                             }
                         }
                     }
                     Err(e) => {
                         reset_starting_state(room).await;
-                        return NotebookResponse::Error {
+                        NotebookResponse::Error {
                             error: format!("Failed to spawn agent: {}", e),
-                        };
+                        }
                     }
                 }
             }
-
-            // Unreachable: agent mode is unconditional
-            unreachable!("agent mode is always enabled");
         }
 
         #[allow(deprecated)]
