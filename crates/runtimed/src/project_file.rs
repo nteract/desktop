@@ -74,6 +74,16 @@ pub fn find_nearest_project_file(
             }
             let candidate = current.join(filename);
             if candidate.exists() {
+                // pyproject.toml with [tool.pixi] should be treated as a pixi project
+                if *kind == ProjectFileKind::PyprojectToml
+                    && kinds.contains(&ProjectFileKind::PixiToml)
+                    && pyproject_has_pixi_section(&candidate)
+                {
+                    return Some(DetectedProjectFile {
+                        path: candidate,
+                        kind: ProjectFileKind::PixiToml,
+                    });
+                }
                 return Some(DetectedProjectFile {
                     path: candidate,
                     kind: kind.clone(),
@@ -111,7 +121,14 @@ pub fn detect_project_file(notebook_path: &Path) -> Option<DetectedProjectFile> 
     find_nearest_project_file(notebook_path, &all_kinds)
 }
 
-/// Check if a pixi.toml file declares ipykernel in its dependencies.
+/// Check if a pyproject.toml contains a `[tool.pixi]` section.
+fn pyproject_has_pixi_section(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .map(|c| c.contains("[tool.pixi]") || c.contains("[tool.pixi."))
+        .unwrap_or(false)
+}
+
+/// Check if a pixi.toml (or pyproject.toml with [tool.pixi]) declares ipykernel.
 ///
 /// Reads the file and checks for `ipykernel` as a TOML key in the
 /// `[dependencies]` or `[pypi-dependencies]` tables. Uses a simple
@@ -224,5 +241,62 @@ mod tests {
         assert!(!pixi_toml_has_ipykernel(Path::new(
             "/nonexistent/pixi.toml"
         )));
+    }
+
+    #[test]
+    fn test_pyproject_with_tool_pixi_detected_as_pixi() {
+        let temp = TempDir::new().unwrap();
+        write_file(
+            temp.path(),
+            "pyproject.toml",
+            "[project]\nname = \"test\"\n\n[tool.pixi.project]\nchannels = [\"conda-forge\"]\nplatforms = [\"linux-64\"]\n",
+        );
+
+        let found = detect_project_file(temp.path());
+        assert!(found.is_some());
+        let found = found.unwrap();
+        assert_eq!(found.kind, ProjectFileKind::PixiToml);
+        assert_eq!(found.to_env_source(), "pixi:toml");
+    }
+
+    #[test]
+    fn test_pyproject_without_tool_pixi_detected_as_uv() {
+        let temp = TempDir::new().unwrap();
+        write_file(
+            temp.path(),
+            "pyproject.toml",
+            "[project]\nname = \"test\"\n\n[tool.uv]\ndev-dependencies = []\n",
+        );
+
+        let found = detect_project_file(temp.path());
+        assert!(found.is_some());
+        let found = found.unwrap();
+        assert_eq!(found.kind, ProjectFileKind::PyprojectToml);
+        assert_eq!(found.to_env_source(), "uv:pyproject");
+    }
+
+    #[test]
+    fn test_pyproject_with_both_pixi_and_uv_prefers_pixi() {
+        let temp = TempDir::new().unwrap();
+        write_file(
+            temp.path(),
+            "pyproject.toml",
+            "[project]\nname = \"test\"\n\n[tool.pixi.project]\nchannels = [\"conda-forge\"]\n\n[tool.uv]\ndev-dependencies = []\n",
+        );
+
+        let found = detect_project_file(temp.path());
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().kind, ProjectFileKind::PixiToml);
+    }
+
+    #[test]
+    fn test_ipykernel_in_pyproject_tool_pixi_deps() {
+        let temp = TempDir::new().unwrap();
+        write_file(
+            temp.path(),
+            "pyproject.toml",
+            "[project]\nname = \"test\"\n\n[tool.pixi.dependencies]\nipykernel = \"*\"\nnumpy = \"*\"\n",
+        );
+        assert!(pixi_toml_has_ipykernel(&temp.path().join("pyproject.toml")));
     }
 }
