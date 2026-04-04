@@ -199,6 +199,7 @@ pub async fn prepare_environment_in(
         "ipykernel".to_string(),
         "ipywidgets".to_string(),
         "anywidget".to_string(),
+        "nbformat".to_string(),
         "uv".to_string(), // For %uv magic in notebooks
     ];
     packages.extend(deps.dependencies.iter().cloned());
@@ -558,6 +559,7 @@ import sys
 import ipykernel
 import IPython
 import ipywidgets
+import nbformat
 import traitlets
 import zmq
 from ipykernel.kernelbase import Kernel

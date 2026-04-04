@@ -2313,6 +2313,7 @@ impl Daemon {
             "ipykernel".to_string(),
             "ipywidgets".to_string(),
             "anywidget".to_string(),
+            "nbformat".to_string(),
         ];
         conda_install_packages.extend(extra_conda_packages.clone());
 
@@ -2323,6 +2324,7 @@ impl Daemon {
                 MatchSpec::from_str("ipykernel", match_spec_options)?,
                 MatchSpec::from_str("ipywidgets", match_spec_options)?,
                 MatchSpec::from_str("anywidget", match_spec_options)?,
+                MatchSpec::from_str("nbformat", match_spec_options)?,
             ];
             for pkg in &extra_conda_packages {
                 specs.push(MatchSpec::from_str(pkg, match_spec_options)?);
@@ -2567,6 +2569,7 @@ import ipykernel
 import IPython
 import ipywidgets
 import anywidget
+import nbformat
 import traitlets
 import zmq
 from ipykernel.kernelbase import Kernel
@@ -2761,6 +2764,7 @@ print("warmup complete")
             "ipykernel".to_string(),
             "ipywidgets".to_string(),
             "anywidget".to_string(),
+            "nbformat".to_string(),
             "uv".to_string(), // For %uv magic in notebooks
         ];
 
@@ -2881,6 +2885,7 @@ import ipykernel
 import IPython
 import ipywidgets
 import anywidget
+import nbformat
 from ipykernel.kernelbase import Kernel
 from ipykernel.ipkernel import IPythonKernel
 print("warmup complete")
