@@ -927,8 +927,8 @@ pub struct NotebookRoom {
     /// agent disconnect.
     pub agent_request_tx: Arc<Mutex<Option<AgentRequestSender>>>,
     /// Fires when the agent establishes its sync connection.
-    /// LaunchKernel waits on this after spawning the agent process.
-    pub agent_connected: Arc<tokio::sync::Notify>,
+    /// Uses `watch(false)` → `true` to avoid lost wakeups.
+    agent_connected_tx: Arc<tokio::sync::watch::Sender<bool>>,
     /// Monotonic counter for execution queue ordering.
     /// The coordinator bumps this for each ExecuteCell and stamps the seq
     /// on the execution entry. The agent sorts by seq to determine order.
@@ -1118,7 +1118,10 @@ impl NotebookRoom {
             agent_handle: Arc::new(Mutex::new(None)),
             agent_env_path: Arc::new(RwLock::new(None)),
             agent_request_tx: Arc::new(Mutex::new(None)),
-            agent_connected: Arc::new(tokio::sync::Notify::new()),
+            agent_connected_tx: {
+                let (tx, _) = tokio::sync::watch::channel(false);
+                Arc::new(tx)
+            },
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
@@ -1186,7 +1189,10 @@ impl NotebookRoom {
             agent_handle: Arc::new(Mutex::new(None)),
             agent_env_path: Arc::new(RwLock::new(None)),
             agent_request_tx: Arc::new(Mutex::new(None)),
-            agent_connected: Arc::new(tokio::sync::Notify::new()),
+            agent_connected_tx: {
+                let (tx, _) = tokio::sync::watch::channel(false);
+                Arc::new(tx)
+            },
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
@@ -1409,7 +1415,7 @@ pub async fn handle_agent_sync_connection<R, W>(
     }
 
     // ── 4. Signal that the agent is connected ────────────────────────
-    room.agent_connected.notify_waiters();
+    let _ = room.agent_connected_tx.send(true);
     info!("[notebook-sync] Agent connected and ready: {}", agent_id);
 
     // ── 5. Sync loop ─────────────────────────────────────────────────
@@ -1522,8 +1528,9 @@ pub async fn handle_agent_sync_connection<R, W>(
                 }
             }
 
-            // RPC requests to forward to agent
-            Some((request, reply_tx)) = agent_rx.recv() => {
+            // RPC requests to forward to agent (only accept when no reply is pending
+            // to serialize RPCs and prevent overwriting the reply slot)
+            Some((request, reply_tx)) = agent_rx.recv(), if pending_reply.is_none() => {
                 let json = match serde_json::to_vec(&request) {
                     Ok(j) => j,
                     Err(e) => {
@@ -1548,11 +1555,12 @@ pub async fn handle_agent_sync_connection<R, W>(
         }
     }
 
-    // Cleanup: clear the request channel so callers know agent is gone
+    // Cleanup: clear the request channel and reset connected signal
     {
         let mut tx_guard = room.agent_request_tx.lock().await;
         *tx_guard = None;
     }
+    let _ = room.agent_connected_tx.send(false);
     info!("[notebook-sync] Agent sync connection closed: {}", agent_id);
 }
 
@@ -3354,16 +3362,19 @@ async fn auto_launch_kernel(
                 }
 
                 // Wait for agent to establish its sync connection
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(30),
-                    room.agent_connected.notified(),
-                )
+                match tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                    room.agent_connected_tx
+                        .subscribe()
+                        .wait_for(|v| *v)
+                        .await
+                        .map(|_| ())
+                })
                 .await
                 {
-                    Ok(()) => {
+                    Ok(Ok(_)) => {
                         info!("[notebook-sync] Agent connected, sending LaunchKernel");
                     }
-                    Err(_) => {
+                    Ok(Err(_)) | Err(_) => {
                         warn!("[notebook-sync] Agent failed to connect within 30s");
                         reset_starting_state(room).await;
                         return;
@@ -4183,14 +4194,17 @@ async fn handle_notebook_request(
                         }
 
                         // Wait for agent to connect back via socket
-                        match tokio::time::timeout(
-                            std::time::Duration::from_secs(30),
-                            room.agent_connected.notified(),
-                        )
+                        match tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                            room.agent_connected_tx
+                                .subscribe()
+                                .wait_for(|v| *v)
+                                .await
+                                .map(|_| ())
+                        })
                         .await
                         {
-                            Ok(()) => {}
-                            Err(_) => {
+                            Ok(Ok(_)) => {}
+                            Ok(Err(_)) | Err(_) => {
                                 reset_starting_state(room).await;
                                 return NotebookResponse::Error {
                                     error: "Agent failed to connect within 30s".to_string(),
@@ -4409,9 +4423,12 @@ async fn handle_notebook_request(
 
             // Agent-backed kernel: write execution to RuntimeStateDoc queue.
             // The agent discovers it via CRDT sync and executes.
+            // Check agent_request_tx (not agent_handle) to ensure the agent's
+            // sync connection is still live — a stale handle with no connection
+            // would leave queued executions orphaned.
             {
-                let agent_guard = room.agent_handle.lock().await;
-                if agent_guard.is_some() {
+                let has_agent = room.agent_request_tx.lock().await.is_some();
+                if has_agent {
                     let execution_id = uuid::Uuid::new_v4().to_string();
                     let seq = room
                         .next_queue_seq
@@ -4584,8 +4601,8 @@ async fn handle_notebook_request(
         NotebookRequest::InterruptExecution {} => {
             // Agent path: send RPC via sync connection
             {
-                let agent_guard = room.agent_handle.lock().await;
-                if agent_guard.is_some() {
+                let has_agent = room.agent_request_tx.lock().await.is_some();
+                if has_agent {
                     return match send_agent_request(
                         room,
                         notebook_protocol::protocol::AgentRequest::InterruptExecution,
@@ -4616,14 +4633,13 @@ async fn handle_notebook_request(
         NotebookRequest::ShutdownKernel {} => {
             // Agent path: send shutdown RPC, then clear handle
             {
-                let agent_guard = room.agent_handle.lock().await;
-                if agent_guard.is_some() {
+                let has_agent = room.agent_request_tx.lock().await.is_some();
+                if has_agent {
                     let _ = send_agent_request(
                         room,
                         notebook_protocol::protocol::AgentRequest::ShutdownKernel,
                     )
                     .await;
-                    drop(agent_guard);
                     let mut guard = room.agent_handle.lock().await;
                     *guard = None;
                     return NotebookResponse::KernelShuttingDown {};
@@ -4747,8 +4763,8 @@ async fn handle_notebook_request(
         NotebookRequest::RunAllCells {} => {
             // Agent path — write all cells to RuntimeStateDoc queue
             {
-                let agent_guard = room.agent_handle.lock().await;
-                if agent_guard.is_some() {
+                let has_agent = room.agent_request_tx.lock().await.is_some();
+                if has_agent {
                     let cells = {
                         let doc = room.doc.read().await;
                         doc.get_cells()
@@ -4875,8 +4891,8 @@ async fn handle_notebook_request(
         NotebookRequest::SendComm { message } => {
             // Agent path
             {
-                let agent_guard = room.agent_handle.lock().await;
-                if agent_guard.is_some() {
+                let has_agent = room.agent_request_tx.lock().await.is_some();
+                if has_agent {
                     return match send_agent_request(
                         room,
                         notebook_protocol::protocol::AgentRequest::SendComm {
@@ -4932,8 +4948,8 @@ async fn handle_notebook_request(
         NotebookRequest::GetHistory { pattern, n, unique } => {
             // Agent path
             {
-                let agent_guard = room.agent_handle.lock().await;
-                if agent_guard.is_some() {
+                let has_agent = room.agent_request_tx.lock().await.is_some();
+                if has_agent {
                     return match send_agent_request(
                         room,
                         notebook_protocol::protocol::AgentRequest::GetHistory {
@@ -4976,8 +4992,8 @@ async fn handle_notebook_request(
         NotebookRequest::Complete { code, cursor_pos } => {
             // Agent path
             {
-                let agent_guard = room.agent_handle.lock().await;
-                if agent_guard.is_some() {
+                let has_agent = room.agent_request_tx.lock().await.is_some();
+                if has_agent {
                     return match send_agent_request(
                         room,
                         notebook_protocol::protocol::AgentRequest::Complete {
@@ -8101,7 +8117,10 @@ mod tests {
             agent_handle: Arc::new(Mutex::new(None)),
             agent_env_path: Arc::new(RwLock::new(None)),
             agent_request_tx: Arc::new(Mutex::new(None)),
-            agent_connected: Arc::new(tokio::sync::Notify::new()),
+            agent_connected_tx: {
+                let (tx, _) = tokio::sync::watch::channel(false);
+                Arc::new(tx)
+            },
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
 
