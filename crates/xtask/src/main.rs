@@ -1986,12 +1986,14 @@ fn mcp_widget_needs_rebuild() -> Option<&'static str> {
         return Some("could not determine output timestamps");
     };
 
-    // Check all source files against the oldest output
+    // Check all source files against the oldest output.
+    // Include pnpm-lock.yaml so transitive dependency updates also trigger a rebuild.
     let sources = [
         Path::new("apps/mcp-app/package.json"),
         Path::new("apps/mcp-app/build-html.js"),
         Path::new("apps/mcp-app/src/mcp-app.ts"),
         Path::new("apps/mcp-app/src/style.css"),
+        Path::new("pnpm-lock.yaml"),
     ];
     for src in &sources {
         if let Some(src_time) = modified_time(src) {
