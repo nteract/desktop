@@ -3340,10 +3340,7 @@ async fn auto_launch_kernel(
             .map(|p| p.dependencies.clone())
             .unwrap_or_default();
         if !deps.is_empty() {
-            info!(
-                "[notebook-sync] pixi:inline deps for pixi exec: {:?}",
-                deps
-            );
+            info!("[notebook-sync] pixi:inline deps for pixi exec: {:?}", deps);
             (None, Some(deps))
         } else {
             (pooled_env, None)
@@ -4000,7 +3997,8 @@ async fn handle_notebook_request(
                             };
                         }
                     },
-                    "uv:pyproject" | "uv:inline" | "uv:pep723" | "conda:inline" | "pixi:toml" | "pixi:inline" => {
+                    "uv:pyproject" | "uv:inline" | "uv:pep723" | "conda:inline" | "pixi:toml"
+                    | "pixi:inline" => {
                         // These sources prepare their own environments, no pooled env needed
                         info!(
                             "[notebook-sync] LaunchKernel: {} prepares its own env, no pool env",
