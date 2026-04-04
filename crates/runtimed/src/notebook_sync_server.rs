@@ -3146,6 +3146,7 @@ async fn auto_launch_kernel(
                     let mut sd = room.state_doc.write().await;
                     sd.set_kernel_status("error");
                     sd.set_kernel_info("python", "python", &env_source);
+                    sd.set_starting_phase("missing_ipykernel");
                     let _ = room.state_changed_tx.send(());
                 }
                 return;

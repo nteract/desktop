@@ -386,10 +386,11 @@ export function NotebookToolbar({
             </div>
           </div>
         )}
-      {/* Pixi ipykernel install prompt */}
+      {/* Pixi ipykernel install prompt — only when daemon signals missing_ipykernel */}
       {runtime === "python" &&
         kernelStatus === KERNEL_STATUS.ERROR &&
-        envSource?.startsWith("pixi:") && (
+        envSource?.startsWith("pixi:") &&
+        startingPhase === "missing_ipykernel" && (
           <div className="border-t px-3 py-2">
             <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
               <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
