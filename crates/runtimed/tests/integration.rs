@@ -61,8 +61,21 @@ fn write_test_ipynb(path: &std::path::Path, cells: &[(&str, &str, &str, Vec<&str
 
 /// Create a test daemon configuration with a unique socket and lock path.
 fn test_config(temp_dir: &TempDir) -> DaemonConfig {
+    // Windows named pipes must use \\.\pipe\ prefix, not filesystem paths
+    #[cfg(windows)]
+    let socket_path = {
+        let unique = temp_dir
+            .path()
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
+        std::path::PathBuf::from(format!(r"\\.\pipe\runtimed-test-{}", unique))
+    };
+    #[cfg(not(windows))]
+    let socket_path = temp_dir.path().join("test-runtimed.sock");
+
     DaemonConfig {
-        socket_path: temp_dir.path().join("test-runtimed.sock"),
+        socket_path,
         cache_dir: temp_dir.path().join("envs"),
         blob_store_dir: temp_dir.path().join("blobs"),
         notebook_docs_dir: temp_dir.path().join("notebook-docs"),
