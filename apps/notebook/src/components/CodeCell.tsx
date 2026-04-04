@@ -392,6 +392,7 @@ export const CodeCell = memo(function CodeCell({
               searchQuery={searchQuery}
               onSearchMatchCount={onSearchMatchCount}
               onLinkClick={handleLinkClick}
+              onIframeMouseDown={onFocus}
             />
           )
         }

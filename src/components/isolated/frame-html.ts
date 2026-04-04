@@ -576,6 +576,14 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
         }
       });
 
+      // --- Mouse Down Forwarding ---
+      // Notify parent that the iframe received a click so it can
+      // update cell focus. Does NOT preventDefault — all iframe
+      // interactions (text selection, links, widgets) continue to work.
+      document.addEventListener('mousedown', function() {
+        sendRpc('nteract/mouseDown', {});
+      });
+
       // --- Double Click Forwarding ---
       document.addEventListener('dblclick', function(e) {
         // Don't forward double-clicks on links (user is selecting text)

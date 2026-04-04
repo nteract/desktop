@@ -102,6 +102,11 @@ interface OutputAreaProps {
    * Called when iframe reports search_results or in-DOM highlighting completes.
    */
   onSearchMatchCount?: (count: number) => void;
+  /**
+   * Callback when the user clicks (mousedown) inside an isolated output iframe.
+   * Use to update cell focus when the click is captured by the iframe.
+   */
+  onIframeMouseDown?: () => void;
 }
 
 /**
@@ -260,6 +265,7 @@ export function OutputArea({
   onWidgetUpdate,
   searchQuery,
   onSearchMatchCount,
+  onIframeMouseDown,
 }: OutputAreaProps) {
   const id = useId();
   const frameRef = useRef<IsolatedFrameHandle>(null);
@@ -510,6 +516,7 @@ export function OutputArea({
                 maxHeight={maxHeight ?? 2000}
                 onReady={handleFrameReady}
                 onLinkClick={onLinkClick}
+                onMouseDown={onIframeMouseDown}
                 onWidgetUpdate={onWidgetUpdate}
                 onMessage={handleIframeMessage}
                 onError={handleIframeError}

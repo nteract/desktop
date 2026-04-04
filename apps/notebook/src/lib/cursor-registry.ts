@@ -242,10 +242,15 @@ function handlePresence(payload: unknown): void {
         affectedCells.add(data.cell_id);
       } else if (msg.channel === "focus") {
         const data = msg.data as { cell_id: string };
-        // Focus replaces cursor
+        // Focus replaces cursor and selection — the peer is no longer
+        // in an editor, so stale highlights must be cleared.
         if (peer.cursor) {
           affectedCells.add(peer.cursor.cell_id);
           peer.cursor = undefined;
+        }
+        if (peer.selection) {
+          affectedCells.add(peer.selection.cell_id);
+          peer.selection = undefined;
         }
         if (peer.focus && peer.focus.cell_id !== data.cell_id) {
           affectedCells.add(peer.focus.cell_id);

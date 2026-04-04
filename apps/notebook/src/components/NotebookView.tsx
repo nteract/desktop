@@ -590,6 +590,7 @@ function NotebookViewContent({
             `[cell-nav] Focusing previous: ${prevCellId.slice(0, 8)}`,
           );
           onFocusCell(prevCellId);
+          presence?.setFocus(prevCellId);
           focusCell(prevCellId, cursorPosition);
         } else {
           logger.debug("[cell-nav] No previous cell (index=0)");
@@ -612,6 +613,7 @@ function NotebookViewContent({
           const nextCellId = cellIdsRef.current[nextIndex];
           logger.debug(`[cell-nav] Focusing next: ${nextCellId.slice(0, 8)}`);
           onFocusCell(nextCellId);
+          presence?.setFocus(nextCellId);
           focusCell(nextCellId, cursorPosition);
         } else {
           logger.debug("[cell-nav] No next cell (at end)");

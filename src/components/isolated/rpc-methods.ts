@@ -49,6 +49,7 @@ export const NTERACT_WIDGET_UPDATE = "nteract/widgetUpdate" as const;
 export const NTERACT_EVAL_RESULT = "nteract/evalResult" as const;
 export const NTERACT_PONG = "nteract/pong" as const;
 export const NTERACT_SEARCH_RESULTS = "nteract/searchResults" as const;
+export const NTERACT_MOUSE_DOWN = "nteract/mouseDown" as const;
 
 // ── Host → Iframe: Request Params & Results ─────────────────────────
 
