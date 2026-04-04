@@ -4303,10 +4303,10 @@ pub fn run(
                             true
                         }
                         Err(e) => {
-                            // Not critical - in-process prewarming will work as fallback
-                            // The failure event was already emitted by ensure_daemon_via_sidecar
+                            // The daemon is required — all kernels run as agent subprocesses.
+                            // The failure event was already emitted by ensure_daemon_via_sidecar.
                             log::warn!(
-                                "[startup] runtimed not available: {}. Using in-process prewarming.",
+                                "[startup] runtimed not available: {}. Kernel execution will not work until daemon starts.",
                                 e
                             );
                             false
