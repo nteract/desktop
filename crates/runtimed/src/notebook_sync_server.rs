@@ -43,9 +43,9 @@ use crate::kernel_manager::{DenoLaunchedConfig, LaunchedEnvConfig, RoomKernel};
 use crate::markdown_assets::resolve_markdown_assets;
 use crate::notebook_doc::{notebook_doc_filename, CellSnapshot, NotebookDoc};
 use crate::notebook_metadata::NotebookMetadataSnapshot;
-use crate::protocol::{
-    EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse, QueueEntry,
-};
+#[cfg(test)]
+use crate::protocol::EnvSyncDiff;
+use crate::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse, QueueEntry};
 use notebook_doc::presence::{self, PresenceState};
 use notebook_doc::runtime_state::{QueueEntry as DocQueueEntry, RuntimeStateDoc};
 
@@ -267,6 +267,7 @@ fn build_launched_config(
 
 /// Compute the difference between launched config and current metadata.
 /// Returns Some(diff) if there are differences, None if in sync.
+#[cfg(test)]
 fn compute_env_sync_diff(
     launched: &LaunchedEnvConfig,
     current: &NotebookMetadataSnapshot,
@@ -433,108 +434,15 @@ async fn process_markdown_assets(room: &NotebookRoom) {
 /// 1. Kernel launched with inline deps - track drift (additions/removals)
 /// 2. Kernel launched with prewarmed - detect when user adds inline deps (needs restart)
 async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
-    // Get current metadata from doc
-    let current_metadata = {
-        let doc = room.doc.read().await;
-        doc.get_metadata_snapshot()
-    };
-
-    let Some(current_metadata) = current_metadata else {
-        return;
-    };
-
-    // Check if kernel is running
-    let kernel_guard = room.kernel.lock().await;
-    if let Some(ref kernel) = *kernel_guard {
-        if !kernel.is_running() {
-            return;
-        }
-
-        let launched = kernel.launched_config();
-
-        // Check if we're tracking inline deps or deno config
-        let is_tracking = launched.uv_deps.is_some()
-            || launched.conda_deps.is_some()
-            || launched.deno_config.is_some();
-
-        if is_tracking {
-            // Case 1: Kernel launched with inline deps - compute drift
-            let diff = compute_env_sync_diff(launched, &current_metadata);
-            let in_sync = diff.is_none();
-
-            // Dual-write env sync to state_doc (borrow before broadcast moves diff)
-            {
-                let mut sd = room.state_doc.write().await;
-                let changed = match &diff {
-                    Some(d) => sd.set_env_sync(
-                        false,
-                        &d.added,
-                        &d.removed,
-                        d.channels_changed,
-                        d.deno_changed,
-                    ),
-                    None => sd.set_env_sync(true, &[], &[], false, false),
-                };
-                if changed {
-                    let _ = room.state_changed_tx.send(());
-                }
-            }
-
-            let _ = room
-                .kernel_broadcast_tx
-                .send(NotebookBroadcast::EnvSyncState { in_sync, diff });
-        } else {
-            // Case 2: Kernel launched with prewarmed - check if metadata now has inline deps
-            // This happens when user adds deps to a notebook with a prewarmed kernel running
-            let current_inline = check_inline_deps(&current_metadata);
-
-            if let Some(ref inline_source) = current_inline {
-                // Metadata now has inline deps but kernel is prewarmed - needs restart
-                let added = match inline_source.as_str() {
-                    "uv:inline" => get_inline_uv_deps(&current_metadata).unwrap_or_default(),
-                    "conda:inline" => get_inline_conda_deps(&current_metadata).unwrap_or_default(),
-                    _ => vec![],
-                };
-
-                if !added.is_empty() {
-                    // Dual-write env sync to state_doc (borrow before broadcast moves added)
-                    {
-                        let mut sd = room.state_doc.write().await;
-                        if sd.set_env_sync(false, &added, &[], false, false) {
-                            let _ = room.state_changed_tx.send(());
-                        }
-                    }
-                    let _ = room
-                        .kernel_broadcast_tx
-                        .send(NotebookBroadcast::EnvSyncState {
-                            in_sync: false,
-                            diff: Some(EnvSyncDiff {
-                                added,
-                                removed: vec![],
-                                channels_changed: false,
-                                deno_changed: false,
-                            }),
-                        });
-                } else {
-                    // Inline section exists but deps list is empty - back in sync
-                    let _ = room
-                        .kernel_broadcast_tx
-                        .send(NotebookBroadcast::EnvSyncState {
-                            in_sync: true,
-                            diff: None,
-                        });
-                }
-            } else {
-                // No inline deps in metadata at all - back in sync
-                let _ = room
-                    .kernel_broadcast_tx
-                    .send(NotebookBroadcast::EnvSyncState {
-                        in_sync: true,
-                        diff: None,
-                    });
-            }
-        }
-    }
+    // TODO: Re-implement for agent mode. The agent owns the kernel's
+    // launched_config — the coordinator needs to either:
+    // 1. Store launched_config on the room when the agent launches, or
+    // 2. Read it from RuntimeStateDoc (requires adding launched_config to the schema)
+    //
+    // For now this is a no-op — env sync drift detection is disabled.
+    // The agent still writes env sync state to RuntimeStateDoc directly
+    // during hot-sync operations.
+    let _ = room;
 }
 
 /// Handle CellError: clear queue on the kernel, mark executions as errored
@@ -1199,34 +1107,15 @@ impl NotebookRoom {
 
     /// Check if this room has an active kernel.
     pub async fn has_kernel(&self) -> bool {
-        // Check local kernel first
-        let kernel = self.kernel.lock().await;
-        if kernel.as_ref().is_some_and(|k| k.is_running()) {
-            return true;
-        }
-        drop(kernel);
-        // Check agent handle
+        // Check agent handle (agent mode is unconditional)
         let agent = self.agent_handle.lock().await;
         agent.as_ref().is_some_and(|a| a.is_alive())
     }
 
-    /// Get kernel info if a kernel is running (local or agent-backed).
+    /// Get kernel info if a kernel is running (agent-backed).
     ///
-    /// For agent-backed kernels, reads from RuntimeStateDoc (source of truth).
+    /// Reads from RuntimeStateDoc (source of truth in agent mode).
     pub async fn kernel_info(&self) -> Option<(String, String, String)> {
-        // Check local kernel first
-        let kernel = self.kernel.lock().await;
-        if let Some(k) = kernel.as_ref() {
-            if k.is_running() {
-                return Some((
-                    k.kernel_type().to_string(),
-                    k.env_source().to_string(),
-                    k.status().to_string(),
-                ));
-            }
-        }
-        drop(kernel);
-
         // Check agent — read from RuntimeStateDoc
         let agent = self.agent_handle.lock().await;
         if agent.as_ref().is_some_and(|a| a.is_alive()) {
@@ -1795,19 +1684,7 @@ where
             let mut rooms_guard = rooms_for_eviction.lock().await;
             // Re-check under lock
             if room_for_eviction.active_peers.load(Ordering::Relaxed) == 0 {
-                // Shutdown kernel if running
-                if let Some(mut kernel) = room_for_eviction.kernel.lock().await.take() {
-                    info!(
-                        "[notebook-sync] Shutting down idle kernel for {}",
-                        notebook_id_for_eviction
-                    );
-                    if let Err(e) = kernel.shutdown().await {
-                        warn!(
-                            "[notebook-sync] Error shutting down kernel for {}: {}",
-                            notebook_id_for_eviction, e
-                        );
-                    }
-                }
+                // Agent subprocess handles its own shutdown via kill_on_drop(true)
 
                 // Stop file watcher if running
                 if let Some(shutdown_tx) = room_for_eviction.watcher_shutdown_tx.lock().await.take()
@@ -2323,16 +2200,6 @@ where
                                 let reply_encoded = {
                                     let mut state_doc = room.state_doc.write().await;
 
-                                    // Snapshot comms before applying client changes
-                                    // so we can diff and forward to the kernel.
-                                    let comms_before: HashMap<String, serde_json::Value> = if !message.changes.is_empty() {
-                                        state_doc.read_state().comms.into_iter()
-                                            .map(|(id, e)| (id, e.state))
-                                            .collect()
-                                    } else {
-                                        HashMap::new()
-                                    };
-
                                     let recv_result = catch_automerge_panic("state-receive-sync", || {
                                         state_doc.receive_sync_message_with_changes(
                                             &mut state_peer_state,
@@ -2353,59 +2220,11 @@ where
                                         }
                                     };
 
-                                    // If client sent changes, notify all peers
-                                    // and forward comm state changes to the kernel.
+                                    // If client sent changes, notify all peers.
+                                    // Comm state forwarding to kernel is handled by the
+                                    // agent via RuntimeStateDoc sync (agent mode is unconditional).
                                     if had_changes {
                                         let _ = room.state_changed_tx.send(());
-
-                                        // Diff comms and forward to kernel
-                                        let comms_after = state_doc.read_state().comms;
-                                        let mut comm_deltas: Vec<(String, serde_json::Value)> = Vec::new();
-                                        for (comm_id, entry) in &comms_after {
-                                            let before = comms_before.get(comm_id);
-                                            if before != Some(&entry.state) {
-                                                comm_deltas.push((comm_id.clone(), entry.state.clone()));
-                                            }
-                                        }
-                                        if !comm_deltas.is_empty() {
-                                            let kernel = room.kernel.clone();
-                                            tokio::spawn(async move {
-                                                let mut guard = kernel.lock().await;
-                                                if let Some(ref mut k) = *guard {
-                                                    for (comm_id, state) in comm_deltas {
-                                                        let msg_id = format!("crdt-fwd-{:x}", std::time::SystemTime::now()
-                                                            .duration_since(std::time::UNIX_EPOCH)
-                                                            .unwrap_or_default()
-                                                            .as_nanos());
-                                                        let msg = serde_json::json!({
-                                                            "header": {
-                                                                "msg_id": msg_id,
-                                                                "msg_type": "comm_msg",
-                                                                "session": "",
-                                                                "username": "frontend",
-                                                                "date": "",
-                                                                "version": "5.3"
-                                                            },
-                                                            "parent_header": null,
-                                                            "metadata": {},
-                                                            "content": {
-                                                                "comm_id": comm_id,
-                                                                "data": {
-                                                                    "method": "update",
-                                                                    "state": state,
-                                                                    "buffer_paths": []
-                                                                }
-                                                            },
-                                                            "buffers": [],
-                                                            "channel": "shell"
-                                                        });
-                                                        if let Err(e) = k.send_comm_message(msg).await {
-                                                            warn!("[notebook-sync] Failed to forward comm state to kernel: {}", e);
-                                                        }
-                                                    }
-                                                }
-                                            });
-                                        }
                                     }
 
                                     match catch_automerge_panic("state-sync-reply", || {
@@ -2933,16 +2752,8 @@ async fn auto_launch_kernel(
     // Resolve metadata snapshot: try Automerge doc first, fall back to disk
     let metadata_snapshot = resolve_metadata_snapshot(room, notebook_path_opt.as_deref()).await;
 
+    // Acquire kernel lock for launch serialization (prevents concurrent launches)
     let kernel_guard = room.kernel.lock().await;
-
-    // Double-check no kernel is already running
-    if let Some(ref kernel) = *kernel_guard {
-        if kernel.is_running() {
-            debug!("[notebook-sync] Auto-launch skipped: kernel already running");
-            reset_starting_state(room).await;
-            return;
-        }
-    }
 
     // Re-check peers after acquiring lock (another race check)
     if room.active_peers.load(std::sync::atomic::Ordering::Relaxed) == 0 {
@@ -3560,14 +3371,7 @@ async fn rekey_ephemeral_room(
                                 .send(NotebookBroadcast::RoomRenamed {
                                     new_notebook_id: canonical_for_task,
                                 });
-                        if let Some(mut kernel) = interloper.kernel.lock().await.take() {
-                            if let Err(e) = kernel.shutdown().await {
-                                warn!(
-                                    "[notebook-sync] Failed to shut down interloper kernel: {}",
-                                    e
-                                );
-                            }
-                        }
+                        // Agent subprocess handles its own shutdown via kill_on_drop(true)
                         if let Some(tx) = interloper.watcher_shutdown_tx.lock().await.take() {
                             let _ = tx.send(());
                         }
@@ -3652,18 +3456,8 @@ async fn handle_notebook_request(
             env_source,
             notebook_path,
         } => {
+            // Acquire kernel lock for launch serialization (prevents concurrent launches)
             let kernel_guard = room.kernel.lock().await;
-
-            // Check if kernel already running
-            if let Some(ref kernel) = *kernel_guard {
-                if kernel.is_running() {
-                    return NotebookResponse::KernelAlreadyRunning {
-                        kernel_type: kernel.kernel_type().to_string(),
-                        env_source: kernel.env_source().to_string(),
-                        launched_config: kernel.launched_config().clone(),
-                    };
-                }
-            }
 
             // Clear any stale comm state from a previous kernel (in case it crashed)
 
@@ -4335,73 +4129,8 @@ async fn handle_notebook_request(
                 }
             }
 
-            // Local kernel path: queue the user's source immediately — no formatter delay.
-            // Formatting is applied afterward via fork+merge (see below).
-            // This is safe because ruff/deno fmt are semantic no-ops:
-            // the formatted code produces identical outputs.
-            let mut kernel_guard = room.kernel.lock().await;
-            if let Some(ref mut kernel) = *kernel_guard {
-                match kernel.queue_cell(cell_id.clone(), source.clone()).await {
-                    Ok(execution_id) => {
-                        // Stamp execution_id at queue time so clients see
-                        // immediate feedback. No output clear needed — new eid
-                        // starts with empty outputs in RuntimeStateDoc.
-                        {
-                            let mut doc = room.doc.write().await;
-                            let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
-                            let _ = room.changed_tx.send(());
-                        }
-
-                        // Best-effort background formatting via fork+merge.
-                        // Fork the doc NOW (before the formatter runs) so
-                        // update_source on the fork diffs against the original
-                        // text. When merged back, Automerge treats formatting
-                        // ops as concurrent with any user edits that arrived
-                        // on the live doc while the formatter was running.
-                        let fork = {
-                            let mut doc = room.doc.write().await;
-                            doc.fork()
-                        };
-                        let room_clone = Arc::clone(room);
-                        let cell_id_clone = cell_id.clone();
-                        tokio::spawn(async move {
-                            if let Some(runtime) = detect_room_runtime(&room_clone).await {
-                                if let Some(formatted) = format_source(&source, &runtime).await {
-                                    let mut fork = fork;
-                                    let actor = formatter_actor(&runtime);
-                                    fork.set_actor(&actor);
-                                    if fork.update_source(&cell_id_clone, &formatted).is_ok() {
-                                        let mut doc = room_clone.doc.write().await;
-                                        if let Err(e) =
-                                            catch_automerge_panic("format-merge", || {
-                                                doc.merge(&mut fork)
-                                            })
-                                        {
-                                            warn!("{}", e);
-                                            doc.rebuild_from_save();
-                                        }
-                                        let _ = room_clone.changed_tx.send(());
-                                        debug!(
-                                            "[format] Formatted cell {} after queuing",
-                                            cell_id_clone
-                                        );
-                                    }
-                                }
-                            }
-                        });
-
-                        NotebookResponse::CellQueued {
-                            cell_id,
-                            execution_id,
-                        }
-                    }
-                    Err(e) => NotebookResponse::Error {
-                        error: format!("Failed to queue cell: {}", e),
-                    },
-                }
-            } else {
-                NotebookResponse::NoKernel {}
-            }
+            // No agent available — kernel not running
+            NotebookResponse::NoKernel {}
         }
 
         NotebookRequest::ClearOutputs { cell_id } => {
@@ -4439,42 +4168,22 @@ async fn handle_notebook_request(
                     cell_id: cell_id.clone(),
                 });
 
-            // Update kernel's internal tracking if kernel exists
-            if let Some(ref eid) = old_eid {
-                let kernel_guard = room.kernel.lock().await;
-                if let Some(ref kernel) = *kernel_guard {
-                    kernel.clear_outputs(eid).await;
-                }
-            }
-
             NotebookResponse::OutputsCleared { cell_id }
         }
 
         NotebookRequest::InterruptExecution {} => {
             // Agent path: send RPC via sync connection
-            {
-                let has_agent = room.agent_request_tx.lock().await.is_some();
-                if has_agent {
-                    return match send_agent_request(
-                        room,
-                        notebook_protocol::protocol::AgentRequest::InterruptExecution,
-                    )
-                    .await
-                    {
-                        Ok(_) => NotebookResponse::InterruptSent {},
-                        Err(e) => NotebookResponse::Error {
-                            error: format!("Agent interrupt error: {}", e),
-                        },
-                    };
-                }
-            }
-            // Local kernel path
-            let mut kernel_guard = room.kernel.lock().await;
-            if let Some(ref mut kernel) = *kernel_guard {
-                match kernel.interrupt().await {
-                    Ok(()) => NotebookResponse::InterruptSent {},
+            let has_agent = room.agent_request_tx.lock().await.is_some();
+            if has_agent {
+                match send_agent_request(
+                    room,
+                    notebook_protocol::protocol::AgentRequest::InterruptExecution,
+                )
+                .await
+                {
+                    Ok(_) => NotebookResponse::InterruptSent {},
                     Err(e) => NotebookResponse::Error {
-                        error: format!("Failed to interrupt: {}", e),
+                        error: format!("Agent interrupt error: {}", e),
                     },
                 }
             } else {
@@ -4484,82 +4193,27 @@ async fn handle_notebook_request(
 
         NotebookRequest::ShutdownKernel {} => {
             // Agent path: send shutdown RPC, then clear handle
-            {
-                let has_agent = room.agent_request_tx.lock().await.is_some();
-                if has_agent {
-                    let _ = send_agent_request(
-                        room,
-                        notebook_protocol::protocol::AgentRequest::ShutdownKernel,
-                    )
-                    .await;
-                    // Clear both handle and request channel so subsequent
-                    // ExecuteCell/Complete/etc. fall through to NoKernel
-                    let mut guard = room.agent_handle.lock().await;
-                    *guard = None;
-                    let mut tx_guard = room.agent_request_tx.lock().await;
-                    *tx_guard = None;
-                    return NotebookResponse::KernelShuttingDown {};
-                }
-            }
-            // Local kernel path
-            let mut kernel_guard = room.kernel.lock().await;
-            if let Some(ref mut kernel) = *kernel_guard {
-                let env_source = kernel.env_source().to_string();
-                match kernel.shutdown().await {
-                    Ok(()) => {
-                        *kernel_guard = None;
-                        // Clear widget state — all comms become invalid when kernel shuts down
-                        {
-                            let mut sd = room.state_doc.write().await;
-                            if sd.clear_comms() {
-                                let _ = room.state_changed_tx.send(());
-                            }
-                        }
-                        // Drop the kernel lock before awaiting the presence update
-                        drop(kernel_guard);
-                        // Publish shutdown presence so late joiners don't see stale kernel state
-                        publish_kernel_state_presence(
-                            room,
-                            presence::KernelStatus::Shutdown,
-                            &env_source,
-                        )
-                        .await;
-                        // Dual-write shutdown to state_doc
-                        {
-                            let mut sd = room.state_doc.write().await;
-                            let mut changed = false;
-                            changed |= sd.set_kernel_status("shutdown");
-                            changed |= sd.set_prewarmed_packages(&[]);
-                            if changed {
-                                let _ = room.state_changed_tx.send(());
-                            }
-                        }
-                        NotebookResponse::KernelShuttingDown {}
-                    }
-                    Err(e) => NotebookResponse::Error {
-                        error: format!("Failed to shutdown kernel: {}", e),
-                    },
-                }
+            let has_agent = room.agent_request_tx.lock().await.is_some();
+            if has_agent {
+                let _ = send_agent_request(
+                    room,
+                    notebook_protocol::protocol::AgentRequest::ShutdownKernel,
+                )
+                .await;
+                // Clear both handle and request channel so subsequent
+                // ExecuteCell/Complete/etc. fall through to NoKernel
+                let mut guard = room.agent_handle.lock().await;
+                *guard = None;
+                let mut tx_guard = room.agent_request_tx.lock().await;
+                *tx_guard = None;
+                NotebookResponse::KernelShuttingDown {}
             } else {
                 NotebookResponse::NoKernel {}
             }
         }
 
         NotebookRequest::GetKernelInfo {} => {
-            // Try local kernel first, then RuntimeStateDoc (covers agent mode)
-            let kernel_guard = room.kernel.lock().await;
-            if let Some(ref kernel) = *kernel_guard {
-                if kernel.is_running() {
-                    return NotebookResponse::KernelInfo {
-                        kernel_type: Some(kernel.kernel_type().to_string()),
-                        env_source: Some(kernel.env_source().to_string()),
-                        status: kernel.status().to_string(),
-                    };
-                }
-            }
-            drop(kernel_guard);
-
-            // Read from RuntimeStateDoc (works for both local and agent-backed kernels)
+            // Read from RuntimeStateDoc (source of truth in agent mode)
             let sd = room.state_doc.read().await;
             let state = sd.read_state();
             if state.kernel.status != "not_started" && !state.kernel.status.is_empty() {
@@ -4586,17 +4240,7 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::GetQueueState {} => {
-            // Try local kernel first
-            let kernel_guard = room.kernel.lock().await;
-            if let Some(ref kernel) = *kernel_guard {
-                return NotebookResponse::QueueState {
-                    executing: kernel.executing_entry(),
-                    queued: kernel.queued_cells(),
-                };
-            }
-            drop(kernel_guard);
-
-            // Read from RuntimeStateDoc (works for agent-backed kernels)
+            // Read from RuntimeStateDoc (source of truth in agent mode)
             let sd = room.state_doc.read().await;
             let state = sd.read_state();
             NotebookResponse::QueueState {
@@ -4657,187 +4301,57 @@ async fn handle_notebook_request(
                 }
             }
 
-            // Local kernel path
-            let mut kernel_guard = room.kernel.lock().await;
-            if let Some(ref mut kernel) = *kernel_guard {
-                // Read all cells from the synced Automerge document
-                let cells = {
-                    let doc = room.doc.read().await;
-                    doc.get_cells()
-                }; // release read lock before writing
+            // No agent available — kernel not running
+            NotebookResponse::NoKernel {}
+        }
 
-                // Queue all code cells immediately with original source —
-                // no formatter delay. See ExecuteCell comment for rationale.
-                let mut queued = Vec::new();
-                let mut cell_sources: Vec<(String, String)> = Vec::new();
-                for cell in cells {
-                    if cell.cell_type == "code" {
-                        match kernel
-                            .queue_cell(cell.id.clone(), cell.source.clone())
-                            .await
-                        {
-                            Ok(execution_id) => {
-                                cell_sources.push((cell.id.clone(), cell.source.clone()));
-                                queued.push(QueueEntry {
-                                    cell_id: cell.id.clone(),
-                                    execution_id,
-                                });
-                            }
-                            Err(e) => {
-                                return NotebookResponse::Error {
-                                    error: format!("Failed to queue cell {}: {}", cell.id, e),
-                                };
-                            }
-                        }
-                    }
-                }
-
-                // Bulk-stamp execution_ids in one CRDT transaction so
-                // clients see all cells updated at once. No output clear
-                // needed — each new execution_id starts with empty outputs
-                // in RuntimeStateDoc.
+        NotebookRequest::SendComm { message } => {
+            // Agent path: forward comm message via RPC
+            let has_agent = room.agent_request_tx.lock().await.is_some();
+            if has_agent {
+                match send_agent_request(
+                    room,
+                    notebook_protocol::protocol::AgentRequest::SendComm {
+                        message: message.clone(),
+                    },
+                )
+                .await
                 {
-                    let mut doc = room.doc.write().await;
-                    for entry in &queued {
-                        let _ = doc.set_execution_id(&entry.cell_id, Some(&entry.execution_id));
-                    }
-                    let _ = room.changed_tx.send(());
+                    Ok(_) => NotebookResponse::Ok {},
+                    Err(e) => NotebookResponse::Error {
+                        error: format!("Agent comm error: {}", e),
+                    },
                 }
-
-                // Best-effort background formatting via fork+merge.
-                // Fork NOW so the baseline is the pre-format doc state.
-                let fork = {
-                    let mut doc = room.doc.write().await;
-                    doc.fork()
-                };
-                let room_clone = Arc::clone(room);
-                tokio::spawn(async move {
-                    if let Some(runtime) = detect_room_runtime(&room_clone).await {
-                        let mut fork = fork;
-                        let actor = formatter_actor(&runtime);
-                        fork.set_actor(&actor);
-                        let mut any_formatted = false;
-                        for (cell_id, source) in &cell_sources {
-                            if let Some(fmt) = format_source(source, &runtime).await {
-                                if fork.update_source(cell_id, &fmt).is_ok() {
-                                    any_formatted = true;
-                                }
-                            }
-                        }
-                        if any_formatted {
-                            let mut doc = room_clone.doc.write().await;
-                            if let Err(e) = catch_automerge_panic("run-all-format-merge", || {
-                                doc.merge(&mut fork)
-                            }) {
-                                warn!("{}", e);
-                                doc.rebuild_from_save();
-                            }
-                            let _ = room_clone.changed_tx.send(());
-                            debug!("[format] Formatted cells after run-all queuing");
-                        }
-                    }
-                });
-
-                NotebookResponse::AllCellsQueued { queued }
             } else {
                 NotebookResponse::NoKernel {}
             }
         }
 
-        NotebookRequest::SendComm { message } => {
-            // Agent path
-            {
-                let has_agent = room.agent_request_tx.lock().await.is_some();
-                if has_agent {
-                    return match send_agent_request(
-                        room,
-                        notebook_protocol::protocol::AgentRequest::SendComm {
-                            message: message.clone(),
-                        },
-                    )
-                    .await
-                    {
-                        Ok(_) => NotebookResponse::Ok {},
-                        Err(e) => NotebookResponse::Error {
-                            error: format!("Agent comm error: {}", e),
-                        },
-                    };
-                }
-            }
-            // Local kernel path
-            let is_state_update = message
-                .get("content")
-                .and_then(|c| c.get("data"))
-                .and_then(|d| d.get("method"))
-                .and_then(|m| m.as_str())
-                == Some("update");
-
-            if is_state_update {
-                // Fire-and-forget for widget state updates to avoid blocking the relay pipeline.
-                // Rapid slider drags send many update messages; waiting for the kernel lock
-                // synchronously causes 30s timeouts.
-                let kernel = Arc::clone(&room.kernel);
-                tokio::spawn(async move {
-                    let mut kernel_guard = kernel.lock().await;
-                    if let Some(ref mut k) = *kernel_guard {
-                        if let Err(e) = k.send_comm_message(message).await {
-                            warn!("[comm] Failed to send comm state update: {}", e);
-                        }
-                    }
-                });
-                NotebookResponse::Ok {}
-            } else {
-                let mut kernel_guard = room.kernel.lock().await;
-                if let Some(ref mut kernel) = *kernel_guard {
-                    match kernel.send_comm_message(message).await {
-                        Ok(()) => NotebookResponse::Ok {},
-                        Err(e) => NotebookResponse::Error {
-                            error: format!("Failed to send comm message: {}", e),
-                        },
-                    }
-                } else {
-                    NotebookResponse::NoKernel {}
-                }
-            }
-        }
-
         NotebookRequest::GetHistory { pattern, n, unique } => {
-            // Agent path
-            {
-                let has_agent = room.agent_request_tx.lock().await.is_some();
-                if has_agent {
-                    return match send_agent_request(
-                        room,
-                        notebook_protocol::protocol::AgentRequest::GetHistory {
-                            pattern: pattern.clone(),
-                            n,
-                            unique,
-                        },
-                    )
-                    .await
-                    {
-                        Ok(notebook_protocol::protocol::AgentResponse::HistoryResult {
-                            entries,
-                        }) => NotebookResponse::HistoryResult { entries },
-                        Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
-                            NotebookResponse::Error { error }
-                        }
-                        Ok(_) => NotebookResponse::Error {
-                            error: "Unexpected agent response".to_string(),
-                        },
-                        Err(e) => NotebookResponse::Error {
-                            error: format!("Agent error: {}", e),
-                        },
-                    };
-                }
-            }
-            // Local kernel path
-            let mut kernel_guard = room.kernel.lock().await;
-            if let Some(ref mut kernel) = *kernel_guard {
-                match kernel.get_history(pattern, n, unique).await {
-                    Ok(entries) => NotebookResponse::HistoryResult { entries },
+            // Agent path: forward via RPC
+            let has_agent = room.agent_request_tx.lock().await.is_some();
+            if has_agent {
+                match send_agent_request(
+                    room,
+                    notebook_protocol::protocol::AgentRequest::GetHistory {
+                        pattern: pattern.clone(),
+                        n,
+                        unique,
+                    },
+                )
+                .await
+                {
+                    Ok(notebook_protocol::protocol::AgentResponse::HistoryResult { entries }) => {
+                        NotebookResponse::HistoryResult { entries }
+                    }
+                    Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
+                        NotebookResponse::Error { error }
+                    }
+                    Ok(_) => NotebookResponse::Error {
+                        error: "Unexpected agent response".to_string(),
+                    },
                     Err(e) => NotebookResponse::Error {
-                        error: format!("Failed to get history: {}", e),
+                        error: format!("Agent error: {}", e),
                     },
                 }
             } else {
@@ -4846,51 +4360,35 @@ async fn handle_notebook_request(
         }
 
         NotebookRequest::Complete { code, cursor_pos } => {
-            // Agent path
-            {
-                let has_agent = room.agent_request_tx.lock().await.is_some();
-                if has_agent {
-                    return match send_agent_request(
-                        room,
-                        notebook_protocol::protocol::AgentRequest::Complete {
-                            code: code.clone(),
-                            cursor_pos,
-                        },
-                    )
-                    .await
-                    {
-                        Ok(notebook_protocol::protocol::AgentResponse::CompletionResult {
-                            items,
-                            cursor_start,
-                            cursor_end,
-                        }) => NotebookResponse::CompletionResult {
-                            items,
-                            cursor_start,
-                            cursor_end,
-                        },
-                        Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
-                            NotebookResponse::Error { error }
-                        }
-                        Ok(_) => NotebookResponse::Error {
-                            error: "Unexpected agent response".to_string(),
-                        },
-                        Err(e) => NotebookResponse::Error {
-                            error: format!("Agent error: {}", e),
-                        },
-                    };
-                }
-            }
-            // Local kernel path
-            let mut kernel_guard = room.kernel.lock().await;
-            if let Some(ref mut kernel) = *kernel_guard {
-                match kernel.complete(code, cursor_pos).await {
-                    Ok((items, cursor_start, cursor_end)) => NotebookResponse::CompletionResult {
+            // Agent path: forward via RPC
+            let has_agent = room.agent_request_tx.lock().await.is_some();
+            if has_agent {
+                match send_agent_request(
+                    room,
+                    notebook_protocol::protocol::AgentRequest::Complete {
+                        code: code.clone(),
+                        cursor_pos,
+                    },
+                )
+                .await
+                {
+                    Ok(notebook_protocol::protocol::AgentResponse::CompletionResult {
+                        items,
+                        cursor_start,
+                        cursor_end,
+                    }) => NotebookResponse::CompletionResult {
                         items,
                         cursor_start,
                         cursor_end,
                     },
+                    Ok(notebook_protocol::protocol::AgentResponse::Error { error }) => {
+                        NotebookResponse::Error { error }
+                    }
+                    Ok(_) => NotebookResponse::Error {
+                        error: "Unexpected agent response".to_string(),
+                    },
                     Err(e) => NotebookResponse::Error {
-                        error: format!("Failed to get completions: {}", e),
+                        error: format!("Agent error: {}", e),
                     },
                 }
             } else {
@@ -5007,235 +4505,13 @@ async fn handle_notebook_request(
 ///
 /// Only supported for UV inline dependencies when there are only additions (no removals).
 /// Conda and other env types fall back to restart.
-async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResponse {
-    use crate::inline_env::UvEnvironment;
-
-    // Get kernel info, venv_path, python_path, and launch_id while holding lock, then release
-    let (launched, venv_path, python_path, launch_id) = {
-        let kernel_guard = room.kernel.lock().await;
-
-        // Check if kernel is running
-        let kernel = match kernel_guard.as_ref() {
-            Some(k) if k.is_running() => k,
-            Some(_) | None => {
-                return NotebookResponse::SyncEnvironmentFailed {
-                    error: "No kernel running".to_string(),
-                    needs_restart: false,
-                };
-            }
-        };
-
-        let mut launched = kernel.launched_config().clone();
-
-        // For prewarmed UV envs, treat as empty baseline so hot-sync can
-        // install deps added after launch (instead of requiring a restart).
-        if launched.uv_deps.is_none() && kernel.env_source() == "uv:prewarmed" {
-            launched.uv_deps = Some(vec![]);
-        }
-
-        // Hot-sync requires a UV env with tracked deps
-        if launched.uv_deps.is_none() {
-            return NotebookResponse::SyncEnvironmentFailed {
-                error: "Hot-sync only supported for UV environments".to_string(),
-                needs_restart: true,
-            };
-        }
-
-        let venv_path = match &launched.venv_path {
-            Some(path) => path.clone(),
-            None => {
-                return NotebookResponse::SyncEnvironmentFailed {
-                    error: "No venv path stored - restart required".to_string(),
-                    needs_restart: true,
-                };
-            }
-        };
-
-        let python_path = match &launched.python_path {
-            Some(path) => path.clone(),
-            None => {
-                return NotebookResponse::SyncEnvironmentFailed {
-                    error: "No python path stored - restart required".to_string(),
-                    needs_restart: true,
-                };
-            }
-        };
-
-        // Capture launch_id to detect if kernel is swapped during async install
-        let launch_id = launched.launch_id.clone();
-
-        (launched, venv_path, python_path, launch_id)
-    };
-
-    // Get current metadata from the document
-    let notebook_path = room.notebook_path.read().await.clone();
-    let current_metadata = match resolve_metadata_snapshot(room, Some(&notebook_path)).await {
-        Some(m) => m,
-        None => {
-            return NotebookResponse::SyncEnvironmentFailed {
-                error: "Could not read notebook metadata".to_string(),
-                needs_restart: false,
-            };
-        }
-    };
-
-    // Compute diff
-    let diff = compute_env_sync_diff(&launched, &current_metadata);
-
-    match diff {
-        None => {
-            // Already in sync
-            NotebookResponse::SyncEnvironmentComplete {
-                synced_packages: vec![],
-            }
-        }
-        Some(d) => {
-            // Check if there are removals - require restart for those
-            if !d.removed.is_empty() {
-                return NotebookResponse::SyncEnvironmentFailed {
-                    error: format!(
-                        "Cannot remove packages from running env: {:?}. Restart required.",
-                        d.removed
-                    ),
-                    needs_restart: true,
-                };
-            }
-
-            // Check for channel changes (conda only, but check anyway)
-            if d.channels_changed {
-                return NotebookResponse::SyncEnvironmentFailed {
-                    error: "Channel changes require restart".to_string(),
-                    needs_restart: true,
-                };
-            }
-
-            // Nothing to add?
-            if d.added.is_empty() {
-                return NotebookResponse::SyncEnvironmentComplete {
-                    synced_packages: vec![],
-                };
-            }
-
-            // Send started notification
-            let packages_to_install = d.added.clone();
-            let _ = room
-                .kernel_broadcast_tx
-                .send(NotebookBroadcast::EnvProgress {
-                    env_type: "uv".to_string(),
-                    phase: kernel_env::progress::EnvProgressPhase::InstallingPackages {
-                        packages: packages_to_install.clone(),
-                    },
-                });
-
-            // Build UvEnvironment and call sync_dependencies
-            let env = UvEnvironment {
-                venv_path: venv_path.clone(),
-                python_path: python_path.clone(),
-            };
-
-            info!(
-                "[notebook-sync] Hot-syncing {} packages to {:?}",
-                packages_to_install.len(),
-                venv_path
-            );
-
-            match kernel_env::uv::sync_dependencies(&env, &packages_to_install).await {
-                Ok(()) => {
-                    info!(
-                        "[notebook-sync] Hot-sync complete: {:?}",
-                        packages_to_install
-                    );
-
-                    // Verify kernel wasn't swapped during async install (race protection).
-                    // Update launched deps to reflect what's actually installed:
-                    // the original baseline + what we just installed. We do NOT
-                    // re-read from the doc — the user may have edited deps during
-                    // the install, and those edits aren't installed yet. The next
-                    // check_and_broadcast_sync_state will detect the remaining drift.
-                    let launch_id_matched = {
-                        let mut kernel_guard = room.kernel.lock().await;
-                        if let Some(ref mut kernel) = *kernel_guard {
-                            let current_launch_id = kernel.launched_config().launch_id.clone();
-                            if current_launch_id != launch_id {
-                                warn!(
-                                    "[notebook-sync] Kernel was swapped during hot-sync, skipping update"
-                                );
-                                false
-                            } else {
-                                // Build the new baseline: what was launched + what we installed
-                                let mut installed_deps =
-                                    launched.uv_deps.clone().unwrap_or_default();
-                                for pkg in &packages_to_install {
-                                    if !installed_deps.contains(pkg) {
-                                        installed_deps.push(pkg.clone());
-                                    }
-                                }
-                                kernel.update_launched_uv_deps(installed_deps);
-                                true
-                            }
-                        } else {
-                            false
-                        }
-                    }; // drop kernel_guard before acquiring state_doc
-
-                    // Only mark in_sync when the kernel we installed into is still running.
-                    // If the kernel was swapped (launch_id mismatch), the new kernel may
-                    // still need a reinitialize — let check_and_broadcast_sync_state
-                    // recompute drift on the next doc change instead.
-                    if launch_id_matched {
-                        let mut sd = room.state_doc.write().await;
-                        if sd.set_env_sync(true, &[], &[], false, false) {
-                            let _ = room.state_changed_tx.send(());
-                        }
-                    }
-
-                    // Broadcast ready
-                    let _ = room
-                        .kernel_broadcast_tx
-                        .send(NotebookBroadcast::EnvProgress {
-                            env_type: "uv".to_string(),
-                            phase: kernel_env::progress::EnvProgressPhase::Ready {
-                                env_path: venv_path.to_string_lossy().to_string(),
-                                python_path: env.python_path.to_string_lossy().to_string(),
-                            },
-                        });
-
-                    // Only broadcast in_sync when the kernel we installed into
-                    // is still the active one. If it was swapped, the new kernel
-                    // may still need a reinitialize.
-                    if launch_id_matched {
-                        let _ = room
-                            .kernel_broadcast_tx
-                            .send(NotebookBroadcast::EnvSyncState {
-                                in_sync: true,
-                                diff: None,
-                            });
-                    }
-
-                    NotebookResponse::SyncEnvironmentComplete {
-                        synced_packages: packages_to_install,
-                    }
-                }
-                Err(e) => {
-                    error!("[notebook-sync] Hot-sync failed: {}", e);
-
-                    // Broadcast error
-                    let _ = room
-                        .kernel_broadcast_tx
-                        .send(NotebookBroadcast::EnvProgress {
-                            env_type: "uv".to_string(),
-                            phase: kernel_env::progress::EnvProgressPhase::Error {
-                                message: e.to_string(),
-                            },
-                        });
-
-                    NotebookResponse::SyncEnvironmentFailed {
-                        error: format!("Failed to install packages: {}", e),
-                        needs_restart: true,
-                    }
-                }
-            }
-        }
+async fn handle_sync_environment(_room: &NotebookRoom) -> NotebookResponse {
+    // In agent mode, environment sync is handled by the agent subprocess.
+    // The local kernel field is always None, so hot-sync is not applicable here.
+    NotebookResponse::SyncEnvironmentFailed {
+        error: "Environment sync is handled by the agent — use restart to apply changes"
+            .to_string(),
+        needs_restart: true,
     }
 }
 
