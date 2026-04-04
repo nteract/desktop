@@ -5,8 +5,7 @@
 use serde_json::Value;
 
 use crate::stats::{
-    compute_stats, detect_trend, extract_numbers, extract_numbers_positional, extract_title,
-    fmt_num,
+    compute_stats, detect_trend, extract_numbers_positional, extract_title, fmt_num,
 };
 
 /// Summarize a Plotly spec into an LLM-friendly text representation.
@@ -273,16 +272,15 @@ enum XAxis<'a> {
 /// Summarize a scatter/line trace.
 ///
 /// Handles both numeric and string x-axes (e.g., dates like "2024-01").
+/// Uses positional extraction for y-values to maintain alignment with x.
 fn summarize_scatter(trace: &Value) -> String {
     let y_arr = match trace.get("y").and_then(|v| v.as_array()) {
         Some(arr) => arr,
         None => return "no data".to_string(),
     };
 
-    let y_vals = extract_numbers(y_arr);
-    if y_vals.is_empty() {
-        return "no data".to_string();
-    }
+    // Use positional extraction to preserve alignment with x-axis
+    let y_pos = extract_numbers_positional(y_arr);
 
     let x_axis = match trace.get("x").and_then(|v| v.as_array()) {
         Some(arr) if arr.first().is_some_and(|v| v.is_string()) => XAxis::Strings(arr),
@@ -290,43 +288,45 @@ fn summarize_scatter(trace: &Value) -> String {
         None => XAxis::None,
     };
 
-    let n = match &x_axis {
-        XAxis::Strings(x) | XAxis::Numeric(x) => x.len().min(y_vals.len()),
-        XAxis::None => y_vals.len(),
+    // Build aligned (x_repr, y_val) pairs, skipping entries where y is null.
+    // For numeric x, also skip where x is null.
+    let pairs: Vec<(String, f64)> = match &x_axis {
+        XAxis::Strings(x) => x
+            .iter()
+            .zip(y_pos.iter())
+            .filter_map(|(xv, yv)| {
+                let label = xv.as_str().unwrap_or("?");
+                Some((label.to_string(), (*yv)?))
+            })
+            .collect(),
+        XAxis::Numeric(x) => {
+            let x_pos = extract_numbers_positional(x);
+            x_pos
+                .iter()
+                .zip(y_pos.iter())
+                .filter_map(|(xv, yv)| Some((fmt_num((*xv)?), (*yv)?)))
+                .collect()
+        }
+        XAxis::None => y_pos
+            .iter()
+            .enumerate()
+            .filter_map(|(i, yv)| Some((i.to_string(), (*yv)?)))
+            .collect(),
     };
 
-    if n == 0 {
+    if pairs.is_empty() {
         return "no data".to_string();
     }
 
+    let n = pairs.len();
+    let y_vals: Vec<f64> = pairs.iter().map(|(_, y)| *y).collect();
+
     if n <= 15 {
-        let pairs: Vec<String> = match &x_axis {
-            XAxis::Strings(x) => x
-                .iter()
-                .zip(y_vals.iter())
-                .take(n)
-                .map(|(x, y)| {
-                    let label = x.as_str().unwrap_or("?");
-                    format!("({}, {})", label, fmt_num(*y))
-                })
-                .collect(),
-            XAxis::Numeric(x) => {
-                let x_vals = extract_numbers(x);
-                x_vals
-                    .iter()
-                    .zip(y_vals.iter())
-                    .take(n)
-                    .map(|(x, y)| format!("({}, {})", fmt_num(*x), fmt_num(*y)))
-                    .collect()
-            }
-            XAxis::None => y_vals
-                .iter()
-                .take(n)
-                .enumerate()
-                .map(|(i, y)| format!("({}, {})", i, fmt_num(*y)))
-                .collect(),
-        };
-        format!("n={}: {}", n, pairs.join(", "))
+        let formatted: Vec<String> = pairs
+            .iter()
+            .map(|(x, y)| format!("({}, {})", x, fmt_num(*y)))
+            .collect();
+        format!("n={}: {}", n, formatted.join(", "))
     } else {
         let y_stats = compute_stats(&y_vals);
         let trend = detect_trend(&y_vals);
@@ -447,27 +447,35 @@ fn summarize_choropleth(trace: &Value) -> String {
         _ => return "no data".to_string(),
     };
 
-    let loc_names: Vec<&str> = locations.iter().filter_map(|v| v.as_str()).collect();
-    let z_vals = extract_numbers(z_arr);
-    let n = loc_names.len().min(z_vals.len());
+    // Use positional extraction to maintain alignment with location names
+    let z_pos = extract_numbers_positional(z_arr);
 
-    if n == 0 {
+    // Pair locations with z-values, skipping entries where either is missing
+    let pairs: Vec<(&str, f64)> = locations
+        .iter()
+        .zip(z_pos.iter())
+        .filter_map(|(loc, z)| Some((loc.as_str()?, (*z)?)))
+        .collect();
+
+    if pairs.is_empty() {
         return "no data".to_string();
     }
 
+    let n = pairs.len();
+    let z_vals: Vec<f64> = pairs.iter().map(|(_, v)| *v).collect();
     let stats = compute_stats(&z_vals);
 
     // Find top/bottom 3
-    let mut indexed: Vec<(usize, f64)> = z_vals[..n].iter().copied().enumerate().collect();
+    let mut indexed: Vec<(usize, f64)> = z_vals.iter().copied().enumerate().collect();
     indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     let top3: Vec<String> = indexed
         .iter()
         .take(3)
         .filter_map(|(i, v)| {
-            loc_names
+            pairs
                 .get(*i)
-                .map(|name| format!("{}={}", name, fmt_num(*v)))
+                .map(|(name, _)| format!("{}={}", name, fmt_num(*v)))
         })
         .collect();
 
@@ -476,9 +484,9 @@ fn summarize_choropleth(trace: &Value) -> String {
         .rev()
         .take(3)
         .filter_map(|(i, v)| {
-            loc_names
+            pairs
                 .get(*i)
-                .map(|name| format!("{}={}", name, fmt_num(*v)))
+                .map(|(name, _)| format!("{}={}", name, fmt_num(*v)))
         })
         .collect();
 
@@ -832,6 +840,74 @@ mod tests {
         assert!(
             !result.contains("Beta: 30"),
             "Beta should not get Gamma's value: {}",
+            result
+        );
+    }
+
+    // Regression: null y-values in scatter should not misalign with x
+    #[test]
+    fn test_scatter_with_null_y() {
+        let spec = json!({
+            "data": [{
+                "type": "scatter",
+                "x": [1, 2, 3],
+                "y": [10, null, 30]
+            }],
+            "layout": {"title": "Sparse Scatter"}
+        });
+        let result = summarize(&spec);
+        // x=2 should be skipped, not paired with y=30
+        assert!(result.contains("(1, 10)"), "should have (1,10): {}", result);
+        assert!(result.contains("(3, 30)"), "should have (3,30): {}", result);
+        assert!(
+            !result.contains("(2, 30)"),
+            "x=2 should not get y=30: {}",
+            result
+        );
+    }
+
+    // Regression: null x-values in scatter should skip those points
+    #[test]
+    fn test_scatter_with_null_x() {
+        let spec = json!({
+            "data": [{
+                "type": "scatter",
+                "x": [1, null, 3],
+                "y": [10, 20, 30]
+            }],
+            "layout": {"title": "Sparse X"}
+        });
+        let result = summarize(&spec);
+        assert!(result.contains("(1, 10)"), "should have (1,10): {}", result);
+        assert!(result.contains("(3, 30)"), "should have (3,30): {}", result);
+        assert!(
+            !result.contains("(3, 20)"),
+            "x=3 should not get y=20: {}",
+            result
+        );
+    }
+
+    // Regression: null z-values in choropleth should not misalign locations
+    #[test]
+    fn test_choropleth_with_nulls() {
+        let spec = json!({
+            "data": [{
+                "type": "choropleth",
+                "locations": ["USA", "CAN", "MEX"],
+                "z": [100, null, 60]
+            }],
+            "layout": {"title": "Sparse Map"}
+        });
+        let result = summarize(&spec);
+        assert!(
+            result.contains("USA=100"),
+            "should have USA=100: {}",
+            result
+        );
+        assert!(result.contains("MEX=60"), "should have MEX=60: {}", result);
+        assert!(
+            !result.contains("CAN=60"),
+            "CAN should not get MEX's value: {}",
             result
         );
     }

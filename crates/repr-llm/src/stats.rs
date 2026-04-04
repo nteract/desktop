@@ -12,6 +12,7 @@ pub struct NumericStats {
 }
 
 /// Extract f64 values from a JSON array, skipping nulls and non-numeric entries.
+#[allow(dead_code)]
 pub fn extract_numbers(arr: &[Value]) -> Vec<f64> {
     arr.iter()
         .filter_map(|v| v.as_f64())
