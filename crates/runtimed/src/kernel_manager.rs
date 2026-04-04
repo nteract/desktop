@@ -248,6 +248,7 @@ async fn update_output_by_display_id_with_manifests(
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     // Get all outputs from the RuntimeStateDoc (keyed by execution_id)
     let outputs = state_doc.get_all_outputs();
+    let mut found = false;
 
     for (exec_id, output_idx, output_str) in outputs {
         // Check if it's a manifest hash or raw JSON
@@ -275,7 +276,7 @@ async fn update_output_by_display_id_with_manifests(
 
                 // Replace the hash in the RuntimeStateDoc
                 state_doc.replace_output(&exec_id, output_idx, &new_hash)?;
-                return Ok(true);
+                found = true;
             }
         } else {
             // Backward compatibility: try parsing as raw JSON
@@ -298,12 +299,12 @@ async fn update_output_by_display_id_with_manifests(
                 // Write back
                 let updated_str = output_json.to_string();
                 state_doc.replace_output(&exec_id, output_idx, &updated_str)?;
-                return Ok(true);
+                found = true;
             }
         }
     }
 
-    Ok(false)
+    Ok(found)
 }
 
 /// A cell queued for execution.
