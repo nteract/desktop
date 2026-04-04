@@ -2,8 +2,10 @@
 //!
 //! Re-exports are adapted to use the local PyO3 `Output` and `DataValue` types.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
+use notebook_doc::runtime_state::CommDocEntry;
 use runtimed::output_resolver as shared;
 
 use crate::output::{DataValue, Output};
@@ -40,8 +42,9 @@ pub async fn resolve_cell_outputs(
     raw_outputs: &[String],
     blob_base_url: &Option<String>,
     blob_store_path: &Option<PathBuf>,
+    comms: Option<&HashMap<String, CommDocEntry>>,
 ) -> Vec<Output> {
-    shared::resolve_cell_outputs(raw_outputs, blob_base_url, blob_store_path)
+    shared::resolve_cell_outputs(raw_outputs, blob_base_url, blob_store_path, comms)
         .await
         .into_iter()
         .map(convert_output)

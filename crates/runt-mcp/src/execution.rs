@@ -127,13 +127,21 @@ pub async fn execute_and_wait(
 
     let execution_count = handle.get_cell_execution_count(cell_id);
 
+    let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
     let outputs = if !output_hashes.is_empty() {
-        output_resolver::resolve_cell_outputs(&output_hashes, blob_base_url, blob_store_path).await
+        output_resolver::resolve_cell_outputs(
+            &output_hashes,
+            blob_base_url,
+            blob_store_path,
+            comms.as_ref(),
+        )
+        .await
     } else if let Some(cell_snapshot) = handle.get_cell(cell_id) {
         output_resolver::resolve_cell_outputs(
             &cell_snapshot.outputs,
             blob_base_url,
             blob_store_path,
+            comms.as_ref(),
         )
         .await
     } else {

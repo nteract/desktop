@@ -56,9 +56,24 @@ class Notebook:
         """Current runtime state read from the local replica.
 
         Returns a ``RuntimeState`` with ``.kernel``, ``.queue``, ``.env``,
-        and ``.executions`` — useful for polling kernel status or queue depth.
+        ``.executions``, and ``.comms`` — useful for polling kernel status
+        or inspecting widget state.
         """
         return self._session.get_runtime_state_sync()
+
+    @property
+    def widgets(self) -> dict:
+        """Active ipywidgets keyed by comm_id.
+
+        Each value is a ``CommDocEntry`` with ``.model_name``, ``.state``
+        (dict), ``.model_module``, etc. Filters ``runtime.comms`` to entries
+        with ``target_name == "jupyter.widget"``.
+        """
+        return {
+            cid: entry
+            for cid, entry in self.runtime.comms.items()
+            if entry.target_name == "jupyter.widget"
+        }
 
     @property
     def peers(self) -> list[tuple[str, str]]:

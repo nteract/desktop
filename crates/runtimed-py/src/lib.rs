@@ -23,8 +23,8 @@ use error::RuntimedError;
 
 use output::{
     Cell, CompletionItem, CompletionResult, ExecutionEvent, ExecutionResult, HistoryEntry,
-    NotebookConnectionInfo, Output, PyEnvState, PyKernelState, PyQueueEntry, PyRuntimeState,
-    QueueState, SyncEnvironmentResult,
+    NotebookConnectionInfo, Output, PyCommDocEntry, PyEnvState, PyKernelState, PyQueueEntry,
+    PyRuntimeState, QueueState, SyncEnvironmentResult,
 };
 
 /// Launch the desktop notebook app, optionally opening a specific notebook.
@@ -132,6 +132,7 @@ fn _internals(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRuntimeState>()?;
     m.add_class::<PyKernelState>()?;
     m.add_class::<PyEnvState>()?;
+    m.add_class::<PyCommDocEntry>()?;
 
     // Error type
     m.add("RuntimedError", m.py().get_type::<RuntimedError>())?;

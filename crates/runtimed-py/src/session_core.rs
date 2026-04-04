@@ -868,7 +868,7 @@ pub(crate) async fn set_cell_type(
 
 /// Get a single cell by ID, with resolved outputs.
 pub(crate) async fn get_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) -> PyResult<Cell> {
-    let (snapshot, blob_base_url, blob_store_path) = {
+    let (snapshot, blob_base_url, blob_store_path, comms) = {
         let st = state.lock().await;
         let handle = st
             .handle
@@ -877,24 +877,29 @@ pub(crate) async fn get_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) ->
 
         let blob_base_url = st.blob_base_url.clone();
         let blob_store_path = st.blob_store_path.clone();
+        let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
 
         let snapshot = handle
             .get_cell(cell_id)
             .ok_or_else(|| to_py_err(format!("Cell not found: {}", cell_id)))?;
 
-        (snapshot, blob_base_url, blob_store_path)
+        (snapshot, blob_base_url, blob_store_path, comms)
     };
 
-    let outputs =
-        output_resolver::resolve_cell_outputs(&snapshot.outputs, &blob_base_url, &blob_store_path)
-            .await;
+    let outputs = output_resolver::resolve_cell_outputs(
+        &snapshot.outputs,
+        &blob_base_url,
+        &blob_store_path,
+        comms.as_ref(),
+    )
+    .await;
 
     Ok(Cell::from_snapshot_with_outputs(snapshot, outputs))
 }
 
 /// Get all cells with resolved outputs.
 pub(crate) async fn get_cells(state: &Arc<Mutex<SessionState>>) -> PyResult<Vec<Cell>> {
-    let (snapshots, blob_base_url, blob_store_path) = {
+    let (snapshots, blob_base_url, blob_store_path, comms) = {
         let st = state.lock().await;
         let handle = st
             .handle
@@ -903,9 +908,10 @@ pub(crate) async fn get_cells(state: &Arc<Mutex<SessionState>>) -> PyResult<Vec<
 
         let blob_base_url = st.blob_base_url.clone();
         let blob_store_path = st.blob_store_path.clone();
+        let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
         let snapshots = handle.get_cells();
 
-        (snapshots, blob_base_url, blob_store_path)
+        (snapshots, blob_base_url, blob_store_path, comms)
     };
 
     let mut cells = Vec::with_capacity(snapshots.len());
@@ -914,6 +920,7 @@ pub(crate) async fn get_cells(state: &Arc<Mutex<SessionState>>) -> PyResult<Vec<
             &snapshot.outputs,
             &blob_base_url,
             &blob_store_path,
+            comms.as_ref(),
         )
         .await;
         cells.push(Cell::from_snapshot_with_outputs(snapshot, outputs));
@@ -1390,6 +1397,7 @@ pub(crate) async fn collect_outputs(
     let mut snapshot = None;
     let mut blob_base_url_out = None;
     let mut blob_store_path_out = None;
+    let mut comms_out = None;
 
     for attempt in 0..5 {
         let st = state.lock().await;
@@ -1413,6 +1421,7 @@ pub(crate) async fn collect_outputs(
         if has_outputs || has_ec || attempt >= 4 {
             blob_base_url_out = blob_base_url.clone();
             blob_store_path_out = blob_store_path.clone();
+            comms_out = handle.get_runtime_state().ok().map(|rs| rs.comms);
             snapshot = Some(snap);
             break;
         }
@@ -1429,6 +1438,7 @@ pub(crate) async fn collect_outputs(
         &snapshot.outputs,
         &blob_base_url_out,
         &blob_store_path_out,
+        comms_out.as_ref(),
     )
     .await;
 

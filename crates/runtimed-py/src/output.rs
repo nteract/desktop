@@ -935,6 +935,51 @@ impl PyExecutionState {
     }
 }
 
+/// A single widget comm entry from the RuntimeStateDoc.
+///
+/// Widget state is stored as a native Automerge map. The `state` property
+/// lazily converts from JSON to a Python dict on access.
+#[pyclass(name = "CommDocEntry", skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyCommDocEntry {
+    /// Widget protocol target (e.g., "jupyter.widget").
+    #[pyo3(get)]
+    pub target_name: String,
+    /// Widget model module (e.g., "@jupyter-widgets/controls").
+    #[pyo3(get)]
+    pub model_module: String,
+    /// Widget model name (e.g., "IntSliderModel").
+    #[pyo3(get)]
+    pub model_name: String,
+    /// JSON-serialized widget state (lazy-converted to dict via `state` getter).
+    pub state_json: String,
+    /// Output manifest hashes (OutputModel widgets only).
+    #[pyo3(get)]
+    pub outputs: Vec<String>,
+    /// Insertion order for dependency-correct replay.
+    #[pyo3(get)]
+    pub seq: u64,
+}
+
+#[pymethods]
+impl PyCommDocEntry {
+    /// Widget state as a Python dict.
+    #[getter]
+    fn state<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let val: serde_json::Value = serde_json::from_str(&self.state_json)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        json_to_py(py, &val)
+    }
+
+    fn __repr__(&self) -> String {
+        let name = self
+            .model_name
+            .strip_suffix("Model")
+            .unwrap_or(&self.model_name);
+        format!("CommDocEntry({name}, target={:?})", self.target_name)
+    }
+}
+
 /// Full runtime state snapshot from the daemon's RuntimeStateDoc.
 #[pyclass(name = "RuntimeState", get_all, skip_from_py_object)]
 #[derive(Clone, Debug)]
@@ -949,13 +994,15 @@ pub struct PyRuntimeState {
     pub last_saved: Option<String>,
     /// Execution lifecycle entries keyed by execution_id.
     pub executions: std::collections::HashMap<String, PyExecutionState>,
+    /// Active comm channels keyed by comm_id.
+    pub comms: std::collections::HashMap<String, PyCommDocEntry>,
 }
 
 #[pymethods]
 impl PyRuntimeState {
     fn __repr__(&self) -> String {
         format!(
-            "RuntimeState(kernel={}, queue={}, env={})",
+            "RuntimeState(kernel={}, queue={}, env={}, comms={})",
             self.kernel.status,
             match &self.queue.executing {
                 Some(entry) => format!("executing={}", entry.cell_id),
@@ -966,6 +1013,7 @@ impl PyRuntimeState {
             } else {
                 "drifted"
             },
+            self.comms.len(),
         )
     }
 
@@ -1020,6 +1068,24 @@ impl From<notebook_doc::runtime_state::RuntimeState> for PyRuntimeState {
                             status: es.status,
                             execution_count: es.execution_count,
                             success: es.success,
+                        },
+                    )
+                })
+                .collect(),
+            comms: rs
+                .comms
+                .into_iter()
+                .map(|(cid, entry)| {
+                    (
+                        cid,
+                        PyCommDocEntry {
+                            target_name: entry.target_name,
+                            model_module: entry.model_module,
+                            model_name: entry.model_name,
+                            state_json: serde_json::to_string(&entry.state)
+                                .unwrap_or_else(|_| "{}".to_string()),
+                            outputs: entry.outputs,
+                            seq: entry.seq,
                         },
                     )
                 })

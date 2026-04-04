@@ -410,10 +410,12 @@ pub async fn build_execution_result(
         if snap.outputs.is_empty() {
             None
         } else {
+            let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
             let outputs = runtimed_client::output_resolver::resolve_cell_outputs(
                 &snap.outputs,
                 &server.blob_base_url,
                 &server.blob_store_path,
+                comms.as_ref(),
             )
             .await;
             let resolved = runtimed_client::resolved_output::ResolvedCell {

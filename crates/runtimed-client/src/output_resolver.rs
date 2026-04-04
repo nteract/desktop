@@ -7,9 +7,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use base64::Engine as _;
+use notebook_doc::runtime_state::CommDocEntry;
 use serde_json::Value;
 
 use crate::resolved_output::{DataValue, Output};
+
+/// MIME type for Jupyter widget view references.
+const WIDGET_VIEW_MIME: &str = "application/vnd.jupyter.widget-view+json";
 
 /// Classification of a MIME type for output data.
 ///
@@ -512,16 +516,24 @@ async fn resolve_text_ref(
 }
 
 /// Resolve all outputs for a cell snapshot.
+///
+/// When `comms` is provided, widget view outputs (`application/vnd.jupyter.widget-view+json`)
+/// are resolved to human-readable `text/llm+plain` summaries by looking up the referenced
+/// widget's current state in the comms map.
 pub async fn resolve_cell_outputs(
     raw_outputs: &[String],
     blob_base_url: &Option<String>,
     blob_store_path: &Option<PathBuf>,
+    comms: Option<&HashMap<String, CommDocEntry>>,
 ) -> Vec<Output> {
     let mut outputs = Vec::with_capacity(raw_outputs.len());
     for output_str in raw_outputs {
-        if let Some(output) =
+        if let Some(mut output) =
             resolve_output_string(output_str, blob_base_url, blob_store_path).await
         {
+            if let (Some(comms), Some(ref mut data)) = (comms, &mut output.data) {
+                synthesize_llm_plain_for_widgets(data, comms);
+            }
             outputs.push(output);
         }
     }
@@ -603,4 +615,226 @@ fn synthesize_llm_plain_for_heavy_types(output_data: &mut HashMap<String, DataVa
         "text/llm+plain".to_string(),
         DataValue::Text(parts.join("\n")),
     );
+}
+
+// ── Widget state synthesis ──────────────────────────────────────────
+
+/// Synthesize `text/llm+plain` from widget view references.
+///
+/// When an output contains `application/vnd.jupyter.widget-view+json`,
+/// extracts the `model_id` (which is a comm_id), looks up the widget's
+/// current state from the comms map, and produces a human-readable summary.
+fn synthesize_llm_plain_for_widgets(
+    output_data: &mut HashMap<String, DataValue>,
+    comms: &HashMap<String, CommDocEntry>,
+) {
+    if output_data.contains_key("text/llm+plain") {
+        return;
+    }
+    let model_id = match output_data.get(WIDGET_VIEW_MIME) {
+        Some(DataValue::Json(val)) => val.get("model_id").and_then(|v| v.as_str()),
+        _ => None,
+    };
+    let Some(model_id) = model_id else { return };
+    let Some(entry) = comms.get(model_id) else {
+        return;
+    };
+
+    let summary = format_widget_summary(model_id, entry, comms);
+    output_data.insert("text/llm+plain".to_string(), DataValue::Text(summary));
+}
+
+/// Format a human-readable one-line summary of a widget's current state.
+///
+/// Examples:
+///   `IntSlider 25fdf9…: 2 (0–10)`
+///   `HBox 789abc…: [IntSlider 25fdf9…: 2, Text def012…: "hello"]`
+///   `Output 345678…: 2 output(s)`
+pub fn format_widget_summary(
+    comm_id: &str,
+    entry: &CommDocEntry,
+    comms: &HashMap<String, CommDocEntry>,
+) -> String {
+    let name = entry
+        .model_name
+        .strip_suffix("Model")
+        .unwrap_or(&entry.model_name);
+    let short_id = &comm_id[..6.min(comm_id.len())];
+
+    match name {
+        // Numeric sliders — value + range
+        "IntSlider" | "FloatSlider" | "FloatLogSlider" => {
+            let val = state_display(&entry.state, "value");
+            let min = state_display(&entry.state, "min");
+            let max = state_display(&entry.state, "max");
+            format!("{name} {short_id}\u{2026}: {val} ({min}\u{2013}{max})")
+        }
+        "IntRangeSlider" | "FloatRangeSlider" => {
+            let val = state_display(&entry.state, "value");
+            format!("{name} {short_id}\u{2026}: {val}")
+        }
+
+        // Numeric inputs
+        "IntText" | "FloatText" | "BoundedIntText" | "BoundedFloatText" => {
+            let val = state_display(&entry.state, "value");
+            format!("{name} {short_id}\u{2026}: {val}")
+        }
+
+        // Text inputs
+        "Text" | "Password" | "Textarea" | "Combobox" => {
+            let val = entry
+                .state
+                .get("value")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let preview = truncate_str(val, 40);
+            format!("{name} {short_id}\u{2026}: {preview:?}")
+        }
+
+        // Boolean/toggle
+        "Checkbox" | "Valid" | "ToggleButton" => {
+            let val = state_display(&entry.state, "value");
+            format!("{name} {short_id}\u{2026}: {val}")
+        }
+
+        // Selection widgets — resolve selected label
+        "Dropdown" | "Select" | "RadioButtons" | "ToggleButtons" | "SelectionSlider" => {
+            let labels = entry
+                .state
+                .get("_options_labels")
+                .and_then(|v| v.as_array());
+            let idx = entry.state.get("index").and_then(|v| v.as_u64());
+            let selected = labels
+                .zip(idx)
+                .and_then(|(l, i)| l.get(i as usize))
+                .and_then(|v| v.as_str());
+            match selected {
+                Some(s) => format!("{name} {short_id}\u{2026}: {s:?}"),
+                None => format!("{name} {short_id}\u{2026}: (no selection)"),
+            }
+        }
+
+        // Multi-select
+        "SelectMultiple" => {
+            let idx = entry
+                .state
+                .get("index")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            format!("{name} {short_id}\u{2026}: {idx} selected")
+        }
+
+        // Progress
+        "IntProgress" | "FloatProgress" => {
+            let val = state_display(&entry.state, "value");
+            let max = state_display(&entry.state, "max");
+            format!("{name} {short_id}\u{2026}: {val}/{max}")
+        }
+
+        // Button — show label
+        "Button" => {
+            let desc = entry
+                .state
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            format!("Button {short_id}\u{2026}: {desc:?}")
+        }
+
+        // Output widget — show captured output count
+        "Output" => {
+            let n = entry.outputs.len();
+            format!("Output {short_id}\u{2026}: {n} output(s)")
+        }
+
+        // Container widgets — show children inline
+        "HBox" | "VBox" | "Box" | "GridBox" | "Tab" | "Accordion" | "Stack" => {
+            let children = resolve_children(&entry.state, comms);
+            format!("{name} {short_id}\u{2026}: [{children}]")
+        }
+
+        // Display widgets
+        "HTML" | "HTMLMath" | "Label" => {
+            let val = entry
+                .state
+                .get("value")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let preview = truncate_str(val, 60);
+            format!("{name} {short_id}\u{2026}: {preview:?}")
+        }
+        "Image" => format!("Image {short_id}\u{2026}"),
+
+        // Color/Date/Time pickers
+        "ColorPicker" | "DatePicker" | "TimePicker" => {
+            let val = state_display(&entry.state, "value");
+            format!("{name} {short_id}\u{2026}: {val}")
+        }
+
+        // Fallback — show description or value if available
+        _ => match entry.state.get("description").and_then(|v| v.as_str()) {
+            Some(d) if !d.is_empty() => format!("{name} {short_id}\u{2026}: {d:?}"),
+            _ => match entry.state.get("value") {
+                Some(v) => {
+                    format!("{name} {short_id}\u{2026}: {}", format_json_compact(v))
+                }
+                None => format!("{name} {short_id}\u{2026}"),
+            },
+        },
+    }
+}
+
+/// Resolve `IPY_MODEL_xxx` children references to short summaries (one level deep).
+fn resolve_children(state: &Value, comms: &HashMap<String, CommDocEntry>) -> String {
+    let Some(children) = state.get("children").and_then(|v| v.as_array()) else {
+        return String::new();
+    };
+    children
+        .iter()
+        .filter_map(|child| {
+            let ref_str = child.as_str()?;
+            let cid = ref_str.strip_prefix("IPY_MODEL_")?;
+            let entry = comms.get(cid)?;
+            let name = entry
+                .model_name
+                .strip_suffix("Model")
+                .unwrap_or(&entry.model_name);
+            let short_id = &cid[..6.min(cid.len())];
+            let val = entry
+                .state
+                .get("value")
+                .map(|v| format!(": {}", format_json_compact(v)))
+                .unwrap_or_default();
+            Some(format!("{name} {short_id}\u{2026}{val}"))
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Get a display string for a state key.
+fn state_display(state: &Value, key: &str) -> String {
+    state
+        .get(key)
+        .map(format_json_compact)
+        .unwrap_or_else(|| "?".to_string())
+}
+
+/// Format a JSON value compactly for display.
+fn format_json_compact(v: &Value) -> String {
+    match v {
+        Value::String(s) => format!("{s:?}"),
+        Value::Null => "null".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Truncate a string to `max` characters, appending an ellipsis if truncated.
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max).collect();
+        format!("{truncated}\u{2026}")
+    }
 }

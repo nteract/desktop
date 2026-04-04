@@ -73,11 +73,13 @@ pub async fn get_cell(
         }
     }
 
-    // Resolve outputs
+    // Resolve outputs (with widget state synthesis)
+    let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
     let outputs = output_resolver::resolve_cell_outputs(
         &cell.outputs,
         &server.blob_base_url,
         &server.blob_store_path,
+        comms.as_ref(),
     )
     .await;
 
@@ -146,8 +148,9 @@ pub async fn get_all_cells(
     };
     let slice = &cells[start.min(cells.len())..end.min(cells.len())];
 
-    // Build cell status map from RuntimeState
+    // Build cell status map and comms from RuntimeState
     let cell_status_map = build_cell_status_map(&handle);
+    let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
 
     match format {
         "json" => {
@@ -162,6 +165,7 @@ pub async fn get_all_cells(
                     &cell.outputs,
                     &server.blob_base_url,
                     &server.blob_store_path,
+                    comms.as_ref(),
                 )
                 .await;
                 let output_texts: Vec<String> = resolved
@@ -197,6 +201,7 @@ pub async fn get_all_cells(
                     &cell.outputs,
                     &server.blob_base_url,
                     &server.blob_store_path,
+                    comms.as_ref(),
                 )
                 .await;
                 let header = formatting::format_cell_header(
@@ -237,6 +242,7 @@ pub async fn get_all_cells(
                         &cell.outputs,
                         &server.blob_base_url,
                         &server.blob_store_path,
+                        comms.as_ref(),
                     )
                     .await;
                     let output_text = formatting::format_outputs_text(&outputs);
