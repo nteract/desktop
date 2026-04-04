@@ -104,8 +104,6 @@ export function useSyncedSettings() {
   >([]);
   // Keep-alive duration in seconds (5s to 7 days)
   const [keepAliveSecs, setKeepAliveSecsState] = useState<number>(30);
-  // Feature flag: agent process isolation
-  const [agentMode, setAgentModeState] = useState<boolean>(false);
 
   // Load initial settings from daemon
   useEffect(() => {
@@ -132,9 +130,6 @@ export function useSyncedSettings() {
           setKeepAliveSecsState(Number(settings.keep_alive_secs));
         } else if (typeof settings.keep_alive_secs === "number") {
           setKeepAliveSecsState(settings.keep_alive_secs);
-        }
-        if (typeof settings.agent_mode === "boolean") {
-          setAgentModeState(settings.agent_mode);
         }
       })
       .catch(() => {
@@ -172,9 +167,6 @@ export function useSyncedSettings() {
         setKeepAliveSecsState(Number(keep_alive_secs));
       } else if (typeof keep_alive_secs === "number") {
         setKeepAliveSecsState(keep_alive_secs);
-      }
-      if (typeof event.payload.agent_mode === "boolean") {
-        setAgentModeState(event.payload.agent_mode);
       }
     });
     return () => {
@@ -238,16 +230,6 @@ export function useSyncedSettings() {
     );
   }, []);
 
-  const setAgentMode = useCallback((enabled: boolean) => {
-    setAgentModeState(enabled);
-    invoke("set_synced_setting", {
-      key: "agent_mode",
-      value: enabled,
-    }).catch((e) =>
-      console.warn("[settings] Failed to persist agent_mode:", e),
-    );
-  }, []);
-
   return {
     theme,
     setTheme,
@@ -261,8 +243,6 @@ export function useSyncedSettings() {
     setDefaultCondaPackages,
     keepAliveSecs,
     setKeepAliveSecs,
-    agentMode,
-    setAgentMode,
   };
 }
 

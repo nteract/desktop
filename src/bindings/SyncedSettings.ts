@@ -39,10 +39,4 @@ keep_alive_secs: bigint,
  * Whether the user has completed the first-launch onboarding flow.
  * When false, the app shows the onboarding screen on startup.
  */
-onboarding_completed: boolean, 
-/**
- * Run kernels in agent subprocesses (process isolation).
- * When true, each notebook's kernel runs in a separate `runtimed agent`
- * process. When false, kernels run in-process (default).
- */
-agent_mode: boolean, };
+onboarding_completed: boolean, };

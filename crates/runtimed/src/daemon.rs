@@ -347,9 +347,6 @@ pub struct Daemon {
     uv_pool: Mutex<Pool>,
     conda_pool: Mutex<Pool>,
     shutdown: Arc<Mutex<bool>>,
-    /// Runtime feature flag: kernel execution via agent subprocess.
-    /// Toggled via `runt agent enable` / `runt agent disable`.
-    pub agent_mode: Arc<std::sync::atomic::AtomicBool>,
     /// Notifier to wake up accept loops on shutdown.
     shutdown_notify: Arc<Notify>,
     /// Singleton lock - kept alive while daemon is running.
@@ -407,9 +404,6 @@ impl Daemon {
 
         let blob_store = Arc::new(BlobStore::new(config.blob_store_dir.clone()));
 
-        // Initialize agent mode from persisted settings
-        let agent_mode = settings.get_all().agent_mode;
-
         Ok(Arc::new(Self {
             uv_pool: Mutex::new(Pool::new(config.uv_pool_size, config.max_age_secs)),
             conda_pool: Mutex::new(Pool::new(config.conda_pool_size, config.max_age_secs)),
@@ -424,7 +418,6 @@ impl Daemon {
             blob_store,
             blob_port: Mutex::new(None),
             notebook_rooms: Arc::new(Mutex::new(HashMap::new())),
-            agent_mode: Arc::new(std::sync::atomic::AtomicBool::new(agent_mode)),
         }))
     }
 
@@ -1913,19 +1906,9 @@ impl Daemon {
                     self.collect_active_env_paths().await.into_iter().collect();
                 Response::ActiveEnvPaths { paths }
             }
-            Request::SetAgentMode { enabled } => {
-                self.agent_mode
-                    .store(enabled, std::sync::atomic::Ordering::Relaxed);
-                // Persist to settings doc so it survives daemon restarts
-                {
-                    let mut settings = self.settings.write().await;
-                    settings.put_bool("agent_mode", enabled);
-                    let _ = settings.save_to_file(&crate::default_settings_doc_path());
-                }
-                info!(
-                    "[runtimed] Agent mode {}",
-                    if enabled { "ENABLED" } else { "DISABLED" }
-                );
+            Request::SetAgentMode { .. } => {
+                // Agent mode is now unconditional — this request is a no-op.
+                // Kept for wire compatibility; will be removed in a future version.
                 Response::Ok
             }
         }
