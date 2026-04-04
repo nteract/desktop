@@ -47,6 +47,27 @@ The daemon provides a single coordinating entity that prewarms environments in t
               └─────────────────────────────────┘
 ```
 
+### Kernel Execution via Agent Subprocess
+
+Every kernel runs in a separate `runtimed agent` subprocess. The daemon coordinator resolves environments and spawns the agent; the agent connects back to the daemon socket as a regular Automerge peer.
+
+```
+Coordinator                    RuntimeStateDoc              Agent Peer
+───────────                    ───────────────              ──────────
+ExecuteCell request arrives
+  ↓
+writes execution entry     →   executions/{eid}:          → watches queue
+  (source, seq, status=queued)   status: "queued"            sorts by seq
+                                 source: "x = 42"            executes
+                                 seq: 7
+                                                           ← writes outputs
+                               executions/{eid}:
+                                 status: "done"
+                                 outputs: [hash1, hash2]
+```
+
+Execution is CRDT-driven — the coordinator writes execution entries (with source + sequence number) to RuntimeStateDoc. The agent discovers new entries via Automerge sync and processes them in order. RPC (`AgentRequest`/`AgentResponse`) is only used for lifecycle operations: `LaunchKernel`, `InterruptExecution`, `ShutdownKernel`, `Complete`, `GetHistory`, `SendComm`.
+
 **Key components:**
 
 | Component | Purpose | Location |
@@ -65,7 +86,7 @@ The daemon provides a single coordinating entity that prewarms environments in t
 
 ### Default: Let the notebook start it
 
-The notebook app automatically tries to connect to or start the daemon on launch. If it's not running, the app falls back to in-process prewarming. You don't need to do anything special.
+The notebook app automatically connects to or starts the daemon on launch. The daemon is required — all kernels run as agent subprocesses connected to the daemon via Unix socket.
 
 The notebook app calls `ensure_daemon_via_sidecar()` (a private function in `crates/notebook/src/lib.rs`) which takes a `tauri::AppHandle` and a progress callback to start and connect to the daemon.
 
@@ -208,6 +229,8 @@ crates/runtimed/
 │   ├── main.rs                  # Daemon CLI entry point
 │   ├── daemon.rs                # Daemon state, pool management, connection routing
 │   ├── notebook_sync_server.rs  # NotebookRoom, room lifecycle, autosave, re-keying, sync loop
+│   ├── agent.rs                 # Agent subprocess: Unix socket peer, CRDT queue watching, kernel ownership
+│   ├── agent_handle.rs          # Coordinator-side agent process management (spawn + monitor)
 │   ├── kernel_manager.rs        # RoomKernel: kernel lifecycle, execution queue, IOPub output routing
 │   ├── kernel_pids.rs           # Kernel PID tracking and orphan reaping
 │   ├── comm_state.rs            # Widget comm state + Output widget capture routing
