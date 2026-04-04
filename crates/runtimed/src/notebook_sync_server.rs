@@ -4209,33 +4209,9 @@ async fn handle_notebook_request(
         }
 
         #[allow(deprecated)]
-        NotebookRequest::QueueCell { cell_id, code } => {
-            let mut kernel_guard = room.kernel.lock().await;
-            if let Some(ref mut kernel) = *kernel_guard {
-                match kernel.queue_cell(cell_id.clone(), code).await {
-                    Ok(execution_id) => {
-                        // Stamp execution_id at queue time so clients see
-                        // immediate feedback via CRDT sync. Outputs are in
-                        // RuntimeStateDoc keyed by execution_id — the new eid
-                        // starts with an empty output list, so no clear needed.
-                        {
-                            let mut doc = room.doc.write().await;
-                            let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
-                            let _ = room.changed_tx.send(());
-                        }
-                        NotebookResponse::CellQueued {
-                            cell_id,
-                            execution_id,
-                        }
-                    }
-                    Err(e) => NotebookResponse::Error {
-                        error: format!("Failed to queue cell: {}", e),
-                    },
-                }
-            } else {
-                NotebookResponse::NoKernel {}
-            }
-        }
+        NotebookRequest::QueueCell { .. } => NotebookResponse::Error {
+            error: "QueueCell is deprecated — use ExecuteCell instead".to_string(),
+        },
 
         NotebookRequest::ExecuteCell { cell_id } => {
             // Read cell source FIRST (before kernel lock) to avoid holding
