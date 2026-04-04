@@ -1,5 +1,4 @@
 {
-  "scenario": "display_data_output",
   "description": "Cell produces display_data with manifest hash (text + image)",
   "expected": {
     "cell_id": "cell-1",
@@ -8,5 +7,6 @@
     "output_hashes": [
       "8d03813914bf97c7dff08275ce70a259340c412859fb8b1ba382c15dd5639961"
     ]
-  }
+  },
+  "scenario": "display_data_output"
 }

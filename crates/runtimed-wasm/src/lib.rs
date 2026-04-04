@@ -876,6 +876,53 @@ impl NotebookHandle {
             .map_err(|e| JsError::new(&format!("set_conda_python failed: {}", e)))
     }
 
+    // ── Pixi dependency operations ──────────────────────────────────
+
+    /// Add a Pixi conda dependency (matchspec). Deduplicates by package name.
+    pub fn add_pixi_dependency(&mut self, pkg: &str) -> Result<(), JsError> {
+        self.invalidate_metadata_cache();
+        self.doc
+            .add_pixi_dependency(pkg)
+            .map_err(|e| JsError::new(&format!("add_pixi_dependency failed: {}", e)))
+    }
+
+    /// Remove a Pixi conda dependency by package name.
+    /// Returns true if a dependency was removed.
+    pub fn remove_pixi_dependency(&mut self, pkg: &str) -> Result<bool, JsError> {
+        self.invalidate_metadata_cache();
+        self.doc
+            .remove_pixi_dependency(pkg)
+            .map_err(|e| JsError::new(&format!("remove_pixi_dependency failed: {}", e)))
+    }
+
+    /// Clear the Pixi section entirely.
+    pub fn clear_pixi_section(&mut self) -> Result<(), JsError> {
+        self.invalidate_metadata_cache();
+        self.doc
+            .clear_pixi_section()
+            .map_err(|e| JsError::new(&format!("clear_pixi_section failed: {}", e)))
+    }
+
+    /// Set Pixi channels.
+    /// Accepts a JSON array string (e.g. `'["conda-forge"]'`).
+    pub fn set_pixi_channels(&mut self, channels_json: &str) -> Result<(), JsError> {
+        self.invalidate_metadata_cache();
+        let channels: Vec<String> = serde_json::from_str(channels_json)
+            .map_err(|e| JsError::new(&format!("invalid channels JSON: {}", e)))?;
+        self.doc
+            .set_pixi_channels(channels)
+            .map_err(|e| JsError::new(&format!("set_pixi_channels failed: {}", e)))
+    }
+
+    /// Set Pixi python version.
+    /// Pass undefined/null to clear the constraint.
+    pub fn set_pixi_python(&mut self, python: Option<String>) -> Result<(), JsError> {
+        self.invalidate_metadata_cache();
+        self.doc
+            .set_pixi_python(python)
+            .map_err(|e| JsError::new(&format!("set_pixi_python failed: {}", e)))
+    }
+
     /// Flush any pending local changes as a sync message to send to the daemon.
     ///
     /// Call this after local CRDT mutations (cell edits, metadata changes) to

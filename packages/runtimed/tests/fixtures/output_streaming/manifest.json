@@ -1,15 +1,15 @@
 {
-  "scenario": "output_streaming",
   "description": "Daemon creates cell, executes, streams 3 stdout lines via manifest hashes",
   "expected": {
     "cell_id": "cell-1",
-    "source": "for i in range(3):\n    print(i)",
     "execution_count": "1",
     "output_count": 3,
     "output_hashes": [
       "78a0649fbafe9fef0482b0cf5d8cbb8410fa724137d2476e8e2e599337f4b279",
       "239f17f40119a86c3f6222684255871e07c2b721b8b392204ab53f6b81281a0d",
       "79b9c3e7cad63d4a0e02bd5c96043dc14aaa3e233402eee1d4a9be3aae0e4acf"
-    ]
-  }
+    ],
+    "source": "for i in range(3):\n    print(i)"
+  },
+  "scenario": "output_streaming"
 }

@@ -160,6 +160,32 @@ export function useCondaDeps(): {
 }
 
 /**
+ * React hook: read pixi inline deps from the Automerge doc.
+ * Returns null when no pixi section is present.
+ */
+export function usePixiDeps(): {
+  dependencies: string[];
+  pypiDependencies: string[];
+  channels: string[];
+  python: string | null;
+} | null {
+  const snapshot = useNotebookMetadata();
+  const deps = snapshot?.runt?.pixi?.dependencies;
+  const pypiDeps = snapshot?.runt?.pixi?.pypi_dependencies;
+  const channels = snapshot?.runt?.pixi?.channels;
+  const python = snapshot?.runt?.pixi?.python ?? null;
+  return useMemo(() => {
+    if (!deps || !channels) return null;
+    return {
+      dependencies: deps,
+      pypiDependencies: pypiDeps ?? [],
+      channels,
+      python,
+    };
+  }, [deps, pypiDeps, channels, python]);
+}
+
+/**
  * React hook: read the Deno flexible_npm_imports setting.
  */
 export function useDenoFlexibleNpmImports(): boolean | null {
@@ -197,6 +223,13 @@ export interface CondaInlineMetadata {
   python?: string;
 }
 
+export interface PixiInlineMetadata {
+  dependencies: string[];
+  pypi_dependencies: string[];
+  channels: string[];
+  python?: string;
+}
+
 export interface DenoMetadata {
   permissions: string[];
   import_map?: string;
@@ -209,6 +242,7 @@ export interface RuntMetadata {
   env_id?: string;
   uv?: UvInlineMetadata;
   conda?: CondaInlineMetadata;
+  pixi?: PixiInlineMetadata;
   deno?: DenoMetadata;
   trust_signature?: string;
   trust_timestamp?: string;
@@ -387,6 +421,61 @@ export async function setCondaChannels(channels: string[]): Promise<void> {
 export async function setCondaPython(python: string | null): Promise<void> {
   if (!_handle) return;
   _handle.set_conda_python(python ?? undefined);
+  await syncToRelay();
+  notifyMetadataChanged();
+}
+
+// ---------------------------------------------------------------------------
+// Pixi dependency write helpers.
+// ---------------------------------------------------------------------------
+
+/**
+ * Add a Pixi conda dependency, deduplicating by package name.
+ */
+export async function addPixiDependency(pkg: string): Promise<void> {
+  if (!_handle) return;
+  _handle.add_pixi_dependency(pkg);
+  await syncToRelay();
+  notifyMetadataChanged();
+}
+
+/**
+ * Remove a Pixi conda dependency by package name.
+ */
+export async function removePixiDependency(pkg: string): Promise<void> {
+  if (!_handle) return;
+  const removed = _handle.remove_pixi_dependency(pkg);
+  if (!removed) return;
+  await syncToRelay();
+  notifyMetadataChanged();
+}
+
+/**
+ * Clear the Pixi dependency section entirely.
+ */
+export async function clearPixiSection(): Promise<void> {
+  if (!_handle) return;
+  _handle.clear_pixi_section();
+  await syncToRelay();
+  notifyMetadataChanged();
+}
+
+/**
+ * Set Pixi channels.
+ */
+export async function setPixiChannels(channels: string[]): Promise<void> {
+  if (!_handle) return;
+  _handle.set_pixi_channels(JSON.stringify(channels));
+  await syncToRelay();
+  notifyMetadataChanged();
+}
+
+/**
+ * Set Pixi python version.
+ */
+export async function setPixiPython(python: string | null): Promise<void> {
+  if (!_handle) return;
+  _handle.set_pixi_python(python ?? undefined);
   await syncToRelay();
   notifyMetadataChanged();
 }

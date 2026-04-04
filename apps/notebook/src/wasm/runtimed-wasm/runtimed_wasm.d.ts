@@ -66,6 +66,10 @@ export class NotebookHandle {
      */
     add_conda_dependency(pkg: string): void;
     /**
+     * Add a Pixi conda dependency (matchspec). Deduplicates by package name.
+     */
+    add_pixi_dependency(pkg: string): void;
+    /**
      * Add a UV dependency, deduplicating by package name (case-insensitive).
      * Initializes the UV section if absent, preserving existing fields.
      */
@@ -111,6 +115,10 @@ export class NotebookHandle {
      * Clear the Conda section entirely.
      */
     clear_conda_section(): void;
+    /**
+     * Clear the Pixi section entirely.
+     */
+    clear_pixi_section(): void;
     /**
      * Clear the UV section entirely (deps + requires-python).
      */
@@ -361,6 +369,11 @@ export class NotebookHandle {
      */
     remove_conda_dependency(pkg: string): boolean;
     /**
+     * Remove a Pixi conda dependency by package name.
+     * Returns true if a dependency was removed.
+     */
+    remove_pixi_dependency(pkg: string): boolean;
+    /**
      * Remove a UV dependency by package name (case-insensitive).
      * Returns true if a dependency was removed.
      */
@@ -463,6 +476,16 @@ export class NotebookHandle {
      * and scalars become native scalars.
      */
     set_metadata_value(key: string, value: any): void;
+    /**
+     * Set Pixi channels.
+     * Accepts a JSON array string (e.g. `'["conda-forge"]'`).
+     */
+    set_pixi_channels(channels_json: string): void;
+    /**
+     * Set Pixi python version.
+     * Pass undefined/null to clear the constraint.
+     */
+    set_pixi_python(python?: string | null): void;
     /**
      * Set UV prerelease strategy, preserving deps and requires-python.
      * Pass "allow", "disallow", "if-necessary", "explicit", "if-necessary-or-explicit", or null to clear.
@@ -594,6 +617,11 @@ export interface InitOutput {
     readonly notebookhandle_clear_conda_section: (a: number, b: number) => void;
     readonly notebookhandle_set_conda_channels: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_set_conda_python: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_add_pixi_dependency: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_remove_pixi_dependency: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_clear_pixi_section: (a: number, b: number) => void;
+    readonly notebookhandle_set_pixi_channels: (a: number, b: number, c: number, d: number) => void;
+    readonly notebookhandle_set_pixi_python: (a: number, b: number, c: number, d: number) => void;
     readonly notebookhandle_flush_local_changes: (a: number, b: number) => void;
     readonly notebookhandle_cancel_last_flush: (a: number) => void;
     readonly notebookhandle_receive_sync_message: (a: number, b: number, c: number, d: number) => void;

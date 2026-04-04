@@ -1,5 +1,4 @@
 {
-  "scenario": "multi_cell_execution",
   "description": "Two code cells + markdown, sequential execution",
   "expected": {
     "cell_count": 3,
@@ -23,5 +22,6 @@
         "source": "# Results"
       }
     ]
-  }
+  },
+  "scenario": "multi_cell_execution"
 }

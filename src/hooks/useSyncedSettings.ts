@@ -52,8 +52,10 @@ export function isKnownRuntime(value: string): value is "python" | "deno" {
 }
 
 /** Known env type values for UI buttons; unknown values are preserved. */
-export function isKnownPythonEnv(value: string): value is "uv" | "conda" {
-  return value === "uv" || value === "conda";
+export function isKnownPythonEnv(
+  value: string,
+): value is "uv" | "conda" | "pixi" {
+  return value === "uv" || value === "conda" || value === "pixi";
 }
 
 /**

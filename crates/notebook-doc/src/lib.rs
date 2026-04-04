@@ -515,6 +515,51 @@ impl NotebookDoc {
         snapshot.set_conda_python(python);
         self.set_metadata_snapshot(&snapshot)
     }
+
+    // ── Pixi dependency operations ──────────────────────────────────
+
+    /// Add a Pixi conda dependency (matchspec). Deduplicates by package name.
+    pub fn add_pixi_dependency(&mut self, pkg: &str) -> Result<(), AutomergeError> {
+        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        snapshot.add_pixi_dependency(pkg);
+        self.set_metadata_snapshot(&snapshot)
+    }
+
+    /// Remove a Pixi conda dependency by package name.
+    pub fn remove_pixi_dependency(&mut self, pkg: &str) -> Result<bool, AutomergeError> {
+        let Some(mut snapshot) = self.get_metadata_snapshot() else {
+            return Ok(false);
+        };
+        let removed = snapshot.remove_pixi_dependency(pkg);
+        if removed {
+            self.set_metadata_snapshot(&snapshot)?;
+        }
+        Ok(removed)
+    }
+
+    /// Clear the Pixi section entirely.
+    pub fn clear_pixi_section(&mut self) -> Result<(), AutomergeError> {
+        if let Some(mut snapshot) = self.get_metadata_snapshot() {
+            snapshot.clear_pixi_section();
+            self.set_metadata_snapshot(&snapshot)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Set Pixi channels, preserving deps.
+    pub fn set_pixi_channels(&mut self, channels: Vec<String>) -> Result<(), AutomergeError> {
+        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        snapshot.set_pixi_channels(channels);
+        self.set_metadata_snapshot(&snapshot)
+    }
+
+    /// Set Pixi python version.
+    pub fn set_pixi_python(&mut self, python: Option<String>) -> Result<(), AutomergeError> {
+        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        snapshot.set_pixi_python(python);
+        self.set_metadata_snapshot(&snapshot)
+    }
 }
 
 impl NotebookDoc {
