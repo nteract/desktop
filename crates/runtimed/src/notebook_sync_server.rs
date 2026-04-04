@@ -137,6 +137,13 @@ fn check_inline_deps(snapshot: &NotebookMetadataSnapshot) -> Option<String> {
         }
     }
 
+    // Check pixi dependencies (conda + pypi)
+    if let Some(ref pixi) = snapshot.runt.pixi {
+        if !pixi.dependencies.is_empty() {
+            return Some("pixi:inline".to_string());
+        }
+    }
+
     // Check conda dependencies
     if let Some(ref conda) = snapshot.runt.conda {
         if !conda.dependencies.is_empty() {
@@ -228,6 +235,18 @@ fn build_launched_config(
         "conda:prewarmed" => {
             // Store paths so hot-sync can install deps into the prewarmed conda env
             // conda_deps stays None to indicate no baseline deps were installed
+            config.venv_path = venv_path;
+            config.python_path = python_path;
+            if let Some(pkgs) = prewarmed_packages {
+                config.prewarmed_packages = pkgs.to_vec();
+            }
+        }
+        "pixi:inline" => {
+            // Store pixi deps for drift detection
+            config.pixi_deps = inline_deps.map(|d| d.to_vec());
+        }
+        "pixi:prewarmed" => {
+            // Pixi prewarmed uses pooled env — store paths
             config.venv_path = venv_path;
             config.python_path = python_path;
             if let Some(pkgs) = prewarmed_packages {
@@ -2787,7 +2806,22 @@ async fn acquire_pool_env_for_source(
     room: &NotebookRoom,
 ) -> Option<Option<crate::PooledEnv>> {
     // Route to appropriate pool based on source prefix
-    if env_source.starts_with("conda:") {
+    if env_source == "pixi:prewarmed" {
+        match daemon.take_pixi_env().await {
+            Some(env) => {
+                info!(
+                    "[notebook-sync] Acquired Pixi env from pool: {:?}",
+                    env.python_path
+                );
+                return Some(Some(env));
+            }
+            None => {
+                // Pixi pool empty — fall through to conda pool as fallback
+                info!("[notebook-sync] Pixi pool empty, falling back to conda pool");
+            }
+        }
+    }
+    if env_source.starts_with("conda:") || env_source == "pixi:prewarmed" {
         match daemon.take_conda_env().await {
             Some(env) => {
                 info!(
@@ -3008,6 +3042,7 @@ async fn auto_launch_kernel(
                 } else {
                     let prewarmed = match default_python_env {
                         crate::settings_doc::PythonEnvType::Conda => "conda:prewarmed",
+                        crate::settings_doc::PythonEnvType::Pixi => "pixi:prewarmed",
                         _ => "uv:prewarmed",
                     };
                     prewarmed.to_string()
@@ -3021,6 +3056,7 @@ async fn auto_launch_kernel(
             } else {
                 let prewarmed = match default_python_env {
                     crate::settings_doc::PythonEnvType::Conda => "conda:prewarmed",
+                    crate::settings_doc::PythonEnvType::Pixi => "pixi:prewarmed",
                     _ => "uv:prewarmed",
                 };
                 info!(
@@ -3036,6 +3072,7 @@ async fn auto_launch_kernel(
                 || env_source == "uv:pep723"
                 || env_source == "conda:inline"
                 || env_source == "pixi:toml"
+                || env_source == "pixi:inline"
             {
                 info!(
                     "[notebook-sync] Auto-launch: {} prepares its own env, no pool env needed",
@@ -3080,6 +3117,7 @@ async fn auto_launch_kernel(
                 } else {
                     let prewarmed = match default_python_env {
                         crate::settings_doc::PythonEnvType::Conda => "conda:prewarmed",
+                        crate::settings_doc::PythonEnvType::Pixi => "pixi:prewarmed",
                         _ => "uv:prewarmed",
                     };
                     info!(
@@ -3291,6 +3329,22 @@ async fn auto_launch_kernel(
                     return;
                 }
             }
+        } else {
+            (pooled_env, None)
+        }
+    } else if env_source == "pixi:inline" {
+        // pixi exec handles its own env caching — just extract deps for the -w flags
+        let deps = metadata_snapshot
+            .as_ref()
+            .and_then(|s| s.runt.pixi.as_ref())
+            .map(|p| p.dependencies.clone())
+            .unwrap_or_default();
+        if !deps.is_empty() {
+            info!(
+                "[notebook-sync] pixi:inline deps for pixi exec: {:?}",
+                deps
+            );
+            (None, Some(deps))
         } else {
             (pooled_env, None)
         }
@@ -3946,7 +4000,7 @@ async fn handle_notebook_request(
                             };
                         }
                     },
-                    "uv:pyproject" | "uv:inline" | "uv:pep723" | "conda:inline" | "pixi:toml" => {
+                    "uv:pyproject" | "uv:inline" | "uv:pep723" | "conda:inline" | "pixi:toml" | "pixi:inline" => {
                         // These sources prepare their own environments, no pooled env needed
                         info!(
                             "[notebook-sync] LaunchKernel: {} prepares its own env, no pool env",
@@ -7612,6 +7666,7 @@ mod tests {
                     prerelease: None,
                 }),
                 conda: None,
+                pixi: None,
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
@@ -7634,6 +7689,7 @@ mod tests {
                     channels: vec!["conda-forge".to_string()],
                     python: None,
                 }),
+                pixi: None,
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
@@ -7652,6 +7708,7 @@ mod tests {
                 env_id: None,
                 uv: None,
                 conda: None,
+                pixi: None,
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
@@ -7707,6 +7764,7 @@ mod tests {
                     channels: vec!["conda-forge".to_string()],
                     python: None,
                 }),
+                pixi: None,
                 deno: None,
                 trust_signature: None,
                 trust_timestamp: None,
@@ -7731,6 +7789,7 @@ mod tests {
                     prerelease: None,
                 }),
                 conda: None,
+                pixi: None,
                 deno: Some(crate::notebook_metadata::DenoMetadata {
                     permissions: vec![],
                     import_map: None,
@@ -9357,6 +9416,7 @@ mod tests {
             uv_deps: Some(vec!["numpy".to_string(), "pandas".to_string()]),
             conda_deps: None,
             conda_channels: None,
+            pixi_deps: None,
             deno_config: None,
             venv_path: None,
             python_path: None,
@@ -9376,6 +9436,7 @@ mod tests {
             uv_deps: Some(vec!["numpy".to_string()]),
             conda_deps: None,
             conda_channels: None,
+            pixi_deps: None,
             deno_config: None,
             venv_path: None,
             python_path: None,
@@ -9395,6 +9456,7 @@ mod tests {
             uv_deps: Some(vec!["numpy".to_string(), "pandas".to_string()]),
             conda_deps: None,
             conda_channels: None,
+            pixi_deps: None,
             deno_config: None,
             venv_path: None,
             python_path: None,
@@ -9413,6 +9475,7 @@ mod tests {
             uv_deps: Some(vec!["numpy".to_string(), "old-pkg".to_string()]),
             conda_deps: None,
             conda_channels: None,
+            pixi_deps: None,
             deno_config: None,
             venv_path: None,
             python_path: None,
@@ -9431,6 +9494,7 @@ mod tests {
             uv_deps: None,
             conda_deps: Some(vec!["scipy".to_string()]),
             conda_channels: Some(vec!["conda-forge".to_string()]),
+            pixi_deps: None,
             deno_config: None,
             venv_path: None,
             python_path: None,

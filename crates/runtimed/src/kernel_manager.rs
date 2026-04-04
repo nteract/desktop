@@ -923,6 +923,35 @@ impl RoomKernel {
                         }
                         cmd
                     }
+                    "pixi:inline" => {
+                        // Use pixi exec with -w flags for each inline dependency
+                        let pixi_path = kernel_launch::tools::get_pixi_path().await?;
+                        info!(
+                            "[kernel-manager] Starting Python kernel with pixi exec (env_source: {})",
+                            env_source
+                        );
+                        let mut cmd = tokio::process::Command::new(&pixi_path);
+                        cmd.arg("exec");
+                        // Always include ipykernel
+                        cmd.args(["-w", "ipykernel"]);
+                        // Add inline deps from launched_config
+                        if let Some(ref deps) = self.launched_config.pixi_deps {
+                            for dep in deps {
+                                cmd.args(["-w", dep]);
+                            }
+                        }
+                        cmd.args([
+                            "python",
+                            "-Xfrozen_modules=off",
+                            "-m",
+                            "ipykernel_launcher",
+                            "-f",
+                        ]);
+                        cmd.arg(&connection_file_path);
+                        cmd.stdout(Stdio::null());
+                        cmd.stderr(Stdio::piped());
+                        cmd
+                    }
                     _ => {
                         // Prewarmed - use pooled environment
                         let pooled_env = env.ok_or_else(|| {
