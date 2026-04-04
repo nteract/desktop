@@ -147,15 +147,49 @@ Key files:
 - `apps/notebook/src/lib/manifest-resolution.ts` — Frontend resolution, `isBinaryMime()`, `resolveContentRef()`
 - `apps/notebook/src/lib/materialize-cells.ts` — Assembles cells with resolved outputs
 
-### 6. Daemon Manages Runtime Resources
+### 6. Process-Isolated Kernel Execution
 
-The daemon owns kernel lifecycle, environment pools, and tooling (ruff, deno, etc.).
+Every kernel runs in a separate **agent subprocess** (`runtimed agent`) that connects back to the daemon's Unix socket as an Automerge peer. The daemon coordinator handles environment resolution and spawns the agent; the agent owns the kernel process and writes outputs to RuntimeStateDoc.
+
+```
+┌────────────────────────────────────────────────────┐
+│ Coordinator (runtimed daemon)                      │
+│  Environment pools, trust, peer sync, persistence  │
+│                                                    │
+│  ExecuteCell → writes execution entry to CRDT      │
+│  (source + seq number in RuntimeStateDoc)          │
+└──────────┬─────────────────────────────────────────┘
+           │ Unix socket (standard peer protocol)
+           ▼
+┌────────────────────────────────────────────────────┐
+│ Agent subprocess (runtimed agent)                  │
+│  Connects as Automerge peer, watches CRDT queue    │
+│  Owns kernel process (ZMQ), IOPub, outputs         │
+│  Writes results back via RuntimeStateDoc sync      │
+└────────────────────────────────────────────────────┘
+```
+
+**CRDT-driven execution:** The coordinator writes execution entries (with source code and a monotonic sequence number) to RuntimeStateDoc. The agent discovers new entries via Automerge sync, sorts by sequence number, and executes. No RPC needed for execution — it's pure state sync.
+
+**RPC for lifecycle:** `LaunchKernel`, `InterruptExecution`, `ShutdownKernel`, `Complete`, `GetHistory`, and `SendComm` use `AgentRequest`/`AgentResponse` frames (0x01/0x02) over the socket.
 
 **Implications:**
 - Clients request kernel launch; they don't spawn kernels directly
 - Environment selection is the daemon's decision based on notebook metadata
 - Tool availability is the daemon's responsibility (bootstrap via rattler if needed)
 - Clients are stateless with respect to runtime resources
+- Each kernel is sandboxable at the OS level (process isolation enables future cgroup/seatbelt)
+- Agents can survive temporary disconnection and sync outputs on reconnect
+
+### 7. Reuse Existing Protocols
+
+New components should connect using existing protocols rather than inventing special transports. The agent subprocess is a regular Unix socket peer — same handshake, same frame types, same Automerge sync as frontends and MCP servers. Execution state flows through the same RuntimeStateDoc CRDT that frontends already subscribe to.
+
+**Implications:**
+- New runtime backends (SSH remote, containerized) connect via the same socket protocol
+- No special framing or serialization for internal components
+- Debugging tools work uniformly (same frame types everywhere)
+- The CRDT is the coordination mechanism — if state can be expressed as a CRDT mutation, prefer that over RPC
 
 ### Crate Boundaries
 
@@ -223,16 +257,19 @@ We are working toward full conformance with these principles.
 | Binary separation | Conformant |
 | Daemon manages resources | Conformant |
 
-The frontend now owns a local Automerge doc via `runtimed-wasm` WASM bindings, making it fully conformant with the canonical-state principle. Cell mutations (edits, reorders, deletes) are applied instantly in WASM with no RPC round-trip, satisfying local-first editing. `ExecuteCell` reads from the synced document. The deprecated `QueueCell` (which accepts code as a parameter) is retained only for `runtimed-py` backwards compatibility.
+The frontend now owns a local Automerge doc via `runtimed-wasm` WASM bindings, making it fully conformant with the canonical-state principle. Cell mutations (edits, reorders, deletes) are applied instantly in WASM with no RPC round-trip, satisfying local-first editing. `ExecuteCell` reads from the synced document.
 
 ## References
 
-- `crates/notebook-protocol/src/protocol.rs` — Canonical wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, `CommSnapshot`
+- `crates/notebook-protocol/src/protocol.rs` — Canonical wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, `AgentRequest`, `AgentResponse`
 - `crates/notebook-doc/src/lib.rs` — `NotebookDoc`: Automerge schema, cell CRUD, output writes, per-cell accessors
 - `crates/notebook-doc/src/diff.rs` — `CellChangeset`: structural diff from Automerge patches
+- `crates/notebook-doc/src/runtime_state.rs` — `RuntimeStateDoc`: kernel status, execution queue/lifecycle, env sync, comms
 - `crates/notebook-sync/src/handle.rs` — `DocHandle`: sync infrastructure, per-cell accessors for Python clients
-- `crates/runtimed/src/notebook_sync_server.rs` — `NotebookRoom`, room lifecycle, autosave debouncer, re-keying, sync loop
-- `crates/runtimed/src/kernel_manager.rs` — Kernel process lifecycle, execution queue, IOPub output routing
+- `crates/runtimed/src/notebook_sync_server.rs` — `NotebookRoom`, room lifecycle, agent sync handler, CRDT execution queue
+- `crates/runtimed/src/agent.rs` — Agent subprocess: Unix socket peer, CRDT queue watching, kernel ownership
+- `crates/runtimed/src/agent_handle.rs` — Coordinator-side agent process management (spawn + monitor)
+- `crates/runtimed/src/kernel_manager.rs` — `RoomKernel`: kernel process lifecycle, execution queue, IOPub output routing
 - `crates/runtimed/src/comm_state.rs` — Widget comm state + Output widget capture routing
 - `crates/runtimed/src/output_store.rs` — Output manifest creation/resolution, `is_binary_mime()`, `ContentRef`
 - `crates/notebook-sync/src/relay.rs` — `RelayHandle`: relay API for forwarding typed frames between WASM and daemon
