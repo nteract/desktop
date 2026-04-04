@@ -3412,6 +3412,18 @@ async fn auto_launch_kernel(
                         publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es)
                             .await;
 
+                        // Write kernel status + info to RuntimeStateDoc so
+                        // frontends see "idle" via CRDT sync.
+                        {
+                            let mut sd = room.state_doc.write().await;
+                            let mut changed = false;
+                            changed |= sd.set_kernel_status("idle");
+                            changed |= sd.set_kernel_info(kernel_type, kernel_type, &es);
+                            if changed {
+                                let _ = room.state_changed_tx.send(());
+                            }
+                        }
+
                         info!(
                             "[notebook-sync] Auto-launch via agent succeeded: {} kernel with {} environment",
                             kernel_type, es
