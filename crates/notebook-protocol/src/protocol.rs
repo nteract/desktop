@@ -545,14 +545,6 @@ pub enum AgentRequest {
         env_vars: std::collections::HashMap<String, String>,
     },
 
-    /// Execute a cell. The coordinator reads source from NotebookDoc
-    /// and passes it here — the agent has no NotebookDoc access.
-    ExecuteCell {
-        cell_id: String,
-        code: String,
-        execution_id: String,
-    },
-
     /// Interrupt the currently executing cell.
     InterruptExecution,
 
@@ -579,12 +571,6 @@ pub enum AgentRequest {
 pub enum AgentResponse {
     /// Kernel launched successfully.
     KernelLaunched { env_source: String },
-
-    /// Cell queued for execution.
-    CellQueued {
-        cell_id: String,
-        execution_id: String,
-    },
 
     /// Code completion result.
     CompletionResult {

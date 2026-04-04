@@ -59,10 +59,6 @@ pub enum Request {
     /// Get environment paths currently in use by running kernels.
     /// Used by `runt env clean` to avoid evicting active environments.
     ActiveEnvPaths,
-
-    /// Enable or disable agent mode (process-isolated kernels).
-    /// Takes effect for the next kernel launch — existing kernels are unaffected.
-    SetAgentMode { enabled: bool },
 }
 
 /// Responses from the daemon to clients.

@@ -359,14 +359,6 @@ async fn handle_agent_request(request: AgentRequest, ctx: &AgentContext) -> Agen
             }
         }
 
-        AgentRequest::ExecuteCell { .. } => {
-            // ExecuteCell is CRDT-driven — should not arrive as RPC.
-            warn!("[agent] Received ExecuteCell RPC — this should be CRDT-driven");
-            AgentResponse::Error {
-                error: "ExecuteCell is CRDT-driven, not RPC".to_string(),
-            }
-        }
-
         AgentRequest::InterruptExecution => {
             let mut guard = ctx.kernel.lock().await;
             if let Some(ref mut k) = *guard {

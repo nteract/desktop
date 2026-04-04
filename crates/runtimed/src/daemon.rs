@@ -1906,11 +1906,6 @@ impl Daemon {
                     self.collect_active_env_paths().await.into_iter().collect();
                 Response::ActiveEnvPaths { paths }
             }
-            Request::SetAgentMode { .. } => {
-                // Agent mode is now unconditional — this request is a no-op.
-                // Kept for wire compatibility; will be removed in a future version.
-                Response::Ok
-            }
         }
     }
 
